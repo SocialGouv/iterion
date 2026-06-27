@@ -1,5 +1,10 @@
 name: 🐳 Container Image
 
+# Each image is built by the reusable _build-image.yml: amd64 on the in-house
+# buildkit-operator warm daemon, arm64 natively on a GitHub arm runner, merged
+# into one multi-arch index and cosign-signed. PR events validate locally
+# (amd64 --load, no operator/secrets). See _build-image.yml for the rationale.
+
 on:
   push:
     branches:
@@ -12,6 +17,7 @@ on:
       - "docker/**"
       - "sandbox/**"
       - ".github/workflows/image.yml"
+      - ".github/workflows/_build-image.yml"
       - "go.mod"
       - "go.sum"
   workflow_dispatch:
@@ -25,391 +31,81 @@ concurrency:
 permissions:
   contents: read
   packages: write
-  # cosign keyless OIDC signing + SBOM attestations need an OIDC token
-  # at workflow level. The signing step itself runs in jobs that
-  # explicitly mount this permission.
+  # cosign keyless OIDC signing + the operator's GitHub OIDC /route auth need an
+  # OIDC token at workflow level; reusable-workflow jobs request it per-job.
   id-token: write
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/iterion
-
 jobs:
+  # Shared values: lowercase owner (OCI refs must be lowercase) + the base image
+  # tag the sandbox chain bakes in — the release tag on a tag push, else the
+  # rolling `edge` (also `edge` on PRs, which reference the published base).
+  prep:
+    runs-on: ubuntu-latest
+    outputs:
+      owner_lc: ${{ steps.vars.outputs.owner_lc }}
+      base_tag: ${{ steps.vars.outputs.base_tag }}
+    steps:
+      - id: vars
+        run: |
+          echo "owner_lc=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "base_tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base_tag=edge" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Main iterion image.
   build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+    needs: prep
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion
+      routing-name: iterion
+      context: .
+      file: Dockerfile
+      build-args: |
+        VERSION=${{ github.ref_name }}
+        COMMIT=${{ github.sha }}
+      is-pr: ${{ github.event_name == 'pull_request' }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute lowercase image ref
-        # OCI references must be lowercase. github.repository_owner
-        # preserves case (e.g. SocialGouv) — feeding the raw value to
-        # `cosign sign` / `cosign attest` produces "could not parse
-        # reference". Lowercase once into REGISTRY_IMAGE and reuse.
-        run: |
-          echo "REGISTRY_IMAGE=$(echo '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-
-      - name: Compute tags
-        id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
-        with:
-          images: ${{ env.REGISTRY_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Build (and push when not a PR)
-        id: build
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          file: Dockerfile
-          # PRs build linux/amd64 only — cross-arch QEMU emulation
-          # roughly doubles the wall-clock and the result is thrown
-          # away anyway. Branch and tag pushes still build both archs.
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ github.ref_name }}
-            COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # ── Supply-chain attestation (Sprint-8 hardening) ─────────────
-      # Only sign + attest when we actually pushed an image (skipped on
-      # PR builds that only `load` into the local daemon). The digest is
-      # the unique address — signing the tag would let a later push
-      # under the same tag claim the signature.
-      - name: Install cosign
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
-
-      - name: Generate SBOM (syft)
-        if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          image: ${{ env.REGISTRY_IMAGE }}@${{ steps.build.outputs.digest }}
-          format: spdx-json
-          output-file: iterion-image.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-
-      - name: Sign image (cosign keyless OIDC)
-        if: github.event_name != 'pull_request'
-        run: |
-          # cosign keyless hits Fulcio + Rekor (public Sigstore services) which
-          # intermittently rate-limit/time out. Retry with backoff so a transient
-          # Sigstore hiccup doesn't fail the whole image run.
-          for a in 1 2 3 4 5; do
-            cosign sign --yes "${REGISTRY_IMAGE}@${DIGEST}" && exit 0
-            echo "::warning::cosign sign attempt $a failed (Sigstore transient?); retry in $((a*10))s"; sleep $((a*10))
-          done
-          echo "::error::cosign sign failed after 5 attempts"; exit 1
-        env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-
-      - name: Attest SBOM
-        if: github.event_name != 'pull_request'
-        run: |
-          for a in 1 2 3 4 5; do
-            cosign attest --yes \
-              --predicate iterion-image.spdx.json \
-              --type spdx \
-              "${REGISTRY_IMAGE}@${DIGEST}" && exit 0
-            echo "::warning::cosign attest attempt $a failed (Sigstore transient?); retry in $((a*10))s"; sleep $((a*10))
-          done
-          echo "::error::cosign attest failed after 5 attempts"; exit 1
-        env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-
-  # ----------------------------------------------------------------------
-  # iterion-sandbox-slim — default image used by `sandbox: auto` when no
-  # .devcontainer/devcontainer.json is found. Pinned to the iterion
-  # release tag, with a rolling `edge` tag tracking main.
-  # ----------------------------------------------------------------------
+  # iterion-sandbox-slim — bakes in the iterion binary via COPY --from, so it
+  # needs the iterion image (and its :edge / :vX.Y.Z tag) published first.
   build-sandbox-slim:
-    runs-on: ubuntu-latest
-    # needs: build so the iterion image (and its :edge / :vX.Y.Z tag) is pushed
-    # before this Dockerfile bakes it in via COPY --from (the sandboxed claw
-    # runner needs `iterion` on PATH inside the pod — k8s can't bind-mount it).
-    needs: build
-    env:
-      SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-slim
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+    needs: [prep, build]
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-slim
+      routing-name: iterion-sandbox-slim
+      context: sandbox/slim
+      file: sandbox/slim/Dockerfile
+      build-args: ITERION_IMAGE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion:${{ needs.prep.outputs.base_tag }}
+      is-pr: ${{ github.event_name == 'pull_request' }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute lowercase image ref
-        run: |
-          echo "SANDBOX_IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-          # iterion image ref to bake in — matches this build's tag: the release
-          # version on a tag push, else the rolling :edge tracking main.
-          IT=$(echo '${{ env.REGISTRY }}/${{ github.repository_owner }}/iterion' | tr '[:upper:]' '[:lower:]')
-          # Use the canonical env vars, not GitHub-expression interpolation: a
-          # crafted tag name (github.ref_name) inlined into this shell would be a
-          # GHA script-injection on tag push. $GITHUB_REF_NAME is the same value,
-          # injection-safe. (Do NOT write the expression delimiters in a run:
-          # comment — GitHub evaluates them even here, and an invalid one fails
-          # the whole workflow to compile.)
-          if [ "$GITHUB_REF_TYPE" = 'tag' ]; then BAKE_REF="$GITHUB_REF_NAME"; else BAKE_REF='edge'; fi
-          echo "ITERION_BAKE_IMAGE=${IT}:${BAKE_REF}" >> "$GITHUB_ENV"
-
-      - name: Compute tags
-        id: meta-slim
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
-        with:
-          images: ${{ env.SANDBOX_IMAGE_REF }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Build (and push when not a PR)
-        id: build-slim
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: sandbox/slim
-          file: sandbox/slim/Dockerfile
-          build-args: |
-            ITERION_IMAGE=${{ env.ITERION_BAKE_IMAGE }}
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ steps.meta-slim.outputs.tags }}
-          labels: ${{ steps.meta-slim.outputs.labels }}
-          cache-from: type=gha,scope=sandbox-slim
-          cache-to: type=gha,mode=max,scope=sandbox-slim
-
-      - name: Install cosign (slim)
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
-
-      - name: Sign sandbox-slim image
-        if: github.event_name != 'pull_request'
-        run: |
-          for a in 1 2 3 4 5; do
-            cosign sign --yes "${SANDBOX_IMAGE_REF}@${DIGEST}" && exit 0
-            echo "::warning::cosign sign attempt $a failed (Sigstore transient?); retry in $((a*10))s"; sleep $((a*10))
-          done
-          echo "::error::cosign sign failed after 5 attempts"; exit 1
-        env:
-          DIGEST: ${{ steps.build-slim.outputs.digest }}
-
-  # ----------------------------------------------------------------------
-  # iterion-sandbox-full — opt-in richer variant FROM the slim image.
-  # Chained on build-sandbox-slim so it picks up the freshly-built base
-  # for the same ref. Users select it via --sandbox-default-image or the
-  # ITERION_SANDBOX_DEFAULT_IMAGE env var.
-  # ----------------------------------------------------------------------
+  # iterion-sandbox-full — FROM the freshly-built slim image.
   build-sandbox-full:
-    runs-on: ubuntu-latest
-    needs: build-sandbox-slim
-    env:
-      SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-full
-      SANDBOX_SLIM_NAME: ${{ github.repository_owner }}/iterion-sandbox-slim
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+    needs: [prep, build-sandbox-slim]
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-full
+      routing-name: iterion-sandbox-full
+      context: sandbox/full
+      file: sandbox/full/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-slim:${{ needs.prep.outputs.base_tag }}
+      is-pr: ${{ github.event_name == 'pull_request' }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute lowercase image refs
-        run: |
-          echo "SANDBOX_IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-          echo "SANDBOX_SLIM_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_SLIM_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-
-      - name: Compute tags
-        id: meta-full
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
-        with:
-          images: ${{ env.SANDBOX_IMAGE_REF }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Resolve slim base ref
-        shell: bash
-        run: |
-          # Pick the slim tag that matches the current build context: a
-          # release tag or the rolling `edge` tag on main; PRs build a
-          # short-lived ephemeral image and reference it by short tag.
-          # $GITHUB_REF (canonical env var), not the github.ref expression
-          # inlined — a crafted tag name would otherwise script-inject this
-          # shell (and a run: comment is still evaluated by GitHub).
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            BASE_TAG="${GITHUB_REF_NAME}"
-          else
-            BASE_TAG="edge"
-          fi
-          echo "SANDBOX_FULL_BASE=${SANDBOX_SLIM_REF}:${BASE_TAG}" >> "$GITHUB_ENV"
-
-      - name: Build (and push when not a PR)
-        id: build-full
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: sandbox/full
-          file: sandbox/full/Dockerfile
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ steps.meta-full.outputs.tags }}
-          labels: ${{ steps.meta-full.outputs.labels }}
-          build-args: |
-            BASE=${{ env.SANDBOX_FULL_BASE }}
-          cache-from: type=gha,scope=sandbox-full
-          cache-to: type=gha,mode=max,scope=sandbox-full
-
-      - name: Install cosign (full)
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
-
-      - name: Sign sandbox-full image
-        if: github.event_name != 'pull_request'
-        run: |
-          for a in 1 2 3 4 5; do
-            cosign sign --yes "${SANDBOX_IMAGE_REF}@${DIGEST}" && exit 0
-            echo "::warning::cosign sign attempt $a failed (Sigstore transient?); retry in $((a*10))s"; sleep $((a*10))
-          done
-          echo "::error::cosign sign failed after 5 attempts"; exit 1
-        env:
-          DIGEST: ${{ steps.build-full.outputs.digest }}
-
-  # ----------------------------------------------------------------------
-  # iterion-sandbox-sec — security-scanner variant FROM the full image
-  # (semgrep/gosec/govulncheck/bandit/pip-audit/trivy/gitleaks). Required
-  # by sec-audit-source / sec-audit-deps, which pin this ref via
-  # sandbox.image — without it the audits silently produce a zero-finding
-  # façade. Chained on build-sandbox-full so it picks up the freshly-built
-  # base for the same ref.
-  # ----------------------------------------------------------------------
+  # iterion-sandbox-sec — FROM the freshly-built full image. Required by
+  # sec-audit-source / sec-audit-deps (pinned via sandbox.image).
   build-sandbox-sec:
-    runs-on: ubuntu-latest
-    needs: build-sandbox-full
-    env:
-      SANDBOX_IMAGE_NAME: ${{ github.repository_owner }}/iterion-sandbox-sec
-      SANDBOX_FULL_NAME: ${{ github.repository_owner }}/iterion-sandbox-full
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Login to GHCR
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute lowercase image refs
-        run: |
-          echo "SANDBOX_IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-          echo "SANDBOX_FULL_REF=$(echo '${{ env.REGISTRY }}/${{ env.SANDBOX_FULL_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-
-      - name: Compute tags
-        id: meta-sec
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
-        with:
-          images: ${{ env.SANDBOX_IMAGE_REF }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Resolve full base ref
-        shell: bash
-        run: |
-          # Mirror build-sandbox-full's base resolution: a release tag or
-          # the rolling `edge` tag on main; PRs build against the published
-          # full:edge (the PR's own full image isn't pushed to the registry).
-          # $GITHUB_REF (canonical env var), not the github.ref expression
-          # inlined — a crafted tag name would otherwise script-inject this
-          # shell (and a run: comment is still evaluated by GitHub).
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            BASE_TAG="${GITHUB_REF_NAME}"
-          else
-            BASE_TAG="edge"
-          fi
-          echo "SANDBOX_SEC_BASE=${SANDBOX_FULL_REF}:${BASE_TAG}" >> "$GITHUB_ENV"
-
-      - name: Build (and push when not a PR)
-        id: build-sec
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: sandbox/sec
-          file: sandbox/sec/Dockerfile
-          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ steps.meta-sec.outputs.tags }}
-          labels: ${{ steps.meta-sec.outputs.labels }}
-          build-args: |
-            BASE=${{ env.SANDBOX_SEC_BASE }}
-          cache-from: type=gha,scope=sandbox-sec
-          cache-to: type=gha,mode=max,scope=sandbox-sec
-
-      - name: Install cosign (sec)
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
-
-      - name: Sign sandbox-sec image
-        if: github.event_name != 'pull_request'
-        run: |
-          for a in 1 2 3 4 5; do
-            cosign sign --yes "${SANDBOX_IMAGE_REF}@${DIGEST}" && exit 0
-            echo "::warning::cosign sign attempt $a failed (Sigstore transient?); retry in $((a*10))s"; sleep $((a*10))
-          done
-          echo "::error::cosign sign failed after 5 attempts"; exit 1
-        env:
-          DIGEST: ${{ steps.build-sec.outputs.digest }}
-
+    needs: [prep, build-sandbox-full]
+    uses: ./.github/workflows/_build-image.yml
+    secrets: inherit
+    with:
+      image-name: iterion-sandbox-sec
+      routing-name: iterion-sandbox-sec
+      context: sandbox/sec
+      file: sandbox/sec/Dockerfile
+      build-args: BASE=ghcr.io/${{ needs.prep.outputs.owner_lc }}/iterion-sandbox-full:${{ needs.prep.outputs.base_tag }}
+      is-pr: ${{ github.event_name == 'pull_request' }}

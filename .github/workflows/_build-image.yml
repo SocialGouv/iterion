@@ -1,0 +1,261 @@
+# Reusable image build — buildkit-operator composite (amd64 on the in-house
+# buildkit-operator daemon, arm64 on a native GitHub arm runner, merged into one
+# multi-arch index and cosign-signed). Called once per image by image.yml.
+#
+# Why composite: the in-house buildkit-operator (Ministères Sociaux, gateway
+# bkod.fabrique.social.gouv.fr) currently has a single amd64 node, so arm64 can't
+# route to it. amd64 builds on the warm daemon (persistent cache mounts + S3 cold
+# cache — the dogfood path); arm64 builds natively on ubuntu-24.04-arm (no QEMU
+# emulation). The two per-arch manifests are stitched into the published index.
+#
+# PR builds DON'T touch the operator: fork PRs get no secrets (mTLS material is
+# withheld), so a PR validates with a plain local buildx --load (amd64 only),
+# exactly like the pre-migration workflow.
+name: build-image (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: "Image repo name without registry/owner (e.g. iterion, iterion-sandbox-slim)."
+        required: true
+        type: string
+      routing-name:
+        description: "buildkit-operator `name` routing component — gives this image its own warm daemon + cache."
+        required: true
+        type: string
+      context:
+        description: "Build context path."
+        required: true
+        type: string
+      file:
+        description: "Dockerfile path."
+        required: true
+        type: string
+      build-args:
+        description: "Build args, one KEY=VALUE per line."
+        required: false
+        type: string
+        default: ""
+      is-pr:
+        description: "True on pull_request events (validate-only: local amd64 build, no operator, no push)."
+        required: true
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # --------------------------------------------------------------------------
+  # PR validation — plain local buildx, amd64 only, --load (no push, no secrets).
+  # Mirrors the pre-migration PR behaviour; works for fork PRs that get no mTLS.
+  # --------------------------------------------------------------------------
+  pr-validate:
+    if: ${{ inputs.is-pr }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (amd64, load, no push)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          build-args: ${{ inputs.build-args }}
+          cache-from: type=gha,scope=${{ inputs.image-name }}-pr
+          cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}-pr
+
+  # --------------------------------------------------------------------------
+  # amd64 — built on the in-house buildkit-operator warm daemon, pushed to a
+  # per-arch staging tag the merge job stitches into the published index.
+  # --------------------------------------------------------------------------
+  amd64:
+    if: ${{ !inputs.is-pr }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # GitHub OIDC identity for buildd /route auth
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Compute lowercase image ref
+        run: echo "IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image-name }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Compute OCI labels
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ env.IMAGE_REF }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build amd64 on buildkit-operator
+        # Pin moved forward on each operator release. This SHA must be pushed to
+        # github.com/SocialGouv/buildkit-operator (branch feat/build-args-passthrough)
+        # for `uses:` to resolve it — it carries the --build-arg passthrough.
+        uses: socialgouv/buildkit-operator@20ed87560a925cc4aa3ef453e59aa10dce58975c
+        with:
+          buildd-url: ${{ vars.BUILDKIT_OPERATOR_BUILDD_URL }}
+          gateway-host: ${{ vars.BUILDKIT_OPERATOR_GATEWAY_HOST || 'bkod.fabrique.social.gouv.fr' }}
+          ca: ${{ secrets.BUILDKIT_OPERATOR_CA }}
+          cert: ${{ secrets.BUILDKIT_OPERATOR_CERT }}
+          key: ${{ secrets.BUILDKIT_OPERATOR_KEY }}
+          token: ${{ secrets.BUILDKIT_OPERATOR_TOKEN }}
+          name: ${{ inputs.routing-name }}
+          arch: amd64
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          build-args: ${{ inputs.build-args }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          sign: false # the published index is signed once in the merge job
+
+  # --------------------------------------------------------------------------
+  # arm64 — native build on a GitHub arm runner (no QEMU), pushed to a per-arch
+  # staging tag. gha layer cache keyed per image+arch.
+  # --------------------------------------------------------------------------
+  arm64:
+    if: ${{ !inputs.is-pr }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Compute lowercase image ref
+        run: echo "IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image-name }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Compute OCI labels
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ env.IMAGE_REF }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build arm64 (native)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.IMAGE_REF }}:${{ github.sha }}-arm64
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ inputs.build-args }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ inputs.image-name }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}-arm64
+
+  # --------------------------------------------------------------------------
+  # merge — stitch the two per-arch staging manifests into the published
+  # multi-arch index (final tags), then cosign-sign + SBOM-attest the index.
+  # --------------------------------------------------------------------------
+  merge:
+    if: ${{ !inputs.is-pr }}
+    needs: [amd64, arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless
+    steps:
+      - name: Compute lowercase image ref
+        run: echo "IMAGE_REF=$(echo '${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image-name }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ${{ env.IMAGE_REF }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=edge,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch index from per-arch staging manifests
+        id: index
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eux
+          tflags=""
+          for t in $TAGS; do tflags="$tflags -t $t"; done
+          # shellcheck disable=SC2086
+          docker buildx imagetools create $tflags \
+            "${IMAGE_REF}:${SHA}-amd64" \
+            "${IMAGE_REF}:${SHA}-arm64"
+          # The index digest is the authoritative address we sign + attest (the
+          # per-arch staging tags stay — the index references their manifests).
+          first_tag="$(printf '%s\n' $TAGS | head -n1)"
+          digest="$(docker buildx imagetools inspect "$first_tag" --format '{{.Manifest.Digest}}')"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Generate SBOM (syft) for the index
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE_REF }}@${{ steps.index.outputs.digest }}
+          format: spdx-json
+          output-file: image.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Sign index + attest SBOM (cosign keyless OIDC)
+        env:
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: |
+          # Fulcio + Rekor intermittently rate-limit/time out; retry with backoff.
+          sign() { for a in 1 2 3 4 5; do "$@" && return 0; echo "::warning::cosign attempt $a failed (Sigstore transient?); retry in $((a*10))s"; sleep $((a*10)); done; return 1; }
+          sign cosign sign --yes "${IMAGE_REF}@${DIGEST}" || { echo "::error::cosign sign failed"; exit 1; }
+          sign cosign attest --yes --predicate image.spdx.json --type spdx "${IMAGE_REF}@${DIGEST}" || { echo "::error::cosign attest failed"; exit 1; }

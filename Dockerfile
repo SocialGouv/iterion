@@ -22,8 +22,14 @@ WORKDIR /app
 # resolve from the locked deps tree, then layer the studio sources.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY studio/package.json studio/.npmrc* ./studio/
-RUN corepack enable && \
+# Cache mount for the pnpm content-addressable store: on buildkit-operator's
+# warm daemon it persists across builds, so a source-only change (which
+# invalidates this layer) still resolves every dep from the warm store instead
+# of re-fetching from the registry. --store-dir pins it onto the mount.
+RUN --mount=type=cache,target=/pnpm-store \
+    corepack enable && \
     corepack pnpm install --frozen-lockfile --prefer-offline \
+        --store-dir=/pnpm-store \
         --filter ./studio...
 COPY studio ./studio
 RUN corepack pnpm --filter ./studio exec vite build
@@ -50,7 +56,12 @@ COPY bots ./bots
 # Embed the freshly-built studio assets the Go binary serves at GET /.
 COPY --from=studio-builder /app/studio/dist ./pkg/server/static
 ENV CGO_ENABLED=0 GOFLAGS="-mod=vendor -trimpath"
-RUN go build \
+# Cache mount for the Go build cache (compiled package objects). Deps are
+# vendored (no module download), so this only caches compilation — kept warm
+# on the operator daemon it turns a full recompile into an incremental one
+# when a source change invalidates this layer.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go build \
     -ldflags="-X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} \
               -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=${COMMIT}" \
     -o /out/iterion ./cmd/iterion
@@ -63,7 +74,10 @@ WORKDIR /llm
 COPY docker/llm-clis/package.json ./package.json
 # npm install (no lock yet) honours the exact pinned versions in
 # package.json. `task docker:pin-llm-clis` (T-39) regenerates these.
-RUN npm install --omit=dev --no-audit --no-fund
+# Cache mount for npm's package cache (~/.npm): warm on the operator daemon,
+# the pinned tarballs are reused instead of re-downloaded on every build.
+RUN --mount=type=cache,target=/root/.npm \
+    npm install --omit=dev --no-audit --no-fund
 
 # ---------------------------------------------------------------------
 # Stage 4 — Runtime
@@ -95,7 +109,14 @@ ENV ITERION_VERSION=${VERSION} \
 #               build JSON note payloads with `jq -nc --arg`; without it
 #               every cloud converse/review run burned an LLM round-trip
 #               on exit-127 before falling back to python3.
-RUN apt-get update \
+# apt cache mounts keep the downloaded .deb archives + package lists warm on
+# the operator daemon (dropping docker-clean so apt doesn't purge them). Both
+# dirs are cache mounts, so they never land in the final image layer — no need
+# for the old `rm -rf /var/lib/apt/lists` cleanup.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
         git \
         ca-certificates \
@@ -104,8 +125,7 @@ RUN apt-get update \
         curl \
         passwd \
         python3 \
-        jq \
- && rm -rf /var/lib/apt/lists/*
+        jq
 
 # glab (GitLab CLI) — review-pr (Revi) runs WITHOUT a sandbox, so in
 # cloud it executes inside the runner pod and posts code reviews onto
