@@ -1,9 +1,7 @@
 // Mirrors pkg/backend/detect.Report. Keep the field names in sync — the
 // Go handler returns json:"snake_case" and we deserialise verbatim.
 
-import { extractErrorMessage } from "./client";
-
-const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
+import { request } from "./client";
 
 export interface BackendStatus {
   name: "claude_code" | "codex" | "claw";
@@ -37,21 +35,21 @@ export interface BackendDetectReport {
 export async function fetchBackendDetect(
   opts: { signal?: AbortSignal; force?: boolean } = {},
 ): Promise<BackendDetectReport> {
-  // Cache-bust both the server-side TTL cache (?force=1) and any browser
-  // / webview HTTP cache (cache: "no-store" + Cache-Control header). The
-  // Wails webview is particularly aggressive about caching identical
-  // GETs unless we explicitly disable it.
-  const url = opts.force
-    ? `${BASE_URL}/backends/detect?force=1`
-    : `${BASE_URL}/backends/detect`;
-  const res = await fetch(url, {
-    credentials: "include",
+  // Route through the shared `request` wrapper so this call gets the same
+  // silent 401 → /auth/refresh → replay handling every other /api/* call has.
+  // Without it, the LLM-credentials panel was the one place that surfaced a
+  // raw "401 authentication required" once the short-lived access cookie
+  // expired, even though the refresh token was still valid (the browser drops
+  // the access cookie at its TTL, so requireAuth sees no bearer at all).
+  //
+  // Cache-bust both the server-side TTL cache (?force=1) and any browser /
+  // webview HTTP cache (cache: "no-store" + Cache-Control header). The Wails
+  // webview is particularly aggressive about caching identical GETs.
+  const path = opts.force ? "/backends/detect?force=1" : "/backends/detect";
+  return request<BackendDetectReport>(path, {
+    method: "GET",
     signal: opts.signal,
     cache: opts.force ? "no-store" : "default",
     headers: opts.force ? { "Cache-Control": "no-cache" } : undefined,
   });
-  if (!res.ok) {
-    throw new Error(`backends/detect: HTTP ${res.status}: ${await extractErrorMessage(res)}`);
-  }
-  return (await res.json()) as BackendDetectReport;
 }

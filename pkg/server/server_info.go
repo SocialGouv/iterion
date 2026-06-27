@@ -60,6 +60,12 @@ type serverInfoResponse struct {
 	// (Config.TriggerStore). The SPA conditionally exposes the Triggers /
 	// Automations view that manages board (and future) subscriptions.
 	TriggersEnabled bool `json:"triggers_enabled"`
+	// ForgeGitHubAppConfigured is true when this server has a GitHub App
+	// configured (ITERION_FORGE_GITHUB_APP_*). The forge connect form only
+	// offers the "Install GitHub App" mode when true — otherwise selecting it
+	// dead-ends on a 400 ("the GitHub App is not configured on this server").
+	// OAuth / PAT connect modes don't depend on it.
+	ForgeGitHubAppConfigured bool `json:"forge_github_app_configured"`
 }
 
 type serverLimitsBlock struct {
@@ -93,11 +99,12 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 				AllowedMIME:    s.cfg.AllowedUploadMIMEs,
 			},
 		},
-		NativeTrackerEnabled: s.cfg.NativeTrackerStore != nil,
-		DispatcherEnabled:    s.cfg.Dispatcher != nil,
-		EmailEnabled:         s.authSvc != nil && s.authSvc.EmailEnabled(),
-		MarketplaceEnabled:   s.marketplace != nil,
-		TriggersEnabled:      s.cfg.TriggerStore != nil,
+		NativeTrackerEnabled:     s.cfg.NativeTrackerStore != nil,
+		DispatcherEnabled:        s.cfg.Dispatcher != nil,
+		EmailEnabled:             s.authSvc != nil && s.authSvc.EmailEnabled(),
+		MarketplaceEnabled:       s.marketplace != nil,
+		TriggersEnabled:          s.cfg.TriggerStore != nil,
+		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 	}
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.

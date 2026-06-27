@@ -145,6 +145,11 @@ export interface ServerInfo {
   // triggers_enabled is true when the event-driven trigger store is wired.
   // The SPA exposes the Automations (Triggers) view + nav entry conditionally.
   triggers_enabled?: boolean;
+  // forge_github_app_configured is true when the server has a GitHub App
+  // configured (ITERION_FORGE_GITHUB_APP_*). The forge ConnectForm only offers
+  // the "Install GitHub App" mode when true — otherwise it dead-ends on a 400.
+  // OAuth / PAT connect modes don't depend on it.
+  forge_github_app_configured?: boolean;
 }
 
 // CostCapStatus mirrors runtime.CapStatus (GET /api/v1/limits/cost).

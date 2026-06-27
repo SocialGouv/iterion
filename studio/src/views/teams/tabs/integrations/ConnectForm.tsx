@@ -9,6 +9,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Radio } from "@/components/ui/Radio";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import { CONNECTABLE, DEFAULT_BASE, canonicalBase } from "./forgeShared";
 
@@ -30,6 +31,14 @@ export function ConnectForm({
   const [busy, setBusy] = useState(false);
   // Once the user picks a mode explicitly, stop auto-steering it.
   const modeTouched = useRef(false);
+
+  // The "Install GitHub App" mode only works when the server actually has a
+  // GitHub App configured (ITERION_FORGE_GITHUB_APP_*). When it doesn't,
+  // offering the option just dead-ends on a 400; hide it and let the user use
+  // OAuth or a PAT (the GitHub App is GitHub-only regardless).
+  const githubAppConfigured = useServerInfoStore(
+    (s) => s.info?.forge_github_app_configured ?? false,
+  );
 
   // OAuth is offered for a (provider, instance) only when a matching OAuth app
   // is registered for this team; otherwise the PAT fallback.
@@ -159,7 +168,7 @@ export function ConnectForm({
           />
           Paste a token
         </label>
-        {provider === "github" && (
+        {provider === "github" && githubAppConfigured && (
           <label className="flex items-center gap-1">
             <Radio checked={mode === "app"} onChange={() => pickMode("app")} />
             Install GitHub App
