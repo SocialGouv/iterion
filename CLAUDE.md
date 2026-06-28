@@ -111,7 +111,8 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/cli/` — CLI command implementations (init, validate, run, inspect, resume, diagram, studio, report, dispatch, issue, bench, bots, bundle, sandbox, version)
 - `pkg/benchmark/` — Metrics collection and reporting
 - `pkg/log/` — Leveled logger (error, warn, info, debug, trace) — public so e2e tests can construct it
-- `pkg/auth/` — Operator authentication primitives (SSO, session cookies, password reset) for cloud-mode endpoints
+- `pkg/identity/` — Two-level tenancy domain (**ADR-048**): `Org` (top level — members via `OrgMembership`, SSO, monthly run/cost/memory budget, billing) → `Team` (the **resource tenant**: every store keys on `Team.ID`; carries `OrgID` + team-level concurrency/launch-rate caps). A user is an org member granted 0..N teams. Active context = `(org_id, team_id)`, both on the JWT. Personal org+team auto-created on signup; `iterion migrate orgs` backfills legacy teams. Store (mongo + memory) is the source of truth for both.
+- `pkg/auth/` — Operator authentication primitives (SSO, session cookies, password reset) for cloud-mode endpoints. Mints the JWT carrying `(OrgID, OrgRole, TeamID, Role)`; `SwitchOrg`/`SwitchTeam` re-issue it (org-then-team validation).
 - `pkg/audit/` — Tenant + platform audit log (control-plane mutations; Mongo TTL store, `/api/teams/{id}/audit` + `/api/admin/audit`)
 - `pkg/orgusage/` — Per-org monthly run/cost counters (Mongo CAS) feeding the launch gate + usage views (see [docs/quotas-and-limits.md](docs/quotas-and-limits.md))
 - `pkg/pat/` — Personal access tokens (`iap_` bearers for programmatic API access)

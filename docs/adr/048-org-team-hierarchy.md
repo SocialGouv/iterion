@@ -1,7 +1,7 @@
 # ADR-048 — Org → Teams two-level hierarchy
 
-Status: **Proposed** (scoping — not yet implemented)
-Date: 2026-06-27
+Status: **Accepted** (implemented — P0→P2)
+Date: 2026-06-27 (implemented 2026-06-28)
 
 ## Context
 
@@ -104,3 +104,51 @@ teams → personal orgs.
   doesn't satisfy "an org with several squads".
 - **Re-key everything on (org, team)** (option B). Cleanest, highest migration
   cost/risk. Rejected for now in favour of additive option (A).
+
+## As built (2026-06-28)
+
+Implemented P0→P2 in one branch under a **no-backward-compat** mandate (young
+project — no compat shims). Key decisions as they actually landed:
+
+- **Model.** New `identity.Org` + `identity.OrgMembership` (first-class, user↔org
+  with `OrgRole` member/admin/owner) alongside the existing `Membership` (the
+  team-grant). `Team.OrgID` + `User.DefaultOrgID` added. The **monthly run/cost +
+  memory quotas and the lifecycle/suspend fields moved off `Team` onto `Org`**;
+  `Team` keeps `MaxConcurrentRuns` + `LaunchRatePerMin` (executor protection,
+  team-level). Store gains Org/OrgMembership CRUD + `ListTeamsByOrg` + `DeleteOrg`
+  (mongo `orgs`/`org_memberships` collections; memory in lock-step).
+- **JWT.** `OrgID`/`OrgRole` added to `AccessClaims`/`Identity`; absent claim
+  degrades to team-derived org and self-heals on refresh.
+- **Launch gate.** Monthly budget is **org-keyed** — switching the usage-counter
+  key from team to org makes it sum across the org's teams for free (test:
+  two teams, one org, shared `MonthlyRunQuota=1`). Concurrency + launch-rate stay
+  team-keyed. Org *or* team suspend blocks a launch.
+- **REST.** `/api/admin/orgs` repointed to real orgs (+ `/teams` drill-down).
+  New `/api/orgs/{id}/{members,invitations,usage,teams,audit}` (org self-serve)
+  and `POST /api/auth/me/org/{id}`. `/api/auth/me` returns the org→teams tree.
+  `canViewOrg`/`canManageOrg`; org-admin implies team-admin for every team in
+  the org.
+- **SSO — deviation from the proposal.** Rather than rewrite every `orgsso`
+  `tenant_id` to the new org id (option A in §3), SSO routes moved to
+  `/api/orgs/{id}/sso` but **storage stays keyed on the org's *primary team***
+  (resolved via `firstTeamInOrg`). This keeps the GitHub team-grant login path
+  correct (it grants that team, which mirrors up to an org membership) and means
+  **the backfill does not touch `orgsso` at all** — strictly simpler + lower risk.
+- **Org invitations** reuse the team-invitation machinery against the org's
+  primary team (accept → team grant → mirrored org membership); no new
+  invitation model.
+- **Migration.** `iterion migrate orgs [--dry-run] [--reverse]` (hidden,
+  operator-only). Idempotent (gated on `Team.OrgID==""` + `Org.MigratedFromTeamID`),
+  reversible. **Custom per-team quota values are NOT carried over** — they decode
+  away from the new `Team` struct, so a migrated org starts on the platform
+  defaults and an operator re-applies any custom cap via the admin console
+  (acceptable under nbc; current-month usage-doc rename was likewise skipped —
+  quotas reset at cutover).
+- **Studio.** AuthContext carries the org tree with `teams`/`activeTeam` *derived*
+  from the active org (existing consumers untouched); two-section Org/Team picker;
+  Org nav entry; new `OrgPage` (members/SSO/usage/audit/billing) vs slimmed
+  `TeamPage`.
+
+Deferred follow-ups: precise org-level memory CAS (today the org quota is pushed
+onto each team bucket); current-month usage-doc rename in the migration; a
+Playwright cloud smoke (tsc/eslint/vite + Go suite are green).
