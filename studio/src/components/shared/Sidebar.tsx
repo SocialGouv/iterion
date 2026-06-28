@@ -5,6 +5,7 @@ import {
 } from "@radix-ui/react-icons";
 
 import NavLinks from "./NavLinks";
+import OrgSwitcher from "./OrgSwitcher";
 import SidebarContext from "./SidebarContext";
 import UserTeamChip from "./UserTeamChip";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
@@ -84,6 +85,13 @@ export default function Sidebar() {
             </button>
           </>
         )}
+      </div>
+
+      {/* Dedicated organization switcher — the single, prominent place to
+          switch org / open org settings / (super-admin) create one. Keeps the
+          org context out of the bottom account chip. */}
+      <div className={`shrink-0 ${collapsed ? "px-1.5 pt-2" : "px-2 pt-2"}`}>
+        <OrgSwitcher collapsed={collapsed} />
       </div>
 
       {/* Context block: project + search/command palette */}

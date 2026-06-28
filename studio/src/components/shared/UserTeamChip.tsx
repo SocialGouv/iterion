@@ -5,12 +5,15 @@ import { useLocation } from "wouter";
 import { hasOrgRole, useAuth } from "@/auth/AuthContext";
 import { Popover, PopoverClose } from "@/components/ui/Popover";
 
-// Hidden entirely in local dev mode (user id "dev"), where the desktop
-// app's native menus drive Settings / ProjectSwitcher instead.
+// Account + team chip at the foot of the sidebar. Org-level switching now lives
+// in the dedicated OrgSwitcher at the top of the sidebar, so this chip is
+// scoped to: switch team, team settings, account, platform admin, sign out.
+//
+// Hidden entirely in local dev mode (user id "dev"), where the desktop app's
+// native menus drive Settings / ProjectSwitcher instead.
 export default function UserTeamChip({ collapsed = false }: { collapsed?: boolean }) {
   const {
     user,
-    orgs,
     teams,
     activeOrg,
     activeOrgID,
@@ -18,7 +21,6 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
     activeTeamID,
     activeTeam,
     signOut,
-    selectOrg,
     selectTeam,
   } = useAuth();
   const [, navigate] = useLocation();
@@ -27,19 +29,12 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
   const isLocal = user?.id === "dev";
   if (isLocal) return null;
 
-  const orgLabel = activeOrg?.org_name ?? "No organization";
   const teamLabel = activeTeam?.team_name ?? "No team";
   const canManageActiveOrg =
     !!user?.is_super_admin || hasOrgRole(activeOrgRole, "admin");
-  // Avatar initials from the ORG name (fallback to the user's email).
-  const initials =
-    orgLabel
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((w) => w[0])
-      .join("")
-      .toUpperCase() || (user?.email?.[0]?.toUpperCase() ?? "?");
+  // Account avatar = the user's email initial (this is the account menu; the
+  // org has its own avatar in the OrgSwitcher above).
+  const initials = user?.email?.[0]?.toUpperCase() ?? "?";
 
   // PopoverClose wraps each menu button so the popover dismisses on
   // click — equivalent to the previous setOpen(false) lines but keyboard-
@@ -61,8 +56,8 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
           <button
             type="button"
             className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-fg-onAccent text-caption font-semibold uppercase hover:opacity-80 transition-opacity"
-            title={`${orgLabel} / ${teamLabel} · ${user?.email ?? ""}`}
-            aria-label={`Account menu — ${orgLabel} / ${teamLabel}, ${user?.email ?? ""}`}
+            title={`${teamLabel} · ${user?.email ?? ""}`}
+            aria-label={`Account menu — ${teamLabel}, ${user?.email ?? ""}`}
           >
             {initials}
           </button>
@@ -70,21 +65,15 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
           <button
             type="button"
             className="flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-surface-2 transition-colors"
-            title={`${orgLabel} / ${teamLabel} · ${user?.email ?? ""}`}
-            aria-label={`Account menu — ${orgLabel} / ${teamLabel}, ${user?.email ?? ""}`}
+            title={`${teamLabel} · ${user?.email ?? ""}`}
+            aria-label={`Account menu — ${teamLabel}, ${user?.email ?? ""}`}
           >
             <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-fg-onAccent text-caption font-semibold uppercase">
               {initials}
             </span>
             <span className="min-w-0 flex-1 leading-tight">
               <span className="block truncate text-xs font-medium text-fg-default">
-                <span className="text-fg-muted">{orgLabel}</span>
-                {activeTeam && (
-                  <>
-                    <span className="text-fg-subtle"> / </span>
-                    {teamLabel}
-                  </>
-                )}
+                {teamLabel}
               </span>
               {user?.email && (
                 <span className="block truncate text-caption text-fg-muted">
@@ -97,30 +86,6 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
         )
       }
     >
-      {orgs.length > 1 && (
-        <>
-          <div className="px-2 py-1 text-xs uppercase tracking-wider text-fg-muted">
-            Switch organization
-          </div>
-          {orgs.map((o) => (
-            <PopoverClose asChild key={o.org_id}>
-              <button
-                onClick={closeAfter(() => void selectOrg(o.org_id))}
-                className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${
-                  o.org_id === activeOrgID ? "bg-surface-2" : ""
-                }`}
-              >
-                <div className="font-medium">{o.org_name}</div>
-                <div className="text-xs text-fg-muted">
-                  {o.org_role || "member"}
-                  {o.personal && " · personal"}
-                </div>
-              </button>
-            </PopoverClose>
-          ))}
-          <div className="my-1 border-t border-border-subtle" />
-        </>
-      )}
       {teams.length > 1 && (
         <>
           <div className="px-2 py-1 text-xs uppercase tracking-wider text-fg-muted">
@@ -162,20 +127,6 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
             </>
           )}
         </div>
-      )}
-      {/* Scope-labelled, not name-labelled: for the personal/default org where
-          org_name == team_name, "Manage X" rendered twice as the same string.
-          The active org/team are already named + highlighted in the Switch
-          sections above, so these only need to say which scope they open. */}
-      {activeOrg && canManageActiveOrg && (
-        <PopoverClose asChild>
-          <button
-            onClick={closeAfter(() => navigate(`/orgs/${activeOrgID}`))}
-            className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
-          >
-            Organization settings
-          </button>
-        </PopoverClose>
       )}
       {activeTeam && (
         <PopoverClose asChild>
