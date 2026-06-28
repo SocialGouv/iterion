@@ -1,0 +1,12 @@
+# graphify scope (trial): build a CODE-architecture graph only.
+# Markdown/docs would trigger headless semantic extraction (needs an LLM key);
+# this repo uses OAuth-forfait backends, no API keys — so exclude prose here.
+# Vendored + sibling-worktree trees are noise for an architecture graph.
+*.md
+*.txt
+*.yaml
+*.yml
+vendor/
+.works/
+.repos/
+.iterion/

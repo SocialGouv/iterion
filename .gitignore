@@ -174,3 +174,10 @@ charts/iterion/Chart.lock
 
 # Harness/editor backups of .claude.json — never commit (swept in by git add -A)
 **/.claude.json.backup.*
+
+# graphify knowledge-graph artifacts (trial). graph.json/html/report +
+# extraction cache, all regenerable from source.
+graphify-out/
+
+# RepoFalcon artifacts (trial comparison vs graphify).
+.falcon/
