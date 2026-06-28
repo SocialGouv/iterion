@@ -14,9 +14,12 @@ import {
   login as apiLogin,
   logout as apiLogout,
   refresh as apiRefresh,
+  switchOrg as apiSwitchOrg,
   switchTeam as apiSwitchTeam,
   type AuthResponse,
   type MembershipView,
+  type OrgRole,
+  type OrgTreeView,
   type Role,
   type UserView,
 } from "@/api/auth";
@@ -24,24 +27,33 @@ import {
 interface AuthState {
   status: "loading" | "anonymous" | "authenticated";
   user: UserView | null;
-  teams: MembershipView[];
+  // orgs is the user's full org→teams tree. teams/activeTeam are derived
+  // from the ACTIVE org so existing consumers keep working unchanged.
+  orgs: OrgTreeView[];
+  activeOrgID: string;
+  activeOrgRole: OrgRole | null;
   activeTeamID: string;
   activeRole: Role | null;
 }
 
 interface AuthCtx extends AuthState {
+  // activeOrg is the OrgTreeView whose org_id matches activeOrgID.
+  activeOrg: OrgTreeView | undefined;
+  // teams is the active org's teams (derived) — the list the team
+  // picker and team-scoped consumers read.
+  teams: MembershipView[];
   // activeTeam is the MembershipView whose team_id matches
-  // activeTeamID, or undefined when no team is active. Derived in
-  // the provider so consumers don't re-search the teams array.
+  // activeTeamID within the active org, or undefined.
   activeTeam: MembershipView | undefined;
-  // isRestricted is the "submitter" tier: a signed-in user who belongs to no
-  // team and isn't a super-admin (the public GitHub SSO sign-up that matched
-  // no authorized team). They get a marketplace-only shell — no workspace,
-  // no runs/editor/board. In local/desktop the synthetic identity is a
-  // super-admin, so this is always false there.
+  // isRestricted is the "submitter" tier: a signed-in user who can reach
+  // no team in any org and isn't a super-admin (the public GitHub SSO
+  // sign-up that matched no authorized team). They get a marketplace-only
+  // shell. In local/desktop the synthetic identity is a super-admin, so
+  // this is always false there.
   isRestricted: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  selectOrg: (orgID: string) => Promise<void>;
   selectTeam: (teamID: string) => Promise<void>;
   // Re-fetch /auth/me — used after a flow that mutates membership
   // server-side (accept invitation, admin promotion).
@@ -53,7 +65,9 @@ const Ctx = createContext<AuthCtx | null>(null);
 const initial: AuthState = {
   status: "loading",
   user: null,
-  teams: [],
+  orgs: [],
+  activeOrgID: "",
+  activeOrgRole: null,
   activeTeamID: "",
   activeRole: null,
 };
@@ -85,17 +99,31 @@ const localIdentity: AuthState = {
     status: "active",
     is_super_admin: true,
   },
-  teams: [],
+  orgs: [],
+  activeOrgID: "",
+  activeOrgRole: null,
   activeTeamID: "",
   activeRole: null,
 };
 
 function applyResponse(prev: AuthState, res: AuthResponse): AuthState {
+  const orgs = res.orgs ?? [];
+  // Resolve the active org: the server's value, else the org that
+  // contains the active team, else the first org.
+  let activeOrgID = res.active_org_id ?? prev.activeOrgID ?? "";
+  const activeTeamID = res.active_team_id ?? prev.activeTeamID ?? "";
+  if (!activeOrgID || !orgs.some((o) => o.org_id === activeOrgID)) {
+    const owner = orgs.find((o) => o.teams.some((t) => t.team_id === activeTeamID));
+    activeOrgID = owner?.org_id ?? orgs[0]?.org_id ?? "";
+  }
+  const activeOrg = orgs.find((o) => o.org_id === activeOrgID);
   return {
     status: "authenticated",
     user: res.user,
-    teams: res.teams ?? [],
-    activeTeamID: res.active_team_id ?? prev.activeTeamID ?? "",
+    orgs,
+    activeOrgID,
+    activeOrgRole: (res.active_org_role || activeOrg?.org_role || null) as OrgRole | null,
+    activeTeamID,
     activeRole: (res.active_role ?? null) as Role | null,
   };
 }
@@ -157,6 +185,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState({ ...initial, status: "anonymous" });
   }, []);
 
+  const selectOrg = useCallback(async (orgID: string) => {
+    const res = await apiSwitchOrg(orgID);
+    setState((prev) => applyResponse(prev, res));
+  }, []);
+
   const selectTeam = useCallback(async (teamID: string) => {
     const res = await apiSwitchTeam(teamID);
     setState((prev) => applyResponse(prev, res));
@@ -167,18 +200,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState((prev) => applyResponse(prev, me));
   }, []);
 
-  const value = useMemo<AuthCtx>(() => ({
-    ...state,
-    activeTeam: state.teams.find((t) => t.team_id === state.activeTeamID),
-    isRestricted:
-      state.status === "authenticated" &&
-      !state.user?.is_super_admin &&
-      state.teams.length === 0,
-    signIn,
-    signOut,
-    selectTeam,
-    reloadIdentity,
-  }), [state, signIn, signOut, selectTeam, reloadIdentity]);
+  const value = useMemo<AuthCtx>(() => {
+    const activeOrg = state.orgs.find((o) => o.org_id === state.activeOrgID);
+    const teams = activeOrg?.teams ?? [];
+    return {
+      ...state,
+      activeOrg,
+      teams,
+      activeTeam: teams.find((t) => t.team_id === state.activeTeamID),
+      isRestricted:
+        state.status === "authenticated" &&
+        !state.user?.is_super_admin &&
+        state.orgs.every((o) => o.teams.length === 0),
+      signIn,
+      signOut,
+      selectOrg,
+      selectTeam,
+      reloadIdentity,
+    };
+  }, [state, signIn, signOut, selectOrg, selectTeam, reloadIdentity]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -209,5 +249,13 @@ export function hasRole(role: Role | null, want: Role | "super-admin"): boolean 
   if (!role) return false;
   const order: Record<Role, number> = { viewer: 1, member: 2, admin: 3, owner: 4 };
   if (want === "super-admin") return false; // checked separately via user.is_super_admin
+  return order[role] >= order[want];
+}
+
+// hasOrgRole checks an active-org role against a requirement. Org roles
+// are coarser than team roles (member < admin < owner).
+export function hasOrgRole(role: OrgRole | null, want: OrgRole): boolean {
+  if (!role) return false;
+  const order: Record<OrgRole, number> = { member: 1, admin: 2, owner: 3 };
   return order[role] >= order[want];
 }

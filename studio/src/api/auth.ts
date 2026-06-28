@@ -19,6 +19,8 @@ export interface UserView {
   created_at?: string;
 }
 
+export type OrgRole = "owner" | "admin" | "member";
+
 export interface MembershipView {
   team_id: string;
   team_name: string;
@@ -27,9 +29,23 @@ export interface MembershipView {
   personal?: boolean;
 }
 
+// OrgTreeView is one organization the user belongs to, carrying the
+// teams inside it they can access. /api/auth/me returns these so the SPA
+// can render an Org picker → Team picker with no extra round trips.
+export interface OrgTreeView {
+  org_id: string;
+  org_name: string;
+  org_slug: string;
+  org_role: OrgRole | "";
+  personal?: boolean;
+  teams: MembershipView[];
+}
+
 export interface AuthResponse {
   user: UserView;
-  teams: MembershipView[];
+  orgs: OrgTreeView[];
+  active_org_id?: string;
+  active_org_role?: OrgRole | "";
   active_team_id?: string;
   active_role?: Role | "";
   access_token?: string;
@@ -111,6 +127,12 @@ export async function getMe(): Promise<AuthResponse> {
 
 export async function switchTeam(teamID: string): Promise<AuthResponse> {
   return send(`/auth/me/team/${encodeURIComponent(teamID)}`, { method: "POST" });
+}
+
+// switchOrg changes the active organization. The server picks an active
+// team within the new org and returns the full org tree + active context.
+export async function switchOrg(orgID: string): Promise<AuthResponse> {
+  return send(`/auth/me/org/${encodeURIComponent(orgID)}`, { method: "POST" });
 }
 
 // listProviders returns the global SSO providers, plus — when an email or org

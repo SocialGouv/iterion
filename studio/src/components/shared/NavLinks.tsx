@@ -16,10 +16,11 @@ import {
   PersonIcon,
   Link2Icon,
   GearIcon,
+  StackIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
-import { useAuth } from "@/auth/AuthContext";
+import { hasOrgRole, useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
   selectEditorTabs,
@@ -39,6 +40,7 @@ export type Section =
   | "dispatcher"
   | "triggers"
   | "marketplace"
+  | "org"
   | "team"
   | "integrations"
   | "admin";
@@ -76,6 +78,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   dispatcher: "dispatcher",
   triggers: "triggers",
   marketplace: "marketplace",
+  orgs: "org",
   teams: "team",
   admin: "admin",
 };
@@ -94,7 +97,7 @@ function deriveSection(pathname: string): Section | undefined {
 // specific file/run without going through the section's inner strip.
 export default function NavLinks({ collapsed }: Props) {
   const info = useServerInfoStore((s) => s.info);
-  const { activeTeam, user } = useAuth();
+  const { activeOrg, activeOrgID, activeOrgRole, activeTeam, user } = useAuth();
   const [location] = useLocation();
   const search = useSearch();
   let active = deriveSection(location);
@@ -119,6 +122,17 @@ export default function NavLinks({ collapsed }: Props) {
   }
   if (info?.marketplace_enabled) {
     links.push({ section: "marketplace", href: "/marketplace", label: "Marketplace", icon: ArchiveIcon });
+  }
+  // Org entry: the org settings hub (members/SSO/billing/usage). Shown to
+  // org admins/owners + super-admins, cloud-only (the org API isn't wired
+  // in local/desktop mode).
+  if (activeOrg && info?.mode === "cloud" && (user?.is_super_admin || hasOrgRole(activeOrgRole, "admin"))) {
+    links.push({
+      section: "org",
+      href: `/orgs/${activeOrgID}`,
+      label: activeOrg.org_name || "Organization",
+      icon: StackIcon,
+    });
   }
   // Team entry hidden when no team is active (e.g. desktop / local mode).
   if (activeTeam) {
