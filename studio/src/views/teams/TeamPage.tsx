@@ -23,37 +23,35 @@ import ApiKeysPanel from "@/views/settings/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 import IntegrationsTab from "./tabs/IntegrationsTab";
-import SSOTab from "./tabs/SSOTab";
 import WebhooksTab from "./tabs/WebhooksTab";
 import SecretsTab from "./tabs/SecretsTab";
 import BindingsTab from "./tabs/BindingsTab";
-import UsageTab from "./tabs/UsageTab";
 import AuditTab from "./tabs/AuditTab";
 import MemoryTab from "./tabs/MemoryTab";
 
 const ROLES = ["viewer", "member", "admin", "owner"] as const;
 
+// SSO, Usage, members-roster and billing are ORG-level — they live on
+// the Org settings page (/orgs/:id). The team page keeps the team's own
+// resources: who can access this team, its API keys, forge integrations,
+// webhooks, secrets, bot bindings, audit and memory.
 type Tab =
   | "members"
   | "api-keys"
   | "integrations"
-  | "sso"
   | "webhooks"
   | "secrets"
   | "bindings"
-  | "usage"
   | "audit"
   | "memory";
 
 const TABS: Array<{ id: Tab; label: string }> = [
-  { id: "members", label: "Members + invitations" },
+  { id: "members", label: "Team access" },
   { id: "api-keys", label: "API keys" },
   { id: "integrations", label: "Integrations" },
-  { id: "sso", label: "SSO" },
   { id: "webhooks", label: "Webhooks" },
   { id: "secrets", label: "Secrets" },
   { id: "bindings", label: "Bot bindings" },
-  { id: "usage", label: "Usage" },
   { id: "audit", label: "Audit log" },
   { id: "memory", label: "Memory" },
 ];
@@ -61,13 +59,13 @@ const TABS: Array<{ id: Tab; label: string }> = [
 export default function TeamPage() {
   const params = useParams<{ id: string }>();
   const teamID = params.id;
-  const { teams, activeRole, user } = useAuth();
+  const { teams, activeOrg, activeRole, user } = useAuth();
   const team = useMemo(() => teams.find((t) => t.team_id === teamID), [teams, teamID]);
   const search = useSearch();
   const [, navigate] = useLocation();
   const tabFromURL = (s: string): Tab => {
     const t = new URLSearchParams(s).get("tab");
-    return TABS.some((x) => x.id === t) ? (t as Tab) : "members";
+    return TABS.some((x) => x.id === t) ? (t as Tab) : "integrations";
   };
   const [tab, setTab] = useState<Tab>(() => tabFromURL(search));
   // Keep the tab in sync with ?tab= so a deep link (e.g. the sidebar's
@@ -90,6 +88,9 @@ export default function TeamPage() {
   useHeaderSlot({
     left: team ? (
       <span className="text-sm font-semibold">
+        {activeOrg && (
+          <span className="text-fg-muted font-normal">{activeOrg.org_name} / </span>
+        )}
         {team.team_name}
         <span className="ml-2 text-xs text-fg-muted font-normal">/{team.team_slug}</span>
       </span>
@@ -129,7 +130,6 @@ export default function TeamPage() {
           {tab === "integrations" && (
             <IntegrationsTab teamID={team.team_id} canManage={canManage} />
           )}
-          {tab === "sso" && <SSOTab teamID={team.team_id} canManage={canManage} />}
           {tab === "webhooks" && (
             <WebhooksTab teamID={team.team_id} canManage={canManage} />
           )}
@@ -139,7 +139,6 @@ export default function TeamPage() {
           {tab === "bindings" && (
             <BindingsTab teamID={team.team_id} canManage={canManage} />
           )}
-          {tab === "usage" && <UsageTab teamID={team.team_id} />}
           {tab === "audit" && <AuditTab teamID={team.team_id} canManage={canManage} />}
           {tab === "memory" && <MemoryTab teamID={team.team_id} />}
         </main>

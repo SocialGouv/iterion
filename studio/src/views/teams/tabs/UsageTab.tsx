@@ -7,17 +7,17 @@ import {
   type OrgUsage,
   fmtBytes,
   fmtUSD,
-  getTeamUsage,
+  getOrgUsage,
   pct,
 } from "@/api/usage";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Tooltip } from "@/components/ui/Tooltip";
 
 interface Props {
-  teamID: string;
+  orgID: string;
 }
 
-export default function UsageTab({ teamID }: Props) {
+export default function UsageTab({ orgID }: Props) {
   const [usage, setUsage] = useState<OrgUsage | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -26,7 +26,7 @@ export default function UsageTab({ teamID }: Props) {
     let alive = true;
     setErr(null);
     setUnavailable(false);
-    getTeamUsage(teamID)
+    getOrgUsage(orgID)
       .then((u) => {
         if (alive) setUsage(u);
       })
@@ -38,7 +38,7 @@ export default function UsageTab({ teamID }: Props) {
     return () => {
       alive = false;
     };
-  }, [teamID]);
+  }, [orgID]);
 
   if (unavailable) {
     return (

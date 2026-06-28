@@ -73,13 +73,13 @@ export interface OrgDomain {
 
 export async function listOrgDomains(teamID: string): Promise<OrgDomain[]> {
   const r = await guard404("org_sso", () =>
-    request<{ domains: OrgDomain[] }>(`/teams/${teamID}/sso/domains`),
+    request<{ domains: OrgDomain[] }>(`/orgs/${teamID}/sso/domains`),
   );
   return r.domains ?? [];
 }
 
 export async function addOrgDomain(teamID: string, domain: string): Promise<OrgDomain> {
-  return request(`/teams/${teamID}/sso/domains`, {
+  return request(`/orgs/${teamID}/sso/domains`, {
     method: "POST",
     body: JSON.stringify({ domain }),
   });
@@ -89,16 +89,16 @@ export async function verifyOrgDomain(
   teamID: string,
   domainID: string,
 ): Promise<{ verified: boolean; error?: string }> {
-  return request(`/teams/${teamID}/sso/domains/${domainID}/verify`, { method: "POST" });
+  return request(`/orgs/${teamID}/sso/domains/${domainID}/verify`, { method: "POST" });
 }
 
 export async function deleteOrgDomain(teamID: string, domainID: string): Promise<void> {
-  await request<void>(`/teams/${teamID}/sso/domains/${domainID}`, { method: "DELETE" });
+  await request<void>(`/orgs/${teamID}/sso/domains/${domainID}`, { method: "DELETE" });
 }
 
 export async function listOrgSSOProviders(teamID: string): Promise<OrgSSOProvider[]> {
   const r = await guard404("org_sso", () =>
-    request<{ providers: OrgSSOProvider[] }>(`/teams/${teamID}/sso/providers`),
+    request<{ providers: OrgSSOProvider[] }>(`/orgs/${teamID}/sso/providers`),
   );
   return r.providers ?? [];
 }
@@ -107,7 +107,7 @@ export async function createOrgSSOProvider(
   teamID: string,
   input: OrgSSOProviderInput,
 ): Promise<OrgSSOProvider> {
-  return request(`/teams/${teamID}/sso/providers`, {
+  return request(`/orgs/${teamID}/sso/providers`, {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -118,19 +118,19 @@ export async function updateOrgSSOProvider(
   providerID: string,
   input: OrgSSOProviderInput,
 ): Promise<OrgSSOProvider> {
-  return request(`/teams/${teamID}/sso/providers/${providerID}`, {
+  return request(`/orgs/${teamID}/sso/providers/${providerID}`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });
 }
 
 export async function deleteOrgSSOProvider(teamID: string, providerID: string): Promise<void> {
-  await request<void>(`/teams/${teamID}/sso/providers/${providerID}`, { method: "DELETE" });
+  await request<void>(`/orgs/${teamID}/sso/providers/${providerID}`, { method: "DELETE" });
 }
 
 export async function testOrgSSOProvider(
   teamID: string,
   providerID: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  return request(`/teams/${teamID}/sso/providers/${providerID}/test`, { method: "POST" });
+  return request(`/orgs/${teamID}/sso/providers/${providerID}/test`, { method: "POST" });
 }

@@ -51,6 +51,14 @@ export function listTeamAudit(teamID: string, q: AuditQuery = {}): Promise<Audit
   );
 }
 
+// listOrgAudit returns the org-scoped control-plane audit (members, SSO,
+// settings). Org-admin gated server-side.
+export function listOrgAudit(orgID: string, q: AuditQuery = {}): Promise<AuditListResponse> {
+  return guard404("audit", () =>
+    request<AuditListResponse>(`/orgs/${encodeURIComponent(orgID)}/audit${qstr(q)}`),
+  );
+}
+
 export function listAdminAudit(q: AuditQuery = {}): Promise<AuditListResponse> {
   return guard404("audit", () => request<AuditListResponse>(`/admin/audit${qstr(q)}`));
 }

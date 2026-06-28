@@ -27,6 +27,7 @@ export interface OrgUsageOrg {
 export interface OrgUsage {
   org: OrgUsageOrg;
   members: number;
+  teams?: number;
   effective_memory_quota_bytes: number;
   monthly_run_quota: number;
 
@@ -46,8 +47,10 @@ export interface OrgUsage {
   webhook_count: number;
 }
 
-export function getTeamUsage(teamID: string): Promise<OrgUsage> {
-  return guard404("usage", () => request<OrgUsage>(`/teams/${encodeURIComponent(teamID)}/usage`));
+// getOrgUsage is the org-admin self-serve consumption view (any member of
+// the org). Distinct from getAdminOrgUsage, which is the super-admin path.
+export function getOrgUsage(orgID: string): Promise<OrgUsage> {
+  return guard404("usage", () => request<OrgUsage>(`/orgs/${encodeURIComponent(orgID)}/usage`));
 }
 
 export function getAdminOrgUsage(orgID: string): Promise<OrgUsage> {

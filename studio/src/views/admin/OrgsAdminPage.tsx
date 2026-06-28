@@ -226,8 +226,6 @@ function OrgDrawer({
   const [memGiB, setMemGiB] = useState<number>(initialGiB);
   const [monthlyRuns, setMonthlyRuns] = useState<number>(org.monthly_run_quota ?? 0);
   const [costCap, setCostCap] = useState<number>(org.monthly_cost_cap_usd ?? 0);
-  const [maxConcurrent, setMaxConcurrent] = useState<number>(org.max_concurrent_runs ?? 0);
-  const [launchRate, setLaunchRate] = useState<number>(org.launch_rate_per_min ?? 0);
 
   // Status draft.
   const [statusDraft, setStatusDraft] = useState<string>(org.status);
@@ -261,8 +259,6 @@ function OrgDrawer({
         memory_quota_bytes: memGiB > 0 ? gibToBytes(memGiB) : 0,
         monthly_run_quota: monthlyRuns,
         monthly_cost_cap_usd: costCap,
-        max_concurrent_runs: maxConcurrent,
-        launch_rate_per_min: launchRate,
       });
       await onAfterUpdate();
     });
@@ -369,22 +365,6 @@ function OrgDrawer({
               step={1}
               value={String(costCap)}
               onChange={(e) => setCostCap(Number(e.target.value))}
-            />
-          </Field>
-          <Field label="Max concurrent runs (0 = unlimited)">
-            <Input
-              type="number"
-              min={0}
-              value={String(maxConcurrent)}
-              onChange={(e) => setMaxConcurrent(Number(e.target.value))}
-            />
-          </Field>
-          <Field label="Launch rate / min (0 = unlimited)">
-            <Input
-              type="number"
-              min={0}
-              value={String(launchRate)}
-              onChange={(e) => setLaunchRate(Number(e.target.value))}
             />
           </Field>
         </div>

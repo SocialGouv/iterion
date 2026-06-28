@@ -10,13 +10,11 @@ export interface OrgView {
   slug: string;
   status: string; // active | suspended | read_only
   personal?: boolean;
+  // Org-level monthly budget (0/omitted = platform default). Concurrency
+  // and launch-rate caps are team-level (managed per team), not here.
   monthly_run_quota?: number;
   memory_quota_bytes?: number;
-  // V2-6: per-org platform caps surfaced through orgView (server fills
-  // them from the team record; 0/omitted = "platform default").
   monthly_cost_cap_usd?: number;
-  max_concurrent_runs?: number;
-  launch_rate_per_min?: number;
   suspend_reason?: string;
   created_at?: string;
 }
@@ -74,8 +72,6 @@ export async function updateOrg(
     monthly_run_quota?: number;
     memory_quota_bytes?: number;
     monthly_cost_cap_usd?: number;
-    max_concurrent_runs?: number;
-    launch_rate_per_min?: number;
   },
 ): Promise<OrgView> {
   return request<OrgView>(`/admin/orgs/${encodeURIComponent(id)}`, {

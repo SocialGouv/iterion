@@ -6,6 +6,7 @@ import {
   type AuditEvent,
   type AuditQuery,
   FeatureUnavailableError,
+  listOrgAudit,
   listTeamAudit,
 } from "@/api/audit";
 
@@ -13,14 +14,20 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 
+// Either teamID (team audit) or orgID (org control-plane audit) — the
+// component picks the matching loader. Exactly one should be set.
 interface Props {
-  teamID: string;
+  teamID?: string;
+  orgID?: string;
   canManage: boolean;
 }
 
 const PAGE = 50;
 
-export default function AuditTab({ teamID, canManage }: Props) {
+export default function AuditTab({ teamID, orgID, canManage }: Props) {
+  const id = orgID ?? teamID ?? "";
+  const load = (q: AuditQuery) =>
+    orgID ? listOrgAudit(orgID, q) : listTeamAudit(teamID ?? "", q);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [filter, setFilter] = useState<AuditQuery>({});
   const [nextOffset, setNextOffset] = useState<number | null>(null);
@@ -32,7 +39,7 @@ export default function AuditTab({ teamID, canManage }: Props) {
     setLoading(true);
     setErr(null);
     try {
-      const r = await listTeamAudit(teamID, { ...q, limit: PAGE });
+      const r = await load({ ...q, limit: PAGE });
       // The Go handler marshals an empty audit log as `events: null` (a nil
       // slice), so coalesce to [] — otherwise `events.length` in the render
       // (and below) throws "can't access property length, … is null".
@@ -53,7 +60,7 @@ export default function AuditTab({ teamID, canManage }: Props) {
     if (!canManage) return;
     void fetchPage({ ...filter, offset: 0 }, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID, canManage]);
+  }, [id, canManage]);
 
   if (!canManage) {
     return (
