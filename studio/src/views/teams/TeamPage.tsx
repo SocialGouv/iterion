@@ -85,14 +85,18 @@ export default function TeamPage() {
   const canManage =
     activeRole === "admin" || activeRole === "owner" || (user?.is_super_admin ?? false);
 
+  // Breadcrumb: show "Org / Team" only when the org name actually adds
+  // information. For the personal/default org (where org_name == team_name) the
+  // prefix is pure redundancy ("SocialGouv / SocialGouv/socialgouv"), so we
+  // collapse it to just the team name and drop the noisy /slug micro-suffix.
+  const showOrgCrumb = !!activeOrg && team != null && activeOrg.org_name !== team.team_name;
   useHeaderSlot({
     left: team ? (
       <span className="text-sm font-semibold">
-        {activeOrg && (
-          <span className="text-fg-muted font-normal">{activeOrg.org_name} / </span>
+        {showOrgCrumb && (
+          <span className="text-fg-muted font-normal">{activeOrg!.org_name} / </span>
         )}
         {team.team_name}
-        <span className="ml-2 text-xs text-fg-muted font-normal">/{team.team_slug}</span>
       </span>
     ) : (
       <span className="text-sm font-semibold">Team not found</span>
