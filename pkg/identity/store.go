@@ -34,6 +34,11 @@ type Store interface {
 	GetTeam(ctx context.Context, id string) (Team, error)
 	GetTeamBySlug(ctx context.Context, slug string) (Team, error)
 	UpdateTeam(ctx context.Context, t Team) error
+	// DeleteTeam removes a team. Like DeleteOrg this is not part of
+	// normal operation; it backs super-admin org deletion (cascade) and
+	// the teams→orgs backfill reversal. Team-scoped resources in other
+	// stores (runs, board, forge connections) are not purged here.
+	DeleteTeam(ctx context.Context, id string) error
 	// ListTeams returns all teams (super-admin org console), oldest
 	// first, offset/limit paginated.
 	ListTeams(ctx context.Context, page Page) ([]Team, error)

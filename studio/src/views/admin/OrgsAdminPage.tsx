@@ -7,6 +7,7 @@ import { useAuth } from "@/auth/AuthContext";
 import {
   type OrgView,
   createOrg,
+  deleteOrg,
   fmtQuotaGiB,
   gibToBytes,
   listOrgs,
@@ -23,7 +24,7 @@ import { Select } from "@/components/ui/Select";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 export default function OrgsAdminPage() {
-  const { user, reloadIdentity } = useAuth();
+  const { user, activeOrgID, reloadIdentity } = useAuth();
   const isSuper = user?.is_super_admin ?? false;
 
   const [orgs, setOrgs] = useState<OrgView[]>([]);
@@ -200,8 +201,10 @@ export default function OrgsAdminPage() {
         <OrgDrawer
           org={active}
           busy={busy}
+          isActiveOrg={active.id === activeOrgID}
           onClose={() => setActive(null)}
           onAfterUpdate={refresh}
+          reloadIdentity={reloadIdentity}
           run={run}
         />
       )}
@@ -212,14 +215,18 @@ export default function OrgsAdminPage() {
 function OrgDrawer({
   org,
   busy,
+  isActiveOrg,
   onClose,
   onAfterUpdate,
+  reloadIdentity,
   run,
 }: {
   org: OrgView;
   busy: boolean;
+  isActiveOrg: boolean;
   onClose: () => void;
   onAfterUpdate: () => Promise<void>;
+  reloadIdentity: () => Promise<void>;
   run: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
   const [usage, setUsage] = useState<OrgUsage | null>(null);
@@ -239,6 +246,8 @@ function OrgDrawer({
   // where a body-portaled ConfirmDialog reads as an outside-click and
   // dismisses the parent — see ProjectSwitcher for the same precedent.
   const [confirmStatus, setConfirmStatus] = useState(false);
+  // Typed confirmation for the irreversible org deletion.
+  const [confirmName, setConfirmName] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -271,6 +280,15 @@ function OrgDrawer({
     run(async () => {
       await setOrgStatus(org.id, statusDraft, reason.trim() || undefined);
       await onAfterUpdate();
+    });
+
+  const deleteOrgNow = () =>
+    run(async () => {
+      await deleteOrg(org.id);
+      await onAfterUpdate();
+      // Refresh the AuthContext org tree so the deleted org leaves the switcher.
+      await reloadIdentity();
+      onClose();
     });
 
   return (
@@ -446,6 +464,39 @@ function OrgDrawer({
             </Button>
           );
         })()}
+      </section>
+
+      <section className="space-y-3 mt-6 border-t border-danger/30 pt-4">
+        <h4 className="font-medium text-danger">Danger zone</h4>
+        {isActiveOrg ? (
+          <p className="text-xs text-fg-muted">
+            This is your active organization — switch to another org (top-left
+            switcher) before you can delete it.
+          </p>
+        ) : (
+          <>
+            <p className="text-xs text-fg-muted">
+              Permanently deletes <strong>{org.name}</strong>, its teams, and all
+              memberships. Run / board history under those teams becomes
+              inaccessible. This cannot be undone.
+            </p>
+            <Field label={`Type "${org.name}" to confirm`}>
+              <Input
+                value={confirmName}
+                onChange={(e) => setConfirmName(e.target.value)}
+                placeholder={org.name}
+              />
+            </Field>
+            <Button
+              variant="danger"
+              loading={busy}
+              disabled={confirmName.trim() !== org.name}
+              onClick={() => void deleteOrgNow()}
+            >
+              Delete organization
+            </Button>
+          </>
+        )}
       </section>
     </Dialog>
   );

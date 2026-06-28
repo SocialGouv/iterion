@@ -64,6 +64,12 @@ export async function getOrgUsage(id: string): Promise<OrgUsage> {
   return request<OrgUsage>(`/admin/orgs/${encodeURIComponent(id)}/usage`);
 }
 
+// Permanently delete an org (super-admin). Cascades to its teams + org/team
+// memberships server-side; refuses the caller's active org (409). 204 No Content.
+export async function deleteOrg(id: string): Promise<void> {
+  await request<void>(`/admin/orgs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function updateOrg(
   id: string,
   patch: {

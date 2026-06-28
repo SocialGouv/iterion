@@ -1022,6 +1022,61 @@ func (s *Service) CreateOrgFor(ctx context.Context, userID, name, slug string) (
 	return identity.Org{}, errors.New("auth: could not allocate slug for org")
 }
 
+// DeleteOrgCascade removes an org and all its identity-scoped children:
+// every team in the org (each team's memberships + pending invitations,
+// then the team record), then all org memberships, then the org itself.
+//
+// It deliberately does NOT purge team-scoped resources living in OTHER
+// stores (runs, board, forge connections, SSO providers, secrets) — those
+// become orphaned and unreachable rather than deleted. Intended for
+// super-admin cleanup of empty / migrated orgs; the caller (admin route)
+// gates on super-admin and refuses to delete the caller's active org.
+func (s *Service) DeleteOrgCascade(ctx context.Context, orgID string) error {
+	if orgID == "" {
+		return fmt.Errorf("auth: org id required")
+	}
+	if _, err := s.store.GetOrg(ctx, orgID); err != nil {
+		return err
+	}
+	teams, err := s.store.ListTeamsByOrg(ctx, orgID)
+	if err != nil {
+		return fmt.Errorf("auth: list teams for org %s: %w", orgID, err)
+	}
+	for _, t := range teams {
+		mems, err := s.store.ListMembershipsByTeam(ctx, t.ID)
+		if err != nil {
+			return fmt.Errorf("auth: list memberships for team %s: %w", t.ID, err)
+		}
+		for _, m := range mems {
+			if err := s.store.DeleteMembership(ctx, m.UserID, t.ID); err != nil {
+				return fmt.Errorf("auth: delete membership %s/%s: %w", m.UserID, t.ID, err)
+			}
+		}
+		// Best-effort: drop the team's pending invitations.
+		if invs, err := s.store.ListInvitationsByTeam(ctx, t.ID); err == nil {
+			for _, inv := range invs {
+				_ = s.store.DeleteInvitation(ctx, inv.ID)
+			}
+		}
+		if err := s.store.DeleteTeam(ctx, t.ID); err != nil {
+			return fmt.Errorf("auth: delete team %s: %w", t.ID, err)
+		}
+	}
+	oms, err := s.store.ListOrgMembershipsByOrg(ctx, orgID)
+	if err != nil {
+		return fmt.Errorf("auth: list org memberships for org %s: %w", orgID, err)
+	}
+	for _, m := range oms {
+		if err := s.store.DeleteOrgMembership(ctx, m.UserID, orgID); err != nil {
+			return fmt.Errorf("auth: delete org membership %s/%s: %w", m.UserID, orgID, err)
+		}
+	}
+	if err := s.store.DeleteOrg(ctx, orgID); err != nil {
+		return fmt.Errorf("auth: delete org %s: %w", orgID, err)
+	}
+	return nil
+}
+
 // CreateInvitation issues a fresh invitation. The plaintext token is
 // returned (caller emails it) and only its hash is persisted.
 func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, role identity.Role, invitedBy string) (token string, inv identity.Invitation, err error) {

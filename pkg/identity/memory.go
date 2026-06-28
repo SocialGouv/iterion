@@ -153,6 +153,18 @@ func (m *MemoryStore) GetTeam(_ context.Context, id string) (Team, error) {
 	return t, nil
 }
 
+func (m *MemoryStore) DeleteTeam(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.teams[id]
+	if !ok {
+		return ErrNotFound
+	}
+	delete(m.teams, id)
+	delete(m.teamSlugs, t.Slug)
+	return nil
+}
+
 func (m *MemoryStore) GetTeamBySlug(_ context.Context, slug string) (Team, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

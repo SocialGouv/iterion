@@ -16,11 +16,10 @@ import {
   PersonIcon,
   Link2Icon,
   GearIcon,
-  StackIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
-import { hasOrgRole, useAuth } from "@/auth/AuthContext";
+import { useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
   selectEditorTabs,
@@ -97,7 +96,7 @@ function deriveSection(pathname: string): Section | undefined {
 // specific file/run without going through the section's inner strip.
 export default function NavLinks({ collapsed }: Props) {
   const info = useServerInfoStore((s) => s.info);
-  const { activeOrg, activeOrgID, activeOrgRole, activeTeam, user } = useAuth();
+  const { activeTeam, user } = useAuth();
   const [location] = useLocation();
   const search = useSearch();
   let active = deriveSection(location);
@@ -123,17 +122,10 @@ export default function NavLinks({ collapsed }: Props) {
   if (info?.marketplace_enabled) {
     links.push({ section: "marketplace", href: "/marketplace", label: "Marketplace", icon: ArchiveIcon });
   }
-  // Org entry: the org settings hub (members/SSO/billing/usage). Shown to
-  // org admins/owners + super-admins, cloud-only (the org API isn't wired
-  // in local/desktop mode).
-  if (activeOrg && info?.mode === "cloud" && (user?.is_super_admin || hasOrgRole(activeOrgRole, "admin"))) {
-    links.push({
-      section: "org",
-      href: `/orgs/${activeOrgID}`,
-      label: activeOrg.org_name || "Organization",
-      icon: StackIcon,
-    });
-  }
+  // Org settings hub now lives in the dedicated OrgSwitcher at the top of the
+  // sidebar (switch org + "Organization settings"); it's intentionally NOT
+  // duplicated as a primary nav entry here — that double-listed the org name
+  // (once as the org, once as the same-named default team).
   // Team entry hidden when no team is active (e.g. desktop / local mode).
   if (activeTeam) {
     links.push({

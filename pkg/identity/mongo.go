@@ -240,6 +240,17 @@ func (s *MongoStore) UpdateTeam(ctx context.Context, t Team) error {
 	return nil
 }
 
+func (s *MongoStore) DeleteTeam(ctx context.Context, id string) error {
+	res, err := s.teams.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return fmt.Errorf("identity: delete team: %w", err)
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *MongoStore) ListTeams(ctx context.Context, page Page) ([]Team, error) {
 	limit := int64(page.Limit)
 	if limit <= 0 {

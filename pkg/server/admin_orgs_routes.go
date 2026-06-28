@@ -23,6 +23,7 @@ func (s *Server) registerAdminOrgRoutes() {
 	s.mux.Handle("POST /api/admin/orgs", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminCreateOrg)))
 	s.mux.Handle("GET /api/admin/orgs/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetOrg)))
 	s.mux.Handle("PATCH /api/admin/orgs/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateOrg)))
+	s.mux.Handle("DELETE /api/admin/orgs/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminDeleteOrg)))
 	s.mux.Handle("POST /api/admin/orgs/{id}/status", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminSetOrgStatus)))
 	s.mux.Handle("GET /api/admin/orgs/{id}/usage", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminOrgUsage)))
 	// Super-admin drill-down: the teams inside one org.
@@ -225,6 +226,36 @@ func (s *Server) handleAdminCreateOrg(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditPlatform(r, o.ID, "org.created", "org", o.ID, map[string]any{"name": o.Name, "owner": ownerID})
 	writeJSON(w, toOrgView(o))
+}
+
+// handleAdminDeleteOrg permanently removes an org and its identity-scoped
+// children (teams, team + org memberships, pending invitations) via the
+// service cascade. Super-admin only. Refuses the caller's active org so a
+// switch is required first (no self-lockout). Team-scoped resources in other
+// stores (runs, board, forge connections) are orphaned, not purged.
+func (s *Server) handleAdminDeleteOrg(w http.ResponseWriter, r *http.Request) {
+	if s.authSvc == nil {
+		httpError(w, http.StatusInternalServerError, "auth not configured")
+		return
+	}
+	id, _ := auth.FromContext(r.Context())
+	orgID := r.PathValue("id")
+	if orgID == id.OrgID {
+		httpError(w, http.StatusConflict, "cannot delete your active organization — switch to another org first")
+		return
+	}
+	// Capture the name for the audit log before the cascade removes it.
+	o, err := s.authStore().GetOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	if err := s.authSvc.DeleteOrgCascade(r.Context(), orgID); err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	s.auditPlatform(r, orgID, "org.deleted", "org", orgID, map[string]any{"name": o.Name})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleAdminGetOrg(w http.ResponseWriter, r *http.Request) {
