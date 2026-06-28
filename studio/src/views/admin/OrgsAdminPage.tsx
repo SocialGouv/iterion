@@ -23,7 +23,7 @@ import { Select } from "@/components/ui/Select";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 export default function OrgsAdminPage() {
-  const { user } = useAuth();
+  const { user, reloadIdentity } = useAuth();
   const isSuper = user?.is_super_admin ?? false;
 
   const [orgs, setOrgs] = useState<OrgView[]>([]);
@@ -91,6 +91,10 @@ export default function OrgsAdminPage() {
       await createOrg({ name: name.trim(), owner_email: ownerEmail.trim() || undefined });
       setName("");
       setOwnerEmail("");
+      // Refresh the AuthContext org tree (it feeds the org switcher in
+      // UserTeamChip), not just this page's local table — otherwise the new
+      // org only appears after a full page reload.
+      await reloadIdentity();
     });
   };
 

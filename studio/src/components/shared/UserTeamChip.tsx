@@ -163,13 +163,17 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
           )}
         </div>
       )}
+      {/* Scope-labelled, not name-labelled: for the personal/default org where
+          org_name == team_name, "Manage X" rendered twice as the same string.
+          The active org/team are already named + highlighted in the Switch
+          sections above, so these only need to say which scope they open. */}
       {activeOrg && canManageActiveOrg && (
         <PopoverClose asChild>
           <button
             onClick={closeAfter(() => navigate(`/orgs/${activeOrgID}`))}
             className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
           >
-            Manage {activeOrg.org_name}
+            Organization settings
           </button>
         </PopoverClose>
       )}
@@ -179,7 +183,7 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
             onClick={closeAfter(() => navigate(`/teams/${activeTeam.team_id}`))}
             className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
           >
-            Manage {activeTeam.team_name}
+            Team settings
           </button>
         </PopoverClose>
       )}
