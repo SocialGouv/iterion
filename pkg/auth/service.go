@@ -659,10 +659,19 @@ func (s *Service) pickActiveTeamInOrg(ctx context.Context, u identity.User, orgI
 	if err != nil {
 		return "", ""
 	}
+	// One read for the org's teams, then intersect with the user's grants —
+	// instead of a GetTeam per membership.
+	teams, terr := s.store.ListTeamsByOrg(ctx, orgID)
+	if terr != nil {
+		return "", ""
+	}
+	inOrg := make(map[string]bool, len(teams))
+	for _, t := range teams {
+		inOrg[t.ID] = true
+	}
 	var first *identity.Membership
 	for i := range memberships {
-		t, terr := s.store.GetTeam(ctx, memberships[i].TeamID)
-		if terr != nil || t.OrgID != orgID {
+		if !inOrg[memberships[i].TeamID] {
 			continue
 		}
 		if memberships[i].TeamID == u.DefaultTeamID {
@@ -675,11 +684,8 @@ func (s *Service) pickActiveTeamInOrg(ctx context.Context, u identity.User, orgI
 	if first != nil {
 		return first.TeamID, first.Role
 	}
-	if u.IsSuperAdmin {
-		teams, terr := s.store.ListTeamsByOrg(ctx, orgID)
-		if terr == nil && len(teams) > 0 {
-			return teams[0].ID, identity.RoleAdmin
-		}
+	if u.IsSuperAdmin && len(teams) > 0 {
+		return teams[0].ID, identity.RoleAdmin
 	}
 	return "", ""
 }

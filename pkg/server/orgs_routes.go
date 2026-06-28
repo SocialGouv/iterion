@@ -284,8 +284,11 @@ func (s *Server) handleCreateOrgTeam(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, toTeamSummaryView(t))
 }
 
-// firstTeamInOrg picks a default team to invite into: the first
-// non-personal team in the org, else the first team of any kind.
+// firstTeamInOrg returns the org's "primary team": the first non-personal
+// team, else any team. It is the **storage tenant** for org-level resources
+// that stay team-keyed by design — SSO providers/domains and the team an
+// org invitation joins — so the org REST surface never has to re-key those
+// stores (ADR-048 "As built"). Returns "" when the org has no team.
 func (s *Server) firstTeamInOrg(ctx context.Context, orgID string) string {
 	teams, err := s.authStore().ListTeamsByOrg(ctx, orgID)
 	if err != nil || len(teams) == 0 {

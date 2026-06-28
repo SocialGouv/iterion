@@ -309,43 +309,24 @@ func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView
 	if st == nil {
 		return nil, nil
 	}
+	// Org membership is the source of truth for which orgs a user can see:
+	// every team grant mirrors up to an org membership (signup, invite, SSO,
+	// migration), so iterating org memberships covers every reachable org
+	// without a GetTeam per team grant.
 	orgMems, _ := st.ListOrgMembershipsByUser(ctx, userID)
 	teamMems, _ := st.ListMembershipsByUser(ctx, userID)
 	teamRole := make(map[string]identity.Role, len(teamMems))
 	for _, m := range teamMems {
 		teamRole[m.TeamID] = m.Role
 	}
-	// Collect org ids the user can see: every org-membership, plus the
-	// parent org of any team grant (robustness for partially-migrated rows).
-	orgRoleByID := make(map[string]identity.OrgRole)
-	order := make([]string, 0)
-	addOrg := func(orgID string, role identity.OrgRole) {
-		if orgID == "" {
-			return
-		}
-		if _, seen := orgRoleByID[orgID]; !seen {
-			order = append(order, orgID)
-		}
-		if role.AtLeast(orgRoleByID[orgID]) {
-			orgRoleByID[orgID] = role
-		}
-	}
+	out := make([]orgTreeView, 0, len(orgMems))
 	for _, om := range orgMems {
-		addOrg(om.OrgID, om.Role)
-	}
-	for _, tm := range teamMems {
-		if t, err := st.GetTeam(ctx, tm.TeamID); err == nil {
-			addOrg(t.OrgID, identity.OrgRoleMember)
-		}
-	}
-	out := make([]orgTreeView, 0, len(order))
-	for _, orgID := range order {
-		org, err := st.GetOrg(ctx, orgID)
+		org, err := st.GetOrg(ctx, om.OrgID)
 		if err != nil {
 			continue
 		}
-		orgRole := orgRoleByID[orgID]
-		teams, _ := st.ListTeamsByOrg(ctx, orgID)
+		orgRole := om.Role
+		teams, _ := st.ListTeamsByOrg(ctx, om.OrgID)
 		tv := make([]membershipView, 0, len(teams))
 		for _, t := range teams {
 			role, granted := teamRole[t.ID]

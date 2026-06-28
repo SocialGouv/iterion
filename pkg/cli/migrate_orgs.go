@@ -162,7 +162,6 @@ func ReverseTeamsToOrgs(ctx context.Context, st identity.Store, logger *iterlog.
 					return res, fmt.Errorf("reverse orgs: delete org member %s: %w", m.UserID, err)
 				}
 			}
-			res.OrgMembersCreated++ // reused as "members touched"
 		}
 		res.Changes = append(res.Changes, fmt.Sprintf("delete org %s (from team %s)", org.ID, org.MigratedFromTeamID))
 		if !dryRun {
@@ -216,34 +215,28 @@ func createOrgUniqueSlug(ctx context.Context, st identity.Store, org identity.Or
 	return identity.Org{}, fmt.Errorf("could not allocate slug for org from %q", base)
 }
 
-func listAllTeams(ctx context.Context, st identity.Store) ([]identity.Team, error) {
-	var out []identity.Team
-	for offset := 0; ; offset += 500 {
-		page, err := st.ListTeams(ctx, identity.Page{Offset: offset, Limit: 500})
+// listAllPaged drains a paginated list endpoint into one slice.
+func listAllPaged[T any](page func(identity.Page) ([]T, error)) ([]T, error) {
+	const size = 500
+	var out []T
+	for offset := 0; ; offset += size {
+		batch, err := page(identity.Page{Offset: offset, Limit: size})
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, page...)
-		if len(page) < 500 {
-			break
+		out = append(out, batch...)
+		if len(batch) < size {
+			return out, nil
 		}
 	}
-	return out, nil
+}
+
+func listAllTeams(ctx context.Context, st identity.Store) ([]identity.Team, error) {
+	return listAllPaged(func(p identity.Page) ([]identity.Team, error) { return st.ListTeams(ctx, p) })
 }
 
 func listAllOrgs(ctx context.Context, st identity.Store) ([]identity.Org, error) {
-	var out []identity.Org
-	for offset := 0; ; offset += 500 {
-		page, err := st.ListOrgs(ctx, identity.Page{Offset: offset, Limit: 500})
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, page...)
-		if len(page) < 500 {
-			break
-		}
-	}
-	return out, nil
+	return listAllPaged(func(p identity.Page) ([]identity.Org, error) { return st.ListOrgs(ctx, p) })
 }
 
 func migratedOrgsByTeam(ctx context.Context, st identity.Store) (map[string]identity.Org, error) {
