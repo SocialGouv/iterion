@@ -1,6 +1,178 @@
 {
   "components": {
     "schemas": {
+      "Connection": {
+        "properties": {
+          "access_token_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "account_login": {
+            "type": "string"
+          },
+          "app_slug": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "forge_base_url": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "installation_id": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_refreshed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "managed_secret_id": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "provider",
+          "kind",
+          "status",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ForgeOAuthApp": {
+        "properties": {
+          "app_manage_url": {
+            "type": "string"
+          },
+          "app_slug": {
+            "type": "string"
+          },
+          "auto_created": {
+            "type": "boolean"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "forge_base_url": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "installable": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_app_id": {
+            "type": "string"
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "provider",
+          "client_id",
+          "auto_created",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "RepoSummary": {
+        "properties": {
+          "can_admin": {
+            "type": "boolean"
+          },
+          "default_branch": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "web_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "full_name",
+          "private",
+          "can_admin"
+        ],
+        "type": "object"
+      },
       "Token": {
         "properties": {
           "created_at": {
@@ -114,6 +286,82 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "forgeConnectReq": {
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "forge_base_url": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "next": {
+            "type": "string"
+          },
+          "pat": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "mode"
+        ],
+        "type": "object"
+      },
+      "forgeConnectResp": {
+        "properties": {
+          "authorize_url": {
+            "type": "string"
+          },
+          "connection": {
+            "$ref": "#/components/schemas/Connection"
+          },
+          "install_url": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "forgeOAuthAppReq": {
+        "properties": {
+          "admin_token": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "forge_base_url": {
+            "type": "string"
+          },
+          "github_org": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "next": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
         ],
         "type": "object"
       },
@@ -3549,8 +3797,26 @@
       "get": {
         "operationId": "getTeamsByIdForgeConnections",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "connections": {
+                      "items": {
+                        "$ref": "#/components/schemas/Connection"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "connections"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/forge/connections",
@@ -3570,9 +3836,26 @@
       ],
       "post": {
         "operationId": "postTeamsByIdForgeConnections",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/forgeConnectReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/forgeConnectResp"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/teams/{id}/forge/connections",
@@ -3617,8 +3900,26 @@
       "get": {
         "operationId": "getTeamsByIdForgeConnectionsByConnIdRepos",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "repos": {
+                      "items": {
+                        "$ref": "#/components/schemas/RepoSummary"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "repos"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/forge/connections/{conn_id}/repos",
@@ -3649,8 +3950,26 @@
       "get": {
         "operationId": "getTeamsByIdForgeOauthApps",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "apps": {
+                      "items": {
+                        "$ref": "#/components/schemas/ForgeOAuthApp"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "apps"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/teams/{id}/forge/oauth-apps",
@@ -3670,9 +3989,26 @@
       ],
       "post": {
         "operationId": "postTeamsByIdForgeOauthApps",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/forgeOAuthAppReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForgeOAuthApp"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/teams/{id}/forge/oauth-apps",
@@ -3694,9 +4030,40 @@
       ],
       "post": {
         "operationId": "postTeamsByIdForgeOauthAppsGithubManifest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/forgeOAuthAppReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "manifest": {},
+                    "post_url": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "post_url",
+                    "manifest",
+                    "state"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/teams/{id}/forge/oauth-apps/github-manifest",

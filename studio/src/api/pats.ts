@@ -2,7 +2,8 @@
 // URL space is /api/me/tokens — deliberately distinct from /api/me/api-keys
 // (BYOK LLM provider keys).
 
-import { FeatureUnavailableError, guard404, request } from "./client";
+import { FeatureUnavailableError, guard404 } from "./client";
+import { apiDelete, apiGet, apiPost } from "./typed";
 
 export { FeatureUnavailableError };
 
@@ -33,22 +34,16 @@ export interface CreatePATResponse {
 
 export async function listMyTokens(): Promise<PersonalAccessToken[]> {
   return guard404("pats", async () => {
-    const r = await request<{ tokens: PersonalAccessToken[] }>(`/me/tokens`);
-    return r.tokens ?? [];
+    const r = await apiGet("/api/me/tokens");
+    return (r.tokens ?? []) as PersonalAccessToken[];
   });
 }
 
 export function createMyToken(input: CreatePATInput): Promise<CreatePATResponse> {
-  return guard404("pats", () =>
-    request<CreatePATResponse>(`/me/tokens`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  );
+  // Body type-checked against the spec's createPATReq.
+  return guard404("pats", async () => (await apiPost("/api/me/tokens", { body: input })) as CreatePATResponse);
 }
 
 export async function revokeMyToken(tokenID: string): Promise<void> {
-  await guard404("pats", () =>
-    request<void>(`/me/tokens/${encodeURIComponent(tokenID)}`, { method: "DELETE" }),
-  );
+  await guard404("pats", () => apiDelete("/api/me/tokens/{token_id}", { params: { token_id: tokenID } }));
 }

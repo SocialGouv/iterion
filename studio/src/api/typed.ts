@@ -12,7 +12,7 @@
 //
 // Existing hand-written api/*.ts modules keep working; migrate to these helpers
 // incrementally where end-to-end type safety against the spec is wanted.
-import { request } from "./client";
+import { apiRequest } from "./client";
 import type { paths } from "./schema";
 
 type Method = "get" | "post" | "put" | "patch" | "delete";
@@ -63,7 +63,10 @@ type BodyOpts<P extends keyof paths, M extends Method> = GetOpts<P, M> & {
 function send<T>(path: string, method: string, opts?: { params?: Record<string, string | number>; body?: unknown }): Promise<T> {
   const init: RequestInit = { method };
   if (opts?.body !== undefined) init.body = JSON.stringify(opts.body);
-  return request<T>(fill(path, opts?.params), init);
+  // apiRequest takes a fully-qualified path (no BASE_URL prefix) — our spec
+  // paths already include the "/api" root — and carries the shared 401-refresh
+  // + ApiError + 204 behaviour.
+  return apiRequest<T>(fill(path, opts?.params), init);
 }
 
 export function apiGet<P extends PathsFor<"get">>(

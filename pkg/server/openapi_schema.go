@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/pat"
 )
 
@@ -53,6 +54,33 @@ func routeSchemas() map[string]routeOp {
 		"POST /api/admin/orgs":       {request: createOrgReq{}, response: orgView{}},
 		"GET /api/admin/orgs/{id}":   {response: orgView{}},
 		"PATCH /api/admin/orgs/{id}": {request: updateOrgReq{}, response: orgView{}},
+
+		// Forge integrations (connections + self-service OAuth/GitHub apps).
+		"GET /api/teams/{id}/forge/connections": {
+			response: struct {
+				Connections []forge.Connection `json:"connections"`
+			}{},
+		},
+		"POST /api/teams/{id}/forge/connections": {request: forgeConnectReq{}, response: forgeConnectResp{}},
+		"GET /api/teams/{id}/forge/connections/{conn_id}/repos": {
+			response: struct {
+				Repos []forge.RepoSummary `json:"repos"`
+			}{},
+		},
+		"GET /api/teams/{id}/forge/oauth-apps": {
+			response: struct {
+				Apps []forge.ForgeOAuthApp `json:"apps"`
+			}{},
+		},
+		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
+		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {
+			request: forgeOAuthAppReq{},
+			response: struct {
+				PostURL  string `json:"post_url"`
+				Manifest any    `json:"manifest"`
+				State    string `json:"state"`
+			}{},
+		},
 	}
 }
 

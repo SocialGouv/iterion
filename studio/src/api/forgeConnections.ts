@@ -1,4 +1,5 @@
 import { guard404, request } from "./client";
+import { apiGet, apiPost } from "./typed";
 
 // Mirrors pkg/forge: the OUTBOUND forge-integration layer (connect a repo +
 // auto-provision the inbound webhook + token binding). Distinct from
@@ -137,19 +138,20 @@ export interface ConnectForgeResult {
 
 export async function listForgeConnections(teamID: string): Promise<ForgeConnection[]> {
   const r = await guard404("forge_integrations", () =>
-    request<{ connections: ForgeConnection[] }>(`/teams/${teamID}/forge/connections`),
+    apiGet("/api/teams/{id}/forge/connections", { params: { id: teamID } }),
   );
-  return r.connections ?? [];
+  return (r.connections ?? []) as ForgeConnection[];
 }
 
 export async function connectForge(
   teamID: string,
   input: ConnectForgeInput,
 ): Promise<ConnectForgeResult> {
-  return request(`/teams/${teamID}/forge/connections`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  // Body type-checked against the spec's forgeConnectReq.
+  return (await apiPost("/api/teams/{id}/forge/connections", {
+    params: { id: teamID },
+    body: input,
+  })) as ConnectForgeResult;
 }
 
 export async function deleteForgeConnection(teamID: string, connID: string): Promise<void> {
@@ -266,19 +268,20 @@ export async function listForgeIntegrationHooks(
 
 export async function listForgeOAuthApps(teamID: string): Promise<ForgeOAuthApp[]> {
   const r = await guard404("forge_integrations", () =>
-    request<{ apps: ForgeOAuthApp[] }>(`/teams/${teamID}/forge/oauth-apps`),
+    apiGet("/api/teams/{id}/forge/oauth-apps", { params: { id: teamID } }),
   );
-  return r.apps ?? [];
+  return (r.apps ?? []) as ForgeOAuthApp[];
 }
 
 export async function registerForgeOAuthApp(
   teamID: string,
   input: RegisterForgeOAuthAppInput,
 ): Promise<ForgeOAuthApp> {
-  return request(`/teams/${teamID}/forge/oauth-apps`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  // Body type-checked against the spec's forgeOAuthAppReq.
+  return (await apiPost("/api/teams/{id}/forge/oauth-apps", {
+    params: { id: teamID },
+    body: input,
+  })) as ForgeOAuthApp;
 }
 
 export async function deleteForgeOAuthApp(teamID: string, appID: string): Promise<void> {
@@ -316,8 +319,10 @@ export async function startGitHubManifest(
   // the caller's personal account (then only installable there).
   input: { forge_base_url?: string; next?: string; github_org?: string },
 ): Promise<GitHubManifestStart> {
-  return request(`/teams/${teamID}/forge/oauth-apps/github-manifest`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
+  // Body type-checked against the spec's forgeOAuthAppReq (provider is
+  // required there; this endpoint is GitHub-only, so state it explicitly).
+  return (await apiPost("/api/teams/{id}/forge/oauth-apps/github-manifest", {
+    params: { id: teamID },
+    body: { provider: "github", ...input },
+  })) as GitHubManifestStart;
 }

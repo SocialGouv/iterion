@@ -3363,6 +3363,58 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Connection: {
+            /** Format: date-time */
+            access_token_expires_at?: string;
+            account_id?: string;
+            account_login?: string;
+            app_slug?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            display_name?: string;
+            forge_base_url?: string;
+            id: string;
+            installation_id?: number;
+            kind: string;
+            /** Format: date-time */
+            last_refreshed_at?: string;
+            managed_secret_id?: string;
+            namespace?: string;
+            provider: string;
+            scopes?: string[];
+            status: string;
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ForgeOAuthApp: {
+            app_manage_url?: string;
+            app_slug?: string;
+            auto_created: boolean;
+            client_id: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            forge_base_url?: string;
+            id: string;
+            installable?: boolean;
+            provider: string;
+            provider_app_id?: string;
+            redirect_uri?: string;
+            scopes?: string[];
+            tenant_id: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        RepoSummary: {
+            can_admin: boolean;
+            default_branch?: string;
+            description?: string;
+            full_name: string;
+            private: boolean;
+            web_url?: string;
+        };
         Token: {
             /** Format: date-time */
             created_at: string;
@@ -3398,6 +3450,30 @@ export interface components {
             expires_in_days?: number;
             name: string;
             team_id?: string;
+        };
+        forgeConnectReq: {
+            display_name?: string;
+            forge_base_url?: string;
+            mode: string;
+            next?: string;
+            pat?: string;
+            provider: string;
+        };
+        forgeConnectResp: {
+            authorize_url?: string;
+            connection?: components["schemas"]["Connection"];
+            install_url?: string;
+        };
+        forgeOAuthAppReq: {
+            admin_token?: string;
+            client_id?: string;
+            client_secret?: string;
+            connection_id?: string;
+            forge_base_url?: string;
+            github_org?: string;
+            mode?: string;
+            next?: string;
+            provider: string;
         };
         loginReq: {
             email: string;
@@ -6551,12 +6627,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        connections: components["schemas"]["Connection"][];
+                    };
+                };
             };
         };
     };
@@ -6569,14 +6649,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["forgeConnectReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["forgeConnectResp"];
+                };
             };
         };
     };
@@ -6613,12 +6699,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        repos: components["schemas"]["RepoSummary"][];
+                    };
+                };
             };
         };
     };
@@ -6633,12 +6723,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        apps: components["schemas"]["ForgeOAuthApp"][];
+                    };
+                };
             };
         };
     };
@@ -6651,14 +6745,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["forgeOAuthAppReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ForgeOAuthApp"];
+                };
             };
         };
     };
@@ -6671,14 +6771,24 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["forgeOAuthAppReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        manifest: unknown;
+                        post_url: string;
+                        state: string;
+                    };
+                };
             };
         };
     };

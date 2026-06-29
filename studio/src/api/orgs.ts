@@ -3,6 +3,7 @@
 // for the internal Team/tenant.
 
 import { guard404, request } from "./client";
+import { apiGet, apiPatch, apiPost } from "./typed";
 
 export interface OrgView {
   id: string;
@@ -50,8 +51,10 @@ export async function listOrgs(): Promise<OrgView[]> {
   // guard404 → FeatureUnavailableError when /api/admin/orgs isn't registered
   // (local/desktop mode — orgs are a cloud-only concept), so the page renders
   // a "cloud-mode feature" notice instead of a raw "404 no such API endpoint".
-  const res = await guard404("admin", () => request<{ orgs: OrgView[] }>("/admin/orgs"));
-  return res.orgs ?? [];
+  // Typed against the OpenAPI spec (apiGet narrows path + response from
+  // schema.ts); guard404 still maps the local-mode 404 to FeatureUnavailable.
+  const res = await guard404("admin", () => apiGet("/api/admin/orgs"));
+  return (res.orgs ?? []) as OrgView[];
 }
 
 export async function createOrg(input: {
@@ -59,7 +62,8 @@ export async function createOrg(input: {
   slug?: string;
   owner_email?: string;
 }): Promise<OrgView> {
-  return request<OrgView>("/admin/orgs", { method: "POST", body: JSON.stringify(input) });
+  // Body is type-checked against the spec's createOrgReq.
+  return (await apiPost("/api/admin/orgs", { body: input })) as OrgView;
 }
 
 export async function getOrgUsage(id: string): Promise<OrgUsage> {
@@ -89,10 +93,8 @@ export async function updateOrg(
     monthly_cost_cap_usd?: number;
   },
 ): Promise<OrgView> {
-  return request<OrgView>(`/admin/orgs/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch),
-  });
+  // Path-param + body type-checked against the spec (updateOrgReq).
+  return (await apiPatch("/api/admin/orgs/{id}", { params: { id }, body: patch })) as OrgView;
 }
 
 export async function setOrgStatus(id: string, status: string, reason?: string): Promise<OrgView> {
