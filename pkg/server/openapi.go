@@ -38,6 +38,8 @@ var routePathParamRe = regexp.MustCompile(`\{([^}]+)\}`)
 // faithful route inventory; richer schemas are an incremental follow-on.
 func (s *Server) buildOpenAPI() map[string]any {
 	paths := map[string]any{}
+	gen := newSchemaGen()
+	schemas := routeSchemas()
 	for _, rt := range s.mux.Routes() {
 		if !strings.HasPrefix(rt.Pattern, "/api/") {
 			continue
@@ -57,9 +59,31 @@ func (s *Server) buildOpenAPI() map[string]any {
 				"operationId": operationID(m, rt.Pattern),
 				"tags":        []string{tagFor(rt.Pattern)},
 				"summary":     m + " " + rt.Pattern,
-				"responses": map[string]any{
-					"default": map[string]any{"description": "Response"},
-				},
+			}
+			// Enrich from the route→types registry when present; otherwise
+			// fall back to an open "default" response.
+			if rs, ok := schemas[m+" "+rt.Pattern]; ok {
+				if rs.request != nil {
+					op["requestBody"] = map[string]any{
+						"required": true,
+						"content": map[string]any{
+							"application/json": map[string]any{"schema": gen.schema(rs.request)},
+						},
+					}
+				}
+				if rs.response != nil {
+					op["responses"] = map[string]any{
+						"200": map[string]any{
+							"description": "OK",
+							"content": map[string]any{
+								"application/json": map[string]any{"schema": gen.schema(rs.response)},
+							},
+						},
+					}
+				}
+			}
+			if _, ok := op["responses"]; !ok {
+				op["responses"] = map[string]any{"default": map[string]any{"description": "Response"}}
 			}
 			item[strings.ToLower(m)] = op
 		}
@@ -69,16 +93,20 @@ func (s *Server) buildOpenAPI() map[string]any {
 	if appinfo.Commit != "" {
 		version += " (" + appinfo.Commit + ")"
 	}
-	return map[string]any{
+	doc := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title":       "iterion API",
 			"version":     version,
-			"description": "Auto-generated route inventory for this iterion instance. Schemas are intentionally open in this version; routes and methods are exact.",
+			"description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route.",
 		},
 		"servers": []any{map[string]any{"url": "/"}},
 		"paths":   paths,
 	}
+	if len(gen.components) > 0 {
+		doc["components"] = map[string]any{"schemas": gen.components}
+	}
+	return doc
 }
 
 // toOpenAPIPath maps Go ServeMux wildcards to OpenAPI templating. Go's

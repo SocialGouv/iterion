@@ -79,6 +79,66 @@ func TestBuildOpenAPIShape(t *testing.T) {
 	}
 }
 
+func TestOpenAPITypedSchemas(t *testing.T) {
+	s := &Server{mux: newRecordingMux()}
+	// Routes whose types are registered in routeSchemas().
+	s.mux.Handle("POST /api/auth/login", http.NotFoundHandler())
+	s.mux.Handle("POST /api/admin/orgs", http.NotFoundHandler())
+
+	doc := s.buildOpenAPI()
+	paths := doc["paths"].(map[string]any)
+
+	// login POST → requestBody schema referencing loginReq fields.
+	login := paths["/api/auth/login"].(map[string]any)["post"].(map[string]any)
+	rb, ok := login["requestBody"].(map[string]any)
+	if !ok {
+		t.Fatalf("login has no requestBody: %+v", login)
+	}
+	schema := rb["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	if ref, _ := schema["$ref"].(string); ref != "#/components/schemas/loginReq" {
+		t.Errorf("login requestBody $ref = %q, want loginReq", ref)
+	}
+	// 200 response schema present (authResponse).
+	resp200, ok := login["responses"].(map[string]any)["200"].(map[string]any)
+	if !ok {
+		t.Fatalf("login has no 200 response: %+v", login["responses"])
+	}
+	if resp200["content"] == nil {
+		t.Errorf("login 200 has no content schema")
+	}
+
+	// components/schemas was populated and includes the referenced types.
+	comps, ok := doc["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("no components emitted")
+	}
+	schemas := comps["schemas"].(map[string]any)
+	for _, want := range []string{"loginReq", "authResponse", "createOrgReq", "orgView"} {
+		if _, ok := schemas[want]; !ok {
+			t.Errorf("components.schemas missing %q", want)
+		}
+	}
+	// loginReq must require email + password (no omitempty).
+	lr := schemas["loginReq"].(map[string]any)
+	req, _ := lr["required"].([]string)
+	if !containsAll(req, "email", "password") {
+		t.Errorf("loginReq required = %v, want email+password", req)
+	}
+}
+
+func containsAll(have []string, want ...string) bool {
+	set := map[string]bool{}
+	for _, h := range have {
+		set[h] = true
+	}
+	for _, w := range want {
+		if !set[w] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestMethodlessRouteGetsGetAndPost(t *testing.T) {
 	s := &Server{mux: newRecordingMux()}
 	s.mux.Handle("/api/memory", http.NotFoundHandler())
