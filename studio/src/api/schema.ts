@@ -3507,6 +3507,10 @@ export interface components {
             status: string;
             suspend_reason?: string;
         };
+        setOrgStatusReq: {
+            reason?: string;
+            status: string;
+        };
         updateOrgReq: {
             memory_quota_bytes?: number;
             monthly_cost_cap_usd?: number;
@@ -3646,12 +3650,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["orgView"];
+                };
             };
         };
     };
@@ -3692,12 +3698,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["orgView"];
+                };
             };
         };
     };
@@ -3710,14 +3718,20 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["setOrgStatusReq"];
+            };
+        };
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["orgView"];
+                };
             };
         };
     };

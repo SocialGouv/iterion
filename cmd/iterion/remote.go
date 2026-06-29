@@ -237,17 +237,24 @@ var remoteAPICmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		out := resp
-		var pretty bytes.Buffer
-		if json.Indent(&pretty, resp, "", "  ") == nil && pretty.Len() > 0 {
-			out = pretty.Bytes()
-		}
-		fmt.Fprintln(os.Stdout, string(out))
-		if code/100 != 2 {
-			return fmt.Errorf("HTTP %d", code)
-		}
-		return nil
+		return printJSONResponse(code, resp)
 	},
+}
+
+// printJSONResponse pretty-prints a JSON response body (falling back to the raw
+// bytes when it isn't valid JSON) and maps a non-2xx status to an error. Shared
+// by `remote api` and `remote openapi`.
+func printJSONResponse(code int, body []byte) error {
+	out := body
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, body, "", "  ") == nil && pretty.Len() > 0 {
+		out = pretty.Bytes()
+	}
+	fmt.Fprintln(os.Stdout, string(out))
+	if code/100 != 2 {
+		return fmt.Errorf("HTTP %d", code)
+	}
+	return nil
 }
 
 var remoteOpenAPICmd = &cobra.Command{
@@ -308,15 +315,7 @@ func remoteGetJSON(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	var pretty bytes.Buffer
-	if json.Indent(&pretty, body, "", "  ") == nil && pretty.Len() > 0 {
-		body = pretty.Bytes()
-	}
-	fmt.Fprintln(os.Stdout, string(body))
-	if code/100 != 2 {
-		return fmt.Errorf("HTTP %d", code)
-	}
-	return nil
+	return printJSONResponse(code, body)
 }
 
 func init() {

@@ -483,6 +483,20 @@
         ],
         "type": "object"
       },
+      "setOrgStatusReq": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
       "updateOrgReq": {
         "properties": {
           "memory_quota_bytes": {
@@ -535,7 +549,7 @@
     }
   },
   "info": {
-    "description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route.",
+    "description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route. Note: the /api/v1/native, /api/v1/dispatcher and /api/v1/mcp/board sub-trees are served but registered on a separate mux, so they are intentionally not catalogued here.",
     "title": "iterion API",
     "version": "current"
   },
@@ -634,8 +648,15 @@
       "delete": {
         "operationId": "deleteAdminOrgsById",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orgView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "DELETE /api/admin/orgs/{id}",
@@ -716,8 +737,15 @@
       "post": {
         "operationId": "postAdminOrgsByIdRestore",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orgView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/admin/orgs/{id}/restore",
@@ -739,9 +767,26 @@
       ],
       "post": {
         "operationId": "postAdminOrgsByIdStatus",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/setOrgStatusReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orgView"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "POST /api/admin/orgs/{id}/status",

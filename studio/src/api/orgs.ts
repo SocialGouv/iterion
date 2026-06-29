@@ -2,8 +2,8 @@
 // Mirrors pkg/server/admin_orgs_routes.go. "org" is the public alias
 // for the internal Team/tenant.
 
-import { guard404, request } from "./client";
-import { apiGet, apiPatch, apiPost } from "./typed";
+import { guard404 } from "./client";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./typed";
 
 export interface OrgView {
   id: string;
@@ -67,7 +67,7 @@ export async function createOrg(input: {
 }
 
 export async function getOrgUsage(id: string): Promise<OrgUsage> {
-  return request<OrgUsage>(`/admin/orgs/${encodeURIComponent(id)}/usage`);
+  return (await apiGet("/api/admin/orgs/{id}/usage", { params: { id } })) as OrgUsage;
 }
 
 // Soft-delete an org (super-admin): marks it pending_deletion with a 24h grace,
@@ -75,12 +75,12 @@ export async function getOrgUsage(id: string): Promise<OrgUsage> {
 // Blocked immediately; refuses the caller's active org (409). Returns the org
 // in its new pending state.
 export async function deleteOrg(id: string): Promise<OrgView> {
-  return request<OrgView>(`/admin/orgs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return (await apiDelete("/api/admin/orgs/{id}", { params: { id } })) as OrgView;
 }
 
 // Cancel a pending org deletion within the grace window (super-admin).
 export async function restoreOrg(id: string): Promise<OrgView> {
-  return request<OrgView>(`/admin/orgs/${encodeURIComponent(id)}/restore`, { method: "POST" });
+  return (await apiPost("/api/admin/orgs/{id}/restore", { params: { id } })) as OrgView;
 }
 
 export async function updateOrg(
@@ -98,10 +98,11 @@ export async function updateOrg(
 }
 
 export async function setOrgStatus(id: string, status: string, reason?: string): Promise<OrgView> {
-  return request<OrgView>(`/admin/orgs/${encodeURIComponent(id)}/status`, {
-    method: "POST",
-    body: JSON.stringify({ status, reason }),
-  });
+  // Body type-checked against the spec's setOrgStatusReq.
+  return (await apiPost("/api/admin/orgs/{id}/status", {
+    params: { id },
+    body: { status, reason },
+  })) as OrgView;
 }
 
 const GiB = 1 << 30;

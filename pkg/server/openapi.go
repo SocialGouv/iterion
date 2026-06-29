@@ -98,7 +98,7 @@ func (s *Server) buildOpenAPI() map[string]any {
 		"info": map[string]any{
 			"title":       "iterion API",
 			"version":     version,
-			"description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route.",
+			"description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route. Note: the /api/v1/native, /api/v1/dispatcher and /api/v1/mcp/board sub-trees are served but registered on a separate mux, so they are intentionally not catalogued here.",
 		},
 		"servers": []any{map[string]any{"url": "/"}},
 		"paths":   paths,

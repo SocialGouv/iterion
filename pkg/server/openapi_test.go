@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -137,6 +138,33 @@ func containsAll(have []string, want ...string) bool {
 		}
 	}
 	return true
+}
+
+// TestRouteSchemasKeysAreRegistered closes the one silent-drift hole the CI
+// generate-and-diff guard doesn't cover: a routeSchemas() key that no longer
+// matches a real route (e.g. after a rename) would quietly stop enriching the
+// spec with zero signal. Assert every key resolves to a recorded route+method.
+func TestRouteSchemasKeysAreRegistered(t *testing.T) {
+	doc, err := BuildOpenAPISpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := doc["paths"].(map[string]any)
+	for key := range routeSchemas() {
+		method, pat, ok := strings.Cut(key, " ")
+		if !ok {
+			t.Errorf("routeSchemas key %q is not \"METHOD /pattern\"", key)
+			continue
+		}
+		item, ok := paths[toOpenAPIPath(pat)].(map[string]any)
+		if !ok {
+			t.Errorf("routeSchemas key %q: path %q is not a registered route (renamed/removed?)", key, pat)
+			continue
+		}
+		if _, ok := item[strings.ToLower(method)]; !ok {
+			t.Errorf("routeSchemas key %q: method %s not registered on path %q", key, method, pat)
+		}
+	}
 }
 
 func TestMethodlessRouteGetsGetAndPost(t *testing.T) {

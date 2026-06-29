@@ -72,6 +72,10 @@ func routeSchemas() map[string]routeOp {
 				Apps []forge.ForgeOAuthApp `json:"apps"`
 			}{},
 		},
+		"DELETE /api/admin/orgs/{id}":       {response: orgView{}},
+		"POST /api/admin/orgs/{id}/restore": {response: orgView{}},
+		"POST /api/admin/orgs/{id}/status":  {request: setOrgStatusReq{}, response: orgView{}},
+
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {
 			request: forgeOAuthAppReq{},
@@ -111,8 +115,7 @@ func (g *schemaGen) schemaForType(t reflect.Type) map[string]any {
 	switch t.Kind() {
 	case reflect.Pointer:
 		// Unwrap; a pointer field is simply optional/nullable.
-		s := g.schemaForType(t.Elem())
-		return s
+		return g.schemaForType(t.Elem())
 	case reflect.Bool:
 		return map[string]any{"type": "boolean"}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
