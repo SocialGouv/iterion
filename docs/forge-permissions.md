@@ -83,8 +83,11 @@ Prefer narrowing the *connection*, not the user:
 
 - **GitHub App** (`github_app`) — the bot acts as the App with exactly the
   permissions in its manifest (`contents:write`, `pull_requests:write`,
-  `administration:write` for repo webhooks, `metadata:read`), scoped to the
-  repos the App is installed on. The right answer for production: bots get only
+  `repository_hooks:write` for the per-repo inbound webhook, `metadata:read`),
+  scoped to the repos the App is installed on. It deliberately does **not**
+  request `administration` (repo deletion/settings/teams/branch-protection) —
+  that is over-privileged, and per GitHub docs webhooks require
+  `repository_hooks`, not `administration`. The right answer for production: bots get only
   what they need, and PRs are authored by a clearly-non-human bot identity.
   **Self-service** (no platform App, no manual registration): Integrations →
   "+ Register an OAuth app" → github → **"Create a GitHub App"** (iterion builds

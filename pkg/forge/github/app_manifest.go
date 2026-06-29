@@ -36,10 +36,15 @@ type AppManifest struct {
 	HookAttributes     map[string]any    `json:"hook_attributes"`
 }
 
-// BuildAppManifest assembles the manifest for an iterion forge OAuth app. The
-// permissions are what a user-to-server token needs to manage repo webhooks
-// (administration) and run a PR-review bot (pull_requests, contents); the
-// App-level webhook is disabled (iterion creates per-repo hooks itself).
+// BuildAppManifest assembles the manifest for an iterion forge GitHub App. The
+// permissions are the LEAST-PRIVILEGE set iterion's forge layer actually needs:
+// push/read code (contents), open + comment on PRs (pull_requests), the
+// mandatory metadata baseline, and manage the per-repo inbound webhook
+// (repository_hooks — the App-level webhook is disabled, iterion creates per-repo
+// hooks itself). It deliberately does NOT request `administration` (repo
+// deletion / settings / teams / branch-protection): that grant is dangerous AND
+// wrong for a GitHub App installation token — per GitHub docs repo webhooks
+// require `repository_hooks:write`, not `administration`.
 func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 	return AppManifest{
 		Name:        name,
@@ -55,10 +60,10 @@ func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 		Public:        false,
 		DefaultEvents: []string{},
 		DefaultPermissions: map[string]string{
-			"administration": "write", // create per-repo webhooks
-			"contents":       "write", // clone + read the diff AND push branches/commits
-			"pull_requests":  "write", // open PRs + post review comments
-			"metadata":       "read",  // mandatory baseline
+			"contents":         "write", // clone + read the diff AND push branches/commits
+			"pull_requests":    "write", // open PRs + post review comments
+			"metadata":         "read",  // mandatory baseline
+			"repository_hooks": "write", // auto-provision the per-repo inbound webhook
 		},
 		HookAttributes: map[string]any{"url": homeURL, "active": false},
 	}

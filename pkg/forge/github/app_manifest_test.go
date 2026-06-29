@@ -56,8 +56,14 @@ func TestBuildAppManifest(t *testing.T) {
 	if m.SetupURL != "https://it/api/forge/github/app/callback" {
 		t.Fatalf("setup_url = %q, want https://it/api/forge/github/app/callback", m.SetupURL)
 	}
-	if m.DefaultPermissions["administration"] != "write" {
-		t.Fatalf("missing administration perm: %+v", m.DefaultPermissions)
+	// Least-privilege: webhooks via repository_hooks (the correct GitHub App perm),
+	// NOT administration — which would grant repo deletion/settings/teams and is
+	// the wrong permission for webhook management on an installation token.
+	if m.DefaultPermissions["repository_hooks"] != "write" {
+		t.Fatalf("missing repository_hooks:write perm: %+v", m.DefaultPermissions)
+	}
+	if _, ok := m.DefaultPermissions["administration"]; ok {
+		t.Fatalf("administration must NOT be requested (over-privileged): %+v", m.DefaultPermissions)
 	}
 	// contents:write is required for bots to push branches/commits (read alone
 	// would let a feature/review bot read but never open a real PR).
