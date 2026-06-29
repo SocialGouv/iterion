@@ -112,7 +112,7 @@ func (s *Server) handleCreateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := s.applyOrgSSOReq(r.Context(), &row, req, true); err != nil {
+	if err := s.applyOrgSSOReq(r.Context(), &row, req, true, id.IsSuperAdmin); err != nil {
 		httpError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
@@ -152,7 +152,7 @@ func (s *Server) handleUpdateOrgSSOProvider(w http.ResponseWriter, r *http.Reque
 	req.Kind = string(row.Kind)
 	row.Enabled = req.Enabled
 	row.UpdatedAt = time.Now().UTC()
-	if err := s.applyOrgSSOReq(r.Context(), &row, req, false); err != nil {
+	if err := s.applyOrgSSOReq(r.Context(), &row, req, false, id.IsSuperAdmin); err != nil {
 		httpError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
@@ -235,7 +235,14 @@ func (s *Server) handleTestOrgSSOProvider(w http.ResponseWriter, r *http.Request
 // empty client_secret preserves the stored one. The role ceiling is enforced
 // by orgsso.Validate (which rejects owner) — anyone reaching here passed
 // canManageTeam (admin/owner), whose SSO grant ceiling is exactly "admin".
-func (s *Server) applyOrgSSOReq(ctx context.Context, row *orgsso.OrgSSOProvider, req orgSSOProviderReq, create bool) error {
+//
+// bypassControlProof skips the GitHub proof-of-control check (forge connection
+// proving the configurer admins the GitHub org). It is set for platform
+// super-admins: the proof gate (H-8) exists to stop a NON-super org admin from
+// allow-listing a GitHub org they don't control; a super-admin is the trusted
+// platform operator, and login still gates on each user's real GitHub-team
+// membership (read from their own login token, not the forge app's).
+func (s *Server) applyOrgSSOReq(ctx context.Context, row *orgsso.OrgSSOProvider, req orgSSOProviderReq, create, bypassControlProof bool) error {
 	row.DisplayName = req.DisplayName
 	switch orgsso.Kind(req.Kind) {
 	case orgsso.KindOIDC:
@@ -264,7 +271,7 @@ func (s *Server) applyOrgSSOReq(ctx context.Context, row *orgsso.OrgSSOProvider,
 		// connection. Mark each grant; unverified grants are stored but inert
 		// (FlattenGitHubTeamKeys / RoleForGroups skip them).
 		for i := range row.Grants {
-			row.Grants[i].Verified = s.teamControlsGitHubOrg(ctx, row.TenantID, row.Grants[i].GitHubOrg)
+			row.Grants[i].Verified = bypassControlProof || s.teamControlsGitHubOrg(ctx, row.TenantID, row.Grants[i].GitHubOrg)
 		}
 	default:
 		return orgsso.ErrInvalid

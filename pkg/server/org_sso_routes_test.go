@@ -128,14 +128,15 @@ func TestOrgSSO_GitHubCreate(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("github create: code=%d body=%s", w.Code, w.Body.String())
 	}
-	// Proof-of-control: with no forge GitHub connection wired, the grant is
-	// stored UNVERIFIED (inert at login) rather than silently trusted.
+	// Super-admin bypass: the platform operator is trusted, so the grant is
+	// auto-verified even without a forge connection (the proof-of-control gate
+	// is for NON-super org admins — asserted on t2 below).
 	var created orgSSOProviderView
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Grants) != 1 || created.Grants[0].Verified {
-		t.Errorf("grant should be unverified without a forge connection: %+v", created.Grants)
+	if len(created.Grants) != 1 || !created.Grants[0].Verified {
+		t.Errorf("super-admin grant should be auto-verified: %+v", created.Grants)
 	}
 
 	// A second github row for the same org is refused (one allow-list per org).
@@ -151,6 +152,27 @@ func TestOrgSSO_GitHubCreate(t *testing.T) {
 	s.handleCreateOrgSSOProvider(w, ssoReq(ctx, "POST", "/api/teams/t2/sso/providers", adminGrant, "t2", ""))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("admin github grant: code=%d want 400 body=%s", w.Code, w.Body.String())
+	}
+
+	// Proof-of-control gate for a NON-super org admin: without a forge GitHub
+	// connection proving control, the grant is stored UNVERIFIED (inert at login).
+	if err := s.authStore().UpsertOrgMembership(context.Background(),
+		identity.OrgMembership{UserID: "adm2", OrgID: "t2", Role: identity.OrgRoleAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	admCtx := auth.WithIdentity(context.Background(),
+		auth.Identity{UserID: "adm2", OrgID: "t2", OrgRole: identity.OrgRoleAdmin})
+	w = httptest.NewRecorder()
+	s.handleCreateOrgSSOProvider(w, ssoReq(admCtx, "POST", "/api/teams/t2/sso/providers", body, "t2", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("t2 non-super github create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var t2created orgSSOProviderView
+	if err := json.Unmarshal(w.Body.Bytes(), &t2created); err != nil {
+		t.Fatal(err)
+	}
+	if len(t2created.Grants) != 1 || t2created.Grants[0].Verified {
+		t.Errorf("non-super grant should be unverified without a forge connection: %+v", t2created.Grants)
 	}
 }
 
