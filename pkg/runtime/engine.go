@@ -818,7 +818,10 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// after the bundle skills so a same-named bundle/workspace file
 	// wins on collision. Best-effort: a plugin must not fail the run.
 	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin skills: %v", err)
+		e.logger.Warn("runtime: plugin contributions: %v", err)
+	}
+	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks: %v", err)
 	}
 	e.applyPresetFocus()
 	return nil

@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -338,10 +339,37 @@ func (m Manifest) Kinds() []string {
 	if len(m.Contributes.Agents) > 0 {
 		k = append(k, "agent")
 	}
+	if len(m.Contributes.Hooks) > 0 {
+		k = append(k, "hook")
+	}
 	if m.Contributes.Lifecycle != nil {
 		k = append(k, "lifecycle")
 	}
 	return k
+}
+
+// HookFragments reads and JSON-decodes the plugin's contributed hook settings
+// fragments. Each fragment is a settings.json shape: either {"hooks": {...}}
+// or the bare {<Event>: [...]} map. The returned maps are the hooks map only.
+func (p *Plugin) HookFragments() ([]map[string]any, error) {
+	var out []map[string]any
+	for _, rel := range p.Manifest.Contributes.Hooks {
+		data, err := fs.ReadFile(p.fsys, filepath.ToSlash(rel))
+		if err != nil {
+			return nil, fmt.Errorf("plugin %q: read hooks %q: %w", p.Name(), rel, err)
+		}
+		var doc map[string]any
+		if jerr := json.Unmarshal(data, &doc); jerr != nil {
+			return nil, fmt.Errorf("plugin %q: parse hooks %q: %w", p.Name(), rel, jerr)
+		}
+		// Accept a full settings fragment ({"hooks": {...}}) or a bare hooks map.
+		if h, ok := doc["hooks"].(map[string]any); ok {
+			out = append(out, h)
+		} else {
+			out = append(out, doc)
+		}
+	}
+	return out, nil
 }
 
 // View projects a plugin to its listing form.

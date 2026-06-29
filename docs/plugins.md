@@ -21,12 +21,25 @@ A manifest's `contributes:` block lists one or more typed extension points:
 | `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start |
 | `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/` (claude_code discovers via `--setting-sources project`) |
 | `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/` (claude_code discovers via `--setting-sources project`) |
+| `hooks`       | JSON settings fragments (`{"hooks": {...}}`)             | idempotently merged into `<workspace>/.claude/settings.json` (claude_code fires them via `--setting-sources project`) |
 | `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
 
 `skills` / `commands` / `agents` share one mirror mechanism + the bundle
 collision policy (copy / no-op / refresh / shadow) — a same-named
 bundle/workspace file shadows the plugin's. Each is a `[]string` of paths
 relative to the plugin root.
+
+`hooks` is a `[]string` of JSON settings-fragment paths. At run start iterion
+**idempotently merges** every enabled plugin's hooks into
+`<workspace>/.claude/settings.json` under `.hooks`: a sidecar
+(`.claude/.iterion-managed/plugin-hooks.json`) records the last injection, so a
+re-run/resume removes the prior set before re-adding the current one — user
+hooks already in `settings.json` are preserved, and disabling a plugin removes
+its hooks. A fragment is either a full settings shape (`{"hooks": {...}}`) or a
+bare `{<Event>: [...]}` map. **Security:** a `command`-type hook runs arbitrary
+shell on tool events — installed plugins are opt-in (disabled by default), so
+enabling one with hooks is the operator's deliberate choice, like installing any
+tool.
 
 A single plugin may contribute several kinds (repo-falcon ships `mcp_servers` +
 `lifecycle` + `skills`).
@@ -152,7 +165,7 @@ map onto Claude Code's plugin model:
 | MCP servers        | `mcp_servers` ✅ shipped | both backends consume the MCP catalog |
 | slash commands     | `commands` ✅ shipped (claude_code) | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`. claw reads commands only from CLAUDE.md today → a `.claude/commands/` loader is staged in `.works/claw-code-go` (`internal/commands/`), lands on the next claw release + `go.mod` bump |
 | subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool + SubagentRunner but no named-agent file loader → claw-side follow-on |
-| hooks              | `hooks` (planned)       | claude_code reads `.claude/settings.json` hooks via `--setting-sources project` (iterion would merge plugin hooks there); claw has shell + Go hook runners but no settings discovery → claw-side follow-on |
+| hooks              | `hooks` ✅ shipped (claude_code) | plugin hooks idempotently merged into `.claude/settings.json`; claude_code fires them via `--setting-sources project`. claw has shell + Go hook runners but no settings discovery → claw-side follow-on |
 
 The principle: where claude_code has a native surface and claw does not (or they
 diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw

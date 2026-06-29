@@ -345,7 +345,10 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
 	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin skills (resume): %v", err)
+		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
+	}
+	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot.
@@ -471,7 +474,10 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
 	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin skills (resume): %v", err)
+		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
+	}
+	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// failed-then-resumed run keeps running as the selected sous-bot.

@@ -67,7 +67,13 @@ type Contributes struct {
 	Skills     []string        `yaml:"skills"`
 	Commands   []string        `yaml:"commands"`
 	Agents     []string        `yaml:"agents"`
-	Lifecycle  *LifecycleSpec  `yaml:"lifecycle"`
+	// Hooks are paths to JSON settings fragments ({"hooks": {<Event>: [...]}}),
+	// idempotently merged into the workspace's .claude/settings.json so
+	// claude_code fires them (discovered via --setting-sources project). A
+	// command-type hook runs arbitrary shell on tool events — installed plugins
+	// are opt-in (disabled by default), so this is the operator's choice.
+	Hooks     []string       `yaml:"hooks"`
+	Lifecycle *LifecycleSpec `yaml:"lifecycle"`
 }
 
 // RewriterSpec declares a command-output rewriter backed by an external binary.
@@ -171,7 +177,7 @@ func (m *Manifest) Validate() error {
 	}
 	c := m.Contributes
 	if len(c.Rewriters) == 0 && len(c.MCPServers) == 0 && len(c.Skills) == 0 &&
-		len(c.Commands) == 0 && len(c.Agents) == 0 && c.Lifecycle == nil {
+		len(c.Commands) == 0 && len(c.Agents) == 0 && len(c.Hooks) == 0 && c.Lifecycle == nil {
 		return fmt.Errorf("plugin %q: contributes nothing", m.Name)
 	}
 	for i := range c.Rewriters {
