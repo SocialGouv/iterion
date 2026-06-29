@@ -145,6 +145,9 @@ export interface ServerInfo {
   // triggers_enabled is true when the event-driven trigger store is wired.
   // The SPA exposes the Automations (Triggers) view + nav entry conditionally.
   triggers_enabled?: boolean;
+  // plugins_enabled is always true: the plugin registry is available in every
+  // mode, so the SPA can surface the Plugins management view + nav entry.
+  plugins_enabled?: boolean;
   // forge_github_app_configured is true when the server has a GitHub App
   // configured (ITERION_FORGE_GITHUB_APP_*). The forge ConnectForm only offers
   // the "Install GitHub App" mode when true — otherwise it dead-ends on a 400.

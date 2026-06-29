@@ -20,6 +20,7 @@ const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));
 const DispatcherView = lazy(() => import("@/views/Dispatcher"));
 const TriggersView = lazy(() => import("@/views/Triggers"));
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
+const PluginsView = lazy(() => import("@/views/Plugins"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
@@ -314,6 +315,13 @@ function AuthedApp() {
               <RunsAnalyticsView />
             </ErrorBoundary>
           </Route>
+          {serverInfo?.plugins_enabled && (
+            <Route path="/plugins">
+              <ErrorBoundary area="Plugins view">
+                <PluginsView />
+              </ErrorBoundary>
+            </Route>
+          )}
           {serverInfo?.native_tracker_enabled && (
             <Route path="/board">
               <ErrorBoundary area="Board view">

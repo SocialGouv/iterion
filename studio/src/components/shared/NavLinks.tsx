@@ -15,6 +15,7 @@ import {
   PlayIcon,
   Link2Icon,
   GearIcon,
+  Component1Icon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
@@ -38,6 +39,7 @@ export type Section =
   | "dispatcher"
   | "triggers"
   | "marketplace"
+  | "plugins"
   | "org"
   | "team"
   | "integrations"
@@ -76,6 +78,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   dispatcher: "dispatcher",
   triggers: "triggers",
   marketplace: "marketplace",
+  plugins: "plugins",
   orgs: "org",
   teams: "team",
   admin: "admin",
@@ -120,6 +123,9 @@ export default function NavLinks({ collapsed }: Props) {
   }
   if (info?.marketplace_enabled) {
     links.push({ section: "marketplace", href: "/marketplace", label: "Marketplace", icon: ArchiveIcon });
+  }
+  if (info?.plugins_enabled) {
+    links.push({ section: "plugins", href: "/plugins", label: "Plugins", icon: Component1Icon });
   }
   // Neither the org nor the team is a primary nav entry: the org lives in the
   // OrgSwitcher (top), team settings in the account chip ("Team settings"). The
