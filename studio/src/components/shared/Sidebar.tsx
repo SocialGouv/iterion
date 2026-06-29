@@ -7,7 +7,6 @@ import {
 import NavLinks from "./NavLinks";
 import OrgSwitcher from "./OrgSwitcher";
 import SidebarContext from "./SidebarContext";
-import UserTeamChip from "./UserTeamChip";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { useUIStore } from "@/store/ui";
 
@@ -132,7 +131,6 @@ export default function Sidebar() {
             <span>Settings</span>
           </button>
         )}
-        <UserTeamChip collapsed={collapsed} />
       </div>
     </aside>
   );

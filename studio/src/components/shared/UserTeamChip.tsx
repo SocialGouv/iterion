@@ -5,13 +5,22 @@ import { useLocation } from "wouter";
 import { hasOrgRole, useAuth } from "@/auth/AuthContext";
 import { Popover, PopoverClose } from "@/components/ui/Popover";
 
-// Account + team chip at the foot of the sidebar. Org-level switching now lives
-// in the dedicated OrgSwitcher at the top of the sidebar, so this chip is
-// scoped to: switch team, team settings, account, platform admin, sign out.
+// Account + team chip (the avatar menu). Org-level switching lives in the
+// dedicated OrgSwitcher; this chip is scoped to: switch team, team settings,
+// account, platform admin, sign out. Rendered top-right in the header (as a
+// compact avatar) — side/align place its popover accordingly.
 //
 // Hidden entirely in local dev mode (user id "dev"), where the desktop app's
 // native menus drive Settings / ProjectSwitcher instead.
-export default function UserTeamChip({ collapsed = false }: { collapsed?: boolean }) {
+export default function UserTeamChip({
+  collapsed = false,
+  side = "top",
+  align = "start",
+}: {
+  collapsed?: boolean;
+  side?: "top" | "bottom";
+  align?: "start" | "end";
+}) {
   const {
     user,
     teams,
@@ -50,8 +59,8 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
     <Popover
       open={open}
       onOpenChange={setOpen}
-      side="top"
-      align="start"
+      side={side}
+      align={align}
       contentClassName="w-[min(20rem,calc(100vw-1rem))] p-2 text-sm"
       trigger={
         collapsed ? (
