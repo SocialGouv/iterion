@@ -1,39 +1,29 @@
 import { guard404, request } from "./client";
+import type { components } from "./schema";
 import { apiGet, apiPost } from "./typed";
 
 // Mirrors pkg/forge: the OUTBOUND forge-integration layer (connect a repo +
 // auto-provision the inbound webhook + token binding). Distinct from
 // api/webhooks.ts (the raw inbound-webhook CRUD).
 
+// The forge enums the Go structs encode only as strings. We keep them as
+// precise unions for provider-specific UI, then graft them onto the generated
+// spec schemas below (Omit + &) so the FIELD SET stays spec-derived — a Go-side
+// rename breaks the build — while these three fields stay narrowed.
 export type ForgeProvider = "gitlab" | "github" | "forgejo";
 export type ForgeKind = "oauth_app" | "github_app" | "pat";
 export type ForgeConnectionStatus = "active" | "needs_reauth" | "revoked";
 
-export interface ForgeConnection {
-  id: string;
-  tenant_id: string;
+export type ForgeConnection = Omit<
+  components["schemas"]["Connection"],
+  "provider" | "kind" | "status"
+> & {
   provider: ForgeProvider;
   kind: ForgeKind;
-  display_name?: string;
-  forge_base_url?: string;
-  account_login?: string;
-  account_id?: string;
-  namespace?: string;
   status: ForgeConnectionStatus;
-  access_token_expires_at?: string;
-  scopes?: string[];
-  managed_secret_id?: string;
-  created_at: string;
-}
+};
 
-export interface ForgeRepo {
-  full_name: string;
-  description?: string;
-  private: boolean;
-  default_branch?: string;
-  web_url?: string;
-  can_admin: boolean;
-}
+export type ForgeRepo = components["schemas"]["RepoSummary"];
 
 export interface ForgeIntegration {
   id: string;
@@ -85,27 +75,13 @@ export interface ForgeProvisionResult {
 
 // ForgeOAuthApp is a per-tenant, per-instance OAuth application's credentials
 // (client_id + sealed client_secret). The connect form offers OAuth for a
-// (provider, instance) only when one of these exists for it.
-export interface ForgeOAuthApp {
-  id: string;
-  tenant_id: string;
+// (provider, instance) only when one of these exists for it. The field set is
+// the spec's ForgeOAuthApp schema; provider stays a narrowed union. `installable`
+// is true for a manifest-created GitHub App whose private key iterion holds (it
+// can be INSTALLED — least-privilege github_app — not only OAuth-authorized).
+export type ForgeOAuthApp = Omit<components["schemas"]["ForgeOAuthApp"], "provider"> & {
   provider: ForgeProvider;
-  forge_base_url?: string;
-  client_id: string;
-  scopes?: string[];
-  redirect_uri?: string;
-  provider_app_id?: string;
-  auto_created: boolean;
-  /** Deep link to delete this app on the forge (e.g. a GitHub App's settings
-   * page); shown in the delete confirmation. Empty when not locatable. */
-  app_manage_url?: string;
-  /** True for a manifest-created GitHub App whose private key iterion holds:
-   * it can be INSTALLED (least-privilege github_app), not only OAuth-authorized. */
-  installable?: boolean;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
+};
 
 export interface RegisterForgeOAuthAppInput {
   provider: ForgeProvider;

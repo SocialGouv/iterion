@@ -3,28 +3,15 @@
 // (BYOK LLM provider keys).
 
 import { FeatureUnavailableError, guard404 } from "./client";
+import type { components } from "./schema";
 import { apiDelete, apiGet, apiPost } from "./typed";
 
 export { FeatureUnavailableError };
 
-export interface PersonalAccessToken {
-  id: string;
-  user_id: string;
-  name: string;
-  token_last4: string;
-  fingerprint?: string;
-  team_id?: string;
-  created_at: string;
-  expires_at?: string;
-  last_used_at?: string;
-  revoked_at?: string;
-}
-
-export interface CreatePATInput {
-  name: string;
-  team_id?: string;
-  expires_in_days?: number;
-}
+// These ARE the spec's schemas (generated from pkg/pat + the handlers), so the
+// responses below need no cast and can't drift from the server.
+export type PersonalAccessToken = components["schemas"]["Token"];
+export type CreatePATInput = components["schemas"]["createPATReq"];
 
 export interface CreatePATResponse {
   pat: PersonalAccessToken;
@@ -35,13 +22,13 @@ export interface CreatePATResponse {
 export async function listMyTokens(): Promise<PersonalAccessToken[]> {
   return guard404("pats", async () => {
     const r = await apiGet("/api/me/tokens");
-    return (r.tokens ?? []) as PersonalAccessToken[];
+    return r.tokens ?? [];
   });
 }
 
 export function createMyToken(input: CreatePATInput): Promise<CreatePATResponse> {
   // Body type-checked against the spec's createPATReq.
-  return guard404("pats", async () => (await apiPost("/api/me/tokens", { body: input })) as CreatePATResponse);
+  return guard404("pats", () => apiPost("/api/me/tokens", { body: input }));
 }
 
 export async function revokeMyToken(tokenID: string): Promise<void> {

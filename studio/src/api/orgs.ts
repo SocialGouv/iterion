@@ -3,24 +3,14 @@
 // for the internal Team/tenant.
 
 import { guard404 } from "./client";
+import type { components } from "./schema";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./typed";
 
-export interface OrgView {
-  id: string;
-  name: string;
-  slug: string;
-  status: string; // active | suspended | read_only
-  personal?: boolean;
-  // Org-level monthly budget (0/omitted = platform default). Concurrency
-  // and launch-rate caps are team-level (managed per team), not here.
-  monthly_run_quota?: number;
-  memory_quota_bytes?: number;
-  monthly_cost_cap_usd?: number;
-  suspend_reason?: string;
-  created_at?: string;
-  // Set when status === "pending_deletion": when the nightly sweeper may purge.
-  purge_after?: string;
-}
+// OrgView IS the spec's orgView schema (generated from the Go orgView struct) —
+// single source of truth, so the response types below need no cast and can't
+// drift from the server. status is "active | suspended | read_only |
+// pending_deletion"; purge_after is set only in the pending state.
+export type OrgView = components["schemas"]["orgView"];
 
 // Backwards-compatible: the full-shape usage view lives in api/usage.ts
 // (OrgUsage there). Keeping the slim alias here so existing call-sites
@@ -54,7 +44,7 @@ export async function listOrgs(): Promise<OrgView[]> {
   // Typed against the OpenAPI spec (apiGet narrows path + response from
   // schema.ts); guard404 still maps the local-mode 404 to FeatureUnavailable.
   const res = await guard404("admin", () => apiGet("/api/admin/orgs"));
-  return (res.orgs ?? []) as OrgView[];
+  return res.orgs ?? [];
 }
 
 export async function createOrg(input: {
@@ -63,7 +53,7 @@ export async function createOrg(input: {
   owner_email?: string;
 }): Promise<OrgView> {
   // Body is type-checked against the spec's createOrgReq.
-  return (await apiPost("/api/admin/orgs", { body: input })) as OrgView;
+  return apiPost("/api/admin/orgs", { body: input });
 }
 
 export async function getOrgUsage(id: string): Promise<OrgUsage> {
@@ -75,12 +65,12 @@ export async function getOrgUsage(id: string): Promise<OrgUsage> {
 // Blocked immediately; refuses the caller's active org (409). Returns the org
 // in its new pending state.
 export async function deleteOrg(id: string): Promise<OrgView> {
-  return (await apiDelete("/api/admin/orgs/{id}", { params: { id } })) as OrgView;
+  return apiDelete("/api/admin/orgs/{id}", { params: { id } });
 }
 
 // Cancel a pending org deletion within the grace window (super-admin).
 export async function restoreOrg(id: string): Promise<OrgView> {
-  return (await apiPost("/api/admin/orgs/{id}/restore", { params: { id } })) as OrgView;
+  return apiPost("/api/admin/orgs/{id}/restore", { params: { id } });
 }
 
 export async function updateOrg(
@@ -94,15 +84,15 @@ export async function updateOrg(
   },
 ): Promise<OrgView> {
   // Path-param + body type-checked against the spec (updateOrgReq).
-  return (await apiPatch("/api/admin/orgs/{id}", { params: { id }, body: patch })) as OrgView;
+  return apiPatch("/api/admin/orgs/{id}", { params: { id }, body: patch });
 }
 
 export async function setOrgStatus(id: string, status: string, reason?: string): Promise<OrgView> {
   // Body type-checked against the spec's setOrgStatusReq.
-  return (await apiPost("/api/admin/orgs/{id}/status", {
+  return apiPost("/api/admin/orgs/{id}/status", {
     params: { id },
     body: { status, reason },
-  })) as OrgView;
+  });
 }
 
 const GiB = 1 << 30;
