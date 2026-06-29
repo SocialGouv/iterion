@@ -51,6 +51,11 @@ func TestBuildAppManifest(t *testing.T) {
 	if len(m.CallbackURLs) != 1 || m.CallbackURLs[0] != "https://it/api/forge/oauth/callback" {
 		t.Fatalf("callback_urls = %v, want [https://it/api/forge/oauth/callback]", m.CallbackURLs)
 	}
+	// setup_url makes GitHub redirect after install so the github_app connection
+	// is created (without it GitHub stays put and iterion never sees the install).
+	if m.SetupURL != "https://it/api/forge/github/app/callback" {
+		t.Fatalf("setup_url = %q, want https://it/api/forge/github/app/callback", m.SetupURL)
+	}
 	if m.DefaultPermissions["administration"] != "write" {
 		t.Fatalf("missing administration perm: %+v", m.DefaultPermissions)
 	}

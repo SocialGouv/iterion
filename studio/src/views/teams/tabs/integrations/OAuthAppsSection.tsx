@@ -74,8 +74,13 @@ export function OAuthAppsSection({
         mode: "app",
         next: window.location.pathname + window.location.search,
       });
-      if (res.install_url) window.location.href = res.install_url;
-      else onError("no install URL returned for this app");
+      // Open install in a NEW tab: after picking repos GitHub redirects to the
+      // App's setup_url (which creates the github_app connection), so the new
+      // tab lands back on Integrations while this tab stays put.
+      if (res.install_url) {
+        const w = window.open(res.install_url, "_blank");
+        if (!w) window.location.href = res.install_url; // popup blocked → same tab
+      } else onError("no install URL returned for this app");
     } catch (e) {
       onError((e as Error).message);
     }

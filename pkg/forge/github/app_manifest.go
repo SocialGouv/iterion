@@ -23,7 +23,13 @@ type AppManifest struct {
 	// with GitHub's "This GitHub App must be configured with a callback URL" —
 	// RedirectURL above only covers the one-shot manifest-conversion redirect,
 	// not the recurring user-to-server OAuth the connect flow uses.
-	CallbackURLs       []string          `json:"callback_urls"`
+	CallbackURLs []string `json:"callback_urls"`
+	// SetupURL is where GitHub redirects AFTER the user installs the App on
+	// repos — without it GitHub stays put and iterion never sees the
+	// installation, so the github_app connection is never created. It points at
+	// the install callback, which the install flow's state flows through to.
+	SetupURL           string            `json:"setup_url"`
+	SetupOnUpdate      bool              `json:"setup_on_update"`
 	Public             bool              `json:"public"`
 	DefaultEvents      []string          `json:"default_events"`
 	DefaultPermissions map[string]string `json:"default_permissions"`
@@ -41,7 +47,11 @@ func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 		RedirectURL: redirectURL,
 		// The connect flow authorizes the user against this App at
 		// {home}/api/forge/oauth/callback (see GET /api/forge/oauth/callback).
-		CallbackURLs:  []string{homeURL + "/api/forge/oauth/callback"},
+		CallbackURLs: []string{homeURL + "/api/forge/oauth/callback"},
+		// After install, GitHub redirects here with installation_id (+ the
+		// install flow's state), so iterion creates the github_app connection.
+		SetupURL:      homeURL + "/api/forge/github/app/callback",
+		SetupOnUpdate: true,
 		Public:        false,
 		DefaultEvents: []string{},
 		DefaultPermissions: map[string]string{
