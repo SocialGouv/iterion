@@ -18,8 +18,15 @@ A manifest's `contributes:` block lists one or more typed extension points:
 |---------------|-----------------------------------------------------------|------------|
 | `rewriters`   | command-output compressors (the rtk generalization)       | the rewrite chain on all three shell surfaces (claude_code Bash hook, claw bash builtin, tool nodes) |
 | `mcp_servers` | MCP servers (e.g. a knowledge-graph explorer)             | the workflow MCP catalog — ambient, workflow-wide, like a project `.mcp.json` entry |
-| `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start (same collision policy as bundle skills) |
+| `skills`      | markdown skills                                           | mirrored into `<workspace>/.claude/skills/` at run start |
+| `commands`    | markdown slash commands                                  | mirrored into `<workspace>/.claude/commands/` (claude_code discovers via `--setting-sources project`) |
+| `agents`      | markdown subagents                                       | mirrored into `<workspace>/.claude/agents/` (claude_code discovers via `--setting-sources project`) |
 | `lifecycle`   | `index` / `refresh` shell commands                        | `iterion plugin run <name> index|refresh` (+ optional `auto_index`) |
+
+`skills` / `commands` / `agents` share one mirror mechanism + the bundle
+collision policy (copy / no-op / refresh / shadow) — a same-named
+bundle/workspace file shadows the plugin's. Each is a `[]string` of paths
+relative to the plugin root.
 
 A single plugin may contribute several kinds (repo-falcon ships `mcp_servers` +
 `lifecycle` + `skills`).
@@ -139,13 +146,13 @@ The `contributes:` design is deliberately open so iterion can grow to configure
 **every Claude Code plugin type** from the UI and the marketplace. Planned kinds
 map onto Claude Code's plugin model:
 
-| Claude plugin type | iterion kind (planned) | parity note |
-|--------------------|------------------------|-------------|
+| Claude plugin type | iterion kind | parity note |
+|--------------------|--------------|-------------|
 | skills             | `skills` ✅ shipped      | claude_code native lookup + claw `skill` tool both read `.claude/skills/` |
 | MCP servers        | `mcp_servers` ✅ shipped | both backends consume the MCP catalog |
-| slash commands     | `commands` (planned)    | claude_code native; **claw needs a command surface** → improve `claw-code-go` |
-| subagents          | `agents` (planned)      | claude_code native `agent` tool; claw has the `agent` builtin — verify parity |
-| hooks              | `hooks` (planned)       | claude_code PreToolUse/PostToolUse/Stop; claw must expose equivalent hook points |
+| slash commands     | `commands` ✅ shipped (claude_code) | mirrored to `.claude/commands/`; claude_code discovers via `--setting-sources project`. claw reads commands only from CLAUDE.md today → a `.claude/commands/` loader is staged in `.works/claw-code-go` (`internal/commands/`), lands on the next claw release + `go.mod` bump |
+| subagents          | `agents` ✅ shipped (claude_code) | mirrored to `.claude/agents/`; claude_code discovers via `--setting-sources project`. claw has the `agent` tool + SubagentRunner but no named-agent file loader → claw-side follow-on |
+| hooks              | `hooks` (planned)       | claude_code reads `.claude/settings.json` hooks via `--setting-sources project` (iterion would merge plugin hooks there); claw has shell + Go hook runners but no settings discovery → claw-side follow-on |
 
 The principle: where claude_code has a native surface and claw does not (or they
 diverge), the gap is closed in **`.works/claw-code-go`** (the vendored claw

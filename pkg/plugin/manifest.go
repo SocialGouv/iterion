@@ -55,11 +55,18 @@ type Manifest struct {
 	Contributes Contributes `yaml:"contributes"`
 }
 
-// Contributes is the set of typed contribution points (v1).
+// Contributes is the set of typed contribution points.
+//
+// Skills, Commands and Agents are markdown files mirrored into the workspace's
+// .claude/<skills|commands|agents>/ directory at run start (claude_code
+// discovers them via --setting-sources project; the claw backend reads the
+// same dirs). They share one mirror mechanism and one collision policy.
 type Contributes struct {
 	Rewriters  []RewriterSpec  `yaml:"rewriters"`
 	MCPServers []MCPServerSpec `yaml:"mcp_servers"`
 	Skills     []string        `yaml:"skills"`
+	Commands   []string        `yaml:"commands"`
+	Agents     []string        `yaml:"agents"`
 	Lifecycle  *LifecycleSpec  `yaml:"lifecycle"`
 }
 
@@ -163,7 +170,8 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("plugin %q: schema_version %d newer than supported %d (upgrade iterion)", m.Name, m.SchemaVersion, SchemaVersion)
 	}
 	c := m.Contributes
-	if len(c.Rewriters) == 0 && len(c.MCPServers) == 0 && len(c.Skills) == 0 && c.Lifecycle == nil {
+	if len(c.Rewriters) == 0 && len(c.MCPServers) == 0 && len(c.Skills) == 0 &&
+		len(c.Commands) == 0 && len(c.Agents) == 0 && c.Lifecycle == nil {
 		return fmt.Errorf("plugin %q: contributes nothing", m.Name)
 	}
 	for i := range c.Rewriters {

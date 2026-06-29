@@ -814,10 +814,10 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		e.markFailedBestEffort(ctx, runID, "bundle skills", err)
 		return fmt.Errorf("runtime: bundle skills: %w", err)
 	}
-	// Mirror skills from enabled plugins (e.g. graphify / repo-falcon)
-	// after the bundle skills so a bundle/workspace skill of the same name
+	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
+	// after the bundle skills so a same-named bundle/workspace file
 	// wins on collision. Best-effort: a plugin must not fail the run.
-	if err := mirrorPluginSkills(e.workDir, e.logger); err != nil && e.logger != nil {
+	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin skills: %v", err)
 	}
 	e.applyPresetFocus()

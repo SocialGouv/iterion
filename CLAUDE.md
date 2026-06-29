@@ -239,7 +239,9 @@ clause reinforces the asymptote, it does not gate it.
 
 Iterion has a **plugin ecosystem**: declarative, out-of-process packages
 (`plugin.yaml`) with typed `contributes:` kinds — `rewriters` (command-output
-compressors), `mcp_servers` (e.g. knowledge-graph explorers), `skills`, and
+compressors), `mcp_servers` (e.g. knowledge-graph explorers), `skills` /
+`commands` / `agents` (markdown mirrored into `.claude/{skills,commands,agents}/`,
+discovered by claude_code via `--setting-sources project`), and
 `lifecycle` (index/refresh). Builtins are embedded
 ([pkg/plugin/builtin/](pkg/plugin/builtin/)); `rtk` ships **enabled**,
 `graphify` + `repo-falcon` ship **disabled**. Installed plugins live under

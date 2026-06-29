@@ -344,7 +344,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	if err := mirrorPluginSkills(e.workDir, e.logger); err != nil && e.logger != nil {
+	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin skills (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
@@ -470,7 +470,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	if err := mirrorPluginSkills(e.workDir, e.logger); err != nil && e.logger != nil {
+	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin skills (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a

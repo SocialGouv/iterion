@@ -51,17 +51,50 @@ type SkillFile struct {
 	Content []byte
 }
 
-// SkillFiles reads the plugin's contributed skill files.
-func (p *Plugin) SkillFiles() ([]SkillFile, error) {
+// MirrorKind names a markdown contribution kind mirrored into a workspace
+// .claude/<dir>/ directory.
+type MirrorKind struct {
+	Name string // "skill" | "command" | "agent"
+	Dir  string // ".claude/<dir>" leaf: "skills" | "commands" | "agents"
+}
+
+// MirrorKinds is the set of markdown contribution kinds, each mirrored into its
+// own .claude/ subdir with the shared collision policy.
+var MirrorKinds = []MirrorKind{
+	{Name: "skill", Dir: "skills"},
+	{Name: "command", Dir: "commands"},
+	{Name: "agent", Dir: "agents"},
+}
+
+// contribPaths returns the relative paths a plugin contributes for a kind.
+func (p *Plugin) contribPaths(kind MirrorKind) []string {
+	switch kind.Name {
+	case "skill":
+		return p.Manifest.Contributes.Skills
+	case "command":
+		return p.Manifest.Contributes.Commands
+	case "agent":
+		return p.Manifest.Contributes.Agents
+	}
+	return nil
+}
+
+// MirrorFiles reads the plugin's contributed files for a markdown kind.
+func (p *Plugin) MirrorFiles(kind MirrorKind) ([]SkillFile, error) {
 	var out []SkillFile
-	for _, rel := range p.Manifest.Contributes.Skills {
+	for _, rel := range p.contribPaths(kind) {
 		data, err := fs.ReadFile(p.fsys, filepath.ToSlash(rel))
 		if err != nil {
-			return nil, fmt.Errorf("plugin %q: read skill %q: %w", p.Name(), rel, err)
+			return nil, fmt.Errorf("plugin %q: read %s %q: %w", p.Name(), kind.Name, rel, err)
 		}
 		out = append(out, SkillFile{Name: filepath.Base(rel), Content: data})
 	}
 	return out, nil
+}
+
+// SkillFiles reads the plugin's contributed skill files (back-compat shorthand).
+func (p *Plugin) SkillFiles() ([]SkillFile, error) {
+	return p.MirrorFiles(MirrorKind{Name: "skill", Dir: "skills"})
 }
 
 // Registry is the loaded set of plugins (builtins + installed) with resolved
@@ -298,6 +331,12 @@ func (m Manifest) Kinds() []string {
 	}
 	if len(m.Contributes.Skills) > 0 {
 		k = append(k, "skill")
+	}
+	if len(m.Contributes.Commands) > 0 {
+		k = append(k, "command")
+	}
+	if len(m.Contributes.Agents) > 0 {
+		k = append(k, "agent")
 	}
 	if m.Contributes.Lifecycle != nil {
 		k = append(k, "lifecycle")

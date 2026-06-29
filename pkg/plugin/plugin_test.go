@@ -24,6 +24,24 @@ contributes:
 	}
 }
 
+func TestParseManifestCommandsAndAgents(t *testing.T) {
+	m, err := ParseManifest([]byte(`
+name: toolkit
+contributes:
+  commands:
+    - commands/ship.md
+  agents:
+    - agents/reviewer.md
+`))
+	if err != nil {
+		t.Fatalf("commands/agents manifest rejected: %v", err)
+	}
+	kinds := m.Kinds()
+	if len(kinds) != 2 || kinds[0] != "command" || kinds[1] != "agent" {
+		t.Fatalf("Kinds = %v, want [command agent]", kinds)
+	}
+}
+
 func TestParseManifestRejects(t *testing.T) {
 	cases := map[string]string{
 		"no name":           "contributes:\n  skills: [a.md]\n",
