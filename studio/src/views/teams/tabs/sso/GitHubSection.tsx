@@ -52,8 +52,32 @@ export function GitHubSection({
     setGrants((g) => g.map((x, j) => (j === i ? { ...x, ...patch } : x)));
   const removeGrant = (i: number) => setGrants((g) => g.filter((_, j) => j !== i));
 
-  const save = () =>
-    run(async () => {
+  // The grant list IS the allow-list: saving an empty list just removes the
+  // GitHub gating (with a confirm), so deleting the last grant is transparent —
+  // no separate "delete allow-list" action and no "needs ≥1 grant" error.
+  const save = async () => {
+    const validGrants = grants.filter((g) => g.github_org.trim() !== "");
+    if (validGrants.length === 0) {
+      if (!row) return; // nothing persisted yet — nothing to save or remove
+      const ok = await confirm({
+        title: "Remove GitHub team gating?",
+        message:
+          "Saving with no grants removes the GitHub allow-list for this org. Members who joined via GitHub keep their access.",
+        confirmLabel: "Remove gating",
+        confirmVariant: "danger",
+      });
+      if (!ok) return;
+      await run(async () => {
+        try {
+          await deleteOrgSSOProvider(teamID, row.id);
+          onChange();
+        } catch (e) {
+          onError(errorMessage(e));
+        }
+      });
+      return;
+    }
+    await run(async () => {
       try {
         const input = {
           kind: "github" as const,
@@ -62,7 +86,7 @@ export function GitHubSection({
           // (auto_provision=false) gate is a tracked follow-up, so we don't yet
           // surface a control that wouldn't take effect.
           auto_provision: true,
-          grants: grants.filter((g) => g.github_org.trim() !== ""),
+          grants: validGrants,
         };
         if (row) await updateOrgSSOProvider(teamID, row.id, input);
         else await createOrgSSOProvider(teamID, input);
@@ -71,31 +95,11 @@ export function GitHubSection({
         onError(errorMessage(e));
       }
     });
-
-  const remove = async () => {
-    if (!row) return;
-    const ok = await confirm({
-      title: "Remove GitHub team gating?",
-      message:
-        "Delete the GitHub allow-list for this org? Members who joined via GitHub keep their access.",
-      confirmLabel: "Delete",
-      confirmVariant: "danger",
-    });
-    if (!ok) return;
-    await run(async () => {
-      try {
-        await deleteOrgSSOProvider(teamID, row.id);
-        onChange();
-      } catch (e) {
-        onError(errorMessage(e));
-      }
-    });
   };
 
-  // Grant edits (add / remove / role / enabled) stage locally until Save, so a
-  // removed row must be saved to persist. Surface that: dirty drives an
-  // "unsaved changes" banner + a Discard, and gates the Save button — otherwise
-  // a removed row silently looks gone (vanishes locally, reappears on refresh).
+  // Grant edits (add / remove / role / enabled) stage locally until Save. dirty
+  // drives an "unsaved changes" banner + Discard so a removed row doesn't
+  // silently look gone (it vanishes locally, reappears on refresh until saved).
   const norm = (gs: GitHubTeamGrant[], en: boolean) =>
     JSON.stringify({
       enabled: en,
@@ -215,12 +219,7 @@ export function GitHubSection({
           {dirty && (
             <InlineBanner tone="info" layout="inline">
               Unsaved changes — click Save to apply, or Discard to revert.
-            </InlineBanner>
-          )}
-          {grants.length === 0 && (
-            <InlineBanner tone="warning" layout="inline">
-              A GitHub allow-list needs at least one grant. Add one, or use “Delete allow-list”
-              below to remove GitHub gating entirely.
+              {row && validGrantCount === 0 && " Saving with no grants removes GitHub gating."}
             </InlineBanner>
           )}
           <div className="flex gap-2">
@@ -231,7 +230,7 @@ export function GitHubSection({
               variant="primary"
               size="sm"
               loading={busy}
-              disabled={busy || validGrantCount === 0}
+              disabled={busy || (!row && validGrantCount === 0)}
               onClick={() => void save()}
             >
               Save
@@ -239,11 +238,6 @@ export function GitHubSection({
             {dirty && (
               <Button variant="ghost" size="sm" disabled={busy} onClick={discard}>
                 Discard
-              </Button>
-            )}
-            {row && (
-              <Button variant="danger" size="sm" onClick={() => void remove()}>
-                Delete allow-list
               </Button>
             )}
           </div>
