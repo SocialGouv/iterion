@@ -82,11 +82,15 @@ is typically who authorized the connection.
 Prefer narrowing the *connection*, not the user:
 
 - **GitHub App** (`github_app`) — the bot acts as the App with exactly the
-  permissions in its manifest (e.g. `contents:read`, `pull_requests:write`),
-  scoped to the repos the App is installed on. The right answer for production:
-  bots get only what they need, and PRs are authored by a clearly-non-human
-  bot identity. (Requires registering a platform GitHub App — see
-  [forge-integrations.md](forge-integrations.md).)
+  permissions in its manifest (`contents:write`, `pull_requests:write`,
+  `administration:write` for repo webhooks, `metadata:read`), scoped to the
+  repos the App is installed on. The right answer for production: bots get only
+  what they need, and PRs are authored by a clearly-non-human bot identity.
+  **Self-service** (no platform App, no manual registration): Integrations →
+  "+ Register an OAuth app" → github → **"Create a GitHub App"** (iterion builds
+  the scoped App via manifest and captures its private key), then the **"Install"**
+  button on that app → install on the org/repos → a `github_app` connection. The
+  legacy platform App (`ITERION_FORGE_GITHUB_APP_*`) still works as a fallback.
 - **A dedicated service-account PAT** (`pat`) with a minimal scope, instead of a
   human org-admin's `oauth_app`.
 
