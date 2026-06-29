@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
+	"github.com/SocialGouv/iterion/pkg/sessionboard"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
@@ -253,6 +254,12 @@ type Service struct {
 	logger  *iterlog.Logger
 	broker  *EventBroker
 	manager *Manager
+
+	// sbStore persists per-run Session-board specs (the LLM curation
+	// layer's output). Nil when no on-disk store dir is available (cloud
+	// mode) — curation then stays disabled. The deterministic task-list
+	// board (Phase 1) is unaffected; it lives entirely in the studio.
+	sbStore sessionboard.Store
 
 	// alertSettings, when non-nil, requests construction of an alert
 	// Manager that observes the run event stream (via the file-event
@@ -535,6 +542,16 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	// buffer to attach.
 	if fs, ok := s.store.(*store.FilesystemRunStore); ok {
 		fs.SetLogPositionFn(s.logPositionForRun)
+	}
+
+	// Session-board curation needs an on-disk dir to persist specs
+	// (runs/<id>/sessionboard.json). Skipped in cloud mode (no storeDir).
+	if s.storeDir != "" {
+		if sb, err := sessionboard.NewFileStore(s.storeDir); err == nil {
+			s.sbStore = sb
+		} else {
+			s.logger.Warn("runview: session board store unavailable: %v", err)
+		}
 	}
 
 	// Build the daily spend-cap guard. The env default only applies when

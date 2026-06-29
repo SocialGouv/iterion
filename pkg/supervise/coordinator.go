@@ -154,7 +154,7 @@ func (c *Coordinator) run() {
 				return
 			}
 			c.ingest(evt)
-			if isTerminal(evt) {
+			if IsTerminal(evt) {
 				return
 			}
 			// Reconstruct state from history without acting on it — a
@@ -171,7 +171,7 @@ func (c *Coordinator) run() {
 				// and re-arm if the bot had declared itself done.
 				c.finished = false
 				c.evaluate(fmt.Sprintf("monitor matched: %s", RenderEvent(evt)), true)
-			} else if !c.finished && isTurnBoundary(evt) {
+			} else if !c.finished && IsTurnBoundary(evt) {
 				armDebounce()
 			}
 		case <-debounceC:

@@ -150,6 +150,11 @@ export interface ServerInfo {
   // the "Install GitHub App" mode when true — otherwise it dead-ends on a 400.
   // OAuth / PAT connect modes don't depend on it.
   forge_github_app_configured?: boolean;
+  // session_board_enabled is true when the LLM Session-board curation layer
+  // is on for this server (ITERION_SESSION_BOARD). The Tasks tab only
+  // fetches the curated widget spec when true; otherwise it shows the
+  // deterministic task-list board alone and never polls.
+  session_board_enabled?: boolean;
 }
 
 // CostCapStatus mirrors runtime.CapStatus (GET /api/v1/limits/cost).

@@ -196,9 +196,11 @@ func RenderEvent(evt *store.Event) string {
 	return b.String()
 }
 
-// isTurnBoundary reports whether an event marks a point where the
-// supervised agent yields control — a good moment to (re-)evaluate.
-func isTurnBoundary(evt *store.Event) bool {
+// IsTurnBoundary reports whether an event marks a point where a watched
+// agent yields control — a good moment to (re-)evaluate. Exported so the
+// session-board coordinator reuses the same classification instead of
+// duplicating it.
+func IsTurnBoundary(evt *store.Event) bool {
 	switch evt.Type {
 	case store.EventLLMStepFinished, store.EventNodeFinished, store.EventNodeStarted, store.EventRunPaused:
 		return true
@@ -207,9 +209,9 @@ func isTurnBoundary(evt *store.Event) bool {
 	}
 }
 
-// isTerminal reports whether an event signals the run has ended, so the
-// coordinator can self-close.
-func isTerminal(evt *store.Event) bool {
+// IsTerminal reports whether an event signals the run has ended, so a
+// coordinator can self-close. Exported alongside IsTurnBoundary.
+func IsTerminal(evt *store.Event) bool {
 	switch evt.Type {
 	case store.EventRunFinished, store.EventRunFailed, store.EventRunCancelled:
 		return true

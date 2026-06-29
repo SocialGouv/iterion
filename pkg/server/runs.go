@@ -67,6 +67,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("POST /api/runs/{id}/pause", s.handlePauseRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/fork", s.handleForkRun)
 	s.mux.HandleFunc("GET /api/runs/{id}/skills", s.handleListRunSkills)
+	s.mux.HandleFunc("GET /api/runs/{id}/session-board", s.handleGetSessionBoard)
 	s.mux.HandleFunc("GET /api/runs/{id}/queue-messages", s.handleListQueuedMessages)
 	s.mux.HandleFunc("POST /api/runs/{id}/queue-message", s.handleQueueMessage)
 	s.mux.HandleFunc("DELETE /api/runs/{id}/queue-message/{msgID}", s.handleCancelQueuedMessage)
@@ -931,6 +932,25 @@ func (s *Server) handleListRunSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSONFor(w, r, skills)
+}
+
+// handleGetSessionBoard returns the LLM-curated Session-board spec for a
+// run (the widgets shown beneath the task list on the Tasks tab). Returns
+// a zero-value spec (version 0, no widgets) when curation never ran for
+// this run — never a 404 — so the studio can render the deterministic
+// task board alone.
+func (s *Server) handleGetSessionBoard(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	spec, err := s.runs.SessionBoard(id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "load session board: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, spec)
 }
 
 func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request) {

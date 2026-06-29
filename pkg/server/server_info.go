@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/sessionboard"
 )
 
 // serverInfoResponse describes the running server to the SPA. Used by
@@ -66,6 +67,11 @@ type serverInfoResponse struct {
 	// dead-ends on a 400 ("the GitHub App is not configured on this server").
 	// OAuth / PAT connect modes don't depend on it.
 	ForgeGitHubAppConfigured bool `json:"forge_github_app_configured"`
+	// SessionBoardEnabled is true when the LLM Session-board curation layer
+	// is on for this server (ITERION_SESSION_BOARD). The run console's Tasks
+	// tab only fetches the curated widget spec when true — when off it
+	// renders the deterministic task-list board alone and never polls.
+	SessionBoardEnabled bool `json:"session_board_enabled"`
 }
 
 type serverLimitsBlock struct {
@@ -108,6 +114,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		MarketplaceEnabled:       s.marketplace != nil,
 		TriggersEnabled:          s.cfg.TriggerStore != nil,
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
+		SessionBoardEnabled:      sessionboard.Enabled(),
 	}
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.

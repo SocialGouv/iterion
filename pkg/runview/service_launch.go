@@ -393,6 +393,12 @@ func (s *Service) spawnRun(
 		stopSupervisors := s.startDeclaredSupervisors(ctx, runID, wf, runLogger)
 		defer stopSupervisors()
 
+		// Spawn the Session-board curation coordinator (opt-in via
+		// ITERION_SESSION_BOARD). No-op when disabled — the deterministic
+		// task-list board (Phase 1) runs in the studio regardless.
+		stopBoard := s.startSessionBoard(ctx, runID, runName, runLogger)
+		defer stopBoard()
+
 		bodyErr := body(ctx, eng)
 		s.logRunOutcome(runID, bodyErr)
 		// Fire the run-completion webhook (no-op unless the run carries a

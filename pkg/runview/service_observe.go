@@ -6,6 +6,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sessionboard"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/supervise"
 )
@@ -136,6 +137,51 @@ func (s *Service) startDeclaredSupervisors(ctx context.Context, runID string, wf
 			c.Close()
 		}
 	}
+}
+
+// Publish persists an updated Session-board spec for runID. It satisfies
+// the sessionboard.Emitter seam so a curation Coordinator can drive
+// *Service without importing it. The studio picks up the change by
+// refetching the spec as the run's event stream advances (board updates
+// are infrequent by design — the coordinator's cooldown floor).
+func (s *Service) Publish(_ context.Context, runID string, spec sessionboard.Spec) error {
+	if s.sbStore == nil {
+		return errors.New("runview: session board store not configured")
+	}
+	return s.sbStore.Save(runID, spec)
+}
+
+// SessionBoard returns the persisted Session-board spec for runID, or a
+// zero-value spec when none exists / the store is unavailable. Consumed by
+// the REST handler and to seed a resuming coordinator.
+func (s *Service) SessionBoard(runID string) (sessionboard.Spec, error) {
+	if s.sbStore == nil {
+		return sessionboard.Spec{}, nil
+	}
+	return s.sbStore.Load(runID)
+}
+
+// startSessionBoard spawns a sessionboard.Coordinator for the run when the
+// LLM curation layer is enabled (ITERION_SESSION_BOARD) and a spec store
+// is available. Returns a stop func the caller defers. A no-op otherwise —
+// the deterministic task-list board (Phase 1) is always on in the studio
+// and needs nothing here.
+func (s *Service) startSessionBoard(ctx context.Context, runID, botID string, logger *iterlog.Logger) (stop func()) {
+	if s.sbStore == nil || !sessionboard.Enabled() {
+		return func() {}
+	}
+	initial, _ := s.sbStore.Load(runID)
+	cfg := sessionboard.Config{
+		BotID:   botID,
+		Model:   sessionboard.ModelFromEnv(),
+		Initial: initial,
+	}
+	coord := sessionboard.New(s, s, runID, cfg, nil, logger)
+	if coord == nil {
+		return func() {}
+	}
+	coord.Start(ctx)
+	return coord.Close
 }
 
 // resolvePromptBody returns the raw text of a workflow prompt by name,

@@ -3,7 +3,27 @@
 // streaming (the only direct-fetch endpoint in the runs barrel).
 
 import { BASE_URL, extractErrorMessage, request, withStoreParam } from "./client";
-import type { RunEvent, RunSnapshot, ToolBlobChunk } from "./types";
+import type {
+  RunEvent,
+  RunSnapshot,
+  SessionBoardSpec,
+  ToolBlobChunk,
+} from "./types";
+
+// getSessionBoard fetches the LLM-curated Session-board spec for a run
+// (the widgets shown beneath the task list on the Tasks tab). The server
+// returns a zero-value spec (version 0, no widgets) when curation never
+// ran — never a 404 — so the caller renders the task board alone.
+export async function getSessionBoard(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<SessionBoardSpec> {
+  const qs = withStoreParam(new URLSearchParams()).toString();
+  return request(
+    `/runs/${encodeURIComponent(runId)}/session-board${qs ? `?${qs}` : ""}`,
+    { signal: opts?.signal },
+  );
+}
 
 export async function getRun(
   runId: string,

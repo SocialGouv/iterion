@@ -138,7 +138,7 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 	}
 
 	opts := model.GenerationOptions{
-		Model:          providerlessModel(e.modelSpec),
+		Model:          model.ProviderlessModelID(e.modelSpec),
 		System:         buildSystemPrompt(in.Spec),
 		Messages:       []api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: buildUserPrompt(in)}}}},
 		ExplicitSchema: json.RawMessage(decisionSchema),
@@ -155,16 +155,6 @@ func (e *LLMEvaluator) Evaluate(ctx context.Context, in EvalInput) (*Decision, E
 	}
 	d := res.Object
 	return &d, usage, nil
-}
-
-// providerlessModel strips the leading "<provider>/" off a claw model
-// spec; claw's GenerationOptions.Model wants the bare model ID while
-// Registry.Resolve wants the full spec (mirrors runview's helper).
-func providerlessModel(spec string) string {
-	if i := strings.Index(spec, "/"); i >= 0 && i+1 < len(spec) {
-		return spec[i+1:]
-	}
-	return spec
 }
 
 // buildSystemPrompt frames the supervisor's role and grafts the

@@ -1,6 +1,9 @@
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import { getSessionBoard } from "@/api/runs";
+import type { SessionBoardSpec } from "@/api/runs/types";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { Badge, EmptyState, LiveDot } from "@/components/ui";
 import { humanizeKey } from "@/lib/humanizeKey";
 import {
@@ -10,6 +13,10 @@ import {
 } from "@/store/run";
 import { TodoItems } from "@/components/Runs/todoChecklist";
 import { STATUS_GLYPH, countByStatus } from "@/components/Runs/todoStatus";
+
+// Lazy so Recharts (heavy) is only fetched when a run actually has curated
+// widgets — most runs never opt into the curation layer.
+const SessionWidgets = lazy(() => import("./widgets"));
 
 // SessionBoardTab is the friendly, persistent per-run "Tasks" view. It is
 // deliberately NOT a re-skin of the technical run view (events / logs /
@@ -24,13 +31,18 @@ import { STATUS_GLYPH, countByStatus } from "@/components/Runs/todoStatus";
 export function SessionBoardTab({ runId }: { runId: string }) {
   const loadHistory = useRunStore((s) => s.loadEventHistoryIfMissing);
   const timeline = useRunStore(useShallow((s) => selectTodoTimeline(s)));
+  // last_seq advances on every run event; we use it as the refetch trigger
+  // for the curated widget spec (which the LLM coordinator updates out of
+  // band, infrequently).
+  const lastSeq = useRunStore((s) => s.snapshot?.last_seq ?? -1);
+  const widgets = useSessionBoardWidgets(runId, lastSeq);
 
   useEffect(() => {
     if (!runId) return;
     void loadHistory(runId).catch(() => {});
   }, [runId, loadHistory]);
 
-  if (timeline.length === 0) {
+  if (timeline.length === 0 && widgets.length === 0) {
     return (
       <div className="h-full min-h-0">
         <EmptyState
@@ -42,17 +54,21 @@ export function SessionBoardTab({ runId }: { runId: string }) {
     );
   }
 
-  const currentIdx = pickCurrentIndex(timeline);
-  const current = timeline[currentIdx]!;
+  const hasTasks = timeline.length > 0;
+  const currentIdx = hasTasks ? pickCurrentIndex(timeline) : -1;
   // Earlier entries, most-recent first (closest to "Now" on top).
-  const earlier = timeline.filter((_, i) => i !== currentIdx).reverse();
+  const earlier = hasTasks
+    ? timeline.filter((_, i) => i !== currentIdx).reverse()
+    : [];
 
   return (
     <div className="h-full min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-4">
-      <section className="flex flex-col gap-2">
-        <SectionHeading>Now</SectionHeading>
-        <CurrentCard entry={current} />
-      </section>
+      {hasTasks && (
+        <section className="flex flex-col gap-2">
+          <SectionHeading>Now</SectionHeading>
+          <CurrentCard entry={timeline[currentIdx]!} />
+        </section>
+      )}
 
       {earlier.length > 0 && (
         <section className="flex flex-col gap-2">
@@ -64,8 +80,49 @@ export function SessionBoardTab({ runId }: { runId: string }) {
           </div>
         </section>
       )}
+
+      {widgets.length > 0 && (
+        <Suspense fallback={null}>
+          <SessionWidgets widgets={widgets} />
+        </Suspense>
+      )}
     </div>
   );
+}
+
+// useSessionBoardWidgets fetches the LLM-curated widget spec for the run
+// and refetches (debounced) as the run advances. Returns [] until/unless
+// curation has produced widgets — the deterministic task board above does
+// not depend on it. Gated on server_info.session_board_enabled: when the
+// curation layer is off (the default), this never fetches, so most runs
+// pay nothing. When on, it fetches immediately on run change and debounces
+// refetches as the event stream advances.
+function useSessionBoardWidgets(runId: string, lastSeq: number) {
+  const enabled = useServerInfoStore(
+    (s) => s.info?.session_board_enabled ?? false,
+  );
+  const [spec, setSpec] = useState<SessionBoardSpec | null>(null);
+  const fetchedRun = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!runId || !enabled) return;
+    // Immediate on the first fetch for this run (a finished run has a
+    // stable seq and would otherwise wait out the debounce); debounced on
+    // subsequent seq advances so a live run doesn't refetch every event.
+    const immediate = fetchedRun.current !== runId;
+    fetchedRun.current = runId;
+    const t = window.setTimeout(
+      () => {
+        getSessionBoard(runId)
+          .then(setSpec)
+          .catch(() => {});
+      },
+      immediate ? 0 : 1500,
+    );
+    return () => window.clearTimeout(t);
+  }, [runId, lastSeq, enabled]);
+
+  return spec?.widgets ?? [];
 }
 
 function SectionHeading({ children }: { children: React.ReactNode }) {

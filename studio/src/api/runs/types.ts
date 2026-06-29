@@ -112,6 +112,31 @@ export type MergeStatus =
   // operator resolves every file + finalizes or aborts.
   | "conflicted";
 
+// Mirror of sessionboard.Widget / sessionboard.Spec (Go). The LLM
+// curation layer (Phase 2) emits these; the studio renders one card per
+// widget on the Tasks tab beneath the deterministic task list. `kind`
+// selects the renderer; `props` is the kind-specific payload (the studio
+// ignores unknown kinds for forward-compat).
+export type SessionBoardWidgetKind =
+  | "note"
+  | "metric"
+  | "checklist"
+  | "progress"
+  | "bar_chart";
+
+export interface SessionBoardWidget {
+  id: string;
+  kind: SessionBoardWidgetKind | string;
+  title?: string;
+  props?: Record<string, unknown>;
+}
+
+export interface SessionBoardSpec {
+  version: number;
+  widgets?: SessionBoardWidget[];
+  updated_seq?: number;
+}
+
 // Mirror of runview.ExecutionState.
 export interface ExecutionState {
   execution_id: string;
