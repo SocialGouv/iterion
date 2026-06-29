@@ -37,6 +37,7 @@ export function RegisterOAuthAppForm({
   const [clientSecret, setClientSecret] = useState("");
   const [githubOrg, setGithubOrg] = useState("");
   const [myOrgs, setMyOrgs] = useState<string[]>([]);
+  const [orgIsCustom, setOrgIsCustom] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Load the user's GitHub orgs once the github provider is selected, to offer a
@@ -175,47 +176,45 @@ export function RegisterOAuthAppForm({
             <label htmlFor="gh-manifest-org" className="block text-xs text-fg-subtle">
               Create under
             </label>
-            {myOrgs.length > 0 ? (
-              <div className="flex items-center gap-2">
-                <Select
-                  size="md"
-                  id="gh-manifest-org"
-                  value={githubOrg}
-                  onChange={(e) => setGithubOrg(e.target.value)}
-                >
-                  <option value="">Your personal account</option>
-                  {myOrgs.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </Select>
-                <button
-                  type="button"
-                  className="text-caption text-accent hover:underline shrink-0"
-                  onClick={() => void pickOrgs()}
-                >
-                  Refresh from GitHub
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Input
-                  size="md"
-                  id="gh-manifest-org"
-                  placeholder="GitHub org (e.g. SocialGouv) — blank = personal account"
-                  value={githubOrg}
-                  onChange={(e) => setGithubOrg(e.target.value)}
-                  autoComplete="off"
-                />
-                <button
-                  type="button"
-                  className="text-caption text-accent hover:underline shrink-0"
-                  onClick={() => void pickOrgs()}
-                >
-                  Pick from my GitHub orgs
-                </button>
-              </div>
+            <div className="flex items-center gap-2">
+              <Select
+                size="md"
+                id="gh-manifest-org"
+                value={orgIsCustom ? "__other__" : githubOrg}
+                onChange={(e) => {
+                  if (e.target.value === "__other__") {
+                    setOrgIsCustom(true);
+                    setGithubOrg("");
+                  } else {
+                    setOrgIsCustom(false);
+                    setGithubOrg(e.target.value);
+                  }
+                }}
+              >
+                <option value="">Your personal account</option>
+                {myOrgs.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+                <option value="__other__">Other organization…</option>
+              </Select>
+              <button
+                type="button"
+                className="text-caption text-accent hover:underline shrink-0"
+                onClick={() => void pickOrgs()}
+              >
+                {myOrgs.length > 0 ? "Refresh from GitHub" : "List my GitHub orgs"}
+              </button>
+            </div>
+            {orgIsCustom && (
+              <Input
+                size="md"
+                placeholder="Org login (e.g. SocialGouv)"
+                value={githubOrg}
+                onChange={(e) => setGithubOrg(e.target.value)}
+                autoComplete="off"
+              />
             )}
           </div>
           <Button
@@ -227,10 +226,11 @@ export function RegisterOAuthAppForm({
             {busy ? "Opening GitHub…" : "Create a GitHub App"}
           </Button>
           <p className="text-caption text-fg-muted">
-            Recommended for GitHub — one click sends you to GitHub to confirm, then iterion stores
-            the app's credentials automatically. Set the <strong>GitHub org</strong> above so the App
-            is created under it and can be installed org-wide (blank creates it on your personal
-            account — then it only installs there). For GitHub Enterprise, set the base URL below first.
+            Creating under an org makes the App installable org-wide (personal account = installable
+            only there). Only orgs that allow iterion's OAuth app appear in the list — GitHub hides
+            orgs with third-party-app restrictions; for one of those pick “Other organization…” and
+            type its login (you can still create the App there with the right perms). GitHub
+            Enterprise: set the base URL below first.
           </p>
         </div>
       )}
