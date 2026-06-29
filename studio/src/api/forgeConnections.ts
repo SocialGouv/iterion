@@ -237,6 +237,30 @@ export async function syncForgeIntegration(
   });
 }
 
+// ForgeHook is a webhook registered on the forge side for an integration's
+// repo. Mirrors the {id,url,events,active} shape the server normalizes from
+// each provider's hook API — used to audit that the iterion webhook is still
+// live on the forge.
+export interface ForgeHook {
+  id: string;
+  url: string;
+  events: string[];
+  active: boolean;
+}
+
+// listForgeIntegrationHooks reads the forge-side registered hooks for an
+// integration's repo, so the operator can audit them against what iterion
+// provisioned.
+export async function listForgeIntegrationHooks(
+  teamID: string,
+  integrationID: string,
+): Promise<ForgeHook[]> {
+  const r = await request<{ hooks: ForgeHook[] }>(
+    `/teams/${teamID}/forge/integrations/${integrationID}/hooks`,
+  );
+  return r.hooks ?? [];
+}
+
 export async function listForgeOAuthApps(teamID: string): Promise<ForgeOAuthApp[]> {
   const r = await guard404("forge_integrations", () =>
     request<{ apps: ForgeOAuthApp[] }>(`/teams/${teamID}/forge/oauth-apps`),

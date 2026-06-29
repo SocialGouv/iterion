@@ -244,3 +244,96 @@ func (c *AdminClient) ListCIHistory(ctx context.Context, repo, ref string, limit
 	}
 	return out, nil
 }
+
+// CreatePull opens a pull request. head/base are branch names. Gitea has no
+// reliable draft-on-create flag, so NewPull.Draft is not honoured here (open
+// then mark via title if needed).
+func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewPull) (forge.PullRef, error) {
+	body := map[string]any{
+		"title": in.Title,
+		"head":  in.SourceBranch,
+		"base":  in.TargetBranch,
+	}
+	if in.Body != "" {
+		body["body"] = in.Body
+	}
+	var p forgejoPull
+	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/pulls", body, &p)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("create pull", code)
+	}
+	return p.toRef(), nil
+}
+
+// UpdatePull applies a partial update (title/body/base/state) via PATCH.
+func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, patch forge.PullPatch) (forge.PullRef, error) {
+	body := map[string]any{}
+	if patch.Title != nil {
+		body["title"] = *patch.Title
+	}
+	if patch.Body != nil {
+		body["body"] = *patch.Body
+	}
+	if patch.TargetBranch != nil {
+		body["base"] = *patch.TargetBranch
+	}
+	if patch.State != nil {
+		body["state"] = *patch.State
+	}
+	var p forgejoPull
+	code, err := c.do(ctx, http.MethodPatch, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), body, &p)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("update pull", code)
+	}
+	return p.toRef(), nil
+}
+
+// mergeDo maps the forge merge method onto Gitea's `Do` field
+// ("merge"|"squash"|"rebase"); empty → "merge".
+func mergeDo(m forge.MergeMethod) string {
+	switch m {
+	case forge.MergeSquash:
+		return "squash"
+	case forge.MergeRebase:
+		return "rebase"
+	default:
+		return "merge"
+	}
+}
+
+// MergePull merges a PR via POST /pulls/{index}/merge (Gitea returns an empty
+// 200), then re-fetches it so the returned ref reflects the merged state.
+// delete_branch_after_merge handles branch deletion natively.
+func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, opts forge.MergeOptions) (forge.PullRef, error) {
+	body := map[string]any{"Do": mergeDo(opts.Method)}
+	if opts.CommitTitle != "" {
+		body["MergeTitleField"] = opts.CommitTitle
+	}
+	if opts.CommitMessage != "" {
+		body["MergeMessageField"] = opts.CommitMessage
+	}
+	if opts.DeleteBranch {
+		body["delete_branch_after_merge"] = true
+	}
+	if opts.SHA != "" {
+		body["head_commit_id"] = opts.SHA
+	}
+	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/pulls/"+strconv.Itoa(number)+"/merge", body, nil)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("merge pull", code)
+	}
+	merged, err := c.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		return forge.PullRef{State: "merged", Number: number}, nil
+	}
+	return merged, nil
+}

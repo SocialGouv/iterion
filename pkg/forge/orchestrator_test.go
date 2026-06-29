@@ -71,6 +71,13 @@ func (f *fakeAdmin) DeleteHook(_ context.Context, repo, hookID string) error {
 	return nil
 }
 
+func (f *fakeAdmin) ListHooks(_ context.Context, repo string) ([]HookHandle, error) {
+	if h, ok := f.hooks[repo]; ok {
+		return []HookHandle{h}, nil
+	}
+	return nil, nil
+}
+
 // --- fixtures ---
 
 func testBotLookup(botID string) (*bundle.ForgeRequirements, error) {

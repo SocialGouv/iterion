@@ -57,6 +57,7 @@ type TrackerConfig struct {
 	Native  *NativeTrackerConfig  `yaml:"native,omitempty" json:"native,omitempty"`
 	GitHub  *GitHubTrackerConfig  `yaml:"github,omitempty" json:"github,omitempty"`
 	Forgejo *ForgejoTrackerConfig `yaml:"forgejo,omitempty" json:"forgejo,omitempty"`
+	GitLab  *GitLabTrackerConfig  `yaml:"gitlab,omitempty" json:"gitlab,omitempty"`
 }
 
 // TrackerKind is the typed discriminator for TrackerConfig.Kind. Using
@@ -68,6 +69,7 @@ const (
 	TrackerKindNative  TrackerKind = "native"
 	TrackerKindGitHub  TrackerKind = "github"
 	TrackerKindForgejo TrackerKind = "forgejo"
+	TrackerKindGitLab  TrackerKind = "gitlab"
 )
 
 // NativeTrackerConfig is intentionally empty in v1 — the native store
@@ -95,6 +97,17 @@ type GitHubTrackerConfig struct {
 
 // ForgejoTrackerConfig configures the forgejo (Gitea-compatible) adapter.
 type ForgejoTrackerConfig struct {
+	Host          string                   `yaml:"host" json:"host"`
+	Repo          string                   `yaml:"repo" json:"repo"`
+	Token         string                   `yaml:"token,omitempty" json:"token,omitempty"`
+	StateMapping  map[string]LabelSelector `yaml:"state_mapping,omitempty" json:"state_mapping,omitempty"`
+	ClaimedLabel  string                   `yaml:"claimed_label,omitempty" json:"claimed_label,omitempty"`
+	IncludeLabels []string                 `yaml:"include_labels,omitempty" json:"include_labels,omitempty"`
+	ExcludeLabels []string                 `yaml:"exclude_labels,omitempty" json:"exclude_labels,omitempty"`
+}
+
+// GitLabTrackerConfig configures the gitlab (v4 REST API) adapter.
+type GitLabTrackerConfig struct {
 	Host          string                   `yaml:"host" json:"host"`
 	Repo          string                   `yaml:"repo" json:"repo"`
 	Token         string                   `yaml:"token,omitempty" json:"token,omitempty"`
@@ -261,6 +274,7 @@ const (
 	DefaultStallTimeoutMS      = 600_000
 	DefaultGitHubClaimedLabel  = "iterion-claimed"
 	DefaultForgejoClaimedLabel = "iterion-claimed"
+	DefaultGitLabClaimedLabel  = "iterion-claimed"
 	// DefaultRunningState mirrors native.StateInProgress; duplicated here
 	// as a string literal to keep pkg/dispatcher/config.go free of the
 	// native package import (config.go is loaded before the native store
@@ -372,6 +386,9 @@ func (c *Config) applyDefaults() {
 	if c.Tracker.Kind == TrackerKindForgejo && c.Tracker.Forgejo != nil && c.Tracker.Forgejo.ClaimedLabel == "" {
 		c.Tracker.Forgejo.ClaimedLabel = DefaultForgejoClaimedLabel
 	}
+	if c.Tracker.Kind == TrackerKindGitLab && c.Tracker.GitLab != nil && c.Tracker.GitLab.ClaimedLabel == "" {
+		c.Tracker.GitLab.ClaimedLabel = DefaultGitLabClaimedLabel
+	}
 }
 
 // defaultOrNone applies the shared kanban-state convention used by
@@ -412,6 +429,9 @@ func (c *Config) applyEnvAndPaths() {
 	if c.Tracker.Forgejo != nil {
 		c.Tracker.Forgejo.Token = expandEnv(c.Tracker.Forgejo.Token)
 	}
+	if c.Tracker.GitLab != nil {
+		c.Tracker.GitLab.Token = expandEnv(c.Tracker.GitLab.Token)
+	}
 }
 
 // Validate checks fields are coherent. Workflow file existence is
@@ -437,7 +457,7 @@ func (c *Config) Validate() error {
 	}
 	switch c.Tracker.Kind {
 	case "":
-		return errors.New("config: tracker.kind is required (native | github | forgejo)")
+		return errors.New("config: tracker.kind is required (native | github | forgejo | gitlab)")
 	case TrackerKindNative:
 		// nothing to validate beyond presence
 	case TrackerKindGitHub:
@@ -457,8 +477,15 @@ func (c *Config) Validate() error {
 		if c.Tracker.Forgejo.Host == "" || c.Tracker.Forgejo.Repo == "" {
 			return errors.New("config: tracker.forgejo requires host and repo")
 		}
+	case TrackerKindGitLab:
+		if c.Tracker.GitLab == nil {
+			return errors.New("config: tracker.kind=gitlab requires tracker.gitlab block")
+		}
+		if c.Tracker.GitLab.Host == "" || c.Tracker.GitLab.Repo == "" {
+			return errors.New("config: tracker.gitlab requires host and repo")
+		}
 	default:
-		return fmt.Errorf("config: tracker.kind %q not supported (native | github | forgejo)", c.Tracker.Kind)
+		return fmt.Errorf("config: tracker.kind %q not supported (native | github | forgejo | gitlab)", c.Tracker.Kind)
 	}
 	if err := c.Hooks.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)

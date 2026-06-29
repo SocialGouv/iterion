@@ -290,6 +290,149 @@ func TestForgejoListCIHistory(t *testing.T) {
 	}
 }
 
+func TestForgejoCommentIssue_RoundTrip(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/repos/o/r/issues/7/comments") {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 88, "html_url": "https://fj/o/r/issues/7#issuecomment-88",
+			"body": body["body"], "user": map[string]any{"login": "bot"},
+		})
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.Client(), srv.URL, "x").CommentIssue(context.Background(), "o/r", 7, "ship it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["body"] != "ship it" {
+		t.Errorf("request body = %v", body)
+	}
+	if got.ID != "88" || got.Author != "bot" || got.Body != "ship it" {
+		t.Errorf("comment = %+v", got)
+	}
+	if got.URL != "https://fj/o/r/issues/7#issuecomment-88" {
+		t.Errorf("url = %q", got.URL)
+	}
+}
+
+func TestForgejoCreatePull_Mapping(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/repos/o/r/pulls") {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"number": 11, "title": body["title"], "state": "open", "html_url": "https://fj/o/r/pulls/11",
+			"head": map[string]any{"ref": body["head"], "sha": "s11"},
+			"base": map[string]any{"ref": body["base"]},
+		})
+	}))
+	defer srv.Close()
+
+	pr, err := New(srv.Client(), srv.URL, "x").CreatePull(context.Background(), "o/r", forge.NewPull{
+		Title: "feat: y", Body: "details", SourceBranch: "feature", TargetBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["head"] != "feature" || body["base"] != "main" {
+		t.Errorf("source/target mapping wrong: head=%v base=%v", body["head"], body["base"])
+	}
+	if body["title"] != "feat: y" || body["body"] != "details" {
+		t.Errorf("title/body = %v", body)
+	}
+	if pr.Number != 11 || pr.SourceBranch != "feature" || pr.TargetBranch != "main" {
+		t.Errorf("created pr = %+v", pr)
+	}
+}
+
+func TestForgejoUpdatePull_StateAndTarget(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/repos/o/r/pulls/4") {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"number": 4, "title": "t", "state": body["state"], "html_url": "u",
+			"base": map[string]any{"ref": body["base"]},
+		})
+	}))
+	defer srv.Close()
+
+	closed, target := "closed", "develop"
+	pr, err := New(srv.Client(), srv.URL, "x").UpdatePull(context.Background(), "o/r", 4, forge.PullPatch{State: &closed, TargetBranch: &target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["state"] != "closed" {
+		t.Errorf("state maps to %v want closed", body["state"])
+	}
+	if body["base"] != "develop" {
+		t.Errorf("TargetBranch maps to base=%v want develop", body["base"])
+	}
+	if _, present := body["title"]; present {
+		t.Errorf("nil patch field leaked: %v", body)
+	}
+	if pr.State != "closed" || pr.TargetBranch != "develop" {
+		t.Errorf("updated pr = %+v", pr)
+	}
+}
+
+func TestForgejoMergePull_DoAndDeleteBranch(t *testing.T) {
+	var mergeBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls/6/merge"):
+			_ = json.NewDecoder(r.Body).Decode(&mergeBody)
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/6"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"number": 6, "title": "t", "state": "closed", "merged": true,
+				"html_url": "https://fj/o/r/pulls/6",
+				"head":     map[string]any{"ref": "feature", "sha": "s"},
+				"base":     map[string]any{"ref": "main"},
+			})
+		default:
+			t.Errorf("unexpected %s %q", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	pr, err := New(srv.Client(), srv.URL, "x").MergePull(context.Background(), "o/r", 6, forge.MergeOptions{
+		Method: forge.MergeSquash, DeleteBranch: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mergeBody["Do"] != "squash" {
+		t.Errorf("Do = %v want squash", mergeBody["Do"])
+	}
+	if mergeBody["delete_branch_after_merge"] != true {
+		t.Errorf("delete_branch_after_merge = %v want true", mergeBody["delete_branch_after_merge"])
+	}
+	if pr.State != "merged" {
+		t.Errorf("post-merge state = %q want merged", pr.State)
+	}
+}
+
 func TestForgejoIssueErrorMapping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

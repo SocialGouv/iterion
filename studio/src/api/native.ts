@@ -235,6 +235,52 @@ export function listIssuePulls(id: string): Promise<PullRef[]> {
   );
 }
 
+// CreateIssuePullBody opens a PR/MR linking the card to a forge. A forge-linked
+// card reuses its connection + repo (omit connection_id/repo); an unlinked card
+// must supply both connection_id and repo ("owner/repo"). title/body default
+// server-side from the card when omitted.
+export interface CreateIssuePullBody {
+  connection_id?: string;
+  repo?: string;
+  title?: string;
+  body?: string;
+  source_branch: string;
+  target_branch: string;
+  draft?: boolean;
+}
+
+// createIssuePull opens a forge pull/merge request for the card and returns the
+// new PR ref.
+export function createIssuePull(id: string, body: CreateIssuePullBody): Promise<PullRef> {
+  return request(`/issues/${encodeURIComponent(id)}/pulls`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export type MergeMethod = "merge" | "squash" | "rebase";
+
+// MergeIssuePullBody controls how a linked PR is merged. All fields optional —
+// the forge applies its defaults when omitted.
+export interface MergeIssuePullBody {
+  method?: MergeMethod;
+  commit_title?: string;
+  commit_message?: string;
+  delete_branch?: boolean;
+}
+
+// mergeIssuePull merges a linked PR and returns the merged PR ref.
+export function mergeIssuePull(
+  id: string,
+  number: number,
+  body: MergeIssuePullBody = {},
+): Promise<PullRef> {
+  return request(`/issues/${encodeURIComponent(id)}/pulls/${number}/merge`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 // getIssuePullCI returns the aggregate CI status + recent run history for a
 // linked PR's head commit.
 export function getIssuePullCI(

@@ -3,9 +3,12 @@ import { Link } from "wouter";
 
 import { type BotEntryWithSchema } from "@/api/bots";
 import {
+  createIssuePull,
   getIssuePullCI,
   listIssuePulls,
+  mergeIssuePull,
   type CIRun,
+  type MergeMethod,
   type NativeBoard,
   type NativeIssue,
   type PullRef,
@@ -25,9 +28,11 @@ import { Tabs } from "@/components/ui/Tabs";
 import { TagInput } from "@/components/ui/TagInput";
 import VarFieldInput, { defaultStringFor } from "@/components/shared/VarFieldInput";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useConfirm, type ConfirmOptions } from "@/hooks/useConfirm";
 import { isVarMissing, RequiredPill } from "@/lib/varValidation";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { useUIStore } from "@/store/ui";
 
 import { BotArgsForm } from "./BotArgsForm";
 import { BotPicker } from "./BotPicker";
@@ -594,11 +599,20 @@ function LastRunSection({
 // (external.repo present) — so a plain native card shows nothing.
 function PullRequestsSection({ issue }: { issue: NativeIssue }) {
   const mode = useServerInfoStore((s) => s.info?.mode);
+  const addToast = useUIStore((s) => s.addToast);
   const [pulls, setPulls] = useState<PullRef[] | null>(null);
+  const [creating, setCreating] = useState(false);
   const loadAction = useAsyncAction();
+  const { confirm, dialog } = useConfirm();
 
   const forgeLinked = !!issue.external?.repo;
   const eligible = mode === "cloud" && forgeLinked;
+
+  const refresh = async () => {
+    await loadAction.run(async () => {
+      setPulls(await listIssuePulls(issue.id));
+    });
+  };
 
   useEffect(() => {
     if (!eligible) {
@@ -612,13 +626,25 @@ function PullRequestsSection({ issue }: { issue: NativeIssue }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue.id, eligible]);
 
-  // Hide entirely for cards that are neither forge-linked nor have PRs.
+  // Hide entirely for non-cloud / unlinked cards. A forge-linked card with no
+  // PRs still renders so the operator can open one.
   if (!eligible) return null;
-  if (!loadAction.busy && (pulls?.length ?? 0) === 0 && !loadAction.error) return null;
+
+  const pullList = pulls ?? [];
 
   return (
     <div className="rounded border border-border-default bg-surface-1 p-2 space-y-2">
-      <div className="text-micro uppercase tracking-wide text-fg-subtle">Pull requests</div>
+      {dialog}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-micro uppercase tracking-wide text-fg-subtle">Pull requests</div>
+        <button
+          type="button"
+          onClick={() => setCreating((v) => !v)}
+          className="text-micro text-accent-text hover:underline"
+        >
+          {creating ? "Cancel" : "+ Open PR"}
+        </button>
+      </div>
       {loadAction.busy && (
         <p className="text-xs text-fg-subtle italic">Loading pull requests…</p>
       )}
@@ -627,20 +653,123 @@ function PullRequestsSection({ issue }: { issue: NativeIssue }) {
           {loadAction.error}
         </InlineBanner>
       )}
-      {(pulls ?? []).map((pr) => (
-        <PullRow key={pr.number} issueID={issue.id} pr={pr} />
+      {creating && (
+        <CreatePullForm
+          issueID={issue.id}
+          onCreated={async (pr) => {
+            setCreating(false);
+            addToast(`Opened PR #${pr.number}`, "success");
+            await refresh();
+          }}
+        />
+      )}
+      {!loadAction.busy && pullList.length === 0 && !loadAction.error && !creating && (
+        <p className="text-xs text-fg-subtle">No pull requests linked to this card yet.</p>
+      )}
+      {pullList.map((pr) => (
+        <PullRow
+          key={pr.number}
+          issueID={issue.id}
+          pr={pr}
+          confirm={confirm}
+          onMerged={async (merged) => {
+            addToast(`Merged PR #${merged.number}`, "success");
+            await refresh();
+          }}
+        />
       ))}
     </div>
   );
 }
 
-// PullRow renders one PR with its CI dot and an expandable run list (current
-// runs + recent history, lazily fetched on first expand).
-function PullRow({ issueID, pr }: { issueID: string; pr: PullRef }) {
+// CreatePullForm is a minimal source→target branch form that opens a PR for a
+// forge-linked card (it reuses the card's connection + repo server-side).
+function CreatePullForm({
+  issueID,
+  onCreated,
+}: {
+  issueID: string;
+  onCreated: (pr: PullRef) => void | Promise<void>;
+}) {
+  const [source, setSource] = useState("");
+  const [target, setTarget] = useState("");
+  const [draft, setDraft] = useState(false);
+  const action = useAsyncAction();
+
+  const submit = async () => {
+    if (!source.trim() || !target.trim()) {
+      action.setError("Source and target branch are required.");
+      return;
+    }
+    const pr = await action.run(() =>
+      createIssuePull(issueID, {
+        source_branch: source.trim(),
+        target_branch: target.trim(),
+        draft,
+      }),
+    );
+    if (pr) await onCreated(pr);
+  };
+
+  return (
+    <div className="rounded border border-border-subtle bg-surface-2 p-2 space-y-2">
+      <div className="grid grid-cols-[auto_1fr] items-center gap-2">
+        <label className="text-micro text-fg-subtle">Source</label>
+        <Input
+          size="sm"
+          value={source}
+          onChange={(e) => setSource(e.target.value)}
+          placeholder="feature/my-branch"
+        />
+        <label className="text-micro text-fg-subtle">Target</label>
+        <Input
+          size="sm"
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          placeholder="main"
+        />
+      </div>
+      <label className="inline-flex items-center gap-2">
+        <Checkbox checked={draft} onChange={(e) => setDraft(e.target.checked)} />
+        <span className="text-micro text-fg-muted">Open as draft</span>
+      </label>
+      {action.error && (
+        <InlineBanner tone="danger" layout="inline">
+          {action.error}
+        </InlineBanner>
+      )}
+      <Button
+        size="sm"
+        onClick={() => void submit()}
+        loading={action.busy}
+        disabled={action.busy}
+      >
+        Open PR
+      </Button>
+    </div>
+  );
+}
+
+// PullRow renders one PR with its CI dot, a Merge action for open PRs, and an
+// expandable run list (current runs + recent history, lazily fetched on first
+// expand).
+function PullRow({
+  issueID,
+  pr,
+  confirm,
+  onMerged,
+}: {
+  issueID: string;
+  pr: PullRef;
+  confirm: (o: ConfirmOptions) => Promise<boolean>;
+  onMerged: (merged: PullRef) => void | Promise<void>;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [runs, setRuns] = useState<CIRun[] | null>(null);
   const [ciState, setCIState] = useState<string>("");
+  const [method, setMethod] = useState<MergeMethod>("merge");
   const ciAction = useAsyncAction();
+  const mergeAction = useAsyncAction();
 
   const loadCI = async () => {
     await ciAction.run(async () => {
@@ -655,6 +784,23 @@ function PullRow({ issueID, pr }: { issueID: string; pr: PullRef }) {
     const next = !expanded;
     setExpanded(next);
     if (next && runs === null && !ciAction.busy) void loadCI();
+  };
+
+  // Open PRs (not merged/closed/draft) can be merged. The forge enforces the
+  // real merge gate (CI, approvals) — this is the operator affordance.
+  const mergeable = ["open", "opened"].includes(pr.state.toLowerCase()) && !pr.draft;
+
+  const doMerge = async () => {
+    const ok = await confirm({
+      title: `Merge PR #${pr.number}?`,
+      message: `Merge ${pr.source_branch} → ${pr.target_branch} using "${method}"? This cannot be undone.`,
+      confirmLabel: "Merge",
+    });
+    if (!ok) return;
+    const merged = await mergeAction.run(() =>
+      mergeIssuePull(issueID, pr.number, { method }),
+    );
+    if (merged) await onMerged(merged);
   };
 
   return (
@@ -686,6 +832,35 @@ function PullRow({ issueID, pr }: { issueID: string; pr: PullRef }) {
           {expanded ? "Hide CI" : "CI"}
         </button>
       </div>
+      {mergeable && (
+        <div className="mt-1 flex items-center gap-2">
+          <Select
+            size="sm"
+            fit
+            value={method}
+            onChange={(e) => setMethod(e.target.value as MergeMethod)}
+            disabled={mergeAction.busy}
+            aria-label="Merge method"
+          >
+            <option value="merge">merge</option>
+            <option value="squash">squash</option>
+            <option value="rebase">rebase</option>
+          </Select>
+          <Button
+            size="sm"
+            onClick={() => void doMerge()}
+            loading={mergeAction.busy}
+            disabled={mergeAction.busy}
+          >
+            Merge
+          </Button>
+        </div>
+      )}
+      {mergeAction.error && (
+        <InlineBanner tone="danger" layout="inline" className="mt-1">
+          {mergeAction.error}
+        </InlineBanner>
+      )}
       {expanded && (
         <div className="mt-1 space-y-1">
           {ciAction.busy && (

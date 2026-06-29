@@ -4,13 +4,16 @@ import { useState } from "react";
 import type { BotEntryWithSchema } from "@/api/bots";
 import {
   type ForgeConnection,
+  type ForgeHook,
   type ForgeIntegration,
   type ForgeSyncResult,
   deleteForgeConnection,
   disableForgeIntegration,
+  listForgeIntegrationHooks,
   syncForgeIntegration,
   updateForgeIntegration,
 } from "@/api/forgeConnections";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -237,6 +240,83 @@ function RepoRow({
           {lastSync.created} created · {lastSync.updated} updated
         </InlineBanner>
       )}
+      <WebhooksPanel teamID={teamID} integrationID={integration.id} />
     </li>
+  );
+}
+
+// WebhooksPanel is a collapsible audit panel that lazy-loads the forge-side
+// registered hooks for an integration's repo on first expand, so the operator
+// can confirm iterion's webhook is still live on the forge.
+function WebhooksPanel({
+  teamID,
+  integrationID,
+}: {
+  teamID: string;
+  integrationID: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [hooks, setHooks] = useState<ForgeHook[] | null>(null);
+  const action = useAsyncAction();
+
+  const load = async () => {
+    const res = await action.run(() => listForgeIntegrationHooks(teamID, integrationID));
+    if (res) setHooks(res);
+  };
+
+  const toggle = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && hooks === null && !action.busy) void load();
+  };
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={toggle}
+        className="text-micro text-accent-text hover:underline"
+        aria-expanded={expanded}
+      >
+        {expanded ? "Hide webhooks" : "Webhooks"}
+      </button>
+      {expanded && (
+        <div className="mt-1 space-y-1">
+          {action.busy && (
+            <p className="text-micro text-fg-subtle italic">Loading webhooks…</p>
+          )}
+          {action.error && (
+            <InlineBanner tone="danger" layout="inline">
+              {action.error}
+            </InlineBanner>
+          )}
+          {hooks && hooks.length === 0 && !action.busy && !action.error && (
+            <p className="text-micro text-fg-subtle">
+              No webhooks registered on the forge for this repo.
+            </p>
+          )}
+          {(hooks ?? []).map((h) => (
+            <div
+              key={h.id}
+              className="rounded border border-border-subtle bg-surface-2 p-1.5 space-y-0.5"
+            >
+              <div className="flex items-center gap-2">
+                <Badge variant={h.active ? "success" : "neutral"} size="sm">
+                  {h.active ? "active" : "inactive"}
+                </Badge>
+                <span className="font-mono text-micro text-fg-default truncate" title={h.url}>
+                  {h.url}
+                </span>
+              </div>
+              {h.events.length > 0 && (
+                <div className="text-micro text-fg-muted truncate">
+                  {h.events.join(", ")}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

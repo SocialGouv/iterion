@@ -519,6 +519,8 @@ func buildTracker(cfg *Config, ns *native.Store) (tracker.Tracker, error) {
 		return buildGitHubTrackerFromConfig(cfg.Tracker.GitHub)
 	case TrackerKindForgejo:
 		return buildForgejoTrackerFromConfig(cfg.Tracker.Forgejo)
+	case TrackerKindGitLab:
+		return buildGitLabTrackerFromConfig(cfg.Tracker.GitLab)
 	default:
 		return nil, fmt.Errorf("dispatcher: unsupported tracker kind %q", cfg.Tracker.Kind)
 	}

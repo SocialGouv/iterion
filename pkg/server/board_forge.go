@@ -41,7 +41,10 @@ func (s *Server) registerBoardForgeRoutes() {
 	s.mux.Handle("POST /api/teams/{id}/forge/integrations/{iid}/sync", s.requireAuth(http.HandlerFunc(s.handleSyncForgeIntegration)))
 	s.mux.Handle("POST /api/v1/native/issues/{id}/push", s.requireAuth(http.HandlerFunc(s.handlePushIssueToForge)))
 	s.mux.Handle("GET /api/v1/native/issues/{id}/pulls", s.requireAuth(http.HandlerFunc(s.handleListIssuePulls)))
+	s.mux.Handle("POST /api/v1/native/issues/{id}/pulls", s.requireAuth(http.HandlerFunc(s.handleCreateIssuePull)))
 	s.mux.Handle("GET /api/v1/native/issues/{id}/pulls/{number}/ci", s.requireAuth(http.HandlerFunc(s.handleIssuePullCI)))
+	s.mux.Handle("POST /api/v1/native/issues/{id}/pulls/{number}/merge", s.requireAuth(http.HandlerFunc(s.handleMergeIssuePull)))
+	s.mux.Handle("GET /api/teams/{id}/forge/integrations/{iid}/hooks", s.requireAuth(http.HandlerFunc(s.handleListIntegrationHooks)))
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +385,157 @@ func (s *Server) handleListIssuePulls(w http.ResponseWriter, r *http.Request) {
 	}{Pulls: out})
 }
 
+// ---------------------------------------------------------------------------
+// board → forge: open / merge a PR from a card (bot-driven lifecycle, item 1)
+// ---------------------------------------------------------------------------
+
+type createPullReq struct {
+	ConnectionID string `json:"connection_id,omitempty"`
+	Repo         string `json:"repo,omitempty"`
+	Title        string `json:"title"`
+	Body         string `json:"body,omitempty"`
+	SourceBranch string `json:"source_branch"`
+	TargetBranch string `json:"target_branch"`
+	Draft        bool   `json:"draft,omitempty"`
+}
+
+// handleCreateIssuePull opens a PR/MR tied to a card. A forge-linked card reuses
+// its connection+repo; an unlinked one requires connection_id+repo in the body.
+func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	board, ok := s.activeTeamBoard(w, id)
+	if !ok {
+		return
+	}
+	card, ok := s.cardFromPath(w, r, board)
+	if !ok {
+		return
+	}
+	var req createPullReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.SourceBranch) == "" || strings.TrimSpace(req.TargetBranch) == "" {
+		httpError(w, http.StatusBadRequest, "source_branch and target_branch are required")
+		return
+	}
+	_, connID, repo, _ := forgeLinkOf(card)
+	if connID == "" || repo == "" {
+		connID, repo = strings.TrimSpace(req.ConnectionID), strings.TrimSpace(req.Repo)
+	}
+	if connID == "" || repo == "" {
+		httpError(w, http.StatusBadRequest, "connection_id and repo are required for an unlinked card")
+		return
+	}
+	pc, conn, ok := s.pullClientForConn(w, r.Context(), id.TeamID, connID)
+	if !ok {
+		return
+	}
+	title := req.Title
+	if title == "" {
+		title = card.Title
+	}
+	ref, err := pc.CreatePull(r.Context(), repo, forge.NewPull{
+		Title:        title,
+		Body:         req.Body,
+		SourceBranch: req.SourceBranch,
+		TargetBranch: req.TargetBranch,
+		Draft:        req.Draft,
+	})
+	if err != nil {
+		httpError(w, http.StatusBadGateway, "create pull request: %v", err)
+		return
+	}
+	_ = conn
+	writeJSON(w, ref)
+}
+
+type mergePullReq struct {
+	Method        string `json:"method,omitempty"` // "merge" | "squash" | "rebase"
+	CommitTitle   string `json:"commit_title,omitempty"`
+	CommitMessage string `json:"commit_message,omitempty"`
+	DeleteBranch  bool   `json:"delete_branch,omitempty"`
+}
+
+// handleMergeIssuePull merges the PR/MR linked to a card via its forge
+// connection. The card must be forge-linked (so the connection+repo are known).
+func (s *Server) handleMergeIssuePull(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	board, ok := s.activeTeamBoard(w, id)
+	if !ok {
+		return
+	}
+	card, ok := s.cardFromPath(w, r, board)
+	if !ok {
+		return
+	}
+	_, connID, repo, _ := forgeLinkOf(card)
+	if repo == "" || connID == "" {
+		httpError(w, http.StatusBadRequest, "card is not linked to a forge")
+		return
+	}
+	number, err := strconv.Atoi(r.PathValue("number"))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid pull number")
+		return
+	}
+	var req mergePullReq
+	_ = decodeJSONOptional(r, &req)
+	pc, _, ok := s.pullClientForConn(w, r.Context(), id.TeamID, connID)
+	if !ok {
+		return
+	}
+	ref, err := pc.MergePull(r.Context(), repo, number, forge.MergeOptions{
+		Method:        forge.MergeMethod(req.Method),
+		CommitTitle:   req.CommitTitle,
+		CommitMessage: req.CommitMessage,
+		DeleteBranch:  req.DeleteBranch,
+	})
+	if err != nil {
+		httpError(w, http.StatusBadGateway, "merge pull request: %v", err)
+		return
+	}
+	writeJSON(w, ref)
+}
+
+// ---------------------------------------------------------------------------
+// webhook introspection: list the forge-side hooks on an integration (item 4)
+// ---------------------------------------------------------------------------
+
+// handleListIntegrationHooks returns every webhook currently registered on the
+// integration's repo (forge-side truth), so the operator can audit orphaned or
+// divergent hooks against iterion's own delivery records.
+func (s *Server) handleListIntegrationHooks(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	ri, ok := s.forgeIntegrationForTenant(w, r, teamID, r.PathValue("iid"))
+	if !ok {
+		return
+	}
+	conn, err := s.forgeConnections.Get(r.Context(), ri.ConnectionID)
+	if err != nil || conn.TenantID != teamID {
+		httpError(w, http.StatusNotFound, "connection not found")
+		return
+	}
+	admin, err := s.forgeAdminFor(r.Context(), conn)
+	if err != nil {
+		httpError(w, http.StatusBadGateway, "admin client: %v", err)
+		return
+	}
+	hooks, err := admin.ListHooks(r.Context(), ri.RepoFullName)
+	if err != nil {
+		httpError(w, http.StatusBadGateway, "list hooks: %v", err)
+		return
+	}
+	writeJSON(w, struct {
+		Hooks []forge.HookHandle `json:"hooks"`
+	}{Hooks: hooks})
+}
+
 func (s *Server) handleIssuePullCI(w http.ResponseWriter, r *http.Request) {
 	id, _ := auth.FromContext(r.Context())
 	board, ok := s.activeTeamBoard(w, id)
@@ -527,6 +681,45 @@ func decodeJSONOptional(r *http.Request, v any) error {
 		return err
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// near-real-time forge → board projection (webhook-driven)
+// ---------------------------------------------------------------------------
+
+// projectForgeWebhookToBoard refreshes the board card(s) for a repo the moment
+// an inbound forge webhook touches it, instead of waiting up to a full
+// runBoardSyncWorker interval. It runs an INCREMENTAL sync (ListIssues since
+// LastSyncedAt) of every sync-enabled integration whose RepoFullName matches
+// the event's repo slug — reusing the exact same syncOneIntegration path, so
+// the changed issue (and any other recently-touched one) lands on its team
+// board immediately. The periodic worker stays the reconciliation net.
+//
+// Best-effort and non-blocking: it is invoked on a detached context from the
+// webhook tail so it never delays the webhook ack; failures are logged. No-op
+// when the cloud board / forge stores aren't wired (self-hosted mode).
+func (s *Server) projectForgeWebhookToBoard(ctx context.Context, repo string) {
+	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil || strings.TrimSpace(repo) == "" {
+		return
+	}
+	ris, err := s.forgeIntegrations.ListSyncEnabled(ctx)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("board projection: list sync-enabled integrations: %v", err)
+		}
+		return
+	}
+	for _, ri := range ris {
+		if ri.RepoFullName != repo {
+			continue
+		}
+		c, u, serr := s.syncOneIntegration(ctx, ri.TenantID, ri)
+		if serr != nil && s.logger != nil {
+			s.logger.Warn("board projection: %s/%s: %v", ri.TenantID, ri.RepoFullName, serr)
+		} else if (c > 0 || u > 0) && s.logger != nil {
+			s.logger.Info("board projection: %s %s → %d created, %d updated", ri.TenantID, ri.RepoFullName, c, u)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

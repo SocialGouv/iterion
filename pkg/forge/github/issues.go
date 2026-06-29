@@ -174,3 +174,33 @@ func (c *AdminClient) UpdateIssue(ctx context.Context, repo string, number int, 
 	}
 	return gi.toRef(), nil
 }
+
+// githubComment is the slice of GitHub's issue-comment object we normalize.
+type githubComment struct {
+	ID      int64  `json:"id"`
+	HTMLURL string `json:"html_url"`
+	Body    string `json:"body"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// CommentIssue posts a comment on an issue (or PR — GitHub shares the endpoint).
+func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
+	var gc githubComment
+	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/issues/"+strconv.Itoa(number)+"/comments", map[string]any{"body": body}, &gc)
+	if err != nil {
+		return forge.CommentRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.CommentRef{}, statusErr("create comment", code)
+	}
+	return forge.CommentRef{
+		ID:        strconv.FormatInt(gc.ID, 10),
+		URL:       gc.HTMLURL,
+		Body:      gc.Body,
+		Author:    gc.User.Login,
+		CreatedAt: gc.CreatedAt,
+	}, nil
+}

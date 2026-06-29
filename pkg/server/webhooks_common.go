@@ -247,6 +247,18 @@ func (s *Server) insertAndLaunchWebhook(
 	// board/run/schedule sources; no-op without the spine wired.
 	s.emitForgeTriggerEvent(ctx, cfg, meta, botID, vars, repoURL, repoRef, runID)
 
+	// Near-real-time forge→board projection: refresh the affected repo's cards
+	// now instead of at the next periodic sweep. Detached context + goroutine so
+	// it never delays the webhook ack; best-effort, no-op without the cloud board.
+	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
+		repo := meta.ProjectPath
+		go func() {
+			pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			s.projectForgeWebhookToBoard(pctx, repo)
+		}()
+	}
+
 	if s.logger != nil {
 		s.logger.Info("webhooks: %s/%s %s launched %s run=%s", cfg.Provider, meta.ProjectPath, meta.SubjectID, botID, runID)
 	}

@@ -183,3 +183,34 @@ func (c *AdminClient) UpdateIssue(ctx context.Context, repo string, number int, 
 	}
 	return i.toRef(), nil
 }
+
+// forgejoComment is the slice of Gitea's issue-comment object we normalize.
+type forgejoComment struct {
+	ID        int64        `json:"id"`
+	HTMLURL   string       `json:"html_url"`
+	Body      string       `json:"body"`
+	Poster    *forgejoUser `json:"user"`
+	CreatedAt time.Time    `json:"created_at"`
+}
+
+// CommentIssue posts a comment on an issue (or PR — Gitea shares the endpoint).
+func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
+	var fc forgejoComment
+	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/issues/"+strconv.Itoa(number)+"/comments", map[string]any{"body": body}, &fc)
+	if err != nil {
+		return forge.CommentRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.CommentRef{}, statusErr("create comment", code)
+	}
+	ref := forge.CommentRef{
+		ID:        strconv.FormatInt(fc.ID, 10),
+		URL:       fc.HTMLURL,
+		Body:      fc.Body,
+		CreatedAt: fc.CreatedAt,
+	}
+	if fc.Poster != nil {
+		ref.Author = fc.Poster.Login
+	}
+	return ref, nil
+}

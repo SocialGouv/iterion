@@ -144,6 +144,42 @@ func TestGitHubUpdateIssue_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestGitHubCommentIssue_RoundTrip(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/repos/o/r/issues/7/comments") {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":       123,
+			"html_url": "https://github.com/o/r/issues/7#issuecomment-123",
+			"body":     body["body"],
+			"user":     map[string]any{"login": "bot"},
+		})
+	}))
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+	got, err := c.CommentIssue(context.Background(), "o/r", 7, "looks good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["body"] != "looks good" {
+		t.Errorf("request body = %v", body)
+	}
+	if got.ID != "123" || got.Author != "bot" || got.Body != "looks good" {
+		t.Errorf("comment = %+v", got)
+	}
+	if got.URL != "https://github.com/o/r/issues/7#issuecomment-123" {
+		t.Errorf("url = %q", got.URL)
+	}
+}
+
 func TestGitHubGetIssue_ErrorMapping(t *testing.T) {
 	cases := map[int]error{
 		http.StatusNotFound:     forge.ErrHookNotFound,

@@ -45,6 +45,12 @@ type Admin interface {
 	// DeleteHook removes a hook. A missing hook (already deleted on the
 	// forge) returns ErrHookNotFound, which deprovision treats as success.
 	DeleteHook(ctx context.Context, repo, hookID string) error
+
+	// ListHooks returns ALL webhooks currently registered on repo (not just
+	// iterion-owned ones), for operator introspection/audit — surfacing
+	// orphaned or divergent hooks. Returns ErrForbidden when the credential
+	// lacks hook-admin scope.
+	ListHooks(ctx context.Context, repo string) ([]HookHandle, error)
 }
 
 // OAuthExchanger drives a provider's OAuth authorization-code(+PKCE) flow

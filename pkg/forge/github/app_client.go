@@ -190,6 +190,14 @@ func (a *AppClient) DeleteHook(ctx context.Context, repo, hookID string) error {
 	return c.DeleteHook(ctx, repo, hookID)
 }
 
+func (a *AppClient) ListHooks(ctx context.Context, repo string) ([]forge.HookHandle, error) {
+	c, err := a.rest(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListHooks(ctx, repo)
+}
+
 // AppRefresher re-mints the installation token for the connection's managed
 // forge_token secret (forge.TokenRefresher). The refreshToken arg is unused
 // — a GitHub App re-mints from its private key, not a refresh token.

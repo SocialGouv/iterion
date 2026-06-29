@@ -182,5 +182,173 @@ func TestListRepos_FiltersAndMaps(t *testing.T) {
 	}
 }
 
+func TestListHooks_ReturnsAll(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s", r.Method)
+		}
+		if got := r.URL.EscapedPath(); !strings.HasSuffix(got, "/projects/group%2Fapi/hooks") {
+			t.Errorf("escaped path = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "url": "https://other/hook", "push_events": true},
+			{"id": 2, "url": "https://iterion/wh", "merge_requests_events": true, "note_events": true},
+		})
+	}))
+	defer srv.Close()
+
+	hooks, err := New(srv.Client(), srv.URL, "tok").ListHooks(context.Background(), "group/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hooks) != 2 {
+		t.Fatalf("want all 2 hooks, got %d", len(hooks))
+	}
+	if hooks[0].ID != "1" || hooks[0].URL != "https://other/hook" {
+		t.Errorf("hook[0] = %+v", hooks[0])
+	}
+	if hooks[1].ID != "2" || hooks[1].URL != "https://iterion/wh" || len(hooks[1].Events) != 2 {
+		t.Errorf("hook[1] = %+v", hooks[1])
+	}
+}
+
+func TestGitLabCommentIssue_PostsNote(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if got := r.URL.EscapedPath(); !strings.HasSuffix(got, "/projects/group%2Fapi/issues/7/notes") {
+			t.Errorf("escaped path = %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 55, "body": body["body"], "author": map[string]any{"username": "bot"},
+		})
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.Client(), srv.URL, "tok").CommentIssue(context.Background(), "group/api", 7, "looks good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["body"] != "looks good" {
+		t.Errorf("request body = %v", body)
+	}
+	if got.ID != "55" || got.Author != "bot" || got.Body != "looks good" {
+		t.Errorf("note = %+v", got)
+	}
+}
+
+func TestGitLabCreatePull_MapsBranchesAndDraft(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if got := r.URL.EscapedPath(); !strings.HasSuffix(got, "/projects/group%2Fapi/merge_requests") {
+			t.Errorf("escaped path = %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"iid": 9, "title": body["title"], "state": "opened", "web_url": "https://gl/mr/9",
+			"source_branch": body["source_branch"], "target_branch": body["target_branch"],
+		})
+	}))
+	defer srv.Close()
+
+	pr, err := New(srv.Client(), srv.URL, "tok").CreatePull(context.Background(), "group/api", forge.NewPull{
+		Title: "feat: x", Body: "details", SourceBranch: "feature", TargetBranch: "main", Draft: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["source_branch"] != "feature" || body["target_branch"] != "main" {
+		t.Errorf("branch mapping wrong: %v", body)
+	}
+	if body["description"] != "details" {
+		t.Errorf("description = %v", body["description"])
+	}
+	// Draft → "Draft: " title prefix.
+	if body["title"] != "Draft: feat: x" {
+		t.Errorf("draft title prefix = %v want 'Draft: feat: x'", body["title"])
+	}
+	if pr.Number != 9 || pr.SourceBranch != "feature" || pr.TargetBranch != "main" {
+		t.Errorf("created pr = %+v", pr)
+	}
+}
+
+func TestGitLabUpdatePull_StateEventAndTarget(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s", r.Method)
+		}
+		if got := r.URL.EscapedPath(); !strings.HasSuffix(got, "/projects/group%2Fapi/merge_requests/3") {
+			t.Errorf("escaped path = %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"iid": 3, "title": "t", "state": "closed", "web_url": "u",
+			"target_branch": body["target_branch"],
+		})
+	}))
+	defer srv.Close()
+
+	closed, target := "closed", "develop"
+	pr, err := New(srv.Client(), srv.URL, "tok").UpdatePull(context.Background(), "group/api", 3, forge.PullPatch{State: &closed, TargetBranch: &target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// State="closed" → state_event:"close" (GitLab's transition verb).
+	if body["state_event"] != "close" {
+		t.Errorf("state_event = %v want close", body["state_event"])
+	}
+	if body["target_branch"] != "develop" {
+		t.Errorf("target_branch = %v want develop", body["target_branch"])
+	}
+	if _, present := body["title"]; present {
+		t.Errorf("nil patch field leaked: %v", body)
+	}
+	if pr.State != "closed" || pr.TargetBranch != "develop" {
+		t.Errorf("updated pr = %+v", pr)
+	}
+}
+
+func TestGitLabMergePull_SquashAndRemoveSource(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s", r.Method)
+		}
+		if got := r.URL.EscapedPath(); !strings.HasSuffix(got, "/projects/group%2Fapi/merge_requests/5/merge") {
+			t.Errorf("escaped path = %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"iid": 5, "title": "t", "state": "merged", "web_url": "https://gl/mr/5",
+		})
+	}))
+	defer srv.Close()
+
+	pr, err := New(srv.Client(), srv.URL, "tok").MergePull(context.Background(), "group/api", 5, forge.MergeOptions{
+		Method: forge.MergeSquash, DeleteBranch: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["squash"] != true {
+		t.Errorf("squash = %v want true", body["squash"])
+	}
+	if body["should_remove_source_branch"] != true {
+		t.Errorf("should_remove_source_branch = %v want true", body["should_remove_source_branch"])
+	}
+	if pr.State != "merged" {
+		t.Errorf("merged pr state = %q want merged", pr.State)
+	}
+}
+
 // compile-time assertion that AdminClient satisfies forge.Admin.
 var _ forge.Admin = (*AdminClient)(nil)

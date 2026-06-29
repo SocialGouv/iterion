@@ -87,6 +87,37 @@ func TestGitHubListRepos_AdminFilter(t *testing.T) {
 	}
 }
 
+func TestGitHubListHooks_ReturnsAll(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/repos/o/r/hooks") {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "active": true, "events": []string{"push"}, "config": map[string]any{"url": "https://other/hook"}},
+			{"id": 2, "active": false, "events": []string{"pull_request"}, "config": map[string]any{"url": "https://iterion/wh"}},
+		})
+	}))
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+	hooks, err := c.ListHooks(context.Background(), "o/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hooks) != 2 {
+		t.Fatalf("want all 2 hooks, got %d", len(hooks))
+	}
+	if hooks[0].ID != "1" || hooks[0].URL != "https://other/hook" || !hooks[0].Active {
+		t.Errorf("hook[0] = %+v", hooks[0])
+	}
+	if hooks[1].ID != "2" || hooks[1].URL != "https://iterion/wh" || hooks[1].Active {
+		t.Errorf("hook[1] = %+v", hooks[1])
+	}
+}
+
 func TestGitHubDeleteHook_404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

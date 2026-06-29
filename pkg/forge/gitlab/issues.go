@@ -183,4 +183,32 @@ func (c *AdminClient) UpdateIssue(ctx context.Context, repo string, number int, 
 	return gi.toRef(), nil
 }
 
+// gitlabNote is the slice of GitLab's issue-note object we normalize. Notes
+// carry no per-note web URL in the create response, so CommentRef.URL is left
+// empty for GitLab.
+type gitlabNote struct {
+	ID        int64      `json:"id"`
+	Body      string     `json:"body"`
+	Author    gitlabUser `json:"author"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// CommentIssue posts a note on an issue.
+func (c *AdminClient) CommentIssue(ctx context.Context, repo string, number int, body string) (forge.CommentRef, error) {
+	var n gitlabNote
+	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/issues/"+strconv.Itoa(number)+"/notes", map[string]any{"body": body}, &n)
+	if err != nil {
+		return forge.CommentRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.CommentRef{}, statusErr("create note", code)
+	}
+	return forge.CommentRef{
+		ID:        strconv.FormatInt(n.ID, 10),
+		Body:      n.Body,
+		Author:    n.Author.Username,
+		CreatedAt: n.CreatedAt,
+	}, nil
+}
+
 var _ forge.IssueClient = (*AdminClient)(nil)

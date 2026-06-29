@@ -340,3 +340,110 @@ func sortRunsNewestFirst(runs []forge.CIRun) {
 		}
 	}
 }
+
+// CreatePull opens a pull request. head/base are branch names; Draft maps to
+// GitHub's `draft` create flag.
+func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewPull) (forge.PullRef, error) {
+	body := map[string]any{
+		"title": in.Title,
+		"head":  in.SourceBranch,
+		"base":  in.TargetBranch,
+	}
+	if in.Body != "" {
+		body["body"] = in.Body
+	}
+	if in.Draft {
+		body["draft"] = true
+	}
+	var gp githubPull
+	code, err := c.do(ctx, http.MethodPost, "/repos/"+repo+"/pulls", body, &gp)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("create pull", code)
+	}
+	return gp.toRef(), nil
+}
+
+// UpdatePull applies a partial update. GitHub's REST PATCH covers title/body/
+// base/state; converting draft↔ready is GraphQL-only, so PullPatch carries no
+// draft toggle.
+func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, patch forge.PullPatch) (forge.PullRef, error) {
+	body := map[string]any{}
+	if patch.Title != nil {
+		body["title"] = *patch.Title
+	}
+	if patch.Body != nil {
+		body["body"] = *patch.Body
+	}
+	if patch.TargetBranch != nil {
+		body["base"] = *patch.TargetBranch
+	}
+	if patch.State != nil {
+		body["state"] = *patch.State
+	}
+	var gp githubPull
+	code, err := c.do(ctx, http.MethodPatch, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), body, &gp)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("update pull", code)
+	}
+	return gp.toRef(), nil
+}
+
+// mergeMethod maps the forge merge method onto GitHub's `merge_method`
+// ("merge"|"squash"|"rebase"); empty → "merge".
+func mergeMethod(m forge.MergeMethod) string {
+	switch m {
+	case forge.MergeSquash:
+		return "squash"
+	case forge.MergeRebase:
+		return "rebase"
+	default:
+		return "merge"
+	}
+}
+
+// MergePull merges a PR via PUT /pulls/{n}/merge, then re-fetches it so the
+// returned ref reflects the merged state. When opts.DeleteBranch is set, the
+// source branch is best-effort deleted afterwards (a failure there does not
+// fail the merge).
+func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, opts forge.MergeOptions) (forge.PullRef, error) {
+	// Fetch first so we know the source branch for an optional delete.
+	pr, err := c.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	body := map[string]any{"merge_method": mergeMethod(opts.Method)}
+	if opts.CommitTitle != "" {
+		body["commit_title"] = opts.CommitTitle
+	}
+	if opts.CommitMessage != "" {
+		body["commit_message"] = opts.CommitMessage
+	}
+	if opts.SHA != "" {
+		body["sha"] = opts.SHA
+	}
+	code, err := c.do(ctx, http.MethodPut, "/repos/"+repo+"/pulls/"+strconv.Itoa(number)+"/merge", body, nil)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("merge pull", code)
+	}
+	if opts.DeleteBranch && pr.SourceBranch != "" {
+		// Best-effort: ignore errors (branch may be auto-deleted, protected, or
+		// already gone). The merge already succeeded.
+		_, _ = c.do(ctx, http.MethodDelete, "/repos/"+repo+"/git/refs/heads/"+url.PathEscape(pr.SourceBranch), nil, nil)
+	}
+	merged, err := c.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		// Merge succeeded; synthesize a minimal merged ref rather than fail.
+		pr.State = "merged"
+		return pr, nil
+	}
+	return merged, nil
+}

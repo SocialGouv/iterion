@@ -292,4 +292,94 @@ func (c *AdminClient) ListCIHistory(ctx context.Context, repo, ref string, limit
 	return out, nil
 }
 
+// CreatePull opens a merge request. SourceBranch/TargetBranch are GitLab's
+// source_branch/target_branch; Draft is expressed via GitLab's "Draft:" title
+// convention (there is no draft flag on the create call).
+func (c *AdminClient) CreatePull(ctx context.Context, repo string, in forge.NewPull) (forge.PullRef, error) {
+	title := in.Title
+	if in.Draft && !strings.HasPrefix(strings.ToLower(title), "draft:") {
+		title = "Draft: " + title
+	}
+	body := map[string]any{
+		"source_branch": in.SourceBranch,
+		"target_branch": in.TargetBranch,
+		"title":         title,
+	}
+	if in.Body != "" {
+		body["description"] = in.Body
+	}
+	var mr gitlabMR
+	code, err := c.do(ctx, http.MethodPost, "/projects/"+projectID(repo)+"/merge_requests", body, &mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("create merge request", code)
+	}
+	return mr.toRef(), nil
+}
+
+// UpdatePull applies a partial update. State transitions map onto GitLab's
+// `state_event` (close|reopen); title/description/target_branch pass through.
+func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, patch forge.PullPatch) (forge.PullRef, error) {
+	body := map[string]any{}
+	if patch.Title != nil {
+		body["title"] = *patch.Title
+	}
+	if patch.Body != nil {
+		body["description"] = *patch.Body
+	}
+	if patch.TargetBranch != nil {
+		body["target_branch"] = *patch.TargetBranch
+	}
+	if patch.State != nil {
+		switch strings.ToLower(strings.TrimSpace(*patch.State)) {
+		case "closed":
+			body["state_event"] = "close"
+		case "open", "opened":
+			body["state_event"] = "reopen"
+		}
+	}
+	var mr gitlabMR
+	code, err := c.do(ctx, http.MethodPut, "/projects/"+projectID(repo)+"/merge_requests/"+strconv.Itoa(number), body, &mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("update merge request", code)
+	}
+	return mr.toRef(), nil
+}
+
+// MergePull merges a merge request via PUT /merge_requests/{iid}/merge, which
+// returns the merged MR. The "squash" method maps to GitLab's squash flag; the
+// merge endpoint has no rebase variant (GitLab exposes rebase as a separate
+// pre-merge step), so MergeRebase falls back to a standard merge.
+func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, opts forge.MergeOptions) (forge.PullRef, error) {
+	body := map[string]any{}
+	if opts.Method == forge.MergeSquash {
+		body["squash"] = true
+		if opts.CommitMessage != "" {
+			body["squash_commit_message"] = opts.CommitMessage
+		}
+	} else if opts.CommitMessage != "" {
+		body["merge_commit_message"] = opts.CommitMessage
+	}
+	if opts.DeleteBranch {
+		body["should_remove_source_branch"] = true
+	}
+	if opts.SHA != "" {
+		body["sha"] = opts.SHA
+	}
+	var mr gitlabMR
+	code, err := c.do(ctx, http.MethodPut, "/projects/"+projectID(repo)+"/merge_requests/"+strconv.Itoa(number)+"/merge", body, &mr)
+	if err != nil {
+		return forge.PullRef{}, err
+	}
+	if code/100 != 2 {
+		return forge.PullRef{}, statusErr("merge merge request", code)
+	}
+	return mr.toRef(), nil
+}
+
 var _ forge.PullClient = (*AdminClient)(nil)

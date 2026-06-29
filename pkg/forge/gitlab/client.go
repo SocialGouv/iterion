@@ -156,6 +156,25 @@ func (c *AdminClient) GetHook(ctx context.Context, repo, deliveryURL string) (*f
 	return nil, nil
 }
 
+// ListHooks returns every webhook registered on repo (not just the
+// iterion-owned one), for operator audit. Mirrors GetHook's listing but
+// without the delivery-URL filter.
+func (c *AdminClient) ListHooks(ctx context.Context, repo string) ([]forge.HookHandle, error) {
+	var hooks []gitlabHook
+	code, err := c.do(ctx, http.MethodGet, "/projects/"+projectID(repo)+"/hooks", nil, &hooks)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, statusErr("GET hooks", code)
+	}
+	out := make([]forge.HookHandle, 0, len(hooks))
+	for _, h := range hooks {
+		out = append(out, h.toHandle())
+	}
+	return out, nil
+}
+
 // CreateHook registers a new project hook.
 func (c *AdminClient) CreateHook(ctx context.Context, repo string, spec forge.HookSpec) (forge.HookHandle, error) {
 	var h gitlabHook

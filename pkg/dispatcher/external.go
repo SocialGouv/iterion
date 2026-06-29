@@ -53,3 +53,25 @@ func buildForgejoTrackerFromConfig(cfg *ForgejoTrackerConfig) (tracker.Tracker, 
 		StateMapping:  mapping,
 	})
 }
+
+func buildGitLabTrackerFromConfig(cfg *GitLabTrackerConfig) (tracker.Tracker, error) {
+	if cfg == nil {
+		return nil, errors.New("dispatcher: tracker.kind=gitlab requires tracker.gitlab block")
+	}
+	mapping := make(map[string]tracker.LabelSelector, len(cfg.StateMapping))
+	for state, sel := range cfg.StateMapping {
+		mapping[state] = tracker.LabelSelector{
+			LabelsInclude: sel.LabelsInclude,
+			LabelsExclude: sel.LabelsExclude,
+		}
+	}
+	return tracker.NewGitLab(tracker.GitLabOptions{
+		Host:          cfg.Host,
+		Repo:          cfg.Repo,
+		Token:         cfg.Token,
+		IncludeLabels: cfg.IncludeLabels,
+		ExcludeLabels: cfg.ExcludeLabels,
+		ClaimedLabel:  cfg.ClaimedLabel,
+		StateMapping:  mapping,
+	})
+}

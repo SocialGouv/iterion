@@ -66,13 +66,28 @@ type IssuePatch struct {
 	Assignees *[]string
 }
 
+// CommentRef is a normalized issue/PR comment as the forge reports it after
+// creation (board→forge / bot reply on the source issue/PR).
+type CommentRef struct {
+	ID        string    `json:"id"`
+	URL       string    `json:"url,omitempty"`
+	Body      string    `json:"body"`
+	Author    string    `json:"author,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // IssueClient is the optional issue read/write capability. ListIssues powers
-// forge→board sync; Create/UpdateIssue power per-card push-to-forge.
+// forge→board sync; Create/UpdateIssue power per-card push-to-forge;
+// CommentIssue lets a bot reply on the source issue/PR.
 type IssueClient interface {
 	ListIssues(ctx context.Context, repo string, opts IssueListOptions) ([]IssueRef, error)
 	GetIssue(ctx context.Context, repo string, number int) (IssueRef, error)
 	CreateIssue(ctx context.Context, repo string, in NewIssue) (IssueRef, error)
 	UpdateIssue(ctx context.Context, repo string, number int, patch IssuePatch) (IssueRef, error)
+	// CommentIssue posts a comment on an issue. On GitHub/Forgejo the issues
+	// endpoint is shared with PRs, so the same call comments on a PR by its
+	// number; on GitLab it targets an issue note. Returns the created comment.
+	CommentIssue(ctx context.Context, repo string, number int, body string) (CommentRef, error)
 }
 
 // PullRef is a normalized pull/merge request.
@@ -120,14 +135,66 @@ type CIStatus struct {
 	Runs  []CIRun `json:"runs,omitempty"`
 }
 
-// PullClient is the optional PR + CI capability for surfacing linked PRs and
-// CI state (current + history) on board cards.
+// NewPull is the payload for CreatePull (open a PR/MR, bot-driven). Branches
+// are provider-native names: SourceBranch is the head, TargetBranch the base.
+type NewPull struct {
+	Title        string
+	Body         string
+	SourceBranch string
+	TargetBranch string
+	Draft        bool
+}
+
+// PullPatch is a partial update for UpdatePull. Nil fields are left untouched;
+// State is "open"|"closed".
+type PullPatch struct {
+	Title        *string
+	Body         *string
+	TargetBranch *string
+	State        *string
+}
+
+// MergeMethod selects how MergePull integrates the PR/MR. Empty → provider
+// default ("merge").
+type MergeMethod string
+
+const (
+	MergeMerge  MergeMethod = "merge"
+	MergeSquash MergeMethod = "squash"
+	MergeRebase MergeMethod = "rebase"
+)
+
+// MergeOptions controls MergePull. Zero value = provider-default merge,
+// keeping the source branch.
+type MergeOptions struct {
+	Method        MergeMethod
+	CommitTitle   string
+	CommitMessage string
+	// DeleteBranch removes the source branch after a successful merge.
+	DeleteBranch bool
+	// SHA, when set, guards the merge: the forge merges only if the PR head
+	// still matches (race protection). Best-effort — providers without the
+	// guard ignore it.
+	SHA string
+}
+
+// PullClient is the optional PR + CI capability: surfacing linked PRs and CI
+// state (current + history) on board cards, plus bot-driven PR lifecycle
+// (open / update / merge).
 type PullClient interface {
 	// ListPullRequests lists PRs/MRs for a repo (for linking to issues + the
 	// card PR panel).
 	ListPullRequests(ctx context.Context, repo string, opts PullListOptions) ([]PullRef, error)
 	// GetPullRequest fetches one PR/MR by number.
 	GetPullRequest(ctx context.Context, repo string, number int) (PullRef, error)
+	// CreatePull opens a new pull/merge request (bot-driven; ties a run's work
+	// back to the source card).
+	CreatePull(ctx context.Context, repo string, in NewPull) (PullRef, error)
+	// UpdatePull applies a partial update (retarget, retitle, close/reopen).
+	UpdatePull(ctx context.Context, repo string, number int, patch PullPatch) (PullRef, error)
+	// MergePull merges a PR/MR and returns the updated PullRef (State "merged"
+	// on success).
+	MergePull(ctx context.Context, repo string, number int, opts MergeOptions) (PullRef, error)
 	// GetCIStatus returns the CURRENT aggregate CI state + runs for a ref
 	// (commit SHA or branch).
 	GetCIStatus(ctx context.Context, repo, ref string) (CIStatus, error)

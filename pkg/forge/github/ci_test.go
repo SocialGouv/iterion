@@ -173,6 +173,139 @@ func TestGitHubListCIHistory_NewestFirstCapped(t *testing.T) {
 	}
 }
 
+func TestGitHubCreatePull_Mapping(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/repos/o/r/pulls") {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"number": 9, "title": body["title"], "state": "open",
+			"html_url": "https://github.com/o/r/pull/9", "draft": body["draft"],
+			"head": map[string]any{"ref": body["head"], "sha": "sha9"},
+			"base": map[string]any{"ref": body["base"]},
+		})
+	}))
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+	pr, err := c.CreatePull(context.Background(), "o/r", forge.NewPull{
+		Title: "feat: x", Body: "details", SourceBranch: "feature", TargetBranch: "main", Draft: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["head"] != "feature" || body["base"] != "main" {
+		t.Errorf("source/target mapping wrong: head=%v base=%v", body["head"], body["base"])
+	}
+	if body["title"] != "feat: x" || body["body"] != "details" {
+		t.Errorf("title/body = %v", body)
+	}
+	if body["draft"] != true {
+		t.Errorf("draft = %v want true", body["draft"])
+	}
+	if pr.Number != 9 || pr.SourceBranch != "feature" || pr.TargetBranch != "main" {
+		t.Errorf("created pr = %+v", pr)
+	}
+}
+
+func TestGitHubUpdatePull_StateAndTarget(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/repos/o/r/pulls/3") {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"number": 3, "title": "t", "state": body["state"],
+			"html_url": "https://github.com/o/r/pull/3",
+			"base":     map[string]any{"ref": body["base"]},
+		})
+	}))
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+	closed, target := "closed", "develop"
+	pr, err := c.UpdatePull(context.Background(), "o/r", 3, forge.PullPatch{State: &closed, TargetBranch: &target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["state"] != "closed" {
+		t.Errorf("state maps to %v want closed", body["state"])
+	}
+	if body["base"] != "develop" {
+		t.Errorf("TargetBranch maps to base=%v want develop", body["base"])
+	}
+	if _, present := body["title"]; present {
+		t.Errorf("nil patch field leaked: %v", body)
+	}
+	if pr.State != "closed" || pr.TargetBranch != "develop" {
+		t.Errorf("updated pr = %+v", pr)
+	}
+}
+
+func TestGitHubMergePull_SquashAndDeleteBranch(t *testing.T) {
+	var mergeBody map[string]any
+	getCount := 0
+	deleteHit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/5"):
+			// GitHub impl GETs before AND after the merge.
+			getCount++
+			merged := getCount > 1
+			resp := map[string]any{
+				"number": 5, "title": "t", "state": "closed",
+				"html_url": "https://github.com/o/r/pull/5",
+				"head":     map[string]any{"ref": "feature", "sha": "abc"},
+				"base":     map[string]any{"ref": "main"},
+			}
+			if merged {
+				resp["merged_at"] = "2026-01-02T03:04:05Z"
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/pulls/5/merge"):
+			_ = json.NewDecoder(r.Body).Decode(&mergeBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{"merged": true, "sha": "mergesha"})
+		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/git/refs/heads/feature"):
+			deleteHit = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %q", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := &AdminClient{HTTP: srv.Client(), APIBase: srv.URL, Token: "t"}
+	pr, err := c.MergePull(context.Background(), "o/r", 5, forge.MergeOptions{
+		Method: forge.MergeSquash, DeleteBranch: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mergeBody["merge_method"] != "squash" {
+		t.Errorf("merge_method = %v want squash", mergeBody["merge_method"])
+	}
+	if !deleteHit {
+		t.Error("DeleteBranch did not trigger a branch delete")
+	}
+	if getCount != 2 {
+		t.Errorf("expected 2 GETs (pre + post merge), got %d", getCount)
+	}
+	if pr.State != "merged" {
+		t.Errorf("post-merge state = %q want merged", pr.State)
+	}
+}
+
 func TestGitHubListPullRequests_ErrorMapping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
