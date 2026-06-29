@@ -1,0 +1,4806 @@
+{
+  "components": {
+    "schemas": {
+      "Token": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "token_last4": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "name",
+          "token_last4",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "authResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "active_org_id": {
+            "type": "string"
+          },
+          "active_org_role": {
+            "type": "string"
+          },
+          "active_role": {
+            "type": "string"
+          },
+          "active_team_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "orgs": {
+            "items": {
+              "$ref": "#/components/schemas/orgTreeView"
+            },
+            "type": "array"
+          },
+          "user": {
+            "$ref": "#/components/schemas/userView"
+          }
+        },
+        "required": [
+          "user",
+          "orgs"
+        ],
+        "type": "object"
+      },
+      "createOrgReq": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "owner_email": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "createPATReq": {
+        "properties": {
+          "expires_in_days": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "loginReq": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "type": "object"
+      },
+      "membershipView": {
+        "properties": {
+          "personal": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "team_id": {
+            "type": "string"
+          },
+          "team_name": {
+            "type": "string"
+          },
+          "team_slug": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "team_name",
+          "team_slug",
+          "role"
+        ],
+        "type": "object"
+      },
+      "orgTreeView": {
+        "properties": {
+          "org_id": {
+            "type": "string"
+          },
+          "org_name": {
+            "type": "string"
+          },
+          "org_role": {
+            "type": "string"
+          },
+          "org_slug": {
+            "type": "string"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/membershipView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "org_id",
+          "org_name",
+          "org_slug",
+          "org_role",
+          "teams"
+        ],
+        "type": "object"
+      },
+      "orgView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "memory_quota_bytes": {
+            "type": "integer"
+          },
+          "monthly_cost_cap_usd": {
+            "type": "number"
+          },
+          "monthly_run_quota": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "personal": {
+            "type": "boolean"
+          },
+          "purge_after": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "suspend_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "slug",
+          "status"
+        ],
+        "type": "object"
+      },
+      "updateOrgReq": {
+        "properties": {
+          "memory_quota_bytes": {
+            "type": "integer"
+          },
+          "monthly_cost_cap_usd": {
+            "type": "number"
+          },
+          "monthly_run_quota": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "userView": {
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_super_admin": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "status",
+          "is_super_admin"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Auto-generated route inventory for this iterion instance. Routes and methods are exact; request/response schemas are populated for the typed surface (see components) and enriched route-by-route.",
+    "title": "iterion API",
+    "version": "current"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/": {
+      "options": {
+        "operationId": "options",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "OPTIONS /api/",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/admin/audit": {
+      "get": {
+        "operationId": "getAdminAudit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/audit",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/orgs": {
+      "get": {
+        "operationId": "getAdminOrgs",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "orgs": {
+                      "items": {
+                        "$ref": "#/components/schemas/orgView"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "orgs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/orgs",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "postAdminOrgs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/createOrgReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orgView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/admin/orgs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/orgs/{id}": {
+      "delete": {
+        "operationId": "deleteAdminOrgsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/admin/orgs/{id}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "get": {
+        "operationId": "getAdminOrgsById",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orgView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/admin/orgs/{id}",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchAdminOrgsById",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/updateOrgReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/orgView"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PATCH /api/admin/orgs/{id}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/orgs/{id}/restore": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminOrgsByIdRestore",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/admin/orgs/{id}/restore",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/orgs/{id}/status": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAdminOrgsByIdStatus",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/admin/orgs/{id}/status",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/orgs/{id}/teams": {
+      "get": {
+        "operationId": "getAdminOrgsByIdTeams",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/orgs/{id}/teams",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/admin/orgs/{id}/usage": {
+      "get": {
+        "operationId": "getAdminOrgsByIdUsage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/orgs/{id}/usage",
+        "tags": [
+          "admin"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/admin/users": {
+      "get": {
+        "operationId": "getAdminUsers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/admin/users",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/users/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchAdminUsersById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/admin/users/{id}",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/auth/invitations/accept": {
+      "post": {
+        "operationId": "postAuthInvitationsAccept",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/invitations/accept",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/invitations/lookup": {
+      "get": {
+        "operationId": "getAuthInvitationsLookup",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/auth/invitations/lookup",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "postAuthLogin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/loginReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/auth/login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "postAuthLogout",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "operationId": "getAuthMe",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/auth/me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/me/org/{org_id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "org_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAuthMeOrgByOrgId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/me/org/{org_id}",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/me/team/{team_id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "team_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postAuthMeTeamByTeamId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/me/team/{team_id}",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/oidc/github/callback/orgs": {
+      "get": {
+        "operationId": "getAuthOidcGithubCallbackOrgs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/auth/oidc/github/callback/orgs",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/oidc/{provider}/callback": {
+      "get": {
+        "operationId": "getAuthOidcByProviderCallback",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/auth/oidc/{provider}/callback",
+        "tags": [
+          "auth"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/auth/oidc/{provider}/start": {
+      "get": {
+        "operationId": "getAuthOidcByProviderStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/auth/oidc/{provider}/start",
+        "tags": [
+          "auth"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/auth/password/change": {
+      "post": {
+        "operationId": "postAuthPasswordChange",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/password/change",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/password/reset/confirm": {
+      "post": {
+        "operationId": "postAuthPasswordResetConfirm",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/password/reset/confirm",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/password/reset/request": {
+      "post": {
+        "operationId": "postAuthPasswordResetRequest",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/password/reset/request",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/providers": {
+      "get": {
+        "operationId": "getAuthProviders",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/auth/providers",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/refresh": {
+      "post": {
+        "operationId": "postAuthRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/refresh",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "operationId": "postAuthRegister",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/register",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/backends/detect": {
+      "get": {
+        "operationId": "getBackendsDetect",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/backends/detect",
+        "tags": [
+          "backends"
+        ]
+      }
+    },
+    "/api/effort-capabilities": {
+      "get": {
+        "operationId": "getEffortCapabilities",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/effort-capabilities",
+        "tags": [
+          "effort-capabilities"
+        ]
+      }
+    },
+    "/api/examples": {
+      "get": {
+        "operationId": "getExamples",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/examples",
+        "tags": [
+          "examples"
+        ]
+      }
+    },
+    "/api/examples/{name}": {
+      "get": {
+        "operationId": "getExamplesByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/examples/{name...}",
+        "tags": [
+          "examples"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/files": {
+      "get": {
+        "operationId": "getFiles",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/files",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/api/files/open": {
+      "post": {
+        "operationId": "postFilesOpen",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/files/open",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/api/files/save": {
+      "post": {
+        "operationId": "postFilesSave",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/files/save",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/api/filesystem/list": {
+      "get": {
+        "operationId": "getFilesystemList",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/filesystem/list",
+        "tags": [
+          "filesystem"
+        ]
+      }
+    },
+    "/api/forge/github/app-manifest/callback": {
+      "get": {
+        "operationId": "getForgeGithubAppManifestCallback",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/forge/github/app-manifest/callback",
+        "tags": [
+          "forge"
+        ]
+      }
+    },
+    "/api/forge/github/app/callback": {
+      "get": {
+        "operationId": "getForgeGithubAppCallback",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/forge/github/app/callback",
+        "tags": [
+          "forge"
+        ]
+      }
+    },
+    "/api/forge/github/orgs/start": {
+      "get": {
+        "operationId": "getForgeGithubOrgsStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/forge/github/orgs/start",
+        "tags": [
+          "forge"
+        ]
+      }
+    },
+    "/api/forge/oauth/callback": {
+      "get": {
+        "operationId": "getForgeOauthCallback",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/forge/oauth/callback",
+        "tags": [
+          "forge"
+        ]
+      }
+    },
+    "/api/me/api-keys": {
+      "get": {
+        "operationId": "getMeApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/api-keys",
+        "tags": [
+          "me"
+        ]
+      },
+      "post": {
+        "operationId": "postMeApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/api-keys",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/api-keys/{key_id}": {
+      "delete": {
+        "operationId": "deleteMeApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/api-keys/{key_id}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "key_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchMeApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/me/api-keys/{key_id}",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/github-orgs": {
+      "get": {
+        "operationId": "getMeGithubOrgs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/github-orgs",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/oauth/connections": {
+      "get": {
+        "operationId": "getMeOauthConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/oauth/connections",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/oauth/{kind}": {
+      "delete": {
+        "operationId": "deleteMeOauthByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/oauth/{kind}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/me/oauth/{kind}/authorize/complete": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postMeOauthByKindAuthorizeComplete",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/oauth/{kind}/authorize/complete",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/oauth/{kind}/authorize/start": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postMeOauthByKindAuthorizeStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/oauth/{kind}/authorize/start",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/oauth/{kind}/credentials": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postMeOauthByKindCredentials",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/oauth/{kind}/credentials",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/oauth/{kind}/refresh": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postMeOauthByKindRefresh",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/oauth/{kind}/refresh",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/password": {
+      "post": {
+        "operationId": "postMePassword",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/password",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/secrets": {
+      "get": {
+        "operationId": "getMeSecrets",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/secrets",
+        "tags": [
+          "me"
+        ]
+      },
+      "post": {
+        "operationId": "postMeSecrets",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/secrets",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/secrets/{secret_id}": {
+      "delete": {
+        "operationId": "deleteMeSecretsBySecretId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/secrets/{secret_id}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "secret_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchMeSecretsBySecretId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/me/secrets/{secret_id}",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/sessions/revoke-all": {
+      "post": {
+        "operationId": "postMeSessionsRevokeAll",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/me/sessions/revoke-all",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/sso/links": {
+      "get": {
+        "operationId": "getMeSsoLinks",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/sso/links",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/sso/links/{provider}/{subject}": {
+      "delete": {
+        "operationId": "deleteMeSsoLinksByProviderBySubject",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/sso/links/{provider}/{subject}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "subject",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/me/sso/{provider}/link/start": {
+      "get": {
+        "operationId": "getMeSsoByProviderLinkStart",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/me/sso/{provider}/link/start",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "provider",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/me/tokens": {
+      "get": {
+        "operationId": "getMeTokens",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "tokens": {
+                      "items": {
+                        "$ref": "#/components/schemas/Token"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "tokens"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/me/tokens",
+        "tags": [
+          "me"
+        ]
+      },
+      "post": {
+        "operationId": "postMeTokens",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/createPATReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "pat": {
+                      "$ref": "#/components/schemas/Token"
+                    },
+                    "token": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "pat",
+                    "token"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/me/tokens",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/tokens/{token_id}": {
+      "delete": {
+        "operationId": "deleteMeTokensByTokenId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/me/tokens/{token_id}",
+        "tags": [
+          "me"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "token_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/memory/doc": {
+      "delete": {
+        "operationId": "deleteMemoryDoc",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/memory/doc",
+        "tags": [
+          "memory"
+        ]
+      },
+      "get": {
+        "operationId": "getMemoryDoc",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/memory/doc",
+        "tags": [
+          "memory"
+        ]
+      },
+      "put": {
+        "operationId": "putMemoryDoc",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/memory/doc",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/memory/docs": {
+      "get": {
+        "operationId": "getMemoryDocs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/memory/docs",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/memory/export": {
+      "get": {
+        "operationId": "getMemoryExport",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/memory/export",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/memory/import": {
+      "post": {
+        "operationId": "postMemoryImport",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/memory/import",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/memory/usage": {
+      "get": {
+        "operationId": "getMemoryUsage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/memory/usage",
+        "tags": [
+          "memory"
+        ]
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "operationId": "getOpenapi.json",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/openapi.json",
+        "tags": [
+          "openapi.json"
+        ]
+      }
+    },
+    "/api/orgs/{id}/audit": {
+      "get": {
+        "operationId": "getOrgsByIdAudit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/audit",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/invitations": {
+      "get": {
+        "operationId": "getOrgsByIdInvitations",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/invitations",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdInvitations",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/invitations",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/invitations/{invite_id}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdInvitationsByInviteId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/invitations/{invite_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "invite_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/members": {
+      "get": {
+        "operationId": "getOrgsByIdMembers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/members",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/members/{user_id}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/members/{user_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/members/{user_id}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/sso/domains": {
+      "get": {
+        "operationId": "getOrgsByIdSsoDomains",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/sso/domains",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdSsoDomains",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/sso/domains",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/sso/domains/{domain_id}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdSsoDomainsByDomainId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/sso/domains/{domain_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "domain_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/orgs/{id}/sso/domains/{domain_id}/verify": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "domain_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdSsoDomainsByDomainIdVerify",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/sso/domains/{domain_id}/verify",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/sso/providers": {
+      "get": {
+        "operationId": "getOrgsByIdSsoProviders",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/sso/providers",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdSsoProviders",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/sso/providers",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/sso/providers/{provider_id}": {
+      "delete": {
+        "operationId": "deleteOrgsByIdSsoProvidersByProviderId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/orgs/{id}/sso/providers/{provider_id}",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "provider_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchOrgsByIdSsoProvidersByProviderId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/orgs/{id}/sso/providers/{provider_id}",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/sso/providers/{provider_id}/test": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "provider_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdSsoProvidersByProviderIdTest",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/sso/providers/{provider_id}/test",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/teams": {
+      "get": {
+        "operationId": "getOrgsByIdTeams",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/teams",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postOrgsByIdTeams",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/orgs/{id}/teams",
+        "tags": [
+          "orgs"
+        ]
+      }
+    },
+    "/api/orgs/{id}/usage": {
+      "get": {
+        "operationId": "getOrgsByIdUsage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/orgs/{id}/usage",
+        "tags": [
+          "orgs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/parse": {
+      "post": {
+        "operationId": "postParse",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/parse",
+        "tags": [
+          "parse"
+        ]
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "operationId": "getProjects",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/projects",
+        "tags": [
+          "projects"
+        ]
+      },
+      "post": {
+        "operationId": "postProjects",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/projects",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/projects/current": {
+      "get": {
+        "operationId": "getProjectsCurrent",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/projects/current",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/projects/switch": {
+      "post": {
+        "operationId": "postProjectsSwitch",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/projects/switch",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/projects/{id}": {
+      "delete": {
+        "operationId": "deleteProjectsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/projects/{id}",
+        "tags": [
+          "projects"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/resolve-effort": {
+      "get": {
+        "operationId": "getResolveEffort",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/resolve-effort",
+        "tags": [
+          "resolve-effort"
+        ]
+      }
+    },
+    "/api/routes": {
+      "get": {
+        "operationId": "getRoutes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/routes",
+        "tags": [
+          "routes"
+        ]
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "operationId": "getRuns",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs",
+        "tags": [
+          "runs"
+        ]
+      },
+      "post": {
+        "operationId": "postRuns",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/global-active": {
+      "get": {
+        "operationId": "getRunsGlobalActive",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/global-active",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/preview-cost": {
+      "post": {
+        "operationId": "postRunsPreviewCost",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/preview-cost",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/uploads": {
+      "post": {
+        "operationId": "postRunsUploads",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/uploads",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}": {
+      "get": {
+        "operationId": "getRunsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/artifact-files": {
+      "get": {
+        "operationId": "getRunsByIdArtifactFiles",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/artifact-files",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/artifact-files/{path}": {
+      "get": {
+        "operationId": "getRunsByIdArtifactFilesByPath",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/artifact-files/{path...}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/artifacts": {
+      "get": {
+        "operationId": "getRunsByIdArtifacts",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/artifacts",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/artifacts/{node}": {
+      "get": {
+        "operationId": "getRunsByIdArtifactsByNode",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/artifacts/{node}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/artifacts/{node}/{version}": {
+      "get": {
+        "operationId": "getRunsByIdArtifactsByNodeByVersion",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/artifacts/{node}/{version}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "node",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "version",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/attachments/{name}": {
+      "get": {
+        "operationId": "getRunsByIdAttachmentsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/attachments/{name}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/attachments/{name}/url": {
+      "get": {
+        "operationId": "getRunsByIdAttachmentsByNameUrl",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/attachments/{name}/url",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/browser/attach": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdBrowserAttach",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/browser/attach",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/browser/cdp": {
+      "get": {
+        "operationId": "getRunsByIdBrowserCdp",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/browser/cdp",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/cancel": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdCancel",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/cancel",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/commit-and-finalize": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdCommitAndFinalize",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/commit-and-finalize",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/commits": {
+      "get": {
+        "operationId": "getRunsByIdCommits",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/commits",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/commits/{sha}": {
+      "get": {
+        "operationId": "getRunsByIdCommitsBySha",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/commits/{sha}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sha",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/commits/{sha}/diff": {
+      "get": {
+        "operationId": "getRunsByIdCommitsByShaDiff",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/commits/{sha}/diff",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sha",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/events": {
+      "get": {
+        "operationId": "getRunsByIdEvents",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/events",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/files": {
+      "get": {
+        "operationId": "getRunsByIdFiles",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/files",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/files/content": {
+      "get": {
+        "operationId": "getRunsByIdFilesContent",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/files/content",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putRunsByIdFilesContent",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/runs/{id}/files/content",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/files/diff": {
+      "get": {
+        "operationId": "getRunsByIdFilesDiff",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/files/diff",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/fork": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdFork",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/fork",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/log": {
+      "get": {
+        "operationId": "getRunsByIdLog",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/log",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/merge": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdMerge",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/merge",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/merge/conflicts": {
+      "get": {
+        "operationId": "getRunsByIdMergeConflicts",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/merge/conflicts",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/merge/conflicts/abort": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdMergeConflictsAbort",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/merge/conflicts/abort",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/merge/conflicts/finalize": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdMergeConflictsFinalize",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/merge/conflicts/finalize",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/merge/conflicts/resolve": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdMergeConflictsResolve",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/merge/conflicts/resolve",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/merge/conflicts/resolve-with-agent": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdMergeConflictsResolveWithAgent",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/merge/conflicts/resolve-with-agent",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/pause": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdPause",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/pause",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/preview": {
+      "get": {
+        "operationId": "getRunsByIdPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/preview",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/queue-message": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdQueueMessage",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/queue-message",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/queue-message/{msgID}": {
+      "delete": {
+        "operationId": "deleteRunsByIdQueueMessageByMsgID",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/runs/{id}/queue-message/{msgID}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "msgID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/queue-messages": {
+      "get": {
+        "operationId": "getRunsByIdQueueMessages",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/queue-messages",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/rename": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdRename",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/rename",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/resume": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdResume",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/resume",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/session-board": {
+      "get": {
+        "operationId": "getRunsByIdSessionBoard",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/session-board",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/skills": {
+      "get": {
+        "operationId": "getRunsByIdSkills",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/skills",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/tools/{toolUseID}/{kind}": {
+      "get": {
+        "operationId": "getRunsByIdToolsByToolUseIDByKind",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/tools/{toolUseID}/{kind}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "toolUseID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/runs/{id}/watch/{issueID}": {
+      "delete": {
+        "operationId": "deleteRunsByIdWatchByIssueID",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/runs/{id}/watch/{issueID}",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "issueID",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdWatchByIssueID",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/watch/{issueID}",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{id}/workflow": {
+      "get": {
+        "operationId": "getRunsByIdWorkflow",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/workflow",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/server/info": {
+      "get": {
+        "operationId": "getServerInfo",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/server/info",
+        "tags": [
+          "server"
+        ]
+      }
+    },
+    "/api/teams": {
+      "get": {
+        "operationId": "getTeams",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams",
+        "tags": [
+          "teams"
+        ]
+      },
+      "post": {
+        "operationId": "postTeams",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/api-keys": {
+      "get": {
+        "operationId": "getTeamsByIdApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/api-keys",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdApiKeys",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/api-keys",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/api-keys/{key_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/api-keys/{key_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "key_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdApiKeysByKeyId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/api-keys/{key_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/audit": {
+      "get": {
+        "operationId": "getTeamsByIdAudit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/audit",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/bots/{bot_id}/bindings": {
+      "get": {
+        "operationId": "getTeamsByIdBotsByBotIdBindings",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/bots/{bot_id}/bindings",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "bot_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdBotsByBotIdBindings",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/bots/{bot_id}/bindings",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/bots/{bot_id}/bindings/{binding_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdBotsByBotIdBindingsByBindingId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "bot_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "binding_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdBotsByBotIdBindingsByBindingId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/connections": {
+      "get": {
+        "operationId": "getTeamsByIdForgeConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/connections",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeConnections",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/connections",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/connections/{conn_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdForgeConnectionsByConnId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/forge/connections/{conn_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/forge/connections/{conn_id}/repos": {
+      "get": {
+        "operationId": "getTeamsByIdForgeConnectionsByConnIdRepos",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/connections/{conn_id}/repos",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/forge/oauth-apps": {
+      "get": {
+        "operationId": "getTeamsByIdForgeOauthApps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/oauth-apps",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeOauthApps",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/oauth-apps",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/oauth-apps/github-manifest": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeOauthAppsGithubManifest",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/oauth-apps/github-manifest",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/oauth-apps/{app_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdForgeOauthAppsByAppId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/forge/oauth-apps/{app_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "app_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/forge/repo-bots": {
+      "get": {
+        "operationId": "getTeamsByIdForgeRepoBots",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/repo-bots",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeRepoBots",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/repo-bots",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/forge/repo-bots/preview": {
+      "get": {
+        "operationId": "getTeamsByIdForgeRepoBotsPreview",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/repo-bots/preview",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/forge/repo-bots/{integration_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdForgeRepoBotsByIntegrationId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/forge/repo-bots/{integration_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "integration_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/invitations": {
+      "get": {
+        "operationId": "getTeamsByIdInvitations",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/invitations",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdInvitations",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/invitations",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/invitations/{invite_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdInvitationsByInviteId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/invitations/{invite_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "invite_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/members": {
+      "get": {
+        "operationId": "getTeamsByIdMembers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/members",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/members/{user_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/members/{user_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "user_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdMembersByUserId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/members/{user_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/secrets": {
+      "get": {
+        "operationId": "getTeamsByIdSecrets",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/secrets",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdSecrets",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/secrets",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/secrets/{secret_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdSecretsBySecretId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/secrets/{secret_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "secret_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdSecretsBySecretId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/secrets/{secret_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/webhooks": {
+      "get": {
+        "operationId": "getTeamsByIdWebhooks",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/webhooks",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdWebhooks",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/webhooks",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/webhooks/{webhook_id}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdWebhooksByWebhookId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/webhooks/{webhook_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "get": {
+        "operationId": "getTeamsByIdWebhooksByWebhookId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/webhooks/{webhook_id}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "webhook_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdWebhooksByWebhookId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/webhooks/{webhook_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/webhooks/{webhook_id}/deliveries": {
+      "get": {
+        "operationId": "getTeamsByIdWebhooksByWebhookIdDeliveries",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/webhooks/{webhook_id}/deliveries",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "webhook_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/webhooks/{webhook_id}/rotate": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "webhook_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdWebhooksByWebhookIdRotate",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/webhooks/{webhook_id}/rotate",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/unparse": {
+      "post": {
+        "operationId": "postUnparse",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/unparse",
+        "tags": [
+          "unparse"
+        ]
+      }
+    },
+    "/api/v1/bots": {
+      "get": {
+        "operationId": "getV1Bots",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/bots",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/install": {
+      "post": {
+        "operationId": "postV1BotsInstall",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/bots/install",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/upload": {
+      "post": {
+        "operationId": "postV1BotsUpload",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/bots/upload",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{name}": {
+      "get": {
+        "operationId": "getV1BotsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/bots/{name}",
+        "tags": [
+          "bots"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putV1BotsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/v1/bots/{name}",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{name}/overlay": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putV1BotsByNameOverlay",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/v1/bots/{name}/overlay",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/limits/cost": {
+      "get": {
+        "operationId": "getV1LimitsCost",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/limits/cost",
+        "tags": [
+          "limits"
+        ]
+      }
+    },
+    "/api/v1/limits/cost/override": {
+      "post": {
+        "operationId": "postV1LimitsCostOverride",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/limits/cost/override",
+        "tags": [
+          "limits"
+        ]
+      }
+    },
+    "/api/v1/marketplace/bots": {
+      "get": {
+        "operationId": "getV1MarketplaceBots",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/marketplace/bots",
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/bots/{slug}": {
+      "get": {
+        "operationId": "getV1MarketplaceBotsBySlug",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/marketplace/bots/{slug}",
+        "tags": [
+          "marketplace"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/marketplace/bots/{slug}/download": {
+      "get": {
+        "operationId": "getV1MarketplaceBotsBySlugDownload",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/marketplace/bots/{slug}/download",
+        "tags": [
+          "marketplace"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/marketplace/bots/{slug}/install": {
+      "delete": {
+        "operationId": "deleteV1MarketplaceBotsBySlugInstall",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/v1/marketplace/bots/{slug}/install",
+        "tags": [
+          "marketplace"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1MarketplaceBotsBySlugInstall",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/marketplace/bots/{slug}/install",
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/config": {
+      "get": {
+        "operationId": "getV1MarketplaceConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/marketplace/config",
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/moderation": {
+      "get": {
+        "operationId": "getV1MarketplaceModeration",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/marketplace/moderation",
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/moderation/{slug}/approve": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1MarketplaceModerationBySlugApprove",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/marketplace/moderation/{slug}/approve",
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/moderation/{slug}/reject": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "slug",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1MarketplaceModerationBySlugReject",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/marketplace/moderation/{slug}/reject",
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/marketplace/submit": {
+      "post": {
+        "operationId": "postV1MarketplaceSubmit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/marketplace/submit",
+        "tags": [
+          "marketplace"
+        ]
+      }
+    },
+    "/api/v1/runs/repos": {
+      "get": {
+        "operationId": "getV1RunsRepos",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/runs/repos",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/v1/runs/stats": {
+      "get": {
+        "operationId": "getV1RunsStats",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/runs/stats",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/v1/triggers": {
+      "get": {
+        "operationId": "getV1Triggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/triggers",
+        "tags": [
+          "triggers"
+        ]
+      },
+      "post": {
+        "operationId": "postV1Triggers",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/triggers",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
+    "/api/v1/triggers/emit": {
+      "post": {
+        "operationId": "postV1TriggersEmit",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/triggers/emit",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
+    "/api/v1/triggers/{id}": {
+      "delete": {
+        "operationId": "deleteV1TriggersById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/v1/triggers/{id}",
+        "tags": [
+          "triggers"
+        ]
+      },
+      "get": {
+        "operationId": "getV1TriggersById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/triggers/{id}",
+        "tags": [
+          "triggers"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putV1TriggersById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/v1/triggers/{id}",
+        "tags": [
+          "triggers"
+        ]
+      }
+    },
+    "/api/validate": {
+      "post": {
+        "operationId": "postValidate",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/validate",
+        "tags": [
+          "validate"
+        ]
+      }
+    },
+    "/api/webhooks/forgejo/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postWebhooksForgejoById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/webhooks/forgejo/{id}",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/api/webhooks/generic/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postWebhooksGenericById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/webhooks/generic/{id}",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/api/webhooks/github/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postWebhooksGithubById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/webhooks/github/{id}",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/api/webhooks/gitlab/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postWebhooksGitlabById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/webhooks/gitlab/{id}",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/api/ws": {
+      "get": {
+        "operationId": "getWs",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/ws",
+        "tags": [
+          "ws"
+        ]
+      }
+    },
+    "/api/ws/runs/{id}": {
+      "get": {
+        "operationId": "getWsRunsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/ws/runs/{id}",
+        "tags": [
+          "ws"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}

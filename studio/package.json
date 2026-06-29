@@ -50,6 +50,7 @@
     "globals": "^17.6.0",
     "jsdom": "^29.1.1",
     "monaco-editor": "^0.55.1",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.61.1",

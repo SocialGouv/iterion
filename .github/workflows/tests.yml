@@ -39,6 +39,22 @@ jobs:
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
 
+      - name: OpenAPI spec + client drift check
+        # The committed openapi.json (offline-generated from the in-code route
+        # table) and studio/src/api/schema.ts (typed client surface) must match
+        # the code. Mirror of `task openapi:check`, inlined so the test job
+        # doesn't pull go-task. Reuses the studio node_modules installed above.
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run -mod=vendor ./cmd/iterion openapi -o openapi.json
+          pnpm -C studio exec openapi-typescript ../openapi.json -o src/api/schema.ts
+          if ! git diff --quiet -- openapi.json studio/src/api/schema.ts; then
+            echo "::error::OpenAPI spec / client drift — run 'task openapi:gen' and commit the result."
+            git --no-pager diff --stat -- openapi.json studio/src/api/schema.ts
+            exit 1
+          fi
+
       - name: Helm chart version drift check
         # Mirror of `task chart:check-version`, inlined so we don't pull
         # go-task into the test job. release-it bumps package.json on
