@@ -92,6 +92,23 @@ export function GitHubSection({
     });
   };
 
+  // Grant edits (add / remove / role / enabled) stage locally until Save, so a
+  // removed row must be saved to persist. Surface that: dirty drives an
+  // "unsaved changes" banner + a Discard, and gates the Save button — otherwise
+  // a removed row silently looks gone (vanishes locally, reappears on refresh).
+  const norm = (gs: GitHubTeamGrant[], en: boolean) =>
+    JSON.stringify({
+      enabled: en,
+      grants: gs
+        .filter((g) => g.github_org.trim() !== "")
+        .map((g) => ({ o: g.github_org.trim(), t: (g.team_slug ?? "").trim(), r: g.role })),
+    });
+  const dirty = norm(grants, enabled) !== norm(row?.grants ?? [], row?.enabled ?? true);
+  const discard = () => {
+    setGrants(row?.grants ?? []);
+    setEnabled(row?.enabled ?? true);
+  };
+
   return (
     <section className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3">
       {dialog}
@@ -152,21 +169,30 @@ export function GitHubSection({
                   ))}
                 </Select>
               </div>
-              <Badge
-                variant={g.verified ? "success" : "neutral"}
-                title={
-                  g.verified
-                    ? "iterion has confirmed you administer this GitHub org — the grant is live."
-                    : "Pending: connect this GitHub org under Integrations to verify control. Until then the grant is saved but inert."
-                }
-              >
-                {g.verified ? "verified" : "pending"}
-              </Badge>
-              {canManage && (
-                <Button variant="ghost" size="sm" onClick={() => removeGrant(i)}>
-                  Remove
-                </Button>
-              )}
+              {/* Spacer label + h-9 band so the badge + Remove vertically align
+                  with the labelled input controls on the same row. */}
+              <div className="flex flex-col">
+                <span className="block text-xs mb-1 select-none" aria-hidden="true">
+                  &nbsp;
+                </span>
+                <div className="flex h-9 items-center gap-2">
+                  <Badge
+                    variant={g.verified ? "success" : "neutral"}
+                    title={
+                      g.verified
+                        ? "iterion has confirmed you administer this GitHub org — the grant is live."
+                        : "Pending: connect this GitHub org under Integrations to verify control. Until then the grant is saved but inert."
+                    }
+                  >
+                    {g.verified ? "verified" : "pending"}
+                  </Badge>
+                  {canManage && (
+                    <Button variant="ghost" size="sm" onClick={() => removeGrant(i)}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
           ))
         )}
@@ -181,13 +207,29 @@ export function GitHubSection({
       {canManage && (
         <div className="space-y-3 border-t border-border-subtle pt-3">
           <Checkbox label="Enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          {dirty && (
+            <InlineBanner tone="info" layout="inline">
+              Unsaved changes — click Save to apply, or Discard to revert.
+            </InlineBanner>
+          )}
           <div className="flex gap-2">
             <Button variant="secondary" size="sm" onClick={addGrant}>
               Add grant
             </Button>
-            <Button variant="primary" size="sm" loading={busy} onClick={() => void save()}>
+            <Button
+              variant="primary"
+              size="sm"
+              loading={busy}
+              disabled={busy || !dirty}
+              onClick={() => void save()}
+            >
               Save
             </Button>
+            {dirty && (
+              <Button variant="ghost" size="sm" disabled={busy} onClick={discard}>
+                Discard
+              </Button>
+            )}
             {row && (
               <Button variant="danger" size="sm" onClick={() => void remove()}>
                 Delete allow-list
