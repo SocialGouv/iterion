@@ -156,6 +156,7 @@ type AgentNode struct {
 	MCP              *MCPConfig // node-level MCP activation/filtering
 	ActiveMCPServers []string   // populated after project config resolution
 	Publish          string     // persistent artifact name (empty if not set)
+	PublishLabels    []string   // DSL artifact_labels: applied to the published artifact
 	Session          SessionMode
 	Tools            []string // tool capability names
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
@@ -216,12 +217,13 @@ type HumanNode struct {
 	BaseNode
 	SchemaFields
 	InteractionFields
-	Publish      string
-	MinAnswers   int    // minimum answers required
-	Instructions string // prompt reference for human instructions
-	Model        string // model for LLM-based interaction modes
-	SystemPrompt string // prompt reference for LLM-based interaction modes
-	AwaitMode    AwaitMode
+	Publish       string
+	PublishLabels []string // DSL artifact_labels: applied to the published artifact
+	MinAnswers    int      // minimum answers required
+	Instructions  string   // prompt reference for human instructions
+	Model         string   // model for LLM-based interaction modes
+	SystemPrompt  string   // prompt reference for LLM-based interaction modes
+	AwaitMode     AwaitMode
 
 	// Review-gate fields (interaction: review). The gate runs a
 	// companion-driven multi-turn dialogue that walks the human through
@@ -246,17 +248,18 @@ func (n *HumanNode) NodeKind() NodeKind { return NodeHuman }
 type ToolNode struct {
 	BaseNode
 	SchemaFields
-	Command     string // command to execute, may contain {{...}} template refs
-	CommandRefs []*Ref // parsed template references in Command (resolved at runtime)
-	Script      string // script body (interpreter snippet); mutually exclusive with Command
-	ScriptRefs  []*Ref // parsed template references in Script
-	Language    string // interpreter for Script: "js"|"py"|"sh"|"bash" (empty defaults to "sh")
-	Publish     string // persistent artifact name (empty = not published)
-	Session     SessionMode
-	AwaitMode   AwaitMode
-	Sandbox     *SandboxSpec // node-level sandbox override (nil = inherit workflow)
-	RTK         string       // rtk output-compression mode: on|ultra|off ("" = inherit)
-	Permission  string       // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Command       string   // command to execute, may contain {{...}} template refs
+	CommandRefs   []*Ref   // parsed template references in Command (resolved at runtime)
+	Script        string   // script body (interpreter snippet); mutually exclusive with Command
+	ScriptRefs    []*Ref   // parsed template references in Script
+	Language      string   // interpreter for Script: "js"|"py"|"sh"|"bash" (empty defaults to "sh")
+	Publish       string   // persistent artifact name (empty = not published)
+	PublishLabels []string // DSL artifact_labels: applied to the published artifact
+	Session       SessionMode
+	AwaitMode     AwaitMode
+	Sandbox       *SandboxSpec // node-level sandbox override (nil = inherit workflow)
+	RTK           string       // rtk output-compression mode: on|ultra|off ("" = inherit)
+	Permission    string       // permission gate mode override: off|ask|deny ("" = inherit workflow)
 
 	// Verified Action quad (ADR-044). All optional; a node with an empty
 	// Postcondition runs the recipe with exit-code = success (unchanged).
@@ -299,9 +302,10 @@ func (n *ToolNode) GetPermission() string { return n.Permission }
 type ComputeNode struct {
 	BaseNode
 	SchemaFields
-	Exprs     []*ComputeExpr // ordered field-name → parsed AST pairs
-	Publish   string         // persistent artifact name (empty = not published)
-	AwaitMode AwaitMode
+	Exprs         []*ComputeExpr // ordered field-name → parsed AST pairs
+	Publish       string         // persistent artifact name (empty = not published)
+	PublishLabels []string       // DSL artifact_labels: applied to the published artifact
+	AwaitMode     AwaitMode
 }
 
 // ComputeExpr is a single field expression in a ComputeNode.
@@ -478,6 +482,23 @@ func NodePublish(n Node) string {
 		return n.Publish
 	}
 	return ""
+}
+
+// NodePublishLabels returns the DSL `artifact_labels:` list for the
+// publish-capable node types (Agent/Human/Tool/Compute), or nil. Judge
+// nodes don't publish, so they're excluded.
+func NodePublishLabels(n Node) []string {
+	switch n := n.(type) {
+	case *AgentNode:
+		return n.PublishLabels
+	case *HumanNode:
+		return n.PublishLabels
+	case *ToolNode:
+		return n.PublishLabels
+	case *ComputeNode:
+		return n.PublishLabels
+	}
+	return nil
 }
 
 // NodeInteraction returns the Interaction field for nodes that support it, or InteractionNone.

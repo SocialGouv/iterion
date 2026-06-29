@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -50,6 +51,73 @@ func (s *Service) ListArtifacts(runID, nodeID string) ([]ArtifactSummary, error)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
 	return out, nil
+}
+
+// RunArtifactSummary describes the latest published artifact for one node,
+// for the studio's centralized, label-grouped artifact view. Title is a
+// short human label derived from the artifact data (a `title`/`name`
+// field) when present, else empty (the studio falls back to the node id).
+type RunArtifactSummary struct {
+	NodeID    string    `json:"node_id"`
+	Version   int       `json:"version"`
+	Labels    []string  `json:"labels,omitempty"`
+	Title     string    `json:"title,omitempty"`
+	WrittenAt time.Time `json:"written_at"`
+}
+
+// ListAllArtifacts enumerates the latest published artifact per node for a
+// run — the data behind the centralized Artifacts view. It walks
+// runs/<id>/artifacts/*/ (filesystem store only; cloud mode returns an
+// empty list, mirroring ListArtifacts) and loads each node's latest
+// version to surface its labels + title. Sorted by node id for stable
+// rendering. Few artifacts per run, so the per-node body read is cheap.
+func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(s.storeDir, "runs", runID, "artifacts")
+	nodes, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("runview: list artifacts: %w", err)
+	}
+	out := make([]RunArtifactSummary, 0, len(nodes))
+	for _, n := range nodes {
+		if !n.IsDir() {
+			continue
+		}
+		nodeID := n.Name()
+		versions, verr := s.ListArtifacts(runID, nodeID)
+		if verr != nil || len(versions) == 0 {
+			continue
+		}
+		latest := versions[len(versions)-1]
+		art, lerr := s.LoadArtifact(runID, nodeID, latest.Version)
+		if lerr != nil || art == nil {
+			continue
+		}
+		out = append(out, RunArtifactSummary{
+			NodeID:    nodeID,
+			Version:   latest.Version,
+			Labels:    art.Labels,
+			Title:     artifactTitle(art.Data),
+			WrittenAt: latest.WrittenAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NodeID < out[j].NodeID })
+	return out, nil
+}
+
+// artifactTitle picks a short human title from artifact data, or "".
+func artifactTitle(data map[string]interface{}) string {
+	for _, k := range []string{"title", "name"} {
+		if s, ok := data[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // LoadArtifact returns one persisted artifact body.

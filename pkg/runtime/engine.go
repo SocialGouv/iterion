@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/SocialGouv/iterion/pkg/artifactlabels"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
@@ -1342,21 +1343,30 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 		return nil
 	}
 	version := rs.artifactVersions[nodeID]
+	// Labels categorise the artifact for the studio's grouped view. Union
+	// the node's DSL artifact_labels with shape-derived labels (plan/
+	// verdict), deduped — so explicit and heuristic labels coexist.
+	labels := dedupeLabels(append(nodePublishLabels(node), artifactlabels.Classify(output)...))
 	if err := e.store.WriteArtifact(ctx, &store.Artifact{
 		RunID:   rs.runID,
 		NodeID:  nodeID,
 		Version: version,
 		Data:    output,
+		Labels:  labels,
 	}); err != nil {
 		return fmt.Errorf("runtime: write artifact: %w", err)
 	}
 	rs.artifactVersions[nodeID] = version + 1
 	rs.artifacts[pub] = output
 
-	if err := e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+	evtData := map[string]interface{}{
 		"publish": pub,
 		"version": version,
-	}); err != nil {
+	}
+	if len(labels) > 0 {
+		evtData["labels"] = labels
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, evtData); err != nil {
 		return fmt.Errorf("runtime: artifact written but event emission failed (state inconsistency): %w", err)
 	}
 	return nil

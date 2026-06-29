@@ -283,6 +283,7 @@ type jsonAgentDecl struct {
 	Input             string               `json:"input,omitempty"`
 	Output            string               `json:"output,omitempty"`
 	Publish           string               `json:"publish,omitempty"`
+	ArtifactLabels    []string             `json:"artifact_labels,omitempty"`
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
@@ -314,6 +315,7 @@ type jsonJudgeDecl struct {
 	Input             string               `json:"input,omitempty"`
 	Output            string               `json:"output,omitempty"`
 	Publish           string               `json:"publish,omitempty"`
+	ArtifactLabels    []string             `json:"artifact_labels,omitempty"`
 	System            string               `json:"system,omitempty"`
 	User              string               `json:"user,omitempty"`
 	Session           string               `json:"session,omitempty"`
@@ -349,41 +351,43 @@ type jsonRouterDecl struct {
 }
 
 type jsonHumanDecl struct {
-	Name              string `json:"name,omitempty"`
-	Input             string `json:"input,omitempty"`
-	Output            string `json:"output,omitempty"`
-	Publish           string `json:"publish,omitempty"`
-	Instructions      string `json:"instructions,omitempty"`
-	Interaction       string `json:"interaction,omitempty"`
-	InteractionPrompt string `json:"interaction_prompt,omitempty"`
-	InteractionModel  string `json:"interaction_model,omitempty"`
-	MinAnswers        int    `json:"min_answers,omitempty"`
-	Model             string `json:"model,omitempty"`
-	System            string `json:"system,omitempty"`
-	Await             string `json:"await,omitempty"`
-	ReviewURL         string `json:"review_url,omitempty"`
-	Posture           string `json:"posture,omitempty"`
-	MergeStrategy     string `json:"merge_strategy,omitempty"`
-	MergeInto         string `json:"merge_into,omitempty"`
-	MaxTurns          int    `json:"max_turns,omitempty"`
+	Name              string   `json:"name,omitempty"`
+	Input             string   `json:"input,omitempty"`
+	Output            string   `json:"output,omitempty"`
+	Publish           string   `json:"publish,omitempty"`
+	ArtifactLabels    []string `json:"artifact_labels,omitempty"`
+	Instructions      string   `json:"instructions,omitempty"`
+	Interaction       string   `json:"interaction,omitempty"`
+	InteractionPrompt string   `json:"interaction_prompt,omitempty"`
+	InteractionModel  string   `json:"interaction_model,omitempty"`
+	MinAnswers        int      `json:"min_answers,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	System            string   `json:"system,omitempty"`
+	Await             string   `json:"await,omitempty"`
+	ReviewURL         string   `json:"review_url,omitempty"`
+	Posture           string   `json:"posture,omitempty"`
+	MergeStrategy     string   `json:"merge_strategy,omitempty"`
+	MergeInto         string   `json:"merge_into,omitempty"`
+	MaxTurns          int      `json:"max_turns,omitempty"`
 }
 
 type jsonToolNodeDecl struct {
-	Name          string             `json:"name,omitempty"`
-	Command       string             `json:"command,omitempty"`
-	Script        string             `json:"script,omitempty"`
-	Language      string             `json:"language,omitempty"`
-	Input         string             `json:"input,omitempty"`
-	Output        string             `json:"output,omitempty"`
-	Publish       string             `json:"publish,omitempty"`
-	Await         string             `json:"await,omitempty"`
-	Sandbox       *jsonSandboxBlock  `json:"sandbox,omitempty"`
-	RTK           string             `json:"rtk,omitempty"`
-	Permission    string             `json:"permission,omitempty"`
-	Goal          string             `json:"goal,omitempty"`
-	Postcondition string             `json:"postcondition,omitempty"`
-	Policy        string             `json:"policy,omitempty"`
-	Recovery      *jsonRecoveryBlock `json:"recovery,omitempty"`
+	Name           string             `json:"name,omitempty"`
+	Command        string             `json:"command,omitempty"`
+	Script         string             `json:"script,omitempty"`
+	Language       string             `json:"language,omitempty"`
+	Input          string             `json:"input,omitempty"`
+	Output         string             `json:"output,omitempty"`
+	Publish        string             `json:"publish,omitempty"`
+	ArtifactLabels []string           `json:"artifact_labels,omitempty"`
+	Await          string             `json:"await,omitempty"`
+	Sandbox        *jsonSandboxBlock  `json:"sandbox,omitempty"`
+	RTK            string             `json:"rtk,omitempty"`
+	Permission     string             `json:"permission,omitempty"`
+	Goal           string             `json:"goal,omitempty"`
+	Postcondition  string             `json:"postcondition,omitempty"`
+	Policy         string             `json:"policy,omitempty"`
+	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
 }
 
 // jsonRecoveryBlock is the JSON form of an ast.RecoveryBlock (ADR-044).
@@ -531,12 +535,13 @@ func sandboxNetworkBlockFromJSON(j *jsonSandboxNetworkBlock) *SandboxNetworkBloc
 }
 
 type jsonComputeDecl struct {
-	Name    string             `json:"name,omitempty"`
-	Input   string             `json:"input,omitempty"`
-	Output  string             `json:"output,omitempty"`
-	Publish string             `json:"publish,omitempty"`
-	Expr    []*jsonComputeExpr `json:"expr,omitempty"`
-	Await   string             `json:"await,omitempty"`
+	Name           string             `json:"name,omitempty"`
+	Input          string             `json:"input,omitempty"`
+	Output         string             `json:"output,omitempty"`
+	Publish        string             `json:"publish,omitempty"`
+	ArtifactLabels []string           `json:"artifact_labels,omitempty"`
+	Expr           []*jsonComputeExpr `json:"expr,omitempty"`
+	Await          string             `json:"await,omitempty"`
 }
 
 type jsonComputeExpr struct {
@@ -665,30 +670,32 @@ func toJSON(f *File) *jsonFile {
 	}
 	for _, t := range f.Tools {
 		jf.Tools = append(jf.Tools, &jsonToolNodeDecl{
-			Name:          t.Name,
-			Command:       t.Command,
-			Script:        t.Script,
-			Language:      t.Language,
-			Input:         t.Input,
-			Output:        t.Output,
-			Publish:       t.Publish,
-			Await:         awaitModeToStr[t.Await],
-			Sandbox:       sandboxBlockToJSON(t.Sandbox),
-			RTK:           t.RTK,
-			Permission:    t.Permission,
-			Goal:          t.Goal,
-			Postcondition: t.Postcondition,
-			Policy:        t.Policy,
-			Recovery:      recoveryBlockToJSON(t.Recovery),
+			Name:           t.Name,
+			Command:        t.Command,
+			Script:         t.Script,
+			Language:       t.Language,
+			Input:          t.Input,
+			Output:         t.Output,
+			Publish:        t.Publish,
+			ArtifactLabels: t.ArtifactLabels,
+			Await:          awaitModeToStr[t.Await],
+			Sandbox:        sandboxBlockToJSON(t.Sandbox),
+			RTK:            t.RTK,
+			Permission:     t.Permission,
+			Goal:           t.Goal,
+			Postcondition:  t.Postcondition,
+			Policy:         t.Policy,
+			Recovery:       recoveryBlockToJSON(t.Recovery),
 		})
 	}
 	for _, c := range f.Computes {
 		jc := &jsonComputeDecl{
-			Name:    c.Name,
-			Input:   c.Input,
-			Output:  c.Output,
-			Publish: c.Publish,
-			Await:   awaitModeToStr[c.Await],
+			Name:           c.Name,
+			Input:          c.Input,
+			Output:         c.Output,
+			Publish:        c.Publish,
+			ArtifactLabels: c.ArtifactLabels,
+			Await:          awaitModeToStr[c.Await],
 		}
 		for _, e := range c.Expr {
 			jc.Expr = append(jc.Expr, &jsonComputeExpr{Key: e.Key, Expr: e.Expr})
@@ -959,6 +966,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Input:             a.Input,
 		Output:            a.Output,
 		Publish:           a.Publish,
+		ArtifactLabels:    a.ArtifactLabels,
 		System:            a.System,
 		User:              a.User,
 		Session:           sessionModeToStr[a.Session],
@@ -992,6 +1000,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Input:             j.Input,
 		Output:            j.Output,
 		Publish:           j.Publish,
+		ArtifactLabels:    j.ArtifactLabels,
 		System:            j.System,
 		User:              j.User,
 		Session:           sessionModeToStr[j.Session],
@@ -1021,6 +1030,7 @@ func humanToJSON(h *HumanDecl) *jsonHumanDecl {
 		Input:             h.Input,
 		Output:            h.Output,
 		Publish:           h.Publish,
+		ArtifactLabels:    h.ArtifactLabels,
 		Instructions:      h.Instructions,
 		Interaction:       interactionModeToStr[h.Interaction],
 		InteractionPrompt: h.InteractionPrompt,
@@ -1221,21 +1231,22 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			return nil, fmt.Errorf("astjson: unknown await mode %q", jt.Await)
 		}
 		f.Tools = append(f.Tools, &ToolNodeDecl{
-			Name:          jt.Name,
-			Command:       jt.Command,
-			Script:        jt.Script,
-			Language:      jt.Language,
-			Input:         jt.Input,
-			Output:        jt.Output,
-			Publish:       jt.Publish,
-			Await:         aw,
-			Sandbox:       sandboxBlockFromJSON(jt.Sandbox),
-			RTK:           jt.RTK,
-			Permission:    jt.Permission,
-			Goal:          jt.Goal,
-			Postcondition: jt.Postcondition,
-			Policy:        jt.Policy,
-			Recovery:      recoveryBlockFromJSON(jt.Recovery),
+			Name:           jt.Name,
+			Command:        jt.Command,
+			Script:         jt.Script,
+			Language:       jt.Language,
+			Input:          jt.Input,
+			Output:         jt.Output,
+			Publish:        jt.Publish,
+			ArtifactLabels: jt.ArtifactLabels,
+			Await:          aw,
+			Sandbox:        sandboxBlockFromJSON(jt.Sandbox),
+			RTK:            jt.RTK,
+			Permission:     jt.Permission,
+			Goal:           jt.Goal,
+			Postcondition:  jt.Postcondition,
+			Policy:         jt.Policy,
+			Recovery:       recoveryBlockFromJSON(jt.Recovery),
 		})
 	}
 
@@ -1245,11 +1256,12 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			return nil, fmt.Errorf("astjson: unknown await mode %q", jc.Await)
 		}
 		cd := &ComputeDecl{
-			Name:    jc.Name,
-			Input:   jc.Input,
-			Output:  jc.Output,
-			Publish: jc.Publish,
-			Await:   aw,
+			Name:           jc.Name,
+			Input:          jc.Input,
+			Output:         jc.Output,
+			Publish:        jc.Publish,
+			ArtifactLabels: jc.ArtifactLabels,
+			Await:          aw,
 		}
 		for _, je := range jc.Expr {
 			cd.Expr = append(cd.Expr, &ComputeExpr{Key: je.Key, Expr: je.Expr})
@@ -1423,6 +1435,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Input:             ja.Input,
 			Output:            ja.Output,
 			Publish:           ja.Publish,
+			ArtifactLabels:    ja.ArtifactLabels,
 			System:            ja.System,
 			User:              ja.User,
 			Session:           sess,
@@ -1470,6 +1483,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Input:             jj.Input,
 			Output:            jj.Output,
 			Publish:           jj.Publish,
+			ArtifactLabels:    jj.ArtifactLabels,
 			System:            jj.System,
 			User:              jj.User,
 			Session:           sess,
@@ -1516,6 +1530,7 @@ func humanFromJSONWithInteraction(jh *jsonHumanDecl, interaction InteractionMode
 		Input:             jh.Input,
 		Output:            jh.Output,
 		Publish:           jh.Publish,
+		ArtifactLabels:    jh.ArtifactLabels,
 		Instructions:      jh.Instructions,
 		Interaction:       interaction,
 		InteractionPrompt: jh.InteractionPrompt,

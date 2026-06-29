@@ -51,6 +51,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
 	s.mux.HandleFunc("GET /api/runs/{id}/events", s.handleGetRunEvents)
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
+	s.mux.HandleFunc("GET /api/runs/{id}/artifacts", s.handleListAllArtifacts)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}", s.handleListArtifacts)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}/{version}", s.handleGetArtifact)
 	s.mux.HandleFunc("GET /api/runs/{id}/tools/{toolUseID}/{kind}", s.handleGetToolBlob)
@@ -476,6 +477,30 @@ func (s *Server) handleGetRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSONFor(w, r, wf)
+}
+
+// handleListAllArtifacts returns the latest published artifact per node
+// for a run (the centralized, label-grouped Artifacts view). Tenant-scoped
+// like handleListArtifacts.
+func (s *Server) handleListAllArtifacts(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
+	out, err := s.runs.ListAllArtifacts(id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list artifacts: %v", err)
+		return
+	}
+	if out == nil {
+		out = []runview.RunArtifactSummary{}
+	}
+	s.writeJSONFor(w, r, map[string]interface{}{"artifacts": out})
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {

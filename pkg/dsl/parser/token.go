@@ -70,6 +70,7 @@ const (
 	TokenTools
 	TokenToolPolicy
 	TokenCapabilities
+	TokenArtifactLabels
 	TokenToolMaxSteps
 	TokenReasoningEffort
 	TokenMode
@@ -228,6 +229,7 @@ var tokenNames = map[TokenType]string{
 	TokenTools:              "tools",
 	TokenToolPolicy:         "tool_policy",
 	TokenCapabilities:       "capabilities",
+	TokenArtifactLabels:     "artifact_labels",
 	TokenToolMaxSteps:       "tool_max_steps",
 	TokenReasoningEffort:    "reasoning_effort",
 	TokenMode:               "mode",
@@ -352,6 +354,7 @@ var keywords = map[string]TokenType{
 	"tools":                 TokenTools,
 	"tool_policy":           TokenToolPolicy,
 	"capabilities":          TokenCapabilities,
+	"artifact_labels":       TokenArtifactLabels,
 	"tool_max_steps":        TokenToolMaxSteps,
 	"reasoning_effort":      TokenReasoningEffort,
 	"mode":                  TokenMode,

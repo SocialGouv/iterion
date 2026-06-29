@@ -46,6 +46,7 @@ const (
 	DiagInvalidCompaction        DiagCode = "C043" // compaction.threshold or compaction.preserve_recent out of range
 	DiagMemoryNotSupported       DiagCode = "C047" // memory: enabled on a backend that does not consume it (only claw does today)
 	DiagMemoryMissingScope       DiagCode = "C048" // memory: enabled without a scope: name
+	DiagArtifactLabelsNoPublish  DiagCode = "C049" // artifact_labels: set on a node with no publish: (nothing to attach to)
 	DiagMemoryInvalidVisibility  DiagCode = "C170" // memory: unknown visibility value
 	DiagMemoryVisibilityConflict DiagCode = "C171" // memory: visibility: with the legacy project_root:
 
@@ -137,6 +138,21 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateRTK(w)
 	c.validatePermission(w)
 	c.validateVerifiedActions(w)
+	c.validateArtifactLabels(w)
+}
+
+// validateArtifactLabels warns (C049) when a node declares artifact_labels:
+// but no publish: — the labels have no artifact to attach to (only a node's
+// *published* output is labelled). Judge nodes never publish, so their
+// artifact_labels are dropped at compile time and not checked here.
+func (c *compiler) validateArtifactLabels(w *Workflow) {
+	for _, n := range w.Nodes {
+		if len(NodePublishLabels(n)) > 0 && NodePublish(n) == "" {
+			c.warnfAt(DiagArtifactLabelsNoPublish, n.NodeID(), "",
+				"%s %q declares artifact_labels but no publish: — the labels have nothing to attach to (only a node's published output is labelled)",
+				n.NodeKind().String(), n.NodeID())
+		}
+	}
 }
 
 // validateRTK enforces that every rtk value (workflow-level + every

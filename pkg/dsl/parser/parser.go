@@ -1181,6 +1181,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenPublish:
 		p.expect(TokenColon)
 		d.Publish = p.expectIdent()
+	case TokenArtifactLabels:
+		p.expect(TokenColon)
+		d.ArtifactLabels = p.parseToolList()
 	case TokenSystem:
 		p.expect(TokenColon)
 		d.System = p.expectIdent()
@@ -1425,6 +1428,9 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 	case TokenPublish:
 		p.expect(TokenColon)
 		hd.Publish = p.expectIdent()
+	case TokenArtifactLabels:
+		p.expect(TokenColon)
+		hd.ArtifactLabels = p.parseToolList()
 	case TokenInstructions:
 		p.expect(TokenColon)
 		hd.Instructions = p.expectIdent()
@@ -1544,6 +1550,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenPublish:
 		p.expect(TokenColon)
 		td.Publish = p.expectIdent()
+	case TokenArtifactLabels:
+		p.expect(TokenColon)
+		td.ArtifactLabels = p.parseToolList()
 	case TokenAwait:
 		p.expect(TokenColon)
 		td.Await = p.parseAwaitMode()
@@ -1679,6 +1688,9 @@ func (p *parser) parseComputeProp(cd *ast.ComputeDecl, propTok Token) {
 	case TokenPublish:
 		p.expect(TokenColon)
 		cd.Publish = p.expectIdent()
+	case TokenArtifactLabels:
+		p.expect(TokenColon)
+		cd.ArtifactLabels = p.parseToolList()
 	case TokenAwait:
 		p.expect(TokenColon)
 		cd.Await = p.parseAwaitMode()
@@ -2437,7 +2449,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenEntry, TokenMCP, TokenBudget, TokenTransport, TokenServers,
 		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools, TokenToolPolicy,
-		TokenCapabilities, TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
+		TokenCapabilities, TokenArtifactLabels, TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
 		TokenInstructions, TokenCommand, TokenScript, TokenLanguage, TokenArgs, TokenURL,
 		TokenAuth, TokenReadonly,
 		TokenDefaultBackend,

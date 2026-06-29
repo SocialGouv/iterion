@@ -522,11 +522,16 @@ type Checkpoint struct {
 
 // Artifact is a versioned output persisted under artifacts/<node>/<version>.json.
 type Artifact struct {
-	RunID     string                 `json:"run_id" bson:"run_id"`
-	NodeID    string                 `json:"node_id" bson:"node_id"`
-	Version   int                    `json:"version" bson:"version"`
-	Data      map[string]interface{} `json:"data" bson:"data"`
-	WrittenAt time.Time              `json:"written_at" bson:"written_at"`
+	RunID   string                 `json:"run_id" bson:"run_id"`
+	NodeID  string                 `json:"node_id" bson:"node_id"`
+	Version int                    `json:"version" bson:"version"`
+	Data    map[string]interface{} `json:"data" bson:"data"`
+	// Labels categorise the artifact (e.g. "plan", "verdict") so the studio
+	// can group artifacts by label. Sourced from the node's DSL
+	// `artifact_labels:` plus a shape heuristic (pkg/artifactlabels). Empty
+	// on legacy artifacts written before this field existed.
+	Labels    []string  `json:"labels,omitempty" bson:"labels,omitempty"`
+	WrittenAt time.Time `json:"written_at" bson:"written_at"`
 }
 
 // ---------------------------------------------------------------------------

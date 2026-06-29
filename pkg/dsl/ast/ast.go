@@ -364,6 +364,7 @@ type LLMDecl struct {
 	Input             string           // schema reference name
 	Output            string           // schema reference name
 	Publish           string           // persistent artifact name (empty if not set)
+	ArtifactLabels    []string         // artifact_labels: applied to the published artifact
 	System            string           // prompt reference name
 	User              string           // prompt reference name
 	Session           SessionMode      // defaults to SessionFresh
@@ -476,6 +477,7 @@ type HumanDecl struct {
 	Input             string          // schema reference name
 	Output            string          // schema reference name
 	Publish           string          // persistent artifact name
+	ArtifactLabels    []string        // artifact_labels: applied to the published artifact
 	Instructions      string          // prompt reference name
 	Interaction       InteractionMode // defaults to InteractionHuman (replaces Mode)
 	InteractionPrompt string          // prompt reference guiding LLM for llm_or_human decisions
@@ -508,17 +510,18 @@ type HumanDecl struct {
 // workspace and executed by the interpreter named by `Language`).
 // Setting both is a validation error; setting neither is also an error.
 type ToolNodeDecl struct {
-	Name       string
-	Command    string        // command to execute, may contain ${...} env refs and {{...}} template refs
-	Script     string        // script body for higher-level interpreters (mutually exclusive with Command)
-	Language   string        // interpreter selector for Script: js | py | sh | bash. Defaults to sh when empty.
-	Input      string        // optional input schema reference name
-	Output     string        // schema reference name
-	Publish    string        // persistent artifact name (empty if not set)
-	Await      AwaitMode     // convergence strategy (none/wait_all/best_effort)
-	Sandbox    *SandboxBlock // node-level sandbox override; nil inherits from workflow
-	RTK        string        // rtk output-compression mode: on|ultra|off ("" = inherit)
-	Permission string        // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Name           string
+	Command        string        // command to execute, may contain ${...} env refs and {{...}} template refs
+	Script         string        // script body for higher-level interpreters (mutually exclusive with Command)
+	Language       string        // interpreter selector for Script: js | py | sh | bash. Defaults to sh when empty.
+	Input          string        // optional input schema reference name
+	Output         string        // schema reference name
+	Publish        string        // persistent artifact name (empty if not set)
+	ArtifactLabels []string      // artifact_labels: applied to the published artifact
+	Await          AwaitMode     // convergence strategy (none/wait_all/best_effort)
+	Sandbox        *SandboxBlock // node-level sandbox override; nil inherits from workflow
+	RTK            string        // rtk output-compression mode: on|ultra|off ("" = inherit)
+	Permission     string        // permission gate mode override: off|ask|deny ("" = inherit workflow)
 
 	// Verified Action quad (ADR-044) — all optional; a tool node without
 	// these behaves exactly as before (recipe only, exit-code = success).
@@ -548,13 +551,14 @@ type RecoveryBlock struct {
 // produce a structured output. Used for streak detection, boolean ANDs,
 // counters, etc., without invoking an LLM or shelling out.
 type ComputeDecl struct {
-	Name    string
-	Input   string         // optional input schema reference name
-	Output  string         // schema reference name (defines the output fields)
-	Publish string         // persistent artifact name (empty if not set)
-	Expr    []*ComputeExpr // ordered list of field-name → expression-source pairs
-	Await   AwaitMode      // convergence strategy (none/wait_all/best_effort)
-	Span    Span
+	Name           string
+	Input          string         // optional input schema reference name
+	Output         string         // schema reference name (defines the output fields)
+	Publish        string         // persistent artifact name (empty if not set)
+	ArtifactLabels []string       // artifact_labels: applied to the published artifact
+	Expr           []*ComputeExpr // ordered list of field-name → expression-source pairs
+	Await          AwaitMode      // convergence strategy (none/wait_all/best_effort)
+	Span           Span
 }
 
 // ComputeExpr is one entry inside a `compute` node's `expr:` block:

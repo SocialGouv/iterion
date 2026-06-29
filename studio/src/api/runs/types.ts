@@ -279,6 +279,19 @@ export interface Artifact {
   node_id: string;
   version: number;
   data: Record<string, unknown>;
+  // Labels categorise the artifact (e.g. "plan", "verdict"). Mirror of
+  // store.Artifact.Labels. Empty/absent on legacy artifacts.
+  labels?: string[];
+  written_at: string;
+}
+
+// RunArtifactSummary mirrors runview.RunArtifactSummary: the latest
+// published artifact per node, for the centralized label-grouped view.
+export interface RunArtifactSummary {
+  node_id: string;
+  version: number;
+  labels?: string[];
+  title?: string;
   written_at: string;
 }
 

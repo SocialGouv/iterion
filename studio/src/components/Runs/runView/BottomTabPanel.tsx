@@ -1,7 +1,7 @@
 import { Tabs } from "@/components/ui";
 import { type RunEvent } from "@/api/runs";
 
-import ArtifactFilesPanel from "../ArtifactFilesPanel";
+import ArtifactsPanel from "../artifacts/ArtifactsPanel";
 import BrowserPane, { type BrowserDock } from "../BrowserPane";
 import EventLog from "../EventLog";
 import ReportTab from "../ReportTab";
@@ -101,7 +101,7 @@ export function BottomTabPanel(props: BottomTabPanelProps) {
             onDockChange={setBrowserDock}
           />
         ) : bottomTab === "artifacts" ? (
-          <ArtifactFilesPanel runId={runId} />
+          <ArtifactsPanel runId={runId} />
         ) : (
           <ReportTab onSelectNode={onSelectNode} />
         )}

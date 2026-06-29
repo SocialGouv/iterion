@@ -11,8 +11,23 @@ import type {
   ArtifactFile,
   ArtifactSummary,
   DownloadOutcome,
+  RunArtifactSummary,
   WireWorkflow,
 } from "./types";
+
+// listAllArtifacts returns the latest published artifact per node for a
+// run (node id, version, labels, title) — the data behind the centralized,
+// label-grouped Artifacts view. Empty when the run published nothing.
+export async function listAllArtifacts(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<RunArtifactSummary[]> {
+  const res = await request<{ artifacts: RunArtifactSummary[] }>(
+    `/runs/${encodeURIComponent(runId)}/artifacts`,
+    { signal: opts?.signal },
+  );
+  return res.artifacts ?? [];
+}
 
 export async function getRunWorkflow(runId: string): Promise<WireWorkflow> {
   const qs = withStoreParam(new URLSearchParams()).toString();

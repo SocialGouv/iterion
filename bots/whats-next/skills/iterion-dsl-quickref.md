@@ -233,11 +233,18 @@ auto-escape strings, but `string[]` substitutions split into
 multiple argv tokens — use positional argv + `--` sentinels
 when passing multi-element arrays.
 
-Add `publish: <name>` to a `tool` (or `compute`, or agent/judge/human)
+Add `publish: <name>` to a `tool` (or `compute`, or agent/human)
 node to persist its output as a versioned artifact — surfaced in the
-studio Artifact tab and `iterion report`, referenceable downstream as
+studio Artifacts tab and `iterion report`, referenceable downstream as
 `{{artifacts.<name>}}`. Deterministic, no LLM cost: `publish:` only
 redirects the already-computed output into the store.
+
+Optionally add `artifact_labels: [plan, ...]` alongside `publish:` to
+categorise the artifact, so the studio's Artifacts tab groups it (e.g. a
+"Plans" group). Plan-shaped (`plan`/`text` body) and verdict-shaped
+(`approved`/`blockers`/…) outputs are auto-labelled `plan`/`verdict` even
+without the field. Diagnostic C049 warns if `artifact_labels:` is set
+without `publish:` (nothing to attach to).
 
 ### Verified Action — adaptive recovery for ACTION tool nodes (ADR-044)
 

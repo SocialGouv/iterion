@@ -784,6 +784,7 @@ func (c *compiler) compileAgents() {
 			InteractionFields: inter,
 			MCP:               convertMCPConfig(a.MCP),
 			Publish:           a.Publish,
+			PublishLabels:     a.ArtifactLabels,
 			Session:           a.Session,
 			Tools:             a.Tools,
 			ToolPolicy:        a.ToolPolicy,
@@ -932,10 +933,11 @@ func (c *compiler) compileHumans() {
 				InteractionPrompt: h.InteractionPrompt,
 				InteractionModel:  h.InteractionModel,
 			},
-			Publish:      h.Publish,
-			MinAnswers:   h.MinAnswers,
-			Instructions: h.Instructions,
-			AwaitMode:    h.Await,
+			Publish:       h.Publish,
+			PublishLabels: h.ArtifactLabels,
+			MinAnswers:    h.MinAnswers,
+			Instructions:  h.Instructions,
+			AwaitMode:     h.Await,
 		}
 
 		// LLM-driven interaction modes (llm, llm_or_human, review) require a
@@ -1100,6 +1102,7 @@ func (c *compiler) compileTools() {
 			ScriptRefs:    scriptRefs,
 			Language:      t.Language,
 			Publish:       t.Publish,
+			PublishLabels: t.ArtifactLabels,
 			AwaitMode:     t.Await,
 			Sandbox:       c.compileSandboxBlock(t.Sandbox, "tool", t.Name),
 			RTK:           t.RTK,
@@ -1153,9 +1156,10 @@ func (c *compiler) compileComputes() {
 				InputSchema:  cd.Input,
 				OutputSchema: cd.Output,
 			},
-			Exprs:     exprs,
-			Publish:   cd.Publish,
-			AwaitMode: cd.Await,
+			Exprs:         exprs,
+			Publish:       cd.Publish,
+			PublishLabels: cd.ArtifactLabels,
+			AwaitMode:     cd.Await,
 		}
 	}
 }
