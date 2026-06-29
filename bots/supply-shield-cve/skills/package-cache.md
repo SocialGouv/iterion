@@ -40,23 +40,34 @@ cloud runners where operator state must not leak between users.
   "summary":         "Install hook runs setup.js; no network calls.",
   "flags":           [{"type": "install-hook", "severity": "low", "description": "..."}],
   "files_audited":   ["node_modules/left-pad/setup.js"],
-  "scanner_version": "sec-audit-deps@0.1.0",
+  "scanner_version": "supply-shield@0.1.0",
   "ttl_days":        30
 }
 ```
 
-`kind` discriminates verdict axes that share this host-wide file:
-`malware` (this bot + supply-shield/Shieldy) vs `cve`
-(supply-shield-cve/Vulny, which adds `advisory_db_date` + a short ttl).
-Each reader consults only its own `kind`; a legacy line with no `kind`
-is treated as `malware`.
+## The `kind` discriminator (malware vs CVE)
+
+The same shared file holds two independent verdict axes, distinguished
+by `kind`:
+
+- `kind: "malware"` — written/read by supply-shield (Shieldy) and
+  sec-audit-deps (Depsy). Durable: a published artifact's malware verdict
+  does not change unless the artifact does (the checksum guards that).
+- `kind: "cve"` — written/read by supply-shield-cve (Vulny). These carry
+  an extra `advisory_db_date` and a SHORT ttl, because a clean-today
+  version can gain a CVE tomorrow as advisories land — see that bot's
+  package-cache skill.
+
+A reader consults only lines matching its own `kind` (legacy lines with
+no `kind` field are treated as `malware` for backward compatibility).
 
 ## Cache key
 
 `ecosystem:name:version:checksum` (within a `kind`) — the checksum is
 part of the key because npm has experienced cases where a `name@version`
 was republished with different content (rare, attack vector). If the
-checksum differs, the cached verdict does NOT apply.
+checksum differs, the cached verdict does NOT apply (supply-shield
+escalates a checksum change to a `checksum-mismatch` finding).
 
 ## Lookup rules (filter_cached)
 
@@ -132,4 +143,4 @@ cache saves. If the cache grows past 1M entries we'll revisit.
 ## See also
 
 - `[[malware-signals]]` — the signal catalogue persisted in `flags`.
-- `[[sec-audit-deps]]` — the playbook that orchestrates this cache.
+- `[[supply-shield-cve]]` — the playbook that orchestrates this cache.

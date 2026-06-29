@@ -106,6 +106,100 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         && npm install -g "deepsec@${DEEPSEC_VERSION}" ; } \
     || echo "deepsec Layer 4 setup did not complete — run_deepsec_scanner will degrade gracefully (enable_deepsec=true users should rebuild with a Node 22+ base or pre-install deepsec)."
 
+# ---------------------------------------------------------------------
+# Layer 5 — supply-shield analyzers (MANDATORY): @nodesecure/js-x-ray for
+# npm malware AST analysis + osv-scanner for the CVE floor. Used by the
+# supply-shield (Shieldy) and supply-shield-cve (Vulny) bots.
+#
+# js-x-ray 15.x is ESM-only, so it cannot be imported by a bare specifier
+# from an arbitrary cwd. We ship a SELF-CONTAINED tool at
+# /opt/iterion-jsxray (its own node_modules + an ESM walker) and a PATH
+# shim `iterion-jsxray`, so the import resolves regardless of the target
+# repo's cwd. The bot's run_jsxray node just invokes `iterion-jsxray` with
+# SCAN_DIR + WORKSPACE_DIR. Node 22 is required (js-x-ray hard requirement)
+# — install it unconditionally here (Layer 4's nodejs is best-effort).
+# ---------------------------------------------------------------------
+ARG JSXRAY_VERSION=^15
+ARG OSV_SCANNER_VERSION=2.4.0
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/root/.npm \
+    set -e; \
+    command -v node >/dev/null 2>&1 || { \
+        rm -f /etc/apt/apt.conf.d/docker-clean; \
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; \
+        apt-get install -y --no-install-recommends nodejs; }; \
+    mkdir -p /opt/iterion-jsxray; \
+    printf '%s\n' '{ "name": "iterion-jsxray", "private": true, "type": "module", "dependencies": { "@nodesecure/js-x-ray": "'"${JSXRAY_VERSION}"'" } }' > /opt/iterion-jsxray/package.json; \
+    npm install --prefix /opt/iterion-jsxray --omit=dev --no-audit --no-fund; \
+    printf '%s\n' '#!/bin/sh' 'exec node /opt/iterion-jsxray/scan.mjs "$@"' > /usr/local/bin/iterion-jsxray; \
+    chmod +x /usr/local/bin/iterion-jsxray
+
+# The ESM walker: walk node_modules + the workspace root, run js-x-ray
+# analyseFileSync over each package's install scripts + entry points, and
+# write $SCAN_DIR/jsxray.json. (Kept here so the tool is fully self-contained
+# in the image; the bot only invokes it. Mirrors bots/supply-shield/skills/js-xray.md.)
+COPY <<'JSXRAY_WALKER' /opt/iterion-jsxray/scan.mjs
+import { AstAnalyser } from "@nodesecure/js-x-ray";
+import fs from "node:fs";
+import path from "node:path";
+const SCAN = process.env.SCAN_DIR || ".";
+const WS = process.env.WORKSPACE_DIR || ".";
+const HOOKS = ["preinstall", "install", "postinstall", "prepare"];
+const analyser = new AstAnalyser();
+const out = [];
+function entryRels(pj) {
+  const set = new Set();
+  for (const h of HOOKS) {
+    const s = pj.scripts && pj.scripts[h];
+    if (s) for (const tok of String(s).split(/\s+/)) if (/\.[cm]?js$/.test(tok)) set.add(tok);
+  }
+  for (const k of ["main", "module"]) if (typeof pj[k] === "string") set.add(pj[k]);
+  if (pj.bin && typeof pj.bin === "object") for (const b of Object.values(pj.bin)) if (typeof b === "string") set.add(b);
+  return [...set];
+}
+function scanPkg(dir) {
+  let pj; try { pj = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")); } catch { return; }
+  for (const rel of entryRels(pj)) {
+    const p = path.join(dir, rel);
+    let st; try { st = fs.statSync(p); } catch { continue; }
+    if (!st.isFile()) continue;
+    try {
+      const r = analyser.analyseFileSync(p);
+      out.push({ package: pj.name || path.basename(dir), version: pj.version || "", file: path.relative(WS, p),
+                 warnings: (r.warnings || []).map((w) => ({ kind: w.kind, value: String(w.value || "").slice(0, 120), location: w.location })),
+                 flags: r.flags ? [...r.flags] : [] });
+    } catch {}
+  }
+}
+function walk(dir, depth) {
+  if (depth > 2) return;
+  if (fs.existsSync(path.join(dir, "package.json"))) scanPkg(dir);
+  let ents = []; try { ents = fs.readdirSync(path.join(dir, "node_modules")); } catch { return; }
+  for (const e of ents) {
+    if (e.startsWith(".")) continue;
+    const sub = path.join(dir, "node_modules", e);
+    if (e.startsWith("@")) { let subs = []; try { subs = fs.readdirSync(sub); } catch {} for (const s of subs) walk(path.join(sub, s), depth + 1); }
+    else walk(sub, depth + 1);
+  }
+}
+walk(WS, 0);
+fs.mkdirSync(SCAN, { recursive: true });
+fs.writeFileSync(path.join(SCAN, "jsxray.json"), JSON.stringify(out));
+process.stderr.write("iterion-jsxray scanned " + out.length + " files\n");
+JSXRAY_WALKER
+
+# osv-scanner — single Go binary (arch-derived like trivy/gitleaks), the
+# OSV/GHSA lockfile CVE floor for supply-shield-cve.
+RUN case "$(uname -m)" in \
+        x86_64)  OSV_ARCH="linux_amd64" ;; \
+        aarch64) OSV_ARCH="linux_arm64" ;; \
+        *)       echo "unsupported arch $(uname -m)" && exit 1 ;; \
+    esac \
+ && curl -fsSL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_${OSV_ARCH}" \
+        -o /usr/local/bin/osv-scanner \
+ && chmod +x /usr/local/bin/osv-scanner
+
 # Numeric UID (not the `devbox` name) on the final stage so the image
 # runs under platforms that forbid non-numeric / root-capable users
 # (OpenShift `restricted` SCC, k8s `runAsNonRoot`). uid 1000 == devbox.
@@ -125,6 +219,14 @@ RUN semgrep --version \
  && pip-audit --version \
  && trivy --version \
  && gitleaks version \
+ && osv-scanner --version \
+ && node --version \
+ && mkdir -p /tmp/jsx \
+ && printf '{"name":"t","version":"1.0.0","scripts":{"postinstall":"node p.js"}}' > /tmp/jsx/package.json \
+ && printf 'eval(atob("MSsx"));\n' > /tmp/jsx/p.js \
+ && SCAN_DIR=/tmp/jsx WORKSPACE_DIR=/tmp/jsx iterion-jsxray \
+ && node -e 'const d=require("/tmp/jsx/jsxray.json");if(!d.some(f=>f.warnings.length)){console.error("iterion-jsxray produced no warnings on a known-malicious eval — FAIL");process.exit(1)}console.log("iterion-jsxray: present, detected eval on the self-test")' \
+ && rm -rf /tmp/jsx \
  && { command -v deepsec >/dev/null 2>&1 \
         && deepsec --version \
         && echo "deepsec: present (optional, only used when enable_deepsec=true)" \

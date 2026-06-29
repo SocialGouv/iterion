@@ -1,0 +1,43 @@
+name: supply-shield-cve
+display_name: Vulny
+version: 0.1.0
+description: |
+  Global supply-chain CVE shield. PR / push-driven, diff-scoped CVE
+  sibling of supply-shield (Shieldy): same pipeline, but the analysis
+  axis is KNOWN VULNERABILITIES, not malware. It inspects only the
+  dependency versions a change adds or upgrades (it diffs the changed
+  lockfiles), matches each `(ecosystem, name, version)` against the
+  advisory databases via a universal lockfile CVE floor (trivy fs +
+  osv-scanner, no install needed) plus the per-ecosystem SCA scanners
+  (npm audit / pip-audit / govulncheck), validates each advisory
+  against the resolved version (affected range / fixed version / Go
+  reachability) with an LLM reviewer, and reports confirmed CVEs back
+  onto the PR/MR via the native forge API (sticky comment, inline
+  review, SARIF / code-scanning) and the kanban board. A deterministic
+  coverage gate hard-fails when the CVE floor did not run so a missing
+  scanner never reads as "0 CVEs found".
+
+  Cross-run memory: verdicts are cached as `kind: cve` lines with a
+  short TTL + `advisory_db_date`, because a clean-today version can gain
+  a CVE tomorrow as advisories land. Point `cache_path` at
+  `$HOME/.iterion/security-cache/packages.jsonl` for host-wide dedup.
+when_to_use: |
+  Use to gate dependency changes on a PR / push for KNOWN CVEs
+  (vulnerable transitive/direct pins, advisories with an available fix).
+  Diff-scoped by default; pass scope_mode=full for a whole-tree CVE
+  baseline. Reports back on the forge and the board; does not fix. For a
+  MALWARE-focused gate use the companion bot supply-shield (Shieldy).
+author: SocialGouv (devthejo) — bots/supply-shield-cve/main.bot
+schema_version: 1
+
+dispatch_vars:
+  scope_notes: |-
+    {{issue.title}}
+    {{issue.body}}
+
+invocations:
+  - kind: command
+    mode: board
+    args_var: scope_notes
+    command: { name: cve, aliases: [supply-shield-cve, shield-cve], scope: any, min_replier_role: developer }
+  - kind: board

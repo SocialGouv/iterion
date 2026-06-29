@@ -225,6 +225,7 @@ dispatcher routes on it), never the persona.
 | ReArchi | `adr-rechallenge` |
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
+| Vetty | `dep-update-guard` |
 | Devy | `devbox-setup` |
 | Doki | `docs-refresh` |
 | Evoly | `evolve` |
@@ -236,6 +237,8 @@ dispatcher routes on it), never the persona.
 | Depsy | `sec-audit-deps` |
 | Seki | `sec-audit-source` |
 | Renovacy | `secured-renovacy` |
+| Shieldy | `supply-shield` |
+| Vulny | `supply-shield-cve` |
 | Testy | `test-coverage` |
 | Nexie | `whats-next` (this bot) |
 | Willy | `whole-improve-loop` |
@@ -325,6 +328,37 @@ fix, and stops on cross-family double-approval.
   a semantic message; pass base_ref for a non-main integration base.
 - **Vars**: `base_ref` (string), `chunk_dir` (string), `chunk_max_loc` (int), `chunk_threshold_loc` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
+
+### `dep-update-guard` — Vetty
+
+Reactive security + alignment guard for automated dependency-update
+PRs (Dependabot / Renovate). Triggered per PR, on the bot's own
+branch, Vetty: (1) audits the bump for supply-chain risk — known
+malware, typosquats, compromised-maintainer signals, and CVEs
+introduced vs resolved; (2) checks reliability by building and
+running the repo's tests; (3) aligns the consuming code to any
+breaking change (a JS/TS lib API, Helm chart values, a Go module,
+…), committing the alignment back onto the PR branch; (4) posts a
+complete review comment with the verdict and evidence; and (5)
+escalates to a human when a structuring architectural decision is
+required. It never merges — the merge stays a human call.
+
+Stack-agnostic by construction: the per-ecosystem scanner and
+build/test knowledge lives in the skills (package-managers,
+dependency-pr-guard), and one adaptive agent reads them and adapts
+to whatever repo the PR targets; deterministic gates verify the
+audit ran and the build is green before anything is committed.
+
+- **Use when**:
+  Use to guard a repository's automated dependency-update PRs. Enable
+  it on a repo via the studio Integrations flow with author filtering
+  to the dependency bots — it then reacts to each Dependabot/Renovate
+  PR, posts a security + alignment verdict, and commits any code
+  alignment onto the PR branch. Not for human PRs (use Revi /
+  review-pr), and not for proactively opening update PRs (that is
+  Renovacy / secured-renovacy).
+- **Vars**: `base_ref` (string), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_review_mode` (string), `pr_url` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Path**: `bots/dep-update-guard/main.bot`
 
 ### `devbox-setup` — Devy
 
@@ -449,7 +483,7 @@ loop until two consecutive cross-family approvals.
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `feature_prompt` (string, required), `workspace_dir` (string)
+- **Vars**: `feature_prompt` (string, required), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini
@@ -633,6 +667,71 @@ family approval.
 - **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_packages_per_run` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
 - **Path**: `bots/secured-renovacy/main.bot`
 
+### `supply-shield` — Shieldy
+
+Global supply-chain MALWARE shield. PR / push-driven, diff-scoped
+sibling of sec-audit-deps (Depsy): it inspects only the dependency
+versions a change ADDS or UPGRADES (it diffs the changed lockfiles),
+looks each `(ecosystem, name, version, checksum)` triple up against
+the host-wide package cache so a version is analysed once and reused
+across runs / PRs / repos, and runs language-specific malware
+analysis on the rest — js-x-ray AST analysis for npm (the
+@nodesecure analyzer the no-package-malware project relied on),
+install-hook + SHA-512 checksum-integrity checks, osv-scanner /
+trivy CVE baseline, and an LLM deep-read of install scripts /
+entry points when heuristics are inconclusive. A deterministic
+coverage gate hard-fails when the scanner floor did not run so a
+missing analyzer never reads as "0 malware found". Confirmed findings
+are reported back onto the PR/MR via the native forge API (GitHub /
+GitLab / Forgejo) — a sticky summary comment, inline review comments,
+and a SARIF / code-scanning upload — and emitted to the kanban board.
+
+Cross-run memory: the package cache is shared (a published package
+version is the same artifact everywhere), so reports are accessible
+across runs. Point `cache_path` at `$HOME/.iterion/security-cache/
+packages.jsonl` for host-wide cross-repo dedup.
+
+- **Use when**:
+  Use to gate dependency changes on a PR / push for MALWARE
+  (install-hook backdoors, obfuscated/encoded payloads, network-exfil,
+  typosquat / homoglyph names, supply-chain re-publish). Diff-scoped by
+  default; pass scope_mode=full for a whole-tree audit. Reports back on
+  the forge and the board; does not fix. For a CVE-focused gate use the
+  companion bot supply-shield-cve (Vulny).
+- **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Path**: `bots/supply-shield/main.bot`
+
+### `supply-shield-cve` — Vulny
+
+Global supply-chain CVE shield. PR / push-driven, diff-scoped CVE
+sibling of supply-shield (Shieldy): same pipeline, but the analysis
+axis is KNOWN VULNERABILITIES, not malware. It inspects only the
+dependency versions a change adds or upgrades (it diffs the changed
+lockfiles), matches each `(ecosystem, name, version)` against the
+advisory databases via a universal lockfile CVE floor (trivy fs +
+osv-scanner, no install needed) plus the per-ecosystem SCA scanners
+(npm audit / pip-audit / govulncheck), validates each advisory
+against the resolved version (affected range / fixed version / Go
+reachability) with an LLM reviewer, and reports confirmed CVEs back
+onto the PR/MR via the native forge API (sticky comment, inline
+review, SARIF / code-scanning) and the kanban board. A deterministic
+coverage gate hard-fails when the CVE floor did not run so a missing
+scanner never reads as "0 CVEs found".
+
+Cross-run memory: verdicts are cached as `kind: cve` lines with a
+short TTL + `advisory_db_date`, because a clean-today version can gain
+a CVE tomorrow as advisories land. Point `cache_path` at
+`$HOME/.iterion/security-cache/packages.jsonl` for host-wide dedup.
+
+- **Use when**:
+  Use to gate dependency changes on a PR / push for KNOWN CVEs
+  (vulnerable transitive/direct pins, advisories with an available fix).
+  Diff-scoped by default; pass scope_mode=full for a whole-tree CVE
+  baseline. Reports back on the forge and the board; does not fix. For a
+  MALWARE-focused gate use the companion bot supply-shield (Shieldy).
+- **Vars**: `base_ref` (string), `cache_dir` (string), `cache_path` (string), `cache_ttl_days` (int), `forge_marker` (string), `head_ref` (string), `pr_ref` (string), `report_path` (string), `sarif_dir` (string), `sarif_path` (string), `scan_dir` (string), `scanner_version` (string), `scope_mode` (string), `scope_notes` (string), `severity_threshold` (string), `workspace_dir` (string)
+- **Path**: `bots/supply-shield-cve/main.bot`
+
 ### `test-coverage` — Testy
 
 Autonomous test-coverage augmentation. Points at a target area (a
@@ -716,7 +815,7 @@ failing forever. See docs/adr/011-whole-improve-loop-context-chunking.md.
   production-readiness audit across the whole workspace, or to drive
   iterative improvement on a specific axis (pass improvement_prompt).
   No new capability — just better/cleaner code.
-- **Vars**: `context_mode` (string), `improvement_prompt` (string), `max_review_chunk_tokens` (int), `max_review_passes` (int), `reviewer_context_percent` (int), `reviewer_context_tokens` (int), `scope_globs` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `context_mode` (string), `improvement_prompt` (string), `max_review_chunk_tokens` (int), `max_review_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `reviewer_context_percent` (int), `reviewer_context_tokens` (int), `scope_globs` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->

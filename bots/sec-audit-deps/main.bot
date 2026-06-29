@@ -656,6 +656,8 @@ for line in raw.splitlines():
     if not line: continue
     try:
         e = json.loads(line)
+        if e.get('kind','malware') != 'malware':
+            continue
         key = '%s:%s:%s:%s' % (e.get('ecosystem',''), e.get('name',''), e.get('version',''), e.get('checksum',''))
         cur = index.get(key)
         if not cur or e.get('scanned_at','') > cur.get('scanned_at',''):
@@ -726,6 +728,7 @@ if _d:
 with open(path, 'a', encoding='utf-8') as f:
     for v in verdicts:
         line = {
+            'kind':            'malware',
             'ecosystem':       v.get('ecosystem',''),
             'name':            v.get('name',''),
             'version':         v.get('version',''),
