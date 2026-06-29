@@ -248,10 +248,11 @@ with `iterion plugin list|info|enable|disable|run|install|uninstall`. The plugin
 system never injects Go code (static `CGO_ENABLED=0` binaries rule out Go
 `plugin`); it wires manifests into existing seams (rewrite chain, MCP catalog,
 skill mirroring). Marketplace entries carry a `kind` (`bot`|`plugin`) so both
-share one registry. Full reference + the roadmap toward the full Claude plugin
-taxonomy (commands/agents/hooks) with claude_code⇄claw parity (improve claw in
-`.works/claw-code-go`) and public-skill-library install:
-[docs/plugins.md](docs/plugins.md).
+share one registry. Public skill libraries install ergonomically: `iterion
+plugin install <git-url>` of a bare `skills/` repo (no `plugin.yaml`)
+synthesizes a skills-only manifest. Full reference + the roadmap toward the full
+Claude plugin taxonomy (commands/agents/hooks) with claude_code⇄claw parity
+(improve claw in `.works/claw-code-go`): [docs/plugins.md](docs/plugins.md).
 
 **Command-output compression** is the `rewriter` kind, generalized from the old
 hardcoded rtk integration. `rtk` ("Rust Token Killer",

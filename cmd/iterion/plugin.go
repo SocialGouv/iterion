@@ -116,8 +116,14 @@ var pluginRunCmd = &cobra.Command{
 
 var pluginInstallCmd = &cobra.Command{
 	Use:   "install <path|git-url>",
-	Short: "Install a third-party plugin from a local directory or git URL",
-	Args:  cobra.ExactArgs(1),
+	Short: "Install a third-party plugin (or a bare public skill library) from a directory or git URL",
+	Long: `Install a plugin from a local directory or git URL into
+~/.iterion/plugins/. A source carrying a plugin.yaml installs as-is. A source
+with no plugin.yaml but bare skills (a public skill library) is installed with
+a synthesized skills-only manifest — every *.md under skills/ (or top-level
+*.md when there is no skills/ dir) becomes a skill. Installed plugins are
+disabled by default; enable with 'iterion plugin enable <name>'.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, err := cli.PluginInstall(cmd.Context(), args[0])
 		if err != nil {

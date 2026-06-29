@@ -153,14 +153,28 @@ source) so a plugin behaves identically on either backend, rather than papered
 over with a claude_code-only adapter. Adaptation bridges are acceptable as an
 interim only when native parity is impractical.
 
-**Public skill libraries.** `plugin install <git-url>` already installs any repo
-carrying a `plugin.yaml`. To ergonomically consume popular public *skill*
-repos that ship bare `skills/` trees (no manifest), a thin adapter will
-synthesize a `skills`-only manifest at install time, so a community skill pack
-becomes a first-class, enable/disable-able iterion plugin.
+The `commands`/`agents`/`hooks` kinds are tracked as a follow-on; the manifest
+schema and registry already accommodate new kinds without a breaking change.
 
-These are tracked as a follow-on; the manifest schema and registry already
-accommodate new kinds without a breaking change.
+## Public skill libraries (shipped)
+
+`iterion plugin install <path|git-url>` installs any repo carrying a
+`plugin.yaml`. When the source has **no** `plugin.yaml` but ships bare skills,
+install **synthesizes a skills-only manifest**, so a popular community skill
+pack becomes a first-class, enable/disable-able iterion plugin with no
+authoring step:
+
+```sh
+iterion plugin install https://github.com/acme/awesome-claude-skills
+iterion plugin enable awesome-claude-skills   # disabled by default (opt-in)
+```
+
+Skill discovery: every `*.md` under `skills/` (recursively); if there is no
+`skills/` directory, top-level `*.md` (excluding `README.md`). The plugin name
+is derived from the repo/dir basename (kebab-cased). The synthesized
+`plugin.yaml` is written into `~/.iterion/plugins/<name>/`, and the skills
+mirror into `<workspace>/.claude/skills/` once enabled — same path as any other
+skill-contributing plugin.
 
 ## Implementation pointers
 

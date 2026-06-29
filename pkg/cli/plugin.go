@@ -93,7 +93,9 @@ func PluginRun(ctx context.Context, name, phase, workspace string) error {
 
 // PluginInstall installs a plugin from a local directory or git URL into
 // ~/.iterion/plugins/<name>/ and returns the installed plugin's name. A git URL
-// is shallow-cloned; a local path's plugin.yaml is validated then copied.
+// is shallow-cloned; a local path's plugin.yaml is validated then copied. When
+// the source has no plugin.yaml but ships bare skills (a public skill library),
+// a skills-only manifest is synthesized and persisted into the install dir.
 func PluginInstall(ctx context.Context, src string) (string, error) {
 	reg, err := plugin.Load()
 	if err != nil {
@@ -114,14 +116,24 @@ func PluginInstall(ctx context.Context, src string) (string, error) {
 		}
 		srcDir = tmp
 	}
-	data, rerr := os.ReadFile(filepath.Join(srcDir, plugin.ManifestFile))
-	if rerr != nil {
-		return "", fmt.Errorf("plugin: %s not found in %q: %w", plugin.ManifestFile, src, rerr)
+	var m *plugin.Manifest
+	synthesized := false
+	if data, rerr := os.ReadFile(filepath.Join(srcDir, plugin.ManifestFile)); rerr == nil {
+		if m, err = plugin.ParseManifest(data); err != nil {
+			return "", err
+		}
+	} else if os.IsNotExist(rerr) {
+		// No plugin.yaml — treat the source as a public skill library: collect
+		// its bare skills and synthesize a skills-only manifest so it becomes a
+		// first-class, enable/disable-able plugin.
+		if m, err = plugin.SynthesizeSkillsManifest(src, srcDir); err != nil {
+			return "", err
+		}
+		synthesized = true
+	} else {
+		return "", fmt.Errorf("plugin: read %s in %q: %w", plugin.ManifestFile, src, rerr)
 	}
-	m, perr := plugin.ParseManifest(data)
-	if perr != nil {
-		return "", perr
-	}
+
 	dest := reg.InstallDir(m.Name)
 	if _, ok := reg.Get(m.Name); ok {
 		// Overwrite an existing installed plugin (upgrade); builtins of the
@@ -133,6 +145,13 @@ func PluginInstall(ctx context.Context, src string) (string, error) {
 	}
 	if err := copyTree(srcDir, dest); err != nil {
 		return "", fmt.Errorf("plugin: install %q: %w", m.Name, err)
+	}
+	// Persist the synthesized manifest into the install dir (the source had
+	// none) so the registry loads the skill library like any other plugin.
+	if synthesized {
+		if err := plugin.WriteManifest(dest, m); err != nil {
+			return "", err
+		}
 	}
 	return m.Name, nil
 }
