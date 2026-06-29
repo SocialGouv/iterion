@@ -95,6 +95,9 @@ export interface ForgeOAuthApp {
   redirect_uri?: string;
   provider_app_id?: string;
   auto_created: boolean;
+  /** Deep link to delete this app on the forge (e.g. a GitHub App's settings
+   * page); shown in the delete confirmation. Empty when not locatable. */
+  app_manage_url?: string;
   created_by: string;
   created_at: string;
   updated_at: string;

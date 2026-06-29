@@ -48,6 +48,13 @@ type ForgeOAuthApp struct {
 	ProviderAppID string `bson:"provider_app_id,omitempty" json:"provider_app_id,omitempty"`
 	AutoCreated   bool   `bson:"auto_created,omitempty" json:"auto_created"`
 
+	// AppManageURL deep-links the forge page where this app can be removed
+	// (e.g. a GitHub App's settings/advanced page). Populated for apps iterion
+	// auto-created and can locate; surfaced in the delete confirmation so the
+	// operator can clean up the forge side — no provider exposes an
+	// app-deletion API iterion could call itself.
+	AppManageURL string `bson:"app_manage_url,omitempty" json:"app_manage_url,omitempty"`
+
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`

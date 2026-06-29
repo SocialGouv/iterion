@@ -86,7 +86,7 @@ func (s *Server) handleRegisterForgeOAuthApp(w http.ResponseWriter, r *http.Requ
 			httpError(w, http.StatusBadRequest, "client_id and client_secret are required for mode=manual")
 			return
 		}
-		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode)
+		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode, "")
 		if err != nil {
 			s.writeForgeOAuthAppError(w, err)
 			return
@@ -149,7 +149,7 @@ func (s *Server) autoCreateForgeOAuthApp(w http.ResponseWriter, r *http.Request,
 		s.writeForgeOAuthAppError(w, err)
 		return
 	}
-	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode)
+	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode, "")
 	if err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return
@@ -183,7 +183,7 @@ func (s *Server) handleDeleteForgeOAuthApp(w http.ResponseWriter, r *http.Reques
 // it. Shared by the manual-register handler and (later) the auto-create modes —
 // the latter pass the client_id/client_secret they got back from the forge.
 // Returns the stored app with SealedSecret nilled, ready to serialise.
-func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, provider forge.Provider, rawBaseURL, clientID, clientSecret, providerAppID string, autoCreated bool, mode string) (forge.ForgeOAuthApp, error) {
+func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, provider forge.Provider, rawBaseURL, clientID, clientSecret, providerAppID string, autoCreated bool, mode, appManageURL string) (forge.ForgeOAuthApp, error) {
 	baseURL := forge.CanonicalBaseURL(provider, rawBaseURL)
 	appID := uuid.NewString()
 	sealed, err := forge.SealOAuthAppSecret(s.sealer, appID, clientSecret)
@@ -194,7 +194,7 @@ func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, pro
 	app := forge.ForgeOAuthApp{
 		ID: appID, TenantID: teamID, Provider: provider, ForgeBaseURL: baseURL,
 		ClientID: clientID, SealedSecret: sealed, RedirectURI: s.forgeOAuthRedirectURI(),
-		ProviderAppID: providerAppID, AutoCreated: autoCreated,
+		ProviderAppID: providerAppID, AutoCreated: autoCreated, AppManageURL: appManageURL,
 		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeOAuthApps.Create(store.WithTenant(r.Context(), teamID), app); err != nil {

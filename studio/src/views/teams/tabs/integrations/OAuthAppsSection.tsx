@@ -28,7 +28,29 @@ export function OAuthAppsSection({
   const remove = async (a: ForgeOAuthApp) => {
     const ok = await confirm({
       title: "Delete OAuth app?",
-      message: `Connections that authenticate via this ${a.provider} app (${a.forge_base_url ?? a.provider}) will no longer be able to OAuth-refresh. Existing connections keep working until their token expires.`,
+      message: (
+        <span>
+          Connections that authenticate via this {a.provider} app (
+          {a.forge_base_url ?? a.provider}) will no longer be able to OAuth-refresh.
+          Existing connections keep working until their token expires.
+          {a.app_manage_url && (
+            <>
+              {" "}
+              This only removes it from iterion — {a.provider} has no app-deletion API,
+              so delete the app on the forge too:{" "}
+              <a
+                href={a.app_manage_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent hover:underline"
+              >
+                open its settings ↗
+              </a>
+              .
+            </>
+          )}
+        </span>
+      ),
       confirmLabel: "Delete",
       confirmVariant: "danger",
     });

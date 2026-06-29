@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // AppManifest is the GitHub App manifest iterion POSTs to
@@ -54,12 +55,34 @@ func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 }
 
 // ManifestConversion is the subset of GitHub's app-manifest conversion
-// response iterion keeps: the App id + the OAuth client credentials.
+// response iterion keeps: the App id + slug + owner (to deep-link its settings)
+// and the OAuth client credentials.
 type ManifestConversion struct {
 	ID           int64  `json:"id"`
 	Slug         string `json:"slug"`
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
+	Owner        struct {
+		Login string `json:"login"`
+		Type  string `json:"type"` // "Organization" | "User"
+	} `json:"owner"`
+}
+
+// AppManageURL is the GitHub settings page (Advanced tab, with the Delete
+// button) for a created App, so the operator can remove it on the forge —
+// GitHub exposes no API to delete an App. Empty when the slug is unknown.
+func AppManageURL(webBase, ownerLogin, ownerType, slug string) string {
+	if slug == "" {
+		return ""
+	}
+	base := strings.TrimRight(webBase, "/")
+	if base == "" {
+		base = "https://github.com"
+	}
+	if strings.EqualFold(ownerType, "Organization") && ownerLogin != "" {
+		return base + "/organizations/" + ownerLogin + "/settings/apps/" + slug + "/advanced"
+	}
+	return base + "/settings/apps/" + slug + "/advanced"
 }
 
 // ConvertManifest exchanges the temporary code GitHub returns after the
