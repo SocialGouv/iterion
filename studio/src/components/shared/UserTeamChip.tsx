@@ -90,6 +90,27 @@ export default function UserTeamChip({
         )
       }
     >
+      {/* Identity header: the avatar trigger is deliberately discreet, so the
+          menu is explicit — the FULL email (wraps, never truncated) + the active
+          org/team context. */}
+      <div className="flex items-center gap-2.5 px-2 py-2 mb-1 border-b border-border-subtle">
+        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-fg-onAccent text-sm font-semibold uppercase">
+          {initials}
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-fg-default break-all leading-tight">
+            {accountLabel}
+          </div>
+          {(activeOrg || activeTeam) && (
+            <div className="mt-0.5 text-xs text-fg-muted wrap-break-word leading-tight">
+              {activeOrg?.org_name}
+              {activeOrg && activeTeam && activeOrg.org_name !== activeTeam.team_name
+                ? ` · ${activeTeam.team_name}`
+                : ""}
+            </div>
+          )}
+        </div>
+      </div>
       {teams.length > 1 && (
         <>
           <div className="px-2 py-1 text-xs uppercase tracking-wider text-fg-muted">
