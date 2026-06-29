@@ -46,6 +46,11 @@ func TestBuildAppManifest(t *testing.T) {
 	if m.RedirectURL != "https://it/cb" || m.Public {
 		t.Fatalf("manifest = %+v", m)
 	}
+	// The OAuth user-authorization callback must be baked in, else "connect via
+	// OAuth" fails with GitHub's "must be configured with a callback URL".
+	if len(m.CallbackURLs) != 1 || m.CallbackURLs[0] != "https://it/api/forge/oauth/callback" {
+		t.Fatalf("callback_urls = %v, want [https://it/api/forge/oauth/callback]", m.CallbackURLs)
+	}
 	if m.DefaultPermissions["administration"] != "write" {
 		t.Fatalf("missing administration perm: %+v", m.DefaultPermissions)
 	}

@@ -14,9 +14,15 @@ import (
 // client_id/client_secret then drive the existing OAuth user-to-server connect
 // flow (OAuthApp).
 type AppManifest struct {
-	Name               string            `json:"name"`
-	URL                string            `json:"url"`
-	RedirectURL        string            `json:"redirect_url"`
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	RedirectURL string `json:"redirect_url"`
+	// CallbackURLs are the user-authorization (OAuth) callback URLs baked into
+	// the created App. WITHOUT this the subsequent "connect via OAuth" step fails
+	// with GitHub's "This GitHub App must be configured with a callback URL" —
+	// RedirectURL above only covers the one-shot manifest-conversion redirect,
+	// not the recurring user-to-server OAuth the connect flow uses.
+	CallbackURLs       []string          `json:"callback_urls"`
 	Public             bool              `json:"public"`
 	DefaultEvents      []string          `json:"default_events"`
 	DefaultPermissions map[string]string `json:"default_permissions"`
@@ -29,9 +35,12 @@ type AppManifest struct {
 // App-level webhook is disabled (iterion creates per-repo hooks itself).
 func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 	return AppManifest{
-		Name:          name,
-		URL:           homeURL,
-		RedirectURL:   redirectURL,
+		Name:        name,
+		URL:         homeURL,
+		RedirectURL: redirectURL,
+		// The connect flow authorizes the user against this App at
+		// {home}/api/forge/oauth/callback (see GET /api/forge/oauth/callback).
+		CallbackURLs:  []string{homeURL + "/api/forge/oauth/callback"},
 		Public:        false,
 		DefaultEvents: []string{},
 		DefaultPermissions: map[string]string{
