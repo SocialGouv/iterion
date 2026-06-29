@@ -52,13 +52,18 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
       contentClassName="w-[min(20rem,calc(100vw-1rem))] p-2 text-sm"
       trigger={
         collapsed ? (
+          // Full-width h-8 row to match the collapsed NavRow footprint (which is
+          // `h-8 w-full`), with the org avatar centered — otherwise the org icon
+          // reads as narrower than the nav icons below it.
           <button
             type="button"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-accent text-fg-onAccent text-caption font-semibold uppercase hover:opacity-80 transition-opacity"
+            className="flex h-8 w-full items-center justify-center rounded hover:bg-surface-2 transition-colors"
             title={`Organization: ${orgLabel}`}
             aria-label={`Switch organization — current: ${orgLabel}`}
           >
-            {initials}
+            <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-accent text-fg-onAccent text-caption font-semibold uppercase">
+              {initials}
+            </span>
           </button>
         ) : (
           <button
