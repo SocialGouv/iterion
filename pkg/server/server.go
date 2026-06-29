@@ -33,6 +33,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
+	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -331,6 +332,10 @@ type Config struct {
 	// Serve starts a cloudsched.Ticker that fires each due schedule exactly
 	// once (CAS, multi-replica-safe) via the run publisher. nil disables it.
 	ScheduledBots cloudsched.Store
+
+	// OrgPurgeSweeper, when set (cloud mode), runs a nightly sweep that
+	// hard-purges orgs whose soft-delete grace has elapsed. nil disables it.
+	OrgPurgeSweeper *orgsweep.Sweeper
 
 	// Bots configures the /api/v1/bots endpoints used by the studio
 	// Board ticket form's bot picker. Empty Paths falls back to the
@@ -943,6 +948,19 @@ func (s *Server) ListenAndServe() error {
 				Launch: s.launchScheduledBot,
 				Logger: s.logger,
 			}).Run(ctx)
+		}()
+	}
+	// Org purge sweeper: nightly hard-purge of soft-deleted orgs past their
+	// grace. Idempotent across replicas (no leader election needed).
+	if s.cfg.OrgPurgeSweeper != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.cfg.OrgPurgeSweeper.Run(ctx)
 		}()
 	}
 	// Cloud board dispatcher: claim + run eligible cards across all tenants.

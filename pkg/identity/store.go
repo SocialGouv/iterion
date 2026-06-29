@@ -1,6 +1,9 @@
 package identity
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Store is the persistence interface for the identity domain. The
 // Mongo implementation lives in mongo.go; an in-memory variant in
@@ -28,6 +31,10 @@ type Store interface {
 	// ListOrgs returns all orgs (super-admin console), oldest first,
 	// offset/limit paginated.
 	ListOrgs(ctx context.Context, page Page) ([]Org, error)
+	// ListOrgsPendingPurge returns orgs soft-deleted (Status ==
+	// pending_deletion) whose PurgeAfter is at or before `before` — the
+	// nightly purge sweeper's work list.
+	ListOrgsPendingPurge(ctx context.Context, before time.Time) ([]Org, error)
 
 	// Teams
 	CreateTeam(ctx context.Context, t Team) (Team, error)

@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
+	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
@@ -335,6 +336,24 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		logger.Info("valkey: connected (distributed state enabled)")
 	}
 
+	// Org purge sweeper: nightly hard-purge of orgs whose soft-delete grace has
+	// elapsed — all team-scoped data across the cloud collections, then the
+	// identity cascade. Multi-replica-safe (idempotent; PurgeOrg no-ops once the
+	// org is gone).
+	var orgPurgeSweeper *orgsweep.Sweeper
+	if authStack.authSvc != nil {
+		orgPurgeSweeper = &orgsweep.Sweeper{
+			Purger: &orgsweep.Purger{
+				DB:      st.DB(),
+				Store:   authStack.identityStore,
+				Cascade: authStack.authSvc.DeleteOrgCascade,
+				Logger:  logger,
+			},
+			HourUTC: 2,
+			Logger:  logger,
+		}
+	}
+
 	srv := server.New(server.Config{
 		Port:                   serverOpts.port,
 		Bind:                   serverOpts.bind,
@@ -345,6 +364,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		CloudBoardFor:          func(tenantID string) native.BoardStore { return boardmongo.New(st.DB(), tenantID) },
 		CloudBoardCoordinator:  boardmongo.NewCoordinator(st.DB()),
 		ScheduledBots:          cloudsched.NewMongoStore(st.DB()),
+		OrgPurgeSweeper:        orgPurgeSweeper,
 		Alerts:                 alertSettings,
 		LaunchPublisher:        pub,
 		EventSource:            eventSrc,

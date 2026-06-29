@@ -349,6 +349,22 @@ func (s *MongoStore) DeleteOrg(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *MongoStore) ListOrgsPendingPurge(ctx context.Context, before time.Time) ([]Org, error) {
+	cur, err := s.orgs.Find(ctx, bson.M{
+		"status":      string(TeamStatusPendingDeletion),
+		"purge_after": bson.M{"$lte": before},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("identity: list orgs pending purge: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []Org
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("identity: decode orgs pending purge: %w", err)
+	}
+	return out, nil
+}
+
 func (s *MongoStore) ListOrgs(ctx context.Context, page Page) ([]Org, error) {
 	limit := int64(page.Limit)
 	if limit <= 0 {

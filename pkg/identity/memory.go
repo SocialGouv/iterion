@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 )
 
 // MemoryStore is an in-process Store backed by maps. It is the
@@ -279,6 +280,18 @@ func (m *MemoryStore) UpdateOrg(_ context.Context, o Org) error {
 	}
 	m.orgs[o.ID] = o
 	return nil
+}
+
+func (m *MemoryStore) ListOrgsPendingPurge(_ context.Context, before time.Time) ([]Org, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []Org
+	for _, o := range m.orgs {
+		if o.EffectiveStatus() == TeamStatusPendingDeletion && o.PurgeAfter != nil && !o.PurgeAfter.After(before) {
+			out = append(out, o)
+		}
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) DeleteOrg(_ context.Context, id string) error {
