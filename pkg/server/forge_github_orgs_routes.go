@@ -16,13 +16,18 @@ import (
 // user and used ONLY as a UI hint (never an authorization input).
 func (s *Server) registerForgeGitHubOrgsRoutes() {
 	s.mux.Handle("GET /api/forge/github/orgs/start", s.requireAuth(http.HandlerFunc(s.handleStartGitHubOrgs)))
-	// Public redirect target (see isPublicPath); authenticated by the signed state.
-	s.mux.HandleFunc("GET /api/forge/github/orgs/callback", s.handleGitHubOrgsCallback)
+	// The callback is a SUBDIRECTORY of the SSO GitHub callback
+	// (/api/auth/oidc/github/callback) on purpose: GitHub only accepts a
+	// redirect_uri that's a subdirectory of the OAuth App's registered callback,
+	// and that's the one the deployment's global GitHub OAuth app registers — so
+	// no extra callback URL needs adding to the App. Public via the
+	// /api/auth/oidc/ prefix in isPublicPath; authed by the signed state.
+	s.mux.HandleFunc("GET /api/auth/oidc/github/callback/orgs", s.handleGitHubOrgsCallback)
 	s.mux.Handle("GET /api/me/github-orgs", s.requireAuth(http.HandlerFunc(s.handleListMyGitHubOrgs)))
 }
 
 func (s *Server) githubOrgsRedirectURI() string {
-	return strings.TrimRight(s.cfg.PublicURL, "/") + "/api/forge/github/orgs/callback"
+	return strings.TrimRight(s.cfg.PublicURL, "/") + "/api/auth/oidc/github/callback/orgs"
 }
 
 // handleStartGitHubOrgs returns the GitHub authorize URL (read:org via the
