@@ -128,10 +128,10 @@ type launchRunRequest struct {
 	// still win. Honored in the in-process spawnRun path; detached mode
 	// (ITERION_RUNS_DETACHED=1) logs a warning and ignores it.
 	Backend string `json:"backend,omitempty"`
-	// RTK is the run-level rtk command-output-compression override
-	// ("on"|"ultra"|"off"). Empty inherits the workflow/node rtk: DSL
-	// then ITERION_RTK. See runview.LaunchSpec.RTK.
-	RTK string `json:"rtk,omitempty"`
+	// Compress is the run-level command-output-compression override
+	// ("on"|"ultra"|"off"). Empty inherits the workflow/node compress: DSL
+	// then ITERION_COMPRESS. See runview.LaunchSpec.Compress.
+	Compress string `json:"compress,omitempty"`
 	// Permission is the run-level tool-permission-gate mode override
 	// ("off"|"ask"|"deny"). Empty inherits the workflow/node permission:
 	// DSL then ITERION_PERMISSION. See docs/permissions.md.
@@ -300,7 +300,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		AutoMerge:          req.AutoMerge,
 		AttachmentPromote:  promote,
 		Backend:            req.Backend,
-		RTK:                req.RTK,
+		Compress:           req.Compress,
 		Permission:         req.Permission,
 		ParentRunID:        req.ParentRunID,
 		ShardIndex:         req.ShardIndex,

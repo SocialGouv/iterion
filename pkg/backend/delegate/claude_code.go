@@ -18,7 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
-	"github.com/SocialGouv/iterion/pkg/backend/rtk"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/thinktokens"
 	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
@@ -423,7 +423,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// and ask_user extend extraAllowedTools; the single registration below
 	// emits one WithAllowedTools call.
 	opts = installMaterializeSecretsHook(task, opts)
-	opts = installRTKHook(task, opts)
+	opts = installRewriteHook(task, opts)
 	opts = b.wireBoardMCP(task, opts, &extraAllowedTools)
 
 	// Watch capabilities (watch.subscribe / watch.unsubscribe) are wired for
@@ -886,31 +886,32 @@ func installMaterializeSecretsHook(task Task, opts []claudesdk.Option) []claudes
 	}))
 }
 
-// installRTKHook adds a PreToolUse hook on the Bash tool that rewrites
-// commands to their `rtk <cmd>` equivalent (e.g. "git status" → "rtk git
-// status"), saving 60–90% of output tokens, when rtk compression is enabled
-// for this node and the rtk binary is present. The rewrite decision is
-// delegated to rtk's own `rtk rewrite` (single source of truth); iterion
-// uses rtk purely as a compressor — never a permission gate — so it always
-// auto-allows the rewritten command. The rewrite runs host-side; the
-// (sandboxed) CLI runs the rewritten command in-container against the
-// bind-mounted rtk binary.
-func installRTKHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
-	rtkMode := rtk.ParseMode(task.RTKMode)
-	if !rtkMode.Enabled() || !rtk.Available() {
+// installRewriteHook adds a PreToolUse hook on the Bash tool that rewrites
+// commands to their compressed equivalent (e.g. "git status" → "rtk git
+// status"), saving 60–90% of output tokens, when compression is enabled for
+// this node and at least one rewriter plugin's binary is present. The rewrite
+// decision is delegated to each rewriter's own contract (single source of
+// truth); iterion uses rewriters purely as compressors — never a permission
+// gate — so it always auto-allows the rewritten command. The rewrite runs
+// host-side; the (sandboxed) CLI runs the rewritten command in-container
+// against the bind-mounted rewriter binary.
+func installRewriteHook(task Task, opts []claudesdk.Option) []claudesdk.Option {
+	mode := rewrite.ParseMode(task.CompressMode)
+	chain := rewrite.NewChain(task.Rewriters)
+	if !mode.Enabled() || !chain.Available() {
 		return opts
 	}
 	bashMatcher := "^Bash$"
 	return append(opts, claudesdk.WithHook(claudesdk.HookPreToolUse, claudesdk.HookMatcher{
 		Matcher: &bashMatcher,
 		Handler: func(hookCtx context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
-			updated, changed := rtk.RewriteCommandField(hookCtx, rtkMode, in.ToolInput)
+			updated, changed := chain.RewriteCommandField(hookCtx, mode, in.ToolInput)
 			if !changed {
 				return claudesdk.HookOutput{}, nil
 			}
 			return claudesdk.HookOutput{
 				Decision:       "allow",
-				DecisionReason: "RTK auto-rewrite",
+				DecisionReason: "compress auto-rewrite",
 				UpdatedInput:   updated,
 			}, nil
 		},

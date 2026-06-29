@@ -436,10 +436,10 @@ export interface CreateRunRequest {
   // auto-detect). Useful for A/B-testing the same workflow against
   // different backends without editing the workflow source.
   backend?: string;
-  // rtk command-output-compression override ("on" | "ultra" | "off").
-  // Empty inherits the workflow/node `rtk:` DSL then ITERION_RTK.
-  // Rewrites agent shell commands to their compact `rtk <cmd>` form.
-  rtk?: string;
+  // command-output-compression override ("on" | "ultra" | "off").
+  // Empty inherits the workflow/node `compress:` DSL then ITERION_COMPRESS.
+  // Rewrites agent shell commands via the active rewriter plugin chain.
+  compress?: string;
   // tool-permission gate mode ("off" | "ask" | "deny"). Empty inherits
   // the workflow/node `permission:` DSL then ITERION_PERMISSION. "ask"
   // pauses for human approval on any tool not allow-listed; "deny" hard-

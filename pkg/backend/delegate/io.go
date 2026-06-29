@@ -3,6 +3,8 @@ package delegate
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
 // IOTask is the on-the-wire form of a [Task] used by the claw
@@ -40,44 +42,45 @@ import (
 // blocks on the matching [EnvelopeToolResult]. This unblocks the
 // MCP-tools-in-sandbox path that V1 couldn't support.
 type IOTask struct {
-	NodeID                 string           `json:"node_id"`
-	Iteration              int              `json:"iteration,omitempty"`
-	SystemPrompt           string           `json:"system_prompt,omitempty"`
-	SystemPromptMode       SystemPromptMode `json:"system_prompt_mode,omitempty"`
-	UserPrompt             string           `json:"user_prompt,omitempty"`
-	UserContent            []ContentBlock   `json:"user_content,omitempty"`
-	AllowedTools           []string         `json:"allowed_tools,omitempty"`
-	Capabilities           []string         `json:"capabilities,omitempty"`
-	StoreDir               string           `json:"store_dir,omitempty"`
-	BoardHTTPEndpoint      string           `json:"board_http_endpoint,omitempty"`
-	BoardRunToken          string           `json:"board_run_token,omitempty"`
-	ToolDefs               []IOToolDef      `json:"tool_defs,omitempty"`
-	OutputSchema           json.RawMessage  `json:"output_schema,omitempty"`
-	Model                  string           `json:"model,omitempty"`
-	HasTools               bool             `json:"has_tools,omitempty"`
-	ToolMaxSteps           int              `json:"tool_max_steps,omitempty"`
-	MaxTokens              int              `json:"max_tokens,omitempty"`
-	WorkDir                string           `json:"work_dir,omitempty"`
-	BaseDir                string           `json:"base_dir,omitempty"`
-	RepoRoot               string           `json:"repo_root,omitempty"`
-	ReasoningEffort        string           `json:"reasoning_effort,omitempty"`
-	Ultracode              bool             `json:"ultracode,omitempty"`
-	SecretsHygiene         bool             `json:"secrets_hygiene,omitempty"`
-	SecretFiles            []SecretFileHint `json:"secret_files,omitempty"`
-	CursorFragments        []string         `json:"cursor_fragments,omitempty"`
-	PresetFragment         string           `json:"preset_fragment,omitempty"`
-	CompactThresholdRatio  float64          `json:"compact_threshold_ratio,omitempty"`
-	CompactPreserveRecent  int              `json:"compact_preserve_recent,omitempty"`
-	SessionID              string           `json:"session_id,omitempty"`
-	ForkSession            bool             `json:"fork_session,omitempty"`
-	SessionFingerprint     string           `json:"session_fingerprint,omitempty"`
-	ProviderHint           string           `json:"provider_hint,omitempty"`
-	InteractionEnabled     bool             `json:"interaction_enabled,omitempty"`
-	ResumeConversation     json.RawMessage  `json:"resume_conversation,omitempty"`
-	ResumePendingToolUseID string           `json:"resume_pending_tool_use_id,omitempty"`
-	ResumeAnswer           string           `json:"resume_answer,omitempty"`
-	Memory                 *MemorySpec      `json:"memory,omitempty"`
-	RTKMode                string           `json:"rtk_mode,omitempty"`
+	NodeID                 string                `json:"node_id"`
+	Iteration              int                   `json:"iteration,omitempty"`
+	SystemPrompt           string                `json:"system_prompt,omitempty"`
+	SystemPromptMode       SystemPromptMode      `json:"system_prompt_mode,omitempty"`
+	UserPrompt             string                `json:"user_prompt,omitempty"`
+	UserContent            []ContentBlock        `json:"user_content,omitempty"`
+	AllowedTools           []string              `json:"allowed_tools,omitempty"`
+	Capabilities           []string              `json:"capabilities,omitempty"`
+	StoreDir               string                `json:"store_dir,omitempty"`
+	BoardHTTPEndpoint      string                `json:"board_http_endpoint,omitempty"`
+	BoardRunToken          string                `json:"board_run_token,omitempty"`
+	ToolDefs               []IOToolDef           `json:"tool_defs,omitempty"`
+	OutputSchema           json.RawMessage       `json:"output_schema,omitempty"`
+	Model                  string                `json:"model,omitempty"`
+	HasTools               bool                  `json:"has_tools,omitempty"`
+	ToolMaxSteps           int                   `json:"tool_max_steps,omitempty"`
+	MaxTokens              int                   `json:"max_tokens,omitempty"`
+	WorkDir                string                `json:"work_dir,omitempty"`
+	BaseDir                string                `json:"base_dir,omitempty"`
+	RepoRoot               string                `json:"repo_root,omitempty"`
+	ReasoningEffort        string                `json:"reasoning_effort,omitempty"`
+	Ultracode              bool                  `json:"ultracode,omitempty"`
+	SecretsHygiene         bool                  `json:"secrets_hygiene,omitempty"`
+	SecretFiles            []SecretFileHint      `json:"secret_files,omitempty"`
+	CursorFragments        []string              `json:"cursor_fragments,omitempty"`
+	PresetFragment         string                `json:"preset_fragment,omitempty"`
+	CompactThresholdRatio  float64               `json:"compact_threshold_ratio,omitempty"`
+	CompactPreserveRecent  int                   `json:"compact_preserve_recent,omitempty"`
+	SessionID              string                `json:"session_id,omitempty"`
+	ForkSession            bool                  `json:"fork_session,omitempty"`
+	SessionFingerprint     string                `json:"session_fingerprint,omitempty"`
+	ProviderHint           string                `json:"provider_hint,omitempty"`
+	InteractionEnabled     bool                  `json:"interaction_enabled,omitempty"`
+	ResumeConversation     json.RawMessage       `json:"resume_conversation,omitempty"`
+	ResumePendingToolUseID string                `json:"resume_pending_tool_use_id,omitempty"`
+	ResumeAnswer           string                `json:"resume_answer,omitempty"`
+	Memory                 *MemorySpec           `json:"memory,omitempty"`
+	CompressMode           string                `json:"compress_mode,omitempty"`
+	Rewriters              []plugin.RewriterSpec `json:"rewriters,omitempty"`
 }
 
 // IOToolDef is the wire form of a [ToolDef]. The Execute closure is
@@ -165,7 +168,8 @@ func ToIOTask(t Task) IOTask {
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
 		Memory:                 t.Memory,
-		RTKMode:                t.RTKMode,
+		CompressMode:           t.CompressMode,
+		Rewriters:              t.Rewriters,
 	}
 }
 
@@ -212,7 +216,8 @@ func FromIOTask(t IOTask) Task {
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
 		ResumeAnswer:           t.ResumeAnswer,
 		Memory:                 t.Memory,
-		RTKMode:                t.RTKMode,
+		CompressMode:           t.CompressMode,
+		Rewriters:              t.Rewriters,
 	}
 }
 

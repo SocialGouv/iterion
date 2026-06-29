@@ -12,9 +12,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/backend/rtk"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -352,27 +353,38 @@ func addClawBinaryMount(spec *sandbox.Spec, wf *ir.Workflow) {
 	)
 }
 
-// addRtkBinaryMount bind-mounts a host rtk binary (the optional command-output
-// compressor, https://github.com/rtk-ai/rtk) into the container at
-// /usr/local/bin/rtk whenever one is found on the host. When a node has rtk
-// enabled, the rewrite *decision* runs host-side (claude_code hook / tool
-// node) but the rewritten `rtk <cmd>` *executes* inside the container, and the
-// sandboxed claw runner decides AND executes in-container — both need rtk on
-// the container PATH. Mounting unconditionally-when-present keeps the host
-// decision and the in-container execution from ever disagreeing; an unused
-// read-only mount is negligible. Production images may bake rtk in instead (the
-// host then has none → no-op). The Linux release is a static musl binary so it
-// runs as-is in the slim/full images; as with addClawBinaryMount, a host of a
-// different arch than the container is the operator's responsibility (use an
-// image with rtk baked in).
-func addRtkBinaryMount(spec *sandbox.Spec) {
-	hostBin := rtk.Locate()
-	if hostBin == "" {
+// addRewriterMounts bind-mounts each enabled rewriter plugin's host binary (the
+// optional command-output compressors, rtk by default) into the container at
+// the container path the rewriter declares (sandbox_mount:, e.g.
+// /usr/local/bin/rtk) whenever the binary is found on the host. When a node has
+// compression enabled, the rewrite *decision* runs host-side (claude_code hook
+// / tool node) but the rewritten command *executes* inside the container, and
+// the sandboxed claw runner decides AND executes in-container — both need the
+// rewriter binary on the container PATH. Mounting unconditionally-when-present
+// keeps the host decision and the in-container execution from ever disagreeing;
+// an unused read-only mount is negligible. Production images may bake the binary
+// in instead (the host then has none → no-op). A host of a different arch than
+// the container is the operator's responsibility (use an image with the binary
+// baked in).
+func addRewriterMounts(spec *sandbox.Spec) {
+	reg, err := plugin.Load()
+	if err != nil {
 		return
 	}
-	spec.Mounts = append(spec.Mounts,
-		fmt.Sprintf("source=%s,target=/usr/local/bin/rtk,type=bind,readonly", hostBin),
-	)
+	for _, m := range rewrite.NewChain(specsOf(reg.EnabledRewriters())).SandboxMounts() {
+		spec.Mounts = append(spec.Mounts,
+			fmt.Sprintf("source=%s,target=%s,type=bind,readonly", m.HostPath, m.ContainerPath),
+		)
+	}
+}
+
+// specsOf flattens rewriter contributions to their specs (chain input).
+func specsOf(contribs []plugin.RewriterContribution) []plugin.RewriterSpec {
+	out := make([]plugin.RewriterSpec, 0, len(contribs))
+	for _, c := range contribs {
+		out = append(out, c.Spec)
+	}
+	return out
 }
 
 // dropHostBindMounts removes type=bind entries from a sandbox spec's mount list,

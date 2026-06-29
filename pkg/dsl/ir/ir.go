@@ -36,7 +36,7 @@ type Workflow struct {
 	Capabilities    []string               // workflow-level default host capabilities (nil = inherit none)
 	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
 	Worktree        string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
-	RTK             string                 // rtk output-compression mode: on|ultra|off ("" = unset)
+	Compress        string                 // compress output-compression mode: on|ultra|off ("" = unset)
 	Permission      string                 // permission gate mode: off|ask|deny ("" = unset → off)
 	PermissionAllow []string               // allow rules (Claude-Code `Tool(pattern)` syntax, e.g. "Bash(go test:*)")
 	PermissionAsk   []string               // ask rules
@@ -167,7 +167,7 @@ type AgentNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
-	RTK              string // rtk output-compression mode: on|ultra|off ("" = inherit)
+	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 }
 
@@ -193,7 +193,7 @@ type JudgeNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
-	RTK              string // rtk output-compression mode: on|ultra|off ("" = inherit)
+	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
 }
 
@@ -258,7 +258,7 @@ type ToolNode struct {
 	Session       SessionMode
 	AwaitMode     AwaitMode
 	Sandbox       *SandboxSpec // node-level sandbox override (nil = inherit workflow)
-	RTK           string       // rtk output-compression mode: on|ultra|off ("" = inherit)
+	Compress      string       // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission    string       // permission gate mode override: off|ask|deny ("" = inherit workflow)
 
 	// Verified Action quad (ADR-044). All optional; a node with an empty
@@ -343,7 +343,7 @@ func (n *FailNode) NodeKind() NodeKind { return NodeFail }
 // LLMNode is satisfied by *AgentNode and *JudgeNode — the two node kinds
 // that carry the complete LLM field set (LLMFields, SchemaFields,
 // InteractionFields plus tools, capabilities, MCP, memory, compaction,
-// cursors, rtk). It lets the field accessors below and the validators in
+// cursors, compress). It lets the field accessors below and the validators in
 // validate*.go / mermaid.go iterate over both uniformly instead of
 // repeating a `case *AgentNode … case *JudgeNode …` ladder at every read
 // site.
@@ -370,7 +370,7 @@ type LLMNode interface {
 	GetCompaction() *Compaction
 	GetMemory() *Memory
 	GetCursors() *CursorInvocation
-	GetRTK() string
+	GetCompress() string
 	GetPermission() string
 }
 
@@ -393,7 +393,7 @@ func (n *AgentNode) GetActiveMCPServers() []string            { return n.ActiveM
 func (n *AgentNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *AgentNode) GetMemory() *Memory                       { return n.Memory }
 func (n *AgentNode) GetCursors() *CursorInvocation            { return n.Cursors }
-func (n *AgentNode) GetRTK() string                           { return n.RTK }
+func (n *AgentNode) GetCompress() string                      { return n.Compress }
 func (n *AgentNode) GetPermission() string                    { return n.Permission }
 
 // LLMNode accessor methods on *JudgeNode.
@@ -410,7 +410,7 @@ func (n *JudgeNode) GetActiveMCPServers() []string            { return n.ActiveM
 func (n *JudgeNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *JudgeNode) GetMemory() *Memory                       { return n.Memory }
 func (n *JudgeNode) GetCursors() *CursorInvocation            { return n.Cursors }
-func (n *JudgeNode) GetRTK() string                           { return n.RTK }
+func (n *JudgeNode) GetCompress() string                      { return n.Compress }
 func (n *JudgeNode) GetPermission() string                    { return n.Permission }
 
 // ---------------------------------------------------------------------------

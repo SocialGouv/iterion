@@ -1,0 +1,13 @@
+name: graphify
+version: 1.0.0
+description: Build a queryable knowledge graph from any codebase/docs (AST + semantic, community detection)
+author: graphify
+schema_version: 1
+default_enabled: false
+auto_index: false
+contributes:
+  lifecycle:
+    index: "graphify {{workspace}}"
+    refresh: "graphify {{workspace}} --update"
+  skills:
+    - skills/graphify.md

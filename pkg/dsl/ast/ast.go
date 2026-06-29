@@ -383,7 +383,7 @@ type LLMDecl struct {
 	Memory            *MemoryBlock     // per-node workspace memory opt-in (nil = disabled)
 	Sandbox           *SandboxBlock    // node-level sandbox override; nil inherits from workflow (see pkg/sandbox)
 	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
-	RTK               string           // rtk output-compression mode: on|ultra|off ("" = inherit)
+	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
 }
 
@@ -520,7 +520,7 @@ type ToolNodeDecl struct {
 	ArtifactLabels []string      // artifact_labels: applied to the published artifact
 	Await          AwaitMode     // convergence strategy (none/wait_all/best_effort)
 	Sandbox        *SandboxBlock // node-level sandbox override; nil inherits from workflow
-	RTK            string        // rtk output-compression mode: on|ultra|off ("" = inherit)
+	Compress       string        // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission     string        // permission gate mode override: off|ask|deny ("" = inherit workflow)
 
 	// Verified Action quad (ADR-044) — all optional; a tool node without
@@ -595,7 +595,7 @@ type WorkflowDecl struct {
 	Compaction     *CompactionBlock  // session compaction defaults for all nodes (optional)
 	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
 	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
-	RTK            string            // rtk output-compression mode: on|ultra|off ("" = unset)
+	Compress       string            // compress output-compression mode: on|ultra|off ("" = unset)
 	Permission     string            // permission gate mode: off|ask|deny ("" = unset → off)
 	Allow          []string          // permission allow rules (Claude-Code `Tool(pattern)` syntax)
 	Ask            []string          // permission ask rules

@@ -1,0 +1,24 @@
+name: repo-falcon
+version: 1.0.0
+description: Deterministic code knowledge-graph MCP server (Go/TS/Python/Java) — symbol lookup, call graphs, impact
+author: SocialGouv (https://github.com/SocialGouv/repo-falcon)
+schema_version: 1
+default_enabled: false
+auto_index: true
+contributes:
+  mcp_servers:
+    - name: falcon
+      transport: stdio
+      command: falcon
+      args:
+        - mcp
+        - serve
+        - --snapshot
+        - "{{workspace}}/.falcon/artifacts"
+        - --repo
+        - "{{workspace}}"
+  lifecycle:
+    index: "falcon index --repo {{workspace}} && falcon snapshot --repo {{workspace}}"
+    refresh: "falcon refresh --repo {{workspace}}"
+  skills:
+    - skills/code-knowledge-graph.md

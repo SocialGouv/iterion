@@ -344,6 +344,9 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
+	if err := mirrorPluginSkills(e.workDir, e.logger); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin skills (resume): %v", err)
+	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot.
 	e.applyPresetFocus()
@@ -466,6 +469,9 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// would otherwise leave the agent reading stale skill content.
 	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
+	}
+	if err := mirrorPluginSkills(e.workDir, e.logger); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin skills (resume): %v", err)
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// failed-then-resumed run keeps running as the selected sous-bot.

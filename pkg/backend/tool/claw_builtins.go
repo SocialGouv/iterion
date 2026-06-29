@@ -14,7 +14,7 @@ import (
 	clawworker "github.com/SocialGouv/claw-code-go/pkg/api/worker"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
-	"github.com/SocialGouv/iterion/pkg/backend/rtk"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 )
 
@@ -46,7 +46,7 @@ func RegisterClawBuiltins(reg *Registry, workspace string) error {
 // inheritance.
 func RegisterClawBuiltinsWithEnv(reg *Registry, workspace string, bashExtraEnv []string) error {
 	bashExec := func(ctx context.Context, input map[string]any) (string, error) {
-		if rewritten, changed := rtk.RewriteCommandField(ctx, rtk.ModeFromContext(ctx), input); changed {
+		if rewritten, changed := rewrite.RewriteCommandFieldCtx(ctx, input); changed {
 			input = rewritten
 		}
 		if len(bashExtraEnv) > 0 {

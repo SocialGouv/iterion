@@ -147,8 +147,8 @@ const (
 	TokenVisibility
 	// Worktree
 	TokenWorktree
-	// RTK output-compression mode: on|off|ultra
-	TokenRTK
+	// Compress output-compression mode: on|off|ultra
+	TokenCompress
 	// Permission gate: scalar mode + allow/ask/deny rule lists
 	TokenPermission
 	TokenAllow
@@ -294,7 +294,7 @@ var tokenNames = map[TokenType]string{
 	TokenProjectRoot:      "project_root",
 	TokenVisibility:       "visibility",
 	TokenWorktree:         "worktree",
-	TokenRTK:              "rtk",
+	TokenCompress:         "compress",
 	TokenPermission:       "permission",
 	TokenAllow:            "allow",
 	TokenAsk:              "ask",
@@ -417,7 +417,7 @@ var keywords = map[string]TokenType{
 	"project_root":          TokenProjectRoot,
 	"visibility":            TokenVisibility,
 	"worktree":              TokenWorktree,
-	"rtk":                   TokenRTK,
+	"compress":              TokenCompress,
 	"permission":            TokenPermission,
 	"allow":                 TokenAllow,
 	"ask":                   TokenAsk,

@@ -79,9 +79,9 @@ export default function LaunchView() {
   // Sending an explicit name overrides the workflow's `default_backend:`
   // but node-level explicit `backend:` still wins.
   const [backendOverride, setBackendOverride] = useState<string>("");
-  // rtk command-output-compression override for this run ("" inherits the
-  // workflow/node `rtk:` DSL then ITERION_RTK).
-  const [rtkOverride, setRtkOverride] = useState<string>("");
+  // command-output-compression override for this run ("" inherits the
+  // workflow/node `compress:` DSL then ITERION_COMPRESS).
+  const [compressOverride, setCompressOverride] = useState<string>("");
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
@@ -290,7 +290,7 @@ export default function LaunchView() {
         attachments:
           Object.keys(attachmentsPayload).length > 0 ? attachmentsPayload : undefined,
         backend: backendOverride || undefined,
-        rtk: rtkOverride || undefined,
+        compress: compressOverride || undefined,
         permission: permissionOverride || undefined,
       });
       setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
@@ -414,11 +414,11 @@ export default function LaunchView() {
             />
             <RunSettingsSection
               backendOverride={backendOverride}
-              rtkOverride={rtkOverride}
+              compressOverride={compressOverride}
               permissionOverride={permissionOverride}
               backendReport={backendReport}
               onBackendChange={setBackendOverride}
-              onRtkChange={setRtkOverride}
+              onCompressChange={setCompressOverride}
               onPermissionChange={setPermissionOverride}
             />
             <WorktreeFinalizationSection

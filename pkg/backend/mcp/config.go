@@ -94,6 +94,19 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 		return err
 	}
 
+	// Enabled plugins that contribute MCP servers (e.g. the repo-falcon
+	// knowledge-graph explorer) are merged in as ambient, workflow-wide
+	// servers — exactly like project .mcp.json entries — so every agent/judge
+	// node gets their tools unless it filters MCP explicitly. This is the
+	// runtime half of the plugin "mcp" contribution kind.
+	for name, cfg := range loadPluginServers(projectDir) {
+		if _, clash := projectServers[name]; clash {
+			continue // a project .mcp.json entry of the same name wins
+		}
+		projectServers[name] = cfg
+		projectNames = append(projectNames, name)
+	}
+
 	catalog, err := mergeCatalog(projectServers, wf.MCPServers)
 	if err != nil {
 		return err

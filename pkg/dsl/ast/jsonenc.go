@@ -302,7 +302,7 @@ type jsonAgentDecl struct {
 	Memory            *jsonMemoryBlock     `json:"memory,omitempty"`
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
-	RTK               string               `json:"rtk,omitempty"`
+	Compress          string               `json:"compress,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 }
 
@@ -334,7 +334,7 @@ type jsonJudgeDecl struct {
 	Memory            *jsonMemoryBlock     `json:"memory,omitempty"`
 	Sandbox           *jsonSandboxBlock    `json:"sandbox,omitempty"`
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
-	RTK               string               `json:"rtk,omitempty"`
+	Compress          string               `json:"compress,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
 }
 
@@ -382,7 +382,7 @@ type jsonToolNodeDecl struct {
 	ArtifactLabels []string           `json:"artifact_labels,omitempty"`
 	Await          string             `json:"await,omitempty"`
 	Sandbox        *jsonSandboxBlock  `json:"sandbox,omitempty"`
-	RTK            string             `json:"rtk,omitempty"`
+	Compress       string             `json:"compress,omitempty"`
 	Permission     string             `json:"permission,omitempty"`
 	Goal           string             `json:"goal,omitempty"`
 	Postcondition  string             `json:"postcondition,omitempty"`
@@ -562,7 +562,7 @@ type jsonWorkflowDecl struct {
 	Compaction     *jsonCompactionBlock  `json:"compaction,omitempty"`
 	Interaction    string                `json:"interaction,omitempty"`
 	Worktree       string                `json:"worktree,omitempty"`
-	RTK            string                `json:"rtk,omitempty"`
+	Compress       string                `json:"compress,omitempty"`
 	Permission     string                `json:"permission,omitempty"`
 	Allow          []string              `json:"allow,omitempty"`
 	Ask            []string              `json:"ask,omitempty"`
@@ -680,7 +680,7 @@ func toJSON(f *File) *jsonFile {
 			ArtifactLabels: t.ArtifactLabels,
 			Await:          awaitModeToStr[t.Await],
 			Sandbox:        sandboxBlockToJSON(t.Sandbox),
-			RTK:            t.RTK,
+			Compress:       t.Compress,
 			Permission:     t.Permission,
 			Goal:           t.Goal,
 			Postcondition:  t.Postcondition,
@@ -985,7 +985,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Memory:            memoryToJSON(a.Memory),
 		Sandbox:           sandboxBlockToJSON(a.Sandbox),
 		Cursors:           cursorBlockToJSON(a.Cursors),
-		RTK:               a.RTK,
+		Compress:          a.Compress,
 		Permission:        a.Permission,
 	}
 }
@@ -1019,7 +1019,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Memory:            memoryToJSON(j.Memory),
 		Sandbox:           sandboxBlockToJSON(j.Sandbox),
 		Cursors:           cursorBlockToJSON(j.Cursors),
-		RTK:               j.RTK,
+		Compress:          j.Compress,
 		Permission:        j.Permission,
 	}
 }
@@ -1057,7 +1057,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		MCP:            mcpConfigToJSON(w.MCP),
 		Compaction:     compactionToJSON(w.Compaction),
 		Worktree:       w.Worktree,
-		RTK:            w.RTK,
+		Compress:       w.Compress,
 		Permission:     w.Permission,
 		Allow:          w.Allow,
 		Ask:            w.Ask,
@@ -1241,7 +1241,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			ArtifactLabels: jt.ArtifactLabels,
 			Await:          aw,
 			Sandbox:        sandboxBlockFromJSON(jt.Sandbox),
-			RTK:            jt.RTK,
+			Compress:       jt.Compress,
 			Permission:     jt.Permission,
 			Goal:           jt.Goal,
 			Postcondition:  jt.Postcondition,
@@ -1454,7 +1454,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Memory:            memoryFromJSON(ja.Memory),
 			Sandbox:           sandboxBlockFromJSON(ja.Sandbox),
 			Cursors:           cursorBlockFromJSON(ja.Cursors),
-			RTK:               ja.RTK,
+			Compress:          ja.Compress,
 			Permission:        ja.Permission,
 		},
 	}, nil
@@ -1502,7 +1502,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Memory:            memoryFromJSON(jj.Memory),
 			Sandbox:           sandboxBlockFromJSON(jj.Sandbox),
 			Cursors:           cursorBlockFromJSON(jj.Cursors),
-			RTK:               jj.RTK,
+			Compress:          jj.Compress,
 			Permission:        jj.Permission,
 		},
 	}, nil
@@ -1557,7 +1557,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		MCP:            mcpConfigFromJSON(jw.MCP),
 		Compaction:     compactionFromJSON(jw.Compaction),
 		Worktree:       jw.Worktree,
-		RTK:            jw.RTK,
+		Compress:       jw.Compress,
 		Permission:     jw.Permission,
 		Allow:          jw.Allow,
 		Ask:            jw.Ask,

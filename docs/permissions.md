@@ -84,7 +84,7 @@ human).
 
 ## Precedence
 
-Mode resolves with the same precedence as `rtk:`:
+Mode resolves with the same precedence as `compress:`:
 
 ```
 CLI --permission  >  node permission:  >  workflow permission:  >  ITERION_PERMISSION  >  off
@@ -155,7 +155,7 @@ identically whichever backend executes it.
 ## See also
 
 - `pkg/backend/permission/` — the matcher + Policy (single source of truth)
-- `docs/rtk.md` — the sibling opt-in `rtk:` field this mirrors
+- `docs/plugins.md` — the sibling opt-in `compress:` field this mirrors
 - Diagnostics: **C110** (invalid permission mode), **C111** (rules
   declared but gate off), **C112** (tool-node `permission:` — parsed but
   not enforced).

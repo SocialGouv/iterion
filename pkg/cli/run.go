@@ -78,11 +78,11 @@ type RunOptions struct {
 	// across runs. Values: "", "auto", "none". Empty inherits
 	// ITERION_SANDBOX_HOST_STATE then the built-in default "auto".
 	SandboxHostState string
-	// RTK is the run-level rtk command-output-compression override
-	// ("", "on", "ultra", "off"). "" inherits the workflow/node `rtk:`
-	// DSL then the ITERION_RTK env default. It is the highest-priority
-	// input to rtk.Resolve. See docs/rtk.md.
-	RTK string
+	// Compress is the run-level command-output-compression override
+	// ("", "on", "ultra", "off"). "" inherits the workflow/node `compress:`
+	// DSL then the ITERION_COMPRESS env default. It is the highest-priority
+	// input to rewrite.Resolve. See docs/plugins.md.
+	Compress string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"). "" inherits the workflow/node
 	// `permission:` DSL then the ITERION_PERMISSION env default.
@@ -382,7 +382,7 @@ func buildRunExecutor(
 		RunID:           runID,
 		Logger:          logger,
 		StoreDir:        storeDir,
-		RTK:             opts.RTK,
+		Compress:        opts.Compress,
 		Permission:      opts.Permission,
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,

@@ -36,6 +36,16 @@ const (
 	StatusRejected Status = "rejected"
 )
 
+// Kind distinguishes a marketplace entry's artifact type. The zero value
+// ("") reads as KindBot via EffectiveKind so every legacy entry (written
+// before plugins shared the registry) stays a bot.
+type Kind string
+
+const (
+	KindBot    Kind = "bot"    // a .bot/.botz workflow bundle (the original entry type)
+	KindPlugin Kind = "plugin" // a plugin.yaml package (rewriter / mcp / skill / lifecycle)
+)
+
 // Source records how an entry's bundle is sourced. The zero value ("")
 // reads as SourceGit via EffectiveSource.
 type Source string
@@ -63,6 +73,10 @@ type Entry struct {
 	// via botregistry.NormalizeName. Used as the URL segment in
 	// `/api/v1/marketplace/bots/{slug}` and as the Mongo _id.
 	Slug string `json:"slug" bson:"_id"`
+
+	// Kind is the entry's artifact type (bot | plugin). Empty reads as
+	// KindBot via EffectiveKind (legacy entries).
+	Kind Kind `json:"kind,omitempty" bson:"kind,omitempty"`
 
 	// Name is the bundle's technical id (manifest.name).
 	Name string `json:"name" bson:"name"`
@@ -163,6 +177,15 @@ func EffectiveScope(e Entry) Scope {
 		return ScopePublic
 	}
 	return e.Scope
+}
+
+// EffectiveKind resolves the artifact kind, treating the empty zero value
+// as a bot (legacy entries written before plugins shared the registry).
+func EffectiveKind(e Entry) Kind {
+	if e.Kind == "" {
+		return KindBot
+	}
+	return e.Kind
 }
 
 // EffectiveSource resolves the bundle source, treating the empty zero
@@ -269,6 +292,9 @@ type Query struct {
 	// Tag, when set, requires an exact (case-insensitive) match in
 	// the entry's Tags.
 	Tag string
+	// Kind, when set, restricts the listing to entries of that artifact
+	// kind (bot | plugin), compared via EffectiveKind. Empty = any.
+	Kind Kind
 	// Viewer scopes the listing to what the requesting principal may
 	// see (see Visible). The zero value (Enforce false) returns every
 	// entry — the local single-tenant default.

@@ -72,6 +72,10 @@ type serverInfoResponse struct {
 	// tab only fetches the curated widget spec when true — when off it
 	// renders the deterministic task-list board alone and never polls.
 	SessionBoardEnabled bool `json:"session_board_enabled"`
+	// PluginsEnabled is always true: the plugin registry (embedded builtins +
+	// ~/.iterion/plugins) is available in every mode, so the SPA can surface a
+	// Plugins management view unconditionally.
+	PluginsEnabled bool `json:"plugins_enabled"`
 }
 
 type serverLimitsBlock struct {
@@ -115,6 +119,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		TriggersEnabled:          s.cfg.TriggerStore != nil,
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 		SessionBoardEnabled:      sessionboard.Enabled(),
+		PluginsEnabled:           true,
 	}
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.

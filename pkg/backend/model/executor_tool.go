@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/backend/rtk"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
@@ -211,7 +211,7 @@ func parseToolNodeOutput(stdout, fallback string) map[string]interface{} {
 // output parse.
 //
 // resolve returns the final command/script string (env-expand, run-ref +
-// template substitution, and — shell only — the rtk rewrite). buildCmd
+// template substitution, and — shell only — the compression rewrite). buildCmd
 // turns that string into an *exec.Cmd, returning an optional cleanup (the
 // script path uses it to remove its temp file) and an error (e.g.
 // unsupported language / temp-file failure). buildCmd runs UNTIMED — only
@@ -338,16 +338,16 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			// into the command verbatim.
 			expandedCommand = resolveRunRefs(expandedCommand, RunIDFromContext(ctx), node.CommandRefs, shellEscapeValue)
 			resolved := resolveCommandTemplate(expandedCommand, node.CommandRefs, input, e.vars, e.secretGuard)
-			// rtk (tool nodes): node-level opt-in ONLY — compresses command
-			// output only when the node's own `rtk:` is on/ultra (a run override
-			// can force-off as a kill switch, never force-on), so a review
-			// loop's `git diff` stays full-fidelity unless the author opts in.
-			// Done before secretGuard.Materialize so hooks/logs persist the
-			// placeholder (rtk-form) command, never the materialised secret.
+			// Compression (tool nodes): node-level opt-in ONLY — compresses
+			// command output only when the node's own `compress:` is on/ultra (a
+			// run override can force-off as a kill switch, never force-on), so a
+			// review loop's `git diff` stays full-fidelity unless the author opts
+			// in. Done before secretGuard.Materialize so hooks/logs persist the
+			// placeholder (rewriter-form) command, never the materialised secret.
 			// Shell-only: a script body (executeToolNodeScript) is not a shell
-			// command line and never rtk-rewrites.
-			if m := rtk.ResolveToolNode(e.rtkOverride, node.RTK); m.Enabled() {
-				if rewritten, changed := rtk.Rewrite(ctx, m, resolved); changed {
+			// command line and never rewrites.
+			if m := rewrite.ResolveToolNode(e.compressOverride, node.Compress); m.Enabled() {
+				if rewritten, changed := e.chain.Rewrite(ctx, m, resolved); changed {
 					resolved = rewritten
 				}
 			}
@@ -464,7 +464,7 @@ func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, inpu
 			// (JSON literal rendering) so values land as valid JS/Python/Ruby
 			// literals — shell-escape's single-quote wrapping breaks
 			// script-language string parsers when the value contains embedded
-			// apostrophes. No rtk: a script body is not a shell command line.
+			// apostrophes. No compression: a script body is not a shell command line.
 			expanded := expandBracedEnv(node.Script)
 			// {{run.id}} first — resolveScriptTemplate only knows input/vars/secrets.
 			expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), node.ScriptRefs, jsonLiteralValue)

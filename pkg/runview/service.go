@@ -74,11 +74,11 @@ type LaunchSpec struct {
 	// (ITERION_RUNS_DETACHED=1) does not yet honor this field; the
 	// service layer logs a warning and ignores it there.
 	Backend string
-	// RTK is the run-level rtk command-output-compression override
+	// Compress is the run-level command-output-compression override
 	// ("", "on", "ultra", "off") from the studio Launch toggle. ""
-	// inherits the workflow/node `rtk:` DSL then ITERION_RTK. Highest
-	// priority input to rtk.Resolve. See docs/rtk.md.
-	RTK string
+	// inherits the workflow/node `compress:` DSL then ITERION_COMPRESS. Highest
+	// priority input to rewrite.Resolve. See docs/plugins.md.
+	Compress string
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny") from the studio Launch toggle. ""
 	// inherits the workflow/node `permission:` DSL then

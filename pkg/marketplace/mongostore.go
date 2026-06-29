@@ -77,6 +77,16 @@ func (s *MongoStore) List(ctx context.Context, q Query) ([]Entry, error) {
 	if t := q.Tag; t != "" {
 		and = append(and, bson.M{"tags": t})
 	}
+	if q.Kind == KindPlugin {
+		and = append(and, bson.M{"kind": string(KindPlugin)})
+	} else if q.Kind == KindBot {
+		// Legacy entries have no kind field; treat missing/empty as bot.
+		and = append(and, bson.M{"$or": bson.A{
+			bson.M{"kind": string(KindBot)},
+			bson.M{"kind": bson.M{"$in": bson.A{"", nil}}},
+			bson.M{"kind": bson.M{"$exists": false}},
+		}})
+	}
 	if text := q.Text; text != "" {
 		// Case-insensitive SUBSTRING match across the searchable fields,
 		// mirroring the JSON store's behaviour. We deliberately avoid Mongo's

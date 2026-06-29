@@ -1079,6 +1079,9 @@ func (s *Server) routes() {
 	// presets so the studio's Board ticket form can render a typed
 	// args form per bot. Read-only, gated by the same auth middleware
 	// as the rest of /api/* (the wrapper at line ~427 wraps the mux).
+	s.mux.HandleFunc("GET /api/v1/plugins", s.handlePluginsList)
+	s.mux.HandleFunc("POST /api/v1/plugins/{name}/enable", s.handlePluginEnable(true))
+	s.mux.HandleFunc("POST /api/v1/plugins/{name}/disable", s.handlePluginEnable(false))
 	s.mux.HandleFunc("GET /api/v1/bots", s.handleBotsList)
 	s.mux.HandleFunc("POST /api/v1/bots/install", s.handleBotInstall)
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)

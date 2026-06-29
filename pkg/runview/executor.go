@@ -14,6 +14,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy/detector"
@@ -22,8 +23,29 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 )
+
+// rewriteChainFromPlugins loads the plugin registry and builds the command-
+// output rewriter chain from every enabled rewriter plugin (rtk by default,
+// in stable name order). Returns nil when the registry can't be loaded or no
+// rewriter plugin is enabled — compression then resolves to a no-op.
+func rewriteChainFromPlugins(logger *iterlog.Logger) *rewrite.Chain {
+	reg, err := plugin.Load()
+	if err != nil {
+		if logger != nil {
+			logger.Warn("runview: load plugins for rewriter chain: %v — compression disabled", err)
+		}
+		return nil
+	}
+	contribs := reg.EnabledRewriters()
+	specs := make([]plugin.RewriterSpec, 0, len(contribs))
+	for _, c := range contribs {
+		specs = append(specs, c.Spec)
+	}
+	return rewrite.NewChain(specs)
+}
 
 // ExecutorSpec carries the inputs required to construct a default
 // ClawExecutor. Splitting the args into a struct keeps cli/run.go and
@@ -67,10 +89,10 @@ type ExecutorSpec struct {
 	// registry and returns the token. nil (CLI) leaves sandboxed
 	// board-emit disabled.
 	BoardRegister func(caps []string) string
-	// RTK is the run-level rtk override ("", "on", "ultra", "off"),
-	// forwarded to the executor as the highest-priority input to
-	// rtk.Resolve (above node/workflow DSL and the ITERION_RTK env).
-	RTK string
+	// Compress is the run-level command-output-compression override ("",
+	// "on", "ultra", "off"), forwarded to the executor as the highest-priority
+	// input to rewrite.Resolve (above node/workflow DSL and ITERION_COMPRESS).
+	Compress string
 
 	// Permission is the run-level tool-permission-gate mode override
 	// ("", "off", "ask", "deny"), highest-priority input to the gate's
@@ -165,7 +187,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithLifecycleHooks(lifecycle),
 		model.WithStoreDir(dispatcherStoreDir),
 		model.WithSecretGuard(guard),
-		model.WithRTKOverride(spec.RTK),
+		model.WithCompressOverride(spec.Compress),
+		model.WithRewriteChain(rewriteChainFromPlugins(spec.Logger)),
 		model.WithPermissionOverride(spec.Permission),
 		model.WithPermissionRules(spec.PermissionAllow, spec.PermissionAsk, spec.PermissionDeny),
 	}

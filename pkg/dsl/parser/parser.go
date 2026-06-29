@@ -1221,9 +1221,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenBackend:
 		p.expect(TokenColon)
 		d.Backend = p.expectString()
-	case TokenRTK:
+	case TokenCompress:
 		p.expect(TokenColon)
-		d.RTK = p.expectIdent()
+		d.Compress = p.expectIdent()
 	case TokenPermission:
 		p.expect(TokenColon)
 		d.Permission = p.expectIdent()
@@ -1559,9 +1559,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenSandbox:
 		p.backup()
 		td.Sandbox = p.parseSandboxBlock()
-	case TokenRTK:
+	case TokenCompress:
 		p.expect(TokenColon)
-		td.RTK = p.expectIdent()
+		td.Compress = p.expectIdent()
 	case TokenPermission:
 		p.expect(TokenColon)
 		td.Permission = p.expectIdent()
@@ -1805,10 +1805,10 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.Worktree = p.expectIdent()
 			p.skipNewlines()
 
-		case TokenRTK:
-			p.next() // consume "rtk"
+		case TokenCompress:
+			p.next() // consume "compress"
 			p.expect(TokenColon)
-			wd.RTK = p.expectIdent()
+			wd.Compress = p.expectIdent()
 			p.skipNewlines()
 
 		case TokenPermission:
@@ -2467,7 +2467,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenCompaction, TokenThreshold, TokenPreserveRecent,
 		TokenMemory, TokenEnabled, TokenScope, TokenAutoload, TokenRead, TokenWrite, TokenPreCompactInject,
 		TokenWorktree,
-		TokenRTK,
+		TokenCompress,
 		TokenPermission, TokenAllow, TokenAsk, TokenDeny,
 		TokenSandbox,
 		TokenCursor, TokenCursors, TokenValues, TokenBands,

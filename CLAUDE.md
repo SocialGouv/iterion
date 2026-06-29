@@ -167,9 +167,9 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 
 **Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`), `workflow <name>:`
 
-**`rtk:` field** (`on|ultra|off`) — opt-in command-output compression on the `workflow` block and on `agent`/`judge`/`tool` nodes (off by default; see the rtk section above + [docs/rtk.md](docs/rtk.md)).
+**`compress:` field** (`on|ultra|off`) — opt-in command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes (off by default; see the plugins section above + [docs/plugins.md](docs/plugins.md)).
 
-**`permission:` field** (`off|ask|deny`) + `allow:`/`ask:`/`deny:` rule lists — opt-in **tool-permission gate** (the anti-prompt-injection boundary). Mode on the `workflow` block and as a per-node override; rule lists (Claude-Code `Tool(pattern)` syntax, e.g. `Bash(go test:*)`, `Read(**)`, `Edit(pkg/**)`) on the workflow block. `off` (default) = today's bypassPermissions; `ask` pauses for human approval on any call not allow-listed; `deny` hard-blocks it (headless). The SAME resolved `permission.Policy` ([pkg/backend/permission](pkg/backend/permission/permission.go)) drives BOTH backends — claude_code's `wirePermissionHook` PreToolUse hook and claw's `executeToolsDirect` gate — so a bot behaves identically on either. Precedence (mirrors `rtk:`): CLI `--permission`/`--permission-allow|ask|deny` → node → workflow → `ITERION_PERMISSION` → off. Diagnostics C110/C111/C112. See [docs/permissions.md](docs/permissions.md).
+**`permission:` field** (`off|ask|deny`) + `allow:`/`ask:`/`deny:` rule lists — opt-in **tool-permission gate** (the anti-prompt-injection boundary). Mode on the `workflow` block and as a per-node override; rule lists (Claude-Code `Tool(pattern)` syntax, e.g. `Bash(go test:*)`, `Read(**)`, `Edit(pkg/**)`) on the workflow block. `off` (default) = today's bypassPermissions; `ask` pauses for human approval on any call not allow-listed; `deny` hard-blocks it (headless). The SAME resolved `permission.Policy` ([pkg/backend/permission](pkg/backend/permission/permission.go)) drives BOTH backends — claude_code's `wirePermissionHook` PreToolUse hook and claw's `executeToolsDirect` gate — so a bot behaves identically on either. Precedence (mirrors `compress:`): CLI `--permission`/`--permission-allow|ask|deny` → node → workflow → `ITERION_PERMISSION` → off. Diagnostics C110/C111/C112. See [docs/permissions.md](docs/permissions.md).
 
 **Edge syntax:**
 ```
@@ -235,22 +235,40 @@ clause reinforces the asymptote, it does not gate it.
 
 **OpenAI ChatGPT-forfait via claw.** When Codex CLI is signed in via "Sign in with ChatGPT" (`auth_mode: "chatgpt"` in `~/.codex/auth.json`), `claw` can reuse that OAuth token + account_id to drive OpenAI calls through `chatgpt.com/backend-api/codex` — billing against the user's ChatGPT Plus/Pro subscription instead of metered API calls. Precedence: `OPENAI_API_KEY` wins when both are present (explicit env var = deliberate); ChatGPT-OAuth activates when no API key is set, or when `ITERION_OPENAI_USE_OAUTH=1` forces it. `ITERION_OPENAI_USE_OAUTH=0` or any `OPENAI_BASE_URL` disables OAuth. The `version:` header (which OpenAI uses to gate model availability — e.g. gpt-5.5 requires codex-cli ≥ 0.130) is sourced from `ITERION_CODEX_VERSION` or `codex --version`. See the "OpenAI via ChatGPT forfait" section in [docs/backends.md](docs/backends.md). The Anthropic-forfait equivalent is **not** supported (Consumer Terms scope it to Claude Code only).
 
-### rtk output compression (token saver)
+### Plugins (rewriters, MCP, skills, lifecycle) + command-output compression
 
-[rtk](https://github.com/rtk-ai/rtk) ("Rust Token Killer") is an **opt-in,
-off-by-default** compressor that rewrites an agent's shell command to its
-token-compressed equivalent (`git status` → `rtk git status`), saving 60–90% of
-command-output tokens. One primitive — rtk's own `rtk rewrite <cmd>` — drives all
-three shell surfaces: the **claude_code** Bash PreToolUse hook, the **claw** bash
-builtin (helps under claw's 10 KB output cap), and **tool nodes** (node-level
-opt-in ONLY — never swept in by a global toggle, so a review loop's `git diff`
-stays full-fidelity). iterion uses rtk strictly as a compressor, never a
-permission gate (exit 0 *and* 3 → apply the rewrite; failures fall back to the
-original command). Enable via precedence `--rtk` / studio Launch toggle → node
-`rtk:` → workflow `rtk:` → `ITERION_RTK` (values `on|ultra|off`); locate the
-binary via `ITERION_RTK_BIN` then PATH. Sandboxed runs bind-mount the host rtk at
-`/usr/local/bin/rtk`. Telemetry is disabled by default (`RTK_TELEMETRY_DISABLED=1`).
-Full reference: [docs/rtk.md](docs/rtk.md).
+Iterion has a **plugin ecosystem**: declarative, out-of-process packages
+(`plugin.yaml`) with typed `contributes:` kinds — `rewriters` (command-output
+compressors), `mcp_servers` (e.g. knowledge-graph explorers), `skills`, and
+`lifecycle` (index/refresh). Builtins are embedded
+([pkg/plugin/builtin/](pkg/plugin/builtin/)); `rtk` ships **enabled**,
+`graphify` + `repo-falcon` ship **disabled**. Installed plugins live under
+`~/.iterion/plugins/<name>/`, enable state in `~/.iterion/plugins.yaml`. Manage
+with `iterion plugin list|info|enable|disable|run|install|uninstall`. The plugin
+system never injects Go code (static `CGO_ENABLED=0` binaries rule out Go
+`plugin`); it wires manifests into existing seams (rewrite chain, MCP catalog,
+skill mirroring). Marketplace entries carry a `kind` (`bot`|`plugin`) so both
+share one registry. Full reference + the roadmap toward the full Claude plugin
+taxonomy (commands/agents/hooks) with claude_code⇄claw parity (improve claw in
+`.works/claw-code-go`) and public-skill-library install:
+[docs/plugins.md](docs/plugins.md).
+
+**Command-output compression** is the `rewriter` kind, generalized from the old
+hardcoded rtk integration. `rtk` ("Rust Token Killer",
+[github](https://github.com/rtk-ai/rtk)) is the default-enabled rewriter: it
+rewrites an agent's shell command to its token-compressed equivalent (`git
+status` → `rtk git status`), saving 60–90% of command-output tokens, on all
+three shell surfaces — the **claude_code** Bash PreToolUse hook, the **claw**
+bash builtin, and **tool nodes** (node-level opt-in ONLY, so a review loop's
+`git diff` stays full-fidelity). The DSL field is **`compress:`**
+(`on|ultra|off`) on the `workflow` block and `agent`/`judge`/`tool` nodes; CLI
+flag **`--compress`**; env **`ITERION_COMPRESS`**. Precedence: CLI → node →
+workflow → env → off. Enabled rewriter plugins form an ordered **chain** so you
+can replace rtk or stack several compressors. iterion uses rewriters strictly as
+compressors, never permission gates (failures fall back to the original
+command). Sandboxed runs bind-mount each rewriter's host binary at its declared
+`sandbox_mount` (rtk → `/usr/local/bin/rtk`). Diagnostic `C102` flags an invalid
+`compress:` value.
 
 ### Sandbox
 
@@ -874,7 +892,7 @@ above is the standing baseline, not an open-work list).
 ```
 iterion init [dir]                      # Scaffold new project
 iterion validate <file.bot>            # Parse and validate workflow
-iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --rtk, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
+iterion run <file.bot> [flags]         # Execute workflow (--var, --recipe, --timeout, --store-dir, --merge-into, --branch-name, --compress, --max-cost-usd, --max-tokens, --max-duration, --max-iterations, --max-parallel-branches)
 iterion inspect [--run-id] [--events]   # View run state and events
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion fork --run-id <parent> --node <id> [--turn N] [--rewind-code]  # Fork a run at a prior LLM turn (resume with `iterion resume`)

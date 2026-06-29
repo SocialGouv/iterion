@@ -299,7 +299,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandbox image instead (see sandbox/*/Dockerfile).
 	if caps.SupportsHostBindMounts {
 		addClawBinaryMount(spec, p.Workflow)
-		addRtkBinaryMount(spec)
+		addRewriterMounts(spec)
 		addWorktreeGitMount(spec, p.WorktreeGitDir, logger)
 	}
 	if err := addSecretFileMounts(ctx, spec, p.Workflow, p.SecretVars); err != nil {

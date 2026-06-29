@@ -206,7 +206,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Readonly: a.Readonly, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			RTK: a.RTK, Permission: a.Permission,
+			Compress: a.Compress, Permission: a.Permission,
 		})
 		if a.Compaction != nil {
 			writeCompaction(&w.b, a.Compaction, "  ", false)
@@ -236,7 +236,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Readonly: j.Readonly, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			RTK: j.RTK, Permission: j.Permission,
+			Compress: j.Compress, Permission: j.Permission,
 		})
 		if j.Compaction != nil {
 			writeCompaction(&w.b, j.Compaction, "  ", false)
@@ -367,8 +367,8 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if t.Await != ast.AwaitNone {
 			writeProp(&w.b, "await", t.Await.String())
 		}
-		if t.RTK != "" {
-			writeProp(&w.b, "rtk", t.RTK)
+		if t.Compress != "" {
+			writeProp(&w.b, "compress", t.Compress)
 		}
 		if t.Permission != "" {
 			writeProp(&w.b, "permission", t.Permission)
@@ -471,8 +471,8 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 			writeProp(&w.b, "worktree", wf.Worktree)
 		}
 
-		if wf.RTK != "" {
-			writeProp(&w.b, "rtk", wf.RTK)
+		if wf.Compress != "" {
+			writeProp(&w.b, "compress", wf.Compress)
 		}
 
 		if wf.Permission != "" {
@@ -754,7 +754,7 @@ type llmFields struct {
 	Interaction                         ast.InteractionMode
 	InteractionPrompt, InteractionModel string
 	Await                               ast.AwaitMode
-	RTK                                 string
+	Compress                            string
 	Permission                          string
 }
 
@@ -824,8 +824,8 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	if f.Await != ast.AwaitNone {
 		writeProp(b, "await", f.Await.String())
 	}
-	if f.RTK != "" {
-		writeProp(b, "rtk", f.RTK)
+	if f.Compress != "" {
+		writeProp(b, "compress", f.Compress)
 	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)

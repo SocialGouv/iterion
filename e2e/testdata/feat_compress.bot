@@ -1,0 +1,13 @@
+## Feature fixture: command-output compression (node-level opt-in).
+## The tool node opts into compression; the active rewriter plugin chain (rtk
+## by default) rewrites `git status` to its compressed equivalent before
+## running it. The test asserts the node runs cleanly with compress on
+## (skipped when no rewriter binary is present).
+
+tool compress_probe:
+  compress: on
+  command: "cd \"${PROJECT_DIR}\" && git status"
+
+workflow main:
+  entry: compress_probe
+  compress_probe -> done

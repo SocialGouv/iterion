@@ -1,6 +1,6 @@
 // Extracted from LaunchView.tsx to keep that file focused.
 // RunSettingsSection renders the "Run settings" block: per-run backend
-// override and rtk compression override. Both selects are presentational —
+// override and compression override. Both selects are presentational —
 // LaunchView owns the override state and feeds it to createRun().
 
 import type { BackendDetectReport } from "@/api/backends";
@@ -9,21 +9,21 @@ import { Select } from "@/components/ui/Select";
 
 export interface RunSettingsSectionProps {
   backendOverride: string;
-  rtkOverride: string;
+  compressOverride: string;
   permissionOverride: string;
   backendReport: BackendDetectReport | null;
   onBackendChange: (value: string) => void;
-  onRtkChange: (value: string) => void;
+  onCompressChange: (value: string) => void;
   onPermissionChange: (value: string) => void;
 }
 
 export default function RunSettingsSection({
   backendOverride,
-  rtkOverride,
+  compressOverride,
   permissionOverride,
   backendReport,
   onBackendChange,
-  onRtkChange,
+  onCompressChange,
   onPermissionChange,
 }: RunSettingsSectionProps) {
   return (
@@ -68,21 +68,21 @@ export default function RunSettingsSection({
         </div>
         <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
           <div>
-            <div className="text-xs font-medium font-mono">rtk</div>
+            <div className="text-xs font-medium font-mono">compress</div>
             <div className="text-caption text-fg-subtle">output compression</div>
           </div>
           <div>
             <Select
-              value={rtkOverride}
-              onChange={(e) => onRtkChange(e.currentTarget.value)}
+              value={compressOverride}
+              onChange={(e) => onCompressChange(e.currentTarget.value)}
             >
-              <option value="">inherit (workflow / ITERION_RTK)</option>
+              <option value="">inherit (workflow / ITERION_COMPRESS)</option>
               <option value="on">on — compress shell output</option>
               <option value="ultra">ultra — densest output</option>
               <option value="off">off — disable for this run</option>
             </Select>
             <div className="mt-1 text-caption text-fg-subtle">
-              Rewrites agent shell commands via{" "}
+              Rewrites agent shell commands via the active rewriter plugin (
               <a
                 href="https://github.com/rtk-ai/rtk"
                 target="_blank"
@@ -91,8 +91,8 @@ export default function RunSettingsSection({
               >
                 rtk
               </a>{" "}
-              to save 60–90% of command-output tokens. Needs the{" "}
-              <code>rtk</code> binary on the host PATH.
+              by default) to save 60–90% of command-output tokens. Needs an
+              enabled rewriter plugin whose binary is on the host PATH.
             </div>
           </div>
         </div>

@@ -495,7 +495,7 @@ func (c *compiler) compile() *Workflow {
 		Supervisors:     supervisors,
 		Interaction:     interaction,
 		Worktree:        defaultWorktreeMode(wf.Worktree),
-		RTK:             wf.RTK,
+		Compress:        wf.Compress,
 		Permission:      wf.Permission,
 		PermissionAllow: wf.Allow,
 		PermissionAsk:   wf.Ask,
@@ -795,7 +795,7 @@ func (c *compiler) compileAgents() {
 			Memory:            compileMemory(a.Memory),
 			Sandbox:           c.compileSandboxBlock(a.Sandbox, "agent", a.Name),
 			Cursors:           compileCursorInvocation(a.Cursors),
-			RTK:               a.RTK,
+			Compress:          a.Compress,
 			Permission:        a.Permission,
 		}
 	}
@@ -828,7 +828,7 @@ func (c *compiler) compileJudges() {
 			Memory:            compileMemory(j.Memory),
 			Sandbox:           c.compileSandboxBlock(j.Sandbox, "judge", j.Name),
 			Cursors:           compileCursorInvocation(j.Cursors),
-			RTK:               j.RTK,
+			Compress:          j.Compress,
 			Permission:        j.Permission,
 		}
 	}
@@ -1105,7 +1105,7 @@ func (c *compiler) compileTools() {
 			PublishLabels: t.ArtifactLabels,
 			AwaitMode:     t.Await,
 			Sandbox:       c.compileSandboxBlock(t.Sandbox, "tool", t.Name),
-			RTK:           t.RTK,
+			Compress:      t.Compress,
 			Permission:    t.Permission,
 			Goal:          t.Goal,
 			Postcondition: t.Postcondition,

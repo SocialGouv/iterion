@@ -13,7 +13,7 @@ import (
 // a workflow that uses the permission gate at every supported site: the scalar
 // mode + allow/ask/deny rule lists at workflow level, and a per-node permission
 // mode override on an agent, a judge, and a tool node. Unparse must emit the
-// scalar mode as a bareword (no quotes, like rtk/worktree) and the rule lists as
+// scalar mode as a bareword (no quotes, like compress/worktree) and the rule lists as
 // quoted-string arrays (like capabilities/hosts), and the re-compiled IR must
 // preserve every value verbatim.
 func TestPermissionRoundTrip(t *testing.T) {

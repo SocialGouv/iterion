@@ -1,0 +1,30 @@
+name: rtk
+version: 1.0.0
+description: Rust Token Killer — compresses shell command output 60–90% (git, go test, npm, …)
+author: rtk-ai (https://github.com/rtk-ai/rtk)
+schema_version: 1
+default_enabled: true
+contributes:
+  rewriters:
+    - id: rtk
+      locate:
+        env: ITERION_RTK_BIN
+        bin: rtk
+        paths:
+          - ~/.local/bin/rtk
+          - /usr/local/bin/rtk
+          - /usr/bin/rtk
+      invoke:
+        argv: ["rewrite", "{{command}}"]
+        env:
+          RTK_TELEMETRY_DISABLED: "1"
+        timeout_ms: 5000
+        # rtk's Default verdict maps to Ask (exit 3) so Claude Code's permission
+        # layer is not bypassed; iterion is a compressor, not a gate, so it
+        # treats 0 (allow) and 3 (ask) identically — both carry the rewrite.
+        apply_exit_codes: [0, 3]
+        modes:
+          on: {}
+          ultra:
+            inject_flag: "--ultra-compact"
+      sandbox_mount: /usr/local/bin/rtk

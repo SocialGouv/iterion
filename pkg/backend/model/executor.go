@@ -23,7 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
-	"github.com/SocialGouv/iterion/pkg/backend/rtk"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
 	"github.com/SocialGouv/iterion/pkg/backend/tool/privacy"
@@ -189,14 +189,18 @@ type ClawExecutor struct {
 	storeDir        string   // dispatcher store root (empty = backend default)
 	lifecycleHooks  *hooks.Runner
 
-	// rtk command-output compression. wfRTK is the workflow-level `rtk:`
-	// DSL value; rtkOverride is the run-level override (CLI --rtk / studio
-	// Launch); rtkEnvDefault is ITERION_RTK, read once at construction
-	// instead of per node. All three feed rtk.Resolve to compute each node's
-	// effective mode (precedence: override > node DSL > workflow DSL > env).
-	wfRTK         string
-	rtkOverride   string
-	rtkEnvDefault string
+	// Command-output compression (the rewriter plugin chain). wfCompress is
+	// the workflow-level `compress:` DSL value; compressOverride is the
+	// run-level override (CLI --compress / studio Launch); compressEnvDefault
+	// is ITERION_COMPRESS, read once at construction instead of per node. All
+	// three feed rewrite.Resolve to compute each node's effective mode
+	// (precedence: override > node DSL > workflow DSL > env). chain is the
+	// ordered set of enabled rewriters (rtk by default), wired from the plugin
+	// registry; nil when no rewriter plugin is enabled (compression off).
+	wfCompress         string
+	compressOverride   string
+	compressEnvDefault string
+	chain              *rewrite.Chain
 
 	// Tool-permission gate (anti-prompt-injection boundary). wfPermission
 	// + wfPerm{Allow,Ask,Deny} are the workflow-level `permission:` DSL
@@ -332,11 +336,18 @@ func WithDefaultBackend(name string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.defaultBackend = name }
 }
 
-// WithRTKOverride sets the run-level rtk override (CLI --rtk / studio Launch
-// toggle): on|ultra|off, or "" for "unset, defer to DSL/env". It is the
-// highest-priority input to rtk.Resolve.
-func WithRTKOverride(mode string) ClawExecutorOption {
-	return func(e *ClawExecutor) { e.rtkOverride = mode }
+// WithCompressOverride sets the run-level compression override (CLI --compress
+// / studio Launch toggle): on|ultra|off, or "" for "unset, defer to DSL/env".
+// It is the highest-priority input to rewrite.Resolve.
+func WithCompressOverride(mode string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.compressOverride = mode }
+}
+
+// WithRewriteChain sets the active rewriter chain (the enabled rewriter
+// plugins, rtk by default), wired from the plugin registry at startup. Nil
+// disables compression regardless of mode.
+func WithRewriteChain(chain *rewrite.Chain) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.chain = chain }
 }
 
 // WithPermissionOverride sets the run-level permission-gate override (CLI
@@ -558,25 +569,25 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		}
 	}
 	e := &ClawExecutor{
-		registry:       registry,
-		prompts:        wf.Prompts,
-		schemas:        wf.Schemas,
-		cursors:        wf.Cursors,
-		imageAttachs:   imageAttachs,
-		defaultBackend: wf.DefaultBackend,
-		wfRTK:          wf.RTK,
-		rtkEnvDefault:  os.Getenv(rtk.ModeEnv),
-		wfPermission:   wf.Permission,
-		wfPermAllow:    wf.PermissionAllow,
-		wfPermAsk:      wf.PermissionAsk,
-		wfPermDeny:     wf.PermissionDeny,
-		permEnvDefault: os.Getenv("ITERION_PERMISSION"),
-		wfCompaction:   wf.Compaction,
-		wfCapabilities: wf.Capabilities,
-		botID:          wf.Name,
-		sessions:       newNodeSessionStore(),
-		vars:           seed,
-		detector:       detect.NewCachedDetector(5 * time.Minute),
+		registry:           registry,
+		prompts:            wf.Prompts,
+		schemas:            wf.Schemas,
+		cursors:            wf.Cursors,
+		imageAttachs:       imageAttachs,
+		defaultBackend:     wf.DefaultBackend,
+		wfCompress:         wf.Compress,
+		compressEnvDefault: os.Getenv(rewrite.ModeEnv),
+		wfPermission:       wf.Permission,
+		wfPermAllow:        wf.PermissionAllow,
+		wfPermAsk:          wf.PermissionAsk,
+		wfPermDeny:         wf.PermissionDeny,
+		permEnvDefault:     os.Getenv("ITERION_PERMISSION"),
+		wfCompaction:       wf.Compaction,
+		wfCapabilities:     wf.Capabilities,
+		botID:              wf.Name,
+		sessions:           newNodeSessionStore(),
+		vars:               seed,
+		detector:           detect.NewCachedDetector(5 * time.Minute),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -979,7 +990,7 @@ type backendFields struct {
 	memory           *ir.Memory
 	capabilities     []string
 	cursors          *ir.CursorInvocation
-	rtk              string // node-level `rtk:` value ("" = unset)
+	compress         string // node-level `compress:` value ("" = unset)
 	permission       string // node-level `permission:` mode override ("" = inherit)
 }
 
@@ -1005,7 +1016,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			memory:           n.Memory,
 			capabilities:     n.Capabilities,
 			cursors:          n.Cursors,
-			rtk:              n.RTK,
+			compress:         n.Compress,
 			permission:       n.Permission,
 		}, nil
 	case *ir.JudgeNode:
@@ -1022,7 +1033,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			memory:           n.Memory,
 			capabilities:     n.Capabilities,
 			cursors:          n.Cursors,
-			rtk:              n.RTK,
+			compress:         n.Compress,
 			permission:       n.Permission,
 		}, nil
 	default:
@@ -1390,13 +1401,17 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
-	// rtk output-compression mode (precedence: run override > node DSL >
-	// workflow DSL > ITERION_RTK env). Stored as a string so the delegate
-	// layer + IPC wire form stay decoupled from the rtk enum; "" (off) is
-	// omitted. claude_code installs a PreToolUse hook when enabled; claw
-	// carries it into its tool loop via ctx.
-	if m := rtk.Resolve(e.rtkOverride, f.rtk, e.wfRTK, e.rtkEnvDefault); m.Enabled() {
-		task.RTKMode = m.String()
+	// Command-output compression mode (precedence: run override > node DSL >
+	// workflow DSL > ITERION_COMPRESS env). Stored as a string so the delegate
+	// layer + IPC wire form stay decoupled from the rewrite enum; "" (off) is
+	// omitted. The rewriter chain (the enabled rewriter plugins, rtk by
+	// default) travels on the Task so both the in-process claude_code hook and
+	// the (possibly sandboxed, IPC) claw runner can rebuild it. claude_code
+	// installs a PreToolUse hook when enabled; claw carries it into its tool
+	// loop via ctx.
+	if m := rewrite.Resolve(e.compressOverride, f.compress, e.wfCompress, e.compressEnvDefault); m.Enabled() {
+		task.CompressMode = m.String()
+		task.Rewriters = e.chain.Specs()
 	}
 	// Tool-permission gate (precedence: run override > node DSL > workflow
 	// DSL > ITERION_PERMISSION env; off = no gate). Rule lists are additive

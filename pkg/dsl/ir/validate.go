@@ -78,8 +78,8 @@ const (
 	DiagReviewNeedsWorktree DiagCode = "C100" // interaction: review without worktree: auto — nothing to merge (error)
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
 
-	// RTK output-compression mode diagnostics.
-	DiagInvalidRTK DiagCode = "C102" // rtk: value not one of on|off|ultra (error)
+	// Compress output-compression mode diagnostics.
+	DiagInvalidCompress DiagCode = "C102" // compress: value not one of on|off|ultra (error)
 
 	// Static cross-node typing diagnostics (Phase 2). These resist the
 	// looseness that makes the rest of the validator a graph linter: they
@@ -135,7 +135,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateProviders(w)
 	c.validateCursorInvocations(w)
 	c.validateReviewGates(w)
-	c.validateRTK(w)
+	c.validateCompress(w)
 	c.validatePermission(w)
 	c.validateVerifiedActions(w)
 	c.validateArtifactLabels(w)
@@ -155,16 +155,16 @@ func (c *compiler) validateArtifactLabels(w *Workflow) {
 	}
 }
 
-// validateRTK enforces that every rtk value (workflow-level + every
+// validateCompress enforces that every compress value (workflow-level + every
 // agent/judge/tool node) is one of the accepted barewords. A typo
 // would silently fall back to "inherit" instead of compressing — so
 // this is an ERROR, not a warning. Empty ("") means unset/inherit
 // and is always valid; the comparison is case-insensitive and
 // whitespace-trimmed.
 //
-// Kept inline (no import of pkg/backend/rtk) so the dsl layer stays
-// dependency-free; keep in sync with rtk.IsValidValue.
-func (c *compiler) validateRTK(w *Workflow) {
+// Kept inline (no import of pkg/backend/rewrite) so the dsl layer stays
+// dependency-free; keep in sync with rewrite.IsValidValue.
+func (c *compiler) validateCompress(w *Workflow) {
 	valid := func(v string) bool {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "", "on", "off", "ultra":
@@ -172,26 +172,26 @@ func (c *compiler) validateRTK(w *Workflow) {
 		}
 		return false
 	}
-	if !valid(w.RTK) {
-		c.errorf(DiagInvalidRTK,
-			"workflow %q has invalid rtk %q; valid values are on, off, ultra",
-			w.Name, w.RTK)
+	if !valid(w.Compress) {
+		c.errorf(DiagInvalidCompress,
+			"workflow %q has invalid compress %q; valid values are on, off, ultra",
+			w.Name, w.Compress)
 	}
 	for _, n := range w.Nodes {
-		var rtk string
+		var compress string
 		var kind string
 		switch nn := n.(type) {
 		case LLMNode:
-			rtk, kind = nn.GetRTK(), nn.NodeKind().String()
+			compress, kind = nn.GetCompress(), nn.NodeKind().String()
 		case *ToolNode:
-			rtk, kind = nn.RTK, "tool"
+			compress, kind = nn.Compress, "tool"
 		default:
 			continue
 		}
-		if !valid(rtk) {
-			c.errorf(DiagInvalidRTK,
-				"%s %q has invalid rtk %q; valid values are on, off, ultra",
-				kind, n.NodeID(), rtk)
+		if !valid(compress) {
+			c.errorf(DiagInvalidCompress,
+				"%s %q has invalid compress %q; valid values are on, off, ultra",
+				kind, n.NodeID(), compress)
 		}
 	}
 }

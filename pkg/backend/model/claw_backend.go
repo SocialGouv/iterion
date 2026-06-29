@@ -17,7 +17,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
-	"github.com/SocialGouv/iterion/pkg/backend/rtk"
+	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/memory"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -188,11 +188,12 @@ func NewClawBackend(registry *Registry, hk EventHooks, retry RetryPolicy, opts .
 // [delegate.IOTask] and in docs/sandbox.md: no MCP servers, no
 // mid-tool-loop ask_user resume.
 func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate.Result, error) {
-	// Carry the resolved rtk mode into the tool loop so the bash builtin can
-	// compress command output (rtk.ModeFromContext). Off is a no-op. For the
-	// sandboxed path the mode rides the IOTask to the in-container runner,
-	// whose own Execute re-applies it here.
-	ctx = rtk.WithMode(ctx, rtk.ParseMode(task.RTKMode))
+	// Carry the resolved compression mode + rewriter chain into the tool loop
+	// so the bash builtin can compress command output (rewrite via context).
+	// Off is a no-op. For the sandboxed path the mode + chain specs ride the
+	// IOTask to the in-container runner, whose own Execute re-applies them here.
+	ctx = rewrite.WithMode(ctx, rewrite.ParseMode(task.CompressMode))
+	ctx = rewrite.WithChain(ctx, rewrite.NewChain(task.Rewriters))
 	if task.Sandbox != nil {
 		return b.executeViaSandboxRunner(ctx, task)
 	}

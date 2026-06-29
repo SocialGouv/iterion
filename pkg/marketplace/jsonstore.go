@@ -114,6 +114,9 @@ func (s *JSONStore) List(_ context.Context, q Query) ([]Entry, error) {
 		if !matchEntry(e, text, tag) {
 			continue
 		}
+		if q.Kind != "" && EffectiveKind(e) != q.Kind {
+			continue
+		}
 		if !Visible(e, q.Viewer) {
 			continue
 		}

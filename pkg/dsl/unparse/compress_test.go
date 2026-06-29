@@ -9,11 +9,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
-// TestRTKRoundTrip exercises parse → unparse → re-parse → re-compile
-// on a workflow that uses rtk at every supported site. Unparse must
+// TestCompressRoundTrip exercises parse → unparse → re-parse → re-compile
+// on a workflow that uses compress at every supported site. Unparse must
 // emit each value as a bareword (no quotes, like worktree), and the
-// re-compiled IR must preserve every RTK verbatim.
-func TestRTKRoundTrip(t *testing.T) {
+// re-compiled IR must preserve every Compress verbatim.
+func TestCompressRoundTrip(t *testing.T) {
 	src := `
 schema empty:
   ok: bool
@@ -21,21 +21,21 @@ schema empty:
 agent start:
   model: "test-model"
   output: empty
-  rtk: ultra
+  compress: ultra
 
 judge gate:
   model: "test-model"
   output: empty
-  rtk: off
+  compress: off
 
 tool ship:
   command: "true"
   output: empty
-  rtk: on
+  compress: on
 
 workflow minimal:
   entry: start
-  rtk: on
+  compress: on
   start -> gate
   gate -> ship
   ship -> done
@@ -47,8 +47,8 @@ workflow minimal:
 		}
 	}
 	unparsed := unparse.Unparse(pr1.File)
-	// Every site must emit `rtk: <value>` as a bareword.
-	for _, want := range []string{"rtk: on", "rtk: ultra", "rtk: off"} {
+	// Every site must emit `compress: <value>` as a bareword.
+	for _, want := range []string{"compress: on", "compress: ultra", "compress: off"} {
 		if !strings.Contains(unparsed, want) {
 			t.Fatalf("unparse missing %q:\n%s", want, unparsed)
 		}
@@ -70,37 +70,37 @@ workflow minimal:
 	if w == nil {
 		t.Fatal("re-compile returned nil workflow")
 	}
-	if w.RTK != "on" {
-		t.Errorf("roundtrip workflow.RTK = %q, want on", w.RTK)
+	if w.Compress != "on" {
+		t.Errorf("roundtrip workflow.Compress = %q, want on", w.Compress)
 	}
-	if a, ok := w.Nodes["start"].(*ir.AgentNode); !ok || a.RTK != "ultra" {
-		t.Errorf("roundtrip start agent.RTK = %q, want ultra", agentRTK(w.Nodes["start"]))
+	if a, ok := w.Nodes["start"].(*ir.AgentNode); !ok || a.Compress != "ultra" {
+		t.Errorf("roundtrip start agent.Compress = %q, want ultra", agentCompress(w.Nodes["start"]))
 	}
-	if j, ok := w.Nodes["gate"].(*ir.JudgeNode); !ok || j.RTK != "off" {
-		t.Errorf("roundtrip gate judge.RTK = %q, want off", judgeRTK(w.Nodes["gate"]))
+	if j, ok := w.Nodes["gate"].(*ir.JudgeNode); !ok || j.Compress != "off" {
+		t.Errorf("roundtrip gate judge.Compress = %q, want off", judgeCompress(w.Nodes["gate"]))
 	}
-	if tn, ok := w.Nodes["ship"].(*ir.ToolNode); !ok || tn.RTK != "on" {
-		t.Errorf("roundtrip ship tool.RTK = %q, want on", toolRTK(w.Nodes["ship"]))
+	if tn, ok := w.Nodes["ship"].(*ir.ToolNode); !ok || tn.Compress != "on" {
+		t.Errorf("roundtrip ship tool.Compress = %q, want on", toolCompress(w.Nodes["ship"]))
 	}
 }
 
-func agentRTK(n ir.Node) string {
+func agentCompress(n ir.Node) string {
 	if a, ok := n.(*ir.AgentNode); ok {
-		return a.RTK
+		return a.Compress
 	}
 	return "<not-agent>"
 }
 
-func judgeRTK(n ir.Node) string {
+func judgeCompress(n ir.Node) string {
 	if j, ok := n.(*ir.JudgeNode); ok {
-		return j.RTK
+		return j.Compress
 	}
 	return "<not-judge>"
 }
 
-func toolRTK(n ir.Node) string {
+func toolCompress(n ir.Node) string {
 	if t, ok := n.(*ir.ToolNode); ok {
-		return t.RTK
+		return t.Compress
 	}
 	return "<not-tool>"
 }
