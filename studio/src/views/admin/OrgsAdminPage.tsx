@@ -232,6 +232,10 @@ function OrgDrawer({
   const [usage, setUsage] = useState<OrgUsage | null>(null);
   const [usageErr, setUsageErr] = useState<string | null>(null);
 
+  // Name + slug drafts.
+  const [nameDraft, setNameDraft] = useState(org.name);
+  const [slugDraft, setSlugDraft] = useState(org.slug);
+
   // Quota draft state — initialised from org.
   const initialGiB = org.memory_quota_bytes ? org.memory_quota_bytes / (1 << 30) : 0;
   const [memGiB, setMemGiB] = useState<number>(initialGiB);
@@ -265,6 +269,14 @@ function OrgDrawer({
       alive = false;
     };
   }, [org.id]);
+
+  const saveDetails = () =>
+    run(async () => {
+      await updateOrg(org.id, { name: nameDraft.trim(), slug: slugDraft.trim() });
+      await onAfterUpdate();
+      // Reflect the new name/slug in the org switcher + breadcrumbs immediately.
+      await reloadIdentity();
+    });
 
   const saveQuotas = () =>
     run(async () => {
@@ -316,6 +328,33 @@ function OrgDrawer({
           {usageErr}
         </div>
       )}
+
+      <section className="space-y-3 mb-4">
+        <h4 className="font-medium">Details</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Field label="Name">
+            <Input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />
+          </Field>
+          <Field label="Slug (URL identifier)">
+            <Input
+              value={slugDraft}
+              onChange={(e) => setSlugDraft(e.target.value)}
+              placeholder="my-org"
+            />
+          </Field>
+        </div>
+        <Button
+          variant="primary"
+          loading={busy}
+          disabled={
+            nameDraft.trim() === "" ||
+            (nameDraft.trim() === org.name && slugDraft.trim() === org.slug)
+          }
+          onClick={() => void saveDetails()}
+        >
+          Save details
+        </Button>
+      </section>
 
       <section className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-4">
         <Stat title="Members" value={String(usage?.members ?? "—")} />
