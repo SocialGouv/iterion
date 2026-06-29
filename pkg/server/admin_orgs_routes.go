@@ -24,6 +24,7 @@ func (s *Server) registerAdminOrgRoutes() {
 	s.mux.Handle("GET /api/admin/orgs/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminGetOrg)))
 	s.mux.Handle("PATCH /api/admin/orgs/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateOrg)))
 	s.mux.Handle("DELETE /api/admin/orgs/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminDeleteOrg)))
+	s.mux.Handle("POST /api/admin/orgs/{id}/restore", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminRestoreOrg)))
 	s.mux.Handle("POST /api/admin/orgs/{id}/status", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminSetOrgStatus)))
 	s.mux.Handle("GET /api/admin/orgs/{id}/usage", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminOrgUsage)))
 	// Super-admin drill-down: the teams inside one org.
@@ -43,10 +44,14 @@ type orgView struct {
 	MonthlyCostCapUSD float64 `json:"monthly_cost_cap_usd,omitempty"`
 	SuspendReason     string  `json:"suspend_reason,omitempty"`
 	CreatedAt         string  `json:"created_at,omitempty"`
+	// PurgeAfter (RFC3339) is set when Status == pending_deletion: the instant
+	// the nightly sweeper may hard-purge the org. Lets the UI show the grace
+	// window + a Cancel action.
+	PurgeAfter string `json:"purge_after,omitempty"`
 }
 
 func toOrgView(o identity.Org) orgView {
-	return orgView{
+	v := orgView{
 		ID:                o.ID,
 		Name:              o.Name,
 		Slug:              o.Slug,
@@ -58,6 +63,10 @@ func toOrgView(o identity.Org) orgView {
 		SuspendReason:     o.SuspendReason,
 		CreatedAt:         o.CreatedAt.Format(time.RFC3339),
 	}
+	if o.PurgeAfter != nil {
+		v.PurgeAfter = o.PurgeAfter.Format(time.RFC3339)
+	}
+	return v
 }
 
 // teamSummaryView is the lightweight team row used by the org teams
@@ -228,11 +237,15 @@ func (s *Server) handleAdminCreateOrg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, toOrgView(o))
 }
 
-// handleAdminDeleteOrg permanently removes an org and its identity-scoped
-// children (teams, team + org memberships, pending invitations) via the
-// service cascade. Super-admin only. Refuses the caller's active org so a
-// switch is required first (no self-lockout). Team-scoped resources in other
-// stores (runs, board, forge connections) are orphaned, not purged.
+// orgDeletionGrace is how long a soft-deleted org sits restorable before the
+// nightly sweeper hard-purges it.
+const orgDeletionGrace = 24 * time.Hour
+
+// handleAdminDeleteOrg SOFT-deletes an org: it is marked pending_deletion and
+// blocked immediately, then the nightly sweeper hard-purges it (org + teams +
+// memberships + all team-scoped data) once the 24h grace elapses. Restorable
+// until then via the restore route. Super-admin only; refuses the caller's
+// active org so a switch is required first (no self-lockout).
 func (s *Server) handleAdminDeleteOrg(w http.ResponseWriter, r *http.Request) {
 	if s.authSvc == nil {
 		httpError(w, http.StatusInternalServerError, "auth not configured")
@@ -244,18 +257,32 @@ func (s *Server) handleAdminDeleteOrg(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusConflict, "cannot delete your active organization — switch to another org first")
 		return
 	}
-	// Capture the name for the audit log before the cascade removes it.
-	o, err := s.authStore().GetOrg(r.Context(), orgID)
+	o, err := s.authSvc.MarkOrgForDeletion(r.Context(), orgID, orgDeletionGrace)
 	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	if err := s.authSvc.DeleteOrgCascade(r.Context(), orgID); err != nil {
+	s.auditPlatform(r, orgID, "org.deletion_scheduled", "org", orgID, map[string]any{
+		"name": o.Name, "purge_after": o.PurgeAfter,
+	})
+	writeJSON(w, toOrgView(o))
+}
+
+// handleAdminRestoreOrg cancels a pending org deletion (within the grace
+// window), returning it to active. Super-admin only.
+func (s *Server) handleAdminRestoreOrg(w http.ResponseWriter, r *http.Request) {
+	if s.authSvc == nil {
+		httpError(w, http.StatusInternalServerError, "auth not configured")
+		return
+	}
+	orgID := r.PathValue("id")
+	o, err := s.authSvc.RestoreOrg(r.Context(), orgID)
+	if err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
-	s.auditPlatform(r, orgID, "org.deleted", "org", orgID, map[string]any{"name": o.Name})
-	w.WriteHeader(http.StatusNoContent)
+	s.auditPlatform(r, orgID, "org.deletion_canceled", "org", orgID, map[string]any{"name": o.Name})
+	writeJSON(w, toOrgView(o))
 }
 
 func (s *Server) handleAdminGetOrg(w http.ResponseWriter, r *http.Request) {

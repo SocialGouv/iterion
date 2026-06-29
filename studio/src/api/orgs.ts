@@ -17,6 +17,8 @@ export interface OrgView {
   monthly_cost_cap_usd?: number;
   suspend_reason?: string;
   created_at?: string;
+  // Set when status === "pending_deletion": when the nightly sweeper may purge.
+  purge_after?: string;
 }
 
 // Backwards-compatible: the full-shape usage view lives in api/usage.ts
@@ -64,10 +66,17 @@ export async function getOrgUsage(id: string): Promise<OrgUsage> {
   return request<OrgUsage>(`/admin/orgs/${encodeURIComponent(id)}/usage`);
 }
 
-// Permanently delete an org (super-admin). Cascades to its teams + org/team
-// memberships server-side; refuses the caller's active org (409). 204 No Content.
-export async function deleteOrg(id: string): Promise<void> {
-  await request<void>(`/admin/orgs/${encodeURIComponent(id)}`, { method: "DELETE" });
+// Soft-delete an org (super-admin): marks it pending_deletion with a 24h grace,
+// after which a nightly sweeper hard-purges the org + teams + ALL their data.
+// Blocked immediately; refuses the caller's active org (409). Returns the org
+// in its new pending state.
+export async function deleteOrg(id: string): Promise<OrgView> {
+  return request<OrgView>(`/admin/orgs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+// Cancel a pending org deletion within the grace window (super-admin).
+export async function restoreOrg(id: string): Promise<OrgView> {
+  return request<OrgView>(`/admin/orgs/${encodeURIComponent(id)}/restore`, { method: "POST" });
 }
 
 export async function updateOrg(

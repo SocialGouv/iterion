@@ -11,6 +11,7 @@ import {
   fmtQuotaGiB,
   gibToBytes,
   listOrgs,
+  restoreOrg,
   setOrgStatus,
   updateOrg,
 } from "@/api/orgs";
@@ -157,7 +158,7 @@ export default function OrgsAdminPage() {
             <tbody>
               {orgs.map((o) => {
                 const statusVariant: BadgeVariant =
-                  o.status === "suspended"
+                  o.status === "suspended" || o.status === "pending_deletion"
                     ? "danger"
                     : o.status === "read_only"
                       ? "neutral"
@@ -203,6 +204,7 @@ export default function OrgsAdminPage() {
           busy={busy}
           isActiveOrg={active.id === activeOrgID}
           onClose={() => setActive(null)}
+          onChanged={setActive}
           onAfterUpdate={refresh}
           reloadIdentity={reloadIdentity}
           run={run}
@@ -217,6 +219,7 @@ function OrgDrawer({
   busy,
   isActiveOrg,
   onClose,
+  onChanged,
   onAfterUpdate,
   reloadIdentity,
   run,
@@ -225,6 +228,7 @@ function OrgDrawer({
   busy: boolean;
   isActiveOrg: boolean;
   onClose: () => void;
+  onChanged: (o: OrgView) => void;
   onAfterUpdate: () => Promise<void>;
   reloadIdentity: () => Promise<void>;
   run: (fn: () => Promise<unknown>) => Promise<void>;
@@ -294,13 +298,24 @@ function OrgDrawer({
       await onAfterUpdate();
     });
 
-  const deleteOrgNow = () =>
+  // Soft-delete: schedules purge after a 24h grace; the drawer stays open and
+  // flips to the "scheduled — cancel" state. reloadIdentity drops the now-blocked
+  // org from the switcher.
+  const scheduleDelete = () =>
     run(async () => {
-      await deleteOrg(org.id);
+      const updated = await deleteOrg(org.id);
       await onAfterUpdate();
-      // Refresh the AuthContext org tree so the deleted org leaves the switcher.
       await reloadIdentity();
-      onClose();
+      setConfirmName("");
+      onChanged(updated);
+    });
+
+  const cancelDelete = () =>
+    run(async () => {
+      const updated = await restoreOrg(org.id);
+      await onAfterUpdate();
+      await reloadIdentity();
+      onChanged(updated);
     });
 
   return (
@@ -507,7 +522,20 @@ function OrgDrawer({
 
       <section className="space-y-3 mt-6 border-t border-danger/30 pt-4">
         <h4 className="font-medium text-danger">Danger zone</h4>
-        {isActiveOrg ? (
+        {org.status === "pending_deletion" ? (
+          <>
+            <p className="text-xs text-fg-muted">
+              Deletion scheduled
+              {org.purge_after
+                ? ` — will be permanently purged after ${new Date(org.purge_after).toLocaleString()}`
+                : ""}
+              . The organization is blocked until then. You can still cancel.
+            </p>
+            <Button variant="secondary" loading={busy} onClick={() => void cancelDelete()}>
+              Cancel deletion
+            </Button>
+          </>
+        ) : isActiveOrg ? (
           <p className="text-xs text-fg-muted">
             This is your active organization — switch to another org (top-left
             switcher) before you can delete it.
@@ -515,9 +543,10 @@ function OrgDrawer({
         ) : (
           <>
             <p className="text-xs text-fg-muted">
-              Permanently deletes <strong>{org.name}</strong>, its teams, and all
-              memberships. Run / board history under those teams becomes
-              inaccessible. This cannot be undone.
+              Schedules permanent deletion of <strong>{org.name}</strong>. The org is
+              blocked immediately, then after a 24h grace a nightly job purges it,
+              its teams, every membership, and all team data (runs, board, forge,
+              secrets…). Cancellable until the grace elapses.
             </p>
             <Field label={`Type "${org.name}" to confirm`}>
               <Input
@@ -530,9 +559,9 @@ function OrgDrawer({
               variant="danger"
               loading={busy}
               disabled={confirmName.trim() !== org.name}
-              onClick={() => void deleteOrgNow()}
+              onClick={() => void scheduleDelete()}
             >
-              Delete organization
+              Schedule deletion (24h)
             </Button>
           </>
         )}

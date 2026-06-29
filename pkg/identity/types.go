@@ -149,12 +149,16 @@ const (
 	TeamStatusActive    TeamStatus = "active"
 	TeamStatusSuspended TeamStatus = "suspended" // no run launches; super-admin only
 	TeamStatusReadOnly  TeamStatus = "read_only" // login + reads OK, no run launches
+	// TeamStatusPendingDeletion marks an org soft-deleted: blocked like a
+	// suspension, awaiting the nightly sweeper which hard-purges it once
+	// Org.PurgeAfter has passed. Restorable until then. Org-only today.
+	TeamStatusPendingDeletion TeamStatus = "pending_deletion"
 )
 
 // ValidTeamStatus reports whether s is one of the known statuses.
 func ValidTeamStatus(s TeamStatus) bool {
 	switch s {
-	case TeamStatusActive, TeamStatusSuspended, TeamStatusReadOnly:
+	case TeamStatusActive, TeamStatusSuspended, TeamStatusReadOnly, TeamStatusPendingDeletion:
 		return true
 	}
 	return false
@@ -248,6 +252,11 @@ type Org struct {
 	SuspendedBy   string     `bson:"suspended_by,omitempty" json:"suspended_by,omitempty"`
 	SuspendReason string     `bson:"suspend_reason,omitempty" json:"suspend_reason,omitempty"`
 
+	// PurgeAfter is set when the org is soft-deleted (Status ==
+	// pending_deletion): the instant the nightly sweeper may hard-purge it.
+	// Cleared on restore. nil for orgs not pending deletion.
+	PurgeAfter *time.Time `bson:"purge_after,omitempty" json:"purge_after,omitempty"`
+
 	// Monthly budget (super-admin managed). Zero means "inherit the
 	// platform default". Enforced pre-launch against the org-keyed
 	// usage counter, which sums every team in the org.
@@ -267,14 +276,22 @@ func (o Org) EffectiveStatus() TeamStatus {
 	return o.Status
 }
 
-// Suspended reports whether the org is suspended (no run launches).
-func (o Org) Suspended() bool { return o.EffectiveStatus() == TeamStatusSuspended }
+// Suspended reports whether the org is blocked from normal use — true for
+// an explicit suspension AND for a pending-deletion org (soft-deleted, awaiting
+// purge), so every gate that blocks on suspension also blocks the latter.
+func (o Org) Suspended() bool {
+	s := o.EffectiveStatus()
+	return s == TeamStatusSuspended || s == TeamStatusPendingDeletion
+}
+
+// PendingDeletion reports whether the org is soft-deleted and awaiting purge.
+func (o Org) PendingDeletion() bool { return o.EffectiveStatus() == TeamStatusPendingDeletion }
 
 // CanLaunch reports whether the org may launch new runs — false when
-// suspended or read-only.
+// suspended, read-only, or pending deletion.
 func (o Org) CanLaunch() bool {
 	switch o.EffectiveStatus() {
-	case TeamStatusSuspended, TeamStatusReadOnly:
+	case TeamStatusSuspended, TeamStatusReadOnly, TeamStatusPendingDeletion:
 		return false
 	default:
 		return true

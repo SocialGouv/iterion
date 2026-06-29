@@ -1077,6 +1077,48 @@ func (s *Service) DeleteOrgCascade(ctx context.Context, orgID string) error {
 	return nil
 }
 
+// MarkOrgForDeletion soft-deletes an org: Status=pending_deletion and
+// PurgeAfter=now+grace. The org is blocked immediately (Suspended()==true);
+// the nightly sweeper hard-purges it once PurgeAfter passes. Restorable until
+// then via RestoreOrg.
+func (s *Service) MarkOrgForDeletion(ctx context.Context, orgID string, grace time.Duration) (identity.Org, error) {
+	if orgID == "" {
+		return identity.Org{}, fmt.Errorf("auth: org id required")
+	}
+	o, err := s.store.GetOrg(ctx, orgID)
+	if err != nil {
+		return identity.Org{}, err
+	}
+	now := time.Now().UTC()
+	purge := now.Add(grace)
+	o.Status = identity.TeamStatusPendingDeletion
+	o.PurgeAfter = &purge
+	o.UpdatedAt = now
+	if err := s.store.UpdateOrg(ctx, o); err != nil {
+		return identity.Org{}, fmt.Errorf("auth: mark org for deletion: %w", err)
+	}
+	return o, nil
+}
+
+// RestoreOrg cancels a pending deletion, returning the org to active. It is a
+// no-op (returns the org unchanged) when the org isn't pending deletion.
+func (s *Service) RestoreOrg(ctx context.Context, orgID string) (identity.Org, error) {
+	o, err := s.store.GetOrg(ctx, orgID)
+	if err != nil {
+		return identity.Org{}, err
+	}
+	if o.EffectiveStatus() != identity.TeamStatusPendingDeletion {
+		return o, nil
+	}
+	o.Status = identity.TeamStatusActive
+	o.PurgeAfter = nil
+	o.UpdatedAt = time.Now().UTC()
+	if err := s.store.UpdateOrg(ctx, o); err != nil {
+		return identity.Org{}, fmt.Errorf("auth: restore org: %w", err)
+	}
+	return o, nil
+}
+
 // CreateInvitation issues a fresh invitation. The plaintext token is
 // returned (caller emails it) and only its hash is persisted.
 func (s *Service) CreateInvitation(ctx context.Context, teamID, email string, role identity.Role, invitedBy string) (token string, inv identity.Invitation, err error) {
