@@ -108,6 +108,11 @@ export function GitHubSection({
     setGrants(row?.grants ?? []);
     setEnabled(row?.enabled ?? true);
   };
+  // Save is allowed whenever there's ≥1 valid grant — NOT gated on dirty, so an
+  // unchanged provider can be re-saved to re-run the verification. A github
+  // provider needs at least one grant (the server rejects zero); to remove
+  // gating entirely use "Delete allow-list".
+  const validGrantCount = grants.filter((g) => g.github_org.trim() !== "").length;
 
   return (
     <section className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3">
@@ -212,6 +217,12 @@ export function GitHubSection({
               Unsaved changes — click Save to apply, or Discard to revert.
             </InlineBanner>
           )}
+          {grants.length === 0 && (
+            <InlineBanner tone="warning" layout="inline">
+              A GitHub allow-list needs at least one grant. Add one, or use “Delete allow-list”
+              below to remove GitHub gating entirely.
+            </InlineBanner>
+          )}
           <div className="flex gap-2">
             <Button variant="secondary" size="sm" onClick={addGrant}>
               Add grant
@@ -220,7 +231,7 @@ export function GitHubSection({
               variant="primary"
               size="sm"
               loading={busy}
-              disabled={busy || !dirty}
+              disabled={busy || validGrantCount === 0}
               onClick={() => void save()}
             >
               Save
