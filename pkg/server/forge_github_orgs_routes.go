@@ -49,9 +49,9 @@ func (s *Server) handleStartGitHubOrgs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.forgeStates.put(forgePending{
-		State:   state,
-		UserID:  id.UserID,
-		NextURL: safeNext(r.URL.Query().Get("next")),
+		State:    state,
+		UserID:   id.UserID,
+		NextURL:  safeNext(r.URL.Query().Get("next")),
 		IssuedAt: time.Now().UTC(),
 	})
 	authURL, err := conn.AuthorizeURL(r.Context(), s.githubOrgsRedirectURI(), state, "")

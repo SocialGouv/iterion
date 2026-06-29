@@ -61,7 +61,7 @@ func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request
 		// Installable = a manifest-created GitHub App whose private key we hold,
 		// so it can be INSTALLED (least-privilege github_app), not only OAuth-used.
 		apps[i].Installable = len(apps[i].SealedPrivateKey) > 0
-		apps[i].SealedSecret = nil    // defensive — also json:"-"
+		apps[i].SealedSecret = nil     // defensive — also json:"-"
 		apps[i].SealedPrivateKey = nil // defensive — also json:"-"
 	}
 	writeJSON(w, map[string]any{"apps": apps})
