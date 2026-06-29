@@ -1582,6 +1582,15 @@ func (e *ClawExecutor) assembleEffectiveTools(f backendFields, backendName strin
 	if ultracode && backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
 		effectiveTools = ensureToolPresent(effectiveTools, "agent")
 	}
+	// Keep the agent's task list available so the per-run Session board
+	// (Tasks tab) is populated regardless of a node's `tools:` list. Only
+	// the claw backend needs the append: claude_code always has its native
+	// TodoWrite under bypassPermissions, and an unrestricted claw set
+	// already exposes `todo_write` via RegisterClawAll. The posture nudge
+	// (agenticOperatingPosture) prompts claw to actually maintain it.
+	if backendName == delegate.BackendClaw && len(effectiveTools) > 0 {
+		effectiveTools = ensureToolPresent(effectiveTools, "todo_write")
+	}
 	// CLI-based backends can't accept inline images on stdin: forward
 	// the image path via {{attachments.X}} text interpolation and
 	// auto-enable `read_image` so the agent can pull the bytes itself.

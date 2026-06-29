@@ -13,7 +13,9 @@ import type {
   QueuedMessageStatus,
   QueuedUserMessage,
   RunStoreState,
+  TodoListSnapshot,
 } from "../run";
+import type { TodoItem } from "@/components/Runs/toolFormatters";
 
 // MAX_EVENTS caps in-memory history so a long-running run with thousands
 // of events doesn't bloat the React store. Older events fall off the
@@ -164,6 +166,7 @@ type ReduceInput = Pick<
   | "lastExecIDByNode"
   | "inFlightToolsByExec"
   | "latestTodosByExec"
+  | "todoHistoryByExec"
   | "snapshot"
   | "pendingHumanInput"
   | "queuedMessages"
@@ -211,6 +214,7 @@ export function reduceEvents(
   let lastExecIDByNode = state.lastExecIDByNode;
   let inFlightToolsByExec = state.inFlightToolsByExec;
   let latestTodosByExec = state.latestTodosByExec;
+  let todoHistoryByExec = state.todoHistoryByExec;
   let snapshot = state.snapshot;
   let pendingHumanInput = state.pendingHumanInput;
   let queuedMessages = state.queuedMessages;
@@ -281,6 +285,26 @@ export function reduceEvents(
     if (latestTodosByExec.size === 0) return;
     ensureTodosCopy();
     latestTodosByExec = new Map();
+  };
+  // Same lazy-copy pattern for the persistent task-list history map.
+  // Deliberately NOT cleared on node_finished / run termination: the
+  // Session board reads it to show the whole journey after the run ends.
+  let todoHistoryMutated = false;
+  const ensureTodoHistoryCopy = () => {
+    if (!todoHistoryMutated) {
+      todoHistoryByExec = new Map(todoHistoryByExec);
+      todoHistoryMutated = true;
+    }
+  };
+  const appendTodoHistory = (execId: string, snap: TodoListSnapshot) => {
+    const prev = todoHistoryByExec.get(execId);
+    // Collapse consecutive identical lists so each history entry is a
+    // real change (the same TodoWrite payload can re-fire on retries).
+    if (prev && prev.length > 0 && todosEqual(prev[prev.length - 1]!.todos, snap.todos)) {
+      return;
+    }
+    ensureTodoHistoryCopy();
+    todoHistoryByExec.set(execId, prev ? prev.concat(snap) : [snap]);
   };
 
   let runStatusOverride: RunHeader["status"] | null = null;
@@ -444,12 +468,16 @@ export function reduceEvents(
         if (TODO_LIST_TOOL_NAMES.has(toolName)) {
           const todos = extractTodosFromInput(evt.data?.input);
           if (todos && todos.length > 0) {
-            ensureTodosCopy();
-            latestTodosByExec.set(exec.execution_id, {
+            const snap = {
               todos,
               updatedAt: Date.parse(evt.timestamp) || Date.now(),
               source: toolName,
-            });
+            };
+            ensureTodosCopy();
+            latestTodosByExec.set(exec.execution_id, snap);
+            // Also append to the persistent, never-cleared history that
+            // backs the Session board (Tasks tab).
+            appendTodoHistory(exec.execution_id, snap);
           }
         }
         break;
@@ -788,10 +816,33 @@ export function reduceEvents(
   if (todosMutated) {
     next.latestTodosByExec = latestTodosByExec;
   }
+  if (todoHistoryMutated) {
+    next.todoHistoryByExec = todoHistoryByExec;
+  }
   if (lastExecIDMutated) {
     next.lastExecIDByNode = lastExecIDByNode;
   }
   return next;
+}
+
+// todosEqual reports whether two task lists are identical (same items,
+// same order, same status + visible text). Used to collapse consecutive
+// duplicate TodoWrite payloads in the persistent history so each entry
+// marks a real change.
+function todosEqual(a: TodoItem[], b: TodoItem[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.content !== y.content ||
+      x.status !== y.status ||
+      x.activeForm !== y.activeForm
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function makeExecutionId(branch: string, nodeId: string, iteration: number): string {

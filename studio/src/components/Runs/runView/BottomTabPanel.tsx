@@ -6,6 +6,7 @@ import BrowserPane, { type BrowserDock } from "../BrowserPane";
 import EventLog from "../EventLog";
 import ReportTab from "../ReportTab";
 import RunLogPanel from "../RunLogPanel";
+import { SessionBoardTab } from "../sessionboard/SessionBoardTab";
 
 import { BOTTOM_TABS, BOTTOM_TAB_LABELS, type BottomTab } from "./layoutFlags";
 
@@ -71,7 +72,9 @@ export function BottomTabPanel(props: BottomTabPanelProps) {
         listClassName="px-3"
       />
       <div className="flex-1 min-h-0">
-        {bottomTab === "events" ? (
+        {bottomTab === "tasks" ? (
+          <SessionBoardTab runId={runId} />
+        ) : bottomTab === "events" ? (
           <EventLog
             events={displayedEvents}
             selectedExecutionId={eventLogSelection}

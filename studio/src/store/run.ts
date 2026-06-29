@@ -179,6 +179,26 @@ export interface TodoListSnapshot {
   source: string;
 }
 
+// TodoTimelineEntry groups one execution's full task-list history for the
+// Session board (Tasks tab). Unlike `latestTodosByExec` — which the live
+// Logs side panel reads and which the reducer clears on node_finished /
+// run termination — the underlying `todoHistoryByExec` is never cleared,
+// so the board survives run completion and shows the journey, not just
+// the live snapshot. `exec` is the joined ExecutionState (for the
+// friendly label, kind, status); it may be undefined for a cold-loaded
+// run whose node_started hasn't been folded yet (rare; defensive).
+export interface TodoTimelineEntry {
+  execId: string;
+  // Joined ExecutionState — the source for the friendly node label, kind,
+  // status and start time. Undefined only defensively (a cold-loaded run
+  // whose node_started hasn't folded yet).
+  exec?: ExecutionState;
+  // Ordered task-list snapshots (oldest → newest); consecutive identical
+  // lists are collapsed by the reducer so each entry is a real change.
+  snapshots: TodoListSnapshot[];
+  latest: TodoListSnapshot;
+}
+
 export interface RunLogState {
   // start is the byte offset in the run's logical log stream where
   // text begins. start > 0 means the older bytes were evicted.
@@ -234,6 +254,14 @@ export interface RunStoreState {
   // tool_started events. Cleared when the execution finishes so the
   // side panel only shows live data.
   latestTodosByExec: Map<string, TodoListSnapshot>;
+  // Full task-list history per execution (ordered, deduped), populated
+  // on the SAME TodoWrite/todo_write tool_started events but NEVER
+  // cleared on node_finished / run termination. Backs the persistent
+  // Session board (Tasks tab) which must survive run completion and
+  // show the journey across all nodes. For a finished run loaded cold
+  // this is rebuilt by folding the persisted /events log (see
+  // loadEventHistoryIfMissing) through the reducer.
+  todoHistoryByExec: Map<string, TodoListSnapshot[]>;
   pendingHumanInput: PendingHumanInput | null;
   // Inbox of operator-queued chat messages for the run. Hydrated via
   // the REST GET /api/runs/{id}/queue-messages endpoint and live-
@@ -351,6 +379,7 @@ function freshInitial() {
     lastExecIDByNode: new Map<string, string>(),
     inFlightToolsByExec: new Map<string, InFlightTool[]>(),
     latestTodosByExec: new Map<string, TodoListSnapshot>(),
+    todoHistoryByExec: new Map<string, TodoListSnapshot[]>(),
     pendingHumanInput: null as PendingHumanInput | null,
     queuedMessages: [] as QueuedUserMessage[],
     chatDraft: "",
@@ -447,6 +476,9 @@ export function createRunStore() {
           lastExecIDByNode,
           inFlightToolsByExec: new Map(),
           latestTodosByExec: new Map(),
+          // Preserve the accumulated task-list history across a snapshot
+          // (a snapshot never carries it); newer events append to it.
+          todoHistoryByExec: state.todoHistoryByExec,
           snapshot: snap,
           pendingHumanInput: rehydrated,
           browser: state.browser,
@@ -838,6 +870,67 @@ export function selectActiveTodos(
     if (!best || snap.updatedAt >= best.updatedAt) best = snap;
   }
   return best;
+}
+
+// selectTodoTimeline returns one entry per execution that ever emitted a
+// task list, ordered chronologically (oldest first) by the execution's
+// start time. Backs the Session board (Tasks tab): the last entry is the
+// most recent ("Now"), earlier entries are the journey. Reads
+// `todoHistoryByExec` (never cleared) — NOT `latestTodosByExec` (live
+// only) — so it stays populated after the run finishes.
+//
+// Memoised on the (todoHistoryByExec, executionsById) map identities: the
+// reducer swaps those references only when they actually change, so the
+// selector — read via useShallow on every store update — returns a stable
+// array (no re-allocation, no re-sort, no spurious re-render) for the far
+// more frequent unrelated updates (log chunks, browser frames, chat). The
+// cache is a single slot shared across run-store instances; that only
+// costs a recompute when the active tab switches, and stays correct
+// because the keys are compared by reference.
+const EMPTY_TIMELINE: TodoTimelineEntry[] = [];
+let timelineCacheHistory: RunStoreState["todoHistoryByExec"] | null = null;
+let timelineCacheExecs: RunStoreState["executionsById"] | null = null;
+let timelineCacheResult: TodoTimelineEntry[] = EMPTY_TIMELINE;
+
+export function selectTodoTimeline(
+  state: Pick<RunStoreState, "todoHistoryByExec" | "executionsById">,
+): TodoTimelineEntry[] {
+  if (
+    timelineCacheHistory === state.todoHistoryByExec &&
+    timelineCacheExecs === state.executionsById
+  ) {
+    return timelineCacheResult;
+  }
+  timelineCacheHistory = state.todoHistoryByExec;
+  timelineCacheExecs = state.executionsById;
+
+  if (state.todoHistoryByExec.size === 0) {
+    timelineCacheResult = EMPTY_TIMELINE;
+    return timelineCacheResult;
+  }
+  const out: TodoTimelineEntry[] = [];
+  for (const [execId, snapshots] of state.todoHistoryByExec) {
+    if (snapshots.length === 0) continue;
+    out.push({
+      execId,
+      exec: state.executionsById.get(execId),
+      snapshots,
+      latest: snapshots[snapshots.length - 1]!,
+    });
+  }
+  out.sort((a, b) => timelineOrderKey(a) - timelineOrderKey(b));
+  timelineCacheResult = out;
+  return timelineCacheResult;
+}
+
+// timelineOrderKey is the chronological sort key for a timeline entry:
+// the execution's start time when known, else the first snapshot's
+// update time (cold-loaded run whose node_started hasn't folded yet).
+function timelineOrderKey(e: TodoTimelineEntry): number {
+  if (e.exec?.started_at) {
+    return Date.parse(e.exec.started_at) || e.snapshots[0]!.updatedAt;
+  }
+  return e.snapshots[0]!.updatedAt;
 }
 
 // selectPendingAgents returns the list of in-flight agentic tool calls

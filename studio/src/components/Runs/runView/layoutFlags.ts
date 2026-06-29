@@ -9,11 +9,19 @@ import { type BrowserDock } from "../BrowserPane";
 export const DETAIL_COLLAPSED_KEY = "run-console-v2.detail-collapsed";
 export const EVENTLOG_COLLAPSED_KEY = "run-console-v2.eventlog-collapsed";
 export const BOTTOM_TAB_KEY = "run-console-v2.bottom-tab";
-export const BOTTOM_TABS = ["events", "logs", "report", "browser", "artifacts"] as const;
+export const BOTTOM_TABS = [
+  "tasks",
+  "events",
+  "logs",
+  "report",
+  "browser",
+  "artifacts",
+] as const;
 export type BottomTab = (typeof BOTTOM_TABS)[number];
 export const CHAT_DOCK_KEY = "run-console-v2.chat-dock";
 export const CHAT_DOCKS = ["closed", "floating", "docked-right"] as const;
 export const BOTTOM_TAB_LABELS: Record<BottomTab, string> = {
+  tasks: "Tasks",
   events: "Events",
   logs: "Logs",
   report: "Report",

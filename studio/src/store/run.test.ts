@@ -66,6 +66,8 @@ beforeEach(() => {
     lastExecIDByNode: new Map(),
     events: [],
     pendingHumanInput: null,
+    latestTodosByExec: new Map(),
+    todoHistoryByExec: new Map(),
   } as never);
 });
 
@@ -257,5 +259,86 @@ describe("applyEventsBatch — nested-loop exec_id attribution", () => {
     // (branch, node) attributes there.
     const recorded = st.lastExecIDByNode.get("main\tvalidate_upgrade");
     expect(recorded).toBe(`exec:main:validate_upgrade:${path12}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session board (Tasks tab) — persistent task-list history
+// ---------------------------------------------------------------------------
+
+import { selectActiveTodos, selectTodoTimeline } from "./run";
+
+function todoWrite(
+  node: string,
+  seq: number,
+  todos: { content: string; status: string; activeForm?: string }[],
+  tool = "TodoWrite",
+): RunEvent {
+  return {
+    seq,
+    timestamp: `2026-01-01T00:00:${String(seq).padStart(2, "0")}Z`,
+    type: "tool_started",
+    run_id: "run_test",
+    branch_id: "main",
+    node_id: node,
+    data: { tool, input: { todos } },
+  };
+}
+
+describe("session board todo history", () => {
+  it("accumulates a per-execution history, deduping consecutive identical lists", () => {
+    const list1 = [
+      { content: "Plan", status: "in_progress", activeForm: "Planning" },
+      { content: "Build", status: "pending" },
+    ];
+    runStore.getState().applyEventsBatch([
+      nodeStarted("implement", 1),
+      todoWrite("implement", 2, list1),
+      // identical → collapsed
+      todoWrite("implement", 3, list1),
+    ]);
+    let timeline = selectTodoTimeline(runStore.getState());
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.snapshots).toHaveLength(1);
+
+    // A real change appends a second snapshot.
+    runStore.getState().applyEventsBatch([
+      todoWrite("implement", 4, [
+        { content: "Plan", status: "completed" },
+        { content: "Build", status: "in_progress", activeForm: "Building" },
+      ]),
+    ]);
+    timeline = selectTodoTimeline(runStore.getState());
+    expect(timeline[0]!.snapshots).toHaveLength(2);
+    expect(timeline[0]!.latest.todos[1]!.status).toBe("in_progress");
+  });
+
+  it("survives node_finished and run_finished (unlike the live snapshot)", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("implement", 1),
+      todoWrite("implement", 2, [{ content: "Work", status: "in_progress" }]),
+      nodeFinished("implement", 3),
+    ]);
+    // Live snapshot is cleared on finish; the board history is not.
+    expect(selectActiveTodos(runStore.getState())).toBeNull();
+    expect(selectTodoTimeline(runStore.getState())).toHaveLength(1);
+
+    runStore.getState().applyEventsBatch([
+      { seq: 4, timestamp: "2026-01-01T00:00:04Z", type: "run_finished", run_id: "run_test" },
+    ]);
+    const timeline = selectTodoTimeline(runStore.getState());
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]!.exec?.ir_node_id).toBe("implement");
+  });
+
+  it("orders multiple executions chronologically by start time", () => {
+    runStore.getState().applyEventsBatch([
+      nodeStarted("plan", 1),
+      todoWrite("plan", 2, [{ content: "A", status: "completed" }]),
+      nodeStarted("implement", 3),
+      todoWrite("implement", 4, [{ content: "B", status: "in_progress" }], "todo_write"),
+    ]);
+    const timeline = selectTodoTimeline(runStore.getState());
+    expect(timeline.map((e) => e.exec?.ir_node_id)).toEqual(["plan", "implement"]);
   });
 });

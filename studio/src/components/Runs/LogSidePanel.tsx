@@ -7,6 +7,8 @@ import {
   useRunStore,
 } from "@/store/run";
 import type { TodoItem } from "@/components/Runs/toolFormatters";
+import { TodoItems } from "@/components/Runs/todoChecklist";
+import { countByStatus } from "@/components/Runs/todoStatus";
 
 // LogSidePanel renders alongside the log stream and surfaces two
 // concurrent signals that the footer can't carry without crowding it:
@@ -77,18 +79,6 @@ function AgentsBadge({
   );
 }
 
-const STATUS_GLYPH: Record<TodoItem["status"], string> = {
-  pending: "○",
-  in_progress: "◐",
-  completed: "●",
-};
-
-const STATUS_COLOR: Record<TodoItem["status"], string> = {
-  pending: "text-fg-subtle",
-  in_progress: "text-warning-fg",
-  completed: "text-success-fg",
-};
-
 function TodoChecklist({
   todos,
   source,
@@ -120,53 +110,11 @@ function TodoChecklist({
           </span>
         )}
       </div>
-      <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-0.5 pr-1">
-        {todos.map((t, idx) => {
-          const text = t.status === "in_progress" ? t.activeForm ?? t.content : t.content;
-          return (
-            <li
-              key={idx}
-              className="flex items-start gap-1.5 px-1 py-0.5 leading-snug"
-            >
-              <span
-                className={`${STATUS_COLOR[t.status]} flex-none mt-[1px]`}
-                aria-label={t.status}
-              >
-                {STATUS_GLYPH[t.status]}
-              </span>
-              <span
-                className={
-                  t.status === "completed"
-                    ? "text-fg-subtle line-through"
-                    : t.status === "in_progress"
-                      ? "text-fg-default font-medium"
-                      : "text-fg-default"
-                }
-              >
-                {text}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+        <TodoItems todos={todos} />
+      </div>
     </div>
   );
-}
-
-function countByStatus(todos: TodoItem[]): {
-  pending: number;
-  in_progress: number;
-  completed: number;
-} {
-  let pending = 0;
-  let inProgress = 0;
-  let completed = 0;
-  for (const t of todos) {
-    if (t.status === "in_progress") inProgress++;
-    else if (t.status === "completed") completed++;
-    else pending++;
-  }
-  return { pending, in_progress: inProgress, completed };
 }
 
 function formatElapsed(ms: number): string {
