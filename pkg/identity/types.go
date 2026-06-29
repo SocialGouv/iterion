@@ -138,6 +138,10 @@ type User struct {
 	DefaultTeamID string     `bson:"default_team_id,omitempty" json:"default_team_id,omitempty"`
 	// DefaultOrgID is the user's preferred active org for new sessions.
 	DefaultOrgID string `bson:"default_org_id,omitempty" json:"default_org_id,omitempty"`
+	// GitHubOrgs are the user's GitHub org logins, captured via a read:org grant
+	// (the "create a GitHub App" org picker) or at GitHub SSO login. Used only as
+	// UI hints (the org dropdown); never an authorization input.
+	GitHubOrgs []string `bson:"github_orgs,omitempty" json:"github_orgs,omitempty"`
 }
 
 // TeamStatus controls whether a team (org) can run work. An empty

@@ -23,6 +23,7 @@ func (s *Server) registerForgeOAuthAppRoutes() {
 	s.mux.Handle("POST /api/teams/{id}/forge/oauth-apps", s.requireAuth(http.HandlerFunc(s.handleRegisterForgeOAuthApp)))
 	s.mux.Handle("DELETE /api/teams/{id}/forge/oauth-apps/{app_id}", s.requireAuth(http.HandlerFunc(s.handleDeleteForgeOAuthApp)))
 	s.registerForgeGitHubManifestRoutes()
+	s.registerForgeGitHubOrgsRoutes()
 }
 
 // forgeOAuthAppReq registers an OAuth app for a (provider, instance). mode

@@ -296,6 +296,20 @@ export interface GitHubManifestStart {
 // startGitHubManifest returns the pre-filled GitHub App manifest + the
 // github.com POST target; the caller auto-submits a form so GitHub creates the
 // App and redirects back to iterion's callback (which stores the credentials).
+// getMyGitHubOrgs returns the caller's GitHub org logins (captured via the
+// read:org picker below or at GitHub SSO login) — UI hints for the org dropdown.
+export async function getMyGitHubOrgs(): Promise<string[]> {
+  const r = await request<{ orgs: string[] }>("/me/github-orgs");
+  return r.orgs ?? [];
+}
+
+// startGitHubOrgsPicker returns a GitHub authorize URL (read:org via the global
+// OAuth app); the studio redirects there. On return the orgs are persisted, so
+// getMyGitHubOrgs then populates the dropdown.
+export async function startGitHubOrgsPicker(next: string): Promise<{ authorize_url: string }> {
+  return request(`/forge/github/orgs/start?next=${encodeURIComponent(next)}`);
+}
+
 export async function startGitHubManifest(
   teamID: string,
   // github_org creates the App UNDER that org (installable org-wide); blank =

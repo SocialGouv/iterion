@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   type ForgeConnection,
   type ForgeProvider,
   type RegisterForgeOAuthAppInput,
+  getMyGitHubOrgs,
   registerForgeOAuthApp,
   startGitHubManifest,
+  startGitHubOrgsPicker,
 } from "@/api/forgeConnections";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -34,7 +36,32 @@ export function RegisterOAuthAppForm({
   const [clientID, setClientID] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [githubOrg, setGithubOrg] = useState("");
+  const [myOrgs, setMyOrgs] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+
+  // Load the user's GitHub orgs once the github provider is selected, to offer a
+  // dropdown instead of free-text. Empty until they grant read:org via the picker.
+  useEffect(() => {
+    if (!show || provider !== "github") return;
+    let alive = true;
+    getMyGitHubOrgs()
+      .then((o) => alive && setMyOrgs(o))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [show, provider]);
+
+  const pickOrgs = async () => {
+    try {
+      const { authorize_url } = await startGitHubOrgsPicker(
+        window.location.pathname + window.location.search,
+      );
+      window.location.href = authorize_url;
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
 
   const redirectURI = `${window.location.origin}/api/forge/oauth/callback`;
   // GitHub has no create-app REST API (only the interactive App-Manifest flow),
@@ -144,18 +171,52 @@ export function RegisterOAuthAppForm({
 
       {provider === "github" && (
         <div className="rounded border border-accent/40 bg-accent/5 p-3 space-y-2">
-          <div>
-            <label htmlFor="gh-manifest-org" className="sr-only">
-              GitHub org
+          <div className="space-y-1">
+            <label htmlFor="gh-manifest-org" className="block text-xs text-fg-subtle">
+              Create under
             </label>
-            <Input
-              size="md"
-              id="gh-manifest-org"
-              placeholder="GitHub org (e.g. SocialGouv) — blank = your personal account"
-              value={githubOrg}
-              onChange={(e) => setGithubOrg(e.target.value)}
-              autoComplete="off"
-            />
+            {myOrgs.length > 0 ? (
+              <div className="flex items-center gap-2">
+                <Select
+                  size="md"
+                  id="gh-manifest-org"
+                  value={githubOrg}
+                  onChange={(e) => setGithubOrg(e.target.value)}
+                >
+                  <option value="">Your personal account</option>
+                  {myOrgs.map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                </Select>
+                <button
+                  type="button"
+                  className="text-caption text-accent hover:underline shrink-0"
+                  onClick={() => void pickOrgs()}
+                >
+                  Refresh from GitHub
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Input
+                  size="md"
+                  id="gh-manifest-org"
+                  placeholder="GitHub org (e.g. SocialGouv) — blank = personal account"
+                  value={githubOrg}
+                  onChange={(e) => setGithubOrg(e.target.value)}
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  className="text-caption text-accent hover:underline shrink-0"
+                  onClick={() => void pickOrgs()}
+                >
+                  Pick from my GitHub orgs
+                </button>
+              </div>
+            )}
           </div>
           <Button
             variant="primary"
