@@ -33,6 +33,7 @@ export function RegisterOAuthAppForm({
   const [connectionID, setConnectionID] = useState("");
   const [clientID, setClientID] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [githubOrg, setGithubOrg] = useState("");
   const [busy, setBusy] = useState(false);
 
   const redirectURI = `${window.location.origin}/api/forge/oauth/callback`;
@@ -85,6 +86,7 @@ export function RegisterOAuthAppForm({
     try {
       const { post_url, manifest } = await startGitHubManifest(teamID, {
         forge_base_url: baseURL.trim() || undefined,
+        github_org: githubOrg.trim() || undefined,
         next: window.location.pathname + window.location.search,
       });
       const form = document.createElement("form");
@@ -142,6 +144,19 @@ export function RegisterOAuthAppForm({
 
       {provider === "github" && (
         <div className="rounded border border-accent/40 bg-accent/5 p-3 space-y-2">
+          <div>
+            <label htmlFor="gh-manifest-org" className="sr-only">
+              GitHub org
+            </label>
+            <Input
+              size="md"
+              id="gh-manifest-org"
+              placeholder="GitHub org (e.g. SocialGouv) — blank = your personal account"
+              value={githubOrg}
+              onChange={(e) => setGithubOrg(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
           <Button
             variant="primary"
             onClick={() => void launchGitHubManifest()}
@@ -152,8 +167,9 @@ export function RegisterOAuthAppForm({
           </Button>
           <p className="text-caption text-fg-muted">
             Recommended for GitHub — one click sends you to GitHub to confirm, then iterion stores
-            the app's credentials automatically. (For GitHub Enterprise, set the base URL below
-            first.) Or use the options below.
+            the app's credentials automatically. Set the <strong>GitHub org</strong> above so the App
+            is created under it and can be installed org-wide (blank creates it on your personal
+            account — then it only installs there). For GitHub Enterprise, set the base URL below first.
           </p>
         </div>
       )}

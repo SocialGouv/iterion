@@ -298,7 +298,9 @@ export interface GitHubManifestStart {
 // App and redirects back to iterion's callback (which stores the credentials).
 export async function startGitHubManifest(
   teamID: string,
-  input: { forge_base_url?: string; next?: string },
+  // github_org creates the App UNDER that org (installable org-wide); blank =
+  // the caller's personal account (then only installable there).
+  input: { forge_base_url?: string; next?: string; github_org?: string },
 ): Promise<GitHubManifestStart> {
   return request(`/teams/${teamID}/forge/oauth-apps/github-manifest`, {
     method: "POST",

@@ -38,6 +38,10 @@ type forgeOAuthAppReq struct {
 	AdminToken   string `json:"admin_token,omitempty"`   // mode=auto
 	ConnectionID string `json:"connection_id,omitempty"` // mode=auto_from_connection
 	Next         string `json:"next,omitempty"`          // github-manifest: studio return path
+	// GitHubOrg (github-manifest): create the App UNDER this org so it can be
+	// installed org-wide. Empty = the user's personal account (a private App is
+	// then installable only there — the cause of "only your personal account").
+	GitHubOrg string `json:"github_org,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {
