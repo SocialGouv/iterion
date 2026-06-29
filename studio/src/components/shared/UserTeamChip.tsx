@@ -29,11 +29,13 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
   const isLocal = user?.id === "dev";
   if (isLocal) return null;
 
-  const teamLabel = activeTeam?.team_name ?? "No team";
   const canManageActiveOrg =
     !!user?.is_super_admin || hasOrgRole(activeOrgRole, "admin");
-  // Account avatar = the user's email initial (this is the account menu; the
-  // org has its own avatar in the OrgSwitcher above).
+  // This is the account chip — strictly the user. Org context lives in the
+  // OrgSwitcher at the top of the sidebar; the team is switched from inside this
+  // popover. So the trigger shows only the user (avatar + email), never the
+  // org/team name (which, for the personal org, read confusingly as the org).
+  const accountLabel = user?.email ?? "Account";
   const initials = user?.email?.[0]?.toUpperCase() ?? "?";
 
   // PopoverClose wraps each menu button so the popover dismisses on
@@ -56,8 +58,8 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
           <button
             type="button"
             className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-fg-onAccent text-caption font-semibold uppercase hover:opacity-80 transition-opacity"
-            title={`${teamLabel} · ${user?.email ?? ""}`}
-            aria-label={`Account menu — ${teamLabel}, ${user?.email ?? ""}`}
+            title={accountLabel}
+            aria-label={`Account menu — ${accountLabel}`}
           >
             {initials}
           </button>
@@ -65,21 +67,14 @@ export default function UserTeamChip({ collapsed = false }: { collapsed?: boolea
           <button
             type="button"
             className="flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-surface-2 transition-colors"
-            title={`${teamLabel} · ${user?.email ?? ""}`}
-            aria-label={`Account menu — ${teamLabel}, ${user?.email ?? ""}`}
+            title={accountLabel}
+            aria-label={`Account menu — ${accountLabel}`}
           >
             <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent text-fg-onAccent text-caption font-semibold uppercase">
               {initials}
             </span>
-            <span className="min-w-0 flex-1 leading-tight">
-              <span className="block truncate text-xs font-medium text-fg-default">
-                {teamLabel}
-              </span>
-              {user?.email && (
-                <span className="block truncate text-caption text-fg-muted">
-                  {user.email}
-                </span>
-              )}
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg-default">
+              {accountLabel}
             </span>
             <CaretSortIcon className="h-4 w-4 shrink-0 text-fg-subtle" />
           </button>

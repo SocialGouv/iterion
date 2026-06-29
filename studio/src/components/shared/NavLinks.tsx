@@ -13,7 +13,6 @@ import {
   ChevronRightIcon,
   Cross2Icon,
   PlayIcon,
-  PersonIcon,
   Link2Icon,
   GearIcon,
 } from "@radix-ui/react-icons";
@@ -122,31 +121,19 @@ export default function NavLinks({ collapsed }: Props) {
   if (info?.marketplace_enabled) {
     links.push({ section: "marketplace", href: "/marketplace", label: "Marketplace", icon: ArchiveIcon });
   }
-  // Org settings hub now lives in the dedicated OrgSwitcher at the top of the
-  // sidebar (switch org + "Organization settings"); it's intentionally NOT
-  // duplicated as a primary nav entry here — that double-listed the org name
-  // (once as the org, once as the same-named default team).
-  // Team entry hidden when no team is active (e.g. desktop / local mode).
-  if (activeTeam) {
+  // Neither the org nor the team is a primary nav entry: the org lives in the
+  // OrgSwitcher (top), team settings in the account chip ("Team settings"). The
+  // old team-name entry sat between Marketplace and Integrations and both
+  // duplicated Integrations (same team page) and read as the org name.
+  // Integrations stays — the valued "connect a repo / enable a bot" shortcut.
+  // Cloud-only (the forge stores are wired only in cloud mode).
+  if (activeTeam && info?.mode === "cloud") {
     links.push({
-      section: "team",
-      href: `/teams/${activeTeam.team_id}`,
-      label: activeTeam.team_name || "Team",
-      icon: PersonIcon,
+      section: "integrations",
+      href: `/teams/${activeTeam.team_id}?tab=integrations`,
+      label: "Integrations",
+      icon: Link2Icon,
     });
-    // Integrations: connect a GitLab/GitHub/Forgejo repo and enable a bot on
-    // it (the team page's Integrations tab). Cloud-only (the forge stores are
-    // wired only in cloud mode); surfaced as its own top-level entry because
-    // "connect a repo to Revi" is otherwise buried two clicks deep under the
-    // team-name link.
-    if (info?.mode === "cloud") {
-      links.push({
-        section: "integrations",
-        href: `/teams/${activeTeam.team_id}?tab=integrations`,
-        label: "Integrations",
-        icon: Link2Icon,
-      });
-    }
   }
   // Admin section: super-admins, and only in cloud mode. /admin/orgs is the
   // org/tenant console, a cloud-only concept whose API isn't registered in
