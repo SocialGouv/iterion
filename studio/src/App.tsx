@@ -42,6 +42,7 @@ import ToastContainer from "@/components/shared/Toast";
 import MissingCLIBanner from "@/components/MissingCLIBanner";
 import CloudLanding, { PublicTopBar } from "@/views/CloudLanding";
 const RestrictedShell = lazy(() => import("@/views/RestrictedShell"));
+const CliAuthPage = lazy(() => import("@/views/CliAuthPage"));
 import { useDesktop } from "@/hooks/useDesktop";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
@@ -142,6 +143,15 @@ function AuthGate() {
     return (
       <Suspense fallback={<BootLoading />}>
         <AcceptInvitation />
+      </Suspense>
+    );
+  }
+  // Browser half of `iterion remote login` — approve + mint a CLI token. Any
+  // authenticated user (incl. the restricted tier) can authorize the CLI.
+  if (location.startsWith("/cli-auth")) {
+    return (
+      <Suspense fallback={<BootLoading />}>
+        <CliAuthPage />
       </Suspense>
     );
   }
