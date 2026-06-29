@@ -98,6 +98,9 @@ export interface ForgeOAuthApp {
   /** Deep link to delete this app on the forge (e.g. a GitHub App's settings
    * page); shown in the delete confirmation. Empty when not locatable. */
   app_manage_url?: string;
+  /** True for a manifest-created GitHub App whose private key iterion holds:
+   * it can be INSTALLED (least-privilege github_app), not only OAuth-authorized. */
+  installable?: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;

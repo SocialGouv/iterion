@@ -98,7 +98,9 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	// Deep link to the App's settings/advanced page so the operator can delete
 	// it on GitHub when they remove the OAuth app here (GitHub has no app-delete API).
 	manageURL := forgegithub.AppManageURL(pending.ForgeBaseURL, conv.Owner.Login, conv.Owner.Type, conv.Slug)
-	if _, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest", manageURL); err != nil {
+	// Capture the App slug + private key (conv.PEM) so the App can be INSTALLED
+	// (least-privilege github_app), not only OAuth-authorized.
+	if _, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest", manageURL, conv.Slug, conv.PEM); err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return
 	}

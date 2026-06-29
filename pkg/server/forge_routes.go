@@ -163,14 +163,15 @@ func (s *Server) forgeAdminForToken(provider forge.Provider, baseURL, token stri
 // forgeAdminFor builds a connection's admin client (the orchestrator's
 // AdminFor). A GitHub-App connection mints a fresh installation token from
 // the App private key on demand; every other kind opens its sealed token.
-func (s *Server) forgeAdminFor(_ context.Context, conn forge.Connection) (forge.Admin, error) {
+func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forge.Admin, error) {
 	if conn.Kind == forge.KindGitHubApp {
-		if !s.forgeGitHubApp.Configured() {
-			return nil, fmt.Errorf("forge: github app is not configured on this server")
+		cfg, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
+		if !ok {
+			return nil, fmt.Errorf("forge: no github app available for this connection")
 		}
 		return &forgegithub.AppClient{
 			HTTP: s.httpClient, WebBaseURL: conn.BaseURL(),
-			Cfg: s.githubAppConfig(), InstallationID: conn.InstallationID,
+			Cfg: cfg, InstallationID: conn.InstallationID,
 		}, nil
 	}
 	token, err := forge.AdminTokenFor(s.sealer, conn)
@@ -178,6 +179,28 @@ func (s *Server) forgeAdminFor(_ context.Context, conn forge.Connection) (forge.
 		return nil, err
 	}
 	return s.forgeAdminForToken(conn.Provider, conn.BaseURL(), token)
+}
+
+// githubAppConfigForTenant returns the GitHub-App identity (app id + private key
+// + slug) used to mint installation tokens for the least-privilege github_app
+// path. It prefers the tenant's own manifest-created App (its sealed private
+// key), falling back to the platform App (ITERION_FORGE_GITHUB_APP_*). ok is
+// false when neither is available.
+func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) (forgegithub.AppConfig, bool) {
+	if s.forgeOAuthApps != nil {
+		base := forge.CanonicalBaseURL(forge.ProviderGitHub, "")
+		if app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, base); err == nil && len(app.SealedPrivateKey) > 0 {
+			if pem, err := forge.OpenForgeAppPrivateKey(s.sealer, app.ID, app.SealedPrivateKey); err == nil && pem != "" {
+				if appID, _ := strconv.ParseInt(app.ProviderAppID, 10, 64); appID != 0 {
+					return forgegithub.AppConfig{AppID: appID, PrivateKeyPEM: pem, AppSlug: app.AppSlug}, true
+				}
+			}
+		}
+	}
+	if s.forgeGitHubApp.Configured() {
+		return s.githubAppConfig(), true
+	}
+	return forgegithub.AppConfig{}, false
 }
 
 // forgeOAuthAppFor builds a provider's OAuth client for a (tenant, provider,
@@ -251,10 +274,11 @@ func forgeDefaultOAuthScopes(p forge.Provider) []string {
 // OAuthExchanger and TokenRefresher.
 func (s *Server) forgeRefresherFor(conn forge.Connection) forge.TokenRefresher {
 	if conn.Kind == forge.KindGitHubApp {
-		if !s.forgeGitHubApp.Configured() {
+		cfg, ok := s.githubAppConfigForTenant(context.Background(), conn.TenantID)
+		if !ok {
 			return nil
 		}
-		return forgegithub.AppRefresher{HTTP: s.httpClient, Cfg: s.githubAppConfig()}
+		return forgegithub.AppRefresher{HTTP: s.httpClient, Cfg: cfg}
 	}
 	if conn.Kind != forge.KindOAuthApp {
 		return nil
@@ -337,13 +361,14 @@ func (s *Server) handleConnectForge(w http.ResponseWriter, r *http.Request) {
 // connectForgeGitHubApp starts the GitHub-App install flow: it returns the
 // App's install URL carrying a signed state, and stashes the pending tenant
 // binding so the install callback can resolve the team.
-func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, _ *http.Request, teamID, userID string, provider forge.Provider, req forgeConnectReq) {
+func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, r *http.Request, teamID, userID string, provider forge.Provider, req forgeConnectReq) {
 	if provider != forge.ProviderGitHub {
 		httpError(w, http.StatusBadRequest, "the app mode is GitHub-only")
 		return
 	}
-	if !s.forgeGitHubApp.Configured() {
-		httpError(w, http.StatusBadRequest, "the GitHub App is not configured on this server — use OAuth or a PAT")
+	cfg, ok := s.githubAppConfigForTenant(r.Context(), teamID)
+	if !ok {
+		httpError(w, http.StatusBadRequest, "no GitHub App available — first create one (Register an OAuth app → Create a GitHub App), or use OAuth/PAT")
 		return
 	}
 	state, _, _, err := oidc.GenerateStateAndPKCE()
@@ -362,7 +387,7 @@ func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, _ *http.Request, t
 		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
 	})
 	s.setForgeAgentBindingCookie(w, binding)
-	installURL := "https://github.com/apps/" + url.PathEscape(s.forgeGitHubApp.AppSlug) + "/installations/new?state=" + url.QueryEscape(state)
+	installURL := "https://github.com/apps/" + url.PathEscape(cfg.AppSlug) + "/installations/new?state=" + url.QueryEscape(state)
 	writeJSON(w, forgeConnectResp{InstallURL: installURL})
 }
 
@@ -520,7 +545,7 @@ func (s *Server) handleForgeOAuthCallback(w http.ResponseWriter, r *http.Request
 // resolve the team from the signed state (not the URL), mint an initial
 // installation token, seal it, and persist a github_app connection.
 func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Request) {
-	if s.forgeStates == nil || !s.forgeGitHubApp.Configured() {
+	if s.forgeStates == nil {
 		httpError(w, http.StatusNotFound, "github app not enabled")
 		return
 	}
@@ -548,7 +573,11 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusBadRequest, "invalid installation_id")
 		return
 	}
-	cfg := s.githubAppConfig()
+	cfg, ok := s.githubAppConfigForTenant(r.Context(), pending.TenantID)
+	if !ok {
+		httpError(w, http.StatusBadRequest, "no github app available for this org")
+		return
+	}
 	base := forge.DefaultBaseURL(forge.ProviderGitHub)
 	now := time.Now().UTC()
 	tok, exp, err := forgegithub.MintInstallationToken(r.Context(), s.httpClient, forgegithub.APIBaseFor(base), cfg, installationID, now)

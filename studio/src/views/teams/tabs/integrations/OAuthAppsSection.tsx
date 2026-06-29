@@ -1,6 +1,7 @@
 import {
   type ForgeConnection,
   type ForgeOAuthApp,
+  connectForge,
   deleteForgeOAuthApp,
 } from "@/api/forgeConnections";
 
@@ -63,6 +64,23 @@ export function OAuthAppsSection({
     }
   };
 
+  // Install a GitHub App (least-privilege github_app): redirects to GitHub to
+  // pick the repos, then GitHub calls back and iterion creates a github_app
+  // connection (the bot acts as the App, not as the authorizing user).
+  const install = async () => {
+    try {
+      const res = await connectForge(teamID, {
+        provider: "github",
+        mode: "app",
+        next: window.location.pathname + window.location.search,
+      });
+      if (res.install_url) window.location.href = res.install_url;
+      else onError("no install URL returned for this app");
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+
   return (
     <div>
       <h3 className="font-medium mb-1">Forge OAuth apps</h3>
@@ -91,14 +109,21 @@ export function OAuthAppsSection({
                 </div>
               </div>
               {canManage && (
-                <Button
-                  variant="danger"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => void remove(a)}
-                >
-                  Delete
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  {a.installable && a.provider === "github" && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      title="Install this App on GitHub (least-privilege bot identity) and connect"
+                      onClick={() => void install()}
+                    >
+                      Install
+                    </Button>
+                  )}
+                  <Button variant="danger" size="sm" onClick={() => void remove(a)}>
+                    Delete
+                  </Button>
+                </div>
               )}
             </li>
           ))}

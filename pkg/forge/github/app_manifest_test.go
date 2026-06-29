@@ -54,6 +54,11 @@ func TestBuildAppManifest(t *testing.T) {
 	if m.DefaultPermissions["administration"] != "write" {
 		t.Fatalf("missing administration perm: %+v", m.DefaultPermissions)
 	}
+	// contents:write is required for bots to push branches/commits (read alone
+	// would let a feature/review bot read but never open a real PR).
+	if m.DefaultPermissions["contents"] != "write" {
+		t.Fatalf("contents perm must be write (push), got %q", m.DefaultPermissions["contents"])
+	}
 	// The App-level webhook must be disabled — iterion creates per-repo hooks.
 	if active, _ := m.HookAttributes["active"].(bool); active {
 		t.Fatal("hook attributes should disable the app-level webhook")

@@ -55,6 +55,18 @@ type ForgeOAuthApp struct {
 	// app-deletion API iterion could call itself.
 	AppManageURL string `bson:"app_manage_url,omitempty" json:"app_manage_url,omitempty"`
 
+	// AppSlug is the GitHub App's URL slug (github.com/apps/<slug>) — used to
+	// build the install URL for the least-privilege github_app path.
+	// SealedPrivateKey holds the App's private key (PEM), sealed via
+	// forge_oauth_app_key:<id>. Both are populated for manifest-created GitHub
+	// Apps; their presence means the App can be INSTALLED (github_app), not only
+	// OAuth-authorized (oauth_app). ProviderAppID doubles as the GitHub App id.
+	AppSlug          string `bson:"app_slug,omitempty" json:"app_slug,omitempty"`
+	SealedPrivateKey []byte `bson:"sealed_private_key,omitempty" json:"-"`
+	// Installable is a computed view flag (never persisted): true when the App
+	// holds a private key, so the UI can offer the "Install" (github_app) action.
+	Installable bool `bson:"-" json:"installable,omitempty"`
+
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`

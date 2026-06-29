@@ -45,9 +45,9 @@ func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 		Public:        false,
 		DefaultEvents: []string{},
 		DefaultPermissions: map[string]string{
-			"administration": "write", // create repo webhooks
-			"contents":       "read",  // clone + read the diff
-			"pull_requests":  "write", // post the review
+			"administration": "write", // create per-repo webhooks
+			"contents":       "write", // clone + read the diff AND push branches/commits
+			"pull_requests":  "write", // open PRs + post review comments
 			"metadata":       "read",  // mandatory baseline
 		},
 		HookAttributes: map[string]any{"url": homeURL, "active": false},
@@ -62,7 +62,13 @@ type ManifestConversion struct {
 	Slug         string `json:"slug"`
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
-	Owner        struct {
+	// PEM is the App's private key — the credential the least-privilege
+	// github_app (installation-token) path needs. WebhookSecret is the App's
+	// generated webhook secret. Both are returned once by the conversion and
+	// must be captured here (GitHub won't re-issue the private key).
+	PEM           string `json:"pem"`
+	WebhookSecret string `json:"webhook_secret"`
+	Owner         struct {
 		Login string `json:"login"`
 		Type  string `json:"type"` // "Organization" | "User"
 	} `json:"owner"`

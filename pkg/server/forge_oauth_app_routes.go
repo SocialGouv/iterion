@@ -53,7 +53,11 @@ func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request
 		return
 	}
 	for i := range apps {
-		apps[i].SealedSecret = nil // defensive — also json:"-"
+		// Installable = a manifest-created GitHub App whose private key we hold,
+		// so it can be INSTALLED (least-privilege github_app), not only OAuth-used.
+		apps[i].Installable = len(apps[i].SealedPrivateKey) > 0
+		apps[i].SealedSecret = nil    // defensive — also json:"-"
+		apps[i].SealedPrivateKey = nil // defensive — also json:"-"
 	}
 	writeJSON(w, map[string]any{"apps": apps})
 }
@@ -86,7 +90,7 @@ func (s *Server) handleRegisterForgeOAuthApp(w http.ResponseWriter, r *http.Requ
 			httpError(w, http.StatusBadRequest, "client_id and client_secret are required for mode=manual")
 			return
 		}
-		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode, "")
+		app, err := s.createForgeOAuthApp(r, teamID, id.UserID, provider, req.ForgeBaseURL, clientID, clientSecret, "", false, mode, "", "", "")
 		if err != nil {
 			s.writeForgeOAuthAppError(w, err)
 			return
@@ -149,7 +153,7 @@ func (s *Server) autoCreateForgeOAuthApp(w http.ResponseWriter, r *http.Request,
 		s.writeForgeOAuthAppError(w, err)
 		return
 	}
-	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode, "")
+	app, err := s.createForgeOAuthApp(r, teamID, userID, provider, baseURL, creds.ClientID, creds.ClientSecret, creds.ProviderAppID, true, mode, "", "", "")
 	if err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return
@@ -183,18 +187,29 @@ func (s *Server) handleDeleteForgeOAuthApp(w http.ResponseWriter, r *http.Reques
 // it. Shared by the manual-register handler and (later) the auto-create modes —
 // the latter pass the client_id/client_secret they got back from the forge.
 // Returns the stored app with SealedSecret nilled, ready to serialise.
-func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, provider forge.Provider, rawBaseURL, clientID, clientSecret, providerAppID string, autoCreated bool, mode, appManageURL string) (forge.ForgeOAuthApp, error) {
+func (s *Server) createForgeOAuthApp(r *http.Request, teamID, userID string, provider forge.Provider, rawBaseURL, clientID, clientSecret, providerAppID string, autoCreated bool, mode, appManageURL, appSlug, privateKeyPEM string) (forge.ForgeOAuthApp, error) {
 	baseURL := forge.CanonicalBaseURL(provider, rawBaseURL)
 	appID := uuid.NewString()
 	sealed, err := forge.SealOAuthAppSecret(s.sealer, appID, clientSecret)
 	if err != nil {
 		return forge.ForgeOAuthApp{}, fmt.Errorf("seal secret: %w", err)
 	}
+	// A manifest-created GitHub App also carries a private key — seal it (bound
+	// to this record id) so the least-privilege github_app install path can mint
+	// installation tokens. Other connect modes pass "".
+	var sealedKey []byte
+	if privateKeyPEM != "" {
+		sealedKey, err = forge.SealForgeAppPrivateKey(s.sealer, appID, privateKeyPEM)
+		if err != nil {
+			return forge.ForgeOAuthApp{}, fmt.Errorf("seal app key: %w", err)
+		}
+	}
 	now := time.Now().UTC()
 	app := forge.ForgeOAuthApp{
 		ID: appID, TenantID: teamID, Provider: provider, ForgeBaseURL: baseURL,
 		ClientID: clientID, SealedSecret: sealed, RedirectURI: s.forgeOAuthRedirectURI(),
 		ProviderAppID: providerAppID, AutoCreated: autoCreated, AppManageURL: appManageURL,
+		AppSlug: appSlug, SealedPrivateKey: sealedKey,
 		CreatedBy: userID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.forgeOAuthApps.Create(store.WithTenant(r.Context(), teamID), app); err != nil {

@@ -91,3 +91,28 @@ func TestOAuthAppSealer_RoundTrip(t *testing.T) {
 		t.Fatal("expected AAD mismatch error opening under a different app id")
 	}
 }
+
+func TestForgeAppPrivateKeySealer_RoundTrip(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"
+	sealed, err := SealForgeAppPrivateKey(sealer, "app-1", pem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := OpenForgeAppPrivateKey(sealer, "app-1", sealed)
+	if err != nil || got != pem {
+		t.Fatalf("round-trip = %q, %v", got, err)
+	}
+	// AAD binds to the app id…
+	if _, err := OpenForgeAppPrivateKey(sealer, "app-2", sealed); err == nil {
+		t.Fatal("expected AAD mismatch under a different app id")
+	}
+	// …and is distinct from the client_secret envelope: a key blob must NOT open
+	// as a client_secret (different AAD), so the two can't be transplanted.
+	if _, err := OpenOAuthAppSecret(sealer, "app-1", sealed); err == nil {
+		t.Fatal("private-key blob must not open as a client_secret (distinct AAD)")
+	}
+}

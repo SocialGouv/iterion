@@ -32,3 +32,30 @@ func OpenOAuthAppSecret(sealer secrets.Sealer, appID string, sealed []byte) (str
 func forgeOAuthAppAAD(appID string) []byte {
 	return []byte("forge_oauth_app:" + appID)
 }
+
+// SealForgeAppPrivateKey seals a manifest-created GitHub App's private key (PEM),
+// bound to the app record id via a distinct AAD so it can't be confused with the
+// OAuth client_secret sealed under the same record. Enables the least-privilege
+// github_app (installation-token) path for per-tenant Apps.
+func SealForgeAppPrivateKey(sealer secrets.Sealer, appID, pem string) ([]byte, error) {
+	if sealer == nil {
+		return nil, fmt.Errorf("forge: nil sealer")
+	}
+	return sealer.Seal([]byte(pem), forgeAppKeyAAD(appID))
+}
+
+// OpenForgeAppPrivateKey returns the App's private key PEM from its sealed blob.
+func OpenForgeAppPrivateKey(sealer secrets.Sealer, appID string, sealed []byte) (string, error) {
+	if sealer == nil {
+		return "", fmt.Errorf("forge: nil sealer")
+	}
+	raw, err := sealer.Open(sealed, forgeAppKeyAAD(appID))
+	if err != nil {
+		return "", fmt.Errorf("forge: open app private key: %w", err)
+	}
+	return string(raw), nil
+}
+
+func forgeAppKeyAAD(appID string) []byte {
+	return []byte("forge_oauth_app_key:" + appID)
+}
