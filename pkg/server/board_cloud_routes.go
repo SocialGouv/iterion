@@ -21,7 +21,7 @@ import (
 // the two are mutually exclusive, so there is no route conflict.
 func (s *Server) registerCloudBoardRoutes() {
 	api := &native.BoardAPI{Resolve: s.cloudBoardResolve}
-	api.RegisterRoutesWithMiddleware(s.mux, "/api/v1/native", s.requireAuth)
+	api.RegisterRoutesWithMiddleware(s.mux.ServeMux, "/api/v1/native", s.requireAuth)
 }
 
 // cloudBoardResolve returns the active team's board store for this request.

@@ -412,8 +412,8 @@ type Server struct {
 	currentProjectID string
 	cfg              Config
 	logger           *iterlog.Logger
-	mux              *http.ServeMux
-	handler          http.Handler // mux wrapped with auth middleware
+	mux              *recordingMux // records routes → GET /api/openapi.json
+	handler          http.Handler  // mux wrapped with auth middleware
 	server           *http.Server
 	hub              *Hub
 	watcher          *Watcher
@@ -590,7 +590,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	s := &Server{
 		cfg:               cfg,
 		logger:            logger,
-		mux:               http.NewServeMux(),
+		mux:               newRecordingMux(),
 		addrReady:         make(chan struct{}),
 		shutdown:          make(chan struct{}),
 		authSvc:           cfg.AuthService,
@@ -1243,11 +1243,11 @@ func (s *Server) routes() {
 		s.registerCloudBoardRoutes()
 	}
 	if s.cfg.NativeTrackerStore != nil {
-		s.cfg.NativeTrackerStore.RegisterRoutesWithMiddleware(s.mux, "/api/v1/native", s.requireAuth)
+		s.cfg.NativeTrackerStore.RegisterRoutesWithMiddleware(s.mux.ServeMux, "/api/v1/native", s.requireAuth)
 		// The Board MCP HTTP endpoint authenticates via its own
 		// per-run X-Iterion-Run token (issued by the runtime at
 		// run-start), so it intentionally bypasses requireAuth.
-		RegisterBoardMCPRoutes(s.mux, "/api/v1/mcp/board", s.cfg.NativeTrackerStore, s.boardMCPTokens)
+		RegisterBoardMCPRoutes(s.mux.ServeMux, "/api/v1/mcp/board", s.cfg.NativeTrackerStore, s.boardMCPTokens)
 		// Resolve a "/command" in a board-issue comment into a bot launch (the
 		// native/local twin of the forge issue-comment trigger). requireAuth on
 		// the comment route already gates who may post; the resolver only adds
@@ -1255,7 +1255,7 @@ func (s *Server) routes() {
 		s.wireNativeBoardCommands()
 	}
 	if s.cfg.Dispatcher != nil {
-		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux, "/api/v1/dispatcher", s.requireAuth)
+		s.cfg.Dispatcher.RegisterRoutesWithMiddleware(s.mux.ServeMux, "/api/v1/dispatcher", s.requireAuth)
 	}
 	// Event-driven trigger subscription CRUD backing the Triggers /
 	// Automations view. No-op without a TriggerStore.
@@ -1273,6 +1273,12 @@ func (s *Server) routes() {
 	// Daily spend-cap status + one-click override. No-op without a run
 	// store. Gated by the global /api/* auth middleware.
 	s.registerLimitsRoutes()
+
+	// Live route inventory as OpenAPI 3 + flat list (GET /api/openapi.json,
+	// /api/routes), generated from the recordingMux so it can't drift. Drives
+	// `iterion remote openapi` / `routes`. Registered LAST so every route
+	// above is captured before the spec is first served.
+	s.registerOpenAPIRoutes()
 
 	// Serve static frontend files with SPA fallback so client-side routes
 	// (e.g. /runs/abc) render index.html instead of 404.

@@ -250,12 +250,81 @@ var remoteAPICmd = &cobra.Command{
 	},
 }
 
+var remoteOpenAPICmd = &cobra.Command{
+	Use:   "openapi",
+	Short: "Print the instance's live OpenAPI 3 spec (GET /api/openapi.json)",
+	Long: "Fetch the instance's auto-generated OpenAPI 3 document — the single\n" +
+		"source of truth for its API surface, generated from the live routing\n" +
+		"table (zero drift). Pipe it to a generator to build a typed client.",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return remoteGetJSON(cmd.Context(), "/api/openapi.json")
+	},
+}
+
+var remoteRoutesCmd = &cobra.Command{
+	Use:   "routes",
+	Short: "List the instance's API routes (method + path)",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		client, err := cli.NewRemoteClient()
+		if err != nil {
+			return err
+		}
+		code, body, err := client.API(cmd.Context(), "GET", "/api/routes", nil)
+		if err != nil {
+			return err
+		}
+		if code/100 != 2 {
+			return fmt.Errorf("HTTP %d", code)
+		}
+		var rr struct {
+			Routes []struct {
+				Method  string `json:"method"`
+				Pattern string `json:"pattern"`
+			} `json:"routes"`
+		}
+		if err := json.Unmarshal(body, &rr); err != nil {
+			return err
+		}
+		for _, r := range rr.Routes {
+			m := r.Method
+			if m == "" {
+				m = "ANY"
+			}
+			fmt.Printf("%-6s %s\n", m, r.Pattern)
+		}
+		return nil
+	},
+}
+
+// remoteGetJSON fetches a path and pretty-prints the JSON response.
+func remoteGetJSON(ctx context.Context, path string) error {
+	client, err := cli.NewRemoteClient()
+	if err != nil {
+		return err
+	}
+	code, body, err := client.API(ctx, "GET", path, nil)
+	if err != nil {
+		return err
+	}
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, body, "", "  ") == nil && pretty.Len() > 0 {
+		body = pretty.Bytes()
+	}
+	fmt.Fprintln(os.Stdout, string(body))
+	if code/100 != 2 {
+		return fmt.Errorf("HTTP %d", code)
+	}
+	return nil
+}
+
 func init() {
 	remoteLoginCmd.Flags().StringVar(&remoteToken, "token", "", "Personal access token (iap_…) — or set ITERION_TOKEN")
 	remoteLoginCmd.Flags().StringVar(&remoteEmail, "email", "", "Email for headless password login (mints a CLI token)")
 	remoteLoginCmd.Flags().StringVar(&remotePassword, "password", "", "Password (or ITERION_PASSWORD); used with --email")
 	remoteAPICmd.Flags().StringVar(&remoteAPIData, "data", "", "Request body JSON (literal, or @file)")
-	remoteCmd.AddCommand(remoteLoginCmd, remoteLogoutCmd, remoteStatusCmd, remoteAPICmd)
+	remoteCmd.AddCommand(remoteLoginCmd, remoteLogoutCmd, remoteStatusCmd, remoteAPICmd, remoteOpenAPICmd, remoteRoutesCmd)
 	rootCmd.AddCommand(remoteCmd)
 }
 
