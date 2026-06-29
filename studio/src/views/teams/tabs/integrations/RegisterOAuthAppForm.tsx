@@ -159,19 +159,15 @@ export function RegisterOAuthAppForm({
       )}
 
       <div className="flex flex-wrap gap-3 text-sm">
-        <label
-          className={`flex items-center gap-1 ${autoSupported ? "" : "opacity-50"}`}
-          title={
-            autoSupported ? "" : "GitHub auto-create needs the App-Manifest flow — paste credentials"
-          }
-        >
-          <Radio
-            checked={mode === "auto"}
-            onChange={() => setMode("auto")}
-            disabled={!autoSupported}
-          />
-          Auto-create (admin token)
-        </label>
+        {/* Token-based auto-create is GitLab/Forgejo-only — GitHub's auto-create
+            is the App-Manifest button above, so we hide this option for GitHub
+            rather than show a dead-end disabled radio. */}
+        {autoSupported && (
+          <label className="flex items-center gap-1">
+            <Radio checked={mode === "auto"} onChange={() => setMode("auto")} />
+            Auto-create (admin token)
+          </label>
+        )}
         <label className="flex items-center gap-1">
           <Radio
             checked={mode === "auto_from_connection"}
