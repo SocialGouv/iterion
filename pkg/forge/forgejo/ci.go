@@ -294,24 +294,12 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 	return p.toRef(), nil
 }
 
-// mergeDo maps the forge merge method onto Gitea's `Do` field
-// ("merge"|"squash"|"rebase"); empty → "merge".
-func mergeDo(m forge.MergeMethod) string {
-	switch m {
-	case forge.MergeSquash:
-		return "squash"
-	case forge.MergeRebase:
-		return "rebase"
-	default:
-		return "merge"
-	}
-}
-
 // MergePull merges a PR via POST /pulls/{index}/merge (Gitea returns an empty
 // 200), then re-fetches it so the returned ref reflects the merged state.
-// delete_branch_after_merge handles branch deletion natively.
+// delete_branch_after_merge handles branch deletion natively. Gitea's `Do`
+// field shares GitHub's merge-method vocabulary (see forge.MergeMethodWire).
 func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, opts forge.MergeOptions) (forge.PullRef, error) {
-	body := map[string]any{"Do": mergeDo(opts.Method)}
+	body := map[string]any{"Do": forge.MergeMethodWire(opts.Method)}
 	if opts.CommitTitle != "" {
 		body["MergeTitleField"] = opts.CommitTitle
 	}

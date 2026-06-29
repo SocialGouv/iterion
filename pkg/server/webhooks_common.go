@@ -253,7 +253,10 @@ func (s *Server) insertAndLaunchWebhook(
 	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
 		repo := meta.ProjectPath
 		go func() {
-			pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			// Fresh background context (not derived from the request ctx) so the
+			// goroutine neither is cancelled by the response nor keeps the
+			// request's scoped values alive for its 30s lifetime.
+			pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			s.projectForgeWebhookToBoard(pctx, repo)
 		}()

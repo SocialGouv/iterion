@@ -259,19 +259,16 @@ func TestGitHubMergePull_SquashAndDeleteBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/5"):
-			// GitHub impl GETs before AND after the merge.
+			// GitHub impl GETs once, AFTER the merge (it reads the source branch
+			// off the re-fetched ref for the optional delete).
 			getCount++
-			merged := getCount > 1
-			resp := map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"number": 5, "title": "t", "state": "closed",
-				"html_url": "https://github.com/o/r/pull/5",
-				"head":     map[string]any{"ref": "feature", "sha": "abc"},
-				"base":     map[string]any{"ref": "main"},
-			}
-			if merged {
-				resp["merged_at"] = "2026-01-02T03:04:05Z"
-			}
-			_ = json.NewEncoder(w).Encode(resp)
+				"html_url":  "https://github.com/o/r/pull/5",
+				"head":      map[string]any{"ref": "feature", "sha": "abc"},
+				"base":      map[string]any{"ref": "main"},
+				"merged_at": "2026-01-02T03:04:05Z",
+			})
 		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/pulls/5/merge"):
 			_ = json.NewDecoder(r.Body).Decode(&mergeBody)
 			_ = json.NewEncoder(w).Encode(map[string]any{"merged": true, "sha": "mergesha"})
@@ -298,8 +295,8 @@ func TestGitHubMergePull_SquashAndDeleteBranch(t *testing.T) {
 	if !deleteHit {
 		t.Error("DeleteBranch did not trigger a branch delete")
 	}
-	if getCount != 2 {
-		t.Errorf("expected 2 GETs (pre + post merge), got %d", getCount)
+	if getCount != 1 {
+		t.Errorf("expected 1 GET (post-merge only), got %d", getCount)
 	}
 	if pr.State != "merged" {
 		t.Errorf("post-merge state = %q want merged", pr.State)

@@ -702,7 +702,7 @@ func (s *Server) projectForgeWebhookToBoard(ctx context.Context, repo string) {
 	if s.cfg.CloudBoardFor == nil || s.forgeIntegrations == nil || strings.TrimSpace(repo) == "" {
 		return
 	}
-	ris, err := s.forgeIntegrations.ListSyncEnabled(ctx)
+	ris, err := s.forgeIntegrations.ListSyncEnabledForRepo(ctx, repo)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Warn("board projection: list sync-enabled integrations: %v", err)
@@ -710,9 +710,6 @@ func (s *Server) projectForgeWebhookToBoard(ctx context.Context, repo string) {
 		return
 	}
 	for _, ri := range ris {
-		if ri.RepoFullName != repo {
-			continue
-		}
 		c, u, serr := s.syncOneIntegration(ctx, ri.TenantID, ri)
 		if serr != nil && s.logger != nil {
 			s.logger.Warn("board projection: %s/%s: %v", ri.TenantID, ri.RepoFullName, serr)

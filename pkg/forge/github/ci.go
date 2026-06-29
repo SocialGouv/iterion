@@ -394,30 +394,12 @@ func (c *AdminClient) UpdatePull(ctx context.Context, repo string, number int, p
 	return gp.toRef(), nil
 }
 
-// mergeMethod maps the forge merge method onto GitHub's `merge_method`
-// ("merge"|"squash"|"rebase"); empty → "merge".
-func mergeMethod(m forge.MergeMethod) string {
-	switch m {
-	case forge.MergeSquash:
-		return "squash"
-	case forge.MergeRebase:
-		return "rebase"
-	default:
-		return "merge"
-	}
-}
-
-// MergePull merges a PR via PUT /pulls/{n}/merge, then re-fetches it so the
+// MergePull merges a PR via PUT /pulls/{n}/merge, then re-fetches it once so the
 // returned ref reflects the merged state. When opts.DeleteBranch is set, the
-// source branch is best-effort deleted afterwards (a failure there does not
-// fail the merge).
+// source branch (read off the re-fetched ref) is best-effort deleted afterwards
+// — a failure there does not fail the merge.
 func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, opts forge.MergeOptions) (forge.PullRef, error) {
-	// Fetch first so we know the source branch for an optional delete.
-	pr, err := c.GetPullRequest(ctx, repo, number)
-	if err != nil {
-		return forge.PullRef{}, err
-	}
-	body := map[string]any{"merge_method": mergeMethod(opts.Method)}
+	body := map[string]any{"merge_method": forge.MergeMethodWire(opts.Method)}
 	if opts.CommitTitle != "" {
 		body["commit_title"] = opts.CommitTitle
 	}
@@ -434,16 +416,15 @@ func (c *AdminClient) MergePull(ctx context.Context, repo string, number int, op
 	if code/100 != 2 {
 		return forge.PullRef{}, statusErr("merge pull", code)
 	}
-	if opts.DeleteBranch && pr.SourceBranch != "" {
-		// Best-effort: ignore errors (branch may be auto-deleted, protected, or
-		// already gone). The merge already succeeded.
-		_, _ = c.do(ctx, http.MethodDelete, "/repos/"+repo+"/git/refs/heads/"+url.PathEscape(pr.SourceBranch), nil, nil)
-	}
 	merged, err := c.GetPullRequest(ctx, repo, number)
 	if err != nil {
 		// Merge succeeded; synthesize a minimal merged ref rather than fail.
-		pr.State = "merged"
-		return pr, nil
+		return forge.PullRef{State: "merged", Number: number}, nil
+	}
+	if opts.DeleteBranch && merged.SourceBranch != "" {
+		// Best-effort: ignore errors (branch may be auto-deleted, protected, or
+		// already gone). The merge already succeeded.
+		_, _ = c.do(ctx, http.MethodDelete, "/repos/"+repo+"/git/refs/heads/"+url.PathEscape(merged.SourceBranch), nil, nil)
 	}
 	return merged, nil
 }

@@ -164,6 +164,21 @@ const (
 	MergeRebase MergeMethod = "rebase"
 )
 
+// MergeMethodWire maps a MergeMethod onto the provider wire value
+// ("merge"|"squash"|"rebase"); empty → "merge". GitHub (`merge_method`) and
+// Gitea/Forgejo (the `Do` field) share this exact vocabulary, so both reuse
+// this; GitLab expresses squash as a boolean instead and does not use it.
+func MergeMethodWire(m MergeMethod) string {
+	switch m {
+	case MergeSquash:
+		return "squash"
+	case MergeRebase:
+		return "rebase"
+	default:
+		return "merge"
+	}
+}
+
 // MergeOptions controls MergePull. Zero value = provider-default merge,
 // keeping the source branch.
 type MergeOptions struct {

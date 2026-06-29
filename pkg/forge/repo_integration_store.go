@@ -64,6 +64,10 @@ type RepoIntegrationStore interface {
 	// ListSyncEnabled returns every integration (across all tenants) with
 	// SyncIssuesEnabled set, for the periodic forge→board sync worker.
 	ListSyncEnabled(ctx context.Context) ([]RepoIntegration, error)
+	// ListSyncEnabledForRepo returns the sync-enabled integrations for a single
+	// repo slug — the per-webhook board projection's filter, pushed down to the
+	// query so a webhook doesn't scan every tenant's integrations.
+	ListSyncEnabledForRepo(ctx context.Context, repo string) ([]RepoIntegration, error)
 }
 
 // ---- in-memory store (tests / local) ----
@@ -142,6 +146,12 @@ func (m *MemoryRepoIntegrationStore) ListByConnection(_ context.Context, tenantI
 
 func (m *MemoryRepoIntegrationStore) ListSyncEnabled(_ context.Context) ([]RepoIntegration, error) {
 	return m.filter(func(ri RepoIntegration) bool { return ri.SyncIssuesEnabled }), nil
+}
+
+func (m *MemoryRepoIntegrationStore) ListSyncEnabledForRepo(_ context.Context, repo string) ([]RepoIntegration, error) {
+	return m.filter(func(ri RepoIntegration) bool {
+		return ri.SyncIssuesEnabled && ri.RepoFullName == repo
+	}), nil
 }
 
 func (m *MemoryRepoIntegrationStore) ListByWebhook(_ context.Context, tenantID, webhookID string) ([]RepoIntegration, error) {
@@ -253,6 +263,10 @@ func (s *MongoRepoIntegrationStore) ListByWebhook(ctx context.Context, tenantID,
 
 func (s *MongoRepoIntegrationStore) ListSyncEnabled(ctx context.Context) ([]RepoIntegration, error) {
 	return s.find(ctx, bson.M{"sync_issues_enabled": true})
+}
+
+func (s *MongoRepoIntegrationStore) ListSyncEnabledForRepo(ctx context.Context, repo string) ([]RepoIntegration, error) {
+	return s.find(ctx, bson.M{"sync_issues_enabled": true, "repo_full_name": repo})
 }
 
 func (s *MongoRepoIntegrationStore) find(ctx context.Context, filter bson.M) ([]RepoIntegration, error) {
