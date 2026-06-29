@@ -66,11 +66,23 @@ type Purger struct {
 // of its teams, all org-scoped collections, then the identity cascade. Safe to
 // call more than once (DeleteMany is idempotent; a no-op once the org is gone).
 func (p *Purger) PurgeOrg(ctx context.Context, orgID string) (int64, error) {
-	if _, err := p.Store.GetOrg(ctx, orgID); err != nil {
+	org, err := p.Store.GetOrg(ctx, orgID)
+	if err != nil {
 		if errors.Is(err, identity.ErrNotFound) {
 			return 0, nil // already purged (e.g. by another replica)
 		}
 		return 0, err
+	}
+	// Defense-in-depth for an IRREVERSIBLE delete: re-assert eligibility here,
+	// not only in the caller's pending-list query. This guards against a
+	// direct/buggy call with an active org's ID AND the restore-during-sweep
+	// race — the operator cancels deletion after Sweep took the pending list
+	// but before this runs. A non-eligible org is a safe no-op, never a purge.
+	if !org.PendingDeletion() || org.PurgeAfter == nil || org.PurgeAfter.After(time.Now().UTC()) {
+		if p.Logger != nil {
+			p.Logger.Info("orgsweep: skip org %s (%s) — no longer eligible (status=%s)", org.ID, org.Name, org.EffectiveStatus())
+		}
+		return 0, nil
 	}
 	teams, err := p.Store.ListTeamsByOrg(ctx, orgID)
 	if err != nil {

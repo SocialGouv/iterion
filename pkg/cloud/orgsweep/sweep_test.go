@@ -32,6 +32,41 @@ func TestNextRun(t *testing.T) {
 	}
 }
 
+// TestPurgeOrg_SkipsIneligible proves the defense-in-depth guard: PurgeOrg
+// NEVER deletes an org that isn't soft-deleted with an elapsed grace, even when
+// called directly. No Mongo needed — the guard returns before any DB access
+// (DB is nil here), and the cascade must not fire. This is the safety net for
+// the irreversible delete + the restore-during-sweep race.
+func TestPurgeOrg_SkipsIneligible(t *testing.T) {
+	ctx := context.Background()
+	st := identity.NewMemoryStore()
+	noCascade := func(context.Context, string) error {
+		t.Fatal("cascade must NOT run for an ineligible org")
+		return nil
+	}
+	p := &Purger{DB: nil, Store: st, Cascade: noCascade}
+
+	// Active org → must be a no-op.
+	if _, err := st.CreateOrg(ctx, identity.Org{ID: "o-active", Name: "Active", Slug: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := p.PurgeOrg(ctx, "o-active"); err != nil || n != 0 {
+		t.Fatalf("active org: got (%d, %v), want (0, nil)", n, err)
+	}
+
+	// Soft-deleted but grace NOT yet elapsed → also a no-op.
+	future := time.Now().UTC().Add(time.Hour)
+	if _, err := st.CreateOrg(ctx, identity.Org{
+		ID: "o-pending", Name: "Pending", Slug: "pending",
+		Status: identity.TeamStatusPendingDeletion, PurgeAfter: &future,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := p.PurgeOrg(ctx, "o-pending"); err != nil || n != 0 {
+		t.Fatalf("pre-grace org: got (%d, %v), want (0, nil)", n, err)
+	}
+}
+
 // TestPurgeOrg_Mongo proves PurgeOrg removes the target org's data across the
 // cloud collections AND the identity records, while leaving a SECOND org's data
 // fully intact (no over-deletion). Gated on a real Mongo like the other cloud
@@ -63,9 +98,17 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 	}
 
 	// Two orgs, one team each. We'll purge A and assert B survives untouched.
-	seedOrgTeam := func(tag string) (orgID, teamID string) {
+	// A is soft-deleted with an elapsed grace (the real precondition PurgeOrg
+	// now re-asserts); B stays active.
+	seedOrgTeam := func(tag string, pending bool) (orgID, teamID string) {
 		orgID, teamID = "org-"+tag, "team-"+tag
-		if _, err := st.CreateOrg(ctx, identity.Org{ID: orgID, Name: "Org " + tag, Slug: "org-" + tag}); err != nil {
+		org := identity.Org{ID: orgID, Name: "Org " + tag, Slug: "org-" + tag}
+		if pending {
+			org.Status = identity.TeamStatusPendingDeletion
+			past := time.Now().UTC().Add(-time.Hour)
+			org.PurgeAfter = &past
+		}
+		if _, err := st.CreateOrg(ctx, org); err != nil {
 			t.Fatalf("CreateOrg %s: %v", tag, err)
 		}
 		if _, err := st.CreateTeam(ctx, identity.Team{ID: teamID, OrgID: orgID, Name: "Team " + tag, Slug: "team-" + tag}); err != nil {
@@ -73,8 +116,8 @@ func TestPurgeOrg_Mongo(t *testing.T) {
 		}
 		return
 	}
-	orgA, teamA := seedOrgTeam("a")
-	orgB, teamB := seedOrgTeam("b")
+	orgA, teamA := seedOrgTeam("a", true)
+	orgB, teamB := seedOrgTeam("b", false)
 
 	ins := func(coll string, doc bson.M) {
 		if _, err := db.Collection(coll).InsertOne(ctx, doc); err != nil {
