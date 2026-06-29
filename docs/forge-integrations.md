@@ -82,6 +82,14 @@ background worker ([pkg/forge/refresh.go](../pkg/forge/refresh.go)) that
 re-seals the connection blob, then rewrites the managed secret's plaintext;
 PAT connections never refresh.
 
+> Note on *identity* (vs envelope): "never what a bot posts with" means the
+> **sealing envelope** differs (`forge_conn:<id>` → `generic_secret:<id>`), not
+> the credential — the managed secret holds the **same token value**, so a bot
+> acts as the **connection's identity** on the forge. Who that is, how it relates
+> to the iterion user who launched the bot (it doesn't — different planes),
+> least-privilege, and GitHub vs GitLab vs Forgejo are documented in
+> **[forge-permissions.md](forge-permissions.md)**.
+
 ## Configuration (cloud)
 
 The Mongo stores (`forge_connections`, `repo_integrations`) and the routes
