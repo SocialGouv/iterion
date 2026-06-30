@@ -1,6 +1,9 @@
 package plugin
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // EffectiveConfig returns the named plugin's config as it is actually used:
 // the manifest field defaults overlaid with the operator's stored values. This
@@ -27,6 +30,73 @@ func (r *Registry) StoredConfig(name string) map[string]string {
 	out := map[string]string{}
 	for k, v := range r.config[name] {
 		out[k] = v
+	}
+	return out
+}
+
+// ApplyConfig merges submitted values over a plugin's stored config and
+// persists. Only declared fields are accepted; a secret submitted blank keeps
+// its prior value ("leave blank to keep"). Shared by the HTTP config handler
+// and the `iterion plugin config` CLI so both behave identically.
+func (r *Registry) ApplyConfig(name string, submitted map[string]string) error {
+	p, ok := r.Get(name)
+	if !ok {
+		return fmt.Errorf("plugin %q not found", name)
+	}
+	merged := r.StoredConfig(name)
+	for _, f := range p.Manifest.Config {
+		v, sent := submitted[f.Key]
+		if !sent {
+			continue
+		}
+		if f.Type == "secret" && strings.TrimSpace(v) == "" {
+			continue
+		}
+		merged[f.Key] = v
+	}
+	return r.SetConfig(name, merged)
+}
+
+// EnabledRewriterSpecs returns the enabled plugins' rewriter specs with their
+// {{config.<key>}} placeholders resolved from each plugin's effective config.
+// {{command}} and {{workspace}}/{{plugin.*}} are left untouched for the
+// rewrite/sandbox layers. This is how operator config reaches a rewriter's
+// invoke env/argv — rewriters run per shell command and carry resolved env,
+// unlike the mcp/lifecycle surfaces which expand via ExpandContext at run time.
+func (r *Registry) EnabledRewriterSpecs() []RewriterSpec {
+	contribs := r.EnabledRewriters()
+	out := make([]RewriterSpec, 0, len(contribs))
+	for _, c := range contribs {
+		out = append(out, expandSpecConfig(c.Spec, r.EffectiveConfig(c.Plugin)))
+	}
+	return out
+}
+
+// expandSpecConfig returns a copy of spec with {{config.<key>}} substituted in
+// its invoke argv + env. The registry's manifest is never mutated.
+func expandSpecConfig(spec RewriterSpec, cfg map[string]string) RewriterSpec {
+	if len(cfg) == 0 {
+		return spec
+	}
+	pairs := make([]string, 0, len(cfg)*2)
+	for k, v := range cfg {
+		pairs = append(pairs, "{{config."+k+"}}", v)
+	}
+	rep := strings.NewReplacer(pairs...)
+	out := spec
+	if len(spec.Invoke.Argv) > 0 {
+		argv := make([]string, len(spec.Invoke.Argv))
+		for i, a := range spec.Invoke.Argv {
+			argv[i] = rep.Replace(a)
+		}
+		out.Invoke.Argv = argv
+	}
+	if len(spec.Invoke.Env) > 0 {
+		env := make(map[string]string, len(spec.Invoke.Env))
+		for k, v := range spec.Invoke.Env {
+			env[k] = rep.Replace(v)
+		}
+		out.Invoke.Env = env
 	}
 	return out
 }

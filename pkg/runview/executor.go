@@ -39,12 +39,10 @@ func rewriteChainFromPlugins(logger *iterlog.Logger) *rewrite.Chain {
 		}
 		return nil
 	}
-	contribs := reg.EnabledRewriters()
-	specs := make([]plugin.RewriterSpec, 0, len(contribs))
-	for _, c := range contribs {
-		specs = append(specs, c.Spec)
-	}
-	return rewrite.NewChain(specs)
+	// EnabledRewriterSpecs resolves each rewriter's {{config.<key>}} placeholders
+	// from operator config before the chain bakes the specs in (the mcp and
+	// lifecycle surfaces expand via ExpandContext at run time instead).
+	return rewrite.NewChain(reg.EnabledRewriterSpecs())
 }
 
 // ExecutorSpec carries the inputs required to construct a default

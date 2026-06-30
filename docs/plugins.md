@@ -92,8 +92,58 @@ contributes:
 
 Activation-time placeholders in `mcp_servers` and `lifecycle`:
 `{{workspace}}`, `{{plugin.dir}}`, `{{plugin.cache}}`
-(`~/.iterion/plugins/<name>/cache`). The rewriter `{{command}}` placeholder is
-substituted at rewrite time with the full shell command line.
+(`~/.iterion/plugins/<name>/cache`), and `{{config.<key>}}` for any declared
+config field (see below). The rewriter `{{command}}` placeholder is substituted
+at rewrite time with the full shell command line; a rewriter's `invoke.env` and
+`invoke.argv` also resolve `{{config.<key>}}`.
+
+## Configuration (`config:`)
+
+A plugin can declare user-configurable settings — like a Firefox add-on's
+preferences. The operator sets values in the studio (the **Configure** pane on
+the Plugins view) or via the CLI; the values are stored in `~/.iterion/plugins.yaml`
+(`0600`, alongside enable state) and substituted into the plugin's
+`mcp_servers`/`rewriters`/`lifecycle` commands through `{{config.<key>}}`.
+
+```yaml
+config:
+  - key: max_depth          # referenced as {{config.max_depth}}
+    label: Max depth        # studio form label (defaults to key)
+    type: int               # string | bool | int | float | enum | secret
+    default: "3"            # used until the operator sets a value
+    description: How deep to traverse.
+  - key: mode
+    type: enum
+    options: [on, ultra]    # required for type: enum
+    default: on
+  - key: api_key
+    type: secret            # password field; value never sent back to the studio
+    required: true          # advisory; surfaced in the UI/CLI
+contributes:
+  lifecycle:
+    index: "graphify {{workspace}} --depth {{config.max_depth}}"
+  mcp_servers:
+    - { name: g, command: graphify, args: ["mcp"], env: { GRAPH_TOKEN: "{{config.api_key}}" } }
+```
+
+Values are stored and substituted as strings (a `bool` is `"true"`/`"false"`,
+an `int` is `"30"`). A `secret` is write-only over the API: the list/info
+responses report only whether it is *set*, never its value, and a blank
+submission keeps the prior value (the studio shows "leave blank to keep").
+Secrets are stored in cleartext in the `0600` `plugins.yaml`, so this is for
+instance-level configuration, not a substitute for tenant secret bindings.
+
+Manage config from the CLI (parity with the studio):
+
+```bash
+iterion plugin config <name>                                   # show schema + values
+iterion plugin config <name> --set max_depth=5 --set mode=ultra  # set values
+iterion plugin info <name>                                     # includes the config block
+```
+
+Endpoints: the plugin list/info DTO carries `config_schema` + `config_values`
+(+ `config_secret_set`); `PUT /api/v1/plugins/{name}/config` (super-admin)
+persists values.
 
 ## Command-output compression (rtk, generalized)
 
@@ -145,7 +195,8 @@ iterion plugin run repo-falcon index   # build the snapshot for this workspace
 
 ```
 iterion plugin list                      # all plugins + enable state + kinds
-iterion plugin info <name>               # manifest details
+iterion plugin info <name>               # manifest details (+ config schema/values)
+iterion plugin config <name> [--set k=v] # show or set a plugin's configuration
 iterion plugin enable <name>             # turn on (persists to plugins.yaml)
 iterion plugin disable <name>            # turn off (use this for builtins; they can't be uninstalled)
 iterion plugin run <name> index|refresh  # run a lifecycle command in the cwd

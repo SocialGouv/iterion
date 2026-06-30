@@ -81,9 +81,87 @@ var pluginInfoCmd = &cobra.Command{
 		p.Line("  enabled:     %t", view.Enabled)
 		p.Line("  builtin:     %t", view.Builtin)
 		p.Line("  contributes: %s", strings.Join(view.Kinds, ", "))
+		printPluginConfig(p, view)
 		return nil
 	},
 }
+
+// printPluginConfig renders a plugin's config schema + current values (secret
+// values shown only as (set)/(unset) — they never leave the server).
+func printPluginConfig(p *cli.Printer, v cli.PluginView) {
+	if len(v.ConfigSchema) == 0 {
+		return
+	}
+	secret := map[string]bool{}
+	for _, k := range v.ConfigSecretSet {
+		secret[k] = true
+	}
+	p.Line("  config:")
+	for _, f := range v.ConfigSchema {
+		typ := f.Type
+		if typ == "" {
+			typ = "string"
+		}
+		var val string
+		switch {
+		case f.Type == "secret":
+			if secret[f.Key] {
+				val = "(set)"
+			} else {
+				val = "(unset)"
+			}
+		case v.ConfigValues[f.Key] != "":
+			val = v.ConfigValues[f.Key]
+		default:
+			val = "(unset)"
+		}
+		req := ""
+		if f.Required {
+			req = " [required]"
+		}
+		p.Line("    %-16s %-7s = %s%s", f.Key, typ, val, req)
+	}
+}
+
+var pluginConfigCmd = &cobra.Command{
+	Use:   "config <name> [--set key=value ...]",
+	Short: "Show or set a plugin's configuration",
+	Long: `Show a plugin's declared configuration and current values, or set values
+with one or more --set key=value flags. Secret values are never printed (only
+whether they are set); set a secret with --set, and leave it unset to keep the
+prior value. Values are stored in ~/.iterion/plugins.yaml and substituted into
+the plugin's mcp/rewriter/lifecycle commands via {{config.<key>}}.
+
+  iterion plugin config graphify
+  iterion plugin config graphify --set max_depth=5 --set include_tests=true`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		sets, _ := cmd.Flags().GetStringArray("set")
+		view, err := cli.PluginConfigView(name)
+		if err != nil {
+			return err
+		}
+		if len(sets) > 0 {
+			if view, err = cli.PluginConfigSet(name, sets); err != nil {
+				return err
+			}
+		}
+		p := newPrinter()
+		if p.Format == cli.OutputJSON {
+			p.JSON(map[string]any{"plugin": view})
+			return nil
+		}
+		if len(view.ConfigSchema) == 0 {
+			p.Line("plugin %q declares no configuration", name)
+			return nil
+		}
+		p.Header(view.Name)
+		printPluginConfig(p, view)
+		return nil
+	},
+}
+
 
 func pluginSetEnabledCmd(use string, enabled bool) *cobra.Command {
 	verb := "Enable"
@@ -149,9 +227,11 @@ var pluginUninstallCmd = &cobra.Command{
 
 func init() {
 	pluginRunCmd.Flags().String("workdir", "", "Workspace directory the lifecycle command runs in (default: cwd)")
+	pluginConfigCmd.Flags().StringArray("set", nil, "Set a config value as key=value (repeatable)")
 	pluginCmd.AddCommand(
 		pluginListCmd,
 		pluginInfoCmd,
+		pluginConfigCmd,
 		pluginSetEnabledCmd("enable", true),
 		pluginSetEnabledCmd("disable", false),
 		pluginRunCmd,

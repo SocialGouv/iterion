@@ -118,25 +118,12 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	p, ok := reg.Get(name)
-	if !ok {
+	if _, ok := reg.Get(name); !ok {
 		http.Error(w, "plugin not found", http.StatusNotFound)
 		return
 	}
-	// Merge submitted values over the stored ones, accepting only declared
-	// fields and keeping a secret whose submission is blank.
-	merged := reg.StoredConfig(name)
-	for _, f := range p.Manifest.Config {
-		v, sent := body.Values[f.Key]
-		if !sent {
-			continue
-		}
-		if f.Type == "secret" && strings.TrimSpace(v) == "" {
-			continue
-		}
-		merged[f.Key] = v
-	}
-	if err := reg.SetConfig(name, merged); err != nil {
+	// ApplyConfig accepts only declared fields and keeps a secret left blank.
+	if err := reg.ApplyConfig(name, body.Values); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

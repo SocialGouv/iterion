@@ -23,7 +23,8 @@ func PluginList() ([]PluginView, error) {
 	return reg.Views(), nil
 }
 
-// PluginInfo returns the full view for one plugin.
+// PluginInfo returns the full view for one plugin (incl. config schema +
+// current values via ViewFor) plus its manifest.
 func PluginInfo(name string) (PluginView, *plugin.Manifest, error) {
 	reg, err := plugin.Load()
 	if err != nil {
@@ -34,7 +35,8 @@ func PluginInfo(name string) (PluginView, *plugin.Manifest, error) {
 		return PluginView{}, nil, fmt.Errorf("plugin %q not found", name)
 	}
 	m := p.Manifest
-	return p.View(), &m, nil
+	v, _ := reg.ViewFor(name)
+	return v, &m, nil
 }
 
 // PluginSetEnabled enables or disables a plugin and persists the decision.
@@ -100,4 +102,40 @@ func PluginInstall(ctx context.Context, src string) (string, error) {
 // PluginUninstall removes an installed plugin (delegates to plugin.Uninstall).
 func PluginUninstall(name string) error {
 	return plugin.Uninstall(name)
+}
+
+// PluginConfigView returns a plugin's view (config schema + masked values).
+func PluginConfigView(name string) (PluginView, error) {
+	reg, err := plugin.Load()
+	if err != nil {
+		return PluginView{}, err
+	}
+	v, ok := reg.ViewFor(name)
+	if !ok {
+		return PluginView{}, fmt.Errorf("plugin %q not found", name)
+	}
+	return v, nil
+}
+
+// PluginConfigSet parses "key=value" --set flags and applies them to a plugin
+// (accepting only declared fields, keeping a secret left blank), returning the
+// refreshed view. Parsing shares the package's kv-flag scanner.
+func PluginConfigSet(name string, sets []string) (PluginView, error) {
+	values, err := parseKVPairs[string](sets, kvOpts[string]{
+		errFmt:            "invalid --set %q (want key=value)",
+		trimKey:           true,
+		requireTrimmedKey: true,
+	})
+	if err != nil {
+		return PluginView{}, err
+	}
+	reg, err := plugin.Load()
+	if err != nil {
+		return PluginView{}, err
+	}
+	if err := reg.ApplyConfig(name, values); err != nil {
+		return PluginView{}, err
+	}
+	v, _ := reg.ViewFor(name)
+	return v, nil
 }
