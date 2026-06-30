@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
+import { Kbd } from "@/components/ui/Kbd";
 
 export function BoardKeyboardHelp({ onClose }: { onClose: () => void }) {
   // Esc is handled by Dialog; this hook still intercepts "?" so a second
@@ -53,9 +54,7 @@ export function BoardKeyboardHelp({ onClose }: { onClose: () => void }) {
 function ShortcutRow({ keys, desc }: { keys: string; desc: string }) {
   return (
     <li className="flex items-center justify-between gap-4">
-      <kbd className="font-mono text-xs px-1.5 py-0.5 rounded bg-surface-2 border border-border-default">
-        {keys}
-      </kbd>
+      <Kbd>{keys}</Kbd>
       <span className="text-fg-muted text-xs">{desc}</span>
     </li>
   );

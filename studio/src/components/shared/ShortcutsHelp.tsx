@@ -1,4 +1,5 @@
 import { Dialog } from "@/components/ui/Dialog";
+import { Kbd } from "@/components/ui/Kbd";
 import { isMacOS } from "@/lib/keyboard";
 
 interface Props {
@@ -39,9 +40,9 @@ export default function ShortcutsHelp({ open, onClose }: Props) {
         {shortcuts.map(({ keys, desc }) => (
           <div key={keys} className="flex items-center justify-between gap-4">
             <span className="text-xs text-fg-muted">{desc}</span>
-            <kbd className="bg-surface-2 border border-border-strong rounded px-2 py-0.5 text-caption text-fg-default font-mono whitespace-nowrap">
+            <Kbd size="md" className="whitespace-nowrap">
               {keys}
-            </kbd>
+            </Kbd>
           </div>
         ))}
         <p className="pt-3 mt-3 border-t border-border-default text-caption text-fg-subtle text-center">

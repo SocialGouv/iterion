@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { Kbd } from "@/components/ui/Kbd";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 
 const EMPTY_BANNER_DISMISSED_KEY = "iterion.board.empty-banner-dismissed";
@@ -23,14 +24,10 @@ export function EmptyBoardBanner({ onCreate }: { onCreate: () => void }) {
       <div className="flex-1 min-w-0">
         <div className="font-medium mb-0.5">Your kanban is empty</div>
         <div className="text-fg-muted text-xs leading-relaxed">
-          Create your first issue (or press{" "}
-          <kbd className="font-mono px-1 rounded bg-surface-2 border border-border-default">c</kbd>
-          ) · Issues land in the first <em>eligible</em> column (green dot) ·
-          Wire a dispatcher at{" "}
+          Create your first issue (or press <Kbd>c</Kbd>) · Issues land in the
+          first <em>eligible</em> column (green dot) · Wire a dispatcher at{" "}
           <code className="text-xs bg-surface-2 px-1 rounded">/dispatcher</code>{" "}
-          to auto-run workflows · Press{" "}
-          <kbd className="font-mono px-1 rounded bg-surface-2 border border-border-default">?</kbd>{" "}
-          for shortcuts
+          to auto-run workflows · Press <Kbd>?</Kbd> for shortcuts
         </div>
       </div>
       <Button variant="primary" size="sm" onClick={onCreate}>
