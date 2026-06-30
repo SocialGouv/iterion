@@ -384,6 +384,18 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 	// In-process lifecycle hooks (audit, safety, compaction
 	// observability). Nil-safe at call sites in generation.go.
 	opts.Hooks = b.lifecycleHooks
+	// Plugin `hooks` parity: when the workspace's .claude/settings.json carries
+	// command-type hooks (merged there from enabled hook plugins, the same file
+	// claude_code reads via --setting-sources project), run them through claw's
+	// hook Runner too. A fresh per-run runner = default lifecycle + settings
+	// hooks (only when present), so the shared runner never accumulates per-run
+	// handlers. The sandboxed path returned above, so this is in-process only.
+	if task.WorkDir != "" {
+		merged := NewDefaultLifecycleHooks(b.hooks)
+		if registerSettingsHooks(merged, task.WorkDir, nil) > 0 {
+			opts.Hooks = merged
+		}
+	}
 
 	// Tool-permission gate (anti-prompt-injection boundary). The
 	// resolved policy is evaluated before each tool executes; see
