@@ -167,12 +167,17 @@ src -> dst                                        # unconditional
 src -> dst when approved                          # bool field on src.output
 src -> dst when not approved
 src -> dst when "!approved && length(blockers) > 0"   # expression
-src -> dst as loop_name(10)                       # bounded loop
+src -> dst as loop_name(10)                       # bounded loop (literal cap)
+src -> dst as loop_name("{{outputs.x.cap}}")      # bounded loop (data-driven cap)
+src -> dst as loop_name(unbounded)                # unbounded: runs until a when-exit; fuel from budget.max_iterations
+src -> dst as loop_name(unbounded 500)            # unbounded with a per-loop fuel ceiling
 src -> dst with { field: "{{outputs.src.x}}" }    # data mapping
 ```
 
 Rules:
-1. Every cycle MUST be bounded (`as name(N)`).
+1. Every cycle MUST be bounded — `as name(N)`, a data-driven cap, or `as name(unbounded)`.
+   `unbounded` needs a fuel ceiling (per-loop `(unbounded N)` or `budget.max_iterations`) — else C097.
+   A runtime liveness monitor also halts an unbounded loop that makes no progress (fixpoint).
 2. Conditional edges must be exhaustive (or have an unconditional fallback).
 3. Edge `with {}` values MUST be strings — int/bool literals fail with E002. Use `"true"` / `"0"` if needed, then coerce in compute.
 4. Edge order matters for conditional fallthrough.
@@ -341,6 +346,20 @@ compute pass_through:
 `expr:` values are quoted expressions (CEL-like), NOT templates.
 Reference `input.x`, `outputs.x.y`, `loop.<name>.previous_output.x`
 directly without `{{...}}`.
+
+### Expression operators & builtins
+
+- Operators: `&& || ! == != < <= > >= + - * / %` (and `and`/`or`/`not`).
+- Indexing: `arr[0]`, `m["key"]`, `people[0].name` (OOB / missing key → nil).
+- Builtins: `length`, `concat`, `unique`, `contains`, `join`, `tail`,
+  `if(cond, then, else)`, `sort`, `keys`, `values`, `slice(arr, start, end)`,
+  `sum`, `min`, `max`, `flatten`.
+- Bounded combinators (lambda, applied once per element of a finite list):
+  - `map(arr, x => x.field)`
+  - `filter(arr, x => x.score > 5)`
+  - `reduce(arr, 0, (acc, x) => acc + x.score)`
+  These are total (no recursion / no fixpoint); a per-eval visit budget bounds
+  deeply nested combinators.
 
 ## Workflow block
 

@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -955,6 +956,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		return err
 	}
 
+	// Multitenant safeguard: clamp the workflow budget to the platform's hard
+	// ceiling so a tenant's bot — however large its declared budget, and
+	// especially an `as X(unbounded)` loop whose fuel falls back to
+	// budget.MaxIterations — can never exceed what the platform allows. The
+	// tenant cannot raise this; it only ever lowers (or, for an unbudgeted
+	// bot, imposes) the limits. See ir.Budget.ClampToCeiling.
+	applyCloudBudgetCeiling(wf, r.cfg.Logger)
+
 	// Phase C: fetch + decrypt the per-run sealed credentials bundle when the
 	// publisher attached one — BEFORE the repo clone + executor so all three
 	// see the credentials in ctx. The result lives only in ctx; the runner
@@ -1557,6 +1566,61 @@ func loadWorkflow(msg *queue.RunMessage) (*ir.Workflow, error) {
 		return nil, fmt.Errorf("runner: compile IR: %d diagnostic(s)", len(cr.Diagnostics))
 	}
 	return cr.Workflow, nil
+}
+
+// applyCloudBudgetCeiling clamps wf.Budget to the platform ceiling read from
+// the environment — the cloud-side enforcement of the unbounded-loop fuel
+// invariant. Set any of ITERION_CLOUD_MAX_ITERATIONS, ITERION_CLOUD_MAX_TOKENS,
+// ITERION_CLOUD_MAX_COST_USD, ITERION_CLOUD_MAX_DURATION,
+// ITERION_CLOUD_MAX_PARALLEL_BRANCHES to impose a hard, tenant-unraisable cap.
+// No env set → no-op (self-hosted / single-tenant keeps DSL budgets verbatim).
+func applyCloudBudgetCeiling(wf *ir.Workflow, logger *iterlog.Logger) {
+	if wf == nil {
+		return
+	}
+	ceiling := &ir.Budget{}
+	any := false
+	if v, ok := envPositiveInt("ITERION_CLOUD_MAX_ITERATIONS"); ok {
+		ceiling.MaxIterations, any = v, true
+	}
+	if v, ok := envPositiveInt("ITERION_CLOUD_MAX_TOKENS"); ok {
+		ceiling.MaxTokens, any = v, true
+	}
+	if v, ok := envPositiveInt("ITERION_CLOUD_MAX_PARALLEL_BRANCHES"); ok {
+		ceiling.MaxParallelBranches, any = v, true
+	}
+	if s := os.Getenv("ITERION_CLOUD_MAX_COST_USD"); s != "" {
+		if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+			ceiling.MaxCostUSD, any = f, true
+		}
+	}
+	if s := os.Getenv("ITERION_CLOUD_MAX_DURATION"); s != "" {
+		ceiling.MaxDuration, any = s, true
+	}
+	if !any {
+		return
+	}
+	if wf.Budget == nil {
+		wf.Budget = &ir.Budget{}
+	}
+	before := *wf.Budget
+	wf.Budget.ClampToCeiling(ceiling)
+	if logger != nil && *wf.Budget != before {
+		logger.Info("runner: clamped workflow budget to platform ceiling (iterations=%d tokens=%d cost=%.2f dur=%q)",
+			wf.Budget.MaxIterations, wf.Budget.MaxTokens, wf.Budget.MaxCostUSD, wf.Budget.MaxDuration)
+	}
+}
+
+func envPositiveInt(key string) (int, bool) {
+	s := os.Getenv(key)
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // buildExecutor reuses runview.BuildExecutor so the runner shares

@@ -5,6 +5,8 @@
 package ir
 
 import (
+	"time"
+
 	"github.com/SocialGouv/iterion/pkg/dsl/expr"
 	"github.com/SocialGouv/iterion/pkg/dsl/types"
 )
@@ -1148,6 +1150,47 @@ type Budget struct {
 	MaxCostUSD          float64
 	MaxTokens           int
 	MaxIterations       int
+}
+
+// ClampToCeiling lowers each numeric limit so it never EXCEEDS the
+// corresponding ceiling (a non-zero ceiling field). Unlike applyBudgetOverrides
+// (which lets a value rise), this only ever shrinks — it is the multitenant
+// safeguard a cloud runner applies so a tenant's bot, however large its
+// declared budget (especially `as X(unbounded)` whose fuel falls back to
+// budget.MaxIterations), can never exceed the platform's hard ceiling. A zero
+// ceiling field means "no platform limit on this dimension" and is ignored. A
+// zero workflow field means "unlimited" and is RAISED to the ceiling (so an
+// unbudgeted bot still inherits the platform cap). Duration is compared by
+// parsed seconds; an unparseable value is replaced by the ceiling.
+func (b *Budget) ClampToCeiling(ceiling *Budget) {
+	if b == nil || ceiling == nil {
+		return
+	}
+	clampInt := func(v, max int) int {
+		if max > 0 && (v <= 0 || v > max) {
+			return max
+		}
+		return v
+	}
+	clampFloat := func(v, max float64) float64 {
+		if max > 0 && (v <= 0 || v > max) {
+			return max
+		}
+		return v
+	}
+	b.MaxIterations = clampInt(b.MaxIterations, ceiling.MaxIterations)
+	b.MaxTokens = clampInt(b.MaxTokens, ceiling.MaxTokens)
+	b.MaxParallelBranches = clampInt(b.MaxParallelBranches, ceiling.MaxParallelBranches)
+	b.MaxCostUSD = clampFloat(b.MaxCostUSD, ceiling.MaxCostUSD)
+	if ceiling.MaxDuration != "" {
+		cd, cerr := time.ParseDuration(ExpandEnvWithDefault(ceiling.MaxDuration))
+		if cerr == nil {
+			vd, verr := time.ParseDuration(ExpandEnvWithDefault(b.MaxDuration))
+			if verr != nil || b.MaxDuration == "" || vd > cd {
+				b.MaxDuration = ceiling.MaxDuration
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
