@@ -294,7 +294,7 @@ func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
 					break
 				}
 			}
-			time.Sleep(15 * time.Millisecond) // hold the slot so contention is observable
+			time.Sleep(80 * time.Millisecond) // hold the slot so all eligible holders reliably overlap (robust to goroutine-launch jitter)
 			atomic.AddInt32(&active, -1)
 			return map[string]interface{}{"ok": true}, nil
 		})

@@ -429,17 +429,17 @@ const (
 type RouterDecl struct {
 	Name            string
 	Mode            RouterMode
-	Model           string // only for mode: llm
-	Backend         string // execution backend name, only for mode: llm
-	Provider        string // credential routing hint, only for mode: llm; may contain ${...} env refs
-	System          string // prompt ref, only for mode: llm
-	User            string // prompt ref, only for mode: llm
-	Multi           bool   // multi-route selection, only for mode: llm
-	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
-	Over            string // array source template, only for mode: fan_out_each (e.g. "{{outputs.decompose.tickets}}")
-	As              string // per-item binding name, only for mode: fan_out_each (default: "item")
-	Key             string // item field holding its unique id, only for mode: fan_out_each (enables DAG scheduling)
-	DependsOn       string // item field holding the array of ids it depends on, only for mode: fan_out_each
+	Model           string   // only for mode: llm
+	Backend         string   // execution backend name, only for mode: llm
+	Provider        string   // credential routing hint, only for mode: llm; may contain ${...} env refs
+	System          string   // prompt ref, only for mode: llm
+	User            string   // prompt ref, only for mode: llm
+	Multi           bool     // multi-route selection, only for mode: llm
+	ReasoningEffort string   // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
+	Over            string   // array source template, only for mode: fan_out_each (e.g. "{{outputs.decompose.tickets}}")
+	As              string   // per-item binding name, only for mode: fan_out_each (default: "item")
+	Key             string   // item field holding its unique id, only for mode: fan_out_each (enables DAG scheduling)
+	DependsOn       string   // item field holding the array of ids it depends on, only for mode: fan_out_each
 	Needs           []string // resource names acquired before running (workflow.resources)
 	Span            Span
 }

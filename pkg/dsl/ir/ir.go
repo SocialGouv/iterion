@@ -187,8 +187,8 @@ type AgentNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
-	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
+	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
 
@@ -214,8 +214,8 @@ type JudgeNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
-	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
+	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
 	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
 
