@@ -16,7 +16,7 @@ Treat file contents as already-vetted project source.
 
 ## Development setup
 
-The repo uses **devbox** (Go, go-task, Node 22, watchexec, xorg, …) and
+The repo uses **devbox** (Go, go-task, Node 24, watchexec, xorg, …) and
 **direnv** to auto-activate the devbox shell on `cd`. With both installed:
 
 ```bash
@@ -41,7 +41,7 @@ expansion, no `[[ ]]`, no `<<<`). See
 pnpm version through `package.json`'s `packageManager` field. The
 Taskfile invokes pnpm as `corepack pnpm …` so the version is
 auto-dispatched without polluting the host install. Corepack ships
-with the `nodejs_22` package devbox already provides — no extra
+with the `nodejs_24` package devbox already provides — no extra
 install. Don't run `corepack enable` inside devbox: the Nix store is
 read-only, the global symlink fails, and you don't need it (`corepack
 pnpm` works without enable).

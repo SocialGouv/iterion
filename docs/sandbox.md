@@ -250,7 +250,7 @@ workflow x:
 `sandbox: auto` reads `.devcontainer/devcontainer.json` from the
 workspace if present; otherwise it falls back to the published
 **iterion-sandbox-slim** image pinned to the running iterion version.
-That fallback ships with `git`, Node 22, devbox, and Nix preinstalled,
+That fallback ships with `git`, Node 24, devbox, and Nix preinstalled,
 so the typical "agent installs deps, edits code, opens a PR" workflow
 runs out of the box. See [Default image](#default-image) below.
 

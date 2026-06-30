@@ -57,7 +57,7 @@ You can also download binaries from the [latest release](https://github.com/soci
 
 ## Docker
 
-The published image (`ghcr.io/socialgouv/iterion:latest`) bundles the `iterion` binary, `git`, Node 22 and the pinned `claude` / `codex` CLIs. Override the default `server` command for ad-hoc runs:
+The published image (`ghcr.io/socialgouv/iterion:latest`) bundles the `iterion` binary, `git`, Node 24 and the pinned `claude` / `codex` CLIs. Override the default `server` command for ad-hoc runs:
 
 ```bash
 # One-off workflow run, mounting your project at /work

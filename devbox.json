@@ -7,7 +7,7 @@
     "kubernetes-helm@latest",
     "kubectl@latest",
     "kind@latest",
-    "nodejs_22@latest",
+    "nodejs_24@latest",
     "watchexec@latest",
     "xorg.xorgserver@latest",
     "xdotool@latest",

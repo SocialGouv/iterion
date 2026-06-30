@@ -88,7 +88,7 @@ RUN case "$(uname -m)" in \
 # build and a partial install only flips the degraded flag at runtime.
 #
 # Requires Node.js 22+ (deepsec hard-requirement). Debian's apt `nodejs`
-# trails behind, so install the NodeSource Node 22 LTS deb and pin
+# trails behind, so install the NodeSource Node 24 LTS deb and pin
 # deepsec via build arg. npm install -g lands the `deepsec` binary on
 # /usr/local/bin which is already on PATH for uid 1000 (devbox).
 #
@@ -101,7 +101,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     --mount=type=cache,target=/root/.npm \
     { rm -f /etc/apt/apt.conf.d/docker-clean \
-        && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+        && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
         && npm install -g "deepsec@${DEEPSEC_VERSION}" ; } \
     || echo "deepsec Layer 4 setup did not complete — run_deepsec_scanner will degrade gracefully (enable_deepsec=true users should rebuild with a Node 22+ base or pre-install deepsec)."
@@ -127,7 +127,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     set -e; \
     command -v node >/dev/null 2>&1 || { \
         rm -f /etc/apt/apt.conf.d/docker-clean; \
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -; \
+        curl -fsSL https://deb.nodesource.com/setup_24.x | bash -; \
         apt-get install -y --no-install-recommends nodejs; }; \
     mkdir -p /opt/iterion-jsxray; \
     printf '%s\n' '{ "name": "iterion-jsxray", "private": true, "type": "module", "dependencies": { "@nodesecure/js-x-ray": "'"${JSXRAY_VERSION}"'" } }' > /opt/iterion-jsxray/package.json; \
