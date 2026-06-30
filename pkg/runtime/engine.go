@@ -1646,27 +1646,18 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 // stores the result as the node's output. It mirrors the standard execution
 // envelope (node_started → output → node_finished → checkpoint → edge select)
 // without invoking the executor backend.
-// execSubbot runs a SubbotNode: it resolves the `with:` mappings into the
-// child's input vars, acquires any `needs:` resource leases (passing the
-// leased instance id to the child as `_lease_<resource>`), invokes the
-// host-supplied SubbotRunner, and maps the child's terminal output to
-// outputs.<subbot>.<field>. The child is a full nested run, so it may contain
-// loops (unlike a fan-out branch).
-func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
-	startedPayload := map[string]interface{}{
-		"kind":      "subbot",
-		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
-		"source":    sn.Source,
-	}
-	if p := e.currentLoopIterationPath(nodeID, rs.loopCounters); p != "" {
-		startedPayload["iteration_path"] = p
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
-		return "", err
-	}
-
+// runSubbotChild resolves the subbot's `with:` mappings against the given scope,
+// acquires any `needs:` resource leases (surfacing each leased instance id to the
+// child as `_lease_<resource>`), and invokes the host-supplied SubbotRunner,
+// returning the child run's terminal output. It is the executor-agnostic core
+// shared by the main-graph path (execSubbot, scope = rs.scope()) and the fan-out
+// branch path (executeNodeForBranch, scope = the branch's merged-output scope) —
+// only the scope used to resolve `with:` differs, so a per-element subbot reads
+// {{outputs.<router>.<as>.<field>}}. It does NOT emit events, record outputs, or
+// advance edges; each caller does that in its own idiom.
+func (e *Engine) runSubbotChild(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode, sc resolveScope) (map[string]interface{}, error) {
 	if e.subbotRunner == nil {
-		return "", &RuntimeError{
+		return nil, &RuntimeError{
 			Code:    ErrCodeExecutionFailed,
 			Message: fmt.Sprintf("subbot %q: no SubbotRunner is wired", nodeID),
 			NodeID:  nodeID,
@@ -1675,7 +1666,6 @@ func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn
 	}
 
 	// Resolve the child's input vars from the `with:` mappings.
-	sc := rs.scope()
 	vars := make(map[string]interface{}, len(sn.With))
 	for _, dm := range sn.With {
 		vars[dm.Key] = e.resolveMapping(dm, sc)
@@ -1685,7 +1675,7 @@ func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn
 	// leased instance id so the child can pick e.g. its worktree index.
 	release, leases, lerr := e.acquireResources(ctx, rs, sn.Needs)
 	if lerr != nil {
-		return "", lerr
+		return nil, lerr
 	}
 	defer release()
 	for res, id := range leases {
@@ -1699,7 +1689,7 @@ func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn
 		NodeID:      nodeID,
 	})
 	if err != nil {
-		return "", &RuntimeError{
+		return nil, &RuntimeError{
 			Code:    ErrCodeExecutionFailed,
 			Message: fmt.Sprintf("subbot %q (source %q): %v", nodeID, sn.Source, err),
 			NodeID:  nodeID,
@@ -1708,6 +1698,30 @@ func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn
 	}
 	if output == nil {
 		output = map[string]interface{}{}
+	}
+	return output, nil
+}
+
+// execSubbot runs a SubbotNode on the main graph: it emits the node-started
+// event, runs the child via runSubbotChild (with the run scope), maps the child's
+// terminal output to outputs.<subbot>.<field>, and advances the edge. The child is
+// a full nested run, so it may contain loops (unlike a fan-out branch).
+func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
+	startedPayload := map[string]interface{}{
+		"kind":      "subbot",
+		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
+		"source":    sn.Source,
+	}
+	if p := e.currentLoopIterationPath(nodeID, rs.loopCounters); p != "" {
+		startedPayload["iteration_path"] = p
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
+		return "", err
+	}
+
+	output, err := e.runSubbotChild(ctx, rs, nodeID, sn, rs.scope())
+	if err != nil {
+		return "", err
 	}
 
 	rs.outputs[nodeID] = output

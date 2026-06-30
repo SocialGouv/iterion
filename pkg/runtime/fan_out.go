@@ -548,6 +548,28 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 			return nil, true
 		}
 		return output, false
+	case *ir.SubbotNode:
+		// A subbot is engine-special (a real nested run), like emit/wait — the
+		// model executor can't run it. Resolve `with:` against the branch's
+		// merged-output scope so {{outputs.<router>.<as>.<field>}} is available per
+		// element, then run the child via the shared subbot core.
+		output, serr := e.runSubbotChild(ctx, rs, currentNodeID, n, resolveScope{
+			vars:      rs.vars,
+			outputs:   merged,
+			runInputs: rs.runInputs,
+			artifacts: mergedArt,
+			rs:        rs,
+		})
+		if serr != nil {
+			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, serr)
+			return nil, true
+		}
+		result.outputs[currentNodeID] = output
+		if err := e.validateNodeOutput(currentNodeID, n, output); err != nil {
+			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
+			return nil, true
+		}
+		return output, false
 	}
 
 	nodeInput := e.buildNodeInputRS(currentNodeID, resolveScope{
