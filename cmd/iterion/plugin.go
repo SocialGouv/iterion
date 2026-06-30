@@ -162,7 +162,6 @@ the plugin's mcp/rewriter/lifecycle commands via {{config.<key>}}.
 	},
 }
 
-
 func pluginSetEnabledCmd(use string, enabled bool) *cobra.Command {
 	verb := "Enable"
 	if !enabled {
