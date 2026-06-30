@@ -225,6 +225,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		return err
 	}
 
+	// Wire the subbot runner so `subbot` nodes can run a child .bot as a
+	// nested run in the same store. Resolved relative to the parent .bot.
+	engineOpts = append(engineOpts, runtime.WithSubbotRunner(
+		subbotRunnerForCLI(iterFile, storeDir, s, logger, opts)))
+
 	eng := buildEngine(wf, s, executor, opts, wfHash, iterFile, runName, bundleHandle, engineOpts)
 
 	// Fold the bundle's file-based presets (presets/<name>.md) into the
@@ -398,6 +403,68 @@ func buildRunExecutor(
 		execSpec.ExtraHooks = append(execSpec.ExtraHooks, exporter.EventHooks())
 	}
 	return runview.BuildExecutor(execSpec)
+}
+
+// maxSubbotDepth bounds nested subbot recursion so a child that (directly or
+// transitively) runs its own parent can't blow the stack. The wall-clock
+// budget/timeout still applies; this is the structural backstop.
+const maxSubbotDepth = 8
+
+type subbotDepthKey struct{}
+
+// subbotRunnerForCLI builds the runtime.SubbotRunner used by `subbot` nodes in
+// CLI runs: it compiles the child .bot (resolved relative to the parent),
+// builds a child executor + engine sharing the parent's store, runs it with the
+// resolved `with:` data as inputs, and returns the child's terminal node
+// output (mapped to outputs.<subbot>.<field> by the engine).
+func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *iterlog.Logger, opts RunOptions) runtime.SubbotRunner {
+	parentDir := filepath.Dir(parentPath)
+	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]interface{}, error) {
+		depth, _ := ctx.Value(subbotDepthKey{}).(int)
+		if depth >= maxSubbotDepth {
+			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
+		}
+
+		childPath := req.Source
+		if !filepath.IsAbs(childPath) {
+			childPath = filepath.Join(parentDir, childPath)
+		}
+		childWf, hash, err := runview.CompileWorkflowWithHash(childPath)
+		if err != nil {
+			return nil, fmt.Errorf("compile child %q: %w", req.Source, err)
+		}
+		childRunID, err := store.GenerateRunID()
+		if err != nil {
+			return nil, err
+		}
+
+		childExec, err := buildRunExecutor(opts, childWf, s, childRunID, storeDir, logger, nil)
+		if err != nil {
+			return nil, err
+		}
+		if c, ok := childExec.(io.Closer); ok {
+			defer func() { _ = c.Close() }()
+		}
+
+		// Capture the child's terminal-node output (the last node before Done)
+		// as the subbot's result.
+		var last map[string]interface{}
+		childEng := runtime.New(childWf, s, childExec,
+			runtime.WithLogger(logger),
+			runtime.WithWorkflowHash(hash),
+			runtime.WithFilePath(childPath),
+			runtime.WithOnNodeFinished(func(_, _ string, out map[string]interface{}) {
+				if out != nil {
+					last = out
+				}
+			}),
+		)
+		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
+		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
+			return nil, err
+		}
+		return last, nil
+	}
 }
 
 // exporterEventHooks is the narrow subset of the Prometheus exporter

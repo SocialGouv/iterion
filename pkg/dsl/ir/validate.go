@@ -36,6 +36,7 @@ const (
 	DiagUseUnknownGroup          DiagCode = "C116" // use references a group that is not declared (error)
 	DiagUseParamMismatch         DiagCode = "C117" // use provides an unknown param, or omits a declared one (error)
 	DiagForeachConflictsLoop     DiagCode = "C118" // edge combines `as foreach` with `as <loop>` (error)
+	DiagSubbotNoSource           DiagCode = "C119" // subbot node without a `source:` child .bot (error)
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
 	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1

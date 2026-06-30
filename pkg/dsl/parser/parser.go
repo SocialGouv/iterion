@@ -91,7 +91,7 @@ func (p *parser) skipToNextTopLevel() {
 		case TokenVars, TokenPresets, TokenAttachments, TokenSecrets,
 			TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor,
 			TokenAgent, TokenJudge, TokenRouter, TokenHuman,
-			TokenTool, TokenCompute, TokenGroup, TokenUse, TokenWorkflow:
+			TokenTool, TokenCompute, TokenGroup, TokenUse, TokenSubbot, TokenWorkflow:
 			return
 		case TokenDedent:
 			p.next()
@@ -273,6 +273,12 @@ func (p *parser) parseFile() *ast.File {
 			ud := p.parseUseDecl()
 			if ud != nil {
 				f.Uses = append(f.Uses, ud)
+			}
+
+		case TokenSubbot:
+			sd := p.parseSubbotDecl()
+			if sd != nil {
+				f.Subbots = append(f.Subbots, sd)
 			}
 
 		case TokenWorkflow:
@@ -1908,6 +1914,53 @@ func (p *parser) parseUseDecl() *ast.UseDecl {
 	return ud
 }
 
+// parseSubbotDecl parses a sub-bot node:
+//
+//	subbot <name>:
+//	  source: "child.bot"
+//	  with: { var: "value", ... }
+//	  output: <schema>
+//	  needs: <resource>
+func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
+	start, name, ok := p.parseDeclHeader("subbot")
+	if !ok {
+		return nil
+	}
+	sd := &ast.SubbotDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch {
+		case t.Type == TokenOutput:
+			p.next()
+			p.expect(TokenColon)
+			sd.Output = p.expectIdent()
+		case t.Type == TokenWith:
+			sd.With = p.parseWithBlock()
+			p.skipNewlines()
+		case t.Type == TokenIdent && t.Value == "source":
+			p.next()
+			p.expect(TokenColon)
+			sd.Source = p.expectString()
+		case t.Type == TokenIdent && t.Value == "needs":
+			p.next()
+			p.expect(TokenColon)
+			sd.Needs = p.parseNeedsList()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown subbot property '"+t.Value+"'")
+			p.next()
+			p.skipToNewline()
+		}
+	}
+	return sd
+}
+
 func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 	start, name, ok := p.parseDeclHeader("workflow")
 	if !ok {
@@ -2753,7 +2806,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenPermission, TokenAllow, TokenAsk, TokenDeny,
 		TokenSandbox,
 		TokenCursor, TokenCursors, TokenValues, TokenBands,
-		TokenGroup, TokenUse,
+		TokenGroup, TokenUse, TokenSubbot,
 		TokenAttachments, TokenTypeFile, TokenTypeImage,
 		// secrets / sandbox-host-state / forge keywords usable as identifiers in name positions
 		TokenSecrets, TokenInheritIfAvailable, TokenProjectRoot, TokenVisibility,

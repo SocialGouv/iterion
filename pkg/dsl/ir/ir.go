@@ -75,6 +75,7 @@ const (
 	NodeHuman                   // human pause/resume
 	NodeTool                    // direct command execution (no LLM)
 	NodeCompute                 // deterministic expression evaluation (no LLM, no shell)
+	NodeSubbot                  // runs another .bot as a nested run
 	NodeDone                    // terminal: success
 	NodeFail                    // terminal: failure
 )
@@ -93,6 +94,8 @@ func (k NodeKind) String() string {
 		return "tool"
 	case NodeCompute:
 		return "compute"
+	case NodeSubbot:
+		return "subbot"
 	case NodeDone:
 		return "done"
 	case NodeFail:
@@ -121,6 +124,8 @@ func NodeNeeds(n Node) []string {
 	case *RouterNode:
 		return x.Needs
 	case *ToolNode:
+		return x.Needs
+	case *SubbotNode:
 		return x.Needs
 	default:
 		return nil
@@ -331,6 +336,22 @@ type RecoverySpec struct {
 	Model             string   // recovery LLM spec (empty = node/workflow default)
 	AgentTools        []string // rung-4 toolset (empty = node capabilities)
 }
+
+// SubbotNode runs another .bot as a nested run. The runtime resolves With into
+// the child's input vars, invokes the host-supplied SubbotRunner (which
+// compiles + runs the child in the same store), and maps the child's terminal
+// output to outputs.<subbot>.<field>. The child is a real run, so unlike a
+// fan-out branch it may contain loops.
+type SubbotNode struct {
+	BaseNode
+	Source       string         // path/ref to the child .bot (relative to the parent workdir)
+	With         []*DataMapping // vars passed to the child run (key = child var name)
+	OutputSchema string         // schema reference describing the child's terminal output
+	Needs        []string       // resource names acquired before running the child
+}
+
+// NodeKind implements Node.
+func (n *SubbotNode) NodeKind() NodeKind { return NodeSubbot }
 
 // NodeKind implements Node.
 func (n *ToolNode) NodeKind() NodeKind { return NodeTool }

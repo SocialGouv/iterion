@@ -342,6 +342,9 @@ func (c *compiler) validateNodeNames() {
 	for _, d := range c.file.Computes {
 		all = append(all, decl{"compute", d.Name})
 	}
+	for _, d := range c.file.Subbots {
+		all = append(all, decl{"subbot", d.Name})
+	}
 
 	seen := make(map[string]string, len(all)) // name → first kind to claim it
 	for _, d := range all {
@@ -434,6 +437,7 @@ func (c *compiler) compile() *Workflow {
 	c.compileHumans()
 	c.compileTools()
 	c.compileComputes()
+	c.compileSubbots()
 
 	// Add terminal nodes. Safe by construction now: validateNodeNames
 	// above rejects any user node named "done"/"fail" before this point.
@@ -1210,6 +1214,38 @@ func (c *compiler) compileComputes() {
 			Publish:       cd.Publish,
 			PublishLabels: cd.ArtifactLabels,
 			AwaitMode:     cd.Await,
+		}
+	}
+}
+
+func (c *compiler) compileSubbots() {
+	for _, sd := range c.file.Subbots {
+		if _, exists := c.nodes[sd.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[sd.Name] {
+			continue
+		}
+		if sd.Source == "" {
+			c.errorfAt(DiagSubbotNoSource, sd.Name, "", "subbot %q has no `source:` — a child .bot path is required", sd.Name)
+		}
+		if sd.Output != "" {
+			c.validateSchemaRef(sd.Name, "output", sd.Output)
+		}
+		with := make([]*DataMapping, 0, len(sd.With))
+		for _, w := range sd.With {
+			refs, err := ParseRefs(w.Value)
+			if err != nil {
+				c.errorfAt(DiagBadTemplateRef, sd.Name, "", "subbot %q with key %q: %v", sd.Name, w.Key, err)
+			}
+			with = append(with, &DataMapping{Key: w.Key, Refs: refs, Raw: w.Value})
+		}
+		c.nodes[sd.Name] = &SubbotNode{
+			BaseNode:     BaseNode{ID: sd.Name},
+			Source:       sd.Source,
+			With:         with,
+			OutputSchema: sd.Output,
+			Needs:        sd.Needs,
 		}
 	}
 }

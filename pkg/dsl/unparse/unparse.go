@@ -33,6 +33,7 @@ func Unparse(f *ast.File) string {
 	w.writeHumans(f.Humans)
 	w.writeTools(f.Tools)
 	w.writeComputes(f.Computes)
+	w.writeSubbots(f.Subbots)
 	w.writeWorkflows(f.Workflows)
 	return w.b.String()
 }
@@ -428,6 +429,29 @@ func writeRecoveryBlock(b *strings.Builder, r *ast.RecoveryBlock, indent string)
 	}
 	if len(r.AgentTools) > 0 {
 		fmt.Fprintf(b, "%sagent_tools: [%s]\n", inner, strings.Join(r.AgentTools, ", "))
+	}
+}
+
+func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
+	for _, s := range subbots {
+		w.blankLine()
+		fmt.Fprintf(&w.b, "subbot %s:\n", s.Name)
+		if s.Source != "" {
+			writeQuotedProp(&w.b, "source", s.Source)
+		}
+		if len(s.With) > 0 {
+			w.b.WriteString("  with {\n")
+			for _, e := range s.With {
+				fmt.Fprintf(&w.b, "    %s: %q,\n", e.Key, e.Value)
+			}
+			w.b.WriteString("  }\n")
+		}
+		if s.Output != "" {
+			writeProp(&w.b, "output", s.Output)
+		}
+		if len(s.Needs) > 0 {
+			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(s.Needs, ", "))
+		}
 	}
 }
 

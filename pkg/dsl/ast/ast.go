@@ -25,6 +25,7 @@ type File struct {
 	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
 	Groups      []*GroupDecl      // reusable node-cluster declarations (compile-time macros)
 	Uses        []*UseDecl        // group instantiations (`use <group> as <prefix>`)
+	Subbots     []*SubbotDecl     // sub-bot node declarations (run another .bot as a nested run)
 	Workflows   []*WorkflowDecl   // workflow declarations
 	Comments    []*Comment        // top-level comments (## ...)
 	Span        Span
@@ -55,6 +56,25 @@ type UseDecl struct {
 	Group  string
 	Prefix string
 	With   []*WithEntry // parameter bindings (key = param name, value = template/literal)
+	Span   Span
+}
+
+// SubbotDecl is a graph node that runs another `.bot` as a nested run:
+//
+//	subbot run_ticket:
+//	  source: "child.bot"
+//	  with: { issue: "{{input.id}}" }
+//	  output: ticket_verdict
+//	  needs: worktree_slot
+//
+// The child executes as a real run (it may contain loops); its terminal
+// output is mapped back to `outputs.<subbot>.<field>`.
+type SubbotDecl struct {
+	Name   string
+	Source string       // path/ref to the child .bot (relative to the parent's workdir)
+	With   []*WithEntry // vars passed to the child run (key = var name)
+	Output string       // schema reference describing the child's terminal output
+	Needs  []string     // named resource leases held while the child runs
 	Span   Span
 }
 

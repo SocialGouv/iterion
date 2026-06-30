@@ -170,6 +170,8 @@ const (
 	// Group declaration (reusable node-cluster macro) + use instantiation
 	TokenGroup
 	TokenUse
+	// Subbot node (runs another .bot as a nested run)
+	TokenSubbot
 	// Supervisor declaration (concurrent node-watcher)
 	TokenSupervisor
 	// Terminal node names (reserved identifiers)
@@ -318,6 +320,7 @@ var tokenNames = map[TokenType]string{
 	TokenCursor:           "cursor",
 	TokenGroup:            "group",
 	TokenUse:              "use",
+	TokenSubbot:           "subbot",
 	TokenSupervisor:       "supervisor",
 	TokenCursors:          "cursors",
 	TokenValues:           "values",
@@ -449,6 +452,7 @@ var keywords = map[string]TokenType{
 	"cursor":                TokenCursor,
 	"group":                 TokenGroup,
 	"use":                   TokenUse,
+	"subbot":                TokenSubbot,
 	"supervisor":            TokenSupervisor,
 	"cursors":               TokenCursors,
 	"values":                TokenValues,
