@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import type { ReactNode } from "react";
+import { useLocation } from "wouter";
 
 import Sidebar from "./Sidebar";
 import ContextualHeaderBar from "./ContextualHeaderBar";
@@ -22,6 +23,13 @@ interface AppShellProps {
 // main content" link, since there's nothing to skip past.
 export default function AppShell({ children }: AppShellProps) {
   const expanded = useUIStore((s) => s.expanded);
+  const [location] = useLocation();
+  // Key the content wrapper by the top-level view segment (not the full
+  // path) so switching views (/runs → /board) plays a gentle opacity
+  // fade, while intra-view URL churn (run id, selected node, ?file=)
+  // does NOT re-trigger it. Opacity-only — the translateY fade would
+  // flash the scrollbar on edge-pinned panels (see app.css).
+  const viewKey = location === "/" ? "home" : location.split("/")[1] || "home";
 
   if (expanded) {
     return (
@@ -43,7 +51,9 @@ export default function AppShell({ children }: AppShellProps) {
       <div className="flex-1 min-w-0 flex flex-col">
         <ContextualHeaderBar />
         <main id="main-content" className="flex-1 min-h-0 overflow-hidden">
-          <Suspense fallback={<MainSpinner />}>{children}</Suspense>
+          <div key={viewKey} className="h-full min-h-0 animate-fade-in-opacity">
+            <Suspense fallback={<MainSpinner />}>{children}</Suspense>
+          </div>
         </main>
       </div>
     </div>

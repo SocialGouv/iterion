@@ -45,9 +45,23 @@ export function EmptyState({
     <div
       className={`flex h-full flex-col items-center justify-center gap-2 px-3 py-8 text-center text-xs text-fg-subtle ${className}`.trim()}
     >
-      {icon && <span aria-hidden>{icon}</span>}
+      {icon &&
+        (title ? (
+          // Rich/hero empty state: seat the glyph in a soft elevated chip so
+          // a zero-data landing reads as a deliberate surface, not a 404.
+          <span
+            aria-hidden
+            className="mb-1 flex h-12 w-12 items-center justify-center rounded-[var(--radius-lg)] border border-border-default bg-surface-2 text-fg-subtle shadow-[var(--shadow-sm)]"
+          >
+            {icon}
+          </span>
+        ) : (
+          <span aria-hidden>{icon}</span>
+        ))}
       {title && (
-        <div className="text-sm font-medium text-fg-default">{title}</div>
+        <div className="text-display font-semibold tracking-tight text-fg-default">
+          {title}
+        </div>
       )}
       {(hasMessage || caret) && (
         <div className={title ? "max-w-sm" : ""}>

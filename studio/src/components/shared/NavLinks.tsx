@@ -108,68 +108,95 @@ export default function NavLinks({ collapsed }: Props) {
   const alertUnseen = useUIStore((s) => s.alertUnseen);
   const clearAlertUnseen = useUIStore((s) => s.clearAlertUnseen);
 
-  const links: LinkDef[] = [...BASE_LINKS];
+  // Primary nav is organised into labelled groups so the rail reads as a
+  // hierarchy instead of a flat list: Workspace (author + run), Operate
+  // (the kanban / dispatch / automation control surfaces), and Extend
+  // (marketplace + plugins). Manage (Integrations / Admin) only appears in
+  // cloud mode. Each group's links are still gated by the same serverInfo
+  // flags as before — empty groups drop out entirely.
+  const operate: LinkDef[] = [];
   if (info?.native_tracker_enabled) {
-    links.push({ section: "board", href: "/board", label: "Board", icon: ViewGridIcon });
+    operate.push({ section: "board", href: "/board", label: "Board", icon: ViewGridIcon });
   }
   if (info?.dispatcher_enabled) {
-    links.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });
+    operate.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });
   }
   if (info?.triggers_enabled) {
-    links.push({ section: "triggers", href: "/triggers", label: "Automations", icon: LightningBoltIcon });
-  }
-  if (info?.marketplace_enabled) {
-    links.push({ section: "marketplace", href: "/marketplace", label: "Marketplace", icon: ArchiveIcon });
-  }
-  if (info?.plugins_enabled) {
-    links.push({ section: "plugins", href: "/plugins", label: "Plugins", icon: Component1Icon });
-  }
-  // Neither the org nor the team is a primary nav entry: the org lives in the
-  // OrgSwitcher (top), team settings in the account chip ("Team settings"). The
-  // old team-name entry sat between Marketplace and Integrations and both
-  // duplicated Integrations (same team page) and read as the org name.
-  // Integrations stays — the valued "connect a repo / enable a bot" shortcut.
-  // Cloud-only (the forge stores are wired only in cloud mode).
-  if (activeTeam && info?.mode === "cloud") {
-    links.push({
-      section: "integrations",
-      href: "/integrations",
-      label: "Integrations",
-      icon: Link2Icon,
-    });
-  }
-  // Admin section: super-admins, and only in cloud mode. /admin/orgs is the
-  // org/tenant console, a cloud-only concept whose API isn't registered in
-  // local/desktop mode — surfacing the link there leads to a dead page.
-  if (user?.is_super_admin && info?.mode === "cloud") {
-    links.push({ section: "admin", href: "/admin/orgs", label: "Admin", icon: GearIcon });
+    operate.push({ section: "triggers", href: "/triggers", label: "Automations", icon: LightningBoltIcon });
   }
 
+  const extend: LinkDef[] = [];
+  if (info?.marketplace_enabled) {
+    extend.push({ section: "marketplace", href: "/marketplace", label: "Marketplace", icon: ArchiveIcon });
+  }
+  if (info?.plugins_enabled) {
+    extend.push({ section: "plugins", href: "/plugins", label: "Plugins", icon: Component1Icon });
+  }
+
+  // Neither the org nor the team is a primary nav entry: the org lives in the
+  // OrgSwitcher (top), team settings in the account chip ("Team settings").
+  // Integrations stays — the valued "connect a repo / enable a bot" shortcut.
+  // Both are cloud-only (the forge stores are wired only in cloud mode).
+  const manage: LinkDef[] = [];
+  if (activeTeam && info?.mode === "cloud") {
+    manage.push({ section: "integrations", href: "/integrations", label: "Integrations", icon: Link2Icon });
+  }
+  // Admin: super-admins only, cloud mode only (/admin/orgs is a cloud-only
+  // console whose API isn't registered in local/desktop mode).
+  if (user?.is_super_admin && info?.mode === "cloud") {
+    manage.push({ section: "admin", href: "/admin/orgs", label: "Admin", icon: GearIcon });
+  }
+
+  const groups: { label?: string; links: LinkDef[] }[] = [
+    { links: BASE_LINKS },
+    { label: "Operate", links: operate },
+    { label: "Extend", links: extend },
+    { label: "Manage", links: manage },
+  ].filter((g) => g.links.length > 0);
+
   return (
-    <nav className="flex flex-col gap-0.5" aria-label="Primary navigation">
-      {links.map(({ section, href, label, icon: Icon }) => {
-        const isActive = active === section;
-        const withSublist =
-          !collapsed && (section === "editor" || section === "runs");
-        // Run-health alert dot rides the Runs entry: an operator who
-        // looked away sees a run needs attention. Acknowledged (cleared)
-        // when they click into the Runs section.
-        const showAlertDot = section === "runs" && alertUnseen > 0;
-        return (
-          <div key={section} className="flex flex-col gap-0.5">
-            <NavRow
-              href={href}
-              label={label}
-              icon={Icon}
-              isActive={isActive}
-              collapsed={collapsed}
-              sublistKind={withSublist ? section : null}
-              showAlertDot={showAlertDot}
-              onNavClick={section === "runs" ? clearAlertUnseen : undefined}
-            />
-          </div>
-        );
-      })}
+    <nav className="flex flex-col gap-3" aria-label="Primary navigation">
+      {groups.map((group, gi) => (
+        <div key={group.label ?? "workspace"} className="flex flex-col gap-0.5">
+          {group.label &&
+            (collapsed ? (
+              // Collapsed: a hairline divider stands in for the caption so
+              // the grouping survives the icon-only rail.
+              gi > 0 && (
+                <div
+                  className="mx-auto mb-1 h-px w-5 bg-border-default"
+                  aria-hidden="true"
+                />
+              )
+            ) : (
+              <div className="px-2 pb-0.5 pt-1 text-caption font-semibold uppercase tracking-wider text-fg-subtle">
+                {group.label}
+              </div>
+            ))}
+          {group.links.map(({ section, href, label, icon: Icon }) => {
+            const isActive = active === section;
+            const withSublist =
+              !collapsed && (section === "editor" || section === "runs");
+            // Run-health alert dot rides the Runs entry: an operator who
+            // looked away sees a run needs attention. Acknowledged (cleared)
+            // when they click into the Runs section.
+            const showAlertDot = section === "runs" && alertUnseen > 0;
+            return (
+              <NavRow
+                key={section}
+                href={href}
+                label={label}
+                icon={Icon}
+                isActive={isActive}
+                collapsed={collapsed}
+                sublistKind={withSublist ? section : null}
+                showAlertDot={showAlertDot}
+                onNavClick={section === "runs" ? clearAlertUnseen : undefined}
+              />
+            );
+          })}
+        </div>
+      ))}
     </nav>
   );
 }
@@ -200,11 +227,12 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
     sublistKind ? readBooleanFlag(storageKey) : true,
   );
 
-  const base = "inline-flex items-center text-xs rounded border transition-colors";
+  const base =
+    "inline-flex items-center text-xs rounded-[var(--radius-md)] transition-[background-color,color] duration-[var(--motion-fast)] ease-[var(--motion-ease)]";
   const layout = collapsed ? "justify-center h-8 w-full" : "gap-2 px-2 py-1.5";
   const state = isActive
-    ? "border-accent/40 bg-accent-soft text-fg-default"
-    : "border-transparent text-fg-muted hover:bg-surface-2 hover:text-fg-default";
+    ? "bg-accent-soft text-fg-default font-medium"
+    : "text-fg-muted hover:bg-surface-2 hover:text-fg-default";
 
   const toggle = () => {
     setFolded((f) => {
@@ -217,6 +245,15 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
   return (
     <>
       <div className={`${base} ${layout} ${state} ${collapsed ? "" : "flex"} relative`}>
+        {/* Signature "you are here" indicator: a short accent bar pinned to
+            the left edge of the active row (expanded only — the collapsed
+            rail relies on the accent-soft fill + tinted icon instead). */}
+        {isActive && !collapsed && (
+          <span
+            className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full bg-accent"
+            aria-hidden="true"
+          />
+        )}
         <Link
           href={href}
           className={`inline-flex items-center gap-2 min-w-0 flex-1 focus:outline-none ${collapsed ? "justify-center" : ""}`}
@@ -226,7 +263,9 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
           onClick={onNavClick}
         >
           <span className="relative inline-flex shrink-0">
-            <Icon className="w-3.5 h-3.5 shrink-0" />
+            <Icon
+              className={`w-3.5 h-3.5 shrink-0 ${isActive ? "text-accent-text" : ""}`}
+            />
             {showAlertDot && (
               <span
                 className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-danger ring-2 ring-surface-1"
