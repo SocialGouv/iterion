@@ -23,9 +23,39 @@ type File struct {
 	Humans      []*HumanDecl      // human node declarations
 	Tools       []*ToolNodeDecl   // tool node declarations (direct execution, no LLM)
 	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
+	Groups      []*GroupDecl      // reusable node-cluster declarations (compile-time macros)
+	Uses        []*UseDecl        // group instantiations (`use <group> as <prefix>`)
 	Workflows   []*WorkflowDecl   // workflow declarations
 	Comments    []*Comment        // top-level comments (## ...)
 	Span        Span
+}
+
+// GroupDecl is a reusable cluster of nodes + internal edges, parameterised by
+// Params and instantiated by a UseDecl. It is purely a compile-time macro:
+// `expandGroups` clones each node with a `<prefix>.<name>` ID, rewrites the
+// internal edges, and substitutes `{{params.X}}` before the IR compiler runs,
+// so groups never reach the runtime.
+type GroupDecl struct {
+	Name     string
+	Params   []string
+	Agents   []*AgentDecl
+	Judges   []*JudgeDecl
+	Routers  []*RouterDecl
+	Humans   []*HumanDecl
+	Tools    []*ToolNodeDecl
+	Computes []*ComputeDecl
+	Edges    []*Edge
+	Span     Span
+}
+
+// UseDecl instantiates a GroupDecl: `use <Group> as <Prefix> with { p: v }`.
+// Each instance's nodes get IDs `<Prefix>.<nodeName>`; external edges address
+// them with that dotted reference.
+type UseDecl struct {
+	Group  string
+	Prefix string
+	With   []*WithEntry // parameter bindings (key = param name, value = template/literal)
+	Span   Span
 }
 
 // ---------------------------------------------------------------------------

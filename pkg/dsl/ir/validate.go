@@ -33,6 +33,8 @@ const (
 	DiagFanOutEachMissingOver    DiagCode = "C113" // fan_out_each router without an 'over:' array source (was C102, clashed with DiagInvalidRTK on main)
 	DiagFanOutEachOnlyProperty   DiagCode = "C114" // 'over'/'as'/'key'/'depends_on' property on a non-fan_out_each router (was C103)
 	DiagFanOutEachEdges          DiagCode = "C115" // fan_out_each router must have exactly one outgoing template edge (was C104)
+	DiagUseUnknownGroup          DiagCode = "C116" // use references a group that is not declared (error)
+	DiagUseParamMismatch         DiagCode = "C117" // use provides an unknown param, or omits a declared one (error)
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
 	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1

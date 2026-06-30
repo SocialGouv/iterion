@@ -392,6 +392,11 @@ func (c *compiler) compile() *Workflow {
 		c.errorf(DiagMultipleWorkflow, "multiple workflows not supported in V1; found %d", len(c.file.Workflows))
 	}
 
+	// Expand `use <group>` instantiations into concrete prefixed nodes +
+	// edges BEFORE any node compile pass, so groups are a pure compile-time
+	// macro (never reaching the IR or runtime).
+	c.expandGroups()
+
 	// Compile shared declarations.
 	c.compileMCPServers()
 	c.compileSchemas()

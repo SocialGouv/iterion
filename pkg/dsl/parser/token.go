@@ -167,6 +167,9 @@ const (
 	TokenCursors
 	TokenValues
 	TokenBands
+	// Group declaration (reusable node-cluster macro) + use instantiation
+	TokenGroup
+	TokenUse
 	// Supervisor declaration (concurrent node-watcher)
 	TokenSupervisor
 	// Terminal node names (reserved identifiers)
@@ -313,6 +316,8 @@ var tokenNames = map[TokenType]string{
 	TokenDeny:             "deny",
 	TokenSandbox:          "sandbox",
 	TokenCursor:           "cursor",
+	TokenGroup:            "group",
+	TokenUse:              "use",
 	TokenSupervisor:       "supervisor",
 	TokenCursors:          "cursors",
 	TokenValues:           "values",
@@ -442,6 +447,8 @@ var keywords = map[string]TokenType{
 	"deny":                  TokenDeny,
 	"sandbox":               TokenSandbox,
 	"cursor":                TokenCursor,
+	"group":                 TokenGroup,
+	"use":                   TokenUse,
 	"supervisor":            TokenSupervisor,
 	"cursors":               TokenCursors,
 	"values":                TokenValues,

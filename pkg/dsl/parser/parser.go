@@ -91,7 +91,7 @@ func (p *parser) skipToNextTopLevel() {
 		case TokenVars, TokenPresets, TokenAttachments, TokenSecrets,
 			TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor,
 			TokenAgent, TokenJudge, TokenRouter, TokenHuman,
-			TokenTool, TokenCompute, TokenWorkflow:
+			TokenTool, TokenCompute, TokenGroup, TokenUse, TokenWorkflow:
 			return
 		case TokenDedent:
 			p.next()
@@ -261,6 +261,18 @@ func (p *parser) parseFile() *ast.File {
 		case TokenCompute:
 			if cd := p.parseComputeDecl(); cd != nil && !p.isReservedName(t, cd.Name, "compute") {
 				f.Computes = append(f.Computes, cd)
+			}
+
+		case TokenGroup:
+			gd := p.parseGroupDecl()
+			if gd != nil {
+				f.Groups = append(f.Groups, gd)
+			}
+
+		case TokenUse:
+			ud := p.parseUseDecl()
+			if ud != nil {
+				f.Uses = append(f.Uses, ud)
 			}
 
 		case TokenWorkflow:
@@ -1784,6 +1796,118 @@ func (p *parser) parseComputeExprBlock() []*ast.ComputeExpr {
 
 // ---- workflow ----
 
+// parseGroupDecl parses a reusable node-cluster:
+//
+//	group <name>(<param>, ...):
+//	  <agent|judge|router|human|tool|compute decls>
+//	  <internal edges>
+func (p *parser) parseGroupDecl() *ast.GroupDecl {
+	start := p.next() // consume "group"
+	nameT := p.next()
+	name := tokenAsIdent(nameT)
+	if name == "" {
+		p.addError(DiagExpectedToken, nameT, "expected group name")
+		p.skipToNextTopLevel()
+		return nil
+	}
+	gd := &ast.GroupDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+
+	// Optional parameter list: (p1, p2, ...)
+	if p.peek().Type == TokenLParen {
+		p.next()
+		for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF && p.peek().Type != TokenNewline {
+			pn := tokenAsIdent(p.next())
+			if pn != "" {
+				gd.Params = append(gd.Params, pn)
+			}
+			if p.peek().Type == TokenComma {
+				p.next()
+			}
+		}
+		p.expect(TokenRParen)
+	}
+
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return gd
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch t.Type {
+		case TokenAgent:
+			if ad := p.parseAgentDecl(); ad != nil {
+				gd.Agents = append(gd.Agents, ad)
+			}
+		case TokenJudge:
+			if jd := p.parseJudgeDecl(); jd != nil {
+				gd.Judges = append(gd.Judges, jd)
+			}
+		case TokenRouter:
+			if rd := p.parseRouterDecl(); rd != nil {
+				gd.Routers = append(gd.Routers, rd)
+			}
+		case TokenHuman:
+			if hd := p.parseHumanDecl(); hd != nil {
+				gd.Humans = append(gd.Humans, hd)
+			}
+		case TokenTool:
+			if td := p.parseToolNodeDecl(); td != nil {
+				gd.Tools = append(gd.Tools, td)
+			}
+		case TokenCompute:
+			if cd := p.parseComputeDecl(); cd != nil {
+				gd.Computes = append(gd.Computes, cd)
+			}
+		case TokenComment:
+			p.next()
+		default:
+			if t.Type == TokenIdent || isKeywordToken(t.Type) {
+				if e := p.parseEdge(); e != nil {
+					gd.Edges = append(gd.Edges, e)
+				}
+			} else {
+				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in group body")
+				p.next()
+			}
+		}
+	}
+	return gd
+}
+
+// parseUseDecl parses a group instantiation:
+//
+//	use <group> as <prefix> [with { <param>: "<value>", ... }]
+func (p *parser) parseUseDecl() *ast.UseDecl {
+	start := p.next() // consume "use"
+	group := tokenAsIdent(p.next())
+	ud := &ast.UseDecl{Group: group, Span: ast.Span{Start: p.pos(start)}}
+	if group == "" {
+		p.addError(DiagExpectedToken, p.peek(), "expected group name after 'use'")
+		p.skipToNewline()
+		return ud
+	}
+	if p.peek().Type == TokenAs {
+		p.next()
+		ud.Prefix = p.expectIdent()
+	} else {
+		p.addError(DiagExpectedToken, p.peek(), "expected 'as <prefix>' after 'use "+group+"'")
+	}
+	if p.peek().Type == TokenWith {
+		ud.With = p.parseWithBlock()
+	}
+	p.skipNewlines()
+	return ud
+}
+
 func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 	start, name, ok := p.parseDeclHeader("workflow")
 	if !ok {
@@ -2135,9 +2259,29 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 
 // ---- edge ----
 
+// continueDottedRef extends an already-read identifier with any following
+// `.ident` segments, yielding a dotted node reference like `r1.check` used to
+// address a node instantiated by a group `use ... as <prefix>`. A plain
+// single-ident endpoint (the common case) returns unchanged.
+func (p *parser) continueDottedRef(head string) string {
+	if head == "" {
+		return ""
+	}
+	for p.peek().Type == TokenDot {
+		p.next() // consume '.'
+		seg := tokenAsIdent(p.next())
+		if seg == "" {
+			p.addError(DiagExpectedToken, p.peek(), "expected identifier after '.' in node reference")
+			break
+		}
+		head += "." + seg
+	}
+	return head
+}
+
 func (p *parser) parseEdge() *ast.Edge {
 	fromT := p.next()
-	from := tokenAsIdent(fromT)
+	from := p.continueDottedRef(tokenAsIdent(fromT))
 	if from == "" {
 		p.addError(DiagExpectedToken, fromT, "expected source node name in edge")
 		p.skipToNewline()
@@ -2150,7 +2294,7 @@ func (p *parser) parseEdge() *ast.Edge {
 	}
 
 	toT := p.next()
-	to := tokenAsIdent(toT)
+	to := p.continueDottedRef(tokenAsIdent(toT))
 	if to == "" {
 		p.addError(DiagExpectedToken, toT, "expected target node name in edge")
 		p.skipToNewline()
@@ -2571,6 +2715,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenPermission, TokenAllow, TokenAsk, TokenDeny,
 		TokenSandbox,
 		TokenCursor, TokenCursors, TokenValues, TokenBands,
+		TokenGroup, TokenUse,
 		TokenAttachments, TokenTypeFile, TokenTypeImage,
 		// secrets / sandbox-host-state / forge keywords usable as identifiers in name positions
 		TokenSecrets, TokenInheritIfAvailable, TokenProjectRoot, TokenVisibility,
