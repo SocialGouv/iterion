@@ -212,7 +212,13 @@ function WiringGuide({
   canManage: boolean;
 }) {
   const wired = forgeConnected && repoEnabled;
-  const [open, setOpen] = useState(!wired);
+  // Default state follows `wired` (collapsed once a forge + repo are wired),
+  // but a manual expand/collapse wins. Tracking an override rather than seeding
+  // useState(!wired) matters because the forge data loads async: at first
+  // render `wired` is always false, so a plain initial state would never
+  // collapse for an already-wired team once its data arrives.
+  const [override, setOverride] = useState<boolean | null>(null);
+  const open = override ?? !wired;
 
   if (wired && !open) {
     return (
@@ -225,7 +231,7 @@ function WiringGuide({
         </span>
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => setOverride(true)}
           className="text-caption text-fg-subtle hover:text-fg-default shrink-0"
         >
           How it works
@@ -246,7 +252,7 @@ function WiringGuide({
         {wired && (
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={() => setOverride(false)}
             className="text-caption text-fg-subtle hover:text-fg-default shrink-0"
           >
             Hide
