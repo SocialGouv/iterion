@@ -70,9 +70,12 @@ Inside the body: `{{each.scan.item}}` (drills into object fields, e.g.
 
 - Use `foreach` for **ordered / stateful** iteration; use `fan_out_each` for an
   **independent parallel map**.
-- The element is resolved against the current index *every iteration* — a node
-  references `{{each.scan.item}}` in its own prompt/command, so the first
-  iteration (entered via the forward edge) sees the element too.
+- The element is resolved against the current index *every iteration*. A node
+  references `{{each.scan.item}}` in its own prompt/command (resolved at execution,
+  regardless of which edge entered it), so the first iteration — entered via the
+  forward edge — sees the element too. Data flow is **edge-driven**: if instead
+  you thread the element through an edge `with { ... }`, bind it on *both* the
+  forward-entry and the back-edge (they are separate data flows).
 - An empty collection runs the body once (the forward-entry run) with
   `each.<name>.empty == true`; gate with `when not each.<name>.empty` if the
   body must not run on an empty list.

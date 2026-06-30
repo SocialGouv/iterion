@@ -925,7 +925,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 		if edge.ForeachName != "" {
 			if fe, ok := e.workflow.Foreaches[edge.ForeachName]; ok {
 				count := len(e.resolveForeachCollection(fe, rs.scope()))
-				if idx := rs.loopCounters[edge.ForeachName]; idx+1 >= count {
+				if idx := rs.loopCounters[foreachCounterKey(edge.ForeachName)]; idx+1 >= count {
 					e.logger.Warn("%s: node %q: edge to %q skipped — foreach %q exhausted (%d/%d)",
 						logPrefix, fromNodeID, edge.To, edge.ForeachName, idx+1, count)
 					continue

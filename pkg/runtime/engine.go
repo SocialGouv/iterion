@@ -1822,7 +1822,8 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 	if selected.ForeachName != "" {
 		// Advancing to the next element: bump the foreach index (shares the
 		// loopCounters map under the foreach name; distinct namespaces).
-		rs.loopCounters[selected.ForeachName] = rs.loopCounters[selected.ForeachName] + 1
+		k := foreachCounterKey(selected.ForeachName)
+		rs.loopCounters[k] = rs.loopCounters[k] + 1
 	}
 
 	if selected.LoopName != "" {
@@ -2007,36 +2008,26 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 		if len(ref.Path) == 0 {
 			return nil
 		}
-		nodeOut := sc.outputs[ref.Path[0]]
-		// Group-instance nodes have dotted ids (`prefix.name`), which collide
-		// with the dotted ref grammar: {{outputs.r1.gate.id}} parses as
-		// [r1, gate, id]. When the single-segment node isn't found, try the
-		// two-segment id `Path[0].Path[1]` and treat the rest as the field path.
-		if nodeOut == nil && len(ref.Path) >= 2 {
-			if joined := sc.outputs[ref.Path[0]+"."+ref.Path[1]]; joined != nil {
-				if len(ref.Path) == 2 {
-					return joined
-				}
-				if len(ref.Path) == 3 {
-					return joined[ref.Path[2]]
-				}
-				return drillPath(joined[ref.Path[2]], ref.Path[3:])
-			}
-		}
+		// Resolve the node id as the LONGEST dotted prefix of the path that is
+		// an actual output key. Group-instance nodes have dotted ids
+		// (`prefix.name`), which collide with the dotted ref grammar:
+		// {{outputs.r1.gate.id}} parses as [r1, gate, id] but the node is
+		// "r1.gate". Longest-prefix-match disambiguates this for any nesting
+		// depth (the field path is whatever follows the matched id).
+		nodeOut, fieldPath := matchOutputNode(sc.outputs, ref.Path)
 		if nodeOut == nil {
 			return nil
 		}
-		if len(ref.Path) == 1 {
+		if len(fieldPath) == 0 {
 			return nodeOut
 		}
-		if len(ref.Path) == 2 {
-			return nodeOut[ref.Path[1]]
+		if len(fieldPath) == 1 {
+			return nodeOut[fieldPath[0]]
 		}
 		// Deep path {{outputs.node.field.sub…}} — drill into nested maps
 		// (e.g. a per-item object surfaced by fan_out_each:
-		// {{outputs.dispatch.item.is_code}}). Previously this truncated to
-		// the level-2 value, silently dropping the remaining keys.
-		return drillPath(nodeOut[ref.Path[1]], ref.Path[2:])
+		// {{outputs.dispatch.item.is_code}}).
+		return drillPath(nodeOut[fieldPath[0]], fieldPath[1:])
 	case ir.RefArtifacts:
 		if len(ref.Path) > 0 {
 			return sc.artifacts[ref.Path[0]]
@@ -2079,7 +2070,7 @@ func (e *Engine) resolveEachPath(path []string, sc resolveScope) interface{} {
 		return nil
 	}
 	coll := e.resolveForeachCollection(fe, sc)
-	idx := sc.rs.loopCounters[name]
+	idx := sc.rs.loopCounters[foreachCounterKey(name)]
 	count := len(coll)
 	switch path[1] {
 	case "item":
@@ -2104,27 +2095,24 @@ func (e *Engine) resolveEachPath(path []string, sc resolveScope) interface{} {
 	return nil
 }
 
-// resolveForeachCollection resolves a foreach's collection template to a slice.
-// A JSON-string collection (a tool printing its array as text) is unmarshalled;
-// a non-array resolves to an empty slice.
+// foreachCounterKey namespaces a foreach's index inside the shared
+// rs.loopCounters map so a foreach name can never collide with a loop of the
+// same name (the "/" can't appear in a DSL identifier).
+func foreachCounterKey(name string) string { return "foreach/" + name }
+
+// resolveForeachCollection resolves a foreach's collection template to a slice,
+// reusing the same coercion as fan_out_each (handles []interface{}, a
+// JSON-string array, and reflected slices). A non-array resolves to nil, which
+// foreach treats as an empty collection.
 func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []interface{} {
 	if len(fe.CollectionRefs) == 0 {
 		return nil
 	}
-	raw := e.resolveRef(fe.CollectionRefs[0], sc)
-	switch v := raw.(type) {
-	case []interface{}:
-		return v
-	case string:
-		if v == "" {
-			return nil
-		}
-		var list []interface{}
-		if json.Unmarshal([]byte(v), &list) == nil {
-			return list
-		}
+	arr, err := coerceToArray(e.resolveRef(fe.CollectionRefs[0], sc), fe.Name, fe.CollectionRaw)
+	if err != nil {
+		return nil
 	}
-	return nil
+	return arr
 }
 
 // resolveLoopPath resolves a {{loop.<name>.<field>[.subfield…]}} reference.
@@ -2293,6 +2281,22 @@ func drillPath(root interface{}, path []string) interface{} {
 		cur = m[key]
 	}
 	return cur
+}
+
+// matchOutputNode picks the node whose id is the LONGEST dotted prefix of the
+// reference path that is an actual key in outputs, returning that node's output
+// map and the remaining field path. This disambiguates dotted group-instance
+// node ids (`prefix.name`) from the dotted ref grammar at any nesting depth:
+// {{outputs.r1.gate.id}} with a node "r1.gate" yields (outputs["r1.gate"], ["id"]).
+// Returns (nil, nil) when no prefix matches.
+func matchOutputNode(outputs map[string]map[string]interface{}, path []string) (map[string]interface{}, []string) {
+	for n := len(path); n >= 1; n-- {
+		id := strings.Join(path[:n], ".")
+		if out, ok := outputs[id]; ok {
+			return out, path[n:]
+		}
+	}
+	return nil, nil
 }
 
 // resolveVars builds the vars map from workflow variable defaults,

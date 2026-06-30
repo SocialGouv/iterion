@@ -2385,17 +2385,17 @@ func (p *parser) parseEdge() *ast.Edge {
 				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'as' clause on edge")
 			}
 			// Disambiguate `as foreach <name>(item in coll)` from the loop form
-			// `as <loop_name>(N)` by looking at the token right after `as`.
+			// `as <loop_name>(N)`. The lexer has only 1-token lookahead, so we
+			// consume `as`, peek the next token, and backup for parseLoopClause
+			// (which re-consumes `as`) when it isn't `foreach`.
 			p.next() // consume "as" tentatively
 			if p.peek().Type == TokenIdent && p.peek().Value == "foreach" {
-				fc := p.parseForeachClause() // consumes "foreach" onward
-				if !sawAs {
+				if fc := p.parseForeachClause(); !sawAs { // consumes "foreach" onward
 					edge.Foreach = fc
 				}
 			} else {
 				p.backup() // restore "as" for parseLoopClause
-				parsed := p.parseLoopClause()
-				if !sawAs {
+				if parsed := p.parseLoopClause(); !sawAs {
 					edge.Loop = parsed
 				}
 			}

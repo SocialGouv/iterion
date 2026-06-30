@@ -801,6 +801,13 @@ func (e *Edge) IsConditional() bool {
 	return e.Condition != "" || e.Expression != nil
 }
 
+// IsBoundedIteration reports whether an edge is a bounded iteration back-edge —
+// either a named loop (max_iterations) or a foreach (collection-bounded). Such
+// edges are cycles by design and are not default fall-through edges.
+func (e *Edge) IsBoundedIteration() bool {
+	return e != nil && (e.LoopName != "" || e.ForeachName != "")
+}
+
 // ---------------------------------------------------------------------------
 // Ref — normalized reference expression
 // ---------------------------------------------------------------------------

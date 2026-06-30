@@ -643,7 +643,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		switch {
 		case e.IsConditional():
 			g.conditional = append(g.conditional, e)
-		case e.LoopName != "" || e.ForeachName != "":
+		case e.IsBoundedIteration():
 			// Loop and foreach back-edges are bounded iteration edges, not
 			// default fall-through edges — they don't count toward the
 			// "one default edge" rule.
@@ -1115,7 +1115,7 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 	for _, e := range w.Edges {
 		// A foreach back-edge is a bounded cycle too — the runtime stops it
 		// when the collection is exhausted.
-		if e.LoopName != "" || e.ForeachName != "" {
+		if e.IsBoundedIteration() {
 			loopNodes[e.From] = true
 			loopNodes[e.To] = true
 		}

@@ -18,8 +18,10 @@ func (c *compiler) expandGroups() {
 		return
 	}
 	groups := make(map[string]*ast.GroupDecl, len(c.file.Groups))
+	names := make(map[string]map[string]bool, len(c.file.Groups))
 	for _, g := range c.file.Groups {
 		groups[g.Name] = g
+		names[g.Name] = groupNodeNames(g) // compute the node-name set once per group
 	}
 	var wf *ast.WorkflowDecl
 	if len(c.file.Workflows) > 0 {
@@ -32,7 +34,7 @@ func (c *compiler) expandGroups() {
 			continue
 		}
 		binds := c.bindGroupParams(g, use)
-		c.instantiateGroup(g, use.Prefix, binds, wf)
+		c.instantiateGroup(g, names[use.Group], use.Prefix, binds, wf)
 	}
 }
 
@@ -62,8 +64,8 @@ func (c *compiler) bindGroupParams(g *ast.GroupDecl, use *ast.UseDecl) map[strin
 
 // instantiateGroup clones the group's nodes + internal edges under the given
 // prefix into the file's top-level slices and the workflow's edge list.
-func (c *compiler) instantiateGroup(g *ast.GroupDecl, prefix string, binds map[string]string, wf *ast.WorkflowDecl) {
-	internal := groupNodeNames(g)
+// internal is the group's node-name set, precomputed once by expandGroups.
+func (c *compiler) instantiateGroup(g *ast.GroupDecl, internal map[string]bool, prefix string, binds map[string]string, wf *ast.WorkflowDecl) {
 	pid := func(name string) string {
 		if internal[name] {
 			return prefix + "." + name
