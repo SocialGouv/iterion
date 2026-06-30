@@ -123,11 +123,12 @@ export default function RouterForm({ decl }: Props) {
         onChange={(v) => updateRouter(decl.name, { mode: v as RouterMode })}
         options={[
           { value: "fan_out_all", label: "fan_out_all" },
+          { value: "fan_out_each", label: "fan_out_each" },
           { value: "condition", label: "condition" },
           { value: "round_robin", label: "round_robin" },
           { value: "llm", label: "llm" },
         ]}
-        help="fan_out_all = send to all targets in parallel; condition = route on 'when' clauses; round_robin = cycle through targets; llm = LLM selects route(s)."
+        help="fan_out_all = send to all targets in parallel; fan_out_each = re-run the outgoing subgraph once per element of a runtime array (with optional DAG scheduling); condition = route on 'when' clauses; round_robin = cycle through targets; llm = LLM selects route(s)."
       />
       {decl.mode === "llm" && (
         <div className="mt-2 space-y-1">
@@ -223,6 +224,43 @@ export default function RouterForm({ decl }: Props) {
         <p className="text-caption text-fg-subtle mt-1">
           Sends input to {outgoingEdges.length} target{outgoingEdges.length !== 1 ? "s" : ""} in parallel.
         </p>
+      )}
+      {decl.mode === "fan_out_each" && (
+        <div className="mt-2 space-y-1">
+          <TextField
+            label="Over (array source)"
+            value={decl.over ?? ""}
+            onChange={(v) => updateRouter(decl.name, { over: v })}
+            placeholder="{{outputs.decompose.tickets}}"
+            help="Template resolving to a runtime array. The single outgoing edge's subgraph runs once per element."
+          />
+          <TextField
+            label="Item binding (as)"
+            value={decl.as ?? ""}
+            onChange={(v) => updateRouter(decl.name, { as: v || undefined })}
+            placeholder="item"
+            help="Name the element is bound to (default: item). Reference as {{outputs.<router>.<as>.<field>}}."
+          />
+          <TextField
+            label="Key field (enables DAG)"
+            value={decl.key ?? ""}
+            onChange={(v) => updateRouter(decl.name, { key: v || undefined })}
+            placeholder="id"
+            help="Optional: item field holding each element's unique id. Setting it enables dependency-DAG scheduling."
+          />
+          <TextField
+            label="Depends-on field"
+            value={decl.depends_on ?? ""}
+            onChange={(v) => updateRouter(decl.name, { depends_on: v || undefined })}
+            placeholder="deps"
+            help="Optional: item field holding the ids it depends on. Independent items run in parallel (bounded by Max Parallel Branches)."
+          />
+          {outgoingEdges.length !== 1 && (
+            <p className="text-caption text-warning mt-1">
+              fan_out_each needs exactly one outgoing edge (the per-item template head); this router has {outgoingEdges.length}.
+            </p>
+          )}
+        </div>
       )}
       {decl.mode === "round_robin" && outgoingEdges.length > 0 && (
         <p className="text-caption text-fg-subtle mt-1">

@@ -56,6 +56,7 @@ const (
 	TokenEntry
 	TokenMCP
 	TokenBudget
+	TokenResources
 	TokenTransport
 	TokenServers
 	TokenDisable
@@ -85,6 +86,7 @@ const (
 	TokenAuth
 	TokenReadonly
 	TokenBackend
+	TokenNeeds
 	TokenDefaultBackend
 	TokenProvider
 	TokenInteraction
@@ -104,11 +106,15 @@ const (
 	TokenFork
 	// Router modes
 	TokenFanOutAll
+	TokenFanOutEach
 	TokenCondition
 	TokenRoundRobin
 	TokenLLM
 	// Router properties
 	TokenMulti
+	TokenOver
+	TokenKey
+	TokenDependsOn
 	// Join strategies
 	TokenWaitAll
 	TokenBestEffort
@@ -161,6 +167,11 @@ const (
 	TokenCursors
 	TokenValues
 	TokenBands
+	// Group declaration (reusable node-cluster macro) + use instantiation
+	TokenGroup
+	TokenUse
+	// Subbot node (runs another .bot as a nested run)
+	TokenSubbot
 	// Supervisor declaration (concurrent node-watcher)
 	TokenSupervisor
 	// Terminal node names (reserved identifiers)
@@ -215,6 +226,7 @@ var tokenNames = map[TokenType]string{
 	TokenEntry:              "entry",
 	TokenMCP:                "mcp",
 	TokenBudget:             "budget",
+	TokenResources:          "resources",
 	TokenTransport:          "transport",
 	TokenServers:            "servers",
 	TokenDisable:            "disable",
@@ -243,6 +255,7 @@ var tokenNames = map[TokenType]string{
 	TokenURL:                "url",
 	TokenReadonly:           "readonly",
 	TokenBackend:            "backend",
+	TokenNeeds:              "needs",
 	TokenDefaultBackend:     "default_backend",
 	TokenProvider:           "provider",
 	TokenInteraction:        "interaction",
@@ -260,10 +273,14 @@ var tokenNames = map[TokenType]string{
 	TokenArtifactsOnly:      "artifacts_only",
 	TokenFork:               "fork",
 	TokenFanOutAll:          "fan_out_all",
+	TokenFanOutEach:         "fan_out_each",
 	TokenCondition:          "condition",
 	TokenRoundRobin:         "round_robin",
 	TokenLLM:                "llm",
 	TokenMulti:              "multi",
+	TokenOver:               "over",
+	TokenKey:                "key",
+	TokenDependsOn:          "depends_on",
 	TokenWaitAll:            "wait_all",
 	TokenBestEffort:         "best_effort",
 	TokenTrue:               "true",
@@ -301,6 +318,9 @@ var tokenNames = map[TokenType]string{
 	TokenDeny:             "deny",
 	TokenSandbox:          "sandbox",
 	TokenCursor:           "cursor",
+	TokenGroup:            "group",
+	TokenUse:              "use",
+	TokenSubbot:           "subbot",
 	TokenSupervisor:       "supervisor",
 	TokenCursors:          "cursors",
 	TokenValues:           "values",
@@ -340,6 +360,7 @@ var keywords = map[string]TokenType{
 	"entry":                 TokenEntry,
 	"mcp":                   TokenMCP,
 	"budget":                TokenBudget,
+	"resources":             TokenResources,
 	"transport":             TokenTransport,
 	"servers":               TokenServers,
 	"disable":               TokenDisable,
@@ -369,6 +390,7 @@ var keywords = map[string]TokenType{
 	"auth":                  TokenAuth,
 	"readonly":              TokenReadonly,
 	"backend":               TokenBackend,
+	"needs":                 TokenNeeds,
 	"default_backend":       TokenDefaultBackend,
 	"provider":              TokenProvider,
 	"interaction":           TokenInteraction,
@@ -386,10 +408,14 @@ var keywords = map[string]TokenType{
 	"artifacts_only":        TokenArtifactsOnly,
 	"fork":                  TokenFork,
 	"fan_out_all":           TokenFanOutAll,
+	"fan_out_each":          TokenFanOutEach,
 	"condition":             TokenCondition,
 	"round_robin":           TokenRoundRobin,
 	"llm":                   TokenLLM,
 	"multi":                 TokenMulti,
+	"over":                  TokenOver,
+	"key":                   TokenKey,
+	"depends_on":            TokenDependsOn,
 	"wait_all":              TokenWaitAll,
 	"best_effort":           TokenBestEffort,
 	"true":                  TokenTrue,
@@ -424,6 +450,9 @@ var keywords = map[string]TokenType{
 	"deny":                  TokenDeny,
 	"sandbox":               TokenSandbox,
 	"cursor":                TokenCursor,
+	"group":                 TokenGroup,
+	"use":                   TokenUse,
+	"subbot":                TokenSubbot,
 	"supervisor":            TokenSupervisor,
 	"cursors":               TokenCursors,
 	"values":                TokenValues,

@@ -919,6 +919,20 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 			}
 		}
 
+		// Foreach back-edge: take it only while another element remains. The
+		// body already ran for the current index; skip (fall through) when
+		// index+1 has reached the collection length.
+		if edge.ForeachName != "" {
+			if fe, ok := e.workflow.Foreaches[edge.ForeachName]; ok {
+				count := len(e.resolveForeachCollection(fe, rs.scope()))
+				if idx := rs.loopCounters[foreachCounterKey(edge.ForeachName)]; idx+1 >= count {
+					e.logger.Warn("%s: node %q: edge to %q skipped — foreach %q exhausted (%d/%d)",
+						logPrefix, fromNodeID, edge.To, edge.ForeachName, idx+1, count)
+					continue
+				}
+			}
+		}
+
 		// Expression form: parsed AST evaluated against the full context.
 		if edge.Expression != nil {
 			if exprCtx == nil {

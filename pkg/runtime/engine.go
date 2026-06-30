@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -121,6 +122,27 @@ type Engine struct {
 	callbackToken            string                // optional: opaque correlation token echoed in the completion payload; set via WithCallback
 	callbackAnswerNode       string                // optional: node whose latest artifact holds the run's final answer; set via WithCallback
 	boardMCPHandler          http.Handler          // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
+	subbotRunner             SubbotRunner          // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
+}
+
+// SubbotRequest is the payload a SubbotNode hands to the host-supplied
+// SubbotRunner: the child .bot source, the resolved input vars, and the
+// parent linkage so the runner can record a child run tied to the parent.
+type SubbotRequest struct {
+	Source      string                 // child .bot path/ref (relative to the parent workdir)
+	Vars        map[string]interface{} // resolved `with:` mappings + `_lease_<resource>` instance ids
+	ParentRunID string
+	NodeID      string
+}
+
+// SubbotRunner compiles and runs a child .bot as a nested run and returns its
+// terminal output (mapped to outputs.<subbot>.<field>). Wired by the CLI /
+// runview layer where compiling + running a child engine is possible.
+type SubbotRunner func(ctx context.Context, req SubbotRequest) (map[string]interface{}, error)
+
+// WithSubbotRunner wires the closure invoked by `subbot` nodes.
+func WithSubbotRunner(r SubbotRunner) EngineOption {
+	return func(e *Engine) { e.subbotRunner = r }
 }
 
 // AttachmentPromoteFunc is invoked once at the start of a run, right
@@ -440,6 +462,17 @@ type runState struct {
 	artifactVersions   map[string]int
 	budget             *SharedBudget // shared across branches, nil if no budget
 
+	// resourceSemaphores holds one buffered channel per declared workflow
+	// resource, pre-seeded with its tokens and shared by reference across all
+	// branches so contention is global. A node that declares `needs: <resource>`
+	// pops a token before running and pushes it back after (even on failure) —
+	// bounding e.g. concurrent Godot sessions WITHOUT a global parallelism cap.
+	// Token values: the empty string for the counting form (`godot: 5` → 5
+	// anonymous tokens), or the member ids for the lease form (`godot: [s1,s2]`
+	// → each acquire leases one distinct id, surfaced to the node as `_lease`).
+	// nil when no resources declared.
+	resourceSemaphores map[string]chan string
+
 	// costUSDTotal is the run's cumulative LLM spend (sum of per-node
 	// _cost_usd), tracked independently of `budget` so the daily spend
 	// cap works even when the workflow declares no per-run budget. Read
@@ -512,7 +545,102 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 		artifactVersions:   make(map[string]int),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),
+		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 	}
+}
+
+// leaseInputKey is the node-input key under which a node's acquired
+// instance leases are surfaced (resource name → leased member id), e.g.
+// input["_lease"]["godot"] == "godot-s3". Only present for lease-form
+// resources; consumed by bots to bind the leased instance (cwd/MCP).
+const leaseInputKey = "_lease"
+
+// buildResourceSemaphores creates one buffered channel per declared resource,
+// PRE-SEEDED with its tokens: the buffer holds the available slots, so a
+// receive acquires (blocks when empty) and a send returns the token. For the
+// counting form the tokens are empty strings (capacity anonymous slots); for
+// the lease form they are the distinct member ids, so an acquire pops a
+// specific instance to lease. Returns nil when the workflow declares no
+// resources, so acquireResources is a no-op.
+func buildResourceSemaphores(resources map[string]int, members map[string][]string) map[string]chan string {
+	if len(resources) == 0 {
+		return nil
+	}
+	sem := make(map[string]chan string, len(resources))
+	for name, capacity := range resources {
+		if capacity <= 0 {
+			continue // defensive; validate rejects ≤ 0
+		}
+		ch := make(chan string, capacity)
+		if pool := members[name]; len(pool) > 0 {
+			// Lease form: seed with the distinct instance ids.
+			for _, id := range pool {
+				ch <- id
+			}
+		} else {
+			// Counting form: seed with `capacity` anonymous tokens.
+			for i := 0; i < capacity; i++ {
+				ch <- ""
+			}
+		}
+		sem[name] = ch
+	}
+	return sem
+}
+
+// acquireResources blocks until a token of every resource in `needs` is free,
+// then returns a release func that frees them and the leases it took. Resources
+// are acquired in a stable (sorted, de-duplicated) order so two nodes that need
+// the same pair can never deadlock via inconsistent lock ordering. A cancelled
+// ctx aborts the wait, releasing any tokens already taken and returning
+// ctx.Err(). The caller must `defer release()` so the tokens free even when the
+// node fails. `leases` maps a resource name to the distinct instance id it
+// acquired, but ONLY for lease-form resources (counting-form tokens are empty
+// and omitted); nil when nothing was leased.
+func (e *Engine) acquireResources(ctx context.Context, rs *runState, needs []string) (func(), map[string]string, error) {
+	if len(needs) == 0 || rs.resourceSemaphores == nil {
+		return func() {}, nil, nil
+	}
+	// De-duplicate + sort for a consistent global acquisition order.
+	seen := make(map[string]bool, len(needs))
+	ordered := make([]string, 0, len(needs))
+	for _, r := range needs {
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		ordered = append(ordered, r)
+	}
+	sort.Strings(ordered)
+
+	type held struct{ name, tok string }
+	acquired := make([]held, 0, len(ordered))
+	release := func() {
+		for _, h := range acquired {
+			rs.resourceSemaphores[h.name] <- h.tok // return the exact token/id
+		}
+	}
+	var leases map[string]string
+	for _, r := range ordered {
+		ch := rs.resourceSemaphores[r]
+		if ch == nil {
+			continue // undeclared resource (validate flags it); skip defensively
+		}
+		select {
+		case tok := <-ch:
+			acquired = append(acquired, held{r, tok})
+			if tok != "" { // lease form → record the leased instance id
+				if leases == nil {
+					leases = make(map[string]string, len(ordered))
+				}
+				leases[r] = tok
+			}
+		case <-ctx.Done():
+			release()
+			return nil, nil, ctx.Err()
+		}
+	}
+	return release, leases, nil
 }
 
 // Run executes the workflow. It creates a run, walks the graph from the
@@ -1144,6 +1272,12 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
 			}
 			return true, false, nextNodeID, nil
+		case ir.RouterFanOutEach:
+			nextNodeID, fErr := e.execFanOutEach(ctx, rs, currentNodeID)
+			if fErr != nil {
+				return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, fErr)
+			}
+			return true, false, nextNodeID, nil
 		case ir.RouterRoundRobin:
 			nextNodeID, rrErr := e.execRoundRobin(ctx, rs, currentNodeID)
 			if rrErr != nil {
@@ -1164,6 +1298,13 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		nextNodeID, cErr := e.execCompute(rs, currentNodeID, n)
 		if cErr != nil {
 			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, cErr)
+		}
+		return true, false, nextNodeID, nil
+
+	case *ir.SubbotNode:
+		nextNodeID, sErr := e.execSubbot(ctx, rs, currentNodeID, n)
+		if sErr != nil {
+			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, sErr)
 		}
 		return true, false, nextNodeID, nil
 	}
@@ -1205,6 +1346,19 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	}
 
 	nodeInput := e.buildNodeInputRS(currentNodeID, rs.scope())
+
+	// Acquire any resources this node declares (`needs:`) — blocks until a
+	// slot is free. Placed before the per-node wall-clock deadline below so
+	// waiting on a busy resource doesn't eat the node's execution budget.
+	// Released on return (defer) so a failed node still frees its slot.
+	releaseResources, leases, aerr := e.acquireResources(ctx, rs, ir.NodeNeeds(node))
+	if aerr != nil {
+		return nil, false, aerr
+	}
+	defer releaseResources()
+	if len(leases) > 0 {
+		nodeInput[leaseInputKey] = leases // surface leased instance ids to the node
+	}
 
 	// Fork rehydration: when resumeFromFailure pinned a backend
 	// conversation / session id at currentNodeID, inject the matching
@@ -1464,6 +1618,89 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 // stores the result as the node's output. It mirrors the standard execution
 // envelope (node_started → output → node_finished → checkpoint → edge select)
 // without invoking the executor backend.
+// execSubbot runs a SubbotNode: it resolves the `with:` mappings into the
+// child's input vars, acquires any `needs:` resource leases (passing the
+// leased instance id to the child as `_lease_<resource>`), invokes the
+// host-supplied SubbotRunner, and maps the child's terminal output to
+// outputs.<subbot>.<field>. The child is a full nested run, so it may contain
+// loops (unlike a fan-out branch).
+func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
+	startedPayload := map[string]interface{}{
+		"kind":      "subbot",
+		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
+		"source":    sn.Source,
+	}
+	if p := e.currentLoopIterationPath(nodeID, rs.loopCounters); p != "" {
+		startedPayload["iteration_path"] = p
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
+		return "", err
+	}
+
+	if e.subbotRunner == nil {
+		return "", &RuntimeError{
+			Code:    ErrCodeExecutionFailed,
+			Message: fmt.Sprintf("subbot %q: no SubbotRunner is wired", nodeID),
+			NodeID:  nodeID,
+			Hint:    "subbot nodes need the CLI/studio runtime that can compile + run a child .bot; the bare engine can't (import cycle with runview)",
+		}
+	}
+
+	// Resolve the child's input vars from the `with:` mappings.
+	sc := rs.scope()
+	vars := make(map[string]interface{}, len(sn.With))
+	for _, dm := range sn.With {
+		vars[dm.Key] = e.resolveMapping(dm, sc)
+	}
+
+	// Acquire resource leases for the duration of the child run; surface the
+	// leased instance id so the child can pick e.g. its worktree index.
+	release, leases, lerr := e.acquireResources(ctx, rs, sn.Needs)
+	if lerr != nil {
+		return "", lerr
+	}
+	defer release()
+	for res, id := range leases {
+		vars["_lease_"+res] = id
+	}
+
+	output, err := e.subbotRunner(ctx, SubbotRequest{
+		Source:      sn.Source,
+		Vars:        vars,
+		ParentRunID: rs.runID,
+		NodeID:      nodeID,
+	})
+	if err != nil {
+		return "", &RuntimeError{
+			Code:    ErrCodeExecutionFailed,
+			Message: fmt.Sprintf("subbot %q (source %q): %v", nodeID, sn.Source, err),
+			NodeID:  nodeID,
+			Cause:   err,
+		}
+	}
+	if output == nil {
+		output = map[string]interface{}{}
+	}
+
+	rs.outputs[nodeID] = output
+	delete(rs.nodeAttempts, nodeID)
+
+	if err := e.validateNodeOutput(nodeID, sn, output); err != nil {
+		return "", err
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(e.sanitizeOutputForEvent(sn, output))); err != nil {
+		return "", err
+	}
+	if e.onNodeFinished != nil {
+		e.onNodeFinished(rs.runID, nodeID, output)
+	}
+	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
+		e.logger.Error("failed to save checkpoint after subbot %q: %v", nodeID, err)
+	}
+
+	return e.selectEdgeRS(rs, nodeID, output)
+}
+
 func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (string, error) {
 	startedPayload := map[string]interface{}{
 		"kind":      "compute",
@@ -1580,6 +1817,13 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 				}
 			}
 		}
+	}
+
+	if selected.ForeachName != "" {
+		// Advancing to the next element: bump the foreach index (shares the
+		// loopCounters map under the foreach name; distinct namespaces).
+		k := foreachCounterKey(selected.ForeachName)
+		rs.loopCounters[k] = rs.loopCounters[k] + 1
 	}
 
 	if selected.LoopName != "" {
@@ -1764,14 +2008,26 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 		if len(ref.Path) == 0 {
 			return nil
 		}
-		nodeOut := sc.outputs[ref.Path[0]]
+		// Resolve the node id as the LONGEST dotted prefix of the path that is
+		// an actual output key. Group-instance nodes have dotted ids
+		// (`prefix.name`), which collide with the dotted ref grammar:
+		// {{outputs.r1.gate.id}} parses as [r1, gate, id] but the node is
+		// "r1.gate". Longest-prefix-match disambiguates this for any nesting
+		// depth (the field path is whatever follows the matched id).
+		nodeOut, fieldPath := matchOutputNode(sc.outputs, ref.Path)
 		if nodeOut == nil {
 			return nil
 		}
-		if len(ref.Path) == 1 {
+		if len(fieldPath) == 0 {
 			return nodeOut
 		}
-		return nodeOut[ref.Path[1]]
+		if len(fieldPath) == 1 {
+			return nodeOut[fieldPath[0]]
+		}
+		// Deep path {{outputs.node.field.sub…}} — drill into nested maps
+		// (e.g. a per-item object surfaced by fan_out_each:
+		// {{outputs.dispatch.item.is_code}}).
+		return drillPath(nodeOut[fieldPath[0]], fieldPath[1:])
 	case ir.RefArtifacts:
 		if len(ref.Path) > 0 {
 			return sc.artifacts[ref.Path[0]]
@@ -1781,6 +2037,11 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 			return nil
 		}
 		return e.resolveLoopPath(ref.Path, sc.rs)
+	case ir.RefEach:
+		if sc.rs == nil || len(ref.Path) < 2 {
+			return nil
+		}
+		return e.resolveEachPath(ref.Path, sc)
 	case ir.RefRun:
 		if sc.rs == nil || len(ref.Path) == 0 {
 			return nil
@@ -1791,6 +2052,67 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 		}
 	}
 	return nil
+}
+
+// resolveEachPath resolves a {{each.<name>.<field>[.subfield…]}} reference for
+// a sequential foreach. Recognized fields:
+//
+//	item   — the current element (drills into sub-fields for object elements)
+//	index  — current 0-based position (int64)
+//	count  — collection length (int64)
+//	first  — index == 0 (bool)
+//	last   — index >= count-1, or count == 0 (bool)
+//	empty  — count == 0 (bool)
+func (e *Engine) resolveEachPath(path []string, sc resolveScope) interface{} {
+	name := path[0]
+	fe, ok := e.workflow.Foreaches[name]
+	if !ok {
+		return nil
+	}
+	coll := e.resolveForeachCollection(fe, sc)
+	idx := sc.rs.loopCounters[foreachCounterKey(name)]
+	count := len(coll)
+	switch path[1] {
+	case "item":
+		if idx < 0 || idx >= count {
+			return nil
+		}
+		if len(path) > 2 {
+			return drillPath(coll[idx], path[2:])
+		}
+		return coll[idx]
+	case "index":
+		return int64(idx)
+	case "count":
+		return int64(count)
+	case "first":
+		return idx == 0
+	case "last":
+		return count == 0 || idx >= count-1
+	case "empty":
+		return count == 0
+	}
+	return nil
+}
+
+// foreachCounterKey namespaces a foreach's index inside the shared
+// rs.loopCounters map so a foreach name can never collide with a loop of the
+// same name (the "/" can't appear in a DSL identifier).
+func foreachCounterKey(name string) string { return "foreach/" + name }
+
+// resolveForeachCollection resolves a foreach's collection template to a slice,
+// reusing the same coercion as fan_out_each (handles []interface{}, a
+// JSON-string array, and reflected slices). A non-array resolves to nil, which
+// foreach treats as an empty collection.
+func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []interface{} {
+	if len(fe.CollectionRefs) == 0 {
+		return nil
+	}
+	arr, err := coerceToArray(e.resolveRef(fe.CollectionRefs[0], sc), fe.Name, fe.CollectionRaw)
+	if err != nil {
+		return nil
+	}
+	return arr
 }
 
 // resolveLoopPath resolves a {{loop.<name>.<field>[.subfield…]}} reference.
@@ -1959,6 +2281,22 @@ func drillPath(root interface{}, path []string) interface{} {
 		cur = m[key]
 	}
 	return cur
+}
+
+// matchOutputNode picks the node whose id is the LONGEST dotted prefix of the
+// reference path that is an actual key in outputs, returning that node's output
+// map and the remaining field path. This disambiguates dotted group-instance
+// node ids (`prefix.name`) from the dotted ref grammar at any nesting depth:
+// {{outputs.r1.gate.id}} with a node "r1.gate" yields (outputs["r1.gate"], ["id"]).
+// Returns (nil, nil) when no prefix matches.
+func matchOutputNode(outputs map[string]map[string]interface{}, path []string) (map[string]interface{}, []string) {
+	for n := len(path); n >= 1; n-- {
+		id := strings.Join(path[:n], ".")
+		if out, ok := outputs[id]; ok {
+			return out, path[n:]
+		}
+	}
+	return nil, nil
 }
 
 // resolveVars builds the vars map from workflow variable defaults,

@@ -1,0 +1,15 @@
+## Child bot run by the parent's `subbot` node (tool-only, no API keys).
+schema out:
+  validated: bool
+  echoed: string
+
+vars:
+  ticket: string = "none"
+
+tool work:
+  command: `printf '{"validated":true,"echoed":"%s"}' "{{vars.ticket}}"`
+  output: out
+
+workflow child:
+  entry: work
+  work -> done

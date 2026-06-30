@@ -109,6 +109,7 @@ const (
 	RouterCondition                    // conditional routing
 	RouterRoundRobin                   // round-robin: cycle through targets one at a time
 	RouterLLM                          // LLM-based routing decision
+	RouterFanOutEach                   // data-driven fan-out: one branch per element of a runtime array
 )
 
 func (rm RouterMode) String() string {
@@ -121,6 +122,8 @@ func (rm RouterMode) String() string {
 		return "round_robin"
 	case RouterLLM:
 		return "llm"
+	case RouterFanOutEach:
+		return "fan_out_each"
 	default:
 		return "unknown"
 	}

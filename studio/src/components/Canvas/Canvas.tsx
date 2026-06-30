@@ -27,6 +27,8 @@ import AuxiliaryNode from "./AuxiliaryNode";
 import ReferenceEdge from "./ReferenceEdge";
 import DetailSubNode from "./DetailSubNode";
 import GroupNode from "./GroupNode";
+import FanoutFrame from "@/components/Runs/FanoutFrame";
+import { computeFanoutRegions, buildFanoutFrames } from "@/lib/fanoutRegions";
 import NodeContextMenu from "./NodeContextMenu";
 
 import BreadcrumbBar from "./BreadcrumbBar";
@@ -40,7 +42,7 @@ import { useCanvasHandlers } from "./useCanvasHandlers";
 import CommandPalette, { type CommandAction } from "@/components/shared/CommandPalette";
 import { useLocation } from "wouter";
 
-const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode };
+const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode, fanoutFrame: FanoutFrame };
 const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
 
 function isEditableNode(id: string): boolean {
@@ -236,10 +238,21 @@ export default function Canvas({ active = true }: CanvasProps) {
   // state (searchOpen, searchQuery, matchedNodeIds) is captured in the callback.
   // Including it would create a dependency cycle since it also depends on layoutNodes.
   const { applySearchFilter } = search;
+  // fan_out_each replicated regions, detected statically from the document
+  // (router mode + edges + wait_all convergence). Drives the dashed region
+  // frame so the "loop body" is visible at edit time, not just in a run.
+  const fanoutRegions = useMemo(
+    () => computeFanoutRegions(document, activeWorkflow),
+    [document, activeWorkflow],
+  );
   const displayNodes = useMemo(
-    () => applySearchFilter(layout.layoutNodes),
+    () => {
+      const base = applySearchFilter(layout.layoutNodes);
+      const frames = buildFanoutFrames(layout.layoutNodes, fanoutRegions);
+      return frames.length > 0 ? [...frames, ...base] : base;
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layout.layoutNodes, search.searchOpen, search.searchQuery, search.currentMatchIndex],
+    [layout.layoutNodes, fanoutRegions, search.searchOpen, search.searchQuery, search.currentMatchIndex],
   );
 
   // All canvas handlers (search, node/edge click, drop, toolbar) live in

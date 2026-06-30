@@ -30,6 +30,13 @@ const (
 	DiagLLMRouterTooFewEdges     DiagCode = "C021" // llm router with fewer than 2 outgoing edges
 	DiagLLMRouterConditionEdge   DiagCode = "C022" // llm router edge has a 'when' condition
 	DiagRouterLLMOnlyProperty    DiagCode = "C023" // LLM-only property on non-llm router
+	DiagFanOutEachMissingOver    DiagCode = "C113" // fan_out_each router without an 'over:' array source (was C102, clashed with DiagInvalidRTK on main)
+	DiagFanOutEachOnlyProperty   DiagCode = "C114" // 'over'/'as'/'key'/'depends_on' property on a non-fan_out_each router (was C103)
+	DiagFanOutEachEdges          DiagCode = "C115" // fan_out_each router must have exactly one outgoing template edge (was C104)
+	DiagUseUnknownGroup          DiagCode = "C116" // use references a group that is not declared (error)
+	DiagUseParamMismatch         DiagCode = "C117" // use provides an unknown param, or omits a declared one (error)
+	DiagForeachConflictsLoop     DiagCode = "C118" // edge combines `as foreach` with `as <loop>` (error)
+	DiagSubbotNoSource           DiagCode = "C119" // subbot node without a `source:` child .bot (error)
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
 	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1
@@ -39,6 +46,7 @@ const (
 	DiagRefNodeNoSchema          DiagCode = "C032" // outputs ref field on node without output schema
 	DiagUndeclaredVar            DiagCode = "C033" // vars ref to undeclared variable
 	DiagInputFieldNotInSchema    DiagCode = "C034" // input ref field not in input schema
+	DiagUnknownResourceInNeeds   DiagCode = "C195" // needs: references a resource not declared in resources:
 	DiagUnknownArtifact          DiagCode = "C035" // artifacts ref to unpublished artifact
 	DiagRefNodeNotReachable      DiagCode = "C036" // outputs ref to node not reachable before consumer
 	DiagNodeMaxTokensVsBudget    DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
@@ -116,6 +124,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateEdgeRouting(w)
 	c.validateRoundRobinEdges(w)
 	c.validateLLMRouterEdges(w)
+	c.validateFanOutEachEdges(w)
 	c.validateConditionFields(w)
 	c.validateExprTypes(w)
 	c.validateDuplicateWithKeys(w)
@@ -136,6 +145,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateCursorInvocations(w)
 	c.validateReviewGates(w)
 	c.validateCompress(w)
+	c.validateResources(w)
 	c.validatePermission(w)
 	c.validateVerifiedActions(w)
 	c.validateArtifactLabels(w)
@@ -633,7 +643,10 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		switch {
 		case e.IsConditional():
 			g.conditional = append(g.conditional, e)
-		case e.LoopName != "":
+		case e.IsBoundedIteration():
+			// Loop and foreach back-edges are bounded iteration edges, not
+			// default fall-through edges — they don't count toward the
+			// "one default edge" rule.
 			g.loopBearing = append(g.loopBearing, e)
 		default:
 			g.unconditional = append(g.unconditional, e)
@@ -647,6 +660,8 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		}
 
 		// Router fan_out_all, round_robin, and llm are allowed multiple unconditional edges.
+		// fan_out_each is excluded here so its dedicated "exactly one template
+		// edge" rule (validateFanOutEachEdges) owns the error message.
 		if r, ok := node.(*RouterNode); ok && (r.RouterMode == RouterFanOutAll || r.RouterMode == RouterRoundRobin || r.RouterMode == RouterLLM) {
 			continue
 		}
@@ -731,6 +746,56 @@ func (c *compiler) validateLLMRouterEdges(w *Workflow) {
 			c.errorf(DiagLLMRouterTooFewEdges,
 				"llm router %q has %d outgoing edge(s); at least 2 are needed",
 				r.ID, count)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// C104 — fan_out_each router must have exactly one outgoing (template) edge
+// ---------------------------------------------------------------------------
+//
+// A fan_out_each router re-executes ONE statically-declared template subgraph
+// once per element of the runtime array `over`. The single outgoing edge is
+// the head of that template; the branch then runs the existing static graph
+// until it reaches a convergence point. Multiple outgoing edges are ambiguous
+// (which template?) and zero means nothing to iterate.
+func (c *compiler) validateFanOutEachEdges(w *Workflow) {
+	for _, node := range w.Nodes {
+		r, ok := node.(*RouterNode)
+		if !ok || r.RouterMode != RouterFanOutEach {
+			continue
+		}
+		count := 0
+		for _, e := range w.Edges {
+			if e.From == r.ID {
+				count++
+				if e.IsConditional() {
+					c.errorf(DiagFanOutEachEdges,
+						"fan_out_each router %q edge to %q has a 'when' condition; the single template edge must be unconditional",
+						r.ID, e.To)
+				}
+			}
+		}
+		if count != 1 {
+			c.errorf(DiagFanOutEachEdges,
+				"fan_out_each router %q has %d outgoing edge(s); exactly one (the per-item template head) is required",
+				r.ID, count)
+		}
+	}
+}
+
+// validateResources flags any node whose `needs:` references a resource the
+// workflow doesn't declare in its `resources:` block. Without this the acquire
+// is a silent no-op and the intended bound (e.g. on Godot sessions) never
+// applies — exactly the failure mode the feature exists to prevent.
+func (c *compiler) validateResources(w *Workflow) {
+	for _, node := range w.Nodes {
+		for _, r := range NodeNeeds(node) {
+			if _, ok := w.Resources[r]; !ok {
+				c.errorf(DiagUnknownResourceInNeeds,
+					"node %q needs resource %q, which is not declared in the workflow's resources: block",
+					node.NodeID(), r)
+			}
 		}
 	}
 }
@@ -1048,7 +1113,9 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 	// LoopName — the runtime enforces max_iterations on that edge.
 	loopNodes := make(map[string]bool)
 	for _, e := range w.Edges {
-		if e.LoopName != "" {
+		// A foreach back-edge is a bounded cycle too — the runtime stops it
+		// when the collection is exhausted.
+		if e.IsBoundedIteration() {
 			loopNodes[e.From] = true
 			loopNodes[e.To] = true
 		}

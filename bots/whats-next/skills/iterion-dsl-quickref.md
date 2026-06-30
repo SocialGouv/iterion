@@ -69,11 +69,25 @@ workflow my_workflow:
 |---|---|---|
 | `agent` | LLM with tools and structured I/O | Most common |
 | `judge` | LLM verdict, no mutation | Tools optional |
-| `router` | Branch selection | Modes: `fan_out_all`, `condition`, `round_robin`, `llm` |
+| `router` | Branch selection | Modes: `fan_out_all`, `fan_out_each`, `condition`, `round_robin`, `llm` |
 | `human` | Pause for human input | `interaction: human | llm | llm_or_human | review` |
 | `tool` | Deterministic shell | No LLM; uses `{{input.x}}` templates with auto shell-escape |
 | `compute` | Deterministic expression | No LLM, no shell. Use for passthrough, derived booleans, loop guards. |
+| `subbot` | Run another `.bot` as a nested run | `source:` + `with { ... }` + `output:`; child may contain loops |
 | `done` / `fail` | Built-in terminals | Never declare them |
+
+## Reuse & iteration (see docs/groups-iteration-subbots.md)
+
+- **`group <name>(params):` + `use <group> as <prefix> with { p: "v" }`** — reusable node
+  cluster (compile-time macro). Instance nodes are addressed `prefix.node`; `{{params.X}}`
+  is substituted from the bindings.
+- **`router mode: fan_out_each` + `over:`/`as:`/`key:`/`depends_on:`** — one parallel branch
+  per element of a collection, topologically scheduled by `key`/`depends_on`; element exposed
+  as `{{outputs.<router>.<as>.<field>}}`. `await: best_effort` on the convergence node.
+- **`src -> dst as foreach name(item in "{{coll}}")`** — ordered, stateful iteration; element
+  via `{{each.name.item|index|count|first|last|empty}}`.
+- **`resources:` (counting or `["a","b"]` lease pool) + node `needs:`** — bound the concurrency
+  of an operation independent of `max_parallel_branches`.
 
 ## Agent/judge properties
 

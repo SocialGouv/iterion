@@ -80,13 +80,27 @@ interface IRNodeData extends Record<string, unknown> {
   // Optional LLM metadata for agent/judge/router-llm nodes. Absent for
   // tool/human/compute/router-non-llm/done/fail.
   meta?: LLMMeta;
+  // Set for nodes inside a fan_out_each replicated region. `count` = the
+  // number of distinct branch items that executed this node; `total` = the
+  // items the router fanned out over. count == total → common per-item path
+  // (every item passes through, e.g. mark_ip/route); count < total → a
+  // routed split (only a subset reached this node, e.g. a per-type stub).
+  replication?: { count: number; total: number } | null;
 }
 
 type IRNodeType = Node<IRNodeData, "irnode">;
 
 export default function IRNode({ data }: NodeProps<IRNodeType>) {
-  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta } =
+  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta, replication } =
     data;
+  // Multi-instance badge: count/total when split, ×N when on the common
+  // per-item path. Distinguishes "mark_ip ran 38×" (×38) from "code_stub
+  // ran 13× because route split the 38 by type" (13/38).
+  const repBadge = replication
+    ? replication.count === replication.total
+      ? `×${replication.total}`
+      : `${replication.count}/${replication.total}`
+    : null;
   const hasMeta =
     !!meta && (!!meta.model || !!meta.backend || !!meta.reasoningEffort);
   const modelLabel = meta?.model
@@ -154,6 +168,18 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
       </div>
       <div className="mt-1 flex items-center gap-1.5 text-caption text-fg-subtle">
         <span>{kind}</span>
+        {repBadge && (
+          <span
+            className="px-1 rounded bg-info-soft text-info-fg text-[9px] font-mono leading-tight"
+            title={
+              replication!.count === replication!.total
+                ? `Runs once per item — ${replication!.total} executions (common per-item path).`
+                : `${replication!.count} of ${replication!.total} items routed here (subset of the fan-out).`
+            }
+          >
+            ‖ {repBadge}
+          </span>
+        )}
         <span className="ml-auto">
           {executions.length === 0
             ? "—"

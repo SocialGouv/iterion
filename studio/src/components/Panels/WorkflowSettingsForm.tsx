@@ -44,6 +44,30 @@ export default function WorkflowSettingsForm() {
     updateWorkflowBudget(workflow.name, Object.keys(clean).length > 0 ? clean : undefined);
   };
 
+  // Named counting semaphores (resource → capacity). Edited as rows; a node's
+  // `needs:` acquires a slot. Stored on the workflow as a plain object.
+  const resources = workflow.resources ?? {};
+  const setResources = (next: Record<string, number>) => {
+    const clean = Object.fromEntries(
+      Object.entries(next).filter(([k, v]) => k.trim() !== "" && v > 0),
+    );
+    updateWorkflow(workflow.name, {
+      resources: Object.keys(clean).length > 0 ? clean : undefined,
+    });
+  };
+  const renameResource = (oldName: string, newName: string) => {
+    if (newName === oldName) return;
+    const next: Record<string, number> = {};
+    for (const [k, v] of Object.entries(resources)) next[k === oldName ? newName : k] = v;
+    setResources(next);
+  };
+  const addResource = () => {
+    let i = 1;
+    let name = "resource";
+    while (resources[name] !== undefined) name = `resource${i++}`;
+    setResources({ ...resources, [name]: 1 });
+  };
+
   return (
     <div className="p-3 text-sm">
       <h2 className="font-bold text-fg-muted mb-3">Workflow Settings</h2>
@@ -152,6 +176,57 @@ export default function WorkflowSettingsForm() {
           onChange={(v) => setBudgetField("max_iterations", v)}
           min={1}
         />
+      </div>
+
+      <div className="border-t border-border-default mt-3 pt-3">
+        <h3 className="text-xs text-fg-subtle font-semibold mb-1">Resources</h3>
+        <p className="text-caption text-fg-subtle mb-2">
+          Named counting semaphores. A node&apos;s <code>needs:</code> acquires a
+          slot — bounds concurrent use of a scarce resource (e.g. Godot sessions)
+          without a global parallelism cap.
+        </p>
+        {Object.entries(resources).length === 0 && (
+          <p className="text-caption text-fg-subtle mb-2">No resources defined.</p>
+        )}
+        {Object.entries(resources).map(([name, cap]) => (
+          <div key={name} className="flex items-end gap-2 mb-1">
+            <div className="flex-1">
+              <CommittedTextField
+                label="Name"
+                value={name}
+                onChange={(v) => renameResource(name, v)}
+                validate={(v) => (!v.trim() ? "Name required" : null)}
+              />
+            </div>
+            <div className="w-24">
+              <NumberField
+                label="Capacity"
+                value={cap}
+                onChange={(v) => setResources({ ...resources, [name]: v ?? 1 })}
+                min={1}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const next = { ...resources };
+                delete next[name];
+                setResources(next);
+              }}
+              className="text-xs text-danger-fg px-2 py-1.5 mb-0.5 hover:bg-danger-soft rounded"
+              title="Remove resource"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={addResource}
+          className="text-xs text-info-fg px-2 py-1 mt-1 hover:bg-info-soft rounded border border-info/40"
+        >
+          + Add resource
+        </button>
       </div>
     </div>
   );

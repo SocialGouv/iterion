@@ -23,9 +23,59 @@ type File struct {
 	Humans      []*HumanDecl      // human node declarations
 	Tools       []*ToolNodeDecl   // tool node declarations (direct execution, no LLM)
 	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
+	Groups      []*GroupDecl      // reusable node-cluster declarations (compile-time macros)
+	Uses        []*UseDecl        // group instantiations (`use <group> as <prefix>`)
+	Subbots     []*SubbotDecl     // sub-bot node declarations (run another .bot as a nested run)
 	Workflows   []*WorkflowDecl   // workflow declarations
 	Comments    []*Comment        // top-level comments (## ...)
 	Span        Span
+}
+
+// GroupDecl is a reusable cluster of nodes + internal edges, parameterised by
+// Params and instantiated by a UseDecl. It is purely a compile-time macro:
+// `expandGroups` clones each node with a `<prefix>.<name>` ID, rewrites the
+// internal edges, and substitutes `{{params.X}}` before the IR compiler runs,
+// so groups never reach the runtime.
+type GroupDecl struct {
+	Name     string
+	Params   []string
+	Agents   []*AgentDecl
+	Judges   []*JudgeDecl
+	Routers  []*RouterDecl
+	Humans   []*HumanDecl
+	Tools    []*ToolNodeDecl
+	Computes []*ComputeDecl
+	Edges    []*Edge
+	Span     Span
+}
+
+// UseDecl instantiates a GroupDecl: `use <Group> as <Prefix> with { p: v }`.
+// Each instance's nodes get IDs `<Prefix>.<nodeName>`; external edges address
+// them with that dotted reference.
+type UseDecl struct {
+	Group  string
+	Prefix string
+	With   []*WithEntry // parameter bindings (key = param name, value = template/literal)
+	Span   Span
+}
+
+// SubbotDecl is a graph node that runs another `.bot` as a nested run:
+//
+//	subbot run_ticket:
+//	  source: "child.bot"
+//	  with: { issue: "{{input.id}}" }
+//	  output: ticket_verdict
+//	  needs: worktree_slot
+//
+// The child executes as a real run (it may contain loops); its terminal
+// output is mapped back to `outputs.<subbot>.<field>`.
+type SubbotDecl struct {
+	Name   string
+	Source string       // path/ref to the child .bot (relative to the parent's workdir)
+	With   []*WithEntry // vars passed to the child run (key = var name)
+	Output string       // schema reference describing the child's terminal output
+	Needs  []string     // named resource leases held while the child runs
+	Span   Span
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +435,7 @@ type LLMDecl struct {
 	Cursors           *CursorBlock     // prompt-engineering cursor activations (nil = none)
 	Compress          string           // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission        string           // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs             []string         // resource names acquired before running (workflow.resources)
 }
 
 // AgentDecl represents an `agent <name>:` node declaration.
@@ -419,6 +470,7 @@ const (
 	RouterCondition  = types.RouterCondition
 	RouterRoundRobin = types.RouterRoundRobin
 	RouterLLM        = types.RouterLLM
+	RouterFanOutEach = types.RouterFanOutEach
 )
 
 // RouterDecl represents a `router <name>:` node declaration.
@@ -427,13 +479,18 @@ const (
 type RouterDecl struct {
 	Name            string
 	Mode            RouterMode
-	Model           string // only for mode: llm
-	Backend         string // execution backend name, only for mode: llm
-	Provider        string // credential routing hint, only for mode: llm; may contain ${...} env refs
-	System          string // prompt ref, only for mode: llm
-	User            string // prompt ref, only for mode: llm
-	Multi           bool   // multi-route selection, only for mode: llm
-	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
+	Model           string   // only for mode: llm
+	Backend         string   // execution backend name, only for mode: llm
+	Provider        string   // credential routing hint, only for mode: llm; may contain ${...} env refs
+	System          string   // prompt ref, only for mode: llm
+	User            string   // prompt ref, only for mode: llm
+	Multi           bool     // multi-route selection, only for mode: llm
+	ReasoningEffort string   // reasoning effort level: "low", "medium", "high", "xhigh", "max" (only for mode: llm)
+	Over            string   // array source template, only for mode: fan_out_each (e.g. "{{outputs.decompose.tickets}}")
+	As              string   // per-item binding name, only for mode: fan_out_each (default: "item")
+	Key             string   // item field holding its unique id, only for mode: fan_out_each (enables DAG scheduling)
+	DependsOn       string   // item field holding the array of ids it depends on, only for mode: fan_out_each
+	Needs           []string // resource names acquired before running (workflow.resources)
 	Span            Span
 }
 
@@ -522,6 +579,7 @@ type ToolNodeDecl struct {
 	Sandbox        *SandboxBlock // node-level sandbox override; nil inherits from workflow
 	Compress       string        // compress output-compression mode: on|ultra|off ("" = inherit)
 	Permission     string        // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs          []string      // resource names acquired before running (workflow.resources)
 
 	// Verified Action quad (ADR-044) — all optional; a tool node without
 	// these behaves exactly as before (recipe only, exit-code = success).
@@ -592,6 +650,7 @@ type WorkflowDecl struct {
 	Capabilities   []string          // workflow-level default host capabilities (nil = inherit none)
 	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
 	Budget         *BudgetBlock      // execution limits (optional)
+	Resources      *ResourcesBlock   // named counting semaphores (optional)
 	Compaction     *CompactionBlock  // session compaction defaults for all nodes (optional)
 	Interaction    *InteractionMode  // workflow-level default interaction mode (nil = not set)
 	Worktree       string            // "auto" creates a per-run git worktree; "" or "none" runs in-place
@@ -613,6 +672,21 @@ type BudgetBlock struct {
 	MaxTokens           int     // 0 = not set
 	MaxIterations       int     // 0 = not set
 	Span                Span
+}
+
+// ResourcesBlock declares named counting semaphores at the workflow level.
+// Each entry is `<name>: <capacity>`. A node that declares `needs: <name>`
+// acquires one slot before running and releases it after — bounding
+// concurrent use of a scarce shared resource (e.g. Godot/Blender sessions)
+// without a global parallelism cap.
+type ResourcesBlock struct {
+	Capacities map[string]int // resource name → capacity
+	// Members holds the named-instance pool for a resource declared as a
+	// bracketed ident-list (e.g. `godot: [godot-s1, godot-s2]`) — each acquire
+	// leases one distinct member id. nil/absent for the counting-only form
+	// (`godot: 5`), where capacity is just a count with no instance identity.
+	Members map[string][]string
+	Span    Span
 }
 
 // CompactionBlock configures session compaction. Both fields use a "0/nil
@@ -707,12 +781,25 @@ type SandboxNetworkBlock struct {
 
 // Edge represents a directed transition: `src -> dst [when ...] [as ...] [with {...}]`.
 type Edge struct {
-	From string       // source node name
-	To   string       // target node name (can be "done" or "fail")
-	When *WhenClause  // optional condition
-	Loop *LoopClause  // optional loop tracking
-	With []*WithEntry // optional data mappings
-	Span Span
+	From    string         // source node name
+	To      string         // target node name (can be "done" or "fail")
+	When    *WhenClause    // optional condition
+	Loop    *LoopClause    // optional loop tracking
+	Foreach *ForeachClause // optional sequential foreach iteration (mutually exclusive with Loop)
+	With    []*WithEntry   // optional data mappings
+	Span    Span
+}
+
+// ForeachClause represents `as foreach <name>(<item> in <collection>)` on a
+// (back-)edge: it iterates the body once per element of the collection, in
+// order, binding the current element under the `each.<name>` namespace
+// ({{each.<name>.item|index|count|first|last}}). The collection is a template
+// resolved at runtime to a JSON array.
+type ForeachClause struct {
+	Name       string // iteration name (e.g. "scan")
+	Item       string // element binding identifier (e.g. "item") — currently informational
+	Collection string // collection template, e.g. "{{outputs.list.items}}"
+	Span       Span
 }
 
 // WhenClause represents a `when [not] <condition>` or `when <expression>` on

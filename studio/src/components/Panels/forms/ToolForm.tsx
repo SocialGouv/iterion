@@ -5,7 +5,7 @@ import type { ToolNodeDecl, AwaitMode } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import { AWAIT_HELP, AWAIT_OPTIONS } from "@/lib/dslOptions";
 import { NODE_COLORS, softColor } from "@/lib/constants";
-import { TextField, CommittedTextField, SelectField, SelectFieldWithCreate } from "./FormField";
+import { TextField, CommittedTextField, SelectField, SelectFieldWithCreate, TagListField } from "./FormField";
 
 interface Props {
   decl: ToolNodeDecl;
@@ -83,6 +83,12 @@ export default function ToolForm({ decl }: Props) {
         onChange={(v) => updateTool(decl.name, { await: (v === "none" ? undefined : v) as AwaitMode | undefined })}
         options={AWAIT_OPTIONS}
         help={AWAIT_HELP}
+      />
+      <TagListField
+        label="Needs (resources)"
+        values={decl.needs ?? []}
+        onChange={(v) => updateTool(decl.name, { needs: v.length > 0 ? v : undefined })}
+        placeholder="Add resource name (e.g. godot)..."
       />
     </div>
   );

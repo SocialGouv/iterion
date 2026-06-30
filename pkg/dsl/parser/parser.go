@@ -91,7 +91,7 @@ func (p *parser) skipToNextTopLevel() {
 		case TokenVars, TokenPresets, TokenAttachments, TokenSecrets,
 			TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor,
 			TokenAgent, TokenJudge, TokenRouter, TokenHuman,
-			TokenTool, TokenCompute, TokenWorkflow:
+			TokenTool, TokenCompute, TokenGroup, TokenUse, TokenSubbot, TokenWorkflow:
 			return
 		case TokenDedent:
 			p.next()
@@ -261,6 +261,24 @@ func (p *parser) parseFile() *ast.File {
 		case TokenCompute:
 			if cd := p.parseComputeDecl(); cd != nil && !p.isReservedName(t, cd.Name, "compute") {
 				f.Computes = append(f.Computes, cd)
+			}
+
+		case TokenGroup:
+			gd := p.parseGroupDecl()
+			if gd != nil {
+				f.Groups = append(f.Groups, gd)
+			}
+
+		case TokenUse:
+			ud := p.parseUseDecl()
+			if ud != nil {
+				f.Uses = append(f.Uses, ud)
+			}
+
+		case TokenSubbot:
+			sd := p.parseSubbotDecl()
+			if sd != nil {
+				f.Subbots = append(f.Subbots, sd)
 			}
 
 		case TokenWorkflow:
@@ -1227,6 +1245,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenPermission:
 		p.expect(TokenColon)
 		d.Permission = p.expectIdent()
+	case TokenNeeds:
+		p.expect(TokenColon)
+		d.Needs = p.parseNeedsList()
 	case TokenProvider:
 		p.expect(TokenColon)
 		d.Provider = p.expectString()
@@ -1344,6 +1365,26 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 			} else if bt.Type != TokenFalse {
 				p.addError(DiagInvalidValue, bt, "expected true or false for 'multi'")
 			}
+		case TokenOver:
+			p.next()
+			p.expect(TokenColon)
+			rd.Over = p.expectString()
+		case TokenAs:
+			p.next()
+			p.expect(TokenColon)
+			rd.As = p.expectIdent()
+		case TokenKey:
+			p.next()
+			p.expect(TokenColon)
+			rd.Key = p.expectIdent()
+		case TokenDependsOn:
+			p.next()
+			p.expect(TokenColon)
+			rd.DependsOn = p.expectIdent()
+		case TokenNeeds:
+			p.next()
+			p.expect(TokenColon)
+			rd.Needs = p.parseNeedsList()
 		case TokenReasoningEffort:
 			p.next()
 			rd.ReasoningEffort = p.parseReasoningEffort()
@@ -1362,6 +1403,8 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 	switch t.Type {
 	case TokenFanOutAll:
 		return ast.RouterFanOutAll
+	case TokenFanOutEach:
+		return ast.RouterFanOutEach
 	case TokenCondition:
 		return ast.RouterCondition
 	case TokenRoundRobin:
@@ -1369,7 +1412,7 @@ func (p *parser) parseRouterMode() ast.RouterMode {
 	case TokenLLM:
 		return ast.RouterLLM
 	default:
-		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, condition, round_robin, llm), got '"+t.Value+"'")
+		p.addError(DiagInvalidValue, t, "expected router mode (fan_out_all, fan_out_each, condition, round_robin, llm), got '"+t.Value+"'")
 		return ast.RouterFanOutAll
 	}
 }
@@ -1565,6 +1608,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 	case TokenPermission:
 		p.expect(TokenColon)
 		td.Permission = p.expectIdent()
+	case TokenNeeds:
+		p.expect(TokenColon)
+		td.Needs = p.parseNeedsList()
 	case TokenIdent:
 		// Verified Action quad (ADR-044). These property names are not
 		// reserved keywords, so they arrive as plain identifiers (the
@@ -1756,6 +1802,165 @@ func (p *parser) parseComputeExprBlock() []*ast.ComputeExpr {
 
 // ---- workflow ----
 
+// parseGroupDecl parses a reusable node-cluster:
+//
+//	group <name>(<param>, ...):
+//	  <agent|judge|router|human|tool|compute decls>
+//	  <internal edges>
+func (p *parser) parseGroupDecl() *ast.GroupDecl {
+	start := p.next() // consume "group"
+	nameT := p.next()
+	name := tokenAsIdent(nameT)
+	if name == "" {
+		p.addError(DiagExpectedToken, nameT, "expected group name")
+		p.skipToNextTopLevel()
+		return nil
+	}
+	gd := &ast.GroupDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+
+	// Optional parameter list: (p1, p2, ...)
+	if p.peek().Type == TokenLParen {
+		p.next()
+		for p.peek().Type != TokenRParen && p.peek().Type != TokenEOF && p.peek().Type != TokenNewline {
+			pn := tokenAsIdent(p.next())
+			if pn != "" {
+				gd.Params = append(gd.Params, pn)
+			}
+			if p.peek().Type == TokenComma {
+				p.next()
+			}
+		}
+		p.expect(TokenRParen)
+	}
+
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return gd
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch t.Type {
+		case TokenAgent:
+			if ad := p.parseAgentDecl(); ad != nil {
+				gd.Agents = append(gd.Agents, ad)
+			}
+		case TokenJudge:
+			if jd := p.parseJudgeDecl(); jd != nil {
+				gd.Judges = append(gd.Judges, jd)
+			}
+		case TokenRouter:
+			if rd := p.parseRouterDecl(); rd != nil {
+				gd.Routers = append(gd.Routers, rd)
+			}
+		case TokenHuman:
+			if hd := p.parseHumanDecl(); hd != nil {
+				gd.Humans = append(gd.Humans, hd)
+			}
+		case TokenTool:
+			if td := p.parseToolNodeDecl(); td != nil {
+				gd.Tools = append(gd.Tools, td)
+			}
+		case TokenCompute:
+			if cd := p.parseComputeDecl(); cd != nil {
+				gd.Computes = append(gd.Computes, cd)
+			}
+		case TokenComment:
+			p.next()
+		default:
+			if t.Type == TokenIdent || isKeywordToken(t.Type) {
+				if e := p.parseEdge(); e != nil {
+					gd.Edges = append(gd.Edges, e)
+				}
+			} else {
+				p.addError(DiagUnexpectedToken, t, "unexpected token '"+t.Value+"' in group body")
+				p.next()
+			}
+		}
+	}
+	return gd
+}
+
+// parseUseDecl parses a group instantiation:
+//
+//	use <group> as <prefix> [with { <param>: "<value>", ... }]
+func (p *parser) parseUseDecl() *ast.UseDecl {
+	start := p.next() // consume "use"
+	group := tokenAsIdent(p.next())
+	ud := &ast.UseDecl{Group: group, Span: ast.Span{Start: p.pos(start)}}
+	if group == "" {
+		p.addError(DiagExpectedToken, p.peek(), "expected group name after 'use'")
+		p.skipToNewline()
+		return ud
+	}
+	if p.peek().Type == TokenAs {
+		p.next()
+		ud.Prefix = p.expectIdent()
+	} else {
+		p.addError(DiagExpectedToken, p.peek(), "expected 'as <prefix>' after 'use "+group+"'")
+	}
+	if p.peek().Type == TokenWith {
+		ud.With = p.parseWithBlock()
+	}
+	p.skipNewlines()
+	return ud
+}
+
+// parseSubbotDecl parses a sub-bot node:
+//
+//	subbot <name>:
+//	  source: "child.bot"
+//	  with: { var: "value", ... }
+//	  output: <schema>
+//	  needs: <resource>
+func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
+	start, name, ok := p.parseDeclHeader("subbot")
+	if !ok {
+		return nil
+	}
+	sd := &ast.SubbotDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch {
+		case t.Type == TokenOutput:
+			p.next()
+			p.expect(TokenColon)
+			sd.Output = p.expectIdent()
+		case t.Type == TokenWith:
+			sd.With = p.parseWithBlock()
+			p.skipNewlines()
+		case t.Type == TokenIdent && t.Value == "source":
+			p.next()
+			p.expect(TokenColon)
+			sd.Source = p.expectString()
+		case t.Type == TokenIdent && t.Value == "needs":
+			p.next()
+			p.expect(TokenColon)
+			sd.Needs = p.parseNeedsList()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown subbot property '"+t.Value+"'")
+			p.next()
+			p.skipToNewline()
+		}
+	}
+	return sd
+}
+
 func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 	start, name, ok := p.parseDeclHeader("workflow")
 	if !ok {
@@ -1790,11 +1995,16 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenEntry:
 			p.next() // consume "entry"
 			p.expect(TokenColon)
-			wd.Entry = p.expectIdent()
+			// Accept a dotted reference so the entry can be a group-instance
+			// node (`entry: r1.gate`).
+			wd.Entry = p.continueDottedRef(p.expectIdent())
 			p.skipNewlines()
 
 		case TokenBudget:
 			wd.Budget = p.parseBudgetBlock()
+
+		case TokenResources:
+			wd.Resources = p.parseResourcesBlock()
 
 		case TokenCompaction:
 			wd.Compaction = p.parseCompactionBlock()
@@ -1932,6 +2142,62 @@ func (p *parser) parseBudgetProp(bb *ast.BudgetBlock, propTok Token) {
 	p.skipNewlines()
 }
 
+// parseResourcesBlock parses `resources:\n  <name>: <capacity>` pairs. Each
+// name is an arbitrary identifier (the resource), each value its slot count.
+func (p *parser) parseResourcesBlock() *ast.ResourcesBlock {
+	start := p.next() // consume "resources"
+	p.expect(TokenColon)
+	p.skipNewlines()
+	if _, ok := p.expect(TokenIndent); !ok {
+		return nil
+	}
+
+	rb := &ast.ResourcesBlock{
+		Capacities: make(map[string]int),
+		Span:       ast.Span{Start: p.pos(start)},
+	}
+
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		p.parseResourceProp(rb, t)
+	}
+	return rb
+}
+
+func (p *parser) parseResourceProp(rb *ast.ResourcesBlock, propTok Token) {
+	name := tokenAsIdent(p.next())
+	if name == "" {
+		p.addError(DiagInvalidValue, propTok, "expected a resource name")
+		p.skipToNewline()
+		p.skipNewlines()
+		return
+	}
+	p.expect(TokenColon)
+	if p.peek().Type == TokenLBrack {
+		// Named-instance pool (lease form): godot: ["godot-s1", "godot-s2", ...].
+		// Capacity = number of members; each acquire leases a distinct id. Ids
+		// are quoted strings (not bare idents) so they may carry hyphens/slashes
+		// — e.g. MCP server names or worktree paths.
+		members := p.parseStringList()
+		if rb.Members == nil {
+			rb.Members = make(map[string][]string)
+		}
+		rb.Members[name] = members
+		rb.Capacities[name] = len(members)
+	} else {
+		// Counting-only form: godot: 5.
+		rb.Capacities[name] = p.expectInt()
+	}
+	p.skipNewlines()
+}
+
 func (p *parser) parseCompactionBlock() *ast.CompactionBlock {
 	start := p.next() // consume "compaction"
 	p.expect(TokenColon)
@@ -2048,9 +2314,29 @@ func (p *parser) parseMemoryProp(mb *ast.MemoryBlock, propTok Token) {
 
 // ---- edge ----
 
+// continueDottedRef extends an already-read identifier with any following
+// `.ident` segments, yielding a dotted node reference like `r1.check` used to
+// address a node instantiated by a group `use ... as <prefix>`. A plain
+// single-ident endpoint (the common case) returns unchanged.
+func (p *parser) continueDottedRef(head string) string {
+	if head == "" {
+		return ""
+	}
+	for p.peek().Type == TokenDot {
+		p.next() // consume '.'
+		seg := tokenAsIdent(p.next())
+		if seg == "" {
+			p.addError(DiagExpectedToken, p.peek(), "expected identifier after '.' in node reference")
+			break
+		}
+		head += "." + seg
+	}
+	return head
+}
+
 func (p *parser) parseEdge() *ast.Edge {
 	fromT := p.next()
-	from := tokenAsIdent(fromT)
+	from := p.continueDottedRef(tokenAsIdent(fromT))
 	if from == "" {
 		p.addError(DiagExpectedToken, fromT, "expected source node name in edge")
 		p.skipToNewline()
@@ -2063,7 +2349,7 @@ func (p *parser) parseEdge() *ast.Edge {
 	}
 
 	toT := p.next()
-	to := tokenAsIdent(toT)
+	to := p.continueDottedRef(tokenAsIdent(toT))
 	if to == "" {
 		p.addError(DiagExpectedToken, toT, "expected target node name in edge")
 		p.skipToNewline()
@@ -2098,9 +2384,20 @@ func (p *parser) parseEdge() *ast.Edge {
 			if sawAs {
 				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'as' clause on edge")
 			}
-			parsed := p.parseLoopClause()
-			if !sawAs {
-				edge.Loop = parsed
+			// Disambiguate `as foreach <name>(item in coll)` from the loop form
+			// `as <loop_name>(N)`. The lexer has only 1-token lookahead, so we
+			// consume `as`, peek the next token, and backup for parseLoopClause
+			// (which re-consumes `as`) when it isn't `foreach`.
+			p.next() // consume "as" tentatively
+			if p.peek().Type == TokenIdent && p.peek().Value == "foreach" {
+				if fc := p.parseForeachClause(); !sawAs { // consumes "foreach" onward
+					edge.Foreach = fc
+				}
+			} else {
+				p.backup() // restore "as" for parseLoopClause
+				if parsed := p.parseLoopClause(); !sawAs {
+					edge.Loop = parsed
+				}
 			}
 			sawAs = true
 		case TokenWith:
@@ -2155,6 +2452,33 @@ func (p *parser) parseWhenClause() *ast.WhenClause {
 	}
 	wc.Condition = cond
 	return wc
+}
+
+// parseForeachClause parses `as foreach <name>(<item> in <collection>)`. The
+// `as` has already been consumed by the caller; this consumes `foreach` onward.
+//
+//	as foreach scan(item in "{{outputs.list.items}}")
+func (p *parser) parseForeachClause() *ast.ForeachClause {
+	start := p.next() // consume "foreach"
+	fc := &ast.ForeachClause{Span: ast.Span{Start: p.pos(start)}}
+	fc.Name = tokenAsIdent(p.next())
+	if fc.Name == "" {
+		p.addError(DiagExpectedToken, p.peek(), "expected foreach name after 'as foreach'")
+	}
+	p.expect(TokenLParen)
+	fc.Item = tokenAsIdent(p.next())
+	if fc.Item == "" {
+		p.addError(DiagExpectedToken, p.peek(), "expected element binding identifier in 'foreach "+fc.Name+"(<item> in ...)'")
+	}
+	// `in` is a bare identifier (not a keyword) between the item and the collection.
+	if in := p.peek(); in.Type == TokenIdent && in.Value == "in" {
+		p.next()
+	} else {
+		p.addError(DiagExpectedToken, in, "expected 'in' after the foreach element binding")
+	}
+	fc.Collection = p.expectString()
+	p.expect(TokenRParen)
+	return fc
 }
 
 func (p *parser) parseLoopClause() *ast.LoopClause {
@@ -2278,6 +2602,19 @@ func (p *parser) parseSessionMode() ast.SessionMode {
 		p.addError(DiagInvalidValue, t, "expected session mode (fresh, inherit, inherit_if_available, fork, artifacts_only), got '"+t.Value+"'")
 		return ast.SessionFresh
 	}
+}
+
+// parseNeedsList parses a node's `needs:` value — either a single resource
+// name (`needs: godot`) or a bracketed list (`needs: [godot, blender]`).
+func (p *parser) parseNeedsList() []string {
+	if p.peek().Type == TokenLBrack {
+		return p.parseIdentList()
+	}
+	id := p.expectIdent()
+	if id == "" {
+		return nil
+	}
+	return []string{id}
 }
 
 func (p *parser) parseIdentList() []string {
@@ -2471,6 +2808,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenPermission, TokenAllow, TokenAsk, TokenDeny,
 		TokenSandbox,
 		TokenCursor, TokenCursors, TokenValues, TokenBands,
+		TokenGroup, TokenUse, TokenSubbot,
 		TokenAttachments, TokenTypeFile, TokenTypeImage,
 		// secrets / sandbox-host-state / forge keywords usable as identifiers in name positions
 		TokenSecrets, TokenInheritIfAvailable, TokenProjectRoot, TokenVisibility,

@@ -33,6 +33,7 @@ func Unparse(f *ast.File) string {
 	w.writeHumans(f.Humans)
 	w.writeTools(f.Tools)
 	w.writeComputes(f.Computes)
+	w.writeSubbots(f.Subbots)
 	w.writeWorkflows(f.Workflows)
 	return w.b.String()
 }
@@ -206,7 +207,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Readonly: a.Readonly, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
-			Compress: a.Compress, Permission: a.Permission,
+			Compress: a.Compress, Permission: a.Permission, Needs: a.Needs,
 		})
 		if a.Compaction != nil {
 			writeCompaction(&w.b, a.Compaction, "  ", false)
@@ -236,7 +237,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Readonly: j.Readonly, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
-			Compress: j.Compress, Permission: j.Permission,
+			Compress: j.Compress, Permission: j.Permission, Needs: j.Needs,
 		})
 		if j.Compaction != nil {
 			writeCompaction(&w.b, j.Compaction, "  ", false)
@@ -278,6 +279,23 @@ func (w *fileWriter) writeRouters(routers []*ast.RouterDecl) {
 			if r.ReasoningEffort != "" {
 				writeReasoningEffortProp(&w.b, r.ReasoningEffort)
 			}
+		}
+		if r.Mode == ast.RouterFanOutEach {
+			if r.Over != "" {
+				writeQuotedProp(&w.b, "over", r.Over)
+			}
+			if r.As != "" {
+				writeIdentProp(&w.b, "as", r.As)
+			}
+			if r.Key != "" {
+				writeIdentProp(&w.b, "key", r.Key)
+			}
+			if r.DependsOn != "" {
+				writeIdentProp(&w.b, "depends_on", r.DependsOn)
+			}
+		}
+		if len(r.Needs) > 0 {
+			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(r.Needs, ", "))
 		}
 	}
 }
@@ -373,6 +391,9 @@ func (w *fileWriter) writeTools(tools []*ast.ToolNodeDecl) {
 		if t.Permission != "" {
 			writeProp(&w.b, "permission", t.Permission)
 		}
+		if len(t.Needs) > 0 {
+			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(t.Needs, ", "))
+		}
 		// Verified Action quad (ADR-044).
 		if t.Goal != "" {
 			writeQuotedProp(&w.b, "goal", t.Goal)
@@ -408,6 +429,29 @@ func writeRecoveryBlock(b *strings.Builder, r *ast.RecoveryBlock, indent string)
 	}
 	if len(r.AgentTools) > 0 {
 		fmt.Fprintf(b, "%sagent_tools: [%s]\n", inner, strings.Join(r.AgentTools, ", "))
+	}
+}
+
+func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
+	for _, s := range subbots {
+		w.blankLine()
+		fmt.Fprintf(&w.b, "subbot %s:\n", s.Name)
+		if s.Source != "" {
+			writeQuotedProp(&w.b, "source", s.Source)
+		}
+		if len(s.With) > 0 {
+			w.b.WriteString("  with {\n")
+			for _, e := range s.With {
+				fmt.Fprintf(&w.b, "    %s: %q,\n", e.Key, e.Value)
+			}
+			w.b.WriteString("  }\n")
+		}
+		if s.Output != "" {
+			writeProp(&w.b, "output", s.Output)
+		}
+		if len(s.Needs) > 0 {
+			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(s.Needs, ", "))
+		}
 	}
 }
 
@@ -497,6 +541,10 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 
 		if wf.Budget != nil {
 			writeBudget(&w.b, wf.Budget)
+		}
+
+		if wf.Resources != nil {
+			writeResources(&w.b, wf.Resources)
 		}
 
 		if wf.Compaction != nil {
@@ -756,6 +804,7 @@ type llmFields struct {
 	Await                               ast.AwaitMode
 	Compress                            string
 	Permission                          string
+	Needs                               []string
 }
 
 func writeAgentFields(b *strings.Builder, f llmFields) {
@@ -829,6 +878,9 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if f.Permission != "" {
 		writeProp(b, "permission", f.Permission)
+	}
+	if len(f.Needs) > 0 {
+		fmt.Fprintf(b, "  needs: [%s]\n", strings.Join(f.Needs, ", "))
 	}
 }
 
@@ -1082,6 +1134,33 @@ func writeBudget(b *strings.Builder, budget *ast.BudgetBlock) {
 	}
 }
 
+// writeResources serializes the workflow `resources:` block. Names are
+// emitted in sorted order for deterministic, round-trip-stable output.
+func writeResources(b *strings.Builder, res *ast.ResourcesBlock) {
+	if res == nil || len(res.Capacities) == 0 {
+		return
+	}
+	b.WriteString("\n  resources:\n")
+	names := make([]string, 0, len(res.Capacities))
+	for name := range res.Capacities {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		// Lease form round-trips as the quoted string-list it was declared
+		// with; counting form as the bare capacity.
+		if members := res.Members[name]; len(members) > 0 {
+			quoted := make([]string, len(members))
+			for i, m := range members {
+				quoted[i] = strconv.Quote(m)
+			}
+			fmt.Fprintf(b, "    %s: [%s]\n", name, strings.Join(quoted, ", "))
+		} else {
+			fmt.Fprintf(b, "    %s: %d\n", name, res.Capacities[name])
+		}
+	}
+}
+
 func writeEdge(b *strings.Builder, e *ast.Edge) {
 	fmt.Fprintf(b, "  %s -> %s", e.From, e.To)
 	if e.When != nil {
@@ -1101,6 +1180,9 @@ func writeEdge(b *strings.Builder, e *ast.Edge) {
 		} else {
 			fmt.Fprintf(b, " as %s(%d)", e.Loop.Name, e.Loop.MaxIterations)
 		}
+	}
+	if e.Foreach != nil {
+		fmt.Fprintf(b, " as foreach %s(%s in %q)", e.Foreach.Name, e.Foreach.Item, e.Foreach.Collection)
 	}
 	if len(e.With) > 0 {
 		if len(e.With) == 1 {

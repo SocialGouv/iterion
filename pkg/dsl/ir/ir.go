@@ -28,7 +28,10 @@ type Workflow struct {
 	Presets         map[string]Preset      // preset name → resolved preset values (var name → typed value)
 	Attachments     map[string]*Attachment // attachment name → resolved attachment
 	Loops           map[string]*Loop       // loop name → loop definition
+	Foreaches       map[string]*Foreach    // foreach name → sequential-iteration definition
 	Budget          *Budget                // workflow budget (nil if not set)
+	Resources       map[string]int         // named counting semaphores (resource name → capacity); nil = none
+	ResourceMembers map[string][]string    // resource name → named-instance lease pool (capacity = len); nil = counting-only
 	Compaction      *Compaction            // workflow-level compaction overrides (nil = no override)
 	MCP             *MCPConfig             // workflow-level MCP activation/filtering
 	DefaultBackend  string                 // workflow-level default backend (empty = not set)
@@ -72,6 +75,7 @@ const (
 	NodeHuman                   // human pause/resume
 	NodeTool                    // direct command execution (no LLM)
 	NodeCompute                 // deterministic expression evaluation (no LLM, no shell)
+	NodeSubbot                  // runs another .bot as a nested run
 	NodeDone                    // terminal: success
 	NodeFail                    // terminal: failure
 )
@@ -90,6 +94,8 @@ func (k NodeKind) String() string {
 		return "tool"
 	case NodeCompute:
 		return "compute"
+	case NodeSubbot:
+		return "subbot"
 	case NodeDone:
 		return "done"
 	case NodeFail:
@@ -104,6 +110,26 @@ func (k NodeKind) String() string {
 type Node interface {
 	NodeID() string
 	NodeKind() NodeKind
+}
+
+// NodeNeeds returns the resource names a node acquires before running (the
+// `needs:` property). Nodes without a `needs:` declaration — and node kinds
+// that don't support it (human/compute/done/fail) — return nil.
+func NodeNeeds(n Node) []string {
+	switch x := n.(type) {
+	case *AgentNode:
+		return x.Needs
+	case *JudgeNode:
+		return x.Needs
+	case *RouterNode:
+		return x.Needs
+	case *ToolNode:
+		return x.Needs
+	case *SubbotNode:
+		return x.Needs
+	default:
+		return nil
+	}
 }
 
 // BaseNode provides the common ID field embedded in every concrete node.
@@ -167,8 +193,9 @@ type AgentNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
-	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
+	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -193,8 +220,9 @@ type JudgeNode struct {
 	Memory           *Memory      // per-node workspace memory opt-in (nil = disabled)
 	Sandbox          *SandboxSpec // node-level sandbox override (nil = inherit workflow)
 	Cursors          *CursorInvocation
-	Compress         string // compress output-compression mode: on|ultra|off ("" = inherit)
-	Permission       string // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Compress         string   // compress output-compression mode: on|ultra|off ("" = inherit)
+	Permission       string   // permission gate mode override: off|ask|deny ("" = inherit workflow)
+	Needs            []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -205,8 +233,29 @@ func (n *JudgeNode) NodeKind() NodeKind { return NodeJudge }
 type RouterNode struct {
 	BaseNode
 	LLMFields              // only populated for RouterLLM mode
-	RouterMode  RouterMode // fan_out_all, condition, round_robin, or llm
+	RouterMode  RouterMode // fan_out_all, condition, round_robin, llm, or fan_out_each
 	RouterMulti bool       // LLM router: select multiple targets (default: one)
+
+	// Data-driven fan-out (RouterFanOutEach only). At runtime the engine
+	// resolves Over to an array and re-executes the single outgoing
+	// template subgraph once per element, binding the element (and its
+	// index) onto this router's per-branch output under ItemBinding /
+	// "item" / "index" / "count".
+	Over        string // raw array-source template, e.g. "{{outputs.decompose.tickets}}"
+	OverRefs    []*Ref // parsed refs from Over (resolved at runtime)
+	ItemBinding string // per-item binding name (default "item")
+
+	// Optional DAG scheduling (RouterFanOutEach only). When KeyField is set,
+	// each item is identified by item[KeyField] and depends on the ids listed
+	// in item[DepsField]; the engine schedules branches in topological order,
+	// running independent items in parallel (bounded by max_parallel_branches)
+	// and holding a dependent until all its deps have finished. Empty deps =>
+	// fully parallel (identical to plain fan_out_each); a linear chain => fully
+	// sequential. Empty KeyField => no DAG, plain fan-out.
+	KeyField  string // item field holding its unique id
+	DepsField string // item field holding the array of ids it depends on
+
+	Needs []string // resource names this node acquires before running (counting semaphores)
 }
 
 // NodeKind implements Node.
@@ -268,6 +317,8 @@ type ToolNode struct {
 	PostcondRefs  []*Ref        // parsed template refs in Postcondition (resolved at runtime)
 	Policy        string        // "required" | "recover" | "best_effort" (defaulted at compile time)
 	Recovery      *RecoverySpec // bounded recovery rung config (nil = no rungs)
+
+	Needs []string // resource names this node acquires before running (counting semaphores)
 }
 
 // Verified Action policy values (ADR-044).
@@ -285,6 +336,22 @@ type RecoverySpec struct {
 	Model             string   // recovery LLM spec (empty = node/workflow default)
 	AgentTools        []string // rung-4 toolset (empty = node capabilities)
 }
+
+// SubbotNode runs another .bot as a nested run. The runtime resolves With into
+// the child's input vars, invokes the host-supplied SubbotRunner (which
+// compiles + runs the child in the same store), and maps the child's terminal
+// output to outputs.<subbot>.<field>. The child is a real run, so unlike a
+// fan-out branch it may contain loops.
+type SubbotNode struct {
+	BaseNode
+	Source       string         // path/ref to the child .bot (relative to the parent workdir)
+	With         []*DataMapping // vars passed to the child run (key = child var name)
+	OutputSchema string         // schema reference describing the child's terminal output
+	Needs        []string       // resource names acquired before running the child
+}
+
+// NodeKind implements Node.
+func (n *SubbotNode) NodeKind() NodeKind { return NodeSubbot }
 
 // NodeKind implements Node.
 func (n *ToolNode) NodeKind() NodeKind { return NodeTool }
@@ -587,6 +654,7 @@ const (
 	RouterCondition  = types.RouterCondition
 	RouterRoundRobin = types.RouterRoundRobin
 	RouterLLM        = types.RouterLLM
+	RouterFanOutEach = types.RouterFanOutEach
 )
 
 // AwaitMode determines how a convergence point handles multiple incoming branches.
@@ -706,6 +774,11 @@ type Edge struct {
 	// Loop reference (optional). LoopName references a Loop in Workflow.Loops.
 	LoopName string
 
+	// Foreach reference (optional). ForeachName references a Foreach in
+	// Workflow.Foreaches: a (back-)edge that iterates its body over a
+	// collection, in order. Mutually exclusive with LoopName.
+	ForeachName string
+
 	// Data mappings (optional). Each entry maps a target input field
 	// to a resolved reference expression.
 	With []*DataMapping
@@ -728,6 +801,13 @@ func (e *Edge) IsConditional() bool {
 	return e.Condition != "" || e.Expression != nil
 }
 
+// IsBoundedIteration reports whether an edge is a bounded iteration back-edge —
+// either a named loop (max_iterations) or a foreach (collection-bounded). Such
+// edges are cycles by design and are not default fall-through edges.
+func (e *Edge) IsBoundedIteration() bool {
+	return e != nil && (e.LoopName != "" || e.ForeachName != "")
+}
+
 // ---------------------------------------------------------------------------
 // Ref — normalized reference expression
 // ---------------------------------------------------------------------------
@@ -744,6 +824,7 @@ const (
 	RefLoop                       // {{loop.<name>.iteration}} / .max / .previous_output[.field]
 	RefRun                        // {{run.id}}
 	RefSecrets                    // {{secrets.<name>}} — renders the placeholder; materialised at exec
+	RefEach                       // {{each.<name>.item|index|count|first|last}} — sequential foreach binding
 )
 
 func (rk RefKind) String() string {
@@ -764,6 +845,8 @@ func (rk RefKind) String() string {
 		return "run"
 	case RefSecrets:
 		return "secrets"
+	case RefEach:
+		return "each"
 	default:
 		return "unknown"
 	}
@@ -1033,6 +1116,18 @@ type Loop struct {
 	// fix_X → review_commit_auto reset the counter every cycle and
 	// review_commit_auto's iteration_path stuck at recovery_loop=0).
 	Entries map[string]bool
+}
+
+// Foreach defines a named sequential iteration over a collection. A
+// back-edge `... as foreach <name>(item in <collection>)` re-enters its
+// body once per element, in order. The runtime advances an index (sharing
+// rs.loopCounters under the foreach name) and exposes the current element
+// via the `each.<name>` namespace ({{each.<name>.item|index|count|first|last}}).
+type Foreach struct {
+	Name           string
+	Item           string // element binding identifier (informational)
+	CollectionRaw  string // collection template source, e.g. "{{outputs.list.items}}"
+	CollectionRefs []*Ref // pre-parsed refs resolved to a []any at runtime
 }
 
 // ---------------------------------------------------------------------------

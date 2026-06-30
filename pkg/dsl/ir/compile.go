@@ -40,6 +40,7 @@ const (
 	DiagInvalidSandboxMode    DiagCode = "C044" // sandbox mode value is not one of "", none, auto
 	DiagSandboxAutoNoConfig   DiagCode = "C045" // sandbox: auto requested but no .devcontainer/devcontainer.json found
 	DiagBudgetCostInvalid     DiagCode = "C046" // budget.max_cost_usd negative, NaN or Inf
+	DiagResourceCapInvalid    DiagCode = "C194" // resources.<name> capacity ≤ 0
 )
 
 // codexBackendName is the literal value of the discouraged backend.
@@ -341,6 +342,9 @@ func (c *compiler) validateNodeNames() {
 	for _, d := range c.file.Computes {
 		all = append(all, decl{"compute", d.Name})
 	}
+	for _, d := range c.file.Subbots {
+		all = append(all, decl{"subbot", d.Name})
+	}
 
 	seen := make(map[string]string, len(all)) // name → first kind to claim it
 	for _, d := range all {
@@ -391,6 +395,11 @@ func (c *compiler) compile() *Workflow {
 		c.errorf(DiagMultipleWorkflow, "multiple workflows not supported in V1; found %d", len(c.file.Workflows))
 	}
 
+	// Expand `use <group>` instantiations into concrete prefixed nodes +
+	// edges BEFORE any node compile pass, so groups are a pure compile-time
+	// macro (never reaching the IR or runtime).
+	c.expandGroups()
+
 	// Compile shared declarations.
 	c.compileMCPServers()
 	c.compileSchemas()
@@ -428,6 +437,7 @@ func (c *compiler) compile() *Workflow {
 	c.compileHumans()
 	c.compileTools()
 	c.compileComputes()
+	c.compileSubbots()
 
 	// Add terminal nodes. Safe by construction now: validateNodeNames
 	// above rejects any user node named "done"/"fail" before this point.
@@ -454,13 +464,16 @@ func (c *compiler) compile() *Workflow {
 	attachments := c.compileAttachments(c.file.Attachments, wf.Attachments, vars)
 
 	// Compile edges.
-	edges, loops := c.compileEdges(wf.Edges)
+	edges, loops, foreaches := c.compileEdges(wf.Edges)
 
 	// Compile budget.
 	var budget *Budget
 	if wf.Budget != nil {
 		budget = c.compileBudget(wf.Budget)
 	}
+
+	// Compile resources (named counting semaphores + optional lease pools).
+	resources, resourceMembers := c.compileResources(wf.Resources)
 
 	// Compile workflow-level compaction overrides.
 	compaction := compileCompaction(wf.Compaction)
@@ -487,7 +500,10 @@ func (c *compiler) compile() *Workflow {
 		Presets:         presets,
 		Attachments:     attachments,
 		Loops:           loops,
+		Foreaches:       foreaches,
 		Budget:          budget,
+		Resources:       resources,
+		ResourceMembers: resourceMembers,
 		Compaction:      compaction,
 		MCP:             convertMCPConfig(wf.MCP),
 		MCPServers:      c.mcp,
@@ -797,6 +813,7 @@ func (c *compiler) compileAgents() {
 			Cursors:           compileCursorInvocation(a.Cursors),
 			Compress:          a.Compress,
 			Permission:        a.Permission,
+			Needs:             a.Needs,
 		}
 	}
 }
@@ -830,6 +847,7 @@ func (c *compiler) compileJudges() {
 			Cursors:           compileCursorInvocation(j.Cursors),
 			Compress:          j.Compress,
 			Permission:        j.Permission,
+			Needs:             j.Needs,
 		}
 	}
 }
@@ -850,6 +868,7 @@ func (c *compiler) compileRouters() {
 		node := &RouterNode{
 			BaseNode:   BaseNode{ID: r.Name},
 			RouterMode: mode,
+			Needs:      r.Needs,
 		}
 		if mode != RouterLLM {
 			if r.Model != "" {
@@ -890,6 +909,40 @@ func (c *compiler) compileRouters() {
 			}
 			node.RouterMulti = r.Multi
 			node.ReasoningEffort = r.ReasoningEffort
+		}
+		// Data-driven fan-out config (RouterFanOutEach only).
+		if mode == RouterFanOutEach {
+			if r.Over == "" {
+				c.errorf(DiagFanOutEachMissingOver,
+					"router %q with mode fan_out_each requires an 'over:' array source (e.g. over: \"{{outputs.decompose.tickets}}\")", r.Name)
+			} else {
+				refs, err := ParseRefs(r.Over)
+				if err != nil {
+					c.errorf(DiagFanOutEachMissingOver, "router %q 'over' is not a valid template: %v", r.Name, err)
+				}
+				node.Over = r.Over
+				node.OverRefs = refs
+			}
+			node.ItemBinding = r.As
+			if node.ItemBinding == "" {
+				node.ItemBinding = "item"
+			}
+			node.KeyField = r.Key
+			node.DepsField = r.DependsOn
+			// depends_on without key is ambiguous (no id to resolve deps against).
+			if r.DependsOn != "" && r.Key == "" {
+				c.errorf(DiagFanOutEachMissingOver, "router %q has 'depends_on' but no 'key'; a 'key' field is required to identify items for DAG scheduling", r.Name)
+			}
+		} else {
+			if r.Over != "" {
+				c.errorf(DiagFanOutEachOnlyProperty, "router %q property 'over' is only valid with mode: fan_out_each", r.Name)
+			}
+			if r.As != "" {
+				c.errorf(DiagFanOutEachOnlyProperty, "router %q property 'as' is only valid with mode: fan_out_each", r.Name)
+			}
+			if r.Key != "" || r.DependsOn != "" {
+				c.errorf(DiagFanOutEachOnlyProperty, "router %q properties 'key'/'depends_on' are only valid with mode: fan_out_each", r.Name)
+			}
 		}
 		c.nodes[r.Name] = node
 	}
@@ -1107,6 +1160,7 @@ func (c *compiler) compileTools() {
 			Sandbox:       c.compileSandboxBlock(t.Sandbox, "tool", t.Name),
 			Compress:      t.Compress,
 			Permission:    t.Permission,
+			Needs:         t.Needs,
 			Goal:          t.Goal,
 			Postcondition: t.Postcondition,
 			PostcondRefs:  postcondRefs,
@@ -1164,12 +1218,45 @@ func (c *compiler) compileComputes() {
 	}
 }
 
+func (c *compiler) compileSubbots() {
+	for _, sd := range c.file.Subbots {
+		if _, exists := c.nodes[sd.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[sd.Name] {
+			continue
+		}
+		if sd.Source == "" {
+			c.errorfAt(DiagSubbotNoSource, sd.Name, "", "subbot %q has no `source:` — a child .bot path is required", sd.Name)
+		}
+		if sd.Output != "" {
+			c.validateSchemaRef(sd.Name, "output", sd.Output)
+		}
+		with := make([]*DataMapping, 0, len(sd.With))
+		for _, w := range sd.With {
+			refs, err := ParseRefs(w.Value)
+			if err != nil {
+				c.errorfAt(DiagBadTemplateRef, sd.Name, "", "subbot %q with key %q: %v", sd.Name, w.Key, err)
+			}
+			with = append(with, &DataMapping{Key: w.Key, Refs: refs, Raw: w.Value})
+		}
+		c.nodes[sd.Name] = &SubbotNode{
+			BaseNode:     BaseNode{ID: sd.Name},
+			Source:       sd.Source,
+			With:         with,
+			OutputSchema: sd.Output,
+			Needs:        sd.Needs,
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Edges
 // ---------------------------------------------------------------------------
 
-func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop) {
+func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop, map[string]*Foreach) {
 	loops := make(map[string]*Loop)
+	foreaches := make(map[string]*Foreach)
 	edges := make([]*Edge, 0, len(astEdges))
 
 	for _, ae := range astEdges {
@@ -1238,6 +1325,27 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			}
 		}
 
+		// Foreach (sequential collection iteration; mutually exclusive with Loop).
+		if ae.Foreach != nil {
+			if ae.Loop != nil {
+				c.errorf(DiagForeachConflictsLoop, "edge %s -> %s: cannot combine `as foreach` with `as <loop>`", ae.From, ae.To)
+			}
+			e.ForeachName = ae.Foreach.Name
+			if _, ok := foreaches[ae.Foreach.Name]; !ok {
+				fe := &Foreach{
+					Name:          ae.Foreach.Name,
+					Item:          ae.Foreach.Item,
+					CollectionRaw: ae.Foreach.Collection,
+				}
+				refs, err := ParseRefs(ae.Foreach.Collection)
+				if err != nil {
+					c.errorf(DiagBadTemplateRef, "foreach %q: collection %q: %v", ae.Foreach.Name, ae.Foreach.Collection, err)
+				}
+				fe.CollectionRefs = refs
+				foreaches[ae.Foreach.Name] = fe
+			}
+		}
+
 		// Data mappings.
 		if len(ae.With) > 0 {
 			e.With = make([]*DataMapping, len(ae.With))
@@ -1258,7 +1366,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 		edges = append(edges, e)
 	}
 
-	return edges, loops
+	return edges, loops, foreaches
 }
 
 // ---------------------------------------------------------------------------
@@ -1524,6 +1632,37 @@ func (c *compiler) compileBudget(b *ast.BudgetBlock) *Budget {
 		MaxTokens:           b.MaxTokens,
 		MaxIterations:       b.MaxIterations,
 	}
+}
+
+// compileResources converts the AST resources block to the IR map
+// (name → capacity). Capacities ≤ 0 are dropped with a diagnostic — a
+// zero/negative semaphore would block its `needs:` nodes forever.
+func (c *compiler) compileResources(rb *ast.ResourcesBlock) (map[string]int, map[string][]string) {
+	if rb == nil || len(rb.Capacities) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]int, len(rb.Capacities))
+	var members map[string][]string
+	for name, capacity := range rb.Capacities {
+		if capacity <= 0 {
+			c.errorf(DiagResourceCapInvalid,
+				"workflow.resources.%s capacity %d must be > 0", name, capacity)
+			continue
+		}
+		out[name] = capacity
+		// Lease form: a resource declared as an ident-list carries its member
+		// ids; each acquire leases one distinct id (capacity = len(members)).
+		if m := rb.Members[name]; len(m) > 0 {
+			if members == nil {
+				members = make(map[string][]string, len(rb.Capacities))
+			}
+			members[name] = m
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, members
 }
 
 // compileCompaction converts an AST CompactionBlock to its IR form. Returns

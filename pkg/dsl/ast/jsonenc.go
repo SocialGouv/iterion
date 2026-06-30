@@ -47,6 +47,7 @@ var strToMCPTransport = func() map[string]MCPTransport {
 
 var routerModeToStr = map[RouterMode]string{
 	RouterFanOutAll:  "fan_out_all",
+	RouterFanOutEach: "fan_out_each",
 	RouterCondition:  "condition",
 	RouterRoundRobin: "round_robin",
 	RouterLLM:        "llm",
@@ -304,6 +305,7 @@ type jsonAgentDecl struct {
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
+	Needs             []string             `json:"needs,omitempty"`
 }
 
 type jsonJudgeDecl struct {
@@ -336,18 +338,24 @@ type jsonJudgeDecl struct {
 	Cursors           *jsonCursorBlock     `json:"cursors,omitempty"`
 	Compress          string               `json:"compress,omitempty"`
 	Permission        string               `json:"permission,omitempty"`
+	Needs             []string             `json:"needs,omitempty"`
 }
 
 type jsonRouterDecl struct {
-	Name            string `json:"name,omitempty"`
-	Mode            string `json:"mode,omitempty"`
-	Model           string `json:"model,omitempty"`
-	Backend         string `json:"backend,omitempty"`
-	Provider        string `json:"provider,omitempty"`
-	System          string `json:"system,omitempty"`
-	User            string `json:"user,omitempty"`
-	Multi           bool   `json:"multi,omitempty"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	Mode            string   `json:"mode,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	Backend         string   `json:"backend,omitempty"`
+	Provider        string   `json:"provider,omitempty"`
+	System          string   `json:"system,omitempty"`
+	User            string   `json:"user,omitempty"`
+	Multi           bool     `json:"multi,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	Over            string   `json:"over,omitempty"`
+	As              string   `json:"as,omitempty"`
+	Key             string   `json:"key,omitempty"`
+	DependsOn       string   `json:"depends_on,omitempty"`
+	Needs           []string `json:"needs,omitempty"`
 }
 
 type jsonHumanDecl struct {
@@ -388,6 +396,7 @@ type jsonToolNodeDecl struct {
 	Postcondition  string             `json:"postcondition,omitempty"`
 	Policy         string             `json:"policy,omitempty"`
 	Recovery       *jsonRecoveryBlock `json:"recovery,omitempty"`
+	Needs          []string           `json:"needs,omitempty"`
 }
 
 // jsonRecoveryBlock is the JSON form of an ast.RecoveryBlock (ADR-044).
@@ -559,6 +568,7 @@ type jsonWorkflowDecl struct {
 	Capabilities   []string              `json:"capabilities,omitempty"`
 	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
 	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
+	Resources      map[string]int        `json:"resources,omitempty"`
 	Compaction     *jsonCompactionBlock  `json:"compaction,omitempty"`
 	Interaction    string                `json:"interaction,omitempty"`
 	Worktree       string                `json:"worktree,omitempty"`
@@ -663,6 +673,11 @@ func toJSON(f *File) *jsonFile {
 			User:            r.User,
 			Multi:           r.Multi,
 			ReasoningEffort: r.ReasoningEffort,
+			Over:            r.Over,
+			As:              r.As,
+			Key:             r.Key,
+			DependsOn:       r.DependsOn,
+			Needs:           r.Needs,
 		})
 	}
 	for _, h := range f.Humans {
@@ -686,6 +701,7 @@ func toJSON(f *File) *jsonFile {
 			Postcondition:  t.Postcondition,
 			Policy:         t.Policy,
 			Recovery:       recoveryBlockToJSON(t.Recovery),
+			Needs:          t.Needs,
 		})
 	}
 	for _, c := range f.Computes {
@@ -987,6 +1003,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Cursors:           cursorBlockToJSON(a.Cursors),
 		Compress:          a.Compress,
 		Permission:        a.Permission,
+		Needs:             a.Needs,
 	}
 }
 
@@ -1021,6 +1038,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Cursors:           cursorBlockToJSON(j.Cursors),
 		Compress:          j.Compress,
 		Permission:        j.Permission,
+		Needs:             j.Needs,
 	}
 }
 
@@ -1081,6 +1099,9 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 			MaxTokens:           w.Budget.MaxTokens,
 			MaxIterations:       w.Budget.MaxIterations,
 		}
+	}
+	if w.Resources != nil && len(w.Resources.Capacities) > 0 {
+		jw.Resources = w.Resources.Capacities
 	}
 	for _, e := range w.Edges {
 		jw.Edges = append(jw.Edges, edgeToJSON(e))
@@ -1214,6 +1235,11 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			User:            jr.User,
 			Multi:           jr.Multi,
 			ReasoningEffort: jr.ReasoningEffort,
+			Over:            jr.Over,
+			As:              jr.As,
+			Key:             jr.Key,
+			DependsOn:       jr.DependsOn,
+			Needs:           jr.Needs,
 		})
 	}
 
@@ -1247,6 +1273,7 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			Postcondition:  jt.Postcondition,
 			Policy:         jt.Policy,
 			Recovery:       recoveryBlockFromJSON(jt.Recovery),
+			Needs:          jt.Needs,
 		})
 	}
 
@@ -1456,6 +1483,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Cursors:           cursorBlockFromJSON(ja.Cursors),
 			Compress:          ja.Compress,
 			Permission:        ja.Permission,
+			Needs:             ja.Needs,
 		},
 	}, nil
 }
@@ -1504,6 +1532,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Cursors:           cursorBlockFromJSON(jj.Cursors),
 			Compress:          jj.Compress,
 			Permission:        jj.Permission,
+			Needs:             jj.Needs,
 		},
 	}, nil
 }
@@ -1593,6 +1622,9 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 			MaxTokens:           jw.Budget.MaxTokens,
 			MaxIterations:       jw.Budget.MaxIterations,
 		}
+	}
+	if len(jw.Resources) > 0 {
+		w.Resources = &ResourcesBlock{Capacities: jw.Resources}
 	}
 	for _, je := range jw.Edges {
 		e, err := edgeFromJSON(je)
