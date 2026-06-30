@@ -1157,6 +1157,9 @@ func writeEdge(b *strings.Builder, e *ast.Edge) {
 			fmt.Fprintf(b, " as %s(%d)", e.Loop.Name, e.Loop.MaxIterations)
 		}
 	}
+	if e.Foreach != nil {
+		fmt.Fprintf(b, " as foreach %s(%s in %q)", e.Foreach.Name, e.Foreach.Item, e.Foreach.Collection)
+	}
 	if len(e.With) > 0 {
 		if len(e.With) == 1 {
 			fmt.Fprintf(b, " with {\n")

@@ -2329,9 +2329,20 @@ func (p *parser) parseEdge() *ast.Edge {
 			if sawAs {
 				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'as' clause on edge")
 			}
-			parsed := p.parseLoopClause()
-			if !sawAs {
-				edge.Loop = parsed
+			// Disambiguate `as foreach <name>(item in coll)` from the loop form
+			// `as <loop_name>(N)` by looking at the token right after `as`.
+			p.next() // consume "as" tentatively
+			if p.peek().Type == TokenIdent && p.peek().Value == "foreach" {
+				fc := p.parseForeachClause() // consumes "foreach" onward
+				if !sawAs {
+					edge.Foreach = fc
+				}
+			} else {
+				p.backup() // restore "as" for parseLoopClause
+				parsed := p.parseLoopClause()
+				if !sawAs {
+					edge.Loop = parsed
+				}
 			}
 			sawAs = true
 		case TokenWith:
@@ -2386,6 +2397,33 @@ func (p *parser) parseWhenClause() *ast.WhenClause {
 	}
 	wc.Condition = cond
 	return wc
+}
+
+// parseForeachClause parses `as foreach <name>(<item> in <collection>)`. The
+// `as` has already been consumed by the caller; this consumes `foreach` onward.
+//
+//	as foreach scan(item in "{{outputs.list.items}}")
+func (p *parser) parseForeachClause() *ast.ForeachClause {
+	start := p.next() // consume "foreach"
+	fc := &ast.ForeachClause{Span: ast.Span{Start: p.pos(start)}}
+	fc.Name = tokenAsIdent(p.next())
+	if fc.Name == "" {
+		p.addError(DiagExpectedToken, p.peek(), "expected foreach name after 'as foreach'")
+	}
+	p.expect(TokenLParen)
+	fc.Item = tokenAsIdent(p.next())
+	if fc.Item == "" {
+		p.addError(DiagExpectedToken, p.peek(), "expected element binding identifier in 'foreach "+fc.Name+"(<item> in ...)'")
+	}
+	// `in` is a bare identifier (not a keyword) between the item and the collection.
+	if in := p.peek(); in.Type == TokenIdent && in.Value == "in" {
+		p.next()
+	} else {
+		p.addError(DiagExpectedToken, in, "expected 'in' after the foreach element binding")
+	}
+	fc.Collection = p.expectString()
+	p.expect(TokenRParen)
+	return fc
 }
 
 func (p *parser) parseLoopClause() *ast.LoopClause {

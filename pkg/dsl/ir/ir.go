@@ -28,6 +28,7 @@ type Workflow struct {
 	Presets         map[string]Preset      // preset name → resolved preset values (var name → typed value)
 	Attachments     map[string]*Attachment // attachment name → resolved attachment
 	Loops           map[string]*Loop       // loop name → loop definition
+	Foreaches       map[string]*Foreach    // foreach name → sequential-iteration definition
 	Budget          *Budget                // workflow budget (nil if not set)
 	Resources       map[string]int         // named counting semaphores (resource name → capacity); nil = none
 	ResourceMembers map[string][]string    // resource name → named-instance lease pool (capacity = len); nil = counting-only
@@ -752,6 +753,11 @@ type Edge struct {
 	// Loop reference (optional). LoopName references a Loop in Workflow.Loops.
 	LoopName string
 
+	// Foreach reference (optional). ForeachName references a Foreach in
+	// Workflow.Foreaches: a (back-)edge that iterates its body over a
+	// collection, in order. Mutually exclusive with LoopName.
+	ForeachName string
+
 	// Data mappings (optional). Each entry maps a target input field
 	// to a resolved reference expression.
 	With []*DataMapping
@@ -790,6 +796,7 @@ const (
 	RefLoop                       // {{loop.<name>.iteration}} / .max / .previous_output[.field]
 	RefRun                        // {{run.id}}
 	RefSecrets                    // {{secrets.<name>}} — renders the placeholder; materialised at exec
+	RefEach                       // {{each.<name>.item|index|count|first|last}} — sequential foreach binding
 )
 
 func (rk RefKind) String() string {
@@ -810,6 +817,8 @@ func (rk RefKind) String() string {
 		return "run"
 	case RefSecrets:
 		return "secrets"
+	case RefEach:
+		return "each"
 	default:
 		return "unknown"
 	}
@@ -1079,6 +1088,18 @@ type Loop struct {
 	// fix_X → review_commit_auto reset the counter every cycle and
 	// review_commit_auto's iteration_path stuck at recovery_loop=0).
 	Entries map[string]bool
+}
+
+// Foreach defines a named sequential iteration over a collection. A
+// back-edge `... as foreach <name>(item in <collection>)` re-enters its
+// body once per element, in order. The runtime advances an index (sharing
+// rs.loopCounters under the foreach name) and exposes the current element
+// via the `each.<name>` namespace ({{each.<name>.item|index|count|first|last}}).
+type Foreach struct {
+	Name           string
+	Item           string // element binding identifier (informational)
+	CollectionRaw  string // collection template source, e.g. "{{outputs.list.items}}"
+	CollectionRefs []*Ref // pre-parsed refs resolved to a []any at runtime
 }
 
 // ---------------------------------------------------------------------------

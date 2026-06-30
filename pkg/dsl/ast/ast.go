@@ -761,12 +761,25 @@ type SandboxNetworkBlock struct {
 
 // Edge represents a directed transition: `src -> dst [when ...] [as ...] [with {...}]`.
 type Edge struct {
-	From string       // source node name
-	To   string       // target node name (can be "done" or "fail")
-	When *WhenClause  // optional condition
-	Loop *LoopClause  // optional loop tracking
-	With []*WithEntry // optional data mappings
-	Span Span
+	From    string         // source node name
+	To      string         // target node name (can be "done" or "fail")
+	When    *WhenClause    // optional condition
+	Loop    *LoopClause    // optional loop tracking
+	Foreach *ForeachClause // optional sequential foreach iteration (mutually exclusive with Loop)
+	With    []*WithEntry   // optional data mappings
+	Span    Span
+}
+
+// ForeachClause represents `as foreach <name>(<item> in <collection>)` on a
+// (back-)edge: it iterates the body once per element of the collection, in
+// order, binding the current element under the `each.<name>` namespace
+// ({{each.<name>.item|index|count|first|last}}). The collection is a template
+// resolved at runtime to a JSON array.
+type ForeachClause struct {
+	Name       string // iteration name (e.g. "scan")
+	Item       string // element binding identifier (e.g. "item") — currently informational
+	Collection string // collection template, e.g. "{{outputs.list.items}}"
+	Span       Span
 }
 
 // WhenClause represents a `when [not] <condition>` or `when <expression>` on

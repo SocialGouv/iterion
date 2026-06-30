@@ -78,6 +78,8 @@ func parseRef(expr, raw string) (*Ref, error) {
 		kind = RefAttachments
 	case "loop":
 		kind = RefLoop
+	case "each":
+		kind = RefEach
 	case "run":
 		kind = RefRun
 	case "secrets":

@@ -1708,6 +1708,12 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 		}
 	}
 
+	if selected.ForeachName != "" {
+		// Advancing to the next element: bump the foreach index (shares the
+		// loopCounters map under the foreach name; distinct namespaces).
+		rs.loopCounters[selected.ForeachName] = rs.loopCounters[selected.ForeachName] + 1
+	}
+
 	if selected.LoopName != "" {
 		rs.loopCounters[selected.LoopName] = rs.loopCounters[selected.LoopName] + 1
 		// Rotate snapshots so {{loop.<name>.previous_output}} reads the
@@ -1914,6 +1920,11 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 			return nil
 		}
 		return e.resolveLoopPath(ref.Path, sc.rs)
+	case ir.RefEach:
+		if sc.rs == nil || len(ref.Path) < 2 {
+			return nil
+		}
+		return e.resolveEachPath(ref.Path, sc)
 	case ir.RefRun:
 		if sc.rs == nil || len(ref.Path) == 0 {
 			return nil
@@ -1921,6 +1932,70 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 		switch ref.Path[0] {
 		case "id":
 			return sc.rs.runID
+		}
+	}
+	return nil
+}
+
+// resolveEachPath resolves a {{each.<name>.<field>[.subfield…]}} reference for
+// a sequential foreach. Recognized fields:
+//
+//	item   — the current element (drills into sub-fields for object elements)
+//	index  — current 0-based position (int64)
+//	count  — collection length (int64)
+//	first  — index == 0 (bool)
+//	last   — index >= count-1, or count == 0 (bool)
+//	empty  — count == 0 (bool)
+func (e *Engine) resolveEachPath(path []string, sc resolveScope) interface{} {
+	name := path[0]
+	fe, ok := e.workflow.Foreaches[name]
+	if !ok {
+		return nil
+	}
+	coll := e.resolveForeachCollection(fe, sc)
+	idx := sc.rs.loopCounters[name]
+	count := len(coll)
+	switch path[1] {
+	case "item":
+		if idx < 0 || idx >= count {
+			return nil
+		}
+		if len(path) > 2 {
+			return drillPath(coll[idx], path[2:])
+		}
+		return coll[idx]
+	case "index":
+		return int64(idx)
+	case "count":
+		return int64(count)
+	case "first":
+		return idx == 0
+	case "last":
+		return count == 0 || idx >= count-1
+	case "empty":
+		return count == 0
+	}
+	return nil
+}
+
+// resolveForeachCollection resolves a foreach's collection template to a slice.
+// A JSON-string collection (a tool printing its array as text) is unmarshalled;
+// a non-array resolves to an empty slice.
+func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []interface{} {
+	if len(fe.CollectionRefs) == 0 {
+		return nil
+	}
+	raw := e.resolveRef(fe.CollectionRefs[0], sc)
+	switch v := raw.(type) {
+	case []interface{}:
+		return v
+	case string:
+		if v == "" {
+			return nil
+		}
+		var list []interface{}
+		if json.Unmarshal([]byte(v), &list) == nil {
+			return list
 		}
 	}
 	return nil

@@ -460,7 +460,7 @@ func (c *compiler) compile() *Workflow {
 	attachments := c.compileAttachments(c.file.Attachments, wf.Attachments, vars)
 
 	// Compile edges.
-	edges, loops := c.compileEdges(wf.Edges)
+	edges, loops, foreaches := c.compileEdges(wf.Edges)
 
 	// Compile budget.
 	var budget *Budget
@@ -496,6 +496,7 @@ func (c *compiler) compile() *Workflow {
 		Presets:         presets,
 		Attachments:     attachments,
 		Loops:           loops,
+		Foreaches:       foreaches,
 		Budget:          budget,
 		Resources:       resources,
 		ResourceMembers: resourceMembers,
@@ -1217,8 +1218,9 @@ func (c *compiler) compileComputes() {
 // Edges
 // ---------------------------------------------------------------------------
 
-func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop) {
+func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop, map[string]*Foreach) {
 	loops := make(map[string]*Loop)
+	foreaches := make(map[string]*Foreach)
 	edges := make([]*Edge, 0, len(astEdges))
 
 	for _, ae := range astEdges {
@@ -1287,6 +1289,27 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 			}
 		}
 
+		// Foreach (sequential collection iteration; mutually exclusive with Loop).
+		if ae.Foreach != nil {
+			if ae.Loop != nil {
+				c.errorf(DiagForeachConflictsLoop, "edge %s -> %s: cannot combine `as foreach` with `as <loop>`", ae.From, ae.To)
+			}
+			e.ForeachName = ae.Foreach.Name
+			if _, ok := foreaches[ae.Foreach.Name]; !ok {
+				fe := &Foreach{
+					Name:          ae.Foreach.Name,
+					Item:          ae.Foreach.Item,
+					CollectionRaw: ae.Foreach.Collection,
+				}
+				refs, err := ParseRefs(ae.Foreach.Collection)
+				if err != nil {
+					c.errorf(DiagBadTemplateRef, "foreach %q: collection %q: %v", ae.Foreach.Name, ae.Foreach.Collection, err)
+				}
+				fe.CollectionRefs = refs
+				foreaches[ae.Foreach.Name] = fe
+			}
+		}
+
 		// Data mappings.
 		if len(ae.With) > 0 {
 			e.With = make([]*DataMapping, len(ae.With))
@@ -1307,7 +1330,7 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 		edges = append(edges, e)
 	}
 
-	return edges, loops
+	return edges, loops, foreaches
 }
 
 // ---------------------------------------------------------------------------

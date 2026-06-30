@@ -35,6 +35,7 @@ const (
 	DiagFanOutEachEdges          DiagCode = "C115" // fan_out_each router must have exactly one outgoing template edge (was C104)
 	DiagUseUnknownGroup          DiagCode = "C116" // use references a group that is not declared (error)
 	DiagUseParamMismatch         DiagCode = "C117" // use provides an unknown param, or omits a declared one (error)
+	DiagForeachConflictsLoop     DiagCode = "C118" // edge combines `as foreach` with `as <loop>` (error)
 	DiagInvalidReasoningEffort   DiagCode = "C027" // invalid reasoning_effort value (was C024, clashed with DiagDuplicateMCPServer)
 	DiagUltracodeModelGate       DiagCode = "C089" // reasoning_effort: ultracode on a model that isn't claude-opus-4-8 (warning)
 	DiagInvalidLoopIterations    DiagCode = "C026" // loop max_iterations must be >= 1
@@ -641,7 +642,10 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		switch {
 		case e.IsConditional():
 			g.conditional = append(g.conditional, e)
-		case e.LoopName != "":
+		case e.LoopName != "" || e.ForeachName != "":
+			// Loop and foreach back-edges are bounded iteration edges, not
+			// default fall-through edges — they don't count toward the
+			// "one default edge" rule.
 			g.loopBearing = append(g.loopBearing, e)
 		default:
 			g.unconditional = append(g.unconditional, e)
@@ -1108,7 +1112,9 @@ func (c *compiler) validateUndeclaredCycles(w *Workflow) {
 	// LoopName — the runtime enforces max_iterations on that edge.
 	loopNodes := make(map[string]bool)
 	for _, e := range w.Edges {
-		if e.LoopName != "" {
+		// A foreach back-edge is a bounded cycle too — the runtime stops it
+		// when the collection is exhausted.
+		if e.LoopName != "" || e.ForeachName != "" {
 			loopNodes[e.From] = true
 			loopNodes[e.To] = true
 		}
