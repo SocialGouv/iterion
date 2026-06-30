@@ -37,6 +37,33 @@ func TestRunEvents_Sticky(t *testing.T) {
 	}
 }
 
+// TestRunEvents_PayloadDeepIsolation verifies the ADR-051 immutability boundary
+// holds for NESTED payload values: a waiter that mutates a nested map/slice in
+// the payload it received must not corrupt the registry's stored event (nor any
+// other waiter's copy). This is the regression for the shallow-clone bug — a
+// per-key copy would leave the nested map aliased and let the mutation leak back.
+func TestRunEvents_PayloadDeepIsolation(t *testing.T) {
+	re := newRunEvents()
+	re.signal("nested", map[string]interface{}{
+		"meta": map[string]interface{}{"count": 1},
+		"tags": []interface{}{"a", "b"},
+	})
+
+	// First waiter reads the payload and mutates the nested structures.
+	first := re.payloadFor("nested")
+	first["meta"].(map[string]interface{})["count"] = 999
+	first["tags"].([]interface{})[0] = "MUTATED"
+
+	// A second, independent read must still see the original nested values.
+	second := re.payloadFor("nested")
+	if got := second["meta"].(map[string]interface{})["count"]; got != 1 {
+		t.Errorf("nested map leaked mutation: count = %v, want 1", got)
+	}
+	if got := second["tags"].([]interface{})[0]; got != "a" {
+		t.Errorf("nested slice leaked mutation: tags[0] = %v, want \"a\"", got)
+	}
+}
+
 // TestRunEvents_DoubleSignal verifies a second emit of the same event does not
 // panic on a re-close and refreshes the payload.
 func TestRunEvents_DoubleSignal(t *testing.T) {

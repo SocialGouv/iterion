@@ -1643,161 +1643,35 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 // ---------------------------------------------------------------------------
 
 // execCompute evaluates a ComputeNode's expressions deterministically and
-// stores the result as the node's output. It mirrors the standard execution
-// envelope (node_started → output → node_finished → checkpoint → edge select)
-// without invoking the executor backend.
-// runSubbotChild resolves the subbot's `with:` mappings against the given scope,
-// acquires any `needs:` resource leases (surfacing each leased instance id to the
-// child as `_lease_<resource>`), and invokes the host-supplied SubbotRunner,
-// returning the child run's terminal output. It is the executor-agnostic core
-// shared by the main-graph path (execSubbot, scope = rs.scope()) and the fan-out
-// branch path (executeNodeForBranch, scope = the branch's merged-output scope) —
-// only the scope used to resolve `with:` differs, so a per-element subbot reads
-// {{outputs.<router>.<as>.<field>}}. It does NOT emit events, record outputs, or
-// advance edges; each caller does that in its own idiom.
-func (e *Engine) runSubbotChild(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode, sc resolveScope) (map[string]interface{}, error) {
-	if e.subbotRunner == nil {
-		return nil, &RuntimeError{
-			Code:    ErrCodeExecutionFailed,
-			Message: fmt.Sprintf("subbot %q: no SubbotRunner is wired", nodeID),
-			NodeID:  nodeID,
-			Hint:    "subbot nodes need the CLI/studio runtime that can compile + run a child .bot; the bare engine can't (import cycle with runview)",
-		}
-	}
-
-	// Resolve the child's input vars from the `with:` mappings.
-	vars := make(map[string]interface{}, len(sn.With))
-	for _, dm := range sn.With {
-		vars[dm.Key] = e.resolveMapping(dm, sc)
-	}
-
-	// Acquire resource leases for the duration of the child run; surface the
-	// leased instance id so the child can pick e.g. its worktree index.
-	release, leases, lerr := e.acquireResources(ctx, rs, sn.Needs)
-	if lerr != nil {
-		return nil, lerr
-	}
-	defer release()
-	for res, id := range leases {
-		vars["_lease_"+res] = id
-	}
-
-	output, err := e.subbotRunner(ctx, SubbotRequest{
-		Source:      sn.Source,
-		Vars:        vars,
-		ParentRunID: rs.runID,
-		NodeID:      nodeID,
-	})
-	if err != nil {
-		return nil, &RuntimeError{
-			Code:    ErrCodeExecutionFailed,
-			Message: fmt.Sprintf("subbot %q (source %q): %v", nodeID, sn.Source, err),
-			NodeID:  nodeID,
-			Cause:   err,
-		}
-	}
-	if output == nil {
-		output = map[string]interface{}{}
-	}
-	return output, nil
-}
-
-// execSubbot runs a SubbotNode on the main graph: it emits the node-started
-// event, runs the child via runSubbotChild (with the run scope), maps the child's
-// terminal output to outputs.<subbot>.<field>, and advances the edge. The child is
-// a full nested run, so it may contain loops (unlike a fan-out branch).
-func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
-	startedPayload := map[string]interface{}{
-		"kind":      "subbot",
-		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
-		"source":    sn.Source,
-	}
-	if p := e.currentLoopIterationPath(nodeID, rs.loopCounters); p != "" {
-		startedPayload["iteration_path"] = p
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
-		return "", err
-	}
-
-	output, err := e.runSubbotChild(ctx, rs, nodeID, sn, rs.scope())
-	if err != nil {
-		return "", err
-	}
-
-	rs.outputs[nodeID] = output
-	delete(rs.nodeAttempts, nodeID)
-
-	if err := e.validateNodeOutput(nodeID, sn, output); err != nil {
-		return "", err
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(e.sanitizeOutputForEvent(sn, output))); err != nil {
-		return "", err
-	}
-	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
-	}
-	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
-		e.logger.Error("failed to save checkpoint after subbot %q: %v", nodeID, err)
-	}
-
-	return e.selectEdgeRS(rs, nodeID, output)
-}
-
+// stores the result as the node's output, persisting its published artifact
+// (post-validation) if declared. The shared lifecycle envelope (node_started →
+// body → validate → node_finished → checkpoint → edge select) lives in
+// execSpecialNode; only the expr-eval body and the publish hook are
+// compute-specific.
 func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (string, error) {
-	startedPayload := map[string]interface{}{
-		"kind":      "compute",
-		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
-	}
-	if p := e.currentLoopIterationPath(nodeID, rs.loopCounters); p != "" {
-		startedPayload["iteration_path"] = p
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
-		return "", err
-	}
+	return e.execSpecialNode(rs, nodeID, "compute", cn, nil,
+		func() (map[string]interface{}, error) { return e.computeOutput(rs, nodeID, cn, rs.scope()) },
+		func(output map[string]interface{}) error {
+			// Publish is compute-specific (only ComputeNode has a Publish
+			// field) and gated on validation: persist only known-valid output.
+			return e.persistArtifactIfPublished(rs.ctx, rs, nodeID, cn, output)
+		},
+	)
+}
 
-	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
-	output := make(map[string]interface{}, len(cn.Exprs))
-
-	exprCtx := e.exprContext(rs, nodeInput)
-	for _, ce := range cn.Exprs {
-		v, err := evalComputeExpr(ce.AST, exprCtx)
-		if err != nil {
-			return "", &RuntimeError{
-				Code:    ErrCodeExecutionFailed,
-				Message: fmt.Sprintf("compute %q: field %q expression %q: %v", nodeID, ce.Key, ce.Raw, err),
-				NodeID:  nodeID,
-				Hint:    "check the compute node's expressions for type mismatches or unknown references",
-			}
-		}
-		output[ce.Key] = v
-	}
-
-	rs.outputs[nodeID] = output
-	delete(rs.nodeAttempts, nodeID)
-
-	if err := e.validateNodeOutput(nodeID, cn, output); err != nil {
-		return "", err
-	}
-
-	// Persist artifact if the compute node has publish. Compute has a
-	// bespoke exec path, so it calls the shared writer explicitly. Zero
-	// extra cost: `output` is already computed deterministically above.
-	if err := e.persistArtifactIfPublished(rs.ctx, rs, nodeID, cn, output); err != nil {
-		return "", err
-	}
-
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(e.sanitizeOutputForEvent(cn, output))); err != nil {
-		return "", err
-	}
-	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
-	}
-
-	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
-		e.logger.Error("failed to save checkpoint after compute %q: %v", nodeID, err)
-	}
-
-	return e.selectEdgeRS(rs, nodeID, output)
+// execSubbot runs a SubbotNode: it resolves the `with:` mappings into the
+// child's input vars, acquires any `needs:` resource leases (passing the leased
+// instance id to the child as `_lease_<resource>`), invokes the host-supplied
+// SubbotRunner, and maps the child's terminal output to outputs.<subbot>.<field>.
+// The child is a full nested run, so it may contain loops (unlike a fan-out
+// branch). The run body lives in runSubbotNode (shared with the branch path);
+// the lifecycle envelope is execSpecialNode.
+func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
+	return e.execSpecialNode(rs, nodeID, "subbot", sn,
+		map[string]interface{}{"source": sn.Source},
+		func() (map[string]interface{}, error) { return e.runSubbotNode(ctx, rs, nodeID, sn, rs.scope()) },
+		nil,
+	)
 }
 
 // ---------------------------------------------------------------------------

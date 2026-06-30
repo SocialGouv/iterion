@@ -1013,7 +1013,19 @@ func evalComputeExpr(ast *expr.AST, exprCtx *expr.Context) (val interface{}, err
 // `input` resolves against the supplied input map (the current node's input
 // for compute nodes, or the source node's output when called from edge
 // selection — both correspond to "the data this edge sees").
+// exprContext builds an expression context against the run's trunk scope
+// (rs.vars / rs.outputs / rs.artifacts). For a node running inside a fan-out
+// branch — which must see branch-local outputs not yet merged into rs — use
+// exprContextScoped with the branch's merged scope.
 func (e *Engine) exprContext(rs *runState, input map[string]interface{}) *expr.Context {
+	return e.exprContextScoped(rs, rs.scope(), input)
+}
+
+// exprContextScoped builds an expression context against an explicit
+// resolveScope for vars/outputs/artifacts, while loop/run namespaces still
+// resolve against rs (read-only, parent-owned even inside a branch). The trunk
+// case (sc == rs.scope()) is behaviorally identical to the old exprContext.
+func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[string]interface{}) *expr.Context {
 	mapResolver := func(m map[string]interface{}) func([]string) interface{} {
 		return func(path []string) interface{} {
 			if len(path) == 0 {
@@ -1043,10 +1055,10 @@ func (e *Engine) exprContext(rs *runState, input map[string]interface{}) *expr.C
 		return nil
 	}
 	return &expr.Context{
-		Vars:      mapResolver(rs.vars),
+		Vars:      mapResolver(sc.vars),
 		Input:     mapResolver(input),
-		Outputs:   keyedMapResolver(rs.outputs),
-		Artifacts: keyedMapResolver(rs.artifacts),
+		Outputs:   keyedMapResolver(sc.outputs),
+		Artifacts: keyedMapResolver(sc.artifacts),
 		Loop:      loopResolver,
 		Run:       runResolver,
 	}

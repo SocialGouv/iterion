@@ -259,6 +259,85 @@ func TestToolAndComputePublishArtifact(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: a compute node INSIDE a fan-out branch (ADR-051 follow-on — unified
+// branch/main special-node dispatch). Before the unification the branch path
+// only special-cased emit/wait, so a compute in a branch fell through to the
+// executor and failed with "unsupported node kind". The compute also references
+// a branch-local upstream output, proving it resolves against the merged
+// parent+branch scope, not just the trunk.
+// ---------------------------------------------------------------------------
+
+func TestComputeNodeInsideFanOutBranch(t *testing.T) {
+	deriveExpr, err := expr.Parse("outputs.precompute.value")
+	if err != nil {
+		t.Fatalf("parse compute expr: %v", err)
+	}
+
+	wf := &ir.Workflow{
+		Name:  "compute_in_branch",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":      &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":     &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"agent_a":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"precompute": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "precompute"}},
+			"derive": &ir.ComputeNode{
+				BaseNode: ir.BaseNode{ID: "derive"},
+				Exprs:    []*ir.ComputeExpr{{Key: "derived", AST: deriveExpr, Raw: "outputs.precompute.value"}},
+			},
+			"finalize": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "finalize"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "agent_a"},
+			{From: "router", To: "precompute"},
+			{From: "precompute", To: "derive"},
+			{From: "agent_a", To: "finalize", With: []*ir.DataMapping{
+				{Key: "a", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"agent_a"}}}, Raw: "{{outputs.agent_a}}"},
+			}},
+			{From: "derive", To: "finalize", With: []*ir.DataMapping{
+				{Key: "d", Refs: []*ir.Ref{{Kind: ir.RefOutputs, Path: []string{"derive", "derived"}}}, Raw: "{{outputs.derive.derived}}"},
+			}},
+			{From: "finalize", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	var finalizeInput map[string]interface{}
+	exec := newStubExecutor()
+	exec.on("precompute", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"value": "from-branch-local"}, nil
+	})
+	exec.on("finalize", func(input map[string]interface{}) (map[string]interface{}, error) {
+		finalizeInput = input
+		return map[string]interface{}{"ok": true}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-compute-branch", nil); err != nil {
+		t.Fatalf("run with compute-in-branch failed: %v", err)
+	}
+
+	r, err := s.LoadRun(context.Background(), "run-compute-branch")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("status = %s, want finished", r.Status)
+	}
+	// The compute node resolved its branch-local upstream and its output reached
+	// the convergence node via the with-mapping.
+	if finalizeInput["d"] != "from-branch-local" {
+		t.Errorf("finalize input d = %v, want \"from-branch-local\" (compute output via merged branch scope)", finalizeInput["d"])
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: bounded loop  agent -> judge -> done (when pass) or loop back
 // ---------------------------------------------------------------------------
 

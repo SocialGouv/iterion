@@ -143,6 +143,73 @@ func TestFanOutWaitAllSuccess(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: a ping-pong fan-out under max_parallel_branches=1 where EACH branch
+// both emits and waits, so whichever branch the scheduler runs first eventually
+// parks on a `wait` while holding the only slot. This deadlocks for EVERY
+// ordering unless the parked wait releases its semaphore slot so the sibling can
+// run (ADR-051 slot-on-park follow-on) — sticky delivery alone can't save it,
+// because the first branch always parks before the second has run at all. With
+// slot-on-park the run completes deterministically regardless of order.
+// ---------------------------------------------------------------------------
+
+func TestFanOutPingPongSingleSlot(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "pingpong_one_slot",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router": &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			// Branch A: announce "a", then wait for "b".
+			"emit_a": &ir.EmitNode{BaseNode: ir.BaseNode{ID: "emit_a"}, Event: "a"},
+			"wait_b": &ir.WaitNode{BaseNode: ir.BaseNode{ID: "wait_b"}, Event: "b", Timeout: 5 * time.Second},
+			// Branch B: wait for "a", then announce "b".
+			"wait_a":   &ir.WaitNode{BaseNode: ir.BaseNode{ID: "wait_a"}, Event: "a", Timeout: 5 * time.Second},
+			"emit_b":   &ir.EmitNode{BaseNode: ir.BaseNode{ID: "emit_b"}, Event: "b"},
+			"finalize": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "finalize"}, AwaitMode: ir.AwaitWaitAll},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "emit_a"},
+			{From: "emit_a", To: "wait_b"},
+			{From: "wait_b", To: "finalize"},
+			{From: "router", To: "wait_a"},
+			{From: "wait_a", To: "emit_b"},
+			{From: "emit_b", To: "finalize"},
+			{From: "finalize", To: "done"},
+		},
+		Budget:  &ir.Budget{MaxParallelBranches: 1},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	exec := newStubExecutor()
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	// Hard ceiling: without slot-on-park the first branch to park blocks until
+	// its 5s wait timeout (run then fails); bound the test below that so a
+	// regression fails fast instead of hanging the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := eng.Run(ctx, "run-pingpong-1slot", nil); err != nil {
+		t.Fatalf("ping-pong deadlocked or failed (slot not released on park?): %v", err)
+	}
+
+	r, err := s.LoadRun(context.Background(), "run-pingpong-1slot")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if r.Status != store.RunStatusFinished {
+		t.Errorf("status = %s, want finished", r.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Test: fan-out with wait_all — one branch fails → run fails
 // ---------------------------------------------------------------------------
 

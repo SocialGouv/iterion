@@ -164,17 +164,16 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		perBranchOutputs[routerNodeID]["index"] = i
 		perBranchOutputs[routerNodeID]["count"] = len(items)
 
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-		case <-branchCtx.Done():
+		slot := &branchSlot{sem: sem}
+		if err := slot.acquire(branchCtx); err != nil {
 			return &branchResult{
 				branchID: branchID,
 				outputs:  make(map[string]map[string]interface{}),
 				err:      e.wrapContextErr(branchCtx.Err()),
 			}
 		}
-		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence)
+		defer slot.release()
+		return e.execBranch(branchCtx, rs, branchID, tmplEdge, perBranchOutputs, parentArtifacts, convergence, slot)
 	}
 
 	// finishBranch applies the shared post-branch cancellation policy.

@@ -142,6 +142,43 @@ func (e *Engine) planFromEdges(rs *runState, routerNodeID string, fanEdges []*ir
 	}, nil
 }
 
+// branchSlot is the fan-out semaphore slot held by one branch goroutine. A
+// parked `wait` node releases its slot (so the emitting branch can acquire one
+// and fire the event) and reacquires it on wake — without this, a `wait` would
+// hold its slot for the whole park and an under-provisioned
+// max_parallel_branches would starve the emitter until the wait timed out
+// (ADR-051 "releasing the slot on park" follow-on). release/acquire are
+// idempotent on `held` so the launchBranches defer always releases exactly the
+// final hold, never double-counting. The slot is owned by a single branch
+// goroutine, so `held` needs no synchronization.
+type branchSlot struct {
+	sem  chan struct{}
+	held bool
+}
+
+// release frees the slot if currently held (no-op otherwise).
+func (s *branchSlot) release() {
+	if s != nil && s.held {
+		<-s.sem
+		s.held = false
+	}
+}
+
+// acquire takes a slot if not already held, blocking until one is free or ctx
+// is cancelled. Returns ctx.Err() if cancelled before a slot is obtained.
+func (s *branchSlot) acquire(ctx context.Context) error {
+	if s == nil || s.held {
+		return nil
+	}
+	select {
+	case s.sem <- struct{}{}:
+		s.held = true
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // launchBranches spawns one bounded goroutine per fan-out edge and returns
 // the buffered results channel (sized to len(plan.edges), so a wedged
 // branch's eventual send never blocks the collector). Each goroutine
@@ -176,10 +213,10 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			// slot held by a branch wedged in executor.Execute even though its
 			// result is already doomed. The cancelled result keeps the
 			// collector's count balanced (no branch_started was emitted yet).
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }() // release
-			case <-branchCtx.Done():
+			// The slot is a *branchSlot so a parked wait can release+reacquire
+			// it mid-branch; the defer releases whatever the branch still holds.
+			slot := &branchSlot{sem: sem}
+			if err := slot.acquire(branchCtx); err != nil {
 				resultsCh <- &branchResult{
 					branchID: branchID,
 					outputs:  make(map[string]map[string]interface{}),
@@ -187,8 +224,9 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 				}
 				return
 			}
+			defer slot.release()
 
-			result := e.execBranch(branchCtx, rs, branchID, edge, plan.parentOutputs, plan.parentArtifacts, plan.preComputedConvergence)
+			result := e.execBranch(branchCtx, rs, branchID, edge, plan.parentOutputs, plan.parentArtifacts, plan.preComputedConvergence, slot)
 			// Cancel siblings (they observe it via the ctx.Done() select at
 			// the top of their per-iteration loop) when this branch tripped
 			// the global budget — every fan_out regardless of await mode — or
@@ -336,7 +374,7 @@ type branchResult struct {
 // convergence point, a terminal node, or encounters an error.
 // convergenceNodeID is the pre-computed convergence point (may be empty
 // if unknown; in that case, AwaitMode on individual nodes is checked).
-func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}, convergenceNodeID string) *branchResult {
+func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}, convergenceNodeID string, slot *branchSlot) *branchResult {
 	result := initBranchResult(rs, branchID)
 	runID := rs.runID
 
@@ -408,7 +446,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			result.eventErrors++
 		}
 
-		output, done := e.executeNodeForBranch(ctx, rs, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result)
+		output, done := e.executeNodeForBranch(ctx, rs, runID, branchID, currentNodeID, node, parentOutputs, parentArtifacts, iter, result, slot)
 		if done {
 			return result
 		}
@@ -521,64 +559,32 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 // flag: done=true (with result.err set) when execution or validation failed.
 // On an execution error it emits node_finished with the error so the event
 // log stays paired.
-func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]interface{}, iter int, result *branchResult) (map[string]interface{}, bool) {
+func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]interface{}, iter int, result *branchResult, slot *branchSlot) (map[string]interface{}, bool) {
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
-
-	// Event-driven primitives (ADR-051) are engine-special, not executor-backed:
-	// they touch the run-scoped event registry directly. A wait parked here
-	// holds this branch's semaphore slot until the emitting branch fires the
-	// event (or the mandatory timeout), so max_parallel_branches must admit
-	// both branches concurrently. emit/wait carry no `needs:` and never shell
-	// out, so they bypass the resource-lease + executor path below.
-	switch n := node.(type) {
-	case *ir.EmitNode:
-		output := e.emitEvent(rs, n)
-		result.outputs[currentNodeID] = output
-		return output, false
-	case *ir.WaitNode:
-		output, werr := e.awaitEvent(ctx, rs, currentNodeID, n)
-		if werr != nil {
-			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, werr)
-			return nil, true
-		}
-		result.outputs[currentNodeID] = output
-		if err := e.validateNodeOutput(currentNodeID, n, output); err != nil {
-			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
-			return nil, true
-		}
-		return output, false
-	case *ir.SubbotNode:
-		// A subbot is engine-special (a real nested run), like emit/wait — the
-		// model executor can't run it. Resolve `with:` against the branch's
-		// merged-output scope so {{outputs.<router>.<as>.<field>}} is available per
-		// element, then run the child via the shared subbot core.
-		output, serr := e.runSubbotChild(ctx, rs, currentNodeID, n, resolveScope{
-			vars:      rs.vars,
-			outputs:   merged,
-			runInputs: rs.runInputs,
-			artifacts: mergedArt,
-			rs:        rs,
-		})
-		if serr != nil {
-			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, serr)
-			return nil, true
-		}
-		result.outputs[currentNodeID] = output
-		if err := e.validateNodeOutput(currentNodeID, n, output); err != nil {
-			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
-			return nil, true
-		}
-		return output, false
-	}
-
-	nodeInput := e.buildNodeInputRS(currentNodeID, resolveScope{
+	branchScope := resolveScope{
 		vars:      rs.vars,
 		outputs:   merged,
 		runInputs: rs.runInputs,
 		artifacts: mergedArt,
 		rs:        rs,
-	})
+	}
+
+	// Executor-less special nodes (compute / subbot / emit / wait) are
+	// engine-special, not executor-backed — they share the SAME body helpers
+	// the main loop uses (ADR-051 "unify branch/main special-node dispatch"),
+	// resolved against this branch's merged scope. They carry no `needs:`
+	// resource lease here (subbot acquires its own inside runSubbotNode) and
+	// never shell out, so they bypass the resource-lease + executor path below;
+	// the surrounding execBranch loop still emits their node_started/finished
+	// pair and runs publishBranchArtifact. A wait parked here holds this
+	// branch's semaphore slot only until the emitting branch fires the event
+	// (or the mandatory timeout) — released on park, see launchBranches.
+	if output, done, handled := e.executeSpecialNodeForBranch(ctx, rs, branchID, currentNodeID, node, branchScope, result, slot); handled {
+		return output, done
+	}
+
+	nodeInput := e.buildNodeInputRS(currentNodeID, branchScope)
 
 	// Acquire this node's declared resources (`needs:`) before running. This
 	// is the spot that bounds resource-heavy work INSIDE a fan-out: N branches
@@ -970,10 +976,16 @@ var readOnlyTools = map[string]bool{
 // isMutatingNode returns true if the node may modify the workspace.
 // Tool nodes are always mutating. Agent/judge nodes are mutating only
 // if they have at least one tool that is not in the read-only set.
-// Nodes with Readonly=true are never considered mutating.
+// Subbot nodes run a child .bot that may do anything (including mutate the
+// shared worktree), so they are conservatively treated as mutating — this
+// keeps validateWorkspaceSafety from admitting two subbot branches that would
+// race the same workspace. Nodes with Readonly=true are never considered
+// mutating.
 func isMutatingNode(node ir.Node) bool {
 	switch n := node.(type) {
 	case *ir.ToolNode:
+		return true
+	case *ir.SubbotNode:
 		return true
 	case *ir.AgentNode:
 		if n.Readonly {

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
-	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // runEvents is the run-scoped reliable event registry backing the emit/wait
@@ -65,31 +64,40 @@ func (re *runEvents) waitChan(name string) <-chan struct{} {
 	return re.chanLocked(name)
 }
 
-// payloadFor returns the recorded payload for a fired event (nil if absent).
+// payloadFor returns an isolated deep copy of the recorded payload for a fired
+// event (empty map if absent). Cloning happens under the mutex so a caller can
+// never observe — or alias — the registry's live `fired` entry; the ADR-051
+// immutability boundary is guaranteed by the API, not by every caller
+// remembering to clone afterward.
 func (re *runEvents) payloadFor(name string) map[string]interface{} {
 	re.mu.Lock()
 	defer re.mu.Unlock()
-	return re.fired[name]
+	return clonePayload(re.fired[name])
 }
 
-// clonePayload makes a shallow copy of an event payload. emit and wait nodes
-// each get their own output map, decoupled from the registry's stored payload
-// (and from sibling waiters) so a downstream mutation can't corrupt the event —
-// the ADR-051 immutability boundary.
+// clonePayload makes a deep copy of an event payload. emit and wait nodes each
+// get their own output map, fully decoupled from the registry's stored payload
+// (and from sibling waiters) so a downstream mutation — even of a *nested* map
+// or slice — can't corrupt the event. Reuses deepCopyValue (the same recursive
+// JSON-shaped clone the fan-out path uses for branch outputs) rather than a
+// shallow per-key copy, which would leave nested structures aliased and break
+// the ADR-051 immutability boundary. clonePayload(nil) returns an empty,
+// non-nil map (the "event not yet fired" path stays behavior-preserving).
 func clonePayload(p map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(p))
 	for k, v := range p {
-		out[k] = v
+		out[k] = deepCopyValue(v)
 	}
 	return out
 }
 
-// emitEvent resolves an emit node's payload from its With data-mappings, signals
-// the run-scoped registry, and returns the node output (a copy of the payload so
-// {{outputs.<emit>.field}} resolves). Shared by the main loop (execEmit) and the
-// fan-out branch path.
-func (e *Engine) emitEvent(rs *runState, en *ir.EmitNode) map[string]interface{} {
-	sc := rs.scope()
+// emitEvent resolves an emit node's payload from its With data-mappings against
+// the given scope, signals the run-scoped registry, and returns the node output
+// (a copy of the payload so {{outputs.<emit>.field}} resolves). Scope is
+// explicit so the main loop resolves against the trunk (rs.scope()) and a
+// fan-out branch resolves against its merged parent+branch scope — letting a
+// branch-local emit reference a sibling node produced earlier in the same branch.
+func (e *Engine) emitEvent(rs *runState, en *ir.EmitNode, sc resolveScope) map[string]interface{} {
 	payload := make(map[string]interface{}, len(en.With))
 	for _, dm := range en.With {
 		payload[dm.Key] = e.resolveMapping(dm, sc)
@@ -124,39 +132,20 @@ func (e *Engine) awaitEvent(ctx context.Context, rs *runState, nodeID string, wn
 		}
 	}
 
-	return clonePayload(rs.events.payloadFor(wn.Event)), nil
+	// payloadFor already returns an isolated deep copy (cloned under the
+	// registry mutex), so no further clone is needed here.
+	return rs.events.payloadFor(wn.Event), nil
 }
 
 // execEmit publishes an emit node's event with an immutable payload resolved
-// from its With data-mappings, then advances. No LLM, no shell.
+// from its With data-mappings, then advances. No LLM, no shell. emit has no
+// output schema, so the envelope's validateNodeOutput is a guaranteed no-op.
 func (e *Engine) execEmit(rs *runState, nodeID string, en *ir.EmitNode) (string, error) {
-	startedPayload := map[string]interface{}{
-		"kind":      "emit",
-		"event":     en.Event,
-		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
-	}
-	if p := e.currentLoopIterationPath(nodeID, rs.loopCounters); p != "" {
-		startedPayload["iteration_path"] = p
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
-		return "", err
-	}
-
-	output := e.emitEvent(rs, en)
-	rs.outputs[nodeID] = output
-	delete(rs.nodeAttempts, nodeID)
-
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(e.sanitizeOutputForEvent(en, output))); err != nil {
-		return "", err
-	}
-	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
-	}
-	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
-		e.logger.Error("failed to save checkpoint after emit %q: %v", nodeID, err)
-	}
-
-	return e.selectEdgeRS(rs, nodeID, output)
+	return e.execSpecialNode(rs, nodeID, "emit", en,
+		map[string]interface{}{"event": en.Event},
+		func() (map[string]interface{}, error) { return e.emitEvent(rs, en, rs.scope()), nil },
+		nil,
+	)
 }
 
 // execWait blocks the current branch until its event is emitted in the same run
@@ -164,37 +153,9 @@ func (e *Engine) execEmit(rs *runState, nodeID string, en *ir.EmitNode) (string,
 // the event payload as the node's output. The timeout is the bornage — a wait
 // can never hang the run.
 func (e *Engine) execWait(ctx context.Context, rs *runState, nodeID string, wn *ir.WaitNode) (string, error) {
-	startedPayload := map[string]interface{}{
-		"kind":      "wait",
-		"event":     wn.Event,
-		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
-	}
-	if p := e.currentLoopIterationPath(nodeID, rs.loopCounters); p != "" {
-		startedPayload["iteration_path"] = p
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, startedPayload); err != nil {
-		return "", err
-	}
-
-	output, err := e.awaitEvent(ctx, rs, nodeID, wn)
-	if err != nil {
-		return "", err
-	}
-	rs.outputs[nodeID] = output
-	delete(rs.nodeAttempts, nodeID)
-
-	if err := e.validateNodeOutput(nodeID, wn, output); err != nil {
-		return "", err
-	}
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, nodeID, buildNodeFinishedData(e.sanitizeOutputForEvent(wn, output))); err != nil {
-		return "", err
-	}
-	if e.onNodeFinished != nil {
-		e.onNodeFinished(rs.runID, nodeID, output)
-	}
-	if err := e.store.SaveCheckpoint(rs.ctx, rs.runID, buildCheckpoint(rs, nodeID)); err != nil {
-		e.logger.Error("failed to save checkpoint after wait %q: %v", nodeID, err)
-	}
-
-	return e.selectEdgeRS(rs, nodeID, output)
+	return e.execSpecialNode(rs, nodeID, "wait", wn,
+		map[string]interface{}{"event": wn.Event},
+		func() (map[string]interface{}, error) { return e.awaitEvent(ctx, rs, nodeID, wn) },
+		nil,
+	)
 }

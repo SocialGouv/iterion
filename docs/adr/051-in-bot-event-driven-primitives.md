@@ -93,12 +93,17 @@ share `runState` by pointer under locks, so the registry rides the same
 discipline. `emit`/`wait` are non-mutating, so the single-mutating-branch
 workspace-safety rule is unaffected.
 
-**Scheduler constraint (documented, not re-architected):** a parked `wait` holds
-its fan-out semaphore slot, so the emitting branch needs a concurrent slot —
-`max_parallel_branches` must be ≥ the number of branches that run concurrently
-with a `wait`. When it is too small the emitter can't run and the `wait` hits
-its (mandatory) timeout: bounded, never a hang. Releasing the slot on park is a
-future scheduler refinement.
+**Scheduler constraint (resolved — slot released on park).** A parked `wait`
+now *releases* its fan-out semaphore slot and reacquires it on wake
+([pkg/runtime/fan_out.go](../../pkg/runtime/fan_out.go) `branchSlot`,
+[pkg/runtime/special_node.go](../../pkg/runtime/special_node.go) `executeSpecialNodeForBranch`),
+so an emitting sibling can always obtain a slot even under
+`max_parallel_branches: 1`. release/acquire are idempotent on a per-branch
+`held` flag, so the `launchBranches` defer still releases exactly the final hold.
+A ping-pong fan-out (each branch emits *and* waits) completes deterministically
+on a single slot — regression: `TestFanOutPingPongSingleSlot`. The mandatory
+`wait` timeout remains the ultimate bound. *(Originally documented as the
+deferred "releasing the slot on park" scheduler refinement.)*
 
 ### Diagnostics (C196–C198 — the next free block after C195)
 
@@ -121,7 +126,9 @@ future scheduler refinement.
   `paused_waiting_human`) and resumes via the ADR-046 spine with a new
   *resume-parked-run* effect alongside the existing *launch* effect. Deferred to
   keep Brick 1 self-contained and deterministically testable in-process.
-- **Releasing the semaphore slot on park** (scheduler refinement) — deferred.
+- ~~**Releasing the semaphore slot on park** (scheduler refinement) — deferred.~~
+  **Done** — a parked `wait` releases + reacquires its fan-out slot (see the
+  scheduler-constraint note above).
 
 ## Consequences
 
