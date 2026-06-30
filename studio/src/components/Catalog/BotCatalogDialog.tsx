@@ -132,15 +132,13 @@ export function BotCatalogDialog({
     setLocation(`/editor?file=${encodeURIComponent(rel)}`);
   };
 
-  // onConnect jumps to the team's Integrations tab to connect a forge + enable
-  // this bot on a repo. The ?bot= hint pre-checks it in the enable dialog (and
-  // auto-opens that dialog when there's a single connection).
+  // onConnect jumps to the Integrations page's Forges tab to connect a forge +
+  // enable this bot on a repo. The ?bot= hint pre-checks it in the enable dialog
+  // (and auto-opens that dialog when there's a single connection).
   const onConnect = (botName: string) => {
     if (!activeTeam) return;
     onOpenChange(false);
-    setLocation(
-      `/teams/${activeTeam.team_id}?tab=integrations&bot=${encodeURIComponent(botName)}`,
-    );
+    setLocation(`/integrations?tab=forges&bot=${encodeURIComponent(botName)}`);
   };
 
   const rows = bots ?? [];

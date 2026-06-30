@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/Select";
 import { Tabs } from "@/components/ui/Tabs";
 import { useLocation, useParams, useSearch } from "wouter";
 import { useConfirm } from "@/hooks/useConfirm";
+import { useCanManageTeam } from "@/hooks/useCanManageTeam";
 import { useAuth } from "@/auth/AuthContext";
 import {
   type InvitationView,
@@ -22,36 +23,21 @@ import {
 import ApiKeysPanel from "@/views/settings/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
-import IntegrationsTab from "./tabs/IntegrationsTab";
-import WebhooksTab from "./tabs/WebhooksTab";
-import SecretsTab from "./tabs/SecretsTab";
-import BindingsTab from "./tabs/BindingsTab";
 import AuditTab from "./tabs/AuditTab";
 import MemoryTab from "./tabs/MemoryTab";
 
 const ROLES = ["viewer", "member", "admin", "owner"] as const;
 
-// SSO, Usage, members-roster and billing are ORG-level — they live on
-// the Org settings page (/orgs/:id). The team page keeps the team's own
-// resources: who can access this team, its API keys, forge integrations,
-// webhooks, secrets, bot bindings, audit and memory.
-type Tab =
-  | "members"
-  | "api-keys"
-  | "integrations"
-  | "webhooks"
-  | "secrets"
-  | "bindings"
-  | "audit"
-  | "memory";
+// SSO, Usage, members-roster and billing are ORG-level — they live on the Org
+// settings page (/orgs/:id). The team page keeps the team's own administrative
+// resources: who can access this team, its API keys, audit and memory. The
+// integration surfaces (forges, webhooks, secrets, bot bindings, model
+// providers) moved to their own top-level destination (/integrations).
+type Tab = "members" | "api-keys" | "audit" | "memory";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "members", label: "Team access" },
   { id: "api-keys", label: "API keys" },
-  { id: "integrations", label: "Integrations" },
-  { id: "webhooks", label: "Webhooks" },
-  { id: "secrets", label: "Secrets" },
-  { id: "bindings", label: "Bot bindings" },
   { id: "audit", label: "Audit log" },
   { id: "memory", label: "Memory" },
 ];
@@ -59,19 +45,18 @@ const TABS: Array<{ id: Tab; label: string }> = [
 export default function TeamPage() {
   const params = useParams<{ id: string }>();
   const teamID = params.id;
-  const { teams, activeOrg, activeRole, user } = useAuth();
+  const { teams, activeOrg, activeRole } = useAuth();
   const team = useMemo(() => teams.find((t) => t.team_id === teamID), [teams, teamID]);
   const search = useSearch();
   const [, navigate] = useLocation();
   const tabFromURL = (s: string): Tab => {
     const t = new URLSearchParams(s).get("tab");
-    return TABS.some((x) => x.id === t) ? (t as Tab) : "integrations";
+    return TABS.some((x) => x.id === t) ? (t as Tab) : "members";
   };
   const [tab, setTab] = useState<Tab>(() => tabFromURL(search));
-  // Keep the tab in sync with ?tab= so a deep link (e.g. the sidebar's
-  // Integrations entry) selects the right tab even when TeamPage is already
-  // mounted; selectTab writes it back so the URL stays shareable + the nav
-  // highlight follows.
+  // Keep the tab in sync with ?tab= so a deep link selects the right tab even
+  // when TeamPage is already mounted; selectTab writes it back so the URL stays
+  // shareable.
   useEffect(() => {
     const t = tabFromURL(search);
     setTab((cur) => (cur === t ? cur : t));
@@ -82,8 +67,7 @@ export default function TeamPage() {
     navigate(`/teams/${teamID}?tab=${t}`, { replace: true });
   };
 
-  const canManage =
-    activeRole === "admin" || activeRole === "owner" || (user?.is_super_admin ?? false);
+  const canManage = useCanManageTeam();
 
   // Breadcrumb: show "Org / Team" only when the org name actually adds
   // information. For the personal/default org (where org_name == team_name) the
@@ -130,18 +114,6 @@ export default function TeamPage() {
           {tab === "members" && <Members teamID={team.team_id} canManage={canManage} />}
           {tab === "api-keys" && (
             <ApiKeysPanel team={{ id: team.team_id, name: team.team_name }} />
-          )}
-          {tab === "integrations" && (
-            <IntegrationsTab teamID={team.team_id} canManage={canManage} />
-          )}
-          {tab === "webhooks" && (
-            <WebhooksTab teamID={team.team_id} canManage={canManage} />
-          )}
-          {tab === "secrets" && (
-            <SecretsTab teamID={team.team_id} canManage={canManage} />
-          )}
-          {tab === "bindings" && (
-            <BindingsTab teamID={team.team_id} canManage={canManage} />
           )}
           {tab === "audit" && <AuditTab teamID={team.team_id} canManage={canManage} />}
           {tab === "memory" && <MemoryTab teamID={team.team_id} />}

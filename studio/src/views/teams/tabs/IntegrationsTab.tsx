@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useSearch } from "wouter";
+import { CheckIcon } from "@radix-ui/react-icons";
 
 import { FeatureUnavailableError } from "@/api/client";
 import {
@@ -12,14 +13,24 @@ import {
   listForgeOAuthApps,
 } from "@/api/forgeConnections";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { useConfirm } from "@/hooks/useConfirm";
 import { isRepoCapable } from "@/lib/triggers";
 import { useBotsStore } from "@/store/bots";
-import OAuthConnections from "@/views/settings/OAuthConnections";
 
 import { ConnectForm } from "./integrations/ConnectForm";
 import { ConnectionCard } from "./integrations/ConnectionCard";
 import { OAuthAppsSection } from "./integrations/OAuthAppsSection";
+
+// scrollToConnectForm jumps the operator to the "Connect a forge" form — the
+// CTA the empty / partly-wired states point them at.
+function scrollToConnectForm() {
+  document
+    .getElementById("connect-forge-form")
+    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
 
 export default function IntegrationsTab({
   teamID,
@@ -117,6 +128,12 @@ export default function IntegrationsTab({
         </InlineBanner>
       )}
 
+      <WiringGuide
+        forgeConnected={connections.length > 0}
+        repoEnabled={integrations.length > 0}
+        canManage={canManage}
+      />
+
       <div>
         <h3 className="font-medium mb-1">Connected forges</h3>
         <p className="text-xs text-fg-muted mb-3">
@@ -124,7 +141,17 @@ export default function IntegrationsTab({
           creates the webhook on the forge and wires the bot's token for you.
         </p>
         {connections.length === 0 ? (
-          <div className="text-fg-muted text-sm">No forge connected yet.</div>
+          <EmptyState
+            title="No forge connected yet"
+            message="Connect a GitLab, GitHub or Forgejo account to let bots act on your repositories."
+            action={
+              canManage ? (
+                <Button variant="primary" size="sm" onClick={scrollToConnectForm}>
+                  Connect a forge
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
           <div className="space-y-3">
             {connections.map((c) => (
@@ -157,19 +184,152 @@ export default function IntegrationsTab({
       />
 
       {canManage && (
-        <ConnectForm
-          teamID={teamID}
-          oauthApps={oauthApps}
-          onConnected={reload}
-          onError={setErr}
-        />
-      )}
-
-      {canManage && (
-        <div className="pt-4 border-t border-border-subtle">
-          <OAuthConnections scope={{ teamId: teamID }} org />
+        <div id="connect-forge-form">
+          <ConnectForm
+            teamID={teamID}
+            oauthApps={oauthApps}
+            onConnected={reload}
+            onError={setErr}
+          />
         </div>
       )}
     </div>
+  );
+}
+
+// WiringGuide is the sober "how it fits together" overview + status checklist
+// at the top of the forges tab. It guides the operator through the connect
+// pipeline (forge → repo+bot → webhook+token auto-wired) and collapses to a
+// single line once a forge is connected and a repo is enabled, so it stays
+// out of the way for established teams.
+function WiringGuide({
+  forgeConnected,
+  repoEnabled,
+  canManage,
+}: {
+  forgeConnected: boolean;
+  repoEnabled: boolean;
+  canManage: boolean;
+}) {
+  const wired = forgeConnected && repoEnabled;
+  const [open, setOpen] = useState(!wired);
+
+  if (wired && !open) {
+    return (
+      <div className="flex items-center justify-between gap-2 bg-surface-1 border border-border-subtle rounded px-4 py-2">
+        <span className="inline-flex items-center gap-2 text-xs text-fg-muted">
+          <Badge variant="success" leadingIcon={<CheckIcon className="w-3 h-3" />}>
+            Wired
+          </Badge>
+          Forge connected and a repo is enabled — webhooks and tokens are managed for you.
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="text-caption text-fg-subtle hover:text-fg-default shrink-0"
+        >
+          How it works
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h3 className="font-medium">How integrations fit together</h3>
+          <p className="text-xs text-fg-muted">
+            Connect a forge, enable a bot on a repo — iterion wires the rest.
+          </p>
+        </div>
+        {wired && (
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="text-caption text-fg-subtle hover:text-fg-default shrink-0"
+          >
+            Hide
+          </button>
+        )}
+      </div>
+      <ol className="space-y-2">
+        <GuideStep
+          n={1}
+          done={forgeConnected}
+          label="Connect a forge"
+          hint="GitLab, GitHub or Forgejo — once per account."
+          action={
+            !forgeConnected && canManage ? (
+              <button
+                type="button"
+                onClick={scrollToConnectForm}
+                className="text-accent-text hover:underline"
+              >
+                Connect →
+              </button>
+            ) : undefined
+          }
+        />
+        <GuideStep
+          n={2}
+          done={repoEnabled}
+          label="Enable a bot on a repo"
+          hint={
+            forgeConnected
+              ? "Use “Enable a repo” on a connected forge below."
+              : "Available once a forge is connected."
+          }
+        />
+        <GuideStep
+          n={3}
+          // Informational step: the webhook + token are provisioned as part of
+          // enabling a repo, so it tracks step 2 rather than a state of its own.
+          done={repoEnabled}
+          label="Webhook + token"
+          hint="Created automatically on the forge — nothing to do."
+        />
+      </ol>
+      <p className="text-caption text-fg-subtle">
+        Need to give a bot a credential? Add it under <strong>Secrets</strong>, then map it in{" "}
+        <strong>Bot bindings</strong>.
+      </p>
+    </div>
+  );
+}
+
+function GuideStep({
+  n,
+  done,
+  label,
+  hint,
+  action,
+}: {
+  n: number;
+  done: boolean;
+  label: string;
+  hint: string;
+  action?: ReactNode;
+}) {
+  return (
+    <li className="flex items-start gap-2.5">
+      <span
+        className={`mt-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full border text-caption shrink-0 ${
+          done
+            ? "bg-success-soft text-success-fg border-success/40"
+            : "bg-surface-2 text-fg-muted border-border-default"
+        }`}
+        aria-hidden
+      >
+        {done ? <CheckIcon className="w-3 h-3" /> : n}
+      </span>
+      <div className="min-w-0">
+        <div className="text-sm text-fg-default">
+          {label}
+          {action && <span className="ml-2 text-xs">{action}</span>}
+        </div>
+        <div className="text-caption text-fg-subtle">{hint}</div>
+      </div>
+    </li>
   );
 }

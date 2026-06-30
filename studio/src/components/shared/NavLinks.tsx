@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useLocation, useSearch } from "wouter";
+import { Link, useLocation } from "wouter";
 import {
   HomeIcon,
   Pencil2Icon,
@@ -81,6 +81,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   plugins: "plugins",
   orgs: "org",
   teams: "team",
+  integrations: "integrations",
   admin: "admin",
 };
 
@@ -100,14 +101,10 @@ export default function NavLinks({ collapsed }: Props) {
   const info = useServerInfoStore((s) => s.info);
   const { activeTeam, user } = useAuth();
   const [location] = useLocation();
-  const search = useSearch();
-  let active = deriveSection(location);
-  // The team page hosts the Integrations tab under ?tab=integrations; give
-  // the dedicated Integrations nav entry its own highlight there so it and
-  // the team entry don't both light up.
-  if (active === "team" && new URLSearchParams(search).get("tab") === "integrations") {
-    active = "integrations";
-  }
+  // Integrations is its own top-level route (/integrations, team-scoped via
+  // the active team in context — like /board, /plugins), so deriveSection's
+  // first-segment match keeps it highlighted across every integration sub-tab.
+  const active = deriveSection(location);
   const alertUnseen = useUIStore((s) => s.alertUnseen);
   const clearAlertUnseen = useUIStore((s) => s.clearAlertUnseen);
 
@@ -136,7 +133,7 @@ export default function NavLinks({ collapsed }: Props) {
   if (activeTeam && info?.mode === "cloud") {
     links.push({
       section: "integrations",
-      href: `/teams/${activeTeam.team_id}?tab=integrations`,
+      href: "/integrations",
       label: "Integrations",
       icon: Link2Icon,
     });

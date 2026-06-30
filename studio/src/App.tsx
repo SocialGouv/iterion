@@ -28,6 +28,7 @@ const Settings = lazy(() => import("@/views/Settings"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
 const SettingsPage = lazy(() => import("@/views/settings/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
+const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
 const OrgPage = lazy(() => import("@/views/orgs/OrgPage"));
 
 // Auth side-doors reachable when anonymous (forced password rotation,
@@ -293,6 +294,7 @@ function AuthedApp() {
           <Route path="/account" component={SettingsPage} />
           <Route path="/orgs/:id" component={OrgPage} />
           <Route path="/teams/:id" component={TeamPage} />
+          <Route path="/integrations" component={IntegrationsPage} />
           <Route path="/admin" component={OrgsAdminPage} />
           <Route path="/admin/orgs" component={OrgsAdminPage} />
           <Route path="/admin/users" component={UsersAdminPage} />
