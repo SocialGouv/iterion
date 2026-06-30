@@ -1166,22 +1166,10 @@ func (b *Budget) ClampToCeiling(ceiling *Budget) {
 	if b == nil || ceiling == nil {
 		return
 	}
-	clampInt := func(v, max int) int {
-		if max > 0 && (v <= 0 || v > max) {
-			return max
-		}
-		return v
-	}
-	clampFloat := func(v, max float64) float64 {
-		if max > 0 && (v <= 0 || v > max) {
-			return max
-		}
-		return v
-	}
-	b.MaxIterations = clampInt(b.MaxIterations, ceiling.MaxIterations)
-	b.MaxTokens = clampInt(b.MaxTokens, ceiling.MaxTokens)
-	b.MaxParallelBranches = clampInt(b.MaxParallelBranches, ceiling.MaxParallelBranches)
-	b.MaxCostUSD = clampFloat(b.MaxCostUSD, ceiling.MaxCostUSD)
+	b.MaxIterations = clampToCeiling(b.MaxIterations, ceiling.MaxIterations)
+	b.MaxTokens = clampToCeiling(b.MaxTokens, ceiling.MaxTokens)
+	b.MaxParallelBranches = clampToCeiling(b.MaxParallelBranches, ceiling.MaxParallelBranches)
+	b.MaxCostUSD = clampToCeiling(b.MaxCostUSD, ceiling.MaxCostUSD)
 	if ceiling.MaxDuration != "" {
 		cd, cerr := time.ParseDuration(ExpandEnvWithDefault(ceiling.MaxDuration))
 		if cerr == nil {
@@ -1191,6 +1179,16 @@ func (b *Budget) ClampToCeiling(ceiling *Budget) {
 			}
 		}
 	}
+}
+
+// clampToCeiling lowers v to max when max is a real ceiling (>0) and v either
+// exceeds it or is unlimited (<=0). A zero ceiling means "no platform limit"
+// and leaves v untouched. Shared by ClampToCeiling's int and float dimensions.
+func clampToCeiling[T int | float64](v, max T) T {
+	if max > 0 && (v <= 0 || v > max) {
+		return max
+	}
+	return v
 }
 
 // ---------------------------------------------------------------------------

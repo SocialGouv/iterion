@@ -1589,10 +1589,8 @@ func applyCloudBudgetCeiling(wf *ir.Workflow, logger *iterlog.Logger) {
 	if v, ok := envPositiveInt("ITERION_CLOUD_MAX_PARALLEL_BRANCHES"); ok {
 		ceiling.MaxParallelBranches, any = v, true
 	}
-	if s := os.Getenv("ITERION_CLOUD_MAX_COST_USD"); s != "" {
-		if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
-			ceiling.MaxCostUSD, any = f, true
-		}
+	if f, ok := envPositiveFloat("ITERION_CLOUD_MAX_COST_USD"); ok {
+		ceiling.MaxCostUSD, any = f, true
 	}
 	if s := os.Getenv("ITERION_CLOUD_MAX_DURATION"); s != "" {
 		ceiling.MaxDuration, any = s, true
@@ -1621,6 +1619,18 @@ func envPositiveInt(key string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+func envPositiveFloat(key string) (float64, bool) {
+	s := os.Getenv(key)
+	if s == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f <= 0 {
+		return 0, false
+	}
+	return f, true
 }
 
 // buildExecutor reuses runview.BuildExecutor so the runner shares
