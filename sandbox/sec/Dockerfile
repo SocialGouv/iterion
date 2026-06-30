@@ -146,8 +146,13 @@ import path from "node:path";
 const SCAN = process.env.SCAN_DIR || ".";
 const WS = process.env.WORKSPACE_DIR || ".";
 const HOOKS = ["preinstall", "install", "postinstall", "prepare"];
+// Bound the walk so a giant node_modules can't blow the run budget
+// (matches run_generic_heuristics' MAX_PKGS guard). The diff-scoped
+// reviewer only consults warnings for newly-added packages anyway.
+const MAX_PKGS = Number(process.env.JSXRAY_MAX_PKGS || "4000");
 const analyser = new AstAnalyser();
 const out = [];
+let pkgCount = 0;
 function entryRels(pj) {
   const set = new Set();
   for (const h of HOOKS) {
@@ -173,10 +178,11 @@ function scanPkg(dir) {
   }
 }
 function walk(dir, depth) {
-  if (depth > 2) return;
-  if (fs.existsSync(path.join(dir, "package.json"))) scanPkg(dir);
+  if (depth > 2 || pkgCount >= MAX_PKGS) return;
+  if (fs.existsSync(path.join(dir, "package.json"))) { pkgCount += 1; scanPkg(dir); }
   let ents = []; try { ents = fs.readdirSync(path.join(dir, "node_modules")); } catch { return; }
   for (const e of ents) {
+    if (pkgCount >= MAX_PKGS) break;
     if (e.startsWith(".")) continue;
     const sub = path.join(dir, "node_modules", e);
     if (e.startsWith("@")) { let subs = []; try { subs = fs.readdirSync(sub); } catch {} for (const s of subs) walk(path.join(sub, s), depth + 1); }
@@ -186,7 +192,7 @@ function walk(dir, depth) {
 walk(WS, 0);
 fs.mkdirSync(SCAN, { recursive: true });
 fs.writeFileSync(path.join(SCAN, "jsxray.json"), JSON.stringify(out));
-process.stderr.write("iterion-jsxray scanned " + out.length + " files\n");
+process.stderr.write("iterion-jsxray scanned " + out.length + " files across " + pkgCount + " packages" + (pkgCount >= MAX_PKGS ? " (capped at " + MAX_PKGS + ")" : "") + "\n");
 JSXRAY_WALKER
 
 # osv-scanner — single Go binary (arch-derived like trivy/gitleaks), the

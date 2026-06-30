@@ -7,6 +7,13 @@
 ## dependency versions a change adds/upgrades, matches each against the
 ## advisory DBs, and reports back on the forge + board.
 ##
+## DERIVED FROM bots/sec-audit-deps/main.bot (via supply-shield) — the
+## scanner parsers, load_cache, filter_cached and update_cache tool bodies
+## are copy-shared (the .bot DSL has no include primitive, and a bundle
+## must be self-contained to run sandboxed against any target repo). When
+## you fix one of those shared tool bodies here, in supply-shield, or in
+## sec-audit-deps, check the other two for the same fix.
+##
 ##   1. diff_scope          — DETERMINISTIC tool. Resolves base..head
 ##                            and the changed lockfiles (lockfile globs
 ##                            live in skills/diff-scope.md, not the DSL),
@@ -547,12 +554,12 @@ agent enumerate_deps:
 
 ## run_eco_heuristics — skill-driven, DETERMINISTIC (no LLM in the path).
 ## For each detected ecosystem it reads the `iterion:heuristics` block
-## from .claude/skills/lang-<id>.md, runs the listed scanner(s) — incl.
-## js-x-ray for npm — then parses the known-vuln scanner outputs into
-## signals. Adding an ecosystem/analyzer = drop a lang-<id>.md skill
-## with a heuristics block (+ a parser here only if its output format
-## is new). The deeper per-ecosystem SCA scanners run here; the trivy +
-## reviewer + checked by coverage_gate, so it needs no parser here.
+## from .claude/skills/lang-<id>.md, runs the listed deeper SCA scanner(s)
+## (npm audit / pip-audit / govulncheck — these need an installed tree)
+## and parses their known-vuln output into signals. The universal CVE
+## floor (trivy + osv, no install) runs in run_generic_heuristics.
+## Adding an ecosystem = drop a lang-<id>.md skill with a heuristics
+## block (+ a parser here only if its output format is new).
 tool run_eco_heuristics:
   command: `mkdir -p {{vars.scan_dir}} && ECOS='{{input.ecosystems}}' SCAN_DIR={{vars.scan_dir}} WORKSPACE_DIR={{vars.workspace_dir}} SKILLS_DIR={{vars.workspace_dir}}/.claude/skills python3 -c "
 import os, sys, json, re, subprocess
@@ -1143,12 +1150,12 @@ print(json.dumps({'appended_count': count, 'summary': 'Appended %d cve verdicts 
 workflow supply_shield_cve:
   entry: diff_scope
 
-  ## Scanners (js-x-ray, trivy, npm audit, …) need a host that ships
+  ## Scanners (trivy, osv-scanner, npm audit, …) need a host that ships
   ## them — slim/full sandbox images and a bare host do NOT, so without
   ## a scanner image every scan silently falls through and the audit
   ## reports zero findings (a façade — coverage_gate guards against it).
-  ## iterion-sandbox-sec layers the toolchain (incl. js-x-ray + osv) onto
-  ## the full image; build it from sandbox/sec/Dockerfile. Network
+  ## iterion-sandbox-sec layers the toolchain (trivy + osv + per-eco SCA)
+  ## onto the full image; build it from sandbox/sec/Dockerfile. Network
   ## defaults to open, so the vuln DBs are reachable. (Until CI publishes
   ## the ref, build locally and `docker tag` it to the ref below.)
   sandbox:

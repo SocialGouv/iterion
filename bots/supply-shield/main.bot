@@ -5,6 +5,14 @@
 ## sibling of sec-audit-deps (Depsy). Where Depsy does a full-tree
 ## weekly audit emitting only to the board, Shieldy:
 ##
+## DERIVED FROM bots/sec-audit-deps/main.bot — the scanner parsers
+## (npm-audit/pip-audit/govulncheck/trivy), load_cache, filter_cached and
+## update_cache tool bodies are copy-shared (the .bot DSL has no include
+## primitive, and a bundle must be self-contained to run sandboxed against
+## any target repo). When you fix one of those shared tool bodies here, in
+## supply-shield-cve, or in sec-audit-deps, check the other two for the
+## same fix.
+##
 ##   1. diff_scope          — DETERMINISTIC tool. Resolves base..head
 ##                            and the changed lockfiles (lockfile globs
 ##                            live in skills/diff-scope.md, not the DSL),
