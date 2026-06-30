@@ -281,7 +281,17 @@ func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
 			items[i] = item(string(rune('A' + i)))
 		}
 
+		// expectedPeak holders barrier on each other before any releases, so the
+		// measured peak is deterministic (no reliance on sleep/scheduler timing):
+		// the semaphore caps concurrency at min(capacity, nItems), and the
+		// barrier forces exactly that many to overlap.
+		expectedPeak := capacity
+		if nItems < expectedPeak {
+			expectedPeak = nItems
+		}
 		var active, peak int32
+		barrier := make(chan struct{})
+		var once sync.Once
 		exec := newStubExecutor()
 		exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
 			return map[string]interface{}{"items": items}, nil
@@ -294,7 +304,10 @@ func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
 					break
 				}
 			}
-			time.Sleep(80 * time.Millisecond) // hold the slot so all eligible holders reliably overlap (robust to goroutine-launch jitter)
+			if n >= int32(expectedPeak) {
+				once.Do(func() { close(barrier) })
+			}
+			<-barrier // block until expectedPeak holders are concurrently inside
 			atomic.AddInt32(&active, -1)
 			return map[string]interface{}{"ok": true}, nil
 		})
