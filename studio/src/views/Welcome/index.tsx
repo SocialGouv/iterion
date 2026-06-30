@@ -66,7 +66,7 @@ export default function Welcome({ onComplete }: WelcomeProps) {
   return (
     <div className="flex flex-col h-screen p-8 bg-surface-0 text-fg-default">
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold">Welcome to Iterion</h1>
+        <h1 className="text-headline font-semibold">Welcome to Iterion</h1>
         <ol
           className="flex gap-3 mt-3 text-xs text-fg-subtle list-none p-0"
           aria-label="Onboarding progress"

@@ -44,8 +44,8 @@ export default function CliAuthPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-surface-0 p-4">
-      <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-lg p-6 space-y-4">
-        <h1 className="text-lg font-semibold">Authorize the iterion CLI</h1>
+      <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] p-6 space-y-4 shadow-[var(--shadow-lg)]">
+        <h1 className="text-headline font-semibold">Authorize the iterion CLI</h1>
         {!loopback ? (
           <InlineBanner tone="danger" layout="inline">
             Invalid request — the CLI redirect target must be a local address

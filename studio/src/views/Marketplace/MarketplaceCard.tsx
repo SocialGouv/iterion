@@ -33,7 +33,7 @@ export function MarketplaceCard({
   const label = entry.display_name?.trim() || entry.name;
   return (
     <li
-      className="flex h-full flex-col gap-2 rounded border border-border-default bg-surface-2 p-3 transition-colors hover:bg-surface-3 focus-within:bg-surface-3"
+      className="flex h-full flex-col gap-2 rounded-[var(--radius-lg)] border border-border-default bg-surface-1 p-4 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color,transform] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-md)] focus-within:border-border-strong"
     >
       <button
         type="button"

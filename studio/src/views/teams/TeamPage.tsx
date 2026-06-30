@@ -233,7 +233,7 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
       )}
 
       {canManage && (
-        <section className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3">
+        <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] p-4 space-y-3">
           <h3 className="font-medium">Invite a member</h3>
           <form onSubmit={invite} className="flex gap-2 items-end">
             <div className="flex-1">

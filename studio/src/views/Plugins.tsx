@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
+import { Component1Icon } from "@radix-ui/react-icons";
 
 import { listPlugins, setPluginEnabled, type PluginView } from "@/api/plugins";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { Spinner } from "@/components/ui/Spinner";
 
 // Plugins lists the iterion plugin registry (embedded builtins +
@@ -44,38 +46,45 @@ export default function Plugins() {
   );
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
-      <header className="mb-4">
-        <h1 className="text-lg font-medium text-fg-default">Plugins</h1>
-        <p className="text-caption text-fg-subtle">
-          Extend iterion with rewriters, MCP servers, skills, commands, agents
-          and hooks. Builtins ship with the binary; install more with{" "}
-          <code>iterion plugin install</code>. See docs/plugins.md.
-        </p>
-      </header>
+    <div className="flex h-full min-h-0 flex-col bg-surface-0 text-fg-default">
+      <PageHeader
+        icon={<Component1Icon className="h-5 w-5" />}
+        title="Plugins"
+        description={
+          <>
+            Extend iterion with rewriters, MCP servers, skills, commands, agents
+            and hooks. Builtins ship with the binary; install more with{" "}
+            <code className="font-mono text-fg-default">iterion plugin install</code>.
+          </>
+        }
+        actions={
+          <Button variant="secondary" size="sm" onClick={() => void refresh()}>
+            Refresh
+          </Button>
+        }
+      />
 
-      {error && (
-        <div className="mb-4">
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3 overflow-y-auto p-6">
+        {error && (
           <InlineBanner tone="danger" title="Plugin error" layout="inline">
             {error}
           </InlineBanner>
-        </div>
-      )}
+        )}
 
-      {plugins === null && !error && (
-        <EmptyState message="Loading plugins…" icon={<Spinner />} />
-      )}
+        {plugins === null && !error && (
+          <EmptyState message="Loading plugins…" icon={<Spinner />} />
+        )}
 
-      {plugins !== null && plugins.length === 0 && (
-        <EmptyState message="No plugins found." />
-      )}
+        {plugins !== null && plugins.length === 0 && (
+          <EmptyState message="No plugins found." />
+        )}
 
-      <ul className="flex flex-col gap-2">
-        {(plugins ?? []).map((p) => (
-          <li
-            key={p.name}
-            className="flex items-start justify-between gap-4 rounded-md border border-border-default bg-surface-1 p-3"
-          >
+        <ul className="flex flex-col gap-2">
+          {(plugins ?? []).map((p) => (
+            <li
+              key={p.name}
+              className="flex items-start justify-between gap-4 rounded-[var(--radius-lg)] border border-border-default bg-surface-1 p-4 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:border-border-strong hover:shadow-[var(--shadow-md)]"
+            >
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="font-mono text-sm text-fg-default">{p.name}</span>
@@ -111,9 +120,10 @@ export default function Plugins() {
             >
               {p.enabled ? "Disable" : "Enable"}
             </Button>
-          </li>
-        ))}
-      </ul>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

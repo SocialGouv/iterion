@@ -109,7 +109,7 @@ export default function OrgsAdminPage() {
           </InlineBanner>
         )}
 
-        <section className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3">
+        <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] p-4 space-y-3">
           <h3 className="font-medium">Create an organization</h3>
           <form onSubmit={create} className="flex flex-wrap gap-2 items-start">
             <div className="flex-1 min-w-[160px]">
@@ -144,7 +144,7 @@ export default function OrgsAdminPage() {
           </form>
         </section>
 
-        <section className="bg-surface-1 border border-border-subtle rounded overflow-hidden">
+        <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
           <div className="overflow-x-auto"><table className="w-full text-sm">
             <thead className="text-left text-fg-muted border-b border-border-subtle">
               <tr>

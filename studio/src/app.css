@@ -17,6 +17,21 @@
  * ========================================================================== */
 
 @theme {
+  /* Typography — dedicated, self-hosted variable fonts (imported in main.tsx).
+   * Geist is a neutral, modern grotesk designed for developer tooling; its
+   * matching mono carries the "terminal" identity for technical identifiers
+   * (run-ids / SHAs / node-ids / branch names), per docs/visual-identity.md
+   * § Brand voice. Both fall back to the system stack if the woff2 fails to
+   * load (offline edge). Wiring these as the `--font-*` tokens makes Tailwind's
+   * `font-sans` / `font-mono` utilities resolve to them everywhere — no
+   * component churn (existing `font-mono` callers inherit automatically). */
+  --font-sans:
+    "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    "Geist Mono Variable", ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code",
+    Menlo, Consolas, "Liberation Mono", monospace;
+
   /* Surfaces (lowest = deepest background; highest = hovered/elevated) */
   --color-surface-0: #111827; /* matches bg-gray-900 */
   --color-surface-1: #1f2937; /* matches bg-gray-800 */
@@ -158,7 +173,12 @@
   --text-body:    0.75rem;   /* 12px — default body (Tailwind text-xs) */
   --text-label:   0.8125rem; /* 13px — emphasised body */
   --text-title:   0.875rem;  /* 14px — section heading (Tailwind text-sm) */
-  --text-display: 1rem;      /* 16px — top-level page heading */
+  --text-display: 1rem;      /* 16px — emphasised section / card heading */
+  --text-headline: 1.125rem; /* 18px — page-level <h1> (PageHeader only). A
+                              * deliberate, sober step above `display` so a
+                              * page title reads as the top of the hierarchy
+                              * without becoming a marketing hero (brand brief
+                              * § avoid hero typography). Body sizes unchanged. */
 
   /* Elevation tokens — replace ad-hoc shadow-lg/xl/2xl utilities so
    * popovers, modals and toasts share a coherent depth language.
@@ -357,6 +377,27 @@
 /* =============================================================================
  * Global resets and accessibility
  * ========================================================================== */
+
+/* Base typography — apply the sans token globally and turn on font smoothing
+ * so Geist renders crisp on both themes (Linux/Chromium especially benefits).
+ * Tailwind v4 wires `--default-font-family` → `--font-sans`, so this mostly
+ * reinforces the cascade; the smoothing + legibility hints are the real win. */
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Monospaced identifiers read better with fixed-width digits and ligatures
+ * off (we want SHAs / ids unambiguous, not prettified). */
+.font-mono,
+code,
+kbd,
+pre,
+samp {
+  font-feature-settings: "tnum" 1, "calt" 0;
+}
 
 :focus-visible {
   outline: 2px solid var(--color-accent);

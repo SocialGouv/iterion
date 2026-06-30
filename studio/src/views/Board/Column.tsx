@@ -382,8 +382,8 @@ function IssueCard({
       onDragEnd={() => setDragging(false)}
       onClick={onClick}
       onDoubleClick={onOpen}
-      className={`bg-surface-0 border rounded p-2 text-sm cursor-grab active:cursor-grabbing transition-transform ${
-        dragging ? "scale-[1.02] shadow-[var(--shadow-lg)]" : ""
+      className={`bg-surface-0 border rounded-[var(--radius-md)] p-2 text-sm cursor-grab active:cursor-grabbing shadow-[var(--shadow-sm)] transition-[transform,box-shadow,border-color] duration-[var(--motion-fast)] ease-[var(--motion-ease)] ${
+        dragging ? "scale-[1.02] shadow-[var(--shadow-lg)]" : "hover:-translate-y-0.5 hover:shadow-[var(--shadow-md)]"
       } ${
         selected
           ? "border-accent ring-1 ring-accent/40"

@@ -31,6 +31,43 @@ Prefer:
 - Status colour used semantically, not decoratively.
 - Density over breathing room — every pixel earns its place.
 
+## Typography
+
+**Decision (2026-06-30): adopt a dedicated, self-hosted type pairing —
+Geist Sans for UI, Geist Mono for technical identifiers.**
+
+The studio previously rode the platform `system-ui` stack, which reads
+generic (and renders as Arial/Helvetica on Linux). Geist is a neutral,
+modern grotesk *designed for developer tooling* — it keeps the calm,
+technical posture while making the whole app feel intentional rather than
+default. Its matching monospace carries the "terminal" identity the brand
+voice already leans on (run-ids / SHAs / node-ids / branch names in
+`font-mono`).
+
+| Token | Family | Use for |
+|---|---|---|
+| `--font-sans` | `Geist Variable` → system fallback | Global UI default (set on `html`) |
+| `--font-mono` | `Geist Mono Variable` → system fallback | Technical identifiers, code, `kbd`, `pre` |
+
+- **Self-hosted, not CDN.** Imported via `@fontsource-variable/geist` /
+  `@fontsource-variable/geist-mono` in `main.tsx` so the woff2 ships in the
+  bundle — offline-safe for the desktop app and sandboxed runs. Each
+  `@font-face` is `unicode-range`-subset, so an English UI only fetches the
+  Latin file.
+- **Base hygiene** (in `app.css`): `-webkit-font-smoothing: antialiased` +
+  `text-rendering: optimizeLegibility` so Geist renders crisp on both
+  themes; `font-feature-settings: "tnum" 1, "calt" 0` on mono so digits are
+  fixed-width and identifiers aren't ligated/prettified.
+- **Scale.** Body sizes are unchanged (the 10/11/12/13/14/16 px tokens). A
+  single new `--text-headline` (18px) sits above `display` for page-level
+  `<h1>`s (used by `PageHeader`) — a deliberate, sober step, **not** a
+  marketing hero (§ The product mental model still rules: no hero typography).
+
+**Migration path** if the pairing changes: swap the `@fontsource-variable/*`
+imports in `main.tsx` and the `--font-sans` / `--font-mono` token values in
+`app.css`'s `@theme` block; everything else inherits via Tailwind's
+`font-sans` / `font-mono`.
+
 ## Primary accent
 
 **Decision (2026-06-21): shift to an electric indigo/periwinkle and

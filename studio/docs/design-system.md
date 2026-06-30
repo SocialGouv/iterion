@@ -8,6 +8,7 @@ Single source of truth: [`studio/src/app.css`](../src/app.css). Everything below
 
 | Family | Tokens | When to use |
 |---|---|---|
+| Fonts | `font-sans` (Geist Variable) / `font-mono` (Geist Mono Variable) | Self-hosted variable fonts (imported in `main.tsx`, defined in `app.css`). `font-sans` is the global default; `font-mono` for technical identifiers (run-ids / SHAs / node-ids / branch names). Both fall back to the system stack. See visual-identity.md § Typography. |
 | Surfaces | `surface-0` / `surface-1` / `surface-2` / `surface-3` | See § Surface hierarchy below |
 | Foreground | `fg-default`, `fg-muted`, `fg-subtle`, `fg-onAccent` | Text contrast tiers |
 | Borders | `border-default`, `border-strong`, `border-subtle` | Dividers, card outlines |
@@ -18,7 +19,7 @@ Single source of truth: [`studio/src/app.css`](../src/app.css). Everything below
 | Selection | `selected`, `sub-tool` | Selected highlights, sub-node tool kind |
 | Library | `library-pattern` | "Pattern" library category (no node-kind equivalent) |
 | Radii | `radius-sm`/`md`/`lg`/`xl` | Component corner radius |
-| Type | `text-caption` (10px) / `text-micro` (11px) / `text-body` (12px) / `text-label` (13px) / `text-title` (14px) / `text-display` (16px) | Use the generated utility directly — `text-body`, `text-title`, … — **not** `text-[12px]` arbitrary values |
+| Type | `text-caption` (10px) / `text-micro` (11px) / `text-body` (12px) / `text-label` (13px) / `text-title` (14px) / `text-display` (16px) / `text-headline` (18px) | Use the generated utility directly — `text-body`, `text-title`, … — **not** `text-[12px]` arbitrary values. `text-headline` is the page-level `<h1>` size (used by `PageHeader`); `text-display` is for emphasised section / card headings. |
 | Elevation | `shadow-sm` / `shadow-md` / `shadow-lg` / `shadow-popover` | Surface depth. Consume via `shadow-[var(--shadow-popover)]`. Light-mode alphas override automatically. |
 | Motion | `motion-fast` (120ms) / `motion-base` (180ms) / `motion-slow` (280ms), `motion-ease` | Transitions, animations |
 | Stacking | `z-canvas` (40, panel chrome) / `z-overlay` (40, modal backdrops) / `z-modal` (50) / `z-confirm` (60, confirm-on-modal + cmd-K) / `z-popover` (70) / `z-tooltip` (80) / `z-toast` (100, also focused skip-link) | Use via `z-[var(--z-modal)]` (Tailwind arbitrary value) or `style={{ zIndex: "var(--z-modal)" }}` |
@@ -76,6 +77,27 @@ It compiles to `color-mix(in srgb, var(--color-node-tool) 13%, transparent)`. Su
 ## Primitives
 
 Use these first. If the use-case doesn't fit, **extend the primitive** rather than rolling your own.
+
+### Page header
+
+[`ui/PageHeader.tsx`](../src/components/ui/PageHeader.tsx) — the single shared header for content-titled / browse / destination views (Marketplace, Plugins, …). Renders `title` in the `text-headline` token, an optional muted `description`, an `eyebrow`, an accent-soft `icon` chip, and a right-aligned `actions` slot, all on a `surface-1` raised bar with a consistent `px-6 py-4` rhythm (centred `max-w-5xl`, or `width="wide"` for dashboards).
+
+```tsx
+<PageHeader
+  icon={<ArchiveIcon className="h-5 w-5" />}
+  title="Bot marketplace"
+  description="Browse the hosted registry…"
+  actions={<Button variant="secondary" size="sm" onClick={refresh}>Refresh</Button>}
+/>
+```
+
+This is the **content** title — distinct from `ContextualHeaderBar` (the slim, always-present account strip above `<main>`, fed by `useHeaderSlot`). A view uses **one or the other**, not both for the same title. Dense working/config views (Board, Dispatcher, Settings, …) keep the slim `useHeaderSlot` title; don't convert them to `PageHeader`.
+
+### Cards & elevation
+
+[`ui/Card.tsx`](../src/components/ui/Card.tsx) — the canonical raised container: `bg-surface-1` + hairline border + `shadow-[var(--shadow-sm)]` at rest. `interactive` adds the hover affordance (subtle lift + `hover:shadow-[var(--shadow-md)]` + `hover:border-border-strong`) for clickable cards/rows; `flush` drops the default `p-4`.
+
+When a list item must stay a semantic `<li>`/`<button>` (so `Card`'s `<div>` doesn't fit), apply the same classes inline: `rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)]` (+ the hover trio for interactive rows). Reach for the elevation tokens (`--shadow-sm|md|lg`) — never a raw `shadow-lg`/`shadow-xl` utility (§ Don'ts).
 
 ### Buttons & icon buttons
 

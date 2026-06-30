@@ -123,7 +123,7 @@ export default function UsersAdminPage() {
           </InlineBanner>
         )}
 
-        <section className="bg-surface-1 border border-border-subtle rounded overflow-hidden">
+        <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
           <div className="overflow-x-auto"><table className="w-full text-sm">
             <thead className="text-left text-fg-muted border-b border-border-subtle">
               <tr>

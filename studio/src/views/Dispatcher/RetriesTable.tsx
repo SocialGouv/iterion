@@ -60,8 +60,8 @@ export default function RetriesTable({
   });
   const now = useTick(1000, needsTick);
   return (
-    <section className="rounded border border-border-default bg-surface-1">
-      <header className="px-4 py-2 border-b border-border-default text-sm font-semibold flex items-center justify-between gap-2">
+    <section className="rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] overflow-hidden">
+      <header className="px-4 py-2 border-b border-border-default text-title font-semibold flex items-center justify-between gap-2">
         <span>Retry queue ({rows?.length ?? 0})</span>
         {rows && rows.length > 0 && (
           <Tooltip content={pollTitle}>

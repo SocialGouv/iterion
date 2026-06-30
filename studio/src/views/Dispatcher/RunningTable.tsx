@@ -49,8 +49,8 @@ export default function RunningTable({
   onOpenRun,
 }: RunningTableProps) {
   return (
-    <section className="rounded border border-border-default bg-surface-1">
-      <header className="px-4 py-2 border-b border-border-default text-sm font-semibold">
+    <section className="rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] overflow-hidden">
+      <header className="px-4 py-2 border-b border-border-default text-title font-semibold">
         Running ({rows?.length ?? 0})
       </header>
       {!rows || rows.length === 0 ? (

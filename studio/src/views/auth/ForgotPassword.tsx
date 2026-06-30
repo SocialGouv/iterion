@@ -34,8 +34,8 @@ export default function ForgotPassword() {
   if (sent) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-surface-0 text-fg-default px-4">
-        <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-lg p-8 shadow-[var(--shadow-md)] space-y-4">
-          <h1 className="text-2xl font-semibold">Check your email</h1>
+        <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] p-8 shadow-[var(--shadow-lg)] space-y-4">
+          <h1 className="text-headline font-semibold">Check your email</h1>
           <p className="text-sm text-fg-muted">
             If we have an account for that email address, we sent a password-reset link.
             The link expires shortly — open it in the same browser to finish resetting.
@@ -54,8 +54,8 @@ export default function ForgotPassword() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-surface-0 text-fg-default px-4">
-      <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-lg p-8 shadow-[var(--shadow-md)]">
-        <h1 className="text-2xl font-semibold mb-2">Forgot your password?</h1>
+      <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] p-8 shadow-[var(--shadow-lg)]">
+        <h1 className="text-headline font-semibold mb-2">Forgot your password?</h1>
         <p className="text-sm text-fg-muted mb-6">
           Enter your email and we'll send a one-time link to reset it.
         </p>

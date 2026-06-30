@@ -145,7 +145,7 @@ export default function TriggersView() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-md border border-border-default">
+        <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)]">
           <table className="w-full text-sm">
             <thead className="bg-surface-2 text-left text-xs text-fg-muted">
               <tr>

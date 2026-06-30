@@ -127,7 +127,7 @@ function FieldsViewInner() {
   return (
     <div className="h-full overflow-auto p-4 space-y-3 text-label">
       <header className="flex items-baseline gap-3">
-        <h1 className="text-lg font-semibold text-fg-default">Board fields</h1>
+        <h1 className="text-headline font-semibold tracking-tight text-fg-default">Board fields</h1>
         <span className="text-fg-muted text-micro">
           {fields.length} custom field{fields.length === 1 ? "" : "s"}
         </span>

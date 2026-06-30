@@ -130,7 +130,7 @@ function LabelsViewInner() {
   return (
     <div className="h-full overflow-auto p-4 space-y-3 text-label">
       <header className="flex items-baseline gap-3">
-        <h1 className="text-lg font-semibold text-fg-default">
+        <h1 className="text-headline font-semibold tracking-tight text-fg-default">
           Board labels
         </h1>
         <span className="text-fg-muted text-micro">

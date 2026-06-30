@@ -74,9 +74,9 @@ export default function SessionLauncher({
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-4">
-      <div className="rounded-lg border border-border-default bg-surface-1 p-6 space-y-4">
+      <div className="rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-lg)] p-6 space-y-4">
         <div>
-          <h2 className="text-lg font-semibold text-fg-default">{bot.label}</h2>
+          <h2 className="text-display font-semibold tracking-tight text-fg-default">{bot.label}</h2>
           <p className="mt-1 text-label text-fg-muted">{bot.description}</p>
         </div>
 

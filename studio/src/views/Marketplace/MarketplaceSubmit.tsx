@@ -112,7 +112,7 @@ export function MarketplaceSubmit({
   };
 
   return (
-    <section className="rounded border border-border-default bg-surface-2 p-3">
+    <section className="rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] p-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xs font-medium text-fg-muted">Submit a repository</h2>
         <Button

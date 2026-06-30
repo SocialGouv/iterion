@@ -15,7 +15,7 @@ export default function WhatsNextCard() {
   return (
     <Link
       href="/whats-next"
-      className="block group rounded-lg border border-accent/40 bg-accent-soft hover:bg-accent-soft hover:border-accent/60 transition-colors p-4"
+      className="block group rounded-[var(--radius-lg)] border border-accent/40 bg-accent-soft shadow-[var(--shadow-sm)] hover:border-accent/60 hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5 transition-[box-shadow,transform,border-color] duration-[var(--motion-fast)] ease-[var(--motion-ease)] p-4"
     >
       <div className="flex items-center gap-4">
         <div className="shrink-0 w-10 h-10 rounded-full bg-accent text-accent-fg flex items-center justify-center">

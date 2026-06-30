@@ -225,7 +225,7 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
       )}
 
       {canManage && (
-        <section className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3">
+        <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] p-4 space-y-3">
           <h3 className="font-medium">Invite a member</h3>
           <form onSubmit={invite} className="flex gap-2 items-end">
             <div className="flex-1">
@@ -411,7 +411,7 @@ function OrgBilling({ orgID }: { orgID: string }) {
         The monthly budget is shared across every team in this organization. Caps
         are managed by platform admins.
       </p>
-      <div className="bg-surface-1 border border-border-subtle rounded divide-y divide-border-subtle">
+      <div className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] divide-y divide-border-subtle overflow-hidden">
         {rows.map(([k, v]) => (
           <div key={k} className="flex items-center justify-between px-4 py-2 text-sm">
             <span className="text-fg-muted">{k}</span>

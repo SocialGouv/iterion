@@ -73,7 +73,9 @@ function RunsAnalyticsViewInner() {
           <ArrowLeftIcon className="w-3 h-3" />
           Runs
         </Link>
-        <h1 className="text-lg font-semibold text-fg-default">Runs analytics</h1>
+        <h1 className="text-headline font-semibold tracking-tight text-fg-default">
+          Runs analytics
+        </h1>
         <span className="text-fg-muted text-micro">
           {stats
             ? `${stats.total_runs} run${stats.total_runs === 1 ? "" : "s"} · ${formatCost(stats.total_cost_usd)} spent · last ${stats.since_days} days`
@@ -182,9 +184,9 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="border border-border-subtle rounded-md bg-surface-0 p-3 space-y-2">
+    <section className="border border-border-default rounded-[var(--radius-lg)] bg-surface-1 shadow-[var(--shadow-sm)] p-4 space-y-2">
       <header className="flex items-baseline gap-2">
-        <h2 className="text-label font-medium text-fg-default">{title}</h2>
+        <h2 className="text-title font-semibold text-fg-default">{title}</h2>
         {subtitle && (
           <span className="text-micro text-fg-muted">— {subtitle}</span>
         )}

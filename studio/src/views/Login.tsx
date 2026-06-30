@@ -207,8 +207,8 @@ export function SignInCard() {
   const showRegister = providers?.signup_mode === "open" || invitation !== "";
 
   return (
-    <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-lg p-8 shadow-[var(--shadow-md)]">
-        <h1 className="text-2xl font-semibold mb-2">
+    <div className="w-full max-w-md bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] p-8 shadow-[var(--shadow-lg)]">
+        <h1 className="text-headline font-semibold mb-2">
           {mode === "login" ? "Sign in to iterion" : "Create your account"}
         </h1>
         <p className="text-sm text-fg-muted mb-6">

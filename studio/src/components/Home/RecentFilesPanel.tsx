@@ -313,7 +313,7 @@ export default function RecentFilesPanel({ variant = "card" }: Props) {
   if (variant === "plain") return body;
 
   return (
-    <section className="flex flex-col bg-surface-1 border border-border-default rounded-lg overflow-hidden">
+    <section className="flex flex-col bg-surface-1 border border-border-default rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
       <header className="px-4 py-2.5 border-b border-border-default flex items-center justify-between">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-fg-muted">
           Workflows

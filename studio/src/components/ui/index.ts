@@ -83,6 +83,12 @@ export { Skeleton } from "./Skeleton";
 export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
 
+export { PageHeader } from "./PageHeader";
+export type { PageHeaderProps } from "./PageHeader";
+
+export { Card } from "./Card";
+export type { CardProps } from "./Card";
+
 export { TerminalCaret } from "./TerminalCaret";
 export type { TerminalCaretProps } from "./TerminalCaret";
 

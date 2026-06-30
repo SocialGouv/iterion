@@ -13,8 +13,11 @@ import {
   type MarketplaceEntry,
 } from "@/api/marketplace";
 import { listBots } from "@/api/bots";
+import { ArchiveIcon } from "@radix-ui/react-icons";
+
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { PageHeader } from "@/components/ui/PageHeader";
 import { useUIStore } from "@/store/ui";
 import { toastError } from "@/lib/errorHints";
 import { useAuth } from "@/auth/AuthContext";
@@ -255,16 +258,28 @@ export default function MarketplaceView() {
   const active = entries?.find((e) => e.slug === activeSlug) ?? null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-surface-1 text-fg-default">
-      <header className="border-b border-border-default px-6 py-4">
-        <div className="mx-auto flex max-w-5xl flex-col gap-1">
-          <h1 className="text-base font-semibold text-fg-default">Bot marketplace</h1>
-          <p className="text-xs text-fg-muted">
+    <div className="flex h-full min-h-0 flex-col bg-surface-0 text-fg-default">
+      <PageHeader
+        icon={<ArchiveIcon className="h-5 w-5" />}
+        title="Bot marketplace"
+        description={
+          <>
             Browse the hosted registry, submit a repository, or install a
-            published bot into this workspace's <code className="text-fg-default">.botz/</code>.
-          </p>
-        </div>
-      </header>
+            published bot into this workspace's{" "}
+            <code className="font-mono text-fg-default">.botz/</code>.
+          </>
+        }
+        actions={
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void refresh()}
+            loading={loading}
+          >
+            Refresh
+          </Button>
+        }
+      />
 
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 overflow-y-auto px-6 py-4">
         <section className="flex flex-col gap-2">
@@ -291,9 +306,6 @@ export default function MarketplaceView() {
                 aria-label="Filter by tag"
               />
             </label>
-            <Button variant="secondary" size="sm" onClick={() => void refresh()}>
-              Refresh
-            </Button>
           </div>
         </section>
 

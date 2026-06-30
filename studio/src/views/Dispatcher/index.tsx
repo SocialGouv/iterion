@@ -332,9 +332,9 @@ function SummaryCard({
   const pillState = status ? status.state : "unreachable";
   const meta = dispatcherPillMeta(pillState);
   return (
-    <section className="rounded border border-border-default bg-surface-1 p-4">
+    <section className="rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] p-4">
       <div className="flex items-center justify-between mb-2 gap-3">
-        <h2 className="text-sm font-semibold">{snap.name || "Dispatcher"}</h2>
+        <h2 className="text-title font-semibold">{snap.name || "Dispatcher"}</h2>
         <Tooltip content={meta.title}>
           <span
             className={`text-caption font-mono rounded px-1.5 py-0.5 ${meta.className}`}
