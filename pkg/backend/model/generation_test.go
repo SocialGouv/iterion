@@ -1461,3 +1461,17 @@ func TestGenerateTextDirect_NonContextErrorNotRetried(t *testing.T) {
 		t.Fatalf("non-context error should not trigger compaction retry, got %d", retried)
 	}
 }
+
+// TestGuardNonEmptyConversation: an empty message list yields a clear iterion
+// error (not the provider's opaque 400), while any real message passes.
+func TestGuardNonEmptyConversation(t *testing.T) {
+	if err := guardNonEmptyConversation(nil); err == nil {
+		t.Fatal("nil messages must error")
+	}
+	if err := guardNonEmptyConversation([]api.Message{}); err == nil {
+		t.Fatal("empty messages must error")
+	}
+	if err := guardNonEmptyConversation([]api.Message{{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}}}); err != nil {
+		t.Fatalf("a real message must pass, got %v", err)
+	}
+}

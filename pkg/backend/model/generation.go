@@ -800,7 +800,24 @@ func mapStopReason(reason string) FinishReason {
 // GenerateTextDirect generates text using api.APIClient.StreamResponse directly.
 // It runs a tool loop: call model → execute tools → append results → repeat,
 // up to MaxSteps iterations.
+// guardNonEmptyConversation rejects a request that carries no message at all,
+// turning the provider's opaque "messages: at least one message is required"
+// 400 into a clear, actionable iterion error. The system prompt lives in
+// opts.System (separate from Messages), so this fires exactly for the
+// degenerate node — an entry agent/judge with an empty `user:` prompt and no
+// input — never when any prior/session/tool message exists (then Messages is
+// non-empty).
+func guardNonEmptyConversation(messages []api.Message) error {
+	if len(messages) == 0 {
+		return fmt.Errorf("this node produced no message to send: give the agent/judge a `user:` prompt, or feed it input from an upstream node or workflow input — a `system:` prompt alone is not a conversation turn")
+	}
+	return nil
+}
+
 func GenerateTextDirect(ctx context.Context, client api.APIClient, opts GenerationOptions) (*TextResult, error) {
+	if err := guardNonEmptyConversation(opts.Messages); err != nil {
+		return nil, err
+	}
 	if opts.Hooks != nil {
 		defer func() {
 			_, _ = opts.Hooks.Fire(ctx, hooks.Context{Event: hooks.Stop})
@@ -1082,6 +1099,9 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 
 	if len(opts.ExplicitSchema) == 0 {
 		return nil, fmt.Errorf("GenerateObjectDirect requires ExplicitSchema to be set")
+	}
+	if err := guardNonEmptyConversation(opts.Messages); err != nil {
+		return nil, err
 	}
 
 	var inputSchema api.InputSchema
