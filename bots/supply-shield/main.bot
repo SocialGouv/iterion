@@ -125,6 +125,15 @@ schema enumerate_output:
   ecosystems:     json
   summary:        string
 
+schema normalize_input:
+  deps:        json
+  ecosystems:  json
+
+schema normalize_output:
+  deps:        json
+  ecosystems:  json
+  summary:     string
+
 schema heuristic_output:
   packages:    json
   errors:      json
@@ -327,7 +336,11 @@ prompt review_system:
        are all valid (textbook supply-chain malware shape).
      - Force risk_level HIGH (score >= 80) on a `checksum-mismatch`
        signal (the same name@version republished with different bytes
-       after a prior scan — a supply-chain re-publish attack).
+       after a prior scan — a supply-chain re-publish attack). A pending
+       package carrying a `_checksum_changed` field was flagged by
+       filter_cached as exactly this republish case — emit a
+       `checksum-mismatch` flag for it citing the cached vs current
+       checksum, and force HIGH.
      - Cap at 0 floor and 100 ceiling.
   4. Bucket risk_level: <=20 LOW, <=50 MEDIUM, >50 HIGH.
   5. Write a 1-2 sentence `summary` citing the strongest evidence file.
@@ -569,6 +582,104 @@ agent enumerate_deps:
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 25
   readonly: true
+
+## normalize_deps — DETERMINISTIC. Coerces enumerate_deps' (LLM) output
+## into the canonical [{ecosystem, name, version, checksum}] shape no matter
+## which shape the model emitted — an array of objects, a {name:[versions]}
+## map, a {ecosystem:[name@ver]} map, or "name@version" strings. This takes
+## the LLM OUT of the cache-key derivation path: cross-run dedup was
+## unreliable because the enumerator inconsistently dropped ecosystem /
+## checksum between runs, so filter_cached built mismatched keys and
+## re-inspected already-cached versions. The cache key is now
+## ecosystem:name:version (see filter_cached); the checksum is metadata
+## compared on a hit to catch republish attacks.
+tool normalize_deps:
+  command: `DEPS={{input.deps}} ECOS={{input.ecosystems}} python3 -c "
+import os, json, re
+try:    deps_in = json.loads(os.environ.get('DEPS','') or '[]')
+except Exception: deps_in = []
+try:    ecos_in = json.loads(os.environ.get('ECOS','') or '[]')
+except Exception: ecos_in = os.environ.get('ECOS','')
+
+def eco_list(x):
+    items = []
+    if isinstance(x, list):
+        for it in x:
+            if isinstance(it, str): items.append(it.strip())
+            elif isinstance(it, dict):
+                for k in ('id','eco','ecosystem','name'):
+                    if isinstance(it.get(k), str): items.append(it[k].strip()); break
+    elif isinstance(x, dict): items = [str(k).strip() for k in x.keys()]
+    elif isinstance(x, str): items = re.findall(r'[A-Za-z0-9_+.-]+', x)
+    seen = []
+    for e in items:
+        if e and e not in seen: seen.append(e)
+    return seen
+
+ecos = eco_list(ecos_in)
+sole = ecos[0] if len(ecos) == 1 else ''
+KNOWN = set(['npm','yarn','pnpm','bun','javascript','typescript','node','nodejs','js',
+             'pypi','python','pip','poetry','uv','py','gomod','golang','go','go-modules',
+             'cargo','rust','rubygems','gem','composer','php','maven','gradle','nuget'])
+
+out = []
+def add(eco, name, version, checksum=''):
+    name = (name or '').strip().strip('/')
+    for marker in ('node_modules/', 'site-packages/', 'vendor/'):
+        i = name.rfind(marker)
+        if i != -1: name = name[i + len(marker):]
+    if not name: return
+    version = '' if version is None else str(version).strip()
+    out.append({'ecosystem': (eco or '').strip(), 'name': name,
+                'version': version, 'checksum': (checksum or '').strip()})
+
+def parse_nv(s):
+    s = s.strip()
+    m = re.match(r'^(@?[^@\s]+)@(.+)\$', s)
+    return (m.group(1), m.group(2)) if m else (s, '')
+
+def from_obj(d, default_eco=''):
+    name = d.get('name') or d.get('package') or ''
+    ver = d.get('version')
+    if ver is None: ver = d.get('versions')
+    eco = d.get('ecosystem') or d.get('eco') or default_eco or sole
+    chk = d.get('checksum') or d.get('integrity') or d.get('hash') or ''
+    if isinstance(ver, list):
+        for v in ver: add(eco, name, v, chk)
+    else:
+        add(eco, name, ver, chk)
+
+if isinstance(deps_in, list):
+    for d in deps_in:
+        if isinstance(d, dict): from_obj(d)
+        elif isinstance(d, str):
+            n, v = parse_nv(d); add(sole, n, v)
+elif isinstance(deps_in, dict):
+    for k, v in deps_in.items():
+        if str(k).strip().lower() in KNOWN:
+            items = v if isinstance(v, list) else [v]
+            for it in items:
+                if isinstance(it, str):
+                    n, vv = parse_nv(it); add(k, n, vv)
+                elif isinstance(it, dict):
+                    from_obj(it, default_eco=k)
+        else:
+            vers = v if isinstance(v, list) else [v]
+            for vv in vers:
+                if isinstance(vv, dict): from_obj(vv)
+                else: add(sole, k, vv)
+
+seen, uniq = set(), []
+for d in out:
+    kk = (d['ecosystem'], d['name'], d['version'])
+    if kk in seen: continue
+    seen.add(kk); uniq.append(d)
+
+print(json.dumps({'deps': uniq, 'ecosystems': ecos,
+                  'summary': 'normalized %d dependency entries across %d ecosystem(s)' % (len(uniq), len(ecos))}))
+"`
+  input: normalize_input
+  output: normalize_output
 
 ## run_eco_heuristics — skill-driven, DETERMINISTIC (no LLM in the path).
 ## For each detected ecosystem it reads the `iterion:heuristics` block
@@ -959,7 +1070,20 @@ if not floor_ok:
 ## filter_cached which parses it inline. On first run the file does not
 ## exist; the tool emits empty raw_jsonl rather than failing.
 tool load_cache:
-  command: `mkdir -p {{vars.cache_dir}} && (touch {{vars.cache_path}} 2>/dev/null || true); RAW=$(cat {{vars.cache_path}} 2>/dev/null || printf ''); LINES=$(printf '%s' "$RAW" | grep -c '^' || printf '0'); printf '{"cache_path":"%s","raw_jsonl":%s,"line_count":%s}\n' "{{vars.cache_path}}" "$(printf '%s' "$RAW" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')" "$LINES"`
+  ## All in python (reads the path from env, not inline printf) so an empty
+  ## cache yields clean JSON — the old shell form emitted a malformed
+  ## line_count ("0 0") and a quoted cache_path on a cold cache.
+  command: `mkdir -p {{vars.cache_dir}} && CACHE_PATH={{vars.cache_path}} python3 -c "
+import os, json
+p = os.environ.get('CACHE_PATH','').strip()
+try:
+    with open(p, encoding='utf-8') as f:
+        raw = f.read()
+except OSError:
+    raw = ''
+n = sum(1 for ln in raw.splitlines() if ln.strip())
+print(json.dumps({'cache_path': p, 'raw_jsonl': raw, 'line_count': n}))
+"`
   output: cache_load_output
 
 ## filter_cached splits deps into pending (cache-miss or stale) and
@@ -982,7 +1106,10 @@ for line in raw.splitlines():
         e = json.loads(line)
         if e.get('kind','malware') != 'malware':
             continue
-        key = '%s:%s:%s:%s' % (e.get('ecosystem',''), e.get('name',''), e.get('version',''), e.get('checksum',''))
+        # Key on identity (ecosystem:name:version), NOT checksum — the
+        # checksum is metadata compared on a hit. Keying on a checksum that
+        # the LLM enumerator emits inconsistently broke cross-run dedup.
+        key = '%s:%s:%s' % (e.get('ecosystem',''), e.get('name',''), e.get('version',''))
         cur = index.get(key)
         if not cur or e.get('scanned_at','') > cur.get('scanned_at',''):
             index[key] = e
@@ -995,7 +1122,7 @@ now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 for d in deps:
     if not isinstance(d, dict):
         pending.append(d); continue
-    key = '%s:%s:%s:%s' % (d.get('ecosystem',''), d.get('name',''), d.get('version',''), d.get('checksum',''))
+    key = '%s:%s:%s' % (d.get('ecosystem',''), d.get('name',''), d.get('version',''))
     e = index.get(key)
     if not e:
         pending.append(d); continue
@@ -1008,6 +1135,14 @@ for d in deps:
         pending.append(d); continue
     if e.get('scanner_version','') < scanner_v:
         pending.append(d); continue
+    # Republish guard: a cached (name@version) whose checksum changed is a
+    # supply-chain re-publish — re-inspect and flag it instead of trusting
+    # the old verdict. Only when BOTH checksums are known.
+    dchk = (d.get('checksum') or '').strip()
+    echk = (e.get('checksum') or '').strip()
+    if dchk and echk and dchk != echk:
+        d2 = dict(d); d2['_checksum_changed'] = {'cached': echk, 'current': dchk}
+        pending.append(d2); continue
     enriched = dict(d); enriched['_cached'] = e
     already.append(enriched)
 
@@ -1177,21 +1312,26 @@ workflow supply_shield:
     scope_notes:        "{{vars.scope_notes}}"
   }
 
-  enumerate_deps -> run_eco_heuristics with {ecosystems: "{{outputs.enumerate_deps.ecosystems}}"}
+  enumerate_deps -> normalize_deps with {
+    deps:        "{{outputs.enumerate_deps.deps}}",
+    ecosystems:  "{{outputs.enumerate_deps.ecosystems}}"
+  }
+
+  normalize_deps -> run_eco_heuristics with {ecosystems: "{{outputs.normalize_deps.ecosystems}}"}
 
   run_eco_heuristics      -> run_jsxray
   run_jsxray              -> run_generic_heuristics
   run_generic_heuristics  -> heuristic_join
 
   heuristic_join -> coverage_gate with {
-    ecosystems:  "{{outputs.enumerate_deps.ecosystems}}",
+    ecosystems:  "{{outputs.normalize_deps.ecosystems}}",
     scan_dir:    "{{vars.scan_dir}}"
   }
 
   coverage_gate -> load_cache
 
   load_cache -> filter_cached with {
-    deps:             "{{outputs.enumerate_deps.deps}}",
+    deps:             "{{outputs.normalize_deps.deps}}",
     cache_raw_jsonl:  "{{outputs.load_cache.raw_jsonl}}",
     scanner_version:  "{{vars.scanner_version}}",
     ttl_days:         "{{vars.cache_ttl_days}}"

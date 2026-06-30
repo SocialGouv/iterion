@@ -2,6 +2,47 @@
 
 Newest first. See [README](README.md) for the template.
 
+## 2026-06-30 — dedup + load_cache fixes, re-validated end-to-end
+
+- **Status:** validated (all three findings from the first run fixed and
+  re-dogfooded)
+- **Versions:** bot supply-shield@0.1.0 · iterion (worktree, dedup fixes)
+- **Method:** same unsandboxed setup as below, but run **from inside the
+  target dir** (so `workDir` = target → skills mirror correctly) + host
+  `iterion-jsxray` shim. Fresh target each time for a clean cache.
+- **What was fixed (from the first run's findings):**
+  1. **Cross-run dedup now reliable.** Added a deterministic
+     `normalize_deps` node that coerces the LLM enumerator's output into
+     canonical `[{ecosystem,name,version,checksum}]` regardless of the
+     shape it emits (object array, `{name:[versions]}` map,
+     `{ecosystem:[name@ver]}` map, or `name@version` strings) **and strips
+     artifact-dir prefixes** (`node_modules/`, `site-packages/`, `vendor/`)
+     so the name is the bare package id. The cache key changed from
+     `ecosystem:name:version:checksum` to **`ecosystem:name:version`**
+     (the LLM-fragile checksum left the key; it is now metadata compared
+     on a hit to catch republish attacks → `_checksum_changed`). Proven:
+     run 1 inspected `telemetry-helper` (pending 1, hit 0); **run 2 on the
+     same target → `cache_hits:1, pending:0`** (no re-inspection). Applied
+     to all three family bots (supply-shield, supply-shield-cve,
+     sec-audit-deps).
+  2. **Skill-mirroring was NOT an engine bug** — `mirrorBundleSkills` is
+     unconditional and correct. The first run's empty
+     `<target>/.claude/skills` was a dogfood-invocation error: passing
+     `--var workspace_dir=<target>` does NOT move the engine's `workDir`
+     (there is no `--workdir` flag; `workDir` defaults to cwd). Running
+     **from inside the target** mirrors skills correctly — the reviewer
+     read them immediately this time, **no runaway `grep`**. Documented as
+     a usage note, no code change.
+  3. **`load_cache` rewritten in python** (reads the path from env, not an
+     inline `printf`) — emits clean JSON on a cold cache (`line_count: 0`,
+     unquoted `cache_path`) instead of the old `"0 0"` / quoted-path glitch.
+- **Re-validation result:** **risk 100 HIGH** on `telemetry-helper@2.4.1`
+  again (5 signals, js-x-ray-confirmed `eval`, `is-minified` FP discarded,
+  board issue filed), name now clean (`telemetry-helper`, prefix stripped),
+  cache holds exactly one `kind:malware` line, dedup hit on re-run. The CVE
+  sibling (Vulny) was validated in the same pass — see
+  [supply-shield-cve.md](supply-shield-cve.md).
+
 ## 2026-06-30 — first dogfood: malware PR-gate end-to-end (run 019f1738)
 
 - **Status:** validated (core) / partial (dedup + scanner floor)
