@@ -1995,7 +1995,9 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 		case TokenEntry:
 			p.next() // consume "entry"
 			p.expect(TokenColon)
-			wd.Entry = p.expectIdent()
+			// Accept a dotted reference so the entry can be a group-instance
+			// node (`entry: r1.gate`).
+			wd.Entry = p.continueDottedRef(p.expectIdent())
 			p.skipNewlines()
 
 		case TokenBudget:

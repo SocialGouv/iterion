@@ -1,0 +1,29 @@
+## Demonstrates group reuse + a subbot node (tool-only, runs without API keys).
+##   plan -> r1.gate (group instance) -> run_ticket (subbot) -> done
+schema pout:
+  id: string
+  ok: bool
+
+schema vout:
+  validated: bool
+  echoed: string
+
+## A reusable one-node "gate" group, parametrised by a label.
+group gate_block(label):
+  tool gate:
+    command: `printf '{"id":"%s","ok":true}' "{{params.label}}"`
+    output: pout
+
+use gate_block as r1 with { label: "T-42" }
+
+## Runs child.bot as a nested run, passing the gate's id as the child's ticket var.
+subbot run_ticket:
+  source: "child.bot"
+  with { ticket: "{{outputs.r1.gate.id}}" }
+  output: vout
+
+workflow composition:
+  entry: r1.gate
+  r1.gate    -> run_ticket
+  run_ticket -> done when validated
+  run_ticket -> fail

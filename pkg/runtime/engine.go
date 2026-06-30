@@ -2008,6 +2008,21 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 			return nil
 		}
 		nodeOut := sc.outputs[ref.Path[0]]
+		// Group-instance nodes have dotted ids (`prefix.name`), which collide
+		// with the dotted ref grammar: {{outputs.r1.gate.id}} parses as
+		// [r1, gate, id]. When the single-segment node isn't found, try the
+		// two-segment id `Path[0].Path[1]` and treat the rest as the field path.
+		if nodeOut == nil && len(ref.Path) >= 2 {
+			if joined := sc.outputs[ref.Path[0]+"."+ref.Path[1]]; joined != nil {
+				if len(ref.Path) == 2 {
+					return joined
+				}
+				if len(ref.Path) == 3 {
+					return joined[ref.Path[2]]
+				}
+				return drillPath(joined[ref.Path[2]], ref.Path[3:])
+			}
+		}
 		if nodeOut == nil {
 			return nil
 		}
