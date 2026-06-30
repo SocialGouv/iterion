@@ -4959,6 +4959,68 @@
         ]
       }
     },
+    "/api/v1/plugins/install": {
+      "post": {
+        "operationId": "postV1PluginsInstall",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/plugins/install",
+        "tags": [
+          "plugins"
+        ]
+      }
+    },
+    "/api/v1/plugins/{name}": {
+      "delete": {
+        "operationId": "deleteV1PluginsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/v1/plugins/{name}",
+        "tags": [
+          "plugins"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/plugins/{name}/config": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putV1PluginsByNameConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/v1/plugins/{name}/config",
+        "tags": [
+          "plugins"
+        ]
+      }
+    },
     "/api/v1/plugins/{name}/disable": {
       "parameters": [
         {
