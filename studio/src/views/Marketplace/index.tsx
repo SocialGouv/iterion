@@ -30,6 +30,50 @@ import {
   type InstalledVersions,
 } from "./installState";
 
+// MarketplaceCategory groups entries for display. Bots are the first-class
+// category (rendered first, most prominent); the plugin-type categories
+// (rewriter / mcp / skill / command / agent / hook) follow.
+interface MarketplaceCategory {
+  key: string;
+  label: string;
+  entries: MarketplaceEntry[];
+}
+
+// CATEGORY_ORDER is the canonical taxonomy + display order. "bot" is the
+// first-class category; the rest are plugin contribution kinds. "plugin" is the
+// catch-all for a plugin entry that declares no recognised kind.
+const CATEGORY_ORDER: { key: string; label: string }[] = [
+  { key: "bot", label: "Bots" },
+  { key: "rewriter", label: "Rewriters" },
+  { key: "mcp", label: "MCP servers" },
+  { key: "skill", label: "Skills" },
+  { key: "command", label: "Commands" },
+  { key: "agent", label: "Agents" },
+  { key: "hook", label: "Hooks" },
+  { key: "lifecycle", label: "Lifecycle" },
+  { key: "plugin", label: "Plugins" },
+];
+
+// categoriesOf returns the category keys an entry belongs to. A bot (kind unset
+// or "bot") is just "bot". A plugin lists its contribution kinds (carried in
+// `categories`), falling back to the catch-all "plugin" when none are declared.
+function categoriesOf(e: MarketplaceEntry): string[] {
+  if ((e.kind ?? "bot") !== "plugin") return ["bot"];
+  return e.categories && e.categories.length > 0 ? e.categories : ["plugin"];
+}
+
+// groupByCategory partitions entries into the canonical ordered categories,
+// dropping empties. An entry contributing several kinds appears under each.
+// Within a category the server's popularity/slug order is preserved.
+function groupByCategory(entries: MarketplaceEntry[]): MarketplaceCategory[] {
+  const out: MarketplaceCategory[] = [];
+  for (const { key, label } of CATEGORY_ORDER) {
+    const inCat = entries.filter((e) => categoriesOf(e).includes(key));
+    if (inCat.length > 0) out.push({ key, label, entries: inCat });
+  }
+  return out;
+}
+
 /** MarketplaceView is the hosted bot registry browse / submit / install
  *  surface. Mirrors the studio's other view conventions: page header,
  *  centred content, neutral surfaces, accent for primary actions. The
@@ -307,21 +351,42 @@ export default function MarketplaceView() {
               )}
             </div>
           ) : (
-            <ul className="grid grid-cols-1 gap-2 md:grid-cols-2">
-              {entries.map((e) => (
-                <MarketplaceCard
-                  key={e.slug}
-                  entry={e}
-                  state={resolveInstalledState(e, installed)}
-                  installing={installing === e.slug}
-                  onInstall={() => void onInstall(e)}
-                  onUpdate={() => void onInstall(e, true)}
-                  onUninstall={() => void onUninstall(e)}
-                  onOpen={() => setActiveSlug(e.slug)}
-                  anonymous={noWorkspace}
-                />
+            <div className="flex flex-col gap-6">
+              {groupByCategory(entries).map(({ key, label, entries: catEntries }) => (
+                <section key={key} className="flex flex-col gap-2">
+                  <div className="flex items-baseline gap-2 border-b border-border-default pb-1">
+                    <h3
+                      className={
+                        key === "bot"
+                          ? "text-sm font-semibold text-fg-default"
+                          : "text-xs font-medium text-fg-muted"
+                      }
+                    >
+                      {label}
+                    </h3>
+                    <span className="text-caption text-fg-subtle">
+                      {catEntries.length}
+                    </span>
+                  </div>
+                  {/* One entry per row. */}
+                  <ul className="flex flex-col gap-2">
+                    {catEntries.map((e) => (
+                      <MarketplaceCard
+                        key={e.slug}
+                        entry={e}
+                        state={resolveInstalledState(e, installed)}
+                        installing={installing === e.slug}
+                        onInstall={() => void onInstall(e)}
+                        onUpdate={() => void onInstall(e, true)}
+                        onUninstall={() => void onUninstall(e)}
+                        onOpen={() => setActiveSlug(e.slug)}
+                        anonymous={noWorkspace}
+                      />
+                    ))}
+                  </ul>
+                </section>
               ))}
-            </ul>
+            </div>
           )}
         </section>
       </div>

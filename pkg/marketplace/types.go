@@ -78,6 +78,12 @@ type Entry struct {
 	// KindBot via EffectiveKind (legacy entries).
 	Kind Kind `json:"kind,omitempty" bson:"kind,omitempty"`
 
+	// Categories are a plugin entry's contribution kinds (rewriter / mcp /
+	// skill / command / agent / hook / lifecycle), used to group it in the
+	// marketplace by plugin type. Empty for bots (grouped under "bot"). For a
+	// plugin it is the plugin manifest's Kinds().
+	Categories []string `json:"categories,omitempty" bson:"categories,omitempty"`
+
 	// Name is the bundle's technical id (manifest.name).
 	Name string `json:"name" bson:"name"`
 

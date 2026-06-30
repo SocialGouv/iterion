@@ -32,6 +32,13 @@ export type MarketplaceStatus = "pending" | "approved" | "rejected";
 export interface MarketplaceEntry {
   slug: string;
   name: string;
+  // kind is the entry's artifact category. Absent reads as "bot" (legacy
+  // entries) — bots are the first-class category in the marketplace.
+  kind?: "bot" | "plugin";
+  // categories are a plugin entry's contribution kinds (rewriter / mcp /
+  // skill / command / agent / hook / lifecycle), used to group it in the
+  // marketplace. Empty for bots (grouped under "bot").
+  categories?: string[];
   display_name?: string;
   description?: string;
   author?: string;
