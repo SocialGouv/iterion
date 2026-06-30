@@ -115,7 +115,7 @@ const (
 	DiagInvalidPermission       DiagCode = "C110" // permission: value not one of off|ask|deny (error)
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
-	DiagIndexOnScalar           DiagCode = "C116" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C115 reserved by the fan_out_each epic
+	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
 )
 
 // validate performs static validation on a compiled workflow.

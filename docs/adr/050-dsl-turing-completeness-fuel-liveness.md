@@ -56,7 +56,7 @@ Indexing (`arr[i]`, `m["k"]`, `x[0].field`), bounded higher-order combinators
 lambda is **not** first-class (only at a combinator call site, applied once per
 element of a finite slice, no recursion ⇒ no constructible fixpoint — the
 Dhall/Starlark posture). A `maxEvalVisits` work budget bounds nested
-combinators. Purely additive / backward-compatible. Diagnostic C116
+combinators. Purely additive / backward-compatible. Diagnostic C120
 (index-on-scalar; lambda arity / namespace-collision are enforced at parse).
 
 ### Layer B — unbounded loops bounded by fuel + liveness (opt-in TC iteration)
@@ -138,4 +138,4 @@ what a bot declares.
 - Implementation: `pkg/dsl/expr` (Layer 0), `pkg/dsl/{ast,parser,ir,unparse}` +
   `pkg/runtime/{engine,helpers}.go` (Layer B), `pkg/dsl/ir/ir.go`
   `ClampToCeiling` + `pkg/runner/loop.go` `applyCloudBudgetCeiling` (cloud).
-- Diagnostics: C097, C098 (unbounded loops); C116 (index-on-scalar).
+- Diagnostics: C097, C098 (unbounded loops); C120 (index-on-scalar).
