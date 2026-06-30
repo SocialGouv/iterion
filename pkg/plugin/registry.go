@@ -103,7 +103,10 @@ func (p *Plugin) SkillFiles() ([]SkillFile, error) {
 type Registry struct {
 	home    string
 	plugins []*Plugin
-	state   map[string]bool // explicit operator overrides
+	state   map[string]bool // explicit enable/disable overrides
+	// config holds per-plugin operator config values (plugin name → key → value),
+	// persisted alongside enable state in plugins.yaml.
+	config map[string]map[string]string
 }
 
 // Load builds a registry from the embedded builtins and the installed plugins
@@ -125,24 +128,28 @@ func Load() (*Registry, error) {
 }
 
 func (r *Registry) loadState() error {
+	r.state = map[string]bool{}
+	r.config = map[string]map[string]string{}
 	data, err := os.ReadFile(filepath.Join(r.home, stateFile))
 	if err != nil {
 		if os.IsNotExist(err) {
-			r.state = map[string]bool{}
 			return nil
 		}
 		return fmt.Errorf("plugin: read %s: %w", stateFile, err)
 	}
 	var s struct {
-		Enabled map[string]bool `yaml:"enabled"`
+		Enabled map[string]bool              `yaml:"enabled"`
+		Config  map[string]map[string]string `yaml:"config"`
 	}
 	if err := yaml.Unmarshal(data, &s); err != nil {
 		return fmt.Errorf("plugin: parse %s: %w", stateFile, err)
 	}
-	if s.Enabled == nil {
-		s.Enabled = map[string]bool{}
+	if s.Enabled != nil {
+		r.state = s.Enabled
 	}
-	r.state = s.Enabled
+	if s.Config != nil {
+		r.config = s.Config
+	}
 	return nil
 }
 
@@ -263,9 +270,18 @@ func (r *Registry) saveState() error {
 	if err := os.MkdirAll(r.home, 0o700); err != nil {
 		return err
 	}
+	// Drop empty per-plugin config maps so an unconfigured plugin leaves no
+	// noise in plugins.yaml.
+	cfg := map[string]map[string]string{}
+	for name, vals := range r.config {
+		if len(vals) > 0 {
+			cfg[name] = vals
+		}
+	}
 	data, err := yaml.Marshal(struct {
-		Enabled map[string]bool `yaml:"enabled"`
-	}{Enabled: r.state})
+		Enabled map[string]bool              `yaml:"enabled"`
+		Config  map[string]map[string]string `yaml:"config,omitempty"`
+	}{Enabled: r.state, Config: cfg})
 	if err != nil {
 		return err
 	}
@@ -319,6 +335,14 @@ type View struct {
 	Enabled     bool     `json:"enabled"`
 	Builtin     bool     `json:"builtin"`
 	Kinds       []string `json:"kinds"`
+	// ConfigSchema is the plugin's declared config fields (empty when the plugin
+	// has no config block). ConfigValues carries the current values for the
+	// NON-secret fields; ConfigSecretSet names the secret fields that currently
+	// have a value (their value is never sent to the studio). The registry fills
+	// the value-bearing fields (Plugin.View only knows the schema).
+	ConfigSchema    []ConfigField     `json:"config_schema,omitempty"`
+	ConfigValues    map[string]string `json:"config_values,omitempty"`
+	ConfigSecretSet []string          `json:"config_secret_set,omitempty"`
 }
 
 // Kinds summarises which contribution points a manifest provides.
@@ -375,21 +399,23 @@ func (p *Plugin) HookFragments() ([]map[string]any, error) {
 // View projects a plugin to its listing form.
 func (p *Plugin) View() View {
 	return View{
-		Name:        p.Name(),
-		Version:     p.Manifest.Version,
-		Description: p.Manifest.Description,
-		Author:      p.Manifest.Author,
-		Enabled:     p.Enabled,
-		Builtin:     p.Builtin,
-		Kinds:       p.Manifest.Kinds(),
+		Name:         p.Name(),
+		Version:      p.Manifest.Version,
+		Description:  p.Manifest.Description,
+		Author:       p.Manifest.Author,
+		Enabled:      p.Enabled,
+		Builtin:      p.Builtin,
+		Kinds:        p.Manifest.Kinds(),
+		ConfigSchema: p.Manifest.Config,
 	}
 }
 
-// Views returns the listing form of every loaded plugin.
+// Views returns the listing form of every loaded plugin, each with its config
+// schema + current (secret-masked) values filled in.
 func (r *Registry) Views() []View {
 	out := make([]View, 0, len(r.plugins))
 	for _, p := range r.plugins {
-		out = append(out, p.View())
+		out = append(out, r.fillConfigView(p.View(), p))
 	}
 	return out
 }
@@ -418,16 +444,23 @@ type ExpandContext struct {
 	Workspace string
 	PluginDir string
 	CacheDir  string
+	// Config is the plugin's effective config (defaults overlaid with operator
+	// values), exposed as {{config.<key>}} placeholders.
+	Config map[string]string
 }
 
-// Expand substitutes {{workspace}}, {{plugin.dir}} and {{plugin.cache}} in s.
+// Expand substitutes {{workspace}}, {{plugin.dir}}, {{plugin.cache}} and
+// {{config.<key>}} in s.
 func (e ExpandContext) Expand(s string) string {
-	rep := strings.NewReplacer(
+	pairs := []string{
 		"{{workspace}}", e.Workspace,
 		"{{plugin.dir}}", e.PluginDir,
 		"{{plugin.cache}}", e.CacheDir,
-	)
-	return rep.Replace(s)
+	}
+	for k, v := range e.Config {
+		pairs = append(pairs, "{{config."+k+"}}", v)
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
 }
 
 // ExpandContextFor builds an ExpandContext for the named plugin in a workspace.
@@ -436,5 +469,10 @@ func (r *Registry) ExpandContextFor(name, workspace string) ExpandContext {
 	if p, ok := r.Get(name); ok {
 		dir = p.Dir
 	}
-	return ExpandContext{Workspace: workspace, PluginDir: dir, CacheDir: r.CacheDir(name)}
+	return ExpandContext{
+		Workspace: workspace,
+		PluginDir: dir,
+		CacheDir:  r.CacheDir(name),
+		Config:    r.EffectiveConfig(name),
+	}
 }

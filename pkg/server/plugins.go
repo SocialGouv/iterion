@@ -94,3 +94,52 @@ func (s *Server) handlePluginUninstall(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeJSONFor(w, r, map[string]any{"name": name, "removed": true})
 }
+
+// handlePluginConfig answers PUT /api/v1/plugins/{name}/config — persists the
+// operator's config values for a plugin (like saving a Firefox add-on's
+// preferences). Super-admin only. Only fields declared in the manifest are
+// accepted; a secret field submitted empty keeps its prior value ("leave blank
+// to keep"). Returns the refreshed view (with masked secret values).
+func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "plugin name required", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Values map[string]string `json:"values"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	reg, err := plugin.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	p, ok := reg.Get(name)
+	if !ok {
+		http.Error(w, "plugin not found", http.StatusNotFound)
+		return
+	}
+	// Merge submitted values over the stored ones, accepting only declared
+	// fields and keeping a secret whose submission is blank.
+	merged := reg.StoredConfig(name)
+	for _, f := range p.Manifest.Config {
+		v, sent := body.Values[f.Key]
+		if !sent {
+			continue
+		}
+		if f.Type == "secret" && strings.TrimSpace(v) == "" {
+			continue
+		}
+		merged[f.Key] = v
+	}
+	if err := reg.SetConfig(name, merged); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	view, _ := reg.ViewFor(name)
+	s.writeJSONFor(w, r, view)
+}

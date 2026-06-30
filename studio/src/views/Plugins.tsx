@@ -20,6 +20,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Spinner } from "@/components/ui/Spinner";
+import PluginConfigForm from "./plugins/PluginConfigForm";
 
 // Plugins lists the iterion plugin registry (embedded builtins +
 // ~/.iterion/plugins) and lets the operator enable/disable each one, filter by
@@ -33,6 +34,7 @@ export default function Plugins() {
   const [busy, setBusy] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<string | null>(null);
   const [installOpen, setInstallOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState<string | null>(null);
 
   const { user } = useAuth();
   const authRequired = useServerInfoStore((s) => s.info?.auth_required);
@@ -174,61 +176,82 @@ export default function Plugins() {
         )}
 
         <ul className="flex flex-col gap-2">
-          {filtered.map((p) => (
-            <li
-              key={p.name}
-              className="flex items-start justify-between gap-4 rounded-[var(--radius-lg)] border border-border-default bg-surface-1 p-4 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:border-border-strong hover:shadow-[var(--shadow-md)]"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm text-fg-default">{p.name}</span>
-                  {p.version && (
-                    <span className="text-caption text-fg-subtle">{p.version}</span>
-                  )}
-                  <Badge variant={p.builtin ? "info" : "neutral"} size="sm">
-                    {p.builtin ? "builtin" : "installed"}
-                  </Badge>
-                  {p.enabled && (
-                    <Badge variant="success" size="sm">
-                      enabled
-                    </Badge>
-                  )}
+          {filtered.map((p) => {
+            const configurable = canManage && (p.config_schema?.length ?? 0) > 0;
+            const open = configOpen === p.name;
+            return (
+              <li
+                key={p.name}
+                className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-border-default bg-surface-1 p-4 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:border-border-strong hover:shadow-[var(--shadow-md)]"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm text-fg-default">{p.name}</span>
+                      {p.version && (
+                        <span className="text-caption text-fg-subtle">{p.version}</span>
+                      )}
+                      <Badge variant={p.builtin ? "info" : "neutral"} size="sm">
+                        {p.builtin ? "builtin" : "installed"}
+                      </Badge>
+                      {p.enabled && (
+                        <Badge variant="success" size="sm">
+                          enabled
+                        </Badge>
+                      )}
+                    </div>
+                    {p.description && (
+                      <p className="mt-1 text-caption text-fg-muted">{p.description}</p>
+                    )}
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {p.kinds.map((k) => (
+                        <Badge key={k} variant="accent" size="sm">
+                          {k}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {configurable && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-expanded={open}
+                        onClick={() => setConfigOpen(open ? null : p.name)}
+                      >
+                        {open ? "Close" : "Configure"}
+                      </Button>
+                    )}
+                    {canManage && !p.builtin && (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        loading={busy === p.name}
+                        disabled={busy !== null}
+                        onClick={() => void remove(p)}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                    <Button
+                      variant={p.enabled ? "secondary" : "primary"}
+                      size="sm"
+                      loading={busy === p.name}
+                      disabled={busy !== null}
+                      onClick={() => void toggle(p)}
+                    >
+                      {p.enabled ? "Disable" : "Enable"}
+                    </Button>
+                  </div>
                 </div>
-                {p.description && (
-                  <p className="mt-1 text-caption text-fg-muted">{p.description}</p>
+                {configurable && open && (
+                  <div className="border-t border-border-default pt-3">
+                    <PluginConfigForm plugin={p} onSaved={refresh} />
+                  </div>
                 )}
-                <div className="mt-1.5 flex flex-wrap gap-1">
-                  {p.kinds.map((k) => (
-                    <Badge key={k} variant="accent" size="sm">
-                      {k}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {canManage && !p.builtin && (
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    loading={busy === p.name}
-                    disabled={busy !== null}
-                    onClick={() => void remove(p)}
-                  >
-                    Remove
-                  </Button>
-                )}
-                <Button
-                  variant={p.enabled ? "secondary" : "primary"}
-                  size="sm"
-                  loading={busy === p.name}
-                  disabled={busy !== null}
-                  onClick={() => void toggle(p)}
-                >
-                  {p.enabled ? "Disable" : "Enable"}
-                </Button>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
 
         {canManage && (

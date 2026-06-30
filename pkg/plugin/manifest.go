@@ -53,6 +53,49 @@ type Manifest struct {
 	AutoIndex bool `yaml:"auto_index"`
 	// Contributes lists the typed extension points this plugin provides.
 	Contributes Contributes `yaml:"contributes"`
+	// Config declares user-configurable settings (like a Firefox add-on's
+	// preferences). The operator sets values in the studio; they are stored in
+	// plugins.yaml and substituted into the manifest's mcp env/args, rewriter
+	// env, and lifecycle commands via {{config.<key>}} placeholders.
+	Config []ConfigField `yaml:"config"`
+}
+
+// ConfigField declares one user-configurable setting. Values are stored and
+// expanded as strings (bool/int render as their natural input in the studio but
+// persist as "true"/"30"), which is what {{config.<key>}} substitutes into a
+// plugin's commands and process environment.
+type ConfigField struct {
+	// Key is the setting id, referenced as {{config.<key>}}.
+	Key string `yaml:"key" json:"key"`
+	// Label is the studio form label; defaults to Key when empty.
+	Label string `yaml:"label" json:"label,omitempty"`
+	// Type is one of string | bool | int | float | enum | secret (default string).
+	// secret renders as a password field and its value is never sent back to the
+	// studio (only whether it's set).
+	Type string `yaml:"type" json:"type,omitempty"`
+	// Description is shown under the field in the studio.
+	Description string `yaml:"description" json:"description,omitempty"`
+	// Default is the value used until the operator sets one.
+	Default string `yaml:"default" json:"default,omitempty"`
+	// Options are the allowed values for type: enum.
+	Options []string `yaml:"options" json:"options,omitempty"`
+	// Required marks the field as mandatory (advisory; surfaced in the studio).
+	Required bool `yaml:"required" json:"required,omitempty"`
+}
+
+func (f ConfigField) validate(plugin string) error {
+	if strings.TrimSpace(f.Key) == "" {
+		return fmt.Errorf("plugin %q: config field missing key", plugin)
+	}
+	switch f.Type {
+	case "", "string", "bool", "int", "float", "enum", "secret":
+	default:
+		return fmt.Errorf("plugin %q config %q: unknown type %q (want string|bool|int|float|enum|secret)", plugin, f.Key, f.Type)
+	}
+	if f.Type == "enum" && len(f.Options) == 0 {
+		return fmt.Errorf("plugin %q config %q: enum requires options", plugin, f.Key)
+	}
+	return nil
 }
 
 // Contributes is the set of typed contribution points.
@@ -187,6 +230,11 @@ func (m *Manifest) Validate() error {
 	}
 	for i := range c.MCPServers {
 		if err := c.MCPServers[i].validate(m.Name); err != nil {
+			return err
+		}
+	}
+	for i := range m.Config {
+		if err := m.Config[i].validate(m.Name); err != nil {
 			return err
 		}
 	}

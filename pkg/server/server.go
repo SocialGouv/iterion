@@ -1088,6 +1088,9 @@ func (s *Server) routes() {
 	// single-user operator keeps full access.
 	s.mux.Handle("POST /api/v1/plugins/install", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginInstall)))
 	s.mux.Handle("DELETE /api/v1/plugins/{name}", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginUninstall)))
+	// config write can carry secrets and is instance-global, so it's super-admin
+	// gated too (operator-open in local/dev mode).
+	s.mux.Handle("PUT /api/v1/plugins/{name}/config", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginConfig)))
 	s.mux.HandleFunc("GET /api/v1/bots", s.handleBotsList)
 	s.mux.HandleFunc("POST /api/v1/bots/install", s.handleBotInstall)
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)

@@ -4,6 +4,18 @@
 
 const BASE = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
 
+// PluginConfigField mirrors pkg/plugin.ConfigField — one declared, user-settable
+// setting (like a Firefox add-on preference).
+export interface PluginConfigField {
+  key: string;
+  label?: string;
+  type?: "string" | "bool" | "int" | "float" | "enum" | "secret";
+  description?: string;
+  default?: string;
+  options?: string[];
+  required?: boolean;
+}
+
 export interface PluginView {
   name: string;
   version?: string;
@@ -12,6 +24,11 @@ export interface PluginView {
   enabled: boolean;
   builtin: boolean;
   kinds: string[];
+  // Config UI: the declared fields, the current non-secret values, and which
+  // secret fields currently have a value (their value is never sent down).
+  config_schema?: PluginConfigField[];
+  config_values?: Record<string, string>;
+  config_secret_set?: string[];
 }
 
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
@@ -62,4 +79,16 @@ export async function installPlugin(source: string): Promise<{ name: string; plu
 // uninstallPlugin removes an installed (non-builtin) plugin. Super-admin only.
 export async function uninstallPlugin(name: string): Promise<void> {
   await send(`/v1/plugins/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+// setPluginConfig persists a plugin's config values. Super-admin only. A secret
+// field left blank keeps its prior value server-side. Returns the refreshed view.
+export async function setPluginConfig(
+  name: string,
+  values: Record<string, string>,
+): Promise<PluginView> {
+  return send(`/v1/plugins/${encodeURIComponent(name)}/config`, {
+    method: "PUT",
+    body: JSON.stringify({ values }),
+  });
 }
