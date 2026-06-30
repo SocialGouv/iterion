@@ -1082,6 +1082,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/plugins", s.handlePluginsList)
 	s.mux.HandleFunc("POST /api/v1/plugins/{name}/enable", s.handlePluginEnable(true))
 	s.mux.HandleFunc("POST /api/v1/plugins/{name}/disable", s.handlePluginEnable(false))
+	// install/uninstall mutate the shared plugin tree (clone an arbitrary
+	// source server-side), so they're gated to platform super-admins —
+	// requireSuperAdmin synthesizes a super-admin in local/dev mode, so the
+	// single-user operator keeps full access.
+	s.mux.Handle("POST /api/v1/plugins/install", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginInstall)))
+	s.mux.Handle("DELETE /api/v1/plugins/{name}", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginUninstall)))
 	s.mux.HandleFunc("GET /api/v1/bots", s.handleBotsList)
 	s.mux.HandleFunc("POST /api/v1/bots/install", s.handleBotInstall)
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)

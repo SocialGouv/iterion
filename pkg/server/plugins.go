@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
@@ -38,4 +40,57 @@ func (s *Server) handlePluginEnable(enabled bool) http.HandlerFunc {
 		}
 		s.writeJSONFor(w, r, map[string]any{"name": name, "enabled": enabled})
 	}
+}
+
+// handlePluginInstall answers POST /api/v1/plugins/install — installs a plugin
+// from a git URL or local path into ~/.iterion/plugins/. Super-admin only (the
+// route is wrapped in requireSuperAdmin), because it clones an arbitrary source
+// server-side and mutates the shared plugin tree. Returns the installed
+// plugin's view so the studio can update its list without a full refetch.
+func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Source string `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	src := strings.TrimSpace(body.Source)
+	if src == "" {
+		http.Error(w, "plugin source (git URL or path) required", http.StatusBadRequest)
+		return
+	}
+	name, err := plugin.Install(r.Context(), src)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Reload so the freshly-installed plugin is in the registry, then return its
+	// view (enabled state resolved, kinds populated).
+	reg, err := plugin.Load()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := map[string]any{"name": name}
+	if p, ok := reg.Get(name); ok {
+		resp["plugin"] = p.View()
+	}
+	s.writeJSONFor(w, r, resp)
+}
+
+// handlePluginUninstall answers DELETE /api/v1/plugins/{name} — removes an
+// installed plugin. Super-admin only. Builtins cannot be removed (plugin.Uninstall
+// rejects them with a 400-worthy error; disable them instead).
+func (s *Server) handlePluginUninstall(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "plugin name required", http.StatusBadRequest)
+		return
+	}
+	if err := plugin.Uninstall(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.writeJSONFor(w, r, map[string]any{"name": name, "removed": true})
 }

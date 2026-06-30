@@ -48,3 +48,18 @@ export async function setPluginEnabled(name: string, enabled: boolean): Promise<
     method: "POST",
   });
 }
+
+// installPlugin installs a plugin from a git URL or local path. Super-admin
+// only on the server (POST /v1/plugins/install, requireSuperAdmin); returns the
+// installed plugin's view when the registry could resolve it.
+export async function installPlugin(source: string): Promise<{ name: string; plugin?: PluginView }> {
+  return send("/v1/plugins/install", {
+    method: "POST",
+    body: JSON.stringify({ source }),
+  });
+}
+
+// uninstallPlugin removes an installed (non-builtin) plugin. Super-admin only.
+export async function uninstallPlugin(name: string): Promise<void> {
+  await send(`/v1/plugins/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
