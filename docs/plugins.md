@@ -101,16 +101,23 @@ Compression is the `rewriter` kind. The DSL field is **`compress:`**
 (`on|ultra|off`) on the `workflow` block and on `agent`/`judge`/`tool` nodes;
 the CLI flag is **`--compress`**; the env default is **`ITERION_COMPRESS`**.
 
-Precedence (mirrors the old rtk chain): CLI `--compress` → node `compress:` →
-workflow `compress:` → `ITERION_COMPRESS` → off. Tool nodes are node-opt-in
-**only** (a run override can force-off as a kill switch but never force-on), so
-a review loop's `git diff` stays full-fidelity unless the author opts in.
+Precedence: CLI `--compress` → node `compress:` → workflow `compress:` →
+`ITERION_COMPRESS` → **default**.
+
+- **Agent/judge nodes are opt-OUT**: when a rewriter plugin is enabled and its
+  binary is present (the chain is available), the default is **on** — so rtk
+  compresses agent shell output out of the box. An explicit `off` at any level
+  wins: per-run via `--compress off` / the studio toggle, or globally via
+  `iterion plugin disable rtk` (chain empty → off) or `ITERION_COMPRESS=off`.
+- **Tool nodes are opt-IN only** (a run override can force-off as a kill switch
+  but never force-on), so a review loop's `git diff` stays full-fidelity unless
+  the node sets `compress:`.
 
 The **active rewriter chain** is every enabled rewriter plugin, applied in
 stable name order — so you can *replace* rtk (disable it, enable another) or
 *complement* it (enable several; each rewrites the previous one's output). rtk
-ships enabled, so behaviour is unchanged out of the box; `compress:` is off
-per-node by default.
+ships installed + enabled, so it is used on runs by default (agent/judge),
+disableable per-run and globally as above.
 
 Diagnostic `C102` flags an invalid `compress:` value.
 

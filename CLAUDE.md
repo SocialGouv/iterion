@@ -167,7 +167,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 
 **Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`), `workflow <name>:`
 
-**`compress:` field** (`on|ultra|off`) — opt-in command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes (off by default; see the plugins section above + [docs/plugins.md](docs/plugins.md)).
+**`compress:` field** (`on|ultra|off`) — command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes. **Opt-OUT on agent/judge nodes**: when a rewriter plugin is enabled and its binary is present, compression defaults **on** (so rtk is used out of the box); disable per-run with `--compress off` (or the studio toggle) or globally with `iterion plugin disable rtk` / `ITERION_COMPRESS=off`. **Tool nodes stay opt-IN** (a review loop's `git diff` is never silently compressed). See the plugins section above + [docs/plugins.md](docs/plugins.md).
 
 **`permission:` field** (`off|ask|deny`) + `allow:`/`ask:`/`deny:` rule lists — opt-in **tool-permission gate** (the anti-prompt-injection boundary). Mode on the `workflow` block and as a per-node override; rule lists (Claude-Code `Tool(pattern)` syntax, e.g. `Bash(go test:*)`, `Read(**)`, `Edit(pkg/**)`) on the workflow block. `off` (default) = today's bypassPermissions; `ask` pauses for human approval on any call not allow-listed; `deny` hard-blocks it (headless). The SAME resolved `permission.Policy` ([pkg/backend/permission](pkg/backend/permission/permission.go)) drives BOTH backends — claude_code's `wirePermissionHook` PreToolUse hook and claw's `executeToolsDirect` gate — so a bot behaves identically on either. Precedence (mirrors `compress:`): CLI `--permission`/`--permission-allow|ask|deny` → node → workflow → `ITERION_PERMISSION` → off. Diagnostics C110/C111/C112. See [docs/permissions.md](docs/permissions.md).
 
@@ -267,8 +267,13 @@ bash builtin, and **tool nodes** (node-level opt-in ONLY, so a review loop's
 `git diff` stays full-fidelity). The DSL field is **`compress:`**
 (`on|ultra|off`) on the `workflow` block and `agent`/`judge`/`tool` nodes; CLI
 flag **`--compress`**; env **`ITERION_COMPRESS`**. Precedence: CLI → node →
-workflow → env → off. Enabled rewriter plugins form an ordered **chain** so you
-can replace rtk or stack several compressors. iterion uses rewriters strictly as
+workflow → env → **default**. The default is opt-OUT for agent/judge nodes
+(**on** when a rewriter plugin is enabled + its binary present, so rtk is used
+out of the box) and opt-IN for tool nodes (off unless the node sets
+`compress:`). Disable per-run (`--compress off` / studio toggle) or globally
+(`iterion plugin disable rtk` → chain empty → off; or `ITERION_COMPRESS=off`).
+Enabled rewriter plugins form an ordered **chain** so you can replace rtk or
+stack several compressors. iterion uses rewriters strictly as
 compressors, never permission gates (failures fall back to the original
 command). Sandboxed runs bind-mount each rewriter's host binary at its declared
 `sandbox_mount` (rtk → `/usr/local/bin/rtk`). Diagnostic `C102` flags an invalid

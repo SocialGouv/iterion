@@ -48,6 +48,30 @@ func fakeRewriter(t *testing.T, body string, applyExit []int, modes map[string]p
 	}
 }
 
+func TestResolveWithDefault(t *testing.T) {
+	// All unset → the default (opt-out On for LLM nodes when chain available).
+	if got := ResolveWithDefault("", "", "", "", On); got != On {
+		t.Errorf("all unset should fall back to default On, got %v", got)
+	}
+	if got := ResolveWithDefault("", "", "", "", Off); got != Off {
+		t.Errorf("all unset with Off default → Off, got %v", got)
+	}
+	// An explicit off at ANY level beats the On default (global + per-run kill).
+	if got := ResolveWithDefault("off", "", "", "", On); got != Off {
+		t.Errorf("run override off must win over On default, got %v", got)
+	}
+	if got := ResolveWithDefault("", "", "", "off", On); got != Off {
+		t.Errorf("ITERION_COMPRESS=off must win over On default, got %v", got)
+	}
+	if got := ResolveWithDefault("", "off", "", "", On); got != Off {
+		t.Errorf("node off must win over On default, got %v", got)
+	}
+	// Explicit ultra anywhere is honoured.
+	if got := ResolveWithDefault("", "", "ultra", "", On); got != Ultra {
+		t.Errorf("workflow ultra honoured, got %v", got)
+	}
+}
+
 func TestChainRewriteApplies(t *testing.T) {
 	// Script: print "fake <the command arg>" (arg $2 is the {{command}}).
 	spec := fakeRewriter(t, `printf 'fake %s' "$2"`, []int{0}, nil)

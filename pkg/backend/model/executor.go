@@ -1409,7 +1409,21 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// the (possibly sandboxed, IPC) claw runner can rebuild it. claude_code
 	// installs a PreToolUse hook when enabled; claw carries it into its tool
 	// loop via ctx.
-	if m := rewrite.Resolve(e.compressOverride, f.compress, e.wfCompress, e.compressEnvDefault); m.Enabled() {
+	//
+	// Compression is opt-OUT on LLM (agent/judge) nodes: when a rewriter plugin
+	// is enabled and its binary is present (chain available) and nothing set it
+	// explicitly, the default is On — so rtk (the default-enabled rewriter)
+	// compresses agent shell output out of the box. An explicit "off" at any
+	// level still wins: per-run via --compress off / studio toggle (override),
+	// or globally via `iterion plugin disable rtk` (chain empty → default Off)
+	// or ITERION_COMPRESS=off (envDefault). Tool nodes stay opt-IN (handled in
+	// executor_tool.go via ResolveToolNode) so deterministic output is never
+	// silently compressed.
+	compressDefault := rewrite.Off
+	if e.chain.Available() {
+		compressDefault = rewrite.On
+	}
+	if m := rewrite.ResolveWithDefault(e.compressOverride, f.compress, e.wfCompress, e.compressEnvDefault, compressDefault); m.Enabled() {
 		task.CompressMode = m.String()
 		task.Rewriters = e.chain.Specs()
 	}
