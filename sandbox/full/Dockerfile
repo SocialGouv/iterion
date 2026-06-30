@@ -112,7 +112,7 @@ RUN ARCH=$(dpkg --print-architecture) \
 #                      script auto-pins to latest stable v3).
 #   k9s              — Kubernetes TUI for observability work.
 #   fnm              — Node version manager (Schniz/fnm). The slim
-#                      base ships Node 22 system-wide; fnm is for
+#                      base ships Node 24 system-wide; fnm is for
 #                      bots that need a specific Node version.
 # ---------------------------------------------------------------------
 ARG YQ_VERSION=v4.44.5

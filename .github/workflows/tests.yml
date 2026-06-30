@@ -237,7 +237,7 @@ jobs:
         # doesn't depend on image.yml succeeding first.
         # The Dockerfile's `studio-builder` stage runs pnpm + vite
         # build itself, so a separate host-side studio build step is
-        # redundant; saves ~30s and a Node 22 setup.
+        # redundant; saves ~30s and a Node 24 setup.
         run: |
           docker build -t "${IMG}" .
 

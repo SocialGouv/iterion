@@ -63,7 +63,7 @@ COPY --from=iterion-bin /usr/local/bin/iterion /usr/local/bin/iterion
 # runAsNonRoot with allowPrivilegeEscalation=false, so sudo can't escalate and
 # the bot's post_create exits 1. Reuse the iterion image's pinned llm-clis
 # (docker/llm-clis: claude-code 2.1.175) and symlink `claude` onto PATH; it runs
-# on this image's node 22. With `claude` present, post_create's `claude --version`
+# on this image's node 24. With `claude` present, post_create's `claude --version`
 # check passes and the sudo branch is skipped (docker + k8s alike).
 COPY --from=iterion-bin /opt/iterion/llm-clis/node_modules /opt/iterion/llm-clis/node_modules
 RUN ln -sf /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude

@@ -47,7 +47,7 @@ RUN apt-get update \
 
 # Playwright MCP — the npm package the runtime spawns via stdio.
 # Pin the global install for reproducibility; bumps land via PR.
-# We rely on Node 22 inherited from slim. Corepack-managed pnpm is
+# We rely on Node 24 inherited from slim. Corepack-managed pnpm is
 # already enabled in the base image.
 RUN npm install -g @playwright/mcp@latest
 

@@ -52,7 +52,7 @@ jobs:
         working-directory: studio
         env:
           # macos-latest (M-series) only ships ~7 GB to a runner and
-          # Node 22's default 2 GB old-space cap is too tight for the
+          # Node 24's default 2 GB old-space cap is too tight for the
           # vite production build (NodeIcon chunk pushes the heap past
           # the limit and v8 SIGABRTs). 4096 MiB clears the build with
           # headroom on every runner OS.

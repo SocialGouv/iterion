@@ -325,7 +325,7 @@ pinned to the running iterion version:
 
 | Variant | Image                                                       | Contents                                                                                            |
 | ------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **slim** (default) | `ghcr.io/socialgouv/iterion-sandbox-slim:<version>` | git, curl, jq, Node 22, devbox + Nix                                                                |
+| **slim** (default) | `ghcr.io/socialgouv/iterion-sandbox-slim:<version>` | git, curl, jq, Node 24, devbox + Nix                                                                |
 | **full** (opt-in)  | `ghcr.io/socialgouv/iterion-sandbox-full:<version>` | slim + Go (+ `g`), Python 3, pnpm, fnm, direnv, gh, yq (mikefarah), kubectl, helm, k9s              |
 
 Tags track iterion releases (`v1.2.3`) plus a rolling `edge` for main.

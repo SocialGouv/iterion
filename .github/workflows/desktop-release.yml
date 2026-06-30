@@ -135,7 +135,7 @@ jobs:
       - name: Enable corepack
         shell: bash
         run: |
-          # Node 22+ ships Corepack disabled by default; `corepack pnpm`
+          # Node 24+ ships Corepack disabled by default; `corepack pnpm`
           # commands silently fail without this on Windows runners. Linux
           # and macOS runners typically have it pre-enabled, but running
           # this is a no-op on those.
