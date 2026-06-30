@@ -2,6 +2,58 @@
 
 Newest first. See [README](README.md) for the template.
 
+## 2026-06-30 — first SANDBOXED run from the sec image (runs 019f1783 / 019f1792 / 019f17.. dedup)
+
+- **Status:** validated (sandboxed, end-to-end)
+- **Versions:** bot supply-shield@0.1.0 · iterion 356fde8b6 · image
+  `ghcr.io/socialgouv/iterion-sandbox-sec:edge` (locally rebuilt + CI
+  `build-sandbox-sec` green — self-test passed: js-x-ray detected the eval,
+  `osv-scanner 2.4.0` present)
+- **Method:** local Docker driver, `iterion run` from inside
+  `/tmp/ssfix/malware-target` (fixtures via
+  `scripts/adhoc/supply-shield-fixtures.sh`), `--var base_ref=<.base>`,
+  `--store-dir /tmp/ss-store`. No `--sandbox none`, no `--workdir`.
+- **Proven for the first time on real infra:**
+  - **Scanners come from the IMAGE** (no host shim): js-x-ray, trivy,
+    npm-audit all ran inside the container; `coverage_gate` →
+    **`degraded:false`** (`present:[generic.json, jsxray.json,
+    npm-audit.json]`, `missing:[]`).
+  - **Skills mirrored INSIDE the container** (`skills mirrored=11` into the
+    worktree `.claude/skills`, bind-mounted into the sandbox).
+  - **Malware detected.** `telemetry-helper@2.4.1`'s `postinstall.js` —
+    `eval(atob(...))` → `https://exfil.example` C2 + `AWS_SECRET_ACCESS_KEY`/
+    `NPM_TOKEN` theft. Notably js-x-ray hit a `parsing-error` on the install
+    hook; the LLM reviewer's **deep-read fallback** caught it directly
+    (anti-façade working).
+  - **Cross-run dedup hits sandboxed.** 2nd run on the same target →
+    `already_scanned:[telemetry-helper]`, `pending:[]`.
+- **Engine/infra findings:**
+  1. **Host-wide cache + sandbox = store-dir matters.** With the default
+     store under `~/.iterion`, the worktree lives inside `~/.iterion`, so
+     the `~/.iterion` host_state mount is SKIPPED (overlap rule,
+     `sandbox.go:collectHostStateMounts`) → a `cache_path` under
+     `~/.iterion` is unreachable in-container and `update_cache` dies with
+     `PermissionError`. Fix: put the run store OUTSIDE `~/.iterion`
+     (`--store-dir /tmp/ss-store`) so `~/.iterion` mounts RW and the cache
+     persists + is writable. Worth documenting for any host-wide-cache
+     sandboxed run.
+  2. **enumerate_deps shape non-determinism (FIXED, 356fde8b6).** The LLM
+     enumerator emits the new dep as `{pkg:[ver]}`, `{eco:[{name,…}]}` OR
+     `{pkg:{version,path,change,…}}` across runs. The last shape (dict keyed
+     by package name, value = details object WITHOUT a `name`) made
+     `normalize_deps` drop it → 0 packages → no scan/dedup. Fixed by
+     injecting the key as `name`. Copy-shared to supply-shield-cve.
+- **Reported (decisions for the operator):**
+  - **(b) board emit:** under sandbox the `__mcp-board` MCP server is
+    unreachable (C082) — `mcp__iterion_board__create_issue` → "No such tool
+    available". The bot handled it gracefully (recorded the error, still
+    produced the verdict + local report). Needs the HTTP board MCP transport
+    (`BoardHTTPEndpoint`/`BoardRunToken`) → run via studio/server, not a bare
+    `iterion run`.
+  - **(c) forge_report:** no forge token present → degraded to
+    `mode=local-only` (report stays at `report_path`). Expected; posting for
+    real needs a forge PR + token.
+
 ## 2026-06-30 — dedup + load_cache fixes, re-validated end-to-end
 
 - **Status:** validated (all three findings from the first run fixed and
