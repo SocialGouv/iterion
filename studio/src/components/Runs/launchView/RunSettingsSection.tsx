@@ -76,7 +76,7 @@ export default function RunSettingsSection({
               value={compressOverride}
               onChange={(e) => onCompressChange(e.currentTarget.value)}
             >
-              <option value="">inherit (workflow / ITERION_COMPRESS)</option>
+              <option value="">default — on when a rewriter plugin is enabled</option>
               <option value="on">on — compress shell output</option>
               <option value="ultra">ultra — densest output</option>
               <option value="off">off — disable for this run</option>
@@ -91,8 +91,11 @@ export default function RunSettingsSection({
               >
                 rtk
               </a>{" "}
-              by default) to save 60–90% of command-output tokens. Needs an
-              enabled rewriter plugin whose binary is on the host PATH.
+              by default) to save 60–90% of command-output tokens. On agent/judge
+              nodes it&apos;s on by default when a rewriter plugin is enabled
+              (its binary on the host PATH); choose <code>off</code> to disable
+              for this run. Tool nodes stay opt-in via the bot&apos;s{" "}
+              <code>compress:</code> field.
             </div>
           </div>
         </div>
