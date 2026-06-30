@@ -33,6 +33,8 @@ func Unparse(f *ast.File) string {
 	w.writeHumans(f.Humans)
 	w.writeTools(f.Tools)
 	w.writeComputes(f.Computes)
+	w.writeEmits(f.Emits)
+	w.writeWaits(f.Waits)
 	w.writeSubbots(f.Subbots)
 	w.writeWorkflows(f.Workflows)
 	return w.b.String()
@@ -476,6 +478,39 @@ func (w *fileWriter) writeComputes(computes []*ast.ComputeDecl) {
 			for _, e := range c.Expr {
 				fmt.Fprintf(&w.b, "    %s: %q\n", e.Key, e.Expr)
 			}
+		}
+	}
+}
+
+func (w *fileWriter) writeEmits(emits []*ast.EmitDecl) {
+	for _, e := range emits {
+		w.blankLine()
+		fmt.Fprintf(&w.b, "emit %s:\n", e.Name)
+		if e.Event != "" {
+			writeQuotedProp(&w.b, "event", e.Event)
+		}
+		if len(e.With) > 0 {
+			w.b.WriteString("  with {\n")
+			for _, entry := range e.With {
+				fmt.Fprintf(&w.b, "    %s: %q,\n", entry.Key, entry.Value)
+			}
+			w.b.WriteString("  }\n")
+		}
+	}
+}
+
+func (w *fileWriter) writeWaits(waits []*ast.WaitDecl) {
+	for _, wt := range waits {
+		w.blankLine()
+		fmt.Fprintf(&w.b, "wait %s:\n", wt.Name)
+		if wt.Event != "" {
+			writeQuotedProp(&w.b, "event", wt.Event)
+		}
+		if wt.Timeout != "" {
+			writeQuotedProp(&w.b, "timeout", wt.Timeout)
+		}
+		if wt.Output != "" {
+			writeProp(&w.b, "output", wt.Output)
 		}
 	}
 }

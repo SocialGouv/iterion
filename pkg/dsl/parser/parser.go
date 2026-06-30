@@ -91,7 +91,7 @@ func (p *parser) skipToNextTopLevel() {
 		case TokenVars, TokenPresets, TokenAttachments, TokenSecrets,
 			TokenMCPServer, TokenPrompt, TokenSchema, TokenCursor,
 			TokenAgent, TokenJudge, TokenRouter, TokenHuman,
-			TokenTool, TokenCompute, TokenGroup, TokenUse, TokenSubbot, TokenWorkflow:
+			TokenTool, TokenCompute, TokenEmit, TokenWait, TokenGroup, TokenUse, TokenSubbot, TokenWorkflow:
 			return
 		case TokenDedent:
 			p.next()
@@ -273,6 +273,16 @@ func (p *parser) parseFile() *ast.File {
 			ud := p.parseUseDecl()
 			if ud != nil {
 				f.Uses = append(f.Uses, ud)
+			}
+
+		case TokenEmit:
+			if ed := p.parseEmitDecl(); ed != nil && !p.isReservedName(t, ed.Name, "emit") {
+				f.Emits = append(f.Emits, ed)
+			}
+
+		case TokenWait:
+			if wd := p.parseWaitDecl(); wd != nil && !p.isReservedName(t, wd.Name, "wait") {
+				f.Waits = append(f.Waits, wd)
 			}
 
 		case TokenSubbot:
@@ -1959,6 +1969,86 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 		}
 	}
 	return sd
+}
+
+// parseEmitDecl parses an emit node (ADR-051):
+//
+//	emit <name>:
+//	  event: "ready"
+//	  with: { value: "{{outputs.producer.n}}" }
+func (p *parser) parseEmitDecl() *ast.EmitDecl {
+	start, name, ok := p.parseDeclHeader("emit")
+	if !ok {
+		return nil
+	}
+	ed := &ast.EmitDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch {
+		case t.Type == TokenWith:
+			ed.With = p.parseWithBlock()
+			p.skipNewlines()
+		case t.Type == TokenIdent && t.Value == "event":
+			p.next()
+			p.expect(TokenColon)
+			ed.Event = p.expectString()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown emit property '"+t.Value+"'")
+			p.next()
+			p.skipToNewline()
+		}
+	}
+	return ed
+}
+
+// parseWaitDecl parses a wait node (ADR-051):
+//
+//	wait <name>:
+//	  event: "ready"
+//	  timeout: "30s"
+//	  output: <schema>
+func (p *parser) parseWaitDecl() *ast.WaitDecl {
+	start, name, ok := p.parseDeclHeader("wait")
+	if !ok {
+		return nil
+	}
+	wd := &ast.WaitDecl{Name: name, Span: ast.Span{Start: p.pos(start)}}
+	for {
+		p.skipNewlines()
+		t := p.peek()
+		if t.Type == TokenDedent || t.Type == TokenEOF {
+			if t.Type == TokenDedent {
+				p.next()
+			}
+			break
+		}
+		switch {
+		case t.Type == TokenOutput:
+			p.next()
+			p.expect(TokenColon)
+			wd.Output = p.expectIdent()
+		case t.Type == TokenIdent && t.Value == "event":
+			p.next()
+			p.expect(TokenColon)
+			wd.Event = p.expectString()
+		case t.Type == TokenIdent && t.Value == "timeout":
+			p.next()
+			p.expect(TokenColon)
+			wd.Timeout = p.expectString()
+		default:
+			p.addError(DiagUnknownProperty, t, "unknown wait property '"+t.Value+"'")
+			p.next()
+			p.skipToNewline()
+		}
+	}
+	return wd
 }
 
 func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {

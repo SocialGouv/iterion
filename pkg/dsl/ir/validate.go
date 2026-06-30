@@ -102,13 +102,17 @@ const (
 	// keeps passing.
 	//
 	// NOTE: an earlier draft also checked edge with-mapping keys/types
-	// against the target node's input schema (C105/C106). That was dropped:
-	// the runtime (engine.buildNodeInputRS) passes EVERY with-key through
-	// verbatim and never validates node input against the declared input
-	// schema — the schema is advisory, not a contract a with-mapping must
-	// satisfy — so such a check rests on a false premise. C104/C105/C106
-	// are intentionally left unallocated.
-	DiagEnumLiteralMismatch     DiagCode = "C103" // comparison literal outside the target field's enum set (error)
+	// against the target node's input schema. That was dropped: the runtime
+	// (engine.buildNodeInputRS) passes EVERY with-key through verbatim and
+	// never validates node input against the declared input schema — the
+	// schema is advisory, not a contract a with-mapping must satisfy — so
+	// such a check rests on a false premise.
+	//
+	// C103-C106 belong to the Verified Action family (ADR-044, see
+	// validate_verified_action.go); the enum-literal check below is C121 so
+	// it joins the expr-type cluster (C107/C108/C120/C121) and does not
+	// collide with DiagInvalidPolicy.
+	DiagEnumLiteralMismatch     DiagCode = "C121" // comparison literal outside the target field's enum set (error)
 	DiagExprOperandTypeMismatch DiagCode = "C107" // compute/when expression operands incompatible under the operator (warning)
 	DiagWhenExprNotBoolish      DiagCode = "C108" // when-expression result clearly not bool-coercible (warning)
 	DiagVarDefaultTypeMismatch  DiagCode = "C109" // a var's default literal type does not match its declared type (error)
@@ -116,6 +120,10 @@ const (
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
 	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
+	// Event-driven primitives (ADR-051): emit/wait nodes.
+	DiagEventNoName     DiagCode = "C196" // emit/wait node with no `event:` name (error)
+	DiagWaitNoTimeout   DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)
+	DiagEventNoListener DiagCode = "C198" // wait on an event no emit produces, or emit no wait consumes (warning — dangling event)
 )
 
 // validate performs static validation on a compiled workflow.
@@ -154,6 +162,38 @@ func (c *compiler) validate(w *Workflow) {
 	c.validatePermission(w)
 	c.validateVerifiedActions(w)
 	c.validateArtifactLabels(w)
+	c.validateEvents(w)
+}
+
+// validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
+// event no emit produces can only ever time out, and an emit no wait consumes is
+// dead. Both are C198 warnings (not errors) — a wait may legitimately await an
+// event emitted outside the run once external-event support lands.
+func (c *compiler) validateEvents(w *Workflow) {
+	emitted := make(map[string]bool)
+	waited := make(map[string]bool)
+	for _, n := range w.Nodes {
+		switch x := n.(type) {
+		case *EmitNode:
+			emitted[x.Event] = true
+		case *WaitNode:
+			waited[x.Event] = true
+		}
+	}
+	for _, n := range w.Nodes {
+		switch x := n.(type) {
+		case *WaitNode:
+			if x.Event != "" && !emitted[x.Event] {
+				c.warnfAt(DiagEventNoListener, x.ID, "",
+					"wait %q awaits event %q which no emit node produces — it can only ever time out", x.ID, x.Event)
+			}
+		case *EmitNode:
+			if x.Event != "" && !waited[x.Event] {
+				c.warnfAt(DiagEventNoListener, x.ID, "",
+					"emit %q produces event %q which no wait node consumes — the event is dead", x.ID, x.Event)
+			}
+		}
+	}
 }
 
 // validateArtifactLabels warns (C049) when a node declares artifact_labels:

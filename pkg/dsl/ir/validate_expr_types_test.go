@@ -49,7 +49,7 @@ func countCode(r *CompileResult, code DiagCode) int {
 	return n
 }
 
-func TestC103_EnumLiteralMismatch(t *testing.T) {
+func TestC121_EnumLiteralMismatch(t *testing.T) {
 	cases := []struct {
 		expr string
 		want int
@@ -67,7 +67,7 @@ func TestC103_EnumLiteralMismatch(t *testing.T) {
 		t.Run(tc.expr, func(t *testing.T) {
 			r := compileFile(t, whenExprTypeSrc(tc.expr))
 			if got := countCode(r, DiagEnumLiteralMismatch); got != tc.want {
-				t.Errorf("C103 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
+				t.Errorf("C121 count = %d, want %d\ndiagnostics: %v", got, tc.want, r.Diagnostics)
 			}
 		})
 	}
@@ -119,7 +119,7 @@ func TestC108_WhenExprNotBoolish(t *testing.T) {
 	}
 }
 
-// TestExprTypeSeverities pins C103 as an error and C107/C108 as warnings.
+// TestExprTypeSeverities pins C121 as an error and C107/C108 as warnings.
 func TestExprTypeSeverities(t *testing.T) {
 	check := func(expr string, code DiagCode, wantSev Severity) {
 		r := compileFile(t, whenExprTypeSrc(expr))
@@ -174,7 +174,7 @@ workflow w:
 `
 	r := compileFile(t, src)
 	if got := countCode(r, DiagEnumLiteralMismatch); got != 1 {
-		t.Errorf("expected 1 C103 from the compute expression, got %d\ndiagnostics: %v", got, r.Diagnostics)
+		t.Errorf("expected 1 C121 from the compute expression, got %d\ndiagnostics: %v", got, r.Diagnostics)
 	}
 }
 

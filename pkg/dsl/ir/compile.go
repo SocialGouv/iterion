@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
@@ -437,6 +438,8 @@ func (c *compiler) compile() *Workflow {
 	c.compileHumans()
 	c.compileTools()
 	c.compileComputes()
+	c.compileEmits()
+	c.compileWaits()
 	c.compileSubbots()
 
 	// Add terminal nodes. Safe by construction now: validateNodeNames
@@ -1232,20 +1235,84 @@ func (c *compiler) compileSubbots() {
 		if sd.Output != "" {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)
 		}
-		with := make([]*DataMapping, 0, len(sd.With))
-		for _, w := range sd.With {
-			refs, err := ParseRefs(w.Value)
-			if err != nil {
-				c.errorfAt(DiagBadTemplateRef, sd.Name, "", "subbot %q with key %q: %v", sd.Name, w.Key, err)
-			}
-			with = append(with, &DataMapping{Key: w.Key, Refs: refs, Raw: w.Value})
-		}
 		c.nodes[sd.Name] = &SubbotNode{
 			BaseNode:     BaseNode{ID: sd.Name},
 			Source:       sd.Source,
-			With:         with,
+			With:         c.compileWithMappings(sd.Name, sd.With),
 			OutputSchema: sd.Output,
 			Needs:        sd.Needs,
+		}
+	}
+}
+
+// compileWithMappings parses a node's `with { ... }` entries into DataMappings,
+// emitting C004 for any malformed template. Shared by the node kinds that carry
+// a `with:` payload (emit, subbot).
+func (c *compiler) compileWithMappings(nodeID string, entries []*ast.WithEntry) []*DataMapping {
+	with := make([]*DataMapping, 0, len(entries))
+	for _, w := range entries {
+		refs, err := ParseRefs(w.Value)
+		if err != nil {
+			c.errorfAt(DiagBadTemplateRef, nodeID, "", "%s: with key %q: %v", nodeID, w.Key, err)
+		}
+		with = append(with, &DataMapping{Key: w.Key, Refs: refs, Raw: w.Value})
+	}
+	return with
+}
+
+// compileEmits compiles `emit` nodes (ADR-051): a named event plus an optional
+// immutable payload resolved from the With data-mappings.
+func (c *compiler) compileEmits() {
+	for _, ed := range c.file.Emits {
+		if _, exists := c.nodes[ed.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[ed.Name] {
+			continue
+		}
+		if ed.Event == "" {
+			c.errorfAt(DiagEventNoName, ed.Name, "", "emit %q has no `event:` name", ed.Name)
+		}
+		c.nodes[ed.Name] = &EmitNode{
+			BaseNode: BaseNode{ID: ed.Name},
+			Event:    ed.Event,
+			With:     c.compileWithMappings(ed.Name, ed.With),
+		}
+	}
+}
+
+// compileWaits compiles `wait` nodes (ADR-051): a named event plus a mandatory
+// timeout (the no-silent-infinity invariant) and an optional payload schema.
+func (c *compiler) compileWaits() {
+	for _, wd := range c.file.Waits {
+		if _, exists := c.nodes[wd.Name]; exists {
+			continue
+		}
+		if ast.ReservedTargets[wd.Name] {
+			continue
+		}
+		if wd.Event == "" {
+			c.errorfAt(DiagEventNoName, wd.Name, "", "wait %q has no `event:` name", wd.Name)
+		}
+		var timeout time.Duration
+		if wd.Timeout == "" {
+			c.errorfAt(DiagWaitNoTimeout, wd.Name, "",
+				"wait %q has no `timeout:` — a mandatory bound is required (the no-silent-infinity invariant)", wd.Name)
+		} else if d, err := time.ParseDuration(wd.Timeout); err != nil {
+			c.errorfAt(DiagWaitNoTimeout, wd.Name, "", "wait %q has an invalid `timeout:` %q: %v", wd.Name, wd.Timeout, err)
+		} else if d <= 0 {
+			c.errorfAt(DiagWaitNoTimeout, wd.Name, "", "wait %q `timeout:` must be positive, got %q", wd.Name, wd.Timeout)
+		} else {
+			timeout = d
+		}
+		if wd.Output != "" {
+			c.validateSchemaRef(wd.Name, "output", wd.Output)
+		}
+		c.nodes[wd.Name] = &WaitNode{
+			BaseNode:     BaseNode{ID: wd.Name},
+			SchemaFields: SchemaFields{OutputSchema: wd.Output},
+			Event:        wd.Event,
+			Timeout:      timeout,
 		}
 	}
 }

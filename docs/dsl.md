@@ -226,6 +226,7 @@ src -> dst                              # Unconditional
 src -> dst when approved                # Conditional (bool field from src output)
 src -> dst when not approved            # Negated condition
 src -> dst as loop_name(5)              # Bounded loop (max 5 iterations)
+src -> dst as loop_name(unbounded 200)  # Opt-in unbounded loop, fuel ceiling 200
 src -> dst with {                       # Data mapping
   context: "{{outputs.src}}",
   config: "{{vars.my_var}}"
@@ -237,6 +238,7 @@ src -> dst with {                       # Data mapping
 - Non-router nodes can have at most one unconditional edge
 - Conditional edges must be exhaustive (`when X` + `when not X`) or have an unconditional fallback
 - All cycles must be declared with `as name(N)` — undeclared cycles are a compile error
+- A cycle may opt into `as name(unbounded [<fuel>])` — no static iteration cap; termination is relocated to a runtime fuel ceiling + a liveness monitor. This is the DSL's opt-in Turing-completeness; see [dsl-totality-and-tc.md](dsl-totality-and-tc.md) and [ADR-050](adr/050-dsl-turing-completeness-fuel-liveness.md). Diagnostics C097 (fuel required) / C098 (no exit edge)
 - Inside loops, you can access iteration history with `{{outputs.node_id.history}}`
 
 ## Template Expressions

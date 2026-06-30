@@ -208,6 +208,8 @@ func styleClasses(w *Workflow) string {
 	b.WriteString("    classDef human fill:#FF6B6B,stroke:#CC4444,color:#fff\n")
 	b.WriteString("    classDef tool fill:#A0522D,stroke:#6E3720,color:#fff\n")
 	b.WriteString("    classDef compute fill:#6BB7B7,stroke:#3D7A7A,color:#fff\n")
+	b.WriteString("    classDef emit fill:#9B59B6,stroke:#6C3483,color:#fff\n")
+	b.WriteString("    classDef wait fill:#34495E,stroke:#1B2631,color:#fff\n")
 	b.WriteString("    classDef done fill:#2ECC71,stroke:#1A8B4C,color:#fff\n")
 	b.WriteString("    classDef fail fill:#E74C3C,stroke:#A93226,color:#fff\n")
 
@@ -240,6 +242,10 @@ func kindIcon(k NodeKind) string {
 		return "🔧"
 	case NodeCompute:
 		return "🧮"
+	case NodeEmit:
+		return "📤"
+	case NodeWait:
+		return "⏳"
 	case NodeDone:
 		return "✅"
 	case NodeFail:

@@ -8,7 +8,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Static cross-node typing (Phase 2): C103 / C107 / C108
+// Static cross-node typing (Phase 2): C121 / C107 / C108 / C120
 //
 // This pass is conservative by construction: every inference bails to
 // "unknown" on the slightest doubt (a json field, an unresolved ref, a
@@ -78,7 +78,7 @@ func (c *compiler) validateExprTypes(w *Workflow) {
 }
 
 // walkExprTypes is the single recursive pass over an expression snapshot. At
-// each comparison it runs both the enum-literal check (C103) and the
+// each comparison it runs both the enum-literal check (C121) and the
 // operand-compatibility check (C107); one walk so adding a third check never
 // spawns a third traversal.
 func (c *compiler) walkExprTypes(n *expr.Snapshot, env exprEnv, nodeID, eid, loc string) {
@@ -96,7 +96,7 @@ func (c *compiler) walkExprTypes(n *expr.Snapshot, env exprEnv, nodeID, eid, loc
 			c.checkOperandCompat(l, r, n.Op, env, nodeID, eid, loc)
 		}
 	}
-	// C113: subscripting a value whose static type is a scalar (string/bool/
+	// C120: subscripting a value whose static type is a scalar (string/bool/
 	// int/float) can never index anything — almost always an author mistake.
 	// StringArray and json/unknown receivers are fine and bail.
 	if n.Kind == expr.SnapIndex && len(n.Children) == 2 {
@@ -112,7 +112,7 @@ func (c *compiler) walkExprTypes(n *expr.Snapshot, env exprEnv, nodeID, eid, loc
 
 // checkEnumPair flags `field == "literal"` / `!=` where the field has an enum
 // constraint and the literal is not a member — the comparison can then never
-// match, so it is almost always a typo (C103).
+// match, so it is almost always a typo (C121).
 func (c *compiler) checkEnumPair(pathSide, litSide *expr.Snapshot, env exprEnv, nodeID, eid, loc string) {
 	if pathSide == nil || litSide == nil || pathSide.Kind != expr.SnapPath || litSide.Kind != expr.SnapString {
 		return

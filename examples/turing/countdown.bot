@@ -1,0 +1,46 @@
+## countdown.bot — a deterministic Turing-completeness demonstrator.
+##
+## This bot proves the `.bot` DSL expresses a while-loop-with-state using ONLY
+## the bounded skeleton — no LLM, no shell. It is the executable companion to
+## docs/dsl-totality-and-tc.md and ADR-050.
+##
+## The four pieces that compose into Turing-completeness (ADR-050, Layer B):
+##   1. an `unbounded` loop      — the self back-edge `step -> step`
+##   2. a `compute` node         — deterministic arithmetic, no LLM
+##   3. a carried accumulator    — the loop's `with:` mapping feeds `step`'s own
+##                                 output `n` back as its input for the next turn
+##   4. a `when`-exit            — convergence on the data-driven base case
+##
+## Behaviour: starting from `n = start`, each crossing decrements `n` by one and
+## exits when `n` reaches 0. It terminates by its OWN logic (the `when done`
+## edge), not by exhausting the fuel ceiling — exactly the property a static
+## termination proof cannot give you but the runtime delivers anyway.
+##
+## Run it:
+##   iterion run examples/turing/countdown.bot --var start=5
+## Trajectory for start=5: n = 5,4,3,2,1,0 over 6 executions (5 back-edge
+## crossings), then `done` fires and the run finishes.
+
+vars:
+  start: int = 5
+
+schema state:
+  n: int
+  done: bool
+
+## step is the entire loop body. On its first execution the loop counter is 0,
+## so it seeds `n` from `vars.start`. On every later execution the back-edge's
+## `with:` mapping has supplied `prev_n` = the previous turn's output `n`, and
+## step decrements it. `if(...)` short-circuits, so `input.prev_n - 1` is never
+## evaluated on the seeding turn (when no `with:` mapping has run yet).
+compute step:
+  output: state
+  publish: countdown_result
+  expr:
+    n: "if(loop.countdown.iteration == 0, vars.start, input.prev_n - 1)"
+    done: "if(loop.countdown.iteration == 0, vars.start, input.prev_n - 1) <= 0"
+
+workflow countdown_wf:
+  entry: step
+  step -> done when done
+  step -> step as countdown(unbounded 200) with { prev_n: "{{outputs.step.n}}" }

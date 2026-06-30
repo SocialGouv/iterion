@@ -135,6 +135,10 @@ what a bot declares.
 
 ## References
 
+- Operator-facing doctrine: [docs/dsl-totality-and-tc.md](../dsl-totality-and-tc.md)
+  (the two-axis posture + the static-predictability surface).
+- Executable demonstrator: [examples/turing/countdown.bot](../../examples/turing/countdown.bot)
+  (a pure-`compute` while-loop-with-state) + its e2e proof `e2e/turing_countdown_test.go`.
 - Implementation: `pkg/dsl/expr` (Layer 0), `pkg/dsl/{ast,parser,ir,unparse}` +
   `pkg/runtime/{engine,helpers}.go` (Layer B), `pkg/dsl/ir/ir.go`
   `ClampToCeiling` + `pkg/runner/loop.go` `applyCloudBudgetCeiling` (cloud).

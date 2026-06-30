@@ -77,6 +77,8 @@ const (
 	NodeHuman                   // human pause/resume
 	NodeTool                    // direct command execution (no LLM)
 	NodeCompute                 // deterministic expression evaluation (no LLM, no shell)
+	NodeEmit                    // publishes a run-scoped event (no LLM, no shell)
+	NodeWait                    // blocks until a run-scoped event (no LLM, no shell)
 	NodeSubbot                  // runs another .bot as a nested run
 	NodeDone                    // terminal: success
 	NodeFail                    // terminal: failure
@@ -96,6 +98,10 @@ func (k NodeKind) String() string {
 		return "tool"
 	case NodeCompute:
 		return "compute"
+	case NodeEmit:
+		return "emit"
+	case NodeWait:
+		return "wait"
 	case NodeSubbot:
 		return "subbot"
 	case NodeDone:
@@ -387,6 +393,31 @@ type ComputeExpr struct {
 // NodeKind implements Node.
 func (n *ComputeNode) NodeKind() NodeKind { return NodeCompute }
 
+// EmitNode publishes a named event with an immutable payload into the
+// run-scoped event registry (ADR-051). It performs no LLM call and no shell-out;
+// the payload is resolved from the With data-mappings on each visit.
+type EmitNode struct {
+	BaseNode
+	Event string         // event name to publish
+	With  []*DataMapping // payload fields (immutable, resolved per visit)
+}
+
+// NodeKind implements Node.
+func (n *EmitNode) NodeKind() NodeKind { return NodeEmit }
+
+// WaitNode blocks its branch until the named event is emitted in the same run,
+// then completes with the event payload as its output (ADR-051). The Timeout is
+// mandatory (the "no silent infinity" invariant) and bounds the wait.
+type WaitNode struct {
+	BaseNode
+	SchemaFields               // optional OutputSchema typing the received payload
+	Event        string        // event name to wait for
+	Timeout      time.Duration // mandatory bound on the wait
+}
+
+// NodeKind implements Node.
+func (n *WaitNode) NodeKind() NodeKind { return NodeWait }
+
 // DoneNode is a terminal success node.
 type DoneNode struct {
 	BaseNode
@@ -518,6 +549,8 @@ func NodeOutputSchema(n Node) string {
 	case *ToolNode:
 		return n.OutputSchema
 	case *ComputeNode:
+		return n.OutputSchema
+	case *WaitNode:
 		return n.OutputSchema
 	}
 	return ""

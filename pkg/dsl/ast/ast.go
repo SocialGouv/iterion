@@ -23,6 +23,8 @@ type File struct {
 	Humans      []*HumanDecl      // human node declarations
 	Tools       []*ToolNodeDecl   // tool node declarations (direct execution, no LLM)
 	Computes    []*ComputeDecl    // deterministic compute node declarations (no LLM, no shell)
+	Emits       []*EmitDecl       // emit node declarations (publish a run-scoped event)
+	Waits       []*WaitDecl       // wait node declarations (block until a run-scoped event)
 	Groups      []*GroupDecl      // reusable node-cluster declarations (compile-time macros)
 	Uses        []*UseDecl        // group instantiations (`use <group> as <prefix>`)
 	Subbots     []*SubbotDecl     // sub-bot node declarations (run another .bot as a nested run)
@@ -76,6 +78,36 @@ type SubbotDecl struct {
 	Output string       // schema reference describing the child's terminal output
 	Needs  []string     // named resource leases held while the child runs
 	Span   Span
+}
+
+// EmitDecl is an `emit` node: it publishes a named event with an optional
+// immutable payload into the run-scoped event registry (ADR-051). No LLM, no
+// shell — a reactive coordination primitive between parallel branches.
+//
+//	emit <name>:
+//	  event: "ready"
+//	  with: { value: "{{outputs.producer.n}}" }
+type EmitDecl struct {
+	Name  string
+	Event string       // event name to publish (required)
+	With  []*WithEntry // immutable payload (key = payload field)
+	Span  Span
+}
+
+// WaitDecl is a `wait` node: it blocks its branch until the named event is
+// emitted in the same run, then completes with the event payload as its output
+// (ADR-051). The `timeout:` is mandatory — the "no silent infinity" invariant.
+//
+//	wait <name>:
+//	  event: "ready"
+//	  timeout: "30s"
+//	  output: <schema>   ## optional: types the received payload
+type WaitDecl struct {
+	Name    string
+	Event   string // event name to wait for (required)
+	Timeout string // Go duration string (required)
+	Output  string // optional schema reference for the received payload
+	Span    Span
 }
 
 // ---------------------------------------------------------------------------

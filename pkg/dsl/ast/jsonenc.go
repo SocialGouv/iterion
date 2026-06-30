@@ -123,6 +123,8 @@ type jsonFile struct {
 	Humans      []*jsonHumanDecl      `json:"humans,omitempty"`
 	Tools       []*jsonToolNodeDecl   `json:"tools,omitempty"`
 	Computes    []*jsonComputeDecl    `json:"computes,omitempty"`
+	Emits       []*jsonEmitDecl       `json:"emits,omitempty"`
+	Waits       []*jsonWaitDecl       `json:"waits,omitempty"`
 	Workflows   []*jsonWorkflowDecl   `json:"workflows,omitempty"`
 	Comments    []*jsonComment        `json:"comments,omitempty"`
 }
@@ -558,6 +560,19 @@ type jsonComputeExpr struct {
 	Expr string `json:"expr,omitempty"`
 }
 
+type jsonEmitDecl struct {
+	Name  string           `json:"name,omitempty"`
+	Event string           `json:"event,omitempty"`
+	With  []*jsonWithEntry `json:"with,omitempty"`
+}
+
+type jsonWaitDecl struct {
+	Name    string `json:"name,omitempty"`
+	Event   string `json:"event,omitempty"`
+	Timeout string `json:"timeout,omitempty"`
+	Output  string `json:"output,omitempty"`
+}
+
 type jsonWorkflowDecl struct {
 	Name           string                `json:"name,omitempty"`
 	Vars           *jsonVarsBlock        `json:"vars,omitempty"`
@@ -717,6 +732,21 @@ func toJSON(f *File) *jsonFile {
 			jc.Expr = append(jc.Expr, &jsonComputeExpr{Key: e.Key, Expr: e.Expr})
 		}
 		jf.Computes = append(jf.Computes, jc)
+	}
+	for _, em := range f.Emits {
+		je := &jsonEmitDecl{Name: em.Name, Event: em.Event}
+		for _, w := range em.With {
+			je.With = append(je.With, &jsonWithEntry{Key: w.Key, Value: w.Value})
+		}
+		jf.Emits = append(jf.Emits, je)
+	}
+	for _, wt := range f.Waits {
+		jf.Waits = append(jf.Waits, &jsonWaitDecl{
+			Name:    wt.Name,
+			Event:   wt.Event,
+			Timeout: wt.Timeout,
+			Output:  wt.Output,
+		})
 	}
 	for _, w := range f.Workflows {
 		jf.Workflows = append(jf.Workflows, workflowToJSON(w))
@@ -1294,6 +1324,23 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			cd.Expr = append(cd.Expr, &ComputeExpr{Key: je.Key, Expr: je.Expr})
 		}
 		f.Computes = append(f.Computes, cd)
+	}
+
+	for _, je := range jf.Emits {
+		ed := &EmitDecl{Name: je.Name, Event: je.Event}
+		for _, w := range je.With {
+			ed.With = append(ed.With, &WithEntry{Key: w.Key, Value: w.Value})
+		}
+		f.Emits = append(f.Emits, ed)
+	}
+
+	for _, jw := range jf.Waits {
+		f.Waits = append(f.Waits, &WaitDecl{
+			Name:    jw.Name,
+			Event:   jw.Event,
+			Timeout: jw.Timeout,
+			Output:  jw.Output,
+		})
 	}
 
 	for _, jw := range jf.Workflows {

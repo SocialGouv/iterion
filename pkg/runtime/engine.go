@@ -466,8 +466,12 @@ type runState struct {
 	loopProgressSig    map[string]string
 	loopStaleness      map[string]int
 	roundRobinCounters map[string]int
-	artifactVersions   map[string]int
-	budget             *SharedBudget // shared across branches, nil if no budget
+	// events is the run-scoped reliable event registry backing the emit/wait
+	// node primitives (ADR-051). Sticky: a wait that arrives after the emit
+	// still observes it. Distinct from the lossy cross-run pkg/eventbus.
+	events           *runEvents
+	artifactVersions map[string]int
+	budget           *SharedBudget // shared across branches, nil if no budget
 
 	// resourceSemaphores holds one buffered channel per declared workflow
 	// resource, pre-seeded with its tokens and shared by reference across all
@@ -555,6 +559,7 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
 		budget:             newSharedBudget(e.workflow.Budget, e.logger),
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
+		events:             newRunEvents(),
 	}
 }
 
@@ -1314,6 +1319,20 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 		nextNodeID, sErr := e.execSubbot(ctx, rs, currentNodeID, n)
 		if sErr != nil {
 			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, sErr)
+		}
+		return true, false, nextNodeID, nil
+
+	case *ir.EmitNode:
+		nextNodeID, emErr := e.execEmit(rs, currentNodeID, n)
+		if emErr != nil {
+			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, emErr)
+		}
+		return true, false, nextNodeID, nil
+
+	case *ir.WaitNode:
+		nextNodeID, wErr := e.execWait(ctx, rs, currentNodeID, n)
+		if wErr != nil {
+			return true, true, "", e.failRunErrWithCheckpoint(rs, currentNodeID, wErr)
 		}
 		return true, false, nextNodeID, nil
 	}

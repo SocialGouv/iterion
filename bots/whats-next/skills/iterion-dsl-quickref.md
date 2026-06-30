@@ -73,6 +73,8 @@ workflow my_workflow:
 | `human` | Pause for human input | `interaction: human | llm | llm_or_human | review` |
 | `tool` | Deterministic shell | No LLM; uses `{{input.x}}` templates with auto shell-escape |
 | `compute` | Deterministic expression | No LLM, no shell. Use for passthrough, derived booleans, loop guards. |
+| `emit` | Publish a run-scoped event | `event: "<name>"` + optional `with { k: "{{ref}}" }` payload. No LLM, no shell (ADR-051). |
+| `wait` | Block a branch until an event fires | `event: "<name>"` + **mandatory** `timeout: "30s"` (the bornage, C197) + optional `output:` schema for the payload. Pair with `emit` in a parallel `fan_out_all` branch for reactive coordination. |
 | `subbot` | Run another `.bot` as a nested run | `source:` + `with { ... }` + `output:`; child may contain loops |
 | `done` / `fail` | Built-in terminals | Never declare them |
 

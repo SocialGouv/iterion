@@ -10,19 +10,19 @@ import (
 )
 
 // phase2TypingCodes are the static cross-node typing diagnostics. No shipped
-// catalog bot may trip them: an enum typo in a routing condition (C103), an
+// catalog bot may trip them: an enum typo in a routing condition (C121), an
 // incompatible comparison (C107), or a bare-numeric when-expression (C108) is
 // a real bug, caught here the same way the repo-/stack-agnostic guards catch
 // overfit. Errors are unconditional; warnings may be allowlisted as debt.
 var phase2TypingCodes = map[ir.DiagCode]bool{
-	ir.DiagEnumLiteralMismatch:     true, // C103 (error)
+	ir.DiagEnumLiteralMismatch:     true, // C121 (error)
 	ir.DiagExprOperandTypeMismatch: true, // C107 (warning)
 	ir.DiagWhenExprNotBoolish:      true, // C108 (warning)
 	ir.DiagVarDefaultTypeMismatch:  true, // C109 (error)
 }
 
 // typingAllowlist records (bot dir, code) warnings accepted as debt. Keep it
-// SHRINKING. Errors (C103) must never be allowlisted. Currently empty.
+// SHRINKING. Errors (C121) must never be allowlisted. Currently empty.
 var typingAllowlist = map[string]map[ir.DiagCode]bool{}
 
 // TestCatalogBotsNoTypingRegressions compiles every catalog workflow (bundles

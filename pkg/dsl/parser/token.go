@@ -53,6 +53,8 @@ const (
 	TokenTool
 	TokenWorkflow
 	TokenCompute
+	TokenEmit
+	TokenWait
 	TokenEntry
 	TokenMCP
 	TokenBudget
@@ -223,6 +225,8 @@ var tokenNames = map[TokenType]string{
 	TokenTool:               "tool",
 	TokenWorkflow:           "workflow",
 	TokenCompute:            "compute",
+	TokenEmit:               "emit",
+	TokenWait:               "wait",
 	TokenEntry:              "entry",
 	TokenMCP:                "mcp",
 	TokenBudget:             "budget",
@@ -357,6 +361,8 @@ var keywords = map[string]TokenType{
 	"tool":                  TokenTool,
 	"workflow":              TokenWorkflow,
 	"compute":               TokenCompute,
+	"emit":                  TokenEmit,
+	"wait":                  TokenWait,
 	"entry":                 TokenEntry,
 	"mcp":                   TokenMCP,
 	"budget":                TokenBudget,

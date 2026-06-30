@@ -1,0 +1,66 @@
+## pingpong.bot — a deterministic in-bot event-driven demonstrator (ADR-051).
+##
+## A fan_out_all router spawns two PARALLEL branches that coordinate through a
+## run-scoped event — no LLM, no shell:
+##   - producer branch:  `emit` a value as event "ready"
+##   - consumer branch:  `wait` for event "ready", receiving the value as payload
+##
+## The consumer's `wait` blocks until the producer's `emit` fires — genuine
+## reactive coordination (CSP channels) between branches, bounded by the
+## mandatory `wait` timeout. This is the executable companion to ADR-051.
+##
+## Run it:
+##   iterion run examples/events/pingpong.bot
+## The consumer receives value=42 from the producer via the "ready" event.
+##
+## NOTE: compute runs on the trunk (produce before fork, gather at convergence);
+## only emit/wait sit inside branches. max_parallel_branches must be >= 2 so the
+## producer branch can run while the consumer branch is parked on the wait.
+
+schema num:
+  n: int
+
+schema payload:
+  value: int
+
+schema result:
+  received: int
+
+## Trunk: compute the value to share, before fanning out.
+compute produce:
+  output: num
+  expr:
+    n: "21 + 21"
+
+router fork:
+  mode: fan_out_all
+
+## Producer branch: publish the value as event "ready".
+emit ping:
+  event: "ready"
+  with { value: "{{outputs.produce.n}}" }
+
+## Consumer branch: park until "ready", receive the payload.
+wait pong:
+  event: "ready"
+  timeout: "10s"
+  output: payload
+
+## Convergence (trunk): runs once both branches complete (wait_all).
+compute gather:
+  await: wait_all
+  output: result
+  publish: gathered
+  expr:
+    received: "outputs.pong.value"
+
+workflow pingpong_wf:
+  budget:
+    max_parallel_branches: 4
+  entry: produce
+  produce -> fork
+  fork -> ping
+  fork -> pong
+  ping -> gather
+  pong -> gather
+  gather -> done

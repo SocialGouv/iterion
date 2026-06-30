@@ -58,6 +58,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C043** | error | Invalid compaction values | `compaction.threshold` is outside `(0, 1]` or `compaction.preserve_recent` is `< 1` | Use a fraction like `0.85` for `threshold` and an integer `>= 1` for `preserve_recent`; omit either to inherit the default |
 | **C047** | warning | Memory enabled on unsupported backend | A node sets `memory: enabled: true` but its resolved backend doesn't read the field — only the `claw` backend wires memory tools today. The check is informational; the run still proceeds | Drop the `memory:` block, or switch the node to `backend: claw` (or another backend that has memory wired). |
 | **C048** | error | Memory missing scope | A node sets `memory: enabled: true` without a non-empty `scope: <name>` — the runtime needs the scope to locate `~/.iterion/projects/<key>/memory/<scope>/` | Add `scope: <name>` to the node's `memory:` block (the scope becomes the directory the `memory_read` / `memory_write` / `memory_list` tools operate against). |
+| **C049** | warning | Artifact labels without publish | A node sets `artifact_labels:` but has no `publish:`, so the labels have no artifact to attach to | Add `publish: <name>`, or remove the `artifact_labels:` (judge nodes never publish, so their labels are dropped at compile time) |
 | **C050** | error | Duplicate attachment | An attachment name is declared more than once across file-level and workflow-level `attachments:` blocks | Rename the duplicate, or merge the definitions |
 | **C051** | error | Attachment / var name collision | An attachment name collides with a declared `vars:` entry | Rename one of them — attachments and vars share a single template namespace |
 | **C052** | error | Invalid attachment MIME | An `accept_mime:` entry is not in `type/subtype` form (e.g. `image/png`, `application/pdf`) | Use `type/subtype` MIME values, optionally with `*` subtype wildcards |
@@ -74,18 +75,57 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C084** | error | Invalid cursor value | A cursor invocation value is not in the enum, falls outside `[0, 1]`, or doesn't match any band. `${VAR}` values defer to runtime | Use a declared enum value or a numeric in range; for env-driven values, ensure the substituted result is valid |
 | **C085** | error | Malformed cursor declaration | A `cursor <name>:` block declares neither `values:` nor `bands:`, declares both, has overlapping bands, or has a range outside `[0, 1]` | Pick exactly one form (enum or numeric); ensure bands cover disjoint sub-ranges of `[0, 1]` |
 | **C086** | error | Duplicate cursor name | The same `cursor <name>:` declaration appears twice in one source | Rename one of them, or merge their `values:` / `bands:` entries |
-| **C103** | error | Enum literal never matches | A `when "field == 'literal'"` / `!=` comparison (or a `compute` expression) compares an enum-typed field against a literal that is not one of its `enum:` values — the comparison can never match, so it is almost always a typo | Use a declared enum value, or fix the field's `enum:` set. `json` fields and unresolved refs are never flagged |
+| **C087** | warning | Unknown provider | A `provider:` chain token is outside the known provider set | Fix the provider name, or accept the warning for a newly-added provider |
+| **C088** | warning | Provider chain ignored | A multi-element `provider:` chain is set on a backend that ignores the hint (`claw`/`codex`) | Drop the extra chain elements, or switch to a backend that honours provider hints |
+| **C089** | warning | Ultracode model gate | `reasoning_effort: ultracode` on a model other than `claude-opus-4-8` — the orchestration half is 4.8-only, so it degrades to plain `xhigh` | Use `model: "claude-opus-4-8"` for full ultracode, or accept the `xhigh` degrade |
+| **C090** | error | Duplicate secret | A secret name is declared more than once in the `secrets:` block | Rename or merge the duplicate |
+| **C091** | error | Secret / var name collision | A secret name collides with a declared `vars:` entry | Rename one — secrets and vars share a template namespace |
+| **C092** | error | Invalid secret host | A secret's egress host scoping (Layer 2 `hosts:`) is ill-formed | Use valid host entries (hostnames / domains) |
+| **C093** | error | Unknown secret reference | `{{secrets.X}}` references a secret not declared in the `secrets:` block | Declare the secret, or fix the name |
+| **C094** | error | Malformed file secret | An `as: file` secret declaration is malformed | Provide a valid `value:`/`env:` and file-mount form |
+| **C095** | error | Unsupported secret sub-field | `{{secrets.X.<subfield>}}` uses a sub-field the runtime does not expose | Drop the sub-field, or reference `{{secrets.X}}` directly |
+| **C097** | error | Unbounded loop without fuel | An `as name(unbounded)` loop has no fuel ceiling (neither a per-loop `unbounded <N>` nor a workflow `budget.max_iterations`) — the "no silent infinity" invariant | Add a per-loop fuel (`as name(unbounded 200)`) or a workflow `budget.max_iterations` |
+| **C098** | warning | Unbounded loop without exit | An `unbounded` loop's body has no edge leaving the loop — only fuel/liveness can stop it | Add a `when`-exit (convergence condition) so the loop terminates by its own logic |
+| **C100** | error | Review without worktree | `interaction: review` without `worktree: auto` — there is nothing to merge | Add `worktree: auto`, or drop the review interaction |
+| **C101** | warning | Review URL unknown ref | `review_url` references an output node that does not exist | Fix the node reference, or remove `review_url` |
+| **C102** | error | Invalid compress value | `compress:` is not one of `on`, `off`, `ultra` | Use `on`, `off`, or `ultra` |
+| **C103** | error | Invalid policy | A Verified Action tool node's `policy:` is not one of `required`, `recover`, `best_effort` (ADR-044) | Use a known policy value |
+| **C104** | error | Recovery without postcondition | A tool node configures `recovery:` (or `policy: recover`) without a `postcondition:` — the deterministic truth oracle that makes adaptive recovery safe | Add a `postcondition:`, or drop the recovery |
+| **C105** | error | Recovery on a gate | Recovery rungs are attached to a GATE (a node where `recipe == postcondition`) | Remove the `recovery:` block — gates stay deterministic; never attach LLM recovery to a gate |
+| **C106** | warning | Recovery without recover policy | `recovery:` bounds are present but `policy:` is not `recover` — dead config | Set `policy: recover`, or remove the recovery bounds |
 | **C107** | warning | Expression operand type mismatch | A comparison inside a `compute` or quoted `when "..."` expression has statically-known operands of incompatible type classes (e.g. `string[] == int`, `count < "x"`) | Compare compatible types. Inference is conservative: `json` (= any) fields, vars, and unresolved refs bail to "no opinion" and are never flagged |
 | **C108** | warning | when-expression not boolean | A quoted `when "<expr>"` is a bare numeric value (e.g. `when "count"`) rather than a boolean — int/float coerce to truthy, which is rarely the author's intent | Use a comparison such as `when "count > 0"`. Bare `bool`, `string[]`, and `string` values ride the documented truthy idiom and are not flagged |
 | **C109** | error | Var default type mismatch | A `vars:` entry's default literal type doesn't match its declared type (e.g. `count: int = "x"`) | Fix the default to match the type. `int`→`float` widening is allowed (`ratio: float = 5`); `json` and `string[]` accept loose literals and are never flagged |
+| **C110** | error | Invalid permission | `permission:` is not one of `off`, `ask`, `deny` | Use `off`, `ask`, or `deny` |
+| **C111** | warning | Permission rules without gate | `allow`/`ask`/`deny` rule lists are declared but the resolved permission mode is `""`/`off`, so they never apply | Set `permission: ask` or `deny`, or remove the rule lists |
+| **C112** | warning | Tool-node permission inert | `permission:` on a tool node — parsed but not enforced (a tool node runs a fixed command, not an agent) | Remove the `permission:` from the tool node; gate the agent nodes instead |
+| **C113** | error | fan_out_each without over | A `fan_out_each` router has no `over:` array source | Add `over: "{{...array...}}"` to the router |
+| **C114** | error | fan_out_each property on non-fan_out_each | `over`/`as`/`key`/`depends_on` set on a router that isn't `mode: fan_out_each` | Remove the property, or change the router mode |
+| **C115** | error | fan_out_each edge count | A `fan_out_each` router must have exactly one outgoing template edge | Keep a single template edge from the router |
+| **C116** | error | Use references unknown group | A `use ... as` statement references a `group` that is not declared | Declare the group, or fix the name |
+| **C117** | error | Use param mismatch | A `use` provides an unknown param, or omits a declared one | Match the group's declared params exactly |
+| **C118** | error | foreach conflicts with loop | An edge combines `as foreach` with `as <loop>` (mutually exclusive) | Use one iteration form per edge |
+| **C119** | error | subbot without source | A `subbot` node has no `source:` child `.bot` | Add `source: <path>.bot` to the subbot |
+| **C120** | warning | Index on scalar | A subscript `[...]` is applied to a statically-scalar value (string/bool/int/float), which is not indexable | Index an array/map, or drop the subscript |
+| **C121** | error | Enum literal never matches | A `when "field == 'literal'"` / `!=` comparison (or a `compute` expression) compares an enum-typed field against a literal that is not one of its `enum:` values — the comparison can never match, so it is almost always a typo | Use a declared enum value, or fix the field's `enum:` set. `json` fields and unresolved refs are never flagged |
+| **C170** | error | Invalid memory visibility | `memory: visibility:` has an unknown value | Use a known visibility (`bot`/`project`/`cross_project`/`user`/`org`/`global`) |
+| **C171** | error | Memory visibility conflict | `memory: visibility:` is combined with the legacy `project_root:` | Use `visibility:` alone — drop the legacy `project_root:` |
+| **C172** | warning | Malformed provider step | A `provider:` chain element of the `provider:model` form has an empty provider or model part | Provide both parts, e.g. `anthropic:claude-sonnet-4-6` |
+| **C190** | warning | Supervisor watches non-agent | A `supervisor` `watches:` a node id that isn't an agent node | Watch an agent node, or fix the node id |
+| **C191** | warning | Malformed supervisor | A `supervisor` declaration is malformed (e.g. a bad cooldown duration) | Use a valid Go duration for cooldown |
+| **C192** | error | Duplicate supervisor | The same `supervisor <name>:` is declared twice | Rename or merge |
+| **C193** | warning | Unknown supervisor prompt | A supervisor's `system:` references an undeclared prompt | Declare the prompt, or fix the name |
+| **C194** | error | Invalid resource capacity | A `resources.<name>` capacity is ≤ 0 | Use a capacity ≥ 1 |
+| **C195** | error | Unknown resource in needs | A `needs:` references a resource not declared in the `resources:` block | Declare the resource, or fix the name |
+| **C196** | error | Event node without name | An `emit`/`wait` node has no `event:` name (ADR-051) | Add `event: "<name>"` |
+| **C197** | error | Wait without timeout | A `wait` node has no (or an invalid/non-positive) `timeout:` — the mandatory bound, the "no silent infinity" invariant for events | Add `timeout: "30s"` (a positive Go duration) |
+| **C198** | warning | Dangling event | A `wait` awaits an event no `emit` produces (it can only ever time out), or an `emit` produces an event no `wait` consumes (dead event) | Pair each `wait` with an `emit` of the same event name (a `wait` on an externally-sourced event is expected to warn until external-event support lands) |
 
-> **Unallocated by design:** `C104`, `C105`, and `C106` are intentionally
-> left free. An earlier draft used `C105`/`C106` to check edge `with:`
-> mapping keys/types against the target node's `input:` schema, but the
-> runtime (`engine.buildNodeInputRS`) passes every `with` key through
-> verbatim and never validates node input against the declared schema — the
-> input schema is advisory, not a contract a `with` mapping must satisfy —
-> so the check rested on a false premise and was dropped.
+> **Note on `C103`–`C106` (Verified Actions, ADR-044):** these four codes are
+> the adaptive-recovery firewall on deterministic ACTION tool nodes. The
+> enum-literal type check that earlier releases emitted as `C103` is now
+> `C121` — a `C103` always means *invalid policy*. See
+> [docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md](../adr/044-adaptive-recovery-for-deterministic-action-nodes.md).
 
 > **Historical code-reuse note:** earlier releases reused `C030` for
 > two cases. `C029` was introduced for the validator-side

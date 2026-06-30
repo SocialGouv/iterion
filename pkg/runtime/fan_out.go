@@ -524,6 +524,32 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]interface{}, iter int, result *branchResult) (map[string]interface{}, bool) {
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
+
+	// Event-driven primitives (ADR-051) are engine-special, not executor-backed:
+	// they touch the run-scoped event registry directly. A wait parked here
+	// holds this branch's semaphore slot until the emitting branch fires the
+	// event (or the mandatory timeout), so max_parallel_branches must admit
+	// both branches concurrently. emit/wait carry no `needs:` and never shell
+	// out, so they bypass the resource-lease + executor path below.
+	switch n := node.(type) {
+	case *ir.EmitNode:
+		output := e.emitEvent(rs, n)
+		result.outputs[currentNodeID] = output
+		return output, false
+	case *ir.WaitNode:
+		output, werr := e.awaitEvent(ctx, rs, currentNodeID, n)
+		if werr != nil {
+			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, werr)
+			return nil, true
+		}
+		result.outputs[currentNodeID] = output
+		if err := e.validateNodeOutput(currentNodeID, n, output); err != nil {
+			result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
+			return nil, true
+		}
+		return output, false
+	}
+
 	nodeInput := e.buildNodeInputRS(currentNodeID, resolveScope{
 		vars:      rs.vars,
 		outputs:   merged,

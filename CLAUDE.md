@@ -160,12 +160,13 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 | **Human** | Pause/resume via `interaction: human` (default for human nodes); optional `interaction: llm` or `llm_or_human` can auto-answer or escalate |
 | **Tool** | Direct shell command execution (no LLM). ACTION tool nodes may opt into the **Verified Action** quad (`goal`+`postcondition`+`policy`+`recovery`) so a brittle recipe self-heals (idempotent-skip → recipe → self-repair → agent → policy) instead of hard-blocking; the postcondition is the deterministic truth oracle at every rung. **Gates stay deterministic** — never attach recovery to a `recipe == postcondition` gate (enforced by C103–C106). See [docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md](docs/adr/044-adaptive-recovery-for-deterministic-action-nodes.md). |
 | **Compute** | Deterministic expression node for derived structured output (no LLM, no shell) |
+| **Emit** / **Wait** | In-bot event-driven primitives (**ADR-051**): `emit` publishes a named run-scoped event with an immutable payload; `wait` blocks a branch until that event fires (mandatory `timeout:` — the bornage). A reactive coordination pair between parallel branches (actor/CSP model, **not** the JS event loop — payloads are immutable, no shared mutable heap), backed by a run-local *reliable* registry, distinct from the lossy cross-run `pkg/eventbus`. Diagnostics C196–C198. See [docs/adr/051-in-bot-event-driven-primitives.md](docs/adr/051-in-bot-event-driven-primitives.md) + [examples/events/pingpong.bot](examples/events/pingpong.bot). |
 | **Done** | Terminal: workflow success |
 | **Fail** | Terminal: workflow failure |
 
 ### DSL Quick Reference
 
-**Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`), `workflow <name>:`
+**Top-level blocks:** `vars:`, `attachments:`, `prompt <name>:`, `schema <name>:`, `cursor <name>:`, node declarations (`agent`, `judge`, `router`, `human`, `tool`, `compute`, `emit`, `wait`), `workflow <name>:`
 
 **`compress:` field** (`on|ultra|off`) — command-output compression (the `rewriter` plugin kind, rtk by default) on the `workflow` block and on `agent`/`judge`/`tool` nodes. **Opt-OUT on agent/judge nodes**: when a rewriter plugin is enabled and its binary is present, compression defaults **on** (so rtk is used out of the box); disable per-run with `--compress off` (or the studio toggle) or globally with `iterion plugin disable rtk` / `ITERION_COMPRESS=off`. **Tool nodes stay opt-IN** (a review loop's `git diff` is never silently compressed). See the plugins section above + [docs/plugins.md](docs/plugins.md).
 
