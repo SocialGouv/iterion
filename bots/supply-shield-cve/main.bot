@@ -644,7 +644,8 @@ elif isinstance(deps_in, dict):
         else:
             vers = v if isinstance(v, list) else [v]
             for vv in vers:
-                if isinstance(vv, dict): from_obj(vv)
+                if isinstance(vv, dict):
+                    o = dict(vv); o.setdefault('name', k); from_obj(o)
                 else: add(sole, k, vv)
 
 seen, uniq = set(), []
