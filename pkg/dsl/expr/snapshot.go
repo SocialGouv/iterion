@@ -12,6 +12,8 @@ const (
 	SnapUnary
 	SnapBinary
 	SnapFuncCall
+	SnapIndex      // recv[index] — Children: [recv, index]
+	SnapLambdaComb // map/filter/reduce — Func set; Children: [coll] or [coll, init]
 )
 
 // Snapshot is a read-only, exported mirror of one expression-AST node. The
@@ -67,6 +69,18 @@ func snap(n node) *Snapshot {
 			kids[i] = snap(a)
 		}
 		return &Snapshot{Kind: SnapFuncCall, Func: t.name, Children: kids}
+	case *indexNode:
+		return &Snapshot{Kind: SnapIndex, Children: []*Snapshot{snap(t.recv), snap(t.index)}}
+	case *lambdaCombNode:
+		// The lambda body is deliberately NOT mirrored: it references
+		// lambda-bound parameters that are not real schema refs, so the
+		// conservative static type-walk must not descend into it. Only the
+		// collection (and reduce's init) are external expressions.
+		kids := []*Snapshot{snap(t.coll)}
+		if t.init != nil {
+			kids = append(kids, snap(t.init))
+		}
+		return &Snapshot{Kind: SnapLambdaComb, Func: t.name, Children: kids}
 	}
 	return nil
 }

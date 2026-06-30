@@ -177,3 +177,23 @@ workflow w:
 		t.Errorf("expected 1 C103 from the compute expression, got %d\ndiagnostics: %v", got, r.Diagnostics)
 	}
 }
+
+// TestC113_IndexOnScalar verifies subscripting a statically-scalar value warns,
+// while subscripting an array (string[]) or json does not.
+func TestC113_IndexOnScalar(t *testing.T) {
+	cases := []struct {
+		expr string
+		want int
+	}{
+		{`count[0] == 1`, 1},  // int is scalar → not indexable
+		{`name[0] == 'a'`, 1}, // string is scalar → not indexable
+		{`tags[0] == 'a'`, 0}, // string[] is indexable
+		{`blob[0] == 1`, 0},   // json → unknown, bail
+	}
+	for _, tc := range cases {
+		r := compileFile(t, whenExprTypeSrc(tc.expr))
+		if got := countCode(r, DiagIndexOnScalar); got != tc.want {
+			t.Errorf("C113 for %q = %d, want %d (%v)", tc.expr, got, tc.want, r.Diagnostics)
+		}
+	}
+}

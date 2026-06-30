@@ -10,26 +10,34 @@
 //	cmp      := add ( ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) add )?
 //	add      := mul ( ( "+" | "-" ) mul )*
 //	mul      := unary ( ( "*" | "/" | "%" ) unary )*
-//	unary    := "-" unary | primary
-//	primary  := number | string | bool | funcCall | path | "(" expr ")"
+//	unary    := "-" unary | postfix
+//	postfix  := primary ( "[" expr "]" )*
+//	primary  := number | string | bool | lambdaComb | funcCall | path | "(" expr ")"
 //	funcCall := IDENT "(" ( expr ( "," expr )* )? ")"
+//	lambdaComb := ("map"|"filter") "(" expr "," lambda ")"
+//	             | "reduce" "(" expr "," expr "," lambda ")"
+//	lambda   := ( IDENT | "(" IDENT ( "," IDENT )* ")" ) "=>" expr
 //	path     := IDENT ( "." IDENT )*
 //
 // The path namespaces recognized by the evaluator depend on the Context:
 // `vars`, `input`, `outputs`, `artifacts`, `loop.<name>.{iteration,max,previous_output[.field]}`,
 // and `run.{id}` are the standard ones.
 //
-// Builtin functions: `length`, `concat`, `unique`, `contains`, `join`,
-// `if(cond, then, else)`. See the builtins map below for signatures and
-// semantics. Function calls are disambiguated from path lookups purely by
-// the presence of `(` directly after the leading IDENT — there is no
-// separate keyword set.
+// Builtin functions: `length`, `concat`, `unique`, `contains`, `join`, `tail`,
+// `if(cond, then, else)`, plus the total array/map helpers `sort`, `keys`,
+// `values`, `slice`, `sum`, `min`, `max`, `flatten`. The bounded higher-order
+// combinators `map`, `filter`, `reduce` take a `=>` lambda whose parameter is a
+// local binding; the lambda is not a first-class value (it can only appear at a
+// combinator call site, applies once per element of a finite slice, and cannot
+// recurse), so the language stays total. Function calls are disambiguated from
+// path lookups purely by the presence of `(` directly after the leading IDENT.
 package expr
 
 import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -88,7 +96,51 @@ func (a *AST) Eval(ctx *Context) (interface{}, error) {
 	if a == nil || a.root == nil {
 		return nil, nil
 	}
-	return evalNode(a.root, ctx)
+	return evalNode(a.root, &evalState{ctx: ctx, visits: maxEvalVisits})
+}
+
+// maxEvalVisits bounds the total number of per-element visits a single
+// evaluation may perform across the bounded combinators (map/filter/reduce).
+// maxExprDepth caps the AST *shape*; this caps the AST *work*: a shallow
+// `map(a, x => map(b, y => ...))` is finite but O(|a|·|b|), so an adversarial
+// .bot under multitenant cloud could otherwise pin a CPU. This keeps the
+// expression layer a total terminating function in both depth and work.
+const maxEvalVisits = 100_000
+
+// evalState carries per-evaluation state threaded through the recursive
+// evaluator: the resolution Context, the lambda local-binding frame stack
+// (innermost last), and the remaining element-visit budget.
+type evalState struct {
+	ctx    *Context
+	locals []map[string]interface{}
+	visits int
+}
+
+// lookupLocal resolves a lambda-bound identifier from the innermost frame out.
+func (st *evalState) lookupLocal(name string) (interface{}, bool) {
+	for i := len(st.locals) - 1; i >= 0; i-- {
+		if v, ok := st.locals[i][name]; ok {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+// consume debits one element visit from the budget; errors when exhausted.
+func (st *evalState) consume() error {
+	st.visits--
+	if st.visits < 0 {
+		return fmt.Errorf("expr: evaluation budget exceeded (%d element visits) — combinator input too large", maxEvalVisits)
+	}
+	return nil
+}
+
+// evalBody pushes a single-binding frame, evaluates body, then pops it.
+func (st *evalState) evalBody(name string, val interface{}, body node) (interface{}, error) {
+	st.locals = append(st.locals, map[string]interface{}{name: val})
+	v, err := evalNode(body, st)
+	st.locals = st.locals[:len(st.locals)-1]
+	return v, err
 }
 
 // EvalBool evaluates and coerces the result to bool. Non-bool truthy values
@@ -186,23 +238,26 @@ const (
 	tokComma
 	tokLParen
 	tokRParen
-	tokAnd   // &&
-	tokOr    // ||
-	tokNot   // !
-	tokEq    // ==
-	tokNeq   // !=
-	tokLt    // <
-	tokLte   // <=
-	tokGt    // >
-	tokGte   // >=
-	tokPlus  // +
-	tokMinus // -
-	tokStar  // *
-	tokSlash // /
-	tokPct   // %
-	tokKwAnd // and
-	tokKwOr  // or
-	tokKwNot // not
+	tokAnd      // &&
+	tokOr       // ||
+	tokNot      // !
+	tokEq       // ==
+	tokNeq      // !=
+	tokLt       // <
+	tokLte      // <=
+	tokGt       // >
+	tokGte      // >=
+	tokPlus     // +
+	tokMinus    // -
+	tokStar     // *
+	tokSlash    // /
+	tokPct      // %
+	tokKwAnd    // and
+	tokKwOr     // or
+	tokKwNot    // not
+	tokLBracket // [
+	tokRBracket // ]
+	tokArrow    // =>
 )
 
 type token struct {
@@ -247,6 +302,12 @@ func (l *lexer) next() (token, error) {
 	case c == ')':
 		l.pos++
 		return token{kind: tokRParen, value: ")"}, nil
+	case c == '[':
+		l.pos++
+		return token{kind: tokLBracket, value: "["}, nil
+	case c == ']':
+		l.pos++
+		return token{kind: tokRBracket, value: "]"}, nil
 	case c == '+':
 		l.pos++
 		return token{kind: tokPlus, value: "+"}, nil
@@ -286,7 +347,11 @@ func (l *lexer) next() (token, error) {
 			l.pos += 2
 			return token{kind: tokEq, value: "=="}, nil
 		}
-		return token{}, fmt.Errorf("expr: lone '=' at offset %d (use '==' for equality)", l.pos)
+		if l.pos+1 < len(l.src) && l.src[l.pos+1] == '>' {
+			l.pos += 2
+			return token{kind: tokArrow, value: "=>"}, nil
+		}
+		return token{}, fmt.Errorf("expr: lone '=' at offset %d (use '==' for equality, or '=>' for a map/filter/reduce lambda)", l.pos)
 	case c == '<':
 		if l.pos+1 < len(l.src) && l.src[l.pos+1] == '=' {
 			l.pos += 2
@@ -425,14 +490,38 @@ type funcCallNode struct {
 	args []node
 }
 
-func (litBool) exprNode()       {}
-func (litInt) exprNode()        {}
-func (litFloat) exprNode()      {}
-func (litString) exprNode()     {}
-func (pathNode) exprNode()      {}
-func (*unaryNode) exprNode()    {}
-func (*binaryNode) exprNode()   {}
-func (*funcCallNode) exprNode() {}
+// indexNode is a postfix subscript `recv[index]` — array element or map value
+// access. Out-of-bounds / missing keys resolve to nil (consistent with absent
+// paths); a non-integer array index or non-string map key on a present
+// collection is a loud error.
+type indexNode struct {
+	recv  node
+	index node
+}
+
+// lambdaCombNode is one of the bounded higher-order combinators `map`,
+// `filter`, `reduce`. The lambda is NOT a first-class value: it can only appear
+// here, is applied exactly once per element of an already-materialized finite
+// slice, and cannot reference itself — so no fixpoint is constructible and the
+// language stays total (terminating). `init` is non-nil only for `reduce`.
+type lambdaCombNode struct {
+	name   string // "map" | "filter" | "reduce"
+	coll   node
+	init   node // reduce only
+	params []string
+	body   node
+}
+
+func (litBool) exprNode()         {}
+func (litInt) exprNode()          {}
+func (litFloat) exprNode()        {}
+func (litString) exprNode()       {}
+func (pathNode) exprNode()        {}
+func (*unaryNode) exprNode()      {}
+func (*binaryNode) exprNode()     {}
+func (*funcCallNode) exprNode()   {}
+func (*indexNode) exprNode()      {}
+func (*lambdaCombNode) exprNode() {}
 
 // ---------------------------------------------------------------------------
 // Parser (recursive-descent)
@@ -597,7 +686,50 @@ func (p *parser) parseUnary() (node, error) {
 		}
 		return &unaryNode{op: "-", child: child}, nil
 	}
-	return p.parsePrimary()
+	return p.parsePostfix()
+}
+
+// parsePostfix parses a primary followed by zero or more `[index]` subscripts
+// and `.field` accesses, so `a[0]`, `m["k"]`, `outputs.x[i]`, `keys(m)[0]`, and
+// `people[0].name` all chain left-to-right. A `.field` after a subscript is
+// sugar for `["field"]` (string-keyed map access). The leading dotted path of a
+// bare identifier is still consumed by parsePrimary; postfix only handles the
+// `.field` that follows a subscript, where parsePrimary has already returned.
+func (p *parser) parsePostfix() (node, error) {
+	n, err := p.parsePrimary()
+	if err != nil {
+		return nil, err
+	}
+	for p.cur.kind == tokLBracket || p.cur.kind == tokDot {
+		if err := p.enter(); err != nil {
+			return nil, err
+		}
+		if p.cur.kind == tokDot {
+			p.advance() // consume '.'
+			if p.cur.kind != tokIdent {
+				p.leave()
+				return nil, fmt.Errorf("expr: expected identifier after '.', got %s", p.cur.value)
+			}
+			n = &indexNode{recv: n, index: litString{v: p.cur.value}}
+			p.advance() // consume IDENT
+			p.leave()
+			continue
+		}
+		p.advance() // consume '['
+		idx, err := p.parseExpr()
+		if err != nil {
+			p.leave()
+			return nil, err
+		}
+		if p.cur.kind != tokRBracket {
+			p.leave()
+			return nil, fmt.Errorf("expr: expected ']' got %s", p.cur.value)
+		}
+		p.advance() // consume ']'
+		p.leave()
+		n = &indexNode{recv: n, index: idx}
+	}
+	return n, nil
 }
 
 func (p *parser) parsePrimary() (node, error) {
@@ -646,6 +778,9 @@ func (p *parser) parsePrimary() (node, error) {
 		// `IDENT(` (with no intervening dot) is a function call. Reject
 		// unknown names at parse time so authoring errors surface up front.
 		if p.cur.kind == tokLParen {
+			if isLambdaComb(ns) {
+				return p.parseLambdaComb(ns)
+			}
 			if _, ok := builtins[ns]; !ok {
 				return nil, fmt.Errorf("expr: unknown function %q", ns)
 			}
@@ -691,11 +826,105 @@ func (p *parser) parseFuncCallArgs(name string) (node, error) {
 	return &funcCallNode{name: name, args: args}, nil
 }
 
+// isLambdaComb reports whether name is one of the bounded higher-order
+// combinators whose final argument is a `=>` lambda (not a normal expression).
+func isLambdaComb(name string) bool {
+	return name == "map" || name == "filter" || name == "reduce"
+}
+
+// parseLambdaComb parses `map(coll, p => body)`, `filter(coll, p => body)`, or
+// `reduce(coll, init, (acc, x) => body)`. Invoked with cur on the opening `(`.
+func (p *parser) parseLambdaComb(name string) (node, error) {
+	if err := p.enter(); err != nil {
+		return nil, err
+	}
+	defer p.leave()
+	p.advance() // consume '('
+	coll, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	if p.cur.kind != tokComma {
+		return nil, fmt.Errorf("expr: %s() expects a comma after the collection, got %s", name, p.cur.value)
+	}
+	p.advance()
+	var initNode node
+	if name == "reduce" {
+		initNode, err = p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if p.cur.kind != tokComma {
+			return nil, fmt.Errorf("expr: reduce() expects a comma after the initial value, got %s", p.cur.value)
+		}
+		p.advance()
+	}
+	params, body, err := p.parseLambda(name)
+	if err != nil {
+		return nil, err
+	}
+	want := 1
+	if name == "reduce" {
+		want = 2
+	}
+	if len(params) != want {
+		return nil, fmt.Errorf("expr: %s() lambda takes %d parameter(s), got %d", name, want, len(params))
+	}
+	if p.cur.kind != tokRParen {
+		return nil, fmt.Errorf("expr: expected ')' to close %s(), got %s", name, p.cur.value)
+	}
+	p.advance() // consume ')'
+	return &lambdaCombNode{name: name, coll: coll, init: initNode, params: params, body: body}, nil
+}
+
+// parseLambda parses `p => body` or `(p1, p2) => body`. Parameter names that
+// collide with a reserved expression namespace are rejected so a body's
+// `outputs`/`vars`/… reference can never be silently shadowed.
+func (p *parser) parseLambda(ctxName string) ([]string, node, error) {
+	var params []string
+	switch p.cur.kind {
+	case tokLParen:
+		p.advance()
+		for p.cur.kind == tokIdent {
+			params = append(params, p.cur.value)
+			p.advance()
+			if p.cur.kind == tokComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+		if p.cur.kind != tokRParen {
+			return nil, nil, fmt.Errorf("expr: expected ')' after %s() lambda parameters, got %s", ctxName, p.cur.value)
+		}
+		p.advance()
+	case tokIdent:
+		params = append(params, p.cur.value)
+		p.advance()
+	default:
+		return nil, nil, fmt.Errorf("expr: %s() expects a lambda (e.g. x => x.field), got %s", ctxName, p.cur.value)
+	}
+	if p.cur.kind != tokArrow {
+		return nil, nil, fmt.Errorf("expr: %s() lambda expects '=>' after parameters, got %s", ctxName, p.cur.value)
+	}
+	p.advance()
+	for _, pm := range params {
+		if evalNamespaces[pm] {
+			return nil, nil, fmt.Errorf("expr: lambda parameter %q collides with the reserved namespace %q", pm, pm)
+		}
+	}
+	body, err := p.parseExpr()
+	if err != nil {
+		return nil, nil, err
+	}
+	return params, body, nil
+}
+
 // ---------------------------------------------------------------------------
 // Evaluator
 // ---------------------------------------------------------------------------
 
-func evalNode(n node, ctx *Context) (interface{}, error) {
+func evalNode(n node, st *evalState) (interface{}, error) {
 	switch v := n.(type) {
 	case litBool:
 		return v.v, nil
@@ -706,18 +935,28 @@ func evalNode(n node, ctx *Context) (interface{}, error) {
 	case litString:
 		return v.v, nil
 	case pathNode:
-		return resolvePath(v.namespace, v.path, ctx)
+		return resolvePath(v.namespace, v.path, st)
 	case *unaryNode:
-		return evalUnary(v, ctx)
+		return evalUnary(v, st)
 	case *binaryNode:
-		return evalBinary(v, ctx)
+		return evalBinary(v, st)
 	case *funcCallNode:
-		return evalFuncCall(v, ctx)
+		return evalFuncCall(v, st)
+	case *indexNode:
+		return evalIndex(v, st)
+	case *lambdaCombNode:
+		return evalLambdaComb(v, st)
 	}
 	return nil, fmt.Errorf("expr: unknown node type %T", n)
 }
 
-func resolvePath(namespace string, path []string, ctx *Context) (interface{}, error) {
+func resolvePath(namespace string, path []string, st *evalState) (interface{}, error) {
+	// Lambda-bound locals shadow every namespace: a `map(arr, x => x.f)` body
+	// resolves `x` from the active frame, never from the Context.
+	if v, ok := st.lookupLocal(namespace); ok {
+		return descendPath(v, path), nil
+	}
+	ctx := st.ctx
 	if ctx == nil {
 		return nil, nil
 	}
@@ -764,8 +1003,8 @@ func resolvePath(namespace string, path []string, ctx *Context) (interface{}, er
 	return nil, fmt.Errorf("expr: unknown namespace %q", namespace)
 }
 
-func evalUnary(n *unaryNode, ctx *Context) (interface{}, error) {
-	v, err := evalNode(n.child, ctx)
+func evalUnary(n *unaryNode, st *evalState) (interface{}, error) {
+	v, err := evalNode(n.child, st)
 	if err != nil {
 		return nil, err
 	}
@@ -784,41 +1023,41 @@ func evalUnary(n *unaryNode, ctx *Context) (interface{}, error) {
 	return nil, fmt.Errorf("expr: unknown unary op %q", n.op)
 }
 
-func evalBinary(n *binaryNode, ctx *Context) (interface{}, error) {
+func evalBinary(n *binaryNode, st *evalState) (interface{}, error) {
 	switch n.op {
 	case "&&":
-		l, err := evalNode(n.left, ctx)
+		l, err := evalNode(n.left, st)
 		if err != nil {
 			return nil, err
 		}
 		if !truthy(l) {
 			return false, nil
 		}
-		r, err := evalNode(n.right, ctx)
+		r, err := evalNode(n.right, st)
 		if err != nil {
 			return nil, err
 		}
 		return truthy(r), nil
 	case "||":
-		l, err := evalNode(n.left, ctx)
+		l, err := evalNode(n.left, st)
 		if err != nil {
 			return nil, err
 		}
 		if truthy(l) {
 			return true, nil
 		}
-		r, err := evalNode(n.right, ctx)
+		r, err := evalNode(n.right, st)
 		if err != nil {
 			return nil, err
 		}
 		return truthy(r), nil
 	}
 
-	l, err := evalNode(n.left, ctx)
+	l, err := evalNode(n.left, st)
 	if err != nil {
 		return nil, err
 	}
-	r, err := evalNode(n.right, ctx)
+	r, err := evalNode(n.right, st)
 	if err != nil {
 		return nil, err
 	}
@@ -1115,9 +1354,17 @@ var builtins = map[string]func(args []interface{}) (interface{}, error){
 	"join":     builtinJoin,
 	"tail":     builtinTail,
 	"if":       builtinIf,
+	"sort":     builtinSort,
+	"keys":     builtinKeys,
+	"values":   builtinValues,
+	"slice":    builtinSlice,
+	"sum":      builtinSum,
+	"min":      builtinMin,
+	"max":      builtinMax,
+	"flatten":  builtinFlatten,
 }
 
-func evalFuncCall(n *funcCallNode, ctx *Context) (interface{}, error) {
+func evalFuncCall(n *funcCallNode, st *evalState) (interface{}, error) {
 	// Special form: if(cond, then, else) short-circuits. Only the
 	// selected branch is evaluated, so the un-taken branch can safely
 	// contain expressions that would otherwise trip a divide-by-zero
@@ -1126,14 +1373,14 @@ func evalFuncCall(n *funcCallNode, ctx *Context) (interface{}, error) {
 	// arm evaluated eagerly when n=0 and crashed the compute node.
 	// Ticket a3a9757b on the native board.
 	if n.name == "if" && len(n.args) == 3 {
-		condVal, err := evalNode(n.args[0], ctx)
+		condVal, err := evalNode(n.args[0], st)
 		if err != nil {
 			return nil, err
 		}
 		if truthy(condVal) {
-			return evalNode(n.args[1], ctx)
+			return evalNode(n.args[1], st)
 		}
-		return evalNode(n.args[2], ctx)
+		return evalNode(n.args[2], st)
 	}
 
 	fn, ok := builtins[n.name]
@@ -1145,7 +1392,7 @@ func evalFuncCall(n *funcCallNode, ctx *Context) (interface{}, error) {
 	}
 	args := make([]interface{}, len(n.args))
 	for i, a := range n.args {
-		v, err := evalNode(a, ctx)
+		v, err := evalNode(a, st)
 		if err != nil {
 			return nil, err
 		}
@@ -1325,18 +1572,438 @@ func builtinJoin(args []interface{}) (interface{}, error) {
 	return strings.Join(parts, sep), nil
 }
 
+// builtinSort returns a new array sorted ascending. All-numeric arrays sort
+// numerically; all-string arrays lexicographically; mixed/other arrays sort by
+// their %v stringification. Ordering is deterministic for prompt-cache
+// stability. The input is never mutated.
+func builtinSort(args []interface{}) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: sort() takes 1 argument, got %d", len(args))
+	}
+	arr, err := toElemSlice(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("expr: sort() expects array, %w", err)
+	}
+	out := make([]interface{}, len(arr))
+	copy(out, arr)
+	allNum, allStr := true, true
+	for _, v := range out {
+		if _, ok := toFloat(v); !ok {
+			allNum = false
+		}
+		if _, ok := v.(string); !ok {
+			allStr = false
+		}
+	}
+	switch {
+	case allNum:
+		sort.SliceStable(out, func(i, j int) bool {
+			a, _ := toFloat(out[i])
+			b, _ := toFloat(out[j])
+			return a < b
+		})
+	case allStr:
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].(string) < out[j].(string)
+		})
+	default:
+		sort.SliceStable(out, func(i, j int) bool {
+			return fmt.Sprintf("%v", out[i]) < fmt.Sprintf("%v", out[j])
+		})
+	}
+	return out, nil
+}
+
+// builtinKeys returns a map's keys, sorted ascending (deterministic).
+func builtinKeys(args []interface{}) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: keys() takes 1 argument, got %d", len(args))
+	}
+	m, err := toStringMap(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("expr: keys() expects a map, %w", err)
+	}
+	out := make([]interface{}, 0, len(m))
+	for _, k := range sortedMapKeys(m) {
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+// builtinValues returns a map's values ordered by sorted key (deterministic).
+func builtinValues(args []interface{}) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: values() takes 1 argument, got %d", len(args))
+	}
+	m, err := toStringMap(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("expr: values() expects a map, %w", err)
+	}
+	out := make([]interface{}, 0, len(m))
+	for _, k := range sortedMapKeys(m) {
+		out = append(out, m[k])
+	}
+	return out, nil
+}
+
+// builtinSlice returns arr[start:end) with bounds clamped to [0, len]. A
+// negative index counts from the end (Python-style); end defaults past the last
+// element when out of range. The result never aliases the input.
+func builtinSlice(args []interface{}) (interface{}, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("expr: slice() takes 3 arguments (array, start, end), got %d", len(args))
+	}
+	arr, err := toElemSlice(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("expr: slice() expects array as first argument, %w", err)
+	}
+	n := int64(len(arr))
+	start, ok := toInt(args[1])
+	if !ok {
+		return nil, fmt.Errorf("expr: slice() start must be an integer, got %T", args[1])
+	}
+	end, ok := toInt(args[2])
+	if !ok {
+		return nil, fmt.Errorf("expr: slice() end must be an integer, got %T", args[2])
+	}
+	clamp := func(i int64) int64 {
+		if i < 0 {
+			i += n
+		}
+		if i < 0 {
+			return 0
+		}
+		if i > n {
+			return n
+		}
+		return i
+	}
+	s, e := clamp(start), clamp(end)
+	if e < s {
+		e = s
+	}
+	out := make([]interface{}, e-s)
+	copy(out, arr[s:e])
+	return out, nil
+}
+
+// builtinSum totals a numeric array. All-integer inputs stay int64 (with
+// overflow detection); a fractional element promotes the sum to float64. Empty
+// is int64(0).
+func builtinSum(args []interface{}) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: sum() takes 1 argument, got %d", len(args))
+	}
+	arr, err := toElemSlice(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("expr: sum() expects array, %w", err)
+	}
+	var isum int64
+	var fsum float64
+	isFloat := false
+	for _, v := range arr {
+		if !isFloat {
+			if iv, ok := toInt(v); ok {
+				if r, ok := addCheckedInt64(isum, iv); ok {
+					isum = r
+					continue
+				}
+				return nil, fmt.Errorf("expr: sum() integer overflow")
+			}
+			// First fractional value: promote accumulated total to float.
+			isFloat = true
+			fsum = float64(isum)
+		}
+		fv, ok := toFloat(v)
+		if !ok {
+			return nil, fmt.Errorf("expr: sum() expects numeric elements, got %T", v)
+		}
+		fsum += fv
+	}
+	if isFloat {
+		return fsum, nil
+	}
+	return isum, nil
+}
+
+// builtinMin / builtinMax return the smallest / largest numeric element, or nil
+// for an empty array.
+func builtinMin(args []interface{}) (interface{}, error) { return minMax(args, "min") }
+func builtinMax(args []interface{}) (interface{}, error) { return minMax(args, "max") }
+
+func minMax(args []interface{}, which string) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: %s() takes 1 argument, got %d", which, len(args))
+	}
+	arr, err := toElemSlice(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("expr: %s() expects array, %w", which, err)
+	}
+	if len(arr) == 0 {
+		return nil, nil
+	}
+	var best interface{}
+	var bestF float64
+	for i, v := range arr {
+		fv, ok := toFloat(v)
+		if !ok {
+			return nil, fmt.Errorf("expr: %s() expects numeric elements, got %T", which, v)
+		}
+		if i == 0 || (which == "min" && fv < bestF) || (which == "max" && fv > bestF) {
+			best, bestF = v, fv
+		}
+	}
+	return best, nil
+}
+
+// builtinFlatten concatenates one level of nesting: each array element is
+// spliced in, each non-array element is kept as-is. Deeper nesting is left
+// intact (deep flatten is excluded to keep output size bounded by input).
+func builtinFlatten(args []interface{}) (interface{}, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("expr: flatten() takes 1 argument, got %d", len(args))
+	}
+	arr, err := toElemSlice(args[0])
+	if err != nil {
+		return nil, fmt.Errorf("expr: flatten() expects array, %w", err)
+	}
+	out := make([]interface{}, 0, len(arr))
+	for _, v := range arr {
+		if inner, ok := v.([]interface{}); ok {
+			out = append(out, inner...)
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// toStringMap normalizes a value to map[string]interface{} (nil → empty),
+// converting concrete string-keyed maps via reflection.
+func toStringMap(v interface{}) (map[string]interface{}, error) {
+	if v == nil {
+		return map[string]interface{}{}, nil
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		return m, nil
+	}
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		out := make(map[string]interface{}, rv.Len())
+		for _, k := range rv.MapKeys() {
+			out[k.String()] = rv.MapIndex(k).Interface()
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("got %T", v)
+}
+
+func sortedMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// descendPath walks a dotted field path into a (possibly nested) map value,
+// returning nil at the first non-map segment or missing key. Used to resolve
+// `x.field` against a lambda-bound local `x`.
+func descendPath(v interface{}, path []string) interface{} {
+	for _, seg := range path {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		v = m[seg]
+	}
+	return v
+}
+
+// evalIndex resolves `recv[index]`. Out-of-bounds array indices and missing map
+// keys yield nil (consistent with absent paths); a wrong-typed subscript on a
+// present collection, or indexing a scalar, is a loud error.
+func evalIndex(n *indexNode, st *evalState) (interface{}, error) {
+	recv, err := evalNode(n.recv, st)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := evalNode(n.index, st)
+	if err != nil {
+		return nil, err
+	}
+	if recv == nil {
+		return nil, nil
+	}
+	switch c := recv.(type) {
+	case []interface{}:
+		i, ok := toInt(idx)
+		if !ok {
+			return nil, fmt.Errorf("expr: array index must be an integer, got %T", idx)
+		}
+		if i < 0 || i >= int64(len(c)) {
+			return nil, nil
+		}
+		return c[i], nil
+	case map[string]interface{}:
+		key, ok := idx.(string)
+		if !ok {
+			return nil, fmt.Errorf("expr: map key must be a string, got %T", idx)
+		}
+		return c[key], nil
+	}
+	// Reflection fallback for concrete slice/array/map types produced by stubs
+	// or backend-specific output shapes (mirrors builtinLength).
+	rv := reflect.ValueOf(recv)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		i, ok := toInt(idx)
+		if !ok {
+			return nil, fmt.Errorf("expr: array index must be an integer, got %T", idx)
+		}
+		if i < 0 || i >= int64(rv.Len()) {
+			return nil, nil
+		}
+		return rv.Index(int(i)).Interface(), nil
+	case reflect.Map:
+		key, ok := idx.(string)
+		if !ok {
+			return nil, fmt.Errorf("expr: map key must be a string, got %T", idx)
+		}
+		mv := rv.MapIndex(reflect.ValueOf(key))
+		if !mv.IsValid() {
+			return nil, nil
+		}
+		return mv.Interface(), nil
+	}
+	return nil, fmt.Errorf("expr: cannot index %T", recv)
+}
+
+// evalLambdaComb evaluates a bounded higher-order combinator. The loop count is
+// fixed before iteration to the materialized slice length; the body is applied
+// once per element under a fresh local frame; each element debits the visit
+// budget. No element can extend the collection, so the construct is total.
+func evalLambdaComb(n *lambdaCombNode, st *evalState) (interface{}, error) {
+	collVal, err := evalNode(n.coll, st)
+	if err != nil {
+		return nil, err
+	}
+	arr, err := toElemSlice(collVal)
+	if err != nil {
+		return nil, fmt.Errorf("expr: %s() expects an array as its collection: %w", n.name, err)
+	}
+	switch n.name {
+	case "map":
+		out := make([]interface{}, 0, len(arr))
+		for _, el := range arr {
+			if err := st.consume(); err != nil {
+				return nil, err
+			}
+			v, err := st.evalBody(n.params[0], el, n.body)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	case "filter":
+		out := make([]interface{}, 0, len(arr))
+		for _, el := range arr {
+			if err := st.consume(); err != nil {
+				return nil, err
+			}
+			v, err := st.evalBody(n.params[0], el, n.body)
+			if err != nil {
+				return nil, err
+			}
+			if truthy(v) {
+				out = append(out, el)
+			}
+		}
+		return out, nil
+	case "reduce":
+		acc, err := evalNode(n.init, st)
+		if err != nil {
+			return nil, err
+		}
+		for _, el := range arr {
+			if err := st.consume(); err != nil {
+				return nil, err
+			}
+			frame := map[string]interface{}{n.params[0]: acc, n.params[1]: el}
+			st.locals = append(st.locals, frame)
+			acc, err = evalNode(n.body, st)
+			st.locals = st.locals[:len(st.locals)-1]
+			if err != nil {
+				return nil, err
+			}
+		}
+		return acc, nil
+	}
+	return nil, fmt.Errorf("expr: unknown combinator %q", n.name)
+}
+
+// toElemSlice normalizes a value to []interface{} for combinators/helpers. A
+// nil value is an empty collection; a concrete slice/array is converted via
+// reflection; anything else is an error.
+func toElemSlice(v interface{}) ([]interface{}, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if arr, ok := v.([]interface{}); ok {
+		return arr, nil
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		out := make([]interface{}, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out[i] = rv.Index(i).Interface()
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("got %T", v)
+}
+
+// walkRefs surfaces the namespace.path references an expression depends on.
+// Lambda-bound parameters are NOT references (they are locals), so the body of
+// a combinator is walked with those parameter names excluded.
 func walkRefs(n node, fn func(Ref)) {
+	walkRefsBound(n, nil, fn)
+}
+
+func walkRefsBound(n node, bound map[string]bool, fn func(Ref)) {
 	switch v := n.(type) {
 	case pathNode:
+		if bound[v.namespace] {
+			return // lambda-bound local, not an external reference
+		}
 		fn(Ref{Namespace: v.namespace, Path: append([]string(nil), v.path...)})
 	case *unaryNode:
-		walkRefs(v.child, fn)
+		walkRefsBound(v.child, bound, fn)
 	case *binaryNode:
-		walkRefs(v.left, fn)
-		walkRefs(v.right, fn)
+		walkRefsBound(v.left, bound, fn)
+		walkRefsBound(v.right, bound, fn)
 	case *funcCallNode:
 		for _, a := range v.args {
-			walkRefs(a, fn)
+			walkRefsBound(a, bound, fn)
 		}
+	case *indexNode:
+		walkRefsBound(v.recv, bound, fn)
+		walkRefsBound(v.index, bound, fn)
+	case *lambdaCombNode:
+		walkRefsBound(v.coll, bound, fn)
+		if v.init != nil {
+			walkRefsBound(v.init, bound, fn)
+		}
+		nb := make(map[string]bool, len(bound)+len(v.params))
+		for k := range bound {
+			nb[k] = true
+		}
+		for _, p := range v.params {
+			nb[p] = true
+		}
+		walkRefsBound(v.body, nb, fn)
 	}
 }

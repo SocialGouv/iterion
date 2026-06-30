@@ -96,6 +96,15 @@ func (c *compiler) walkExprTypes(n *expr.Snapshot, env exprEnv, nodeID, eid, loc
 			c.checkOperandCompat(l, r, n.Op, env, nodeID, eid, loc)
 		}
 	}
+	// C113: subscripting a value whose static type is a scalar (string/bool/
+	// int/float) can never index anything — almost always an author mistake.
+	// StringArray and json/unknown receivers are fine and bail.
+	if n.Kind == expr.SnapIndex && len(n.Children) == 2 {
+		if rt := env.inferType(n.Children[0]); rt.known && isScalarType(rt.t) {
+			c.warnfAt(DiagIndexOnScalar, nodeID, eid,
+				"%s: subscript [...] applied to a %s value, which is not indexable", loc, rt.t)
+		}
+	}
 	for _, ch := range n.Children {
 		c.walkExprTypes(ch, env, nodeID, eid, loc)
 	}
@@ -134,6 +143,15 @@ func (c *compiler) checkOperandCompat(l, r *expr.Snapshot, op string, env exprEn
 	c.warnfAt(DiagExprOperandTypeMismatch, nodeID, eid,
 		"%s: operator %q compares %s with %s — incompatible operand types; the comparison will not behave as written",
 		loc, op, lt.t, rt.t)
+}
+
+// isScalarType reports whether a FieldType is a non-indexable scalar.
+func isScalarType(t FieldType) bool {
+	switch t {
+	case FieldTypeString, FieldTypeBool, FieldTypeInt, FieldTypeFloat:
+		return true
+	}
+	return false
 }
 
 // compatibleOperands reports whether two inferred types may be compared.

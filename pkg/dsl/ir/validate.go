@@ -111,6 +111,7 @@ const (
 	DiagInvalidPermission       DiagCode = "C110" // permission: value not one of off|ask|deny (error)
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
+	DiagIndexOnScalar           DiagCode = "C113" // subscript `[...]` applied to a statically-scalar value (warning)
 )
 
 // validate performs static validation on a compiled workflow.
