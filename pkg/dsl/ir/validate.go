@@ -82,6 +82,10 @@ const (
 	DiagInvalidSecretFile DiagCode = "C094" // file secret declaration is malformed
 	DiagSecretSubfield    DiagCode = "C095" // unsupported {{secrets.X.<subfield>}}
 
+	// Unbounded-loop diagnostics (Turing-completeness Layer B).
+	DiagUnboundedNoFuel DiagCode = "C097" // `as X(unbounded)` without a fuel ceiling (clause fuel or budget.max_iterations) (error)
+	DiagUnboundedNoExit DiagCode = "C098" // unbounded loop whose back-edges have no sibling when-exit (warning)
+
 	// Review-gate diagnostics (interaction: review).
 	DiagReviewNeedsWorktree DiagCode = "C100" // interaction: review without worktree: auto — nothing to merge (error)
 	DiagReviewURLUnknownRef DiagCode = "C101" // review_url references an output node that does not exist (warning)
@@ -1188,12 +1192,64 @@ func (c *compiler) validateLoopIterations(w *Workflow) {
 		if loop.MaxIterationsExpr != "" {
 			continue
 		}
+		// Unbounded loops legitimately carry no literal iteration cap; their
+		// bound is fuel + liveness (validated by C097 below), so C026 is N/A.
+		if loop.Unbounded {
+			continue
+		}
 		if loop.MaxIterations < 1 {
 			c.errorf(DiagInvalidLoopIterations,
 				"loop %q has max_iterations=%d; must be >= 1",
 				loop.Name, loop.MaxIterations)
 		}
 	}
+	c.validateUnboundedLoops(w)
+}
+
+// validateUnboundedLoops enforces the "no silent infinity" invariant on
+// `as <name>(unbounded)` loops: C097 (a fuel ceiling is mandatory — either the
+// clause's own fuel or budget.max_iterations) and C098 (a warning when an
+// unbounded loop's back-edges have no sibling `when`-exit, so only fuel/liveness
+// can ever stop it).
+func (c *compiler) validateUnboundedLoops(w *Workflow) {
+	budgetIters := 0
+	if w.Budget != nil {
+		budgetIters = w.Budget.MaxIterations
+	}
+	for _, loop := range w.Loops {
+		if !loop.Unbounded {
+			continue
+		}
+		if loop.FuelCap <= 0 && budgetIters <= 0 {
+			c.errorf(DiagUnboundedNoFuel,
+				"loop %q is unbounded but has no fuel ceiling; set a per-loop fuel (as %s(unbounded <N>)) or workflow budget.max_iterations",
+				loop.Name, loop.Name)
+		}
+		if !c.unboundedLoopHasExit(w, loop) {
+			c.warnf(DiagUnboundedNoExit,
+				"loop %q is unbounded and no node in its body has an edge leaving the loop; only fuel/liveness can stop it — add a `when`-exit (convergence condition)",
+				loop.Name)
+		}
+	}
+}
+
+// unboundedLoopHasExit reports whether any node in the loop's body has an
+// outgoing edge that leaves the body (an exit path) — anywhere in the cycle,
+// not only at the back-edge source. Conservative: if the body is empty
+// (uncomputed), assume an exit exists so we never false-warn.
+func (c *compiler) unboundedLoopHasExit(w *Workflow, loop *Loop) bool {
+	if len(loop.Body) == 0 {
+		return true
+	}
+	for _, e := range w.Edges {
+		if !loop.Body[e.From] || e.LoopName == loop.Name {
+			continue
+		}
+		if !loop.Body[e.To] {
+			return true // edge leaving the loop body = an exit
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

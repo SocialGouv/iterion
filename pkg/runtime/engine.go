@@ -458,6 +458,13 @@ type runState struct {
 	// loopCurrentOutput on each traversal to preserve the one-iteration lag.
 	loopPreviousOutput map[string]map[string]interface{}
 	loopCurrentOutput  map[string]map[string]interface{} // staging slot for the next iteration's "previous"
+	// loopProgressSig / loopStaleness drive the unbounded-loop liveness monitor:
+	// the last-seen progress signature (a hash of the source output) per loop,
+	// and how many consecutive crossings it has been unchanged. Reset when the
+	// signal changes or the loop is re-entered. Not persisted across resume —
+	// a resumed run simply starts its stall window fresh.
+	loopProgressSig    map[string]string
+	loopStaleness      map[string]int
 	roundRobinCounters map[string]int
 	artifactVersions   map[string]int
 	budget             *SharedBudget // shared across branches, nil if no budget
@@ -541,6 +548,8 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 		loopCounters:       make(map[string]int),
 		loopPreviousOutput: make(map[string]map[string]interface{}),
 		loopCurrentOutput:  make(map[string]map[string]interface{}),
+		loopProgressSig:    make(map[string]string),
+		loopStaleness:      make(map[string]int),
 		roundRobinCounters: make(map[string]int),
 		artifactVersions:   make(map[string]int),
 		nodeAttempts:       make(map[string]map[ErrorCode]int),
@@ -1815,6 +1824,8 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 					delete(rs.loopPreviousOutput, loopName)
 					delete(rs.loopCurrentOutput, loopName)
 				}
+				delete(rs.loopProgressSig, loopName)
+				delete(rs.loopStaleness, loopName)
 			}
 		}
 	}
@@ -2147,7 +2158,59 @@ func (e *Engine) resolveLoopPath(path []string, rs *runState) interface{} {
 // (typically 0 for the template form) — that surfaces as a "loop
 // exhausted on iteration 0" log line at the edge check, which is the
 // loudest visible failure mode we can offer without aborting the run.
+// defaultUnboundedFuel is the fuel ceiling applied to an `unbounded` loop that
+// declares neither a per-loop fuel nor a workflow budget.max_iterations.
+// Validation (C097) normally requires one of those, so this only guards a
+// programmatically-constructed IR that bypassed the compiler — it must never be
+// 0 (that would be a silent infinity).
+const defaultUnboundedFuel = 1000
+
+// maxLoopStall is the liveness threshold: when an unbounded loop's progress
+// signal (the source node's output) is unchanged across this many consecutive
+// back-edge crossings, the loop is judged stuck at a fixpoint and the back-edge
+// falls through to the exit path. This catches PRACTICAL non-termination (the
+// loop is making no progress) better than any static analysis could.
+const maxLoopStall = 3
+
+// loopStalled updates and reports the unbounded-loop liveness state: it hashes
+// the source output into a progress signature and counts consecutive crossings
+// where the signature is unchanged. Returns true once the loop has been stuck
+// at the same fixpoint for maxLoopStall crossings.
+func (e *Engine) loopStalled(loopName string, output map[string]interface{}, rs *runState) bool {
+	sig := outputSignature(output)
+	if prev, ok := rs.loopProgressSig[loopName]; ok && prev == sig {
+		rs.loopStaleness[loopName]++
+	} else {
+		rs.loopStaleness[loopName] = 0
+	}
+	rs.loopProgressSig[loopName] = sig
+	return rs.loopStaleness[loopName] >= maxLoopStall
+}
+
+// outputSignature produces a stable string fingerprint of a node output for
+// liveness comparison. json.Marshal sorts map keys, so the signature is
+// deterministic for equal content.
+func outputSignature(output map[string]interface{}) string {
+	if b, err := json.Marshal(output); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%v", output)
+}
+
 func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
+	// Unbounded loops have no user iteration cap; the effective ceiling is the
+	// fuel: the clause's per-loop fuel, else the workflow's max_iterations, else
+	// a hard default (so there is never a silent infinity even if validation was
+	// bypassed). The liveness monitor halts a no-progress loop before this.
+	if loop.Unbounded {
+		if loop.FuelCap > 0 {
+			return loop.FuelCap
+		}
+		if e.workflow.Budget != nil && e.workflow.Budget.MaxIterations > 0 {
+			return e.workflow.Budget.MaxIterations
+		}
+		return defaultUnboundedFuel
+	}
 	if loop.MaxIterationsExpr == "" || len(loop.MaxIterationsExprRefs) == 0 {
 		return loop.MaxIterations
 	}

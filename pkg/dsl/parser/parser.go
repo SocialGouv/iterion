@@ -2495,13 +2495,22 @@ func (p *parser) parseLoopClause() *ast.LoopClause {
 	// template (`as fix_loop("{{outputs.X.cap}}")`) resolved at runtime.
 	// Anything else is an error reported at the offending token; we
 	// still consume it to keep the parser advancing past the cap.
-	switch nt := p.peek(); nt.Type {
-	case TokenInt:
+	switch nt := p.peek(); {
+	case nt.Type == TokenInt:
 		lc.MaxIterations = p.expectInt()
-	case TokenString:
+	case nt.Type == TokenString:
 		lc.MaxIterationsExpr = p.expectString()
+	case tokenAsIdent(nt) == "unbounded":
+		// `as <name>(unbounded)` or `as <name>(unbounded <fuel>)`: the loop
+		// is not iteration-capped; an optional integer sets a per-loop fuel
+		// ceiling (otherwise budget.max_iterations is required — C097).
+		p.next() // consume "unbounded"
+		lc.Unbounded = true
+		if p.peek().Type == TokenInt {
+			lc.FuelCap = p.expectInt()
+		}
 	default:
-		p.addError(DiagExpectedToken, nt, "expected integer or template string for loop cap, got "+nt.Type.String())
+		p.addError(DiagExpectedToken, nt, "expected integer, template string, or 'unbounded' for loop cap, got "+nt.Type.String())
 		p.next()
 	}
 	p.expect(TokenRParen)

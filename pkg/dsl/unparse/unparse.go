@@ -1175,9 +1175,16 @@ func writeEdge(b *strings.Builder, e *ast.Edge) {
 		}
 	}
 	if e.Loop != nil {
-		if e.Loop.MaxIterationsExpr != "" {
+		switch {
+		case e.Loop.Unbounded:
+			if e.Loop.FuelCap > 0 {
+				fmt.Fprintf(b, " as %s(unbounded %d)", e.Loop.Name, e.Loop.FuelCap)
+			} else {
+				fmt.Fprintf(b, " as %s(unbounded)", e.Loop.Name)
+			}
+		case e.Loop.MaxIterationsExpr != "":
 			fmt.Fprintf(b, " as %s(%q)", e.Loop.Name, e.Loop.MaxIterationsExpr)
-		} else {
+		default:
 			fmt.Fprintf(b, " as %s(%d)", e.Loop.Name, e.Loop.MaxIterations)
 		}
 	}

@@ -1299,7 +1299,8 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 				// agree across both literal-int and template forms —
 				// otherwise the runtime resolution would be ambiguous.
 				if existing.MaxIterations != ae.Loop.MaxIterations ||
-					existing.MaxIterationsExpr != ae.Loop.MaxIterationsExpr {
+					existing.MaxIterationsExpr != ae.Loop.MaxIterationsExpr ||
+					existing.Unbounded != ae.Loop.Unbounded {
 					c.errorf(DiagDuplicateLoop,
 						"loop %q has conflicting max_iterations: %d/%q vs %d/%q",
 						ae.Loop.Name,
@@ -1311,6 +1312,8 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 					Name:              ae.Loop.Name,
 					MaxIterations:     ae.Loop.MaxIterations,
 					MaxIterationsExpr: ae.Loop.MaxIterationsExpr,
+					Unbounded:         ae.Loop.Unbounded,
+					FuelCap:           ae.Loop.FuelCap,
 				}
 				if ae.Loop.MaxIterationsExpr != "" {
 					refs, err := ParseRefs(ae.Loop.MaxIterationsExpr)

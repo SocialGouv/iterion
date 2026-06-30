@@ -912,8 +912,26 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 			if ok {
 				maxIter := e.resolveLoopMax(loop, rs)
 				if rs.loopCounters[edge.LoopName] >= maxIter {
-					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q exhausted (%d/%d)",
-						logPrefix, fromNodeID, edge.To, edge.LoopName, rs.loopCounters[edge.LoopName], maxIter)
+					kind := "exhausted"
+					if loop.Unbounded {
+						kind = "out of fuel"
+					}
+					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q %s (%d/%d)",
+						logPrefix, fromNodeID, edge.To, edge.LoopName, kind, rs.loopCounters[edge.LoopName], maxIter)
+					continue
+				}
+				// Liveness monitor: an unbounded loop making no progress (its
+				// source output unchanged across maxLoopStall crossings) is at a
+				// fixpoint — skip the back-edge so the run falls through to the
+				// exit path instead of burning the rest of its fuel.
+				if loop.Unbounded && e.loopStalled(edge.LoopName, output, rs) {
+					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q made no progress for %d crossings (liveness stall), falling through",
+						logPrefix, fromNodeID, edge.To, edge.LoopName, maxLoopStall)
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]interface{}{
+						"loop": edge.LoopName, "reason": "liveness_stall", "crossings": maxLoopStall,
+					}); err != nil {
+						e.logger.Warn("failed to emit liveness_stall warning: %v", err)
+					}
 					continue
 				}
 			}

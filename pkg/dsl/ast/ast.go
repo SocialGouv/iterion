@@ -823,7 +823,13 @@ type LoopClause struct {
 	Name              string // loop name (e.g. "refine_loop", "full_recipe_loop")
 	MaxIterations     int    // upper bound (literal form)
 	MaxIterationsExpr string // template form, e.g. `{{outputs.X.fix_loop_max}}`
-	Span              Span
+	// Unbounded marks `as <name>(unbounded)` / `as <name>(unbounded <fuel>)`:
+	// the iteration count is not user-capped; the loop runs until a `when`-exit
+	// fires (convergence) with a mandatory fuel ceiling as the backstop, plus
+	// a runtime liveness monitor that halts a no-progress (fixpoint) loop.
+	Unbounded bool
+	FuelCap   int // optional per-loop fuel for the unbounded form (0 = inherit budget.max_iterations)
+	Span      Span
 }
 
 // WithEntry is a single key-value mapping inside a `with { ... }` block.

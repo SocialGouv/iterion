@@ -1095,6 +1095,13 @@ type Loop struct {
 	// runtime lookup is a pure string interpolation against rs.
 	MaxIterationsExpr     string
 	MaxIterationsExprRefs []*Ref
+	// Unbounded marks `as <name>(unbounded)`: the loop has no user iteration
+	// cap. It still terminates — the runtime bounds it by FuelCap (the
+	// effective fuel ceiling) and by a liveness monitor (no-progress halt).
+	// The cycle is still *declared*, so C019 stays silent. FuelCap is the
+	// resolved per-loop fuel: the clause's own fuel, else budget.max_iterations.
+	Unbounded bool
+	FuelCap   int
 	// Body is the set of node IDs that participate in the loop's cycle —
 	// each node from which the loop's edge target is reachable and which
 	// can reach the loop's edge source (i.e. nodes on a path that closes
