@@ -89,6 +89,9 @@ export type { PageHeaderProps } from "./PageHeader";
 export { Card } from "./Card";
 export type { CardProps } from "./Card";
 
+export { Kbd } from "./Kbd";
+export type { KbdProps } from "./Kbd";
+
 export { TerminalCaret } from "./TerminalCaret";
 export type { TerminalCaretProps } from "./TerminalCaret";
 

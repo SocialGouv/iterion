@@ -50,7 +50,7 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
         <div className="text-xs font-medium text-fg-default flex items-center gap-1 min-w-0">
           <span className="truncate">{item.name}</span>
           {item.template.pattern && (
-            <span className="text-[9px] bg-info/20 text-info-fg px-1 rounded shrink-0">
+            <span className="text-caption bg-info/20 text-info-fg px-1 rounded shrink-0">
               {item.template.pattern.nodes.length} nodes
             </span>
           )}
@@ -61,7 +61,7 @@ export default function LibraryItemCard({ item, onAdd }: Props) {
             {item.tags.slice(0, 3).map((tag) => (
               <span
                 key={tag}
-                className="text-[9px] px-1 py-0 rounded bg-surface-2 text-fg-subtle"
+                className="text-caption px-1 py-0 rounded bg-surface-2 text-fg-subtle"
               >
                 {tag}
               </span>

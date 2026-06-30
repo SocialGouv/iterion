@@ -19,6 +19,12 @@ const NODE_TYPES: { kind: NodeKind; label: string }[] = [
   { kind: "compute", label: "Compute" },
 ];
 
+// Shared draggable node-chip styling — tactile elevation + hover lift on the
+// kind-coloured palette tiles. Single source so the collapsed rail and the
+// expanded Quick-Add grid (which differ only in size) stay in sync.
+const NODE_TILE_CLASS =
+  "flex flex-col items-center justify-center gap-0.5 rounded-[var(--radius-md)] cursor-grab border border-border-strong shadow-[var(--shadow-sm)] transition-[transform,box-shadow,filter] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:-translate-y-0.5 hover:brightness-110 hover:shadow-[var(--shadow-md)] active:translate-y-0";
+
 const CATEGORIES: { value: LibraryCategory | null; label: string }[] = [
   { value: null, label: "All" },
   { value: "agent", label: "Agent" },
@@ -41,18 +47,18 @@ function CollapsedPalette({ onExpand }: { onExpand: () => void }) {
 
   return (
     <div className="flex flex-col items-center gap-2 py-3 px-1 h-full">
-      <span className="text-[9px] text-fg-subtle uppercase tracking-wider">Nodes</span>
+      <span className="text-caption text-fg-subtle uppercase tracking-wider">Nodes</span>
       {NODE_TYPES.map(({ kind, label }) => (
         <div
           key={kind}
           draggable
           onDragStart={(e) => onDragStart(e, kind)}
-          className="w-12 h-12 flex flex-col items-center justify-center gap-0.5 rounded cursor-grab hover:brightness-125 transition-all border border-border-strong"
+          className={`w-12 h-12 ${NODE_TILE_CLASS}`}
           style={{ backgroundColor: softColor(NODE_COLORS[kind], 20), borderColor: NODE_COLORS[kind] }}
           title={label}
         >
           <NodeIcon kind={kind} size={16} />
-          <span className="text-[9px] text-fg-muted">{label}</span>
+          <span className="text-caption text-fg-muted">{label}</span>
         </div>
       ))}
       <div className="flex-1" />
@@ -145,19 +151,19 @@ function ExpandedPanel({ onCollapse }: { onCollapse: () => void }) {
       {/* Quick Add — generic node types */}
       {!activeCategory && !searchQuery && (
         <div className="px-3 pb-2">
-          <span className="text-[9px] text-fg-subtle uppercase tracking-wider">Quick Add</span>
+          <span className="text-caption text-fg-subtle uppercase tracking-wider">Quick Add</span>
           <div className="grid grid-cols-3 gap-1 mt-1">
             {NODE_TYPES.map(({ kind, label }) => (
               <div
                 key={kind}
                 draggable
                 onDragStart={(e) => onDragStart(e, kind)}
-                className="h-10 flex flex-col items-center justify-center gap-0.5 rounded cursor-grab hover:brightness-125 transition-all border border-border-strong"
+                className={`h-10 ${NODE_TILE_CLASS}`}
                 style={{ backgroundColor: softColor(NODE_COLORS[kind], 20), borderColor: NODE_COLORS[kind] }}
                 title={label}
               >
                 <NodeIcon kind={kind} size={14} />
-                <span className="text-[8px] text-fg-muted">{label}</span>
+                <span className="text-caption text-fg-muted">{label}</span>
               </div>
             ))}
           </div>

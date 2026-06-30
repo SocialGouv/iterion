@@ -176,7 +176,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout }: Props
                 <button
                   type="button"
                   onDoubleClick={() => setEditingName(true)}
-                  className="font-medium truncate max-w-md text-left hover:text-fg-default focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded"
+                  className="font-semibold tracking-tight truncate max-w-md text-left hover:text-fg-default focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded"
                 >
                   <span className="truncate">{friendlyName}</span>
                 </button>

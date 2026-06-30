@@ -7,6 +7,7 @@ import {
 import NavLinks from "./NavLinks";
 import OrgSwitcher from "./OrgSwitcher";
 import SidebarContext from "./SidebarContext";
+import { BrandMark } from "@/components/ui/BrandMark";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { useUIStore } from "@/store/ui";
 
@@ -49,12 +50,7 @@ export default function Sidebar() {
             aria-label="Expand sidebar"
             aria-expanded={false}
           >
-            <img
-              src="/favicon-96x96.png"
-              alt=""
-              aria-hidden="true"
-              className="h-7 w-7 shrink-0 dark:invert"
-            />
+            <BrandMark className="h-7 w-7 shrink-0" />
           </button>
         ) : (
           <>
@@ -64,12 +60,7 @@ export default function Sidebar() {
               title="Iterion home"
               aria-label="Iterion home"
             >
-              <img
-                src="/favicon-96x96.png"
-                alt=""
-                aria-hidden="true"
-                className="h-7 w-7 shrink-0 dark:invert"
-              />
+              <BrandMark className="h-7 w-7 shrink-0" />
               <BrandWordmark />
             </Link>
             <button

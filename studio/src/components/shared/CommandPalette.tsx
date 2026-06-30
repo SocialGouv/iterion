@@ -1,4 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { MagnifyingGlassIcon } from "@radix-ui/react-icons";
+
+import { Kbd } from "@/components/ui/Kbd";
+
+// Footer keyboard legend — the signature ⌘K affordance. Declarative so the
+// hints stay in one place.
+const PALETTE_HINTS: { keys: string[]; label: string }[] = [
+  { keys: ["↑", "↓"], label: "navigate" },
+  { keys: ["↵"], label: "select" },
+  { keys: ["esc"], label: "close" },
+];
 
 export interface CommandAction {
   id: string;
@@ -118,27 +129,30 @@ export default function CommandPalette({ open, actions, onClose }: Props) {
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="w-[min(560px,calc(100vw-2rem))] rounded-lg border border-border-default bg-surface-1 shadow-[var(--shadow-lg)] overflow-hidden"
+        className="w-[min(560px,calc(100vw-2rem))] rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-lg)] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <input
-          ref={inputRef}
-          type="text"
-          role="combobox"
-          aria-expanded={matches.length > 0}
-          aria-controls="cmdk-listbox"
-          aria-activedescendant={matches.length > 0 ? `cmdk-opt-${cursor}` : undefined}
-          aria-label="Search commands"
-          autoComplete="off"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setCursor(0);
-          }}
-          onKeyDown={handleKey}
-          placeholder="Type a command…"
-          className="w-full bg-transparent px-4 py-3 text-sm text-fg-default placeholder-fg-subtle outline-none border-b border-border-default"
-        />
+        <div className="flex items-center gap-2.5 px-4 border-b border-border-default">
+          <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-fg-subtle" aria-hidden />
+          <input
+            ref={inputRef}
+            type="text"
+            role="combobox"
+            aria-expanded={matches.length > 0}
+            aria-controls="cmdk-listbox"
+            aria-activedescendant={matches.length > 0 ? `cmdk-opt-${cursor}` : undefined}
+            aria-label="Search commands"
+            autoComplete="off"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setCursor(0);
+            }}
+            onKeyDown={handleKey}
+            placeholder="Type a command…"
+            className="w-full bg-transparent py-3 text-sm text-fg-default placeholder-fg-subtle outline-none"
+          />
+        </div>
         <div className="max-h-[50vh] overflow-auto">
           {matches.length === 0 ? (
             <div role="presentation" className="px-4 py-6 text-center text-xs text-fg-muted">
@@ -167,14 +181,29 @@ export default function CommandPalette({ open, actions, onClose }: Props) {
                     {a.group}
                   </span>
                   <span className="flex-1 truncate">{a.title}</span>
-                  {a.shortcut && (
-                    <kbd className="font-mono text-caption px-1.5 py-0.5 rounded bg-surface-2 border border-border-default text-fg-muted">
-                      {a.shortcut}
-                    </kbd>
-                  )}
+                  {a.shortcut && <Kbd>{a.shortcut}</Kbd>}
                 </button>
               ))}
             </div>
+          )}
+        </div>
+        {/* Footer hint bar — the signature ⌘K affordance: keyboard legend so
+            the palette reads as a navigable surface, not just a search box. */}
+        <div className="flex items-center gap-3 border-t border-border-default px-4 py-1.5 text-caption text-fg-subtle">
+          {PALETTE_HINTS.map((hint) => (
+            <span key={hint.label} className="inline-flex items-center gap-1">
+              {hint.keys.map((k) => (
+                <Kbd key={k} className="px-1 py-px">
+                  {k}
+                </Kbd>
+              ))}
+              {hint.label}
+            </span>
+          ))}
+          {matches.length > 0 && (
+            <span className="ml-auto font-mono">
+              {matches.length} result{matches.length === 1 ? "" : "s"}
+            </span>
           )}
         </div>
       </div>
