@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/internal/apikit"
@@ -41,6 +43,12 @@ const (
 
 	// retryBaseDelay is the initial backoff delay between retries.
 	retryBaseDelay = 500 * time.Millisecond
+
+	// maxRetryDelay caps how long a single retry wait can be, so honoring a
+	// server-sent Retry-After can never block one request for minutes. The
+	// documented, service-respecting behavior on 429/503 is to wait the delay
+	// the server returns; this cap just bounds a pathological value.
+	maxRetryDelay = 60 * time.Second
 )
 
 // Client is the Anthropic HTTP API client.
@@ -230,8 +238,17 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 			}
 		}
 
-		// Exponential backoff before next attempt.
+		// Backoff before next attempt. Honor a server-sent Retry-After
+		// header (429/503) — the documented, service-respecting behavior —
+		// falling back to exponential backoff when absent. Capped by
+		// maxRetryDelay so a pathological value can't block indefinitely.
 		delay := retryBaseDelay * time.Duration(1<<(attempt-1))
+		if ra := retryAfterDelay(resp.Header); ra > 0 {
+			delay = ra
+		}
+		if delay > maxRetryDelay {
+			delay = maxRetryDelay
+		}
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
@@ -534,6 +551,29 @@ func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 // transient error suitable for retry (408, 429, and 5xx).
 func isRetryableStatus(code int) bool {
 	return code == 408 || code == 429 || code >= 500
+}
+
+// retryAfterDelay parses a Retry-After response header into a wait duration.
+// Per RFC 7231 the value is either an integer count of seconds or an HTTP-date;
+// both forms are honored. Returns 0 when the header is absent or unparseable
+// (caller then uses its own backoff). A past HTTP-date yields 0.
+func retryAfterDelay(h http.Header) time.Duration {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // stripInternalFields returns a shallow copy of in with internal-only
