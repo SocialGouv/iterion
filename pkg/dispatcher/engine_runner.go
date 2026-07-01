@@ -6,10 +6,12 @@ import (
 	"io"
 	"sync"
 
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -269,6 +271,22 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// means a clean start.
 	if spec.ResumeFromRunID != "" {
 		return eng.Resume(ctx, spec.ResumeFromRunID, nil)
+	}
+
+	// Resolve the mono/dual review topology for a fresh dispatch (no-op
+	// unless the workflow declares a review_mode var). A per-ticket
+	// bot_arg review_mode wins over auto-detection; no dispatcher-level
+	// flag override, so pass "". Mirrors the CLI and runview surfaces.
+	if spec.Vars == nil {
+		spec.Vars = map[string]any{}
+	}
+	if mode, family, injected := reviewtopology.InjectIfDeclared(r.workflow, spec.Vars, detect.Detect(ctx), ""); injected {
+		r.logger.Info("review topology: %s%s", mode, func() string {
+			if family != "" {
+				return " (family " + family + ")"
+			}
+			return ""
+		}())
 	}
 	return eng.Run(ctx, spec.RunID, spec.Vars)
 }

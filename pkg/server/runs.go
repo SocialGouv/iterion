@@ -137,6 +137,10 @@ type launchRunRequest struct {
 	// ("off"|"ask"|"deny"). Empty inherits the workflow/node permission:
 	// DSL then ITERION_PERMISSION. See docs/permissions.md.
 	Permission string `json:"permission,omitempty"`
+	// ReviewMode is the run-level mono/dual review-topology override
+	// ("auto"|"mono"|"dual") for bi-model review-loop bots. Empty/"auto"
+	// resolves from detected providers at launch. See pkg/reviewtopology.
+	ReviewMode string `json:"review_mode,omitempty"`
 	// Cap. 3 sharding fields. When ParentRunID is non-empty, this
 	// launch is a shard child of an existing parent run; the server
 	// propagates the fields to the persisted Run document and (in
@@ -303,6 +307,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Backend:            req.Backend,
 		Compress:           req.Compress,
 		Permission:         req.Permission,
+		ReviewMode:         req.ReviewMode,
 		ParentRunID:        req.ParentRunID,
 		ShardIndex:         req.ShardIndex,
 		ShardCount:         req.ShardCount,

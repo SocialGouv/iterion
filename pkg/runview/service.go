@@ -84,6 +84,12 @@ type LaunchSpec struct {
 	// inherits the workflow/node `permission:` DSL then
 	// ITERION_PERMISSION. See docs/permissions.md.
 	Permission string
+	// ReviewMode is the run-level mono/dual review-topology override
+	// ("", "auto", "mono", "dual") from the studio Launch toggle /
+	// dispatcher. Only affects bots that declare a review_mode var. ""
+	// / "auto" resolves from detected provider credentials at launch;
+	// "mono"/"dual" force it. See pkg/reviewtopology.
+	ReviewMode string
 	// ParentRunID, ShardIndex, ShardCount, ShardLabel are set when a
 	// parent run dispatches this as a shard child (see Cap. 3 in
 	// docs/security-bots-distributed.md). The cloudpublisher copies

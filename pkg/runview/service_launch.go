@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -161,6 +163,18 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 	for k, v := range spec.Vars {
 		inputs[k] = v
+	}
+
+	// Resolve the mono/dual review topology (no-op unless the workflow
+	// declares a review_mode var). Mirrors the CLI so studio/API/dispatcher
+	// launches auto-detect providers too. The spec override (studio toggle)
+	// wins over a --var review_mode; both win over auto.
+	if mode, family, injected := reviewtopology.InjectIfDeclared(wf, inputs, detect.Detect(parent), spec.ReviewMode); injected {
+		if family != "" {
+			runLogger.Info("review topology: %s (family %s)", mode, family)
+		} else {
+			runLogger.Info("review topology: %s", mode)
+		}
 	}
 
 	runName := store.GenerateRunName(spec.FilePath + ":" + runID)
