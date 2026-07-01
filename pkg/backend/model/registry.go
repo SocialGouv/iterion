@@ -83,7 +83,8 @@ func (r *Registry) registerDefaults() {
 		// line in ~/.iterion/env.
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		baseURL := os.Getenv("ANTHROPIC_BASE_URL")
-		if apiKey == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+		authToken := os.Getenv("ANTHROPIC_AUTH_TOKEN")
+		if apiKey == "" && authToken == "" {
 			if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
 				apiKey = zai
 				if baseURL == "" {
@@ -91,11 +92,25 @@ func (r *Registry) registerDefaults() {
 				}
 			}
 		}
-		return p.NewClient(api.ProviderConfig{
+		cfg := api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,
 			BaseURL: baseURL,
-		})
+		}
+		// Claude Code subscription "forfait": when only ANTHROPIC_AUTH_TOKEN is
+		// set (the OAuth access token from ~/.claude/.credentials.json) against
+		// real api.anthropic.com — not a z.ai/bigmodel BYOK base URL, which uses
+		// the token as an x-api-key-style key — pass it as the OAuth bearer so
+		// claw sends `Authorization: Bearer` + the `anthropic-beta: oauth-2025-04-20`
+		// header the API requires (see claw client.go). DEV-PURPOSE ONLY: reusing
+		// the Claude Code token from a non-Claude-Code client is outside Anthropic's
+		// Consumer Terms — do not enable for cloud/production/full-automation.
+		lowBase := strings.ToLower(baseURL)
+		isZAI := strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel")
+		if apiKey == "" && authToken != "" && !isZAI {
+			cfg.OAuthToken = authToken
+		}
+		return p.NewClient(cfg)
 	}
 	r.providersWithKey["anthropic"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := anthropicprovider.New()

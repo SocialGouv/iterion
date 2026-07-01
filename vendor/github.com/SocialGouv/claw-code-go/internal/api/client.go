@@ -25,6 +25,15 @@ const (
 	// rotating field flips and pay full input-token cost every call.
 	anthropicBetaValue     = "prompt-caching-2024-07-31,prompt-caching-scope-2026-01-05"
 	anthropicVersionHeader = "anthropic-version"
+	// anthropicOAuthBetaValue is the beta token the Anthropic API requires to
+	// accept an OAuth *bearer* token on /v1/messages (the Claude Code
+	// subscription "forfait" path). Without it an OAuth request 401s with
+	// "x-api-key header is required". It is sent INSTEAD OF anthropicBetaValue
+	// for bearer sessions — OAuth sessions reject the caching betas (see the
+	// beta-header branch in StreamResponse). DEV-PURPOSE ONLY: reusing the
+	// Claude Code subscription token from a non-Claude-Code client is outside
+	// Anthropic's Consumer Terms; do not use on cloud/production/full-automation.
+	anthropicOAuthBetaValue = "oauth-2025-04-20"
 
 	// defaultMaxRetries is the maximum number of retry attempts for retryable
 	// HTTP errors (429, 5xx). The first attempt is attempt 1.
@@ -122,6 +131,14 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 		// the more-recent beta enables.
 		if c.Auth.Kind != AuthSourceBearer && c.OAuthToken == "" {
 			httpReq.Header.Set(anthropicBetaHeader, anthropicBetaValue)
+		} else {
+			// OAuth/Bearer session (Claude Code subscription forfait,
+			// dev-purpose): the API only accepts the bearer token on
+			// /v1/messages when the oauth beta header is present — omitting
+			// it 401s with "x-api-key header is required". Send ONLY the
+			// oauth token, not the caching betas (which OAuth sessions
+			// reject with 400, per the comment above).
+			httpReq.Header.Set(anthropicBetaHeader, anthropicOAuthBetaValue)
 		}
 		httpReq.Header.Set("content-type", "application/json")
 		httpReq.Header.Set("accept", "text/event-stream")
