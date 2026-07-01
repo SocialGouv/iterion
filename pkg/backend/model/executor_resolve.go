@@ -1,0 +1,160 @@
+package model
+
+import (
+	"context"
+	"os"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+)
+
+// resolveBackendName returns the effective backend name for a node.
+//
+// Resolution chain (first non-empty wins):
+//  1. node.Backend (set on AgentNode/JudgeNode/RouterNode); supports
+//     ${VAR}/${VAR:-default} env-var expansion so workflows can pick
+//     a backend per environment (e.g. `backend: "${RESCUE_BACKEND:-claude_code}"`).
+//  2. workflow-level default (e.defaultBackend, from `default_backend:` or
+//     IR Preferences.BackendOrder[0])
+//  3. ITERION_DEFAULT_BACKEND env var (legacy explicit override)
+//  4. detect.Resolve over ITERION_BACKEND_PREFERENCE (auto-selection based
+//     on credentials present on the host)
+//  5. delegate.BackendClaw (hardcoded last-resort fallback)
+//
+// Step 4 is what makes the studio's empty default template "just work" when
+// the user has any credential configured.
+func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
+	var backend string
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		backend = n.Backend
+	case *ir.JudgeNode:
+		backend = n.Backend
+	case *ir.RouterNode:
+		backend = n.Backend
+	}
+	backend = ir.ExpandEnvWithDefault(backend)
+	if backend != "" && backend != "auto" {
+		return backend
+	}
+	if e.defaultBackend != "" {
+		return e.defaultBackend
+	}
+	if env := os.Getenv("ITERION_DEFAULT_BACKEND"); env != "" {
+		return env
+	}
+	if resolved := e.detectorResolve(); resolved != "" {
+		return resolved
+	}
+	return delegate.BackendClaw
+}
+
+// providerStep is one element of a resolved provider fallback chain: a
+// credential-routing hint paired with an optional per-element model
+// override. An empty Model means "inherit the node's `model:`" — the
+// historical behaviour, so a chain without any `provider:model` element
+// is byte-for-byte unchanged.
+type providerStep struct {
+	Provider string // routing hint ("" = auto / defer to process-env precedence)
+	Model    string // per-element model override ("" = inherit the node's model)
+}
+
+// resolveProvider returns the first (preferred) credential-routing hint
+// for a node, or "" to defer to the global precedence. It is the
+// single-value façade over resolveProviderChain, kept for the call
+// sites and tests that only need the head of the chain.
+//
+// Known hint values (matched by anthropicCredEnvForCLI / the claw registry):
+//   - "anthropic" — force ANTHROPIC_API_KEY / CLAUDE_CONFIG_DIR, skip z.ai
+//     even when ZAI_API_KEY is set on the process.
+//   - "zai" — force z.ai routing (ANTHROPIC_BASE_URL=z.ai facade +
+//     ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY).
+//   - "openai" — for claw/OpenAI-compat: force OPENAI_API_KEY direct.
+//   - "auto" / "" — current process-env-driven precedence.
+func (e *ClawExecutor) resolveProvider(node ir.Node) string {
+	return e.resolveProviderChain(node)[0].Provider
+}
+
+// resolveProviderChain resolves the per-node `provider:` field into an
+// ordered fallback chain of credential-routing hints, each optionally
+// carrying its own model. A single value (the historical form, incl.
+// `${RESCUE_PROVIDER:-zai}`) yields a one-element chain, so existing
+// workflows behave exactly as before.
+//
+// A comma-separated value (`provider: "anthropic,zai,openai"`) yields
+// the ordered list: the executor tries each provider in turn, falling
+// through to the next on a hard failure beyond the retry budget (see
+// dispatchWithProviderFallback). This generalises the single-node
+// RESCUE_PROVIDER escape hatch into a declarative chain.
+//
+// Each element may pin its own model with a `provider:model` token
+// (`provider: "zai:glm-5.2,anthropic:claude-opus-4-8"`): on fall-through
+// the executor swaps BOTH the credential hint AND the wire model, so a
+// chain can route a provider-specific model (glm-5.2 on z.ai) to a
+// different model on the next provider (claude-opus-4-8 on anthropic).
+// The split is on the FIRST colon only, so a model id that itself
+// contains a colon survives intact. A token without a colon keeps the
+// node's `model:` (Model == "").
+//
+// Env expansion runs on the whole field FIRST, then the result is split
+// on commas — so an env var may supply the entire chain
+// (`${PROVIDERS:-anthropic,zai}`) and a `:-default` may itself contain a
+// comma. (Because expansion precedes the colon split, a `${VAR:-x}`
+// default's `:-` is never mistaken for a provider:model separator.)
+// Tokens are trimmed; an explicit "auto" normalises to "" (defer to
+// process-env precedence) but is kept as a chain element; genuinely
+// empty tokens (stray/trailing commas) are dropped; consecutive
+// duplicate steps are collapsed. The chain is never empty: an
+// unset/blank field yields a single auto attempt.
+func (e *ClawExecutor) resolveProviderChain(node ir.Node) []providerStep {
+	var raw string
+	switch n := node.(type) {
+	case *ir.AgentNode:
+		raw = n.Provider
+	case *ir.JudgeNode:
+		raw = n.Provider
+	case *ir.RouterNode:
+		raw = n.Provider
+	}
+	expanded := ir.ExpandEnvWithDefault(raw)
+	chain := make([]providerStep, 0, 4)
+	for _, part := range strings.Split(expanded, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue // stray, leading or trailing comma
+		}
+		// ir.SplitProviderStep is the single source of truth for the
+		// `provider:model` element form, shared with the compiler's
+		// validateProviders so parse and validation never drift.
+		hint, model, _ := ir.SplitProviderStep(token)
+		step := providerStep{Provider: hint, Model: model}
+		if step.Provider == "auto" {
+			step.Provider = "" // explicit auto → process-env precedence
+		}
+		if len(chain) > 0 && chain[len(chain)-1] == step {
+			continue // collapse consecutive duplicates
+		}
+		chain = append(chain, step)
+	}
+	if len(chain) == 0 {
+		return []providerStep{{}}
+	}
+	return chain
+}
+
+// detectorResolve picks the first available backend in
+// ITERION_BACKEND_PREFERENCE order, or "" when nothing is available.
+func (e *ClawExecutor) detectorResolve() string {
+	report := e.detector.Get(context.Background())
+	return detect.Resolve(report.PreferenceOrder, report.Backends)
+}
+
+// detectorSuggestedModel returns the model spec for claw based on
+// detected providers, or "" when none are available (the registry then
+// emits a clear "no model" error).
+func (e *ClawExecutor) detectorSuggestedModel() string {
+	report := e.detector.Get(context.Background())
+	return detect.SuggestedModel(detect.BackendClaw, report.Providers)
+}

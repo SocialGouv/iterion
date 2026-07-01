@@ -1,0 +1,301 @@
+package server
+
+import (
+	"context"
+	"net"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/SocialGouv/iterion/pkg/auth/oidc"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/trigger"
+)
+
+// Addr returns the actual bound address (host:port) once ListenAndServe has
+// successfully created its listener. It blocks until the listener is ready or
+// the context is cancelled. Used by the desktop host when Port=0 was passed
+// and the OS picks the port.
+func (s *Server) Addr() string {
+	<-s.addrReady
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
+}
+
+// ListenAndServe starts the HTTP server.
+func (s *Server) ListenAndServe() error {
+	ln, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		// Even on error, signal Addr() so callers don't block forever.
+		close(s.addrReady)
+		return err
+	}
+	s.listener = ln
+	// Reflect the OS-chosen port back into the config so logging and the
+	// origin allowlist see the real port (Port=0 mode).
+	if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+		s.cfg.Port = tcpAddr.Port
+	}
+	close(s.addrReady)
+	// Sweep abandoned upload staging dirs in the background. Without
+	// this, attachments uploaded for runs that never launched (operator
+	// closed the modal, browser crashed mid-upload, etc.) accumulate
+	// under <store>/uploads/ until the disk fills. The reaper itself
+	// is best-effort — it walks the staging root, deletes dirs older
+	// than uploadStagingTTL, and stops when s.shutdown closes.
+	if s.runs != nil {
+		go s.runStagedUploadReaper()
+	}
+	// MVP3b: fan native-board issue-state transitions out to runs that
+	// subscribed (Run.WatchedIssueIDs). No-op when no native tracker is
+	// wired or the events tail can't start.
+	if s.runs != nil && s.cfg.NativeTrackerStore != nil {
+		s.watchCoord = startWatchCoordinator(s.runs, s.cfg.NativeTrackerStore, s.logger)
+	}
+	// Event-driven trigger spine: tail board transitions → match stored
+	// subscriptions → promote matching cards (the dispatcher then claims
+	// them). No-op when no TriggerStore is wired. The dispatcher Manager
+	// doubles as the nudger so a promoted card dispatches now, not at poll.
+	if s.cfg.NativeTrackerStore != nil && s.cfg.TriggerStore != nil {
+		var nudger trigger.Nudger
+		if s.cfg.Dispatcher != nil {
+			nudger = s.cfg.Dispatcher
+		}
+		var launcher trigger.Launcher
+		if s.runs != nil {
+			launcher = newServiceLauncher(s.runs, s.effectivePaths(), s.logger)
+		}
+		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.logger)
+		// Wire the run-completion source onto the same bus so a finished /
+		// failed run can fire downstream trigger subscriptions.
+		if s.triggerCoord != nil && s.runs != nil {
+			s.runs.SetEventPublisher(s.triggerCoord.Bus())
+		}
+	}
+	// Sweep abandoned OIDC PendingAuth entries — a user who clicks
+	// "Sign in with Google" then closes the tab never returns to
+	// trigger the lazy eviction inside Take, so without this the
+	// in-memory store grows unbounded under brute-force attempts
+	// or distracted users.
+	if mss, ok := s.oidcStates.(*oidc.MemoryStateStore); ok {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			mss.StartSweeper(ctx, 0) // 0 = use store TTL as interval
+		}()
+	}
+	// Forge OAuth token refresh: keep oauth_app connection tokens (and their
+	// managed forge_token secrets) fresh so bot runs never read an expired
+	// credential. PAT connections are skipped by the worker. No-op when the
+	// forge orchestrator isn't wired (local mode).
+	if s.forgeOrchestrator != nil {
+		worker := &forge.RefreshWorker{
+			Connections:  s.forgeConnections,
+			Secrets:      s.genericSecrets,
+			Sealer:       s.sealer,
+			RefresherFor: s.forgeRefresherFor,
+			Lead:         5 * time.Minute,
+		}
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			t := time.NewTicker(10 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if _, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+						s.logger.Warn("forge token refresh: %v", err)
+					}
+				}
+			}
+		}()
+	}
+	// OAuth-forfait token refresh: proactively rotate Claude Code (and
+	// Codex) subscription access tokens before they expire so neither an
+	// interactive run nor an automated (webhook/dispatcher/cron) run ever
+	// reads a stale credential. Covers personal AND org-scoped records.
+	// No-op without a store/sealer or any configured client id.
+	if s.oauthStore != nil && s.sealer != nil && (s.cfg.AnthropicOAuthClientID != "" || s.cfg.CodexOAuthClientID != "") {
+		worker := &secrets.OAuthRefreshWorker{
+			Store:             s.oauthStore,
+			Sealer:            s.sealer,
+			HTTP:              s.httpClient,
+			AnthropicClientID: s.cfg.AnthropicOAuthClientID,
+			CodexClientID:     s.cfg.CodexOAuthClientID,
+			Lead:              30 * time.Minute,
+		}
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			t := time.NewTicker(10 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if n, err := worker.RunOnce(ctx); err != nil && s.logger != nil {
+						s.logger.Warn("oauth-forfait refresh: %v", err)
+					} else if n > 0 && s.logger != nil {
+						s.logger.Info("oauth-forfait refresh: rotated %d token(s)", n)
+					}
+				}
+			}
+		}()
+	}
+	// Forge → board issue sync (cloud only): periodically mirror every
+	// sync-enabled repo's forge issues onto its team board. Off unless a
+	// cloud board + the integration store are wired. See board_forge.go.
+	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runBoardSyncWorker(ctx, 5*time.Minute)
+		}()
+	}
+	// Orphan-run sweeper (cloud only): flips queued/running rows whose
+	// runner died without a terminal write to failed_resumable. Needs
+	// both the Mongo store (stale scan capability) and the queue (KV
+	// lease check) — silently absent otherwise (local mode).
+	if lister, ok := s.cfg.Store.(staleRunLister); ok && s.queue != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.runQueueSweeper(ctx, lister, s.queue)
+		}()
+	}
+	// Cloud scheduler: fire due cron-scheduled bots. Multi-replica-safe via the
+	// store CAS (no leader election). Absent in local mode (ScheduledBots nil).
+	if s.cfg.ScheduledBots != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			(&cloudsched.Ticker{
+				Store:  s.cfg.ScheduledBots,
+				Launch: s.launchScheduledBot,
+				Logger: s.logger,
+			}).Run(ctx)
+		}()
+	}
+	// Org purge sweeper: nightly hard-purge of soft-deleted orgs past their
+	// grace. Idempotent across replicas (no leader election needed).
+	if s.cfg.OrgPurgeSweeper != nil {
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			s.cfg.OrgPurgeSweeper.Run(ctx)
+		}()
+	}
+	// Cloud board dispatcher: claim + run eligible cards across all tenants.
+	// Multi-replica-safe via the per-card Claim CAS (no leader election).
+	if s.cfg.CloudBoardCoordinator != nil {
+		marker := "board-dispatcher:" + uuid.NewString()
+		go func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() {
+				<-s.shutdown
+				cancel()
+			}()
+			newBoardDispatcher(s.cfg.CloudBoardCoordinator, s.processBoardCard, marker, 4, s.logger).run(ctx)
+		}()
+	}
+	// Truthful URL in the log: if the operator chose a non-loopback bind we
+	// print the actual address so they know the studio is exposed beyond the
+	// local machine. Previously we always printed http://localhost:<port>
+	// regardless of the bind interface.
+	displayHost := s.cfg.Bind
+	if displayHost == "127.0.0.1" || displayHost == "::1" || displayHost == "" {
+		displayHost = "localhost"
+	}
+	s.logger.Info("Editor server listening on http://%s:%d", displayHost, s.cfg.Port)
+	return s.server.Serve(ln)
+}
+
+// Shutdown gracefully shuts down the server.
+//
+// Order matters: HTTP-level shutdown (Server.Shutdown) drains in-flight
+// requests, while the run console service drains in-process workflow
+// goroutines. We do the workflow drain first so any cancel events
+// reach the on-disk store before the file watcher stops broadcasting
+// and clients drop. The drain ctx is the caller-supplied shutdown
+// deadline.
+//
+// Drain (rather than Stop) is intentional: it flips each in-flight
+// run to failed_resumable and emits EventRunInterrupted so the next
+// boot can offer one-click resume and clients can distinguish
+// shutdown-induced termination from user-initiated cancel.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.runs != nil {
+		s.runs.Drain(ctx)
+	}
+	// Stop the dispatcher before the HTTP server tears down so its
+	// shutdown() path can release in-flight claims to a clean state.
+	// Without this the daemon's SIGTERM (watchexec restart, operator
+	// Ctrl+C) would orphan claimed-by-self tickets on disk and the
+	// next dispatcher start would skip them (ListCandidates filters
+	// Claimed=true) until the operator manually edited the JSON.
+	// See ticket 012cb3a2 / 7221c7be.
+	if s.cfg.Dispatcher != nil {
+		// Shutdown (not Stop) so a server SIGTERM / Ctrl-C / watchexec
+		// rebuild preserves the operator's last-known intent in
+		// runtime.json. Stop persists `desired=stopped` — that's
+		// operator-driven only.
+		s.cfg.Dispatcher.Shutdown()
+	}
+	if s.watchCoord != nil {
+		s.watchCoord.Close()
+	}
+	if s.triggerCoord != nil {
+		s.triggerCoord.Close()
+	}
+	if s.watcher != nil {
+		s.watcher.Stop()
+	}
+	s.hub.Stop()
+	// Close shutdown last so background goroutines (upload reaper)
+	// observe it after the drain has settled and HTTP handlers have
+	// stopped accepting new requests.
+	select {
+	case <-s.shutdown:
+		// already closed (idempotent shutdown)
+	default:
+		close(s.shutdown)
+	}
+	return s.server.Shutdown(ctx)
+}

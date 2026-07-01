@@ -1,0 +1,272 @@
+package delegate
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/backend/delegate/claudesdk"
+	"github.com/SocialGouv/iterion/pkg/secrets"
+)
+
+func resolveMaxConsecutiveToolErrors() int {
+	if v := os.Getenv("ITERION_CLAUDE_CODE_MAX_TOOL_ERRORS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return defaultMaxConsecutiveToolErrors
+}
+
+// settingSourcesFromEnv returns the CLI --setting-sources for claude_code
+// nodes. Default "user,project": load the operator's user-level CLAUDE.md /
+// settings.json and the target repo's project CLAUDE.md / .claude/settings.json
+// so the agent honours the same conventions native Claude Code would — a core
+// part of closing the adaptivity gap. Override via
+// ITERION_CLAUDE_CODE_SETTING_SOURCES (comma-separated user/project/local);
+// "" or "none" disables it, restoring the CLI's headless no-settings default.
+// "local" is omitted from the default: .claude/settings.local.json is
+// machine-specific and may carry absolute paths that don't resolve in a sandbox.
+func settingSourcesFromEnv() []claudesdk.SettingSource {
+	raw, ok := os.LookupEnv("ITERION_CLAUDE_CODE_SETTING_SOURCES")
+	if !ok {
+		raw = "user,project"
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.EqualFold(raw, "none") {
+		return nil
+	}
+	var out []claudesdk.SettingSource
+	for _, part := range strings.Split(raw, ",") {
+		switch strings.ToLower(strings.TrimSpace(part)) {
+		case "user":
+			out = append(out, claudesdk.SettingSourceUser)
+		case "project":
+			out = append(out, claudesdk.SettingSourceProject)
+		case "local":
+			out = append(out, claudesdk.SettingSourceLocal)
+		}
+	}
+	return out
+}
+
+// anthropicCredOptsForCLI returns claudesdk.WithEnv options that point
+// the spawned Claude Code subprocess at the right credentials.
+//
+// providerHint, when non-empty, overrides the default precedence with
+// a per-node routing decision (from the DSL `provider:` field):
+//   - "anthropic" — force Anthropic-direct (API key or OAuth dir),
+//     skip z.ai even if ZAI_API_KEY is set on the process. Use when a
+//     specific node needs Anthropic's full context window (1M on
+//     Claude Opus 4.7) instead of the smaller z.ai window.
+//   - "zai" — force z.ai routing (Anthropic-shaped facade backed by
+//     GLM-4.6) even if Anthropic credentials are present. Use to pin
+//     a node to GLM regardless of process-env precedence.
+//   - "" / "auto" — current process-env-driven precedence (below).
+//
+// Default precedence (first match wins, returned options are mutually
+// exclusive — never set both ANTHROPIC_API_KEY and CLAUDE_CONFIG_DIR):
+//
+//  1. Per-run BYOK z.ai key: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
+//     (z.ai's Coding-Plan token routes through Anthropic-shaped wire to
+//     z.ai's gateway, which aliases the model to GLM-4.5/4.6 internally).
+//  2. Per-run BYOK Anthropic key: ANTHROPIC_API_KEY.
+//  3. Per-run OAuth-forfait credentials.json (desktop): CLAUDE_CONFIG_DIR.
+//     NB: on the cloud the same kind is scheduled for removal under
+//     Anthropic Consumer Terms — see .plans/zai-glm-oauth.md.
+//  4. Process-env fallback ZAI_API_KEY: same shape as case 1, lets
+//     desktop users put `ZAI_API_KEY=...` in ~/.iterion/env without
+//     also having to set ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN by
+//     hand. ANTHROPIC_API_KEY in env (if present) takes precedence
+//     via the CLI's own resolution; we don't set anything in that
+//     case so the inherited env wins.
+func anthropicCredOptsForCLI(ctx context.Context, providerHint string) []claudesdk.Option {
+	return credEnvToOpts(anthropicCredEnvForCLI(ctx, providerHint))
+}
+
+// credEnvToOpts converts a credential env map into claudesdk.Option
+// values with a stable key order. Extracted so the cross-provider
+// fingerprint path can compute the env map once, derive a fingerprint,
+// and pass the same map to the SDK without recomputing.
+func credEnvToOpts(env map[string]string) []claudesdk.Option {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	opts := make([]claudesdk.Option, 0, len(keys))
+	for _, k := range keys {
+		opts = append(opts, claudesdk.WithEnv(k, env[k]))
+	}
+	return opts
+}
+
+// shouldDropSessionFork decides whether to skip --resume + --fork-session
+// for the incoming task. Thinking blocks in a Claude session carry
+// provider-specific signatures; reusing a session built on a different
+// provider surfaces HTTP 400 "Invalid signature in thinking block"
+// the moment the new provider reads the prior conversation.
+//
+// Drop policy (forks only — a bare resume from the same daemon process
+// is always same-provider continuation, so signatures are trustworthy):
+//
+//   - parent fingerprint set AND differs from current → drop.
+//   - parent fingerprint EMPTY (legacy output produced by a binary
+//     that predates the stamp, or by a daemon restarted across a
+//     provider switch) → drop conservatively. The alternative —
+//     "proceed when unknown" — was the actual observed failure mode:
+//     a fresh Anthropic daemon attempting to fork a session-id
+//     produced by an older ZAI-side binary blew up on the 400 with
+//     nothing flagging the mismatch. Losing head-session continuity
+//     for one node is recoverable; a 400 is not.
+//   - parent fingerprint set, current fingerprint EMPTY (provider
+//     env is currently unresolved — e.g. cred ctx not wired) → keep
+//     the fork. The CLI subprocess will fall back to inherited env,
+//     and if that's a mismatch the surface error is the same 400 we
+//     started with; we don't gain anything by dropping pre-emptively
+//     when we can't classify ourselves.
+//
+// Returns (drop, reason). The reason string carries no secrets and is
+// safe to log verbatim.
+func shouldDropSessionFork(task Task, currentFingerprint string) (bool, string) {
+	if !task.ForkSession {
+		return false, ""
+	}
+	if task.SessionFingerprint == "" {
+		return true, "parent session has no recorded provider fingerprint (legacy output or pre-stamp binary) — starting fresh to avoid cross-provider thinking-block 400s"
+	}
+	if currentFingerprint != "" && task.SessionFingerprint != currentFingerprint {
+		return true, fmt.Sprintf("parent session was built on %q but current provider is %q (signed thinking blocks would 400 on cross-provider reuse)",
+			task.SessionFingerprint, currentFingerprint)
+	}
+	return false, ""
+}
+
+// providerFingerprint derives a stable identifier for the routing
+// decision encoded by a cred env map. Two calls to anthropicCredEnvForCLI
+// with the same provider precedence return the same fingerprint, so
+// sessions produced under one provider can be detected (and dropped)
+// when a later run targets a different one. Key values are NOT
+// included — fingerprints are safe to log and to ferry through the
+// recipe output map.
+func providerFingerprint(env map[string]string) string {
+	if env == nil {
+		return "anthropic-env"
+	}
+	if base := env["ANTHROPIC_BASE_URL"]; base != "" {
+		return "facade:" + base
+	}
+	if env["ANTHROPIC_API_KEY"] != "" {
+		return "anthropic-direct"
+	}
+	if env["CLAUDE_CONFIG_DIR"] != "" {
+		return "anthropic-oauth"
+	}
+	// Explicit zeroing of BASE_URL/AUTH_TOKEN (the providerHint==anthropic
+	// path) lands here too — it means "use the inherited ANTHROPIC_API_KEY
+	// from the process env", which is also Anthropic-direct semantically.
+	return "anthropic-env"
+}
+
+// anthropicCredEnvForCLI is the testable core: it returns the env
+// variables (key → value) the claude_code subprocess should be invoked
+// with, based on the context-bound credentials and the optional
+// providerHint. anthropicCredOptsForCLI wraps it into claudesdk.Option
+// values for the SDK call site. Separated so unit tests can assert
+// routing decisions without reflecting on closures.
+//
+// An empty key string with a non-empty key entry means "clear this
+// inherited env var" (e.g. {"ANTHROPIC_BASE_URL": ""} actively
+// suppresses a stale z.ai value in the parent env when the hint asks
+// for Anthropic-direct).
+func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string]string {
+	creds, hasCreds := secrets.CredentialsFromContext(ctx)
+
+	// providerHint=="anthropic": force Anthropic-direct. Skip the z.ai
+	// branches entirely, even if ZAI_API_KEY is in the process env.
+	if providerHint == "anthropic" {
+		if hasCreds {
+			if k := creds.APIKey(secrets.ProviderAnthropic); k != "" {
+				return map[string]string{"ANTHROPIC_API_KEY": k}
+			}
+			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
+				return map[string]string{"CLAUDE_CONFIG_DIR": d}
+			}
+		}
+		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the
+		// CLI. Actively clear ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN
+		// so a stale z.ai value from the parent env doesn't leak in.
+		return map[string]string{
+			"ANTHROPIC_BASE_URL":   "",
+			"ANTHROPIC_AUTH_TOKEN": "",
+		}
+	}
+
+	// providerHint=="zai": force the z.ai facade. Prefer in-context
+	// creds; fall back to ZAI_API_KEY in the process env.
+	if providerHint == "zai" {
+		if hasCreds {
+			if k := creds.APIKey(secrets.ProviderZAI); k != "" {
+				return map[string]string{
+					"ANTHROPIC_BASE_URL":   secrets.ZAIDefaultBaseURL,
+					"ANTHROPIC_AUTH_TOKEN": k,
+				}
+			}
+		}
+		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
+			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+			if baseURL == "" {
+				baseURL = secrets.ZAIDefaultBaseURL
+			}
+			return map[string]string{
+				"ANTHROPIC_BASE_URL":   baseURL,
+				"ANTHROPIC_AUTH_TOKEN": zai,
+			}
+		}
+		// No z.ai key reachable — clear hostile env and let downstream
+		// surface the "no credential" error rather than silently
+		// falling back to a different provider.
+		return map[string]string{
+			"ANTHROPIC_BASE_URL":   "",
+			"ANTHROPIC_AUTH_TOKEN": "",
+		}
+	}
+
+	// Default precedence (providerHint is "" / "auto").
+	if hasCreds {
+		switch {
+		case creds.APIKey(secrets.ProviderZAI) != "":
+			return map[string]string{
+				"ANTHROPIC_BASE_URL":   secrets.ZAIDefaultBaseURL,
+				"ANTHROPIC_AUTH_TOKEN": creds.APIKey(secrets.ProviderZAI),
+			}
+		case creds.APIKey(secrets.ProviderAnthropic) != "":
+			return map[string]string{"ANTHROPIC_API_KEY": creds.APIKey(secrets.ProviderAnthropic)}
+		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
+			return map[string]string{"CLAUDE_CONFIG_DIR": creds.OAuthDir(string(secrets.OAuthKindClaudeCode))}
+		}
+	}
+	// Env-fallback: ZAI_API_KEY is the convenience knob for desktop
+	// users. Only honoured when no Anthropic-flavoured creds are
+	// already wired by env — ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+	// from the inherited env stays authoritative.
+	if os.Getenv("ANTHROPIC_API_KEY") == "" && os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+		if zai := os.Getenv("ZAI_API_KEY"); zai != "" {
+			baseURL := os.Getenv("ANTHROPIC_BASE_URL")
+			if baseURL == "" {
+				baseURL = secrets.ZAIDefaultBaseURL
+			}
+			return map[string]string{
+				"ANTHROPIC_BASE_URL":   baseURL,
+				"ANTHROPIC_AUTH_TOKEN": zai,
+			}
+		}
+	}
+	return nil
+}

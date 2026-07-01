@@ -1,0 +1,241 @@
+package runtime
+
+import (
+	"fmt"
+	"reflect"
+
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+	"github.com/SocialGouv/iterion/pkg/store"
+)
+
+// processConvergence aggregates branch results according to the convergence
+// node's await strategy, merges outputs into the run state, builds the
+// convergence node's input from multi-edge with-mappings, and returns
+// the convergence node ID for the main loop to continue execution.
+func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, results []*branchResult) (string, error) {
+	convNode, ok := e.workflow.Nodes[convergenceNodeID]
+	if !ok {
+		return "", fmt.Errorf("convergence node %q not found", convergenceNodeID)
+	}
+
+	// Determine await strategy: use node's explicit setting, default to wait_all.
+	strategy := nodeAwaitMode(convNode)
+	if strategy == ir.AwaitNone {
+		strategy = ir.AwaitWaitAll
+	}
+
+	// Collect failed branches metadata.
+	var failedBranches []map[string]interface{}
+	for _, r := range results {
+		if r.err != nil {
+			failedBranches = append(failedBranches, map[string]interface{}{
+				"branch_id": r.branchID,
+				"error":     r.err.Error(),
+			})
+		}
+	}
+
+	// Apply await strategy.
+	switch strategy {
+	case ir.AwaitWaitAll:
+		if len(failedBranches) > 0 {
+			return "", fmt.Errorf("convergence at %s (wait_all): %d branch(es) failed: %v",
+				convergenceNodeID, len(failedBranches), failedBranches[0]["error"])
+		}
+	case ir.AwaitBestEffort:
+		// Proceed even with failures — failed branch metadata is exposed.
+	}
+
+	// Merge successful branch outputs into the run state.
+	for _, r := range results {
+		if r.err != nil {
+			continue
+		}
+		for nodeID, output := range r.outputs {
+			rs.outputs[nodeID] = output
+		}
+		for name, output := range r.artifacts {
+			// Last-write-wins, but make a silent clobber observable: two
+			// parallel branches publishing the same artifact name would
+			// otherwise overwrite each other with no trace.
+			if prev, ok := rs.artifacts[name]; ok && !reflect.DeepEqual(prev, output) {
+				e.logger.Warn("convergence at %s: artifact %q published by multiple branches with differing values — last write wins",
+					convergenceNodeID, name)
+			}
+			rs.artifacts[name] = output
+		}
+		for nodeID, version := range r.artifactVersions {
+			rs.artifactVersions[nodeID] = version
+		}
+	}
+
+	// Add failed branches metadata to outputs so it's available via with-mappings.
+	if len(failedBranches) > 0 {
+		// Expose as a special output on the convergence node.
+		if rs.outputs[convergenceNodeID] == nil {
+			rs.outputs[convergenceNodeID] = make(map[string]interface{})
+		}
+		rs.outputs[convergenceNodeID]["_failed_branches"] = failedBranches
+	}
+
+	// Emit convergence_ready event.
+	convData := map[string]interface{}{
+		"strategy": strategy.String(),
+	}
+	if len(failedBranches) > 0 {
+		convData["failed_branches"] = failedBranches
+	}
+	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, convergenceNodeID, convData); err != nil {
+		e.logger.Warn("failed to emit convergence_ready: %v", err)
+	}
+
+	// Return the convergence node ID — the main loop will execute it normally.
+	return convergenceNodeID, nil
+}
+
+// processConvergenceTerminal handles the best_effort all-done topology
+// (every branch ran to its own *ir.DoneNode and no branch failed).
+// Merges branch outputs/artifacts into the run state and hands back one
+// of the terminal node IDs so the engine's main loop emits run_finished.
+func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResult) (string, error) {
+	for _, r := range results {
+		for nodeID, output := range r.outputs {
+			rs.outputs[nodeID] = output
+		}
+		for name, output := range r.artifacts {
+			rs.artifacts[name] = output
+		}
+		for nodeID, version := range r.artifactVersions {
+			rs.artifactVersions[nodeID] = version
+		}
+	}
+	// Use the first branch's terminal node — the engine treats any Done
+	// node as run_finished, so picking one is unambiguous.
+	terminal := results[0].terminalNodeID
+	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, terminal, map[string]interface{}{
+		"strategy":       ir.AwaitBestEffort.String(),
+		"terminal_join":  true,
+		"branches_total": len(results),
+	}); err != nil {
+		e.logger.Warn("failed to emit terminal convergence join_ready: %v", err)
+	}
+	return terminal, nil
+}
+
+// findConvergencePoint walks outgoing edges from the router's targets to
+// find a downstream convergence point (a node with AwaitMode != AwaitNone,
+// or a node that receives edges from multiple distinct sources).
+// Terminal nodes (done/fail) can be convergence points when multiple
+// branches target them directly.
+// This is also called pre-emptively before branches start so that each
+// branch knows where to stop.
+func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) string {
+	// Build in-degree map: count distinct sources per target.
+	inSources := make(map[string]map[string]bool)
+	for _, edge := range e.workflow.Edges {
+		if _, ok := inSources[edge.To]; !ok {
+			inSources[edge.To] = make(map[string]bool)
+		}
+		inSources[edge.To][edge.From] = true
+	}
+
+	// BFS from each fan-out target to find a convergence point.
+	// maxVisits guards against a malformed graph where a cycle slipped
+	// past compile-time validation (C012/C013): without it the queue
+	// could grow without bound. Cap at the workflow's node count —
+	// any honest BFS visits each node at most once.
+	maxVisits := len(e.workflow.Nodes) + 1
+	for _, startEdge := range fanEdges {
+		visited := map[string]bool{}
+		queue := []string{startEdge.To}
+		for len(queue) > 0 {
+			if len(visited) > maxVisits {
+				if e.logger != nil {
+					e.logger.Warn("findConvergencePoint: BFS exceeded %d visits — likely an undetected graph cycle, aborting search", maxVisits)
+				}
+				break
+			}
+			nodeID := queue[0]
+			queue = queue[1:]
+			if visited[nodeID] {
+				continue
+			}
+			visited[nodeID] = true
+
+			node, ok := e.workflow.Nodes[nodeID]
+			if !ok {
+				continue
+			}
+			// Convergence point: explicitly marked OR has multiple distinct incoming sources.
+			if nodeAwaitMode(node) != ir.AwaitNone || len(inSources[nodeID]) > 1 {
+				return nodeID
+			}
+			// Follow outgoing edges.
+			for _, edge := range e.workflow.Edges {
+				if edge.From == nodeID {
+					queue = append(queue, edge.To)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Output copy helpers
+// ---------------------------------------------------------------------------
+
+// mergeOutputs creates a merged view of parent and branch outputs.
+// Branch outputs take precedence over parent outputs.
+func mergeOutputs(parent, branch map[string]map[string]interface{}) map[string]map[string]interface{} {
+	merged := make(map[string]map[string]interface{}, len(parent)+len(branch))
+	for k, v := range parent {
+		merged[k] = v
+	}
+	for k, v := range branch {
+		merged[k] = v
+	}
+	return merged
+}
+
+// copyOutputs creates a deep copy of the outputs map so that concurrent
+// branches cannot mutate shared parent state. Naive two-level copying
+// (the previous implementation) left nested maps and slices aliased
+// between branches: a fan-out where two branches both received an
+// upstream output containing a nested map would race on that map's
+// internal hashtable.
+func copyOutputs(src map[string]map[string]interface{}) map[string]map[string]interface{} {
+	dst := make(map[string]map[string]interface{}, len(src))
+	for k, v := range src {
+		inner := make(map[string]interface{}, len(v))
+		for ik, iv := range v {
+			inner[ik] = deepCopyValue(iv)
+		}
+		dst[k] = inner
+	}
+	return dst
+}
+
+// deepCopyValue recursively copies a value tree of the shapes produced
+// by JSON unmarshalling (map[string]interface{}, []interface{}, plus
+// scalars). Other concrete types pass through unchanged — the runtime
+// only stores JSON-shaped values in node outputs, so this covers the
+// real cases without paying the cost of reflection-based cloning.
+func deepCopyValue(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(t))
+		for k, val := range t {
+			out[k] = deepCopyValue(val)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(t))
+		for i, val := range t {
+			out[i] = deepCopyValue(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
