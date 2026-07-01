@@ -1180,6 +1180,11 @@ func TestCompileSupervisorModelFallbackMissing(t *testing.T) {
 	// suppress the C018 diagnostic this test verifies.
 	for _, k := range []string{
 		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+		// z.ai routes Anthropic through ANTHROPIC_BASE_URL + ZAI_API_KEY
+		// (or ANTHROPIC_AUTH_TOKEN); without scrubbing these, a z.ai-configured
+		// dev box makes detect.go report an Anthropic provider available and
+		// suppresses the C018 diagnostic this test verifies.
+		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
 		"OPENAI_API_KEY",
 		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
 		"AWS_REGION", "AWS_DEFAULT_REGION",
