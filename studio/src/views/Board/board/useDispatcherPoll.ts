@@ -31,6 +31,9 @@ export interface UseDispatcherPollResult {
 // in-flight optimistic drag.
 export function useDispatcherPoll(
   setIssues: React.Dispatch<React.SetStateAction<NativeIssue[]>>,
+  // Skip polling entirely when the dispatcher feature is off (cloud mode):
+  // /api/v1/dispatcher/* isn't wired, so a 2s poll would just 404 forever.
+  enabled = true,
 ): UseDispatcherPollResult {
   const [runningByIssue, setRunningByIssue] = useState<Map<string, RunningView>>(
     new Map(),
@@ -49,6 +52,7 @@ export function useDispatcherPoll(
   const prevActiveSigRef = useRef<string>("");
 
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     let inflight = false;
     let gen = 0;
@@ -123,7 +127,7 @@ export function useDispatcherPoll(
       alive = false;
       clearInterval(id);
     };
-  }, [setIssues]);
+  }, [setIssues, enabled]);
 
   return {
     runningByIssue,

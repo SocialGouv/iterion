@@ -42,6 +42,7 @@ import {
 } from "./boardShared";
 import { EmptyBoard } from "./board/EmptyBoard";
 import { EmptyBoardBanner } from "./board/EmptyBoardBanner";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { isDispatchable } from "./board/boardSort";
 import { useBoardData } from "./board/useBoardData";
 import { useDispatcherPoll } from "./board/useDispatcherPoll";
@@ -97,13 +98,18 @@ export default function BoardView() {
   // running/retrying badge + cancel button. When the active (running +
   // retrying) set changes the hook re-fetches issues via setIssues so a
   // dispatched card actually moves columns instead of stranding.
+  // The dispatcher (`iterion dispatch`) is a self-hosted feature; in cloud
+  // mode it's disabled and its /api/v1/dispatcher/* endpoints aren't wired.
+  // Gate every dispatcher surface on this so the board doesn't surface a
+  // scary "Can't reach the dispatcher API" for a feature that's simply off.
+  const dispatcherEnabled = useServerInfoStore((s) => s.info?.dispatcher_enabled ?? false);
   const {
     runningByIssue,
     retryingByIssue,
     skipByIssue,
     trackerError,
     dispatcherPaused,
-  } = useDispatcherPoll(setIssues);
+  } = useDispatcherPoll(setIssues, dispatcherEnabled);
 
   const onCancelRun = useCallback(
     async (issueID: string) => {
@@ -543,7 +549,9 @@ export default function BoardView() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      <DispatcherControlBar onOpenSettings={() => setSettingsOpen(true)} />
+      {dispatcherEnabled && (
+        <DispatcherControlBar onOpenSettings={() => setSettingsOpen(true)} />
+      )}
       <SettingsDrawer
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -557,7 +565,7 @@ export default function BoardView() {
           message={trackerError.message}
         />
       )}
-      {dispatcherPaused && (
+      {dispatcherEnabled && dispatcherPaused && (
         <InlineBanner tone="warning" title="Dispatcher paused">
           New issues won't be dispatched until you resume from the toolbar
           above. In-flight runs continue unaffected.
