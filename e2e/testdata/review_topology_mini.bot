@@ -1,0 +1,75 @@
+## Minimal fixture mirroring the bi-model review-loop topology used by
+## branch-improve-loop / feature-dev / docs-refresh / whole-improve-loop:
+## a `condition` router (`alt`) selecting a family per pass, two family
+## reviewers feeding a `streak_check` compute over a bounded review_loop,
+## and a topology-aware `stop`. Exercised by review_topology_test.go with
+## the scenario stub in both mono and dual — no LLM, no sandbox, no tools.
+
+schema verdict:
+  approved: bool
+  family: string
+  confidence: string
+
+schema streak:
+  stop: bool
+  approved: bool
+  family: string
+
+vars:
+  review_mode: string = "auto"
+  mono_family: string = ""
+
+agent seed:
+  model: "claude-opus-4-7"
+  output: verdict
+
+## Family router — the change under test. Binary select: the GPT edge is
+## guarded, the CLAUDE edge is the unconditional default (C012). In dual,
+## parity on review_loop.iteration alternates claude/gpt; in mono, only
+## mono_family ever runs.
+router alt:
+  mode: condition
+
+agent reviewer_claude:
+  model: "claude-opus-4-7"
+  output: verdict
+
+agent reviewer_gpt:
+  model: "claude-opus-4-7"
+  output: verdict
+
+compute streak_check:
+  output: streak
+  expr:
+    stop: "input.approved && loop.review_loop.previous_output.approved && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family)"
+    approved: "input.approved || input.confidence == 'low'"
+    family: "input.family"
+
+workflow review_topology_mini:
+  entry: seed
+
+  budget:
+    max_iterations: 40
+
+  seed -> alt
+
+  alt -> reviewer_claude
+  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)"
+
+  reviewer_claude -> streak_check as review_loop(20) with {
+    approved: "{{outputs.reviewer_claude.approved}}",
+    family: "{{outputs.reviewer_claude.family}}",
+    confidence: "{{outputs.reviewer_claude.confidence}}"
+  }
+  reviewer_gpt -> streak_check as review_loop(20) with {
+    approved: "{{outputs.reviewer_gpt.approved}}",
+    family: "{{outputs.reviewer_gpt.family}}",
+    confidence: "{{outputs.reviewer_gpt.confidence}}"
+  }
+
+  streak_check -> done when stop
+  streak_check -> alt
+
+  ## Loop-exhaustion fallback (never hit in the happy-path tests).
+  reviewer_claude -> fail
+  reviewer_gpt    -> fail

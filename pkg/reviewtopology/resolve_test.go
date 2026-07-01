@@ -1,0 +1,126 @@
+package reviewtopology
+
+import (
+	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
+)
+
+func rep(providers ...detect.ProviderStatus) detect.Report {
+	return detect.Report{Providers: providers}
+}
+
+func prov(name string, avail bool) detect.ProviderStatus {
+	return detect.ProviderStatus{Name: name, Available: avail}
+}
+
+func TestResolve(t *testing.T) {
+	tests := []struct {
+		name       string
+		report     detect.Report
+		override   string
+		wantMode   string
+		wantFamily string
+	}{
+		// auto: two families → dual
+		{"auto both families", rep(prov("anthropic", true), prov("openai", true)), "auto", ModeDual, ""},
+		{"empty override both families", rep(prov("anthropic", true), prov("openai", true)), "", ModeDual, ""},
+		// auto: single family → mono on that family
+		{"auto claude only", rep(prov("anthropic", true), prov("openai", false)), "auto", ModeMono, FamilyClaude},
+		{"auto gpt only", rep(prov("anthropic", false), prov("openai", true)), "auto", ModeMono, FamilyGPT},
+		// zai counts as the claude family (operator decision)
+		{"auto zai only → claude", rep(prov("zai", true)), "auto", ModeMono, FamilyClaude},
+		{"auto zai + openai → dual", rep(prov("zai", true), prov("openai", true)), "auto", ModeDual, ""},
+		{"auto anthropic + zai is one family → mono claude", rep(prov("anthropic", true), prov("zai", true)), "auto", ModeMono, FamilyClaude},
+		// auto: no participating family → dual (fail normally on credential)
+		{"auto no providers", rep(), "auto", ModeDual, ""},
+		{"auto only cloud providers ignored", rep(prov("bedrock", true), prov("vertex", true)), "auto", ModeDual, ""},
+		// explicit dual always dual
+		{"explicit dual with one family", rep(prov("anthropic", true)), "dual", ModeDual, ""},
+		{"explicit dual with none", rep(), "dual", ModeDual, ""},
+		// explicit mono picks preferred available family
+		{"explicit mono both → claude preferred", rep(prov("anthropic", true), prov("openai", true)), "mono", ModeMono, FamilyClaude},
+		{"explicit mono gpt only", rep(prov("openai", true)), "mono", ModeMono, FamilyGPT},
+		{"explicit mono none → empty family", rep(), "mono", ModeMono, ""},
+		// unknown override collapses to auto behaviour
+		{"unknown override falls back to auto", rep(prov("openai", true)), "wat", ModeMono, FamilyGPT},
+		{"case-insensitive DUAL", rep(prov("anthropic", true), prov("openai", true)), "DUAL", ModeDual, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode, family := Resolve(tt.report, tt.override)
+			if mode != tt.wantMode || family != tt.wantFamily {
+				t.Fatalf("Resolve(%q) = (%q, %q), want (%q, %q)",
+					tt.override, mode, family, tt.wantMode, tt.wantFamily)
+			}
+		})
+	}
+}
+
+func wfWithVars(names ...string) *ir.Workflow {
+	vars := make(map[string]*ir.Var, len(names))
+	for _, n := range names {
+		vars[n] = &ir.Var{}
+	}
+	return &ir.Workflow{Vars: vars}
+}
+
+func TestInjectIfDeclared_optIn(t *testing.T) {
+	// Bot that does NOT declare review_mode is untouched.
+	inputs := map[string]interface{}{}
+	_, _, injected := InjectIfDeclared(wfWithVars("workspace_dir"), inputs,
+		rep(prov("anthropic", true), prov("openai", true)), "")
+	if injected {
+		t.Fatal("expected no injection for a bot without review_mode var")
+	}
+	if len(inputs) != 0 {
+		t.Fatalf("inputs mutated for non-opted-in bot: %v", inputs)
+	}
+}
+
+func TestInjectIfDeclared_autoDetectDual(t *testing.T) {
+	wf := wfWithVars(VarReviewMode, VarMonoFamily)
+	inputs := map[string]interface{}{VarReviewMode: ModeAuto}
+	mode, family, injected := InjectIfDeclared(wf, inputs,
+		rep(prov("anthropic", true), prov("openai", true)), "")
+	if !injected || mode != ModeDual || family != "" {
+		t.Fatalf("got (%q,%q,injected=%v), want dual/empty/true", mode, family, injected)
+	}
+	if inputs[VarReviewMode] != ModeDual || inputs[VarMonoFamily] != "" {
+		t.Fatalf("inputs not written: %v", inputs)
+	}
+}
+
+func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
+	wf := wfWithVars(VarReviewMode, VarMonoFamily)
+	inputs := map[string]interface{}{VarReviewMode: ModeAuto}
+	mode, family, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
+	if mode != ModeMono || family != FamilyGPT {
+		t.Fatalf("got (%q,%q), want mono/gpt", mode, family)
+	}
+	if inputs[VarMonoFamily] != FamilyGPT {
+		t.Fatalf("mono_family not injected: %v", inputs)
+	}
+}
+
+func TestInjectIfDeclared_flagOverrideWins(t *testing.T) {
+	wf := wfWithVars(VarReviewMode, VarMonoFamily)
+	// Two families available (auto would pick dual) but the flag forces mono.
+	inputs := map[string]interface{}{VarReviewMode: ModeAuto}
+	mode, family, _ := InjectIfDeclared(wf, inputs,
+		rep(prov("anthropic", true), prov("openai", true)), "mono")
+	if mode != ModeMono || family != FamilyClaude {
+		t.Fatalf("got (%q,%q), want mono/claude (flag override)", mode, family)
+	}
+}
+
+func TestInjectIfDeclared_varOverrideUsedWhenNoFlag(t *testing.T) {
+	wf := wfWithVars(VarReviewMode, VarMonoFamily)
+	// Operator set --var review_mode=dual; no flag → var wins over auto.
+	inputs := map[string]interface{}{VarReviewMode: ModeDual}
+	mode, _, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
+	if mode != ModeDual {
+		t.Fatalf("got %q, want dual (var override)", mode)
+	}
+}

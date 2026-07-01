@@ -122,6 +122,23 @@ vars:
   ## finalize_mr posts the opened MR's URL back as a comment on it.
   source_issue_ref: string = ""
 
+  ## ─── Review topology (mono/dual) ───────────────────────────────
+  ## Selects how the review loop alternates model families:
+  ##   dual → alternate claude ↔ gpt each pass (two families, robust,
+  ##          the historical behaviour); stop needs a cross-family
+  ##          double-approval.
+  ##   mono → one family only (mono_family), ~half the LLM calls; stop
+  ##          converges on two consecutive clean self-approvals.
+  ##   auto → resolved at LAUNCH (a bot can't probe host credentials):
+  ##          dual when two provider families are detected, else mono.
+  ## These vars are INJECTED by pkg/reviewtopology at launch (CLI
+  ## --review-mode flag / studio toggle / dispatcher) when left at
+  ## "auto". Launched WITHOUT that resolution, "auto" behaves as dual
+  ## (parity) — a pure non-regression. mono_family is filled by the
+  ## resolver in mono mode; leave it empty for dual/auto.
+  review_mode: string = "auto"
+  mono_family: string = ""
+
 secrets:
   ## Forge access for push + MR creation + the issue back-link. Mounted
   ## as a read-only file the gh/glab CLI authenticates from; never read
@@ -1005,8 +1022,18 @@ else:
   ## already-emitted structured output.
   publish: chunk_plan_artifact
 
+## Family selector for the review loop. Was `round_robin` (blindly
+## alternating the two reviewers); now `condition` so a MONO run can
+## route to a SINGLE family and never spawn the second model —
+## round_robin ignores `when` guards (pkg/runtime/routing.go), so a
+## conditional router is the only way to gate the second family. The
+## parity that reproduces the old alternation rides
+## `loop.review_loop.iteration` (monotonic, 0-based, +1 per review pass;
+## `alt` is not a review_loop entry so plan_chunks→alt never resets it —
+## exactly in lockstep with the old round_robin counter). See the two
+## guarded `alt -> reviewer_*` edges in the workflow block.
 router alt:
-  mode: round_robin
+  mode: condition
 
 judge reviewer_claude:
   backend: "claude_code"
@@ -1052,12 +1079,18 @@ judge reviewer_gpt:
 ## Deterministic streak detector.
 ##
 ## stop=true iff (current AND previous reviewer both ACTUALLY
-## approved) AND families differ. The success criterion is two
-## consecutive POSITIVE verdicts from opposite families — both
-## AIs must let the code pass on successive iterations. A
-## low-confidence rejection does NOT count as approval for the
-## stop signal: the code only ships when it convinces both
-## reviewers.
+## approved) AND — in DUAL — the families differ. The dual success
+## criterion is two consecutive POSITIVE verdicts from OPPOSITE
+## families (both AIs let the code pass on successive iterations).
+## In MONO there is only one family, so the cross-family clause is
+## bypassed (`vars.review_mode == 'mono' || …`) and success is two
+## consecutive clean self-approvals from the single reviewer — the
+## accepted mono trade-off (no cross-model verification, but the
+## engagement + verify gates still hold). Without this OR, mono would
+## never satisfy `family != previous.family` and could never stop —
+## it would loop to review_loop(15) exhaustion → fail. A low-confidence
+## rejection does NOT count as approval for the stop signal: the code
+## only ships when it genuinely convinces the reviewer(s).
 ##
 ## The `approved` passthrough field stays soft — it includes
 ## low-confidence rejections — so the downstream
@@ -1069,7 +1102,7 @@ judge reviewer_gpt:
 compute streak_check:
   output: streak_state
   expr:
-    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
+    stop: "input.approved && loop.review_loop.previous_output.approved && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family)"
     approved: "input.approved || input.confidence == 'low'"
     family: "input.family"
     blockers: "input.blockers"
@@ -1250,15 +1283,28 @@ workflow branch_improve_loop:
   ## deterministic, then hands off to the round-robin selector.
   plan_chunks -> alt
 
-  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
-  ## Each reviewer receives the OTHER family's most recent fixer
-  ## pushback so it knows which items to skip — the alternation
-  ## guarantees the cross-family pushback comes from the previous
-  ## iteration's fixer of the opposing family. On the first
-  ## iteration both `outputs.fix_*` are empty → fields render as
-  ## empty strings and the prompt's "ne re-flague pas ces items"
-  ## section is harmless. The chunk_* fields relay plan_chunks's
-  ## size verdict so the reviewer picks whole-diff vs chunked mode.
+  ## Family routing (replaces round-robin alternation). Binary select:
+  ## the GPT edge is guarded; the CLAUDE edge is the unconditional
+  ## DEFAULT (required by C012 for a condition router, and a safe
+  ## fallback — if the guard ever fails to match, review still happens
+  ## via claude rather than dead-ending on NO_OUTGOING_EDGE).
+  ##  - dual (review_mode != 'mono', incl. the unresolved "auto"
+  ##    default): route by review-pass parity via the GPT guard
+  ##    (`iteration % 2 == 1`) → pass 0 claude, 1 gpt, 2 claude …
+  ##    identical to the old round_robin (both 0-based, +1 per review
+  ##    pass). Each reviewer receives the OTHER family's most recent
+  ##    fixer pushback so it knows which items to skip — the alternation
+  ##    guarantees the cross-family pushback comes from the previous
+  ##    iteration's opposing-family fixer. On the first iteration both
+  ##    `outputs.fix_*` are empty → fields render empty and the prompt's
+  ##    "ne re-flague pas ces items" section is harmless.
+  ##  - mono: the GPT guard is `mono_family == 'gpt'`; when mono_family
+  ##    is 'claude' it's false → always the claude default. Either way a
+  ##    single family runs every pass; the other reviewer (and its fixer,
+  ##    which follows the actual reviewer's `family`) never runs → ~half
+  ##    the LLM calls.
+  ## The chunk_* fields relay plan_chunks's size verdict so the reviewer
+  ## picks whole-diff vs chunked mode.
   alt -> reviewer_claude with {
     prior_pushback: "{{outputs.fix_gpt.pushback}}",
     prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
@@ -1269,7 +1315,7 @@ workflow branch_improve_loop:
     manifest_path: "{{outputs.plan_chunks.manifest_path}}",
     chunk_max_loc: "{{outputs.plan_chunks.chunk_max_loc}}"
   }
-  alt -> reviewer_gpt with {
+  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
     previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",

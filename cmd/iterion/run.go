@@ -30,6 +30,7 @@ var runOpts struct {
 	permissionAllow     []string
 	permissionAsk       []string
 	permissionDeny      []string
+	reviewMode          string
 	maxCostUSD          float64
 	maxTokens           int
 	maxDuration         string
@@ -64,6 +65,7 @@ var runCmd = &cobra.Command{
 			PermissionAllow:     runOpts.permissionAllow,
 			PermissionAsk:       runOpts.permissionAsk,
 			PermissionDeny:      runOpts.permissionDeny,
+			ReviewMode:          runOpts.reviewMode,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          runOpts.maxCostUSD,
 				MaxTokens:           runOpts.maxTokens,
@@ -107,6 +109,7 @@ func init() {
 	f.StringArrayVar(&runOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), Claude-Code syntax e.g. 'Bash(go test:*)', 'Read(**)', 'Edit(pkg/**)'. Auto-approved without prompting. Additive to the workflow allow: list.")
 	f.StringArrayVar(&runOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls always pause for approval. Additive to the workflow ask: list.")
 	f.StringArrayVar(&runOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked, even in ask mode. Additive to the workflow deny: list.")
+	f.StringVar(&runOpts.reviewMode, "review-mode", "", "For bi-model review-loop bots (whole-improve-loop, branch-improve-loop, feature-dev, docs-refresh, secured-renovacy): \"mono\" (one model family, ~half the calls), \"dual\" (alternate two families), or \"auto\" (default: dual when two provider families are detected, else mono). No-op for bots that don't declare a review_mode var.")
 	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches)
 	rootCmd.AddCommand(runCmd)
 }

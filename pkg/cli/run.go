@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -19,6 +20,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
 	"github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/reviewtopology"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -97,6 +99,12 @@ type RunOptions struct {
 	// --max-parallel-branches). Non-zero fields win over the DSL/recipe
 	// budget; zero fields inherit. See applyBudgetOverrides.
 	Budget BudgetOverrides
+	// ReviewMode is the run-level override for bi-model review-loop bots'
+	// mono/dual topology ("", "auto", "mono", "dual"). Only bots that
+	// declare a review_mode var are affected. "" / "auto" resolves from
+	// detected provider credentials at launch (pkg/reviewtopology);
+	// "mono"/"dual" force the topology. See docs on review topology.
+	ReviewMode string
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -241,6 +249,19 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	inputs, err := buildRunInputs(wf, opts.Preset, opts.Vars)
 	if err != nil {
 		return err
+	}
+
+	// Resolve the mono/dual review topology for bi-model review-loop bots.
+	// No-op unless the workflow declares a review_mode var; then detect
+	// host provider credentials and inject the resolved review_mode +
+	// mono_family (the --review-mode flag / a --var override wins over
+	// auto-detection). See pkg/reviewtopology.
+	if mode, family, injected := reviewtopology.InjectIfDeclared(wf, inputs, detect.Detect(ctx), opts.ReviewMode); injected {
+		if family != "" {
+			logger.Info("review topology: %s (family %s)", mode, family)
+		} else {
+			logger.Info("review topology: %s", mode)
+		}
 	}
 
 	if opts.Timeout > 0 {
