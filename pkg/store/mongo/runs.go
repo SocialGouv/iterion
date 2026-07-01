@@ -63,6 +63,46 @@ func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	return &r, nil
 }
 
+// DeleteRun permanently removes a run and all of its data: the run
+// document, its events, seq counter, interactions, queued user-messages
+// (Mongo), and every artifact + attachment blob. Tenant-scoped when the
+// ctx carries a tenant, so a tenant can only delete its own runs.
+// Idempotent — a gone run is a no-op.
+//
+// Order: blobs first, then the child Mongo collections, then the run
+// document last. A partial failure can only UNDER-delete (leave orphaned
+// docs pointing at gone blobs — harmless), never leave the run visible
+// while its data is gone.
+func (s *Store) DeleteRun(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("store/mongo: DeleteRun requires a run id")
+	}
+	if err := s.blob.DeleteRun(ctx, id); err != nil {
+		return fmt.Errorf("store/mongo: blob delete run %s: %w", id, err)
+	}
+	if err := s.blob.DeleteRunAttachments(ctx, id); err != nil {
+		return fmt.Errorf("store/mongo: blob delete attachments %s: %w", id, err)
+	}
+	children := []struct {
+		name string
+		coll *mongo.Collection
+	}{
+		{"events", s.events},
+		{"run_seq", s.runSeq},
+		{"interactions", s.interactions},
+		{"user_messages", s.userMessages},
+	}
+	for _, c := range children {
+		if _, err := c.coll.DeleteMany(ctx, withTenantFilter(ctx, bson.M{"run_id": id})); err != nil {
+			return fmt.Errorf("store/mongo: delete %s for run %s: %w", c.name, id, err)
+		}
+	}
+	if _, err := s.runs.DeleteOne(ctx, withTenantFilter(ctx, bson.M{"_id": id})); err != nil {
+		return fmt.Errorf("store/mongo: delete run %s: %w", id, err)
+	}
+	return nil
+}
+
 // SaveRun replaces the run document atomically. Tenant-scoped
 // callers can only overwrite documents belonging to their tenant.
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {

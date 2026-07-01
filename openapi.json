@@ -2543,6 +2543,18 @@
       }
     },
     "/api/runs/{id}": {
+      "delete": {
+        "operationId": "deleteRunsById",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/runs/{id}",
+        "tags": [
+          "runs"
+        ]
+      },
       "get": {
         "operationId": "getRunsById",
         "responses": {

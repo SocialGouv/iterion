@@ -67,6 +67,58 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
+	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
+}
+
+// testDeleteRun proves DeleteRun removes a run (with events) from both
+// LoadRun and ListRuns, leaves a sibling run untouched, and is idempotent.
+func testDeleteRun(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+	for _, id := range []string{"run_del", "run_keep"} {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		if _, err := s.AppendEvent(ctx, id, store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}); err != nil {
+			t.Fatalf("AppendEvent %s: %v", id, err)
+		}
+	}
+
+	if err := s.DeleteRun(ctx, "run_del"); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, err := s.LoadRun(ctx, "run_del"); err == nil {
+		t.Error("LoadRun after delete: want error, got nil")
+	}
+	ids, err := s.ListRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if id == "run_del" {
+			t.Errorf("ListRuns still contains deleted run: %v", ids)
+		}
+	}
+	if !containsStr(ids, "run_keep") {
+		t.Errorf("ListRuns dropped the sibling run_keep: %v", ids)
+	}
+	// Sibling's data survives.
+	if _, err := s.LoadRun(ctx, "run_keep"); err != nil {
+		t.Errorf("sibling run_keep gone after deleting run_del: %v", err)
+	}
+	// Idempotent: deleting an already-gone run is a no-op.
+	if err := s.DeleteRun(ctx, "run_del"); err != nil {
+		t.Errorf("second DeleteRun should be a no-op, got: %v", err)
+	}
+}
+
+func containsStr(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 func testWatchedIssues(t *testing.T, s store.RunStore) {

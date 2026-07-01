@@ -1574,7 +1574,8 @@ export interface paths {
         get: operations["getRunsById"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** DELETE /api/runs/{id} */
+        delete: operations["deleteRunsById"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5666,6 +5667,26 @@ export interface operations {
         };
     };
     getRunsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteRunsById: {
         parameters: {
             query?: never;
             header?: never;

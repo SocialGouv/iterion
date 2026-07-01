@@ -121,6 +121,13 @@ type RunStore interface {
 	// distribué en cloud via NATS KV)
 	LockRun(ctx context.Context, runID string) (RunLock, error)
 
+	// DeleteRun permanently removes a run and ALL of its data (the run
+	// document, events, seq counter, interactions, queued user-messages,
+	// artifacts and attachments). Backs the DELETE /api/runs/{id} admin
+	// action. Idempotent: deleting an already-gone run is a no-op, not an
+	// error. Tenant-scoped when the ctx carries a tenant.
+	DeleteRun(ctx context.Context, id string) error
+
 	// Capabilities — déclarées par chaque impl pour que les
 	// consommateurs (runview, server) puissent brancher le bon code.
 	Capabilities() Capabilities

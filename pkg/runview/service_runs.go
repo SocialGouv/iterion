@@ -61,6 +61,17 @@ func (s *Service) RenameRunCtx(ctx context.Context, runID, name string) (*store.
 	return r, nil
 }
 
+// DeleteRunCtx permanently removes a run and all of its data. It LoadRuns
+// first so a run outside the caller's tenant scope surfaces as not-found
+// (a tenant can only delete its own runs); the actual delete is then
+// tenant-scoped by the store as well. Idempotent at the store layer.
+func (s *Service) DeleteRunCtx(ctx context.Context, runID string) error {
+	if _, err := s.store.LoadRun(ctx, runID); err != nil {
+		return err
+	}
+	return s.store.DeleteRun(ctx, runID)
+}
+
 // List returns every run in the store filtered by f. The result is
 // sorted by CreatedAt descending (newest first); Limit truncates after
 // sort.

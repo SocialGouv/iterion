@@ -5,7 +5,7 @@ import { useLocation } from "wouter";
 import { ClockIcon, LockClosedIcon, Pencil1Icon, ResetIcon } from "@radix-ui/react-icons";
 
 import type { RunHeader as RunHeaderType } from "@/api/runs";
-import { cancelRun, getRun, loadEvents, pauseRun, renameRun } from "@/api/runs";
+import { cancelRun, deleteRun, getRun, loadEvents, pauseRun, renameRun } from "@/api/runs";
 import {
   Button,
   CopyButton,
@@ -163,6 +163,26 @@ export default function RunHeader({ run, active, wsState, onResetLayout }: Props
     if (ok) await onCancel();
   };
 
+  // Delete is offered only for terminal runs — an active run must be
+  // cancelled first. Irreversible: removes the run + all its data.
+  const canDelete = ["finished", "failed", "failed_resumable", "cancelled"].includes(run.status);
+  const deleteWithConfirm = async () => {
+    const ok = await confirm({
+      title: "Delete this run?",
+      message:
+        "This permanently removes the run and all its data — events, artifacts, attachments. This cannot be undone.",
+      confirmLabel: "Delete run",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
+    try {
+      await deleteRun(run.id);
+      setLocation("/runs");
+    } catch (e) {
+      setError(`Delete failed: ${errorMessage(e)}`);
+    }
+  };
+
   return (
     <>
       <div className="shrink-0 border-b border-border-default px-3 sm:px-4 py-2 flex flex-col gap-1.5 text-sm">
@@ -270,6 +290,13 @@ export default function RunHeader({ run, active, wsState, onResetLayout }: Props
                   disabled={busy}
                 >
                   Cancel
+                </Button>
+              </Tooltip>
+            )}
+            {canDelete && (
+              <Tooltip content="Permanently delete this run and all its data">
+                <Button variant="ghost" size="sm" onClick={() => void deleteWithConfirm()}>
+                  Delete
                 </Button>
               </Tooltip>
             )}

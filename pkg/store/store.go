@@ -482,6 +482,21 @@ func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error)
 	return r, nil
 }
 
+// DeleteRun permanently removes a run's entire directory (run.json,
+// events.jsonl, artifacts, interactions, attachments — everything under
+// runs/<id>/). Idempotent: a missing run dir is not an error.
+func (s *FilesystemRunStore) DeleteRun(_ context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("store: DeleteRun requires a run id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.RemoveAll(filepath.Join(s.root, "runs", id)); err != nil {
+		return fmt.Errorf("store: delete run %s: %w", id, err)
+	}
+	return nil
+}
+
 // UpdateRunStatus updates the status (and optional error) of a run.
 // Protected by mu to prevent concurrent read-modify-write races.
 func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, status RunStatus, runErr string) error {

@@ -35,6 +35,14 @@ export async function cancelRun(
   return request(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
 }
 
+// deleteRun permanently removes a run and ALL of its data (events,
+// artifacts, interactions, attachments). Irreversible. Tenant-scoped
+// server-side: a 404 means the run is gone or outside your team's scope.
+// Returns void (the server answers 204 No Content).
+export async function deleteRun(runId: string): Promise<void> {
+  await request<void>(`/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+}
+
 // pauseRun requests a soft, operator-initiated pause. The engine
 // interrupts at the next safe boundary (top of execLoop, between LLM
 // turns inside an agent), saves a checkpoint, transitions to
