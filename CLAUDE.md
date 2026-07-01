@@ -679,6 +679,26 @@ loop bots — preserve them when authoring/editing:
   verdict so verdicts trend monotonically, not randomly.
 - **Bounded `max_iterations`** is the backstop, not the design goal.
 
+**Mono/dual review topology (ADR-052).** These five bots run their
+reviewer alternation through a **`condition` router** (never
+`round_robin` — it ignores `when` guards), driven by two injected vars
+`review_mode` (`auto|mono|dual`) + `mono_family`. DUAL alternates
+claude↔gpt by `loop.review_loop.iteration` parity (the historical
+behaviour); MONO routes to a single family (~half the LLM calls). The
+topology is resolved at LAUNCH from detected providers by
+[pkg/reviewtopology](pkg/reviewtopology/resolve.go) (a bot can't probe
+credentials) and injected on every surface — CLI `iterion run
+--review-mode`, studio/API `review_mode`, dispatcher `review_mode`
+bot_arg. Because 4 of the 5 bots encode the cross-family requirement in
+`streak_check.stop` (`input.family != …previous.family`), those `stop`
+expressions OR-in `vars.review_mode == 'mono'` so MONO converges on two
+consecutive same-family clean approvals instead of never satisfying the
+clause (whole_improve_loop's `stop` is count-based, already
+family-agnostic, so it is unchanged). Unresolved `auto` behaves as DUAL —
+a non-regression. When editing one of these bots, preserve the condition
+router + the guarded gpt edge + the topology vars
+(`bots/review_topology_test.go` enforces this).
+
 The fastest way to **break** convergence is to make a reviewer judge
 the **wrong artifact**. The implementer's work lives in the
 **uncommitted working tree** — the commit step runs only *after* review
