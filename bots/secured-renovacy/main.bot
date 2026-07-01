@@ -57,6 +57,18 @@
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
+  ## ─── Review topology (mono/dual) — see branch-improve-loop ─────
+  ## dual = alternate claude ↔ gpt (robust, two families); mono = one
+  ## family (mono_family), ~half the LLM calls; auto = resolved at
+  ## LAUNCH (dual if two provider families detected, else mono).
+  ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
+  ## dispatcher) when left "auto"; without that resolution "auto"
+  ## behaves as dual (a pure non-regression). Applies to the Phase-2
+  ## review/fix loop (alt_review); mono_family is filled by the
+  ## resolver in mono mode.
+  review_mode: string = "auto"
+  mono_family: string = ""
+
   ## Free-form context the operator can pass at run time. Empty
   ## by default — when empty, the prompt blocks render an empty
   ## "Project context" section.
@@ -3018,12 +3030,20 @@ compute mark_failed_and_continue:
 
 ## alt_review is a ROUTER, not a fan-out. Each invocation routes to
 ## exactly ONE successor in round-robin order; the next invocation
-## alternates to the other reviewer. A full Phase-2 cross-family
+## alternates to the other reviewer (DUAL). A full Phase-2 cross-family
 ## approval streak (streak_check.stop) therefore needs at least TWO
 ## alt_review rounds — one per reviewer — so the runtime never starts
-## reviewer_claude and reviewer_gpt in parallel.
+## reviewer_claude and reviewer_gpt in parallel. In MONO only one family
+## runs and the streak is two consecutive same-family clean approvals.
+##
+## Family selector (see branch-improve-loop for the full rationale):
+## round_robin → condition so a MONO run routes to a single family
+## (round_robin ignores `when` guards). The GPT edge is guarded; the
+## CLAUDE edge is the unconditional default (C012). Parity rides
+## loop.review_loop.iteration (this router is not a review_loop entry,
+## so loop-backs never reset it — lockstep with the old counter).
 router alt_review:
-  mode: round_robin
+  mode: condition
 
 judge reviewer_claude:
   backend: "claude_code"
@@ -3069,7 +3089,7 @@ judge reviewer_gpt:
 compute streak_check:
   output: streak_state
   expr:
-    stop: "input.approved && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
+    stop: "input.approved && loop.review_loop.previous_output.approved && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family)"
     approved: "input.approved || input.confidence == 'low'"
     family: "input.family"
     blockers: "input.blockers"
@@ -5026,7 +5046,7 @@ workflow secured_renovacy:
     _session_fingerprint: "{{outputs.detect_stack._session_fingerprint}}"
   }
 
-  alt_review -> reviewer_gpt with {
+  alt_review -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     start_sha: "{{outputs.capture_start_sha.sha}}",
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",

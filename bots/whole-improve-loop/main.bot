@@ -47,6 +47,20 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
+
+  ## ─── Review topology (mono/dual) — see branch-improve-loop ─────
+  ## dual = alternate claude ↔ gpt (robust, two families); mono = one
+  ## family (mono_family), ~half the LLM calls; auto = resolved at
+  ## LAUNCH (dual if two provider families detected, else mono).
+  ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
+  ## dispatcher) when left "auto"; without that resolution "auto"
+  ## behaves as dual (a pure non-regression). NB: this bot's streak_check
+  ## is COUNT-based (clean_streak >= num_chunks+1), already family-
+  ## agnostic, so `stop` is unchanged — mono just reviews every chunk
+  ## with the single family. mono_family is filled by the resolver.
+  review_mode: string = "auto"
+  mono_family: string = ""
+
   scope_notes: string = ""
   ## Optional override of the improvement axis. Empty (default) means
   ## "audit against the full production-ready grid defined in the
@@ -1209,8 +1223,14 @@ print(json.dumps({
 "`
   output: snapshot_output
 
+## Family selector (see branch-improve-loop for the full rationale):
+## round_robin → condition so a MONO run routes to a single family
+## (round_robin ignores `when` guards). The GPT edge is guarded; the
+## CLAUDE edge is the unconditional default (C012). Parity rides
+## loop.review_loop.iteration (this router is not a review_loop entry,
+## so loop-backs never reset it — lockstep with the old counter).
 router alt:
-  mode: round_robin
+  mode: condition
 
 judge reviewer_claude:
   backend: "claude_code"
@@ -1266,11 +1286,14 @@ judge reviewer_gpt:
 ##
 ## clean_streak counts CONSECUTIVE fully-clean passes (approved AND
 ## zero blockers), resetting to 0 on any non-clean pass. Because each
-## pass reviews exactly ONE chunk and the family alternates every pass
-## (round_robin), a clean_streak of `num_chunks + 1` means the entire
-## workspace was just reviewed clean end-to-end with both families
-## contributing — the chunked analogue of the original "two
-## consecutive cross-family approvals".
+## pass reviews exactly ONE chunk and (in DUAL) the family alternates
+## every pass (the condition router's parity), a clean_streak of
+## `num_chunks + 1` means the entire workspace was just reviewed clean
+## end-to-end with both families contributing — the chunked analogue of
+## the original "two consecutive cross-family approvals". In MONO the
+## single family reviews every chunk; the same count still guarantees a
+## full clean end-to-end sweep (by one family) — the accepted mono
+## trade-off. The stop is COUNT-based, so it needs no topology change.
 ## NB (precise guarantee): the cursor advances one chunk and the family
 ## flips one step per pass, so within a SINGLE terminating sweep each
 ## chunk is seen by exactly ONE family (only the wrap chunk repeats).
@@ -1713,7 +1736,7 @@ workflow whole_improve_loop:
     num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
     chunked: "{{outputs.snapshot_chunk.chunked}}"
   }
-  alt -> reviewer_gpt with {
+  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
     previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",

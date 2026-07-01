@@ -39,6 +39,18 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
+
+  ## ─── Review topology (mono/dual) — see branch-improve-loop ─────
+  ## dual = alternate claude ↔ gpt (robust, two families); mono = one
+  ## family (mono_family), ~half the LLM calls; auto = resolved at
+  ## LAUNCH (dual if two provider families detected, else mono).
+  ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
+  ## dispatcher) when left "auto"; without that resolution "auto"
+  ## behaves as dual (a pure non-regression). mono_family is filled by
+  ## the resolver in mono mode.
+  review_mode: string = "auto"
+  mono_family: string = ""
+
   feature_prompt: string
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────
@@ -869,8 +881,14 @@ agent finalize_mr:
 
 ## ─── Nodes : Review / Fix Loop ──────────────────────────────────
 
+## Family selector (see branch-improve-loop for the full rationale):
+## round_robin → condition so a MONO run routes to a single family
+## (round_robin ignores `when` guards). The GPT edge is guarded; the
+## CLAUDE edge is the unconditional default (C012). Parity rides
+## loop.review_loop.iteration (this router is not a review_loop entry,
+## so plan-loop-backs never reset it — lockstep with the old counter).
 router alt:
-  mode: round_robin
+  mode: condition
 
 judge reviewer_claude:
   backend: "claude_code"
@@ -961,7 +979,7 @@ judge reviewer_gpt:
 compute streak_check:
   output: streak_state
   expr:
-    stop: "(input.approved || input.confidence != 'high') && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
+    stop: "(input.approved || input.confidence != 'high') && loop.review_loop.previous_output.approved && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family)"
     approved: "input.approved || input.confidence != 'high'"
     family: "input.family"
     blockers: "input.blockers"
@@ -1116,7 +1134,7 @@ workflow feature_dev:
     prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
     previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
   }
-  alt -> reviewer_gpt with {
+  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
     previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"

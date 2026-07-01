@@ -120,6 +120,17 @@
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
+  ## ─── Review topology (mono/dual) — see branch-improve-loop ─────
+  ## dual = alternate claude ↔ gpt (robust, two families); mono = one
+  ## family (mono_family), ~half the LLM calls; auto = resolved at
+  ## LAUNCH (dual if two provider families detected, else mono).
+  ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
+  ## dispatcher) when left "auto"; without that resolution "auto"
+  ## behaves as dual (a pure non-regression). mono_family is filled by
+  ## the resolver in mono mode.
+  review_mode: string = "auto"
+  mono_family: string = ""
+
   ## Doc footprint scope (comma-separated globs). The scan_docs
   ## tool node enumerates files matching these globs once, at run
   ## start. Hidden / vendored / runtime dirs (.iterion, .works,
@@ -1921,8 +1932,14 @@ print(json.dumps({
   input: build_manifest_input
   output: build_manifest_output
 
+## Family selector (see branch-improve-loop for the full rationale):
+## round_robin → condition so a MONO run routes to a single family
+## (round_robin ignores `when` guards). The GPT edge is guarded; the
+## CLAUDE edge is the unconditional default (C012). Parity rides
+## loop.review_loop.iteration (this router is not a review_loop entry,
+## so plan-loop-backs never reset it — lockstep with the old counter).
 router alt:
-  mode: round_robin
+  mode: condition
 
 judge reviewer_claude:
   backend: "claude_code"
@@ -2030,7 +2047,7 @@ compute streak_check:
     ## oscillated the gate. The asymptote requirement (CLAUDE.md
     ## "Review loops must converge to an asymptote") demands
     ## both sides treat low-conf identically.
-    stop: "(input.approved || input.confidence == 'low' || input.blocker_count == 0) && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.blocker_count == 0) && input.family != loop.review_loop.previous_output.family && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
+    stop: "(input.approved || input.confidence == 'low' || input.blocker_count == 0) && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.blocker_count == 0) && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family) && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
     approved: "input.approved || input.confidence == 'low' || input.blocker_count == 0"
     family: "input.family"
     blockers: "input.blockers"
@@ -2442,7 +2459,7 @@ workflow docs_refresh:
     cumulative_dismissed_pairs: "{{outputs.streak_check.cumulative_dismissed_pairs}}",
     cumulative_pushback: "{{outputs.streak_check.cumulative_pushback}}"
   }
-  alt -> reviewer_gpt with {
+  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     total_docs: "{{outputs.build_manifest.total_docs}}",
     total_anchors: "{{outputs.build_manifest.total_anchors}}",
     verified_anchors: "{{outputs.build_manifest.verified_anchors}}",
