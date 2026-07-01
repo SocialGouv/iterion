@@ -124,11 +124,34 @@ func HeaderDetail(toolName string, input []byte, keys map[string][]string) strin
 			}
 		default:
 			if s := stringFromInput(raw[k]); s != "" {
-				return truncate(firstLine(s), 100)
+				return truncate(firstLine(shortenWorktreePath(s)), 100)
 			}
 		}
 	}
 	return ""
+}
+
+// shortenWorktreePath strips the ephemeral run-worktree prefix
+// (".../worktrees/<run-id>/") from a bare absolute path so a tool-log
+// header shows the workspace-relative path (e.g. "e2e/foo.go") instead of a
+// ~95-char prefix that wraps in narrow panes and reads as duplicated
+// fragments. Deliberately conservative: only rewrites a value that is a bare
+// absolute path (leading "/", no whitespace) containing the "/worktrees/"
+// segment, so Bash command strings, URLs, and patterns pass through untouched.
+func shortenWorktreePath(s string) string {
+	const marker = "/worktrees/"
+	if !strings.HasPrefix(s, "/") || strings.ContainsAny(s, " \t") {
+		return s
+	}
+	i := strings.Index(s, marker)
+	if i < 0 {
+		return s
+	}
+	rest := s[i+len(marker):] // "<run-id>/e2e/foo.go"
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		return rest[j+1:] // drop the run-id segment → "e2e/foo.go"
+	}
+	return s
 }
 
 // BlockBody returns a multi-line body to attach under the log header for

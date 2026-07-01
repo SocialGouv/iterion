@@ -254,3 +254,33 @@ func TestBlockBody_Agent(t *testing.T) {
 		t.Fatalf("Agent with no prompt should return empty body, got %q", got)
 	}
 }
+
+func TestShortenWorktreePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		// Bare absolute worktree path → workspace-relative.
+		{"/home/jo/lab/ai/iterion/.iterion/worktrees/019f1e43-99db-7e74-95c3-b587bd4765c8/e2e/live_feat_ski.go", "e2e/live_feat_ski.go"},
+		{"/root/.iterion/worktrees/abc123/pkg/runtime/engine.go", "pkg/runtime/engine.go"},
+		// Non-worktree absolute path → untouched.
+		{"/home/jo/lab/ai/iterion/pkg/runtime/engine.go", "/home/jo/lab/ai/iterion/pkg/runtime/engine.go"},
+		// Bash command containing a worktree path (has spaces) → untouched.
+		{"cd /x/worktrees/id/pkg && go test ./...", "cd /x/worktrees/id/pkg && go test ./..."},
+		// Relative path / non-absolute → untouched.
+		{"e2e/foo.go", "e2e/foo.go"},
+		// URL → untouched.
+		{"https://example.com/worktrees/x/y", "https://example.com/worktrees/x/y"},
+	}
+	for _, c := range cases {
+		if got := shortenWorktreePath(c.in); got != c.want {
+			t.Errorf("shortenWorktreePath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// HeaderDetail must show the workspace-relative path for a worktree Read.
+func TestHeaderDetail_ShortensWorktreePath(t *testing.T) {
+	in := mustJSON(t, map[string]any{"file_path": "/home/u/.iterion/worktrees/run-id-xyz/pkg/runtime/branch.go"})
+	got := HeaderDetail("Read", in, CamelCaseKeys)
+	if got != "pkg/runtime/branch.go" {
+		t.Fatalf("HeaderDetail Read = %q, want workspace-relative %q", got, "pkg/runtime/branch.go")
+	}
+}
