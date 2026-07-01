@@ -255,21 +255,22 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if worktreeActive {
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
-		} else if repoRoot := gitlib.FindMainRepoRoot(e.workDir); repoRoot != "" {
+		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" {
 			// workDir is a git working tree that the runtime didn't set
-			// up itself (e.g. the dispatcher seeded a per-issue worktree
-			// via its after_create hook). Record the baseline anyway so
-			// the studio's FilesPanel can render the branch diff —
-			// without this, dispatcher-spawned runs always hit
-			// "no_baseline" and the diff sidebar is empty even though
-			// the bot is making real commits. The dispatcher path is
-			// the only producer of this shape today; CLI runs without
-			// `worktree: auto` run inside the operator's repo and we
-			// intentionally avoid stamping their state.
-			if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
-				run.RepoRoot = repoRoot
-				run.BaseCommit = head
-				run.Worktree = true
+			// up itself. Only promote this to a managed-worktree baseline
+			// when the workspace is already isolated from the operator's main
+			// checkout (for example, a dispatcher-seeded linked worktree). An
+			// explicit `worktree: none` run launched from the main checkout is
+			// intentionally in-place: stamping Worktree=true there would make
+			// resume/review-gate finalization reconstruct a worktree context
+			// against the user's checkout and potentially branch/merge/clean it.
+			mainRepoRoot := gitlib.FindMainRepoRoot(e.workDir)
+			if mainRepoRoot != "" && mainRepoRoot != worktreeRoot {
+				if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
+					run.RepoRoot = mainRepoRoot
+					run.BaseCommit = head
+					run.Worktree = true
+				}
 			}
 		}
 		if err := e.store.SaveRun(ctx, run); err != nil {

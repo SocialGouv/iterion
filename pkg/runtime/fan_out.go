@@ -45,7 +45,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	defer cancelBranches()
 
 	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan)
-	results, ctxErr := e.collectBranches(ctx, cancelBranches, resultsCh, len(plan.edges), routerNodeID)
+	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, len(plan.edges), routerNodeID, "fan_out")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
@@ -241,20 +241,26 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 	return resultsCh
 }
 
-// collectBranches drains `total` branch results. It is ctx-aware: if the
-// parent ctx fires (run cancellation, timeout) it cancels branches and keeps
-// draining — branches that already started but ignore ctx (e.g. a
-// claude_code subprocess that swallows SIGINT) must not leak goroutines — but
-// records the cancellation so the aggregate error reflects it. After
-// cancellation it bounds the wait by branchCancelGracePeriod, then abandons
-// any still-running branches (their buffered sends never block). doneCh is
-// niled after the first fire so the closed channel doesn't busy-spin.
-func (e *Engine) collectBranches(ctx context.Context, cancelBranches context.CancelFunc, resultsCh <-chan *branchResult, total int, routerNodeID string) ([]*branchResult, error) {
+// collectBranches drains `total` branch results. It observes both the parent
+// ctx and the fan-out's internal branchCtx. Parent cancellation is surfaced to
+// the caller as ctx.Err(); internal cancellation (sibling failure, budget trip)
+// only starts the bounded grace drain so the original branch result is preserved.
+// After cancellation it bounds the wait by branchCancelGracePeriod, then
+// abandons any still-running branches (their buffered sends never block).
+func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context, cancelBranches context.CancelFunc, resultsCh <-chan *branchResult, total int, routerNodeID, mode string) ([]*branchResult, error) {
 	results := make([]*branchResult, 0, total)
 	var ctxErr error
-	doneCh := ctx.Done()
+	parentDoneCh := ctx.Done()
+	branchDoneCh := branchCtx.Done()
 	var graceCh <-chan time.Time
 	var graceTimer *time.Timer
+	startGrace := func() {
+		if graceTimer != nil {
+			return
+		}
+		graceTimer = time.NewTimer(branchCancelGracePeriod)
+		graceCh = graceTimer.C
+	}
 	defer func() {
 		if graceTimer != nil {
 			graceTimer.Stop()
@@ -265,15 +271,23 @@ func (e *Engine) collectBranches(ctx context.Context, cancelBranches context.Can
 		case r := <-resultsCh:
 			results = append(results, r)
 			collected++
-		case <-doneCh:
+		case <-parentDoneCh:
 			ctxErr = ctx.Err()
 			cancelBranches()
-			doneCh = nil
-			graceTimer = time.NewTimer(branchCancelGracePeriod)
-			graceCh = graceTimer.C
+			parentDoneCh = nil
+			branchDoneCh = nil
+			startGrace()
+		case <-branchDoneCh:
+			if err := ctx.Err(); err != nil {
+				ctxErr = err
+				cancelBranches()
+				parentDoneCh = nil
+			}
+			branchDoneCh = nil
+			startGrace()
 		case <-graceCh:
 			if abandoned := total - collected; abandoned > 0 && e.logger != nil {
-				e.logger.Warn("fan_out from %s: abandoning %d branch(es) still running %s after cancellation (wedged in executor.Execute?)", routerNodeID, abandoned, branchCancelGracePeriod)
+				e.logger.Warn("%s from %s: abandoning %d branch(es) still running %s after cancellation (wedged in executor.Execute?)", mode, routerNodeID, abandoned, branchCancelGracePeriod)
 			}
 			collected = total
 		}

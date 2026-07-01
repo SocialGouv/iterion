@@ -23,6 +23,7 @@ func TestBackendsDetectRouteShape(t *testing.T) {
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
+		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
 	} {
 		t.Setenv(k, "")
 	}
@@ -65,6 +66,11 @@ func TestBackendsDetectReflectsAnthropic(t *testing.T) {
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",
 		"CLAUDE_CONFIG_DIR", "CODEX_HOME",
+		// ANTHROPIC_BASE_URL / ZAI_API_KEY steer detection onto the
+		// z.ai facade (hasZAIBaseURL), which suppresses the "anthropic"
+		// provider and would leave claw unresolved. Clear them so the
+		// test is isolated from a host running against z.ai/bigmodel.
+		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
 	} {
 		t.Setenv(k, "")
 	}

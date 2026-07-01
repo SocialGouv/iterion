@@ -270,6 +270,12 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 		return nil, false, aerr
 	}
 	defer releaseResources()
+	if rem, bounded := rs.budget.RemainingDuration(); bounded && rem <= 0 {
+		used, limit, _ := rs.budget.DurationStatus()
+		return nil, false, e.failBudgetExceeded(rs, currentNodeID, &budgetCheckResult{
+			exceeded: true, dimension: "duration", used: used, limit: limit,
+		})
+	}
 	if len(leases) > 0 {
 		nodeInput[leaseInputKey] = leases // surface leased instance ids to the node
 	}
@@ -319,7 +325,9 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// 50m budget, a claude_code stream stalled 43m after a timeout). The
 	// deadline propagates into claude_code's exec.CommandContext and claw's
 	// streaming ctx, force-terminating the node; expiry is surfaced below as
-	// a resumable BUDGET_EXCEEDED(duration) failure.
+	// a resumable BUDGET_EXCEEDED(duration) failure. Recompute after resource
+	// acquisition so time spent waiting for a busy slot cannot exhaust the
+	// run's max_duration and then start execution with no deadline.
 	if rem, bounded := rs.budget.RemainingDuration(); bounded && rem > 0 {
 		var cancel context.CancelFunc
 		spanCtx, cancel = context.WithDeadline(spanCtx, time.Now().Add(rem))

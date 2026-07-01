@@ -65,7 +65,15 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 			rs.artifacts[name] = output
 		}
 		for nodeID, version := range r.artifactVersions {
-			rs.artifactVersions[nodeID] = version
+			// Max-merge (not last-write-wins): every branch copies the full
+			// parent version map, so a branch that never touched this node
+			// still carries its pre-fan-out version. A plain assignment would
+			// let a stale branch ordered after the publishing one regress the
+			// counter — freezing the persisted artifacts/<node>/<v>.json
+			// history on a looped fan-out. Keep the highest version reached.
+			if version > rs.artifactVersions[nodeID] {
+				rs.artifactVersions[nodeID] = version
+			}
 		}
 	}
 
@@ -106,7 +114,15 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 			rs.artifacts[name] = output
 		}
 		for nodeID, version := range r.artifactVersions {
-			rs.artifactVersions[nodeID] = version
+			// Max-merge (not last-write-wins): every branch copies the full
+			// parent version map, so a branch that never touched this node
+			// still carries its pre-fan-out version. A plain assignment would
+			// let a stale branch ordered after the publishing one regress the
+			// counter — freezing the persisted artifacts/<node>/<v>.json
+			// history on a looped fan-out. Keep the highest version reached.
+			if version > rs.artifactVersions[nodeID] {
+				rs.artifactVersions[nodeID] = version
+			}
 		}
 	}
 	// Use the first branch's terminal node — the engine treats any Done

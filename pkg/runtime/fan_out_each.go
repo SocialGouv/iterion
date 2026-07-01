@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -129,6 +128,10 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	maxParallel := len(items)
 	if e.workflow.Budget != nil && e.workflow.Budget.MaxParallelBranches > 0 && e.workflow.Budget.MaxParallelBranches < maxParallel {
 		maxParallel = e.workflow.Budget.MaxParallelBranches
+	}
+
+	if err := e.validateFanOutEachWorkspaceSafety(routerNodeID, tmplEdge, convergence, len(items), maxParallel); err != nil {
+		return "", err
 	}
 
 	// Sibling-cancellation policy (mirror execFanOut): cancel siblings on the
@@ -260,32 +263,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Collect results (ctx-aware drain, mirrors execFanOut).
-	results := make([]*branchResult, 0, len(items))
-	var ctxErr error
-	doneCh := ctx.Done()
-	var graceCh <-chan time.Time
-	var graceTimer *time.Timer
-	for collected := 0; collected < len(items); {
-		select {
-		case r := <-resultsCh:
-			results = append(results, r)
-			collected++
-		case <-doneCh:
-			ctxErr = ctx.Err()
-			cancelBranches()
-			doneCh = nil
-			graceTimer = time.NewTimer(branchCancelGracePeriod)
-			graceCh = graceTimer.C
-		case <-graceCh:
-			if abandoned := len(items) - collected; abandoned > 0 && e.logger != nil {
-				e.logger.Warn("fan_out_each from %s: abandoning %d branch(es) still running %s after cancellation", routerNodeID, abandoned, branchCancelGracePeriod)
-			}
-			collected = len(items)
-		}
-	}
-	if graceTimer != nil {
-		graceTimer.Stop()
-	}
+	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, len(items), routerNodeID, "fan_out_each")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}

@@ -151,18 +151,75 @@ func TestEngineRun_ExplicitNoneSkipsWorktreeOnGitRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load run: %v", err)
 	}
-	// Explicit opt-out: no per-run worktree directory was created. The
-	// run executes inside the operator's repo and downstream consumers
-	// (FilesPanel, finalize) still receive a baseline via the existing
-	// "workDir is a git working tree" fallback in runPersistWorkspace,
-	// so r.Worktree may be true even though no isolation happened — the
-	// invariant we assert is structural: no worktree directory exists,
-	// the workDir equals the operator-supplied path verbatim.
+	// Explicit opt-out from the operator's main checkout must stay a plain
+	// in-place run. In particular, do not stamp Worktree=true just because
+	// git commands succeed here: resume/review-gate paths use that flag to
+	// reconstruct finalization and would otherwise operate on the user's
+	// checkout as if it were a runtime-managed worktree.
+	if r.Worktree {
+		t.Errorf("run.Worktree = true, want false for explicit worktree:none in main checkout")
+	}
+	if r.RepoRoot != "" {
+		t.Errorf("run.RepoRoot = %q, want empty for non-isolated main checkout", r.RepoRoot)
+	}
+	if r.BaseCommit != "" {
+		t.Errorf("run.BaseCommit = %q, want empty for non-isolated main checkout", r.BaseCommit)
+	}
 	if r.WorkDir != repo {
 		t.Errorf("run.WorkDir = %q, want exactly %q (engine must not have remapped to a worktree path)", r.WorkDir, repo)
 	}
 	wtDir := filepath.Join(s.Root(), "worktrees", runID)
 	if _, err := os.Stat(wtDir); err == nil {
 		t.Errorf("unexpected worktree directory at %s — explicit none must skip setup", wtDir)
+	}
+}
+
+func TestEngineRun_UnmanagedLinkedWorktreeRecordsBaseline(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "wt-linked-dispatcher",
+		Entry: "start",
+		Nodes: map[string]ir.Node{
+			"start": &ir.ToolNode{
+				BaseNode: ir.BaseNode{ID: "start"},
+				Command:  "true",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail": &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges:    []*ir.Edge{{From: "start", To: "done"}},
+		Worktree: "none",
+	}
+
+	s := tmpStore(t)
+	repo, originalTip := initBareishRepo(t)
+	linked := filepath.Join(t.TempDir(), "linked-wt")
+	mustRun(t, repo, "git", "worktree", "add", "--detach", linked, "HEAD")
+	t.Cleanup(func() { mustRun(t, repo, "git", "worktree", "remove", "--force", linked) })
+
+	eng := New(wf, s, newStubExecutor(),
+		WithWorkDir(linked),
+		WithLogger(log.New(log.LevelWarn, os.Stderr)),
+	)
+
+	runID := "run-linked-wt-baseline"
+	if err := eng.Run(context.Background(), runID, nil); err != nil {
+		t.Fatalf("engine.Run in unmanaged linked worktree returned error: %v", err)
+	}
+
+	r, err := s.LoadRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if !r.Worktree {
+		t.Fatalf("run.Worktree = false, want true for an already-isolated linked worktree")
+	}
+	if r.WorkDir != linked {
+		t.Errorf("run.WorkDir = %q, want linked worktree %q", r.WorkDir, linked)
+	}
+	if r.RepoRoot != repo {
+		t.Errorf("run.RepoRoot = %q, want main repo %q", r.RepoRoot, repo)
+	}
+	if r.BaseCommit != originalTip {
+		t.Errorf("run.BaseCommit = %q, want linked worktree HEAD %q", r.BaseCommit, originalTip)
 	}
 }

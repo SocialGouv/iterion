@@ -138,3 +138,22 @@ func (e *Engine) validateWorkspaceSafety(routerNodeID string, fanEdges []*ir.Edg
 	}
 	return nil
 }
+
+// validateFanOutEachWorkspaceSafety applies the same shared-worktree mutation
+// guard to data-driven fan-out. A fan_out_each has only one static template
+// edge, so the static fan_out_all check cannot see that the template may be
+// executed N times concurrently at runtime. Once cardinality and the effective
+// parallelism cap are known, reject concurrent replays of a mutating template.
+func (e *Engine) validateFanOutEachWorkspaceSafety(routerNodeID string, tmplEdge *ir.Edge, convergence string, itemCount, maxParallel int) error {
+	if itemCount <= 1 || maxParallel <= 1 || tmplEdge == nil {
+		return nil
+	}
+	if !e.branchContainsMutation(tmplEdge.To, convergence) {
+		return nil
+	}
+	return &RuntimeError{
+		Code:    ErrCodeWorkspaceSafety,
+		Message: fmt.Sprintf("workspace safety violation: fan_out_each router %q would run mutating template branch %q concurrently for %d items", routerNodeID, tmplEdge.To, itemCount),
+		Hint:    "mutating fan_out_each templates must run with max_parallel_branches=1 or be moved to sequential steps/read-only nodes",
+	}
+}

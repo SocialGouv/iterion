@@ -1172,3 +1172,49 @@ func TestSequentialFanOuts(t *testing.T) {
 var _ = fmt.Sprintf
 var _ = sort.Strings
 var _ sync.Mutex
+
+func TestFanOutInternalCancellationAbandonsWedgedBranch(t *testing.T) {
+	oldGrace := branchCancelGracePeriod
+	branchCancelGracePeriod = 100 * time.Millisecond
+	defer func() { branchCancelGracePeriod = oldGrace }()
+
+	wf := fanOutWorkflow(ir.AwaitWaitAll)
+	wedgedStarted := make(chan struct{})
+	release := make(chan struct{})
+	var closeOnce sync.Once
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"summary": "go"}, nil
+	})
+	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		<-wedgedStarted // ensure sibling is already stuck before failing
+		return nil, errors.New("agent_a failed")
+	})
+	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		closeOnce.Do(func() { close(wedgedStarted) })
+		<-release // deliberately ignores ctx until the test releases it
+		return map[string]interface{}{}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- eng.Run(context.Background(), "run-internal-cancel-wedged", nil) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected wait_all branch failure")
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("fan_out returned too slowly after internal cancellation: %s", elapsed)
+		}
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("fan_out hung on a wedged branch after internal cancellation")
+	}
+	close(release)
+	waitBranchFinished(t, s, "run-internal-cancel-wedged", "branch_router_agent_b")
+}

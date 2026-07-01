@@ -49,6 +49,7 @@ func TestFanOutEach_SubbotPerElement(t *testing.T) {
 			{From: "run_child", To: "collect"},
 			{From: "collect", To: "done"},
 		},
+		Budget:  &ir.Budget{MaxParallelBranches: 1},
 		Schemas: map[string]*ir.Schema{},
 		Prompts: map[string]*ir.Prompt{},
 		Vars:    map[string]*ir.Var{},
