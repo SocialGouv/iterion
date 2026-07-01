@@ -376,6 +376,13 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 			maxSteps = 5
 		}
 		opts.MaxSteps = maxSteps
+		// A tool-equipped claw node is agentic by intent: it must ground its
+		// answer in the workspace, not answer from priors. gpt-5.5 under the
+		// default "auto" tool_choice skips its tools and fabricates a verdict
+		// (0 tool calls) — the explore-mode façade that made whole_improve_loop's
+		// GPT reviewer ungrounded. Force the first turn to be a tool call; the
+		// loop reverts to auto once a tool lands so the model can still finish.
+		opts.ForceInitialToolUse = true
 	}
 
 	// Observability hooks.

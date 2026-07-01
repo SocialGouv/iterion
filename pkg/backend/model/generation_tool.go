@@ -48,6 +48,18 @@ type GenerationOptions struct {
 	// MaxSteps is the maximum number of tool-loop iterations (default 10).
 	MaxSteps int
 
+	// ForceInitialToolUse compels the model to call a tool before it may
+	// emit a final answer: while no tool has been called yet, the tool loop
+	// pins tool_choice to "any" (mapped to the provider's required/any
+	// form), reverting to auto once the first tool call lands. This is the
+	// agentic-parity lever for backends/models that, under the default
+	// "auto" tool_choice, skip provided tools and answer from priors — the
+	// exact failure that let a claw+gpt-5.5 reviewer produce an ungrounded
+	// verdict (0 tool calls) while claude_code read the files. No-op when
+	// Tools is empty. Set by the claw backend for tool-equipped agent/judge
+	// nodes; harmless for models that already use their tools.
+	ForceInitialToolUse bool
+
 	// MaxTokens is the maximum tokens per response (default 8192).
 	MaxTokens int
 

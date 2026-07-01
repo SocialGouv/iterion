@@ -740,9 +740,9 @@ func forceCompactToTokens(messages []api.Message, targetTokens, preserveRecent i
 // target and retries, up to maxContextCompactRetries. It mutates
 // *messages in place so the compaction persists into the rest of the
 // tool loop. Non-context errors and exhausted retries surface unchanged.
-func callWithContextRetry(ctx context.Context, client api.APIClient, opts GenerationOptions, messages *[]api.Message) (*aggregatedResponse, error) {
+func callWithContextRetry(ctx context.Context, client api.APIClient, opts GenerationOptions, messages *[]api.Message, toolChoice *api.ToolChoice) (*aggregatedResponse, error) {
 	for attempt := 0; ; attempt++ {
-		req, err := buildRequest(opts, *messages, nil, nil)
+		req, err := buildRequest(opts, *messages, nil, toolChoice)
 		if err != nil {
 			return nil, err
 		}
@@ -856,13 +856,24 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		}
 	}
 
+	toolCallsSoFar := 0
 	for step := 1; step <= maxSteps; step++ {
+		// Agentic-parity lever: while ForceInitialToolUse is set and the
+		// model has not yet called a single tool, pin tool_choice to "any"
+		// so it MUST use a tool before it can answer — then revert to auto
+		// (nil) so it can finish. Without this, gpt-5.5 (and other models)
+		// under the default "auto" choice skip the tools and answer from
+		// priors, producing ungrounded verdicts. No-op without tools.
+		var stepToolChoice *api.ToolChoice
+		if opts.ForceInitialToolUse && len(opts.Tools) > 0 && toolCallsSoFar == 0 {
+			stepToolChoice = &api.ToolChoice{Type: "any"}
+		}
 		// callWithContextRetry builds the request, calls the model, and on
 		// a context-window rejection force-compacts `messages` (in place)
 		// and retries — so a backend whose real window is smaller than the
 		// model's advertised one (ChatGPT-forfait) recovers instead of
 		// killing the run.
-		agg, err := callWithContextRetry(ctx, client, opts, &messages)
+		agg, err := callWithContextRetry(ctx, client, opts, &messages, stepToolChoice)
 		if err != nil {
 			return partial(), err
 		}
@@ -870,6 +881,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 		accumulateUsage(&totalUsage, agg.usage)
 		finishReason := mapStopReason(agg.stopReason)
 		stepToolCalls := toolCallsFromBlocks(agg.toolUses)
+		toolCallsSoFar += len(stepToolCalls)
 
 		stepResult := StepResult{
 			Number:       step,

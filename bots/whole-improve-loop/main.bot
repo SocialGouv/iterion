@@ -134,10 +134,11 @@ vars:
   ## finalize_mr node pushes the run's HEAD to the forge and opens a
   ## merge/pull request. Off by default so a plain local run just leaves
   ## the commit on the operator's branch. The comment→MR trigger sets this
-  ## true. This bot edits the live workspace (no worktree) — in cloud that
-  ## is a fresh clone, so commit_changes advances HEAD and finalize_mr can
-  ## push it. Requires a forge_token secret (or host-authenticated gh/glab)
-  ## and a clone with a push remote.
+  ## true. This bot runs in a per-run git worktree — no `worktree:` field is
+  ## declared and the engine default resolves that to "auto" — so
+  ## commit_changes advances the worktree HEAD and finalize_mr pushes that
+  ## branch; in cloud the worktree is carved from a fresh clone. Requires a
+  ## forge_token secret (or host-authenticated gh/glab) and a push remote.
   open_mr: bool = false
   ## Branch name to push + open the MR from. Empty = derive a stable
   ## name from the run (iterion/improve/<run-id>). A --var override lets

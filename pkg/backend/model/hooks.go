@@ -333,12 +333,17 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 			}
 		}
 	}
+	// Per-step token counts are DEBUG-level detail: they are the noisiest
+	// line in a multi-step tool loop (one per turn) and claude_code emits no
+	// equivalent, so at INFO they crowd the log (and wrap in narrow panes).
+	// The authoritative per-node total + cost still lands on the INFO-level
+	// "Node finished" line, so nothing observable is lost at INFO.
 	if step.CacheReadTokens > 0 || step.CacheWriteTokens > 0 {
-		h.logger.Logf(iterlog.LevelInfo, "📊", "[%s#%d/claw] step %d: %d in / %d out tokens (cache: %d read, %d write)",
+		h.logger.Logf(iterlog.LevelDebug, "📊", "[%s#%d/claw] step %d: %d in / %d out tokens (cache: %d read, %d write)",
 			nodeID, step.Iteration, step.Number, step.InputTokens, step.OutputTokens,
 			step.CacheReadTokens, step.CacheWriteTokens)
 	} else {
-		h.logger.Logf(iterlog.LevelInfo, "📊", "[%s#%d/claw] step %d: %d in / %d out tokens",
+		h.logger.Logf(iterlog.LevelDebug, "📊", "[%s#%d/claw] step %d: %d in / %d out tokens",
 			nodeID, step.Iteration, step.Number, step.InputTokens, step.OutputTokens)
 	}
 	if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {

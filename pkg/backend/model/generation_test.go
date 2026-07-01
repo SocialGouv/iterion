@@ -478,6 +478,82 @@ func TestGenerateTextDirect_ToolLoop(t *testing.T) {
 	}
 }
 
+// TestGenerateTextDirect_ForceInitialToolUse verifies the agentic-parity
+// lever: with ForceInitialToolUse set, the FIRST turn pins tool_choice to
+// "any" (forcing the model to call a tool before it may answer), and once a
+// tool call has landed the loop reverts to auto (nil) so the model can
+// finish. Regression guard for the claw+gpt-5.5 explore-mode façade, where
+// the model under the default "auto" choice skipped its read tools and
+// fabricated an ungrounded verdict with zero tool calls.
+func TestGenerateTextDirect_ForceInitialToolUse(t *testing.T) {
+	client := newMockClient(
+		toolUseEvents("tu_1", "add", `{"a":2,"b":3}`, 100, 30),
+		textEvents("The sum is 5", 150, 25),
+	)
+	addTool := GenerationTool{
+		Name:        "add",
+		Description: "Adds two numbers",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"number"},"b":{"type":"number"}}}`),
+		Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "5", nil
+		},
+	}
+
+	_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model:               "openai/gpt-5.5",
+		Tools:               []GenerationTool{addTool},
+		ForceInitialToolUse: true,
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "What is 2+3?"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := client.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	// Turn 1: no tool call yet → forced to "any".
+	if calls[0].ToolChoice == nil || calls[0].ToolChoice.Type != "any" {
+		t.Errorf("turn 1 ToolChoice = %+v, want {Type:any}", calls[0].ToolChoice)
+	}
+	// Turn 2: a tool call already landed → reverts to auto (nil).
+	if calls[1].ToolChoice != nil {
+		t.Errorf("turn 2 ToolChoice = %+v, want nil (auto)", calls[1].ToolChoice)
+	}
+}
+
+// TestGenerateTextDirect_NoForceLeavesToolChoiceAuto is the negative control:
+// without ForceInitialToolUse the tool loop never pins tool_choice, so a
+// model that legitimately answers without tools is untouched.
+func TestGenerateTextDirect_NoForceLeavesToolChoiceAuto(t *testing.T) {
+	client := newMockClient(textEvents("Direct answer", 100, 20))
+	addTool := GenerationTool{
+		Name:        "add",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute:     func(_ context.Context, _ json.RawMessage) (string, error) { return "5", nil },
+	}
+	_, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "openai/gpt-5.5",
+		Tools: []GenerationTool{addTool},
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	calls := client.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	if calls[0].ToolChoice != nil {
+		t.Errorf("ToolChoice = %+v, want nil (auto)", calls[0].ToolChoice)
+	}
+}
+
 // TestGenerateTextDirect_MCPToolNameNormalization verifies that an MCP
 // tool registered under its sanitized single-underscore name
 // ("mcp_iterion_board_assign_issue") still dispatches when the model

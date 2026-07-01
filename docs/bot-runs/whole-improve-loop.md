@@ -10,6 +10,91 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-01 — dogfood surfaced (and fixed) a claw+gpt explore-mode façade; grounded reviews restored (runs 019f1cf7, 019f1d24)
+
+- Status: **high value** — the run itself is secondary; it exposed a real engine
+  bug that made every `claw` (gpt-5.5) reviewer/fixer ungrounded. Fixed + validated;
+  run resumed on GLM-5.2 to converge after the OpenAI forfait capped mid-sweep.
+- Versions: bot 0.5.0 · iterion `a2a20ab` + fix (this change)
+- Method: `claude_code` opus-4-8 (reviewer_claude + fixers) · `claw` `openai/gpt-5.5`
+  (reviewer_gpt) · **`--sandbox none`** (see caveat 1) · `--merge-into none` ·
+  store = operator `.iterion` (visible in studio) · `scope_globs` = the recently
+  hardened `pkg/runtime` core (engine*/branch/convergence/fan_out*/events*/
+  special_node/recovery_dispatch/workspace_safety/helpers) → **7 chunks**
+  (bounded so a watched run can converge).
+
+### The bug — claw+gpt-5.5 "explore-mode façade" (the headline finding)
+In explore mode the reviewer must READ the chunk files (source is not inlined) and
+report `files_reviewed`. reviewer_gpt (claw / gpt-5.5) made **zero tool calls**,
+fabricated a plausible verdict from priors, and self-reported `files_reviewed`
+paths it never opened — sailing through the engagement gate (which trusts the
+self-reported list). reviewer_claude (claude_code) read the files and behaved
+correctly. So Willy's GPT half of the cross-family review was a **façade**, and the
+"no logs for reviewer_gpt in the studio" symptom was just its consequence (no tool
+calls → nothing to stream).
+
+Root cause (verified with a 1-node probe + code trace): iterion always sent
+`tool_choice: nil` (→ provider default "auto"), and **gpt-5.5 under "auto" declines
+to use provided tools** and answers directly, even when the prompt says "you MUST
+call read_file". Claude is agentic under "auto"; gpt-5.5 is not. The sub-agent's
+first hypothesis (a missing `ToolChoice` passthrough in claw's OpenAI
+chat/completions path) is a **real latent bug** but not the operative cause here:
+ChatGPT-OAuth always routes to `/v1/responses`, which *does* forward ToolChoice —
+so nil→auto was the actual lever.
+
+### The fix — `ForceInitialToolUse` (agentic parity for claw)
+`pkg/backend/model`: new `GenerationOptions.ForceInitialToolUse`. The tool loop pins
+`tool_choice="any"` on the first turn (and until the first tool call lands), then
+reverts to auto so the model can finish. Enabled for every tool-equipped claw
+agent/judge (`claw_backend.go`). The `/v1/responses` path maps "any"→"required", so
+the force reaches the ChatGPT-forfait endpoint.
+- Validated: the probe's gpt-5.5 now calls `read_file`; 2 new unit tests
+  (`TestGenerateTextDirect_ForceInitialToolUse` + negative control); and in the real
+  Willy run **reviewer_gpt now reads both chunk files and emits `tool_started`/
+  `tool_called` events** → activity is visible in the studio (original symptom
+  fixed). Its verdict became specific + grounded (a real `max_duration`-after-
+  resource-wait deadline gap in `engine_exec.go`), vs the earlier hand-wavy claim.
+- Also trimmed claw per-step `tokens` logging to DEBUG (noise; totals stay on the
+  `Node finished` line) and corrected the stale `main.bot:137` comment (Willy runs in
+  a worktree by default, it does not edit the live tree).
+
+### Value the run produced (in the worktree, pre-convergence)
+Grounded cross-family review of `pkg/runtime` → real edits: `convergence.go`,
+`engine_exec.go` (the rem<=0 duration-budget guard after `acquireResources`),
+`fan_out_each.go` simplification, `workspace_safety.go` hardening, + added tests
+(`fan_out_each_test.go`, `parallel_test.go`, `worktree_default_test.go`). Most other
+chunks were reviewed **CLEAN** with genuine cross-references (not a rubber-stamp).
+
+### Caveats / follow-ups
+1. **Sandboxed runs still need the fix in-container.** The first sandboxed relaunch
+   (019f1cf7) still showed 0 gpt tool calls — the `iterion __claw-runner` inside the
+   container ran a stale binary. `--sandbox none` (in-process, fresh binary) was used
+   to validate + deliver. To help the operator's *normal* (sandboxed) Willy runs,
+   rebuild the sandbox image with the fixed iterion (or verify `addClawBinaryMount`
+   mounts the fresh host binary and that `/usr/local/bin/iterion` wins on PATH).
+2. **OpenAI forfait cap.** reviewer_gpt hit a 429 usage-limit after ~13 passes ->
+   `recovery_pause`. Resumed with `--answer acknowledge_recovery=continue --force`
+   and `ITERION_VIBE_MODEL_GPT=anthropic/glm-5.2` + ZAI mode (both reviewers on
+   GLM-5.2 via z.ai) to converge. Cross-family diversity is paused in that fallback.
+3. **Latent claw bug** (not hit here): OpenAI **chat/completions** + Foundry
+   providers drop `ToolChoice` (only `/v1/responses` + anthropic/bedrock/vertex
+   forward it) — API-key-mode gpt with forced tools would not be forced. Fix in
+   `.works/claw-code-go` `internal/api/providers/openai/provider.go` + `foundry/`.
+4. **Engagement gate is still self-reported.** `streak_check` trusts `files_reviewed`
+   subset of `chunk_file_list`, not real tool telemetry. Forcing initial tool use
+   makes the model actually read (observed: full 2/2-file coverage per chunk), so this
+   is no longer urgent — but grounding the gate on real read telemetry would make it
+   Goodhart-proof for any future backend.
+
+### Lessons for next run
+- On a fresh `.bot` change, `iterion resume` needs `--force` (source hash changes).
+- For a watched, converging dogfood, scope tight (<= ~7 chunks): `num_chunks + 1`
+  clean-streak + `loop_max = num_chunks + 15` means big scopes can't converge in one
+  run. `pkg/runtime,pkg/server` was 42 chunks (won't converge); one package ~= 16-20.
+- Force the store with an explicit `--store-dir <workspace>/.iterion`: a bare
+  `iterion run <bot>` keyed the store off the *bot path* (`~/.iterion/projects/...`),
+  invisible to the operator's studio.
+
 ## 2026-06-23 — code-quality axis was a no-op; fixed → 14 real cleanups + a sandbox-claw bug (runs 019ef545, 019ef550)
 
 - Status: **partial** (run 2 produced strong value, ended `failed_resumable` on a reviewer context overflow before convergence)
