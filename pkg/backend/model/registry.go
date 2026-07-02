@@ -41,6 +41,11 @@ type cacheEntry struct {
 
 // Registry resolves model specs of the form "provider/model-id" to
 // APIClient instances. It caches resolved clients for reuse.
+// claudeForfaitWarnOnce guards the one-time stderr warning emitted when the
+// claw backend is wired to the Claude Code subscription forfait (dev-purpose;
+// see the anthropic provider factory below).
+var claudeForfaitWarnOnce sync.Once
+
 type Registry struct {
 	mu               sync.Mutex
 	providers        map[string]ProviderFactory
@@ -102,13 +107,28 @@ func (r *Registry) registerDefaults() {
 		// real api.anthropic.com — not a z.ai/bigmodel BYOK base URL, which uses
 		// the token as an x-api-key-style key — pass it as the OAuth bearer so
 		// claw sends `Authorization: Bearer` + the `anthropic-beta: oauth-2025-04-20`
-		// header the API requires (see claw client.go). DEV-PURPOSE ONLY: reusing
-		// the Claude Code token from a non-Claude-Code client is outside Anthropic's
-		// Consumer Terms — do not enable for cloud/production/full-automation.
+		// header the API requires (see claw client.go).
+		//
+		// KNOWN LIMITATION — effectively unusable, dev-purpose only. The token
+		// authenticates, but the forfait's rate limiter throttles non-Claude-Code
+		// clients to ~zero: a claw request 429s immediately (rate_limit_error, no
+		// Retry-After), even with fresh daily quota, while the official `claude`
+		// CLI on the same token+model works fine. Anthropic scopes the forfait to
+		// Claude Code (Consumer Terms). What claw "lacks" is the Claude Code client
+		// identity (User-Agent / client headers) — reproducing it would be spoofing,
+		// not a fix, so we don't. Use ANTHROPIC_API_KEY, z.ai (ZAI_API_KEY), or
+		// another provider for real runs. A one-time stderr warning fires below.
 		lowBase := strings.ToLower(baseURL)
 		isZAI := strings.Contains(lowBase, "z.ai") || strings.Contains(lowBase, "bigmodel")
 		if apiKey == "" && authToken != "" && !isZAI {
 			cfg.OAuthToken = authToken
+			claudeForfaitWarnOnce.Do(func() {
+				fmt.Fprintln(os.Stderr, "⚠️  claw: using the Claude Code subscription forfait "+
+					"(ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY) for an anthropic/* model. This is "+
+					"DEV-PURPOSE ONLY and effectively unusable: the forfait throttles non-Claude-Code "+
+					"clients, so requests 429 immediately (Consumer Terms scope it to Claude Code). "+
+					"Use ANTHROPIC_API_KEY, z.ai (ZAI_API_KEY), or another provider for real runs.")
+			})
 		}
 		return p.NewClient(cfg)
 	}

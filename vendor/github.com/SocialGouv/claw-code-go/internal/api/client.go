@@ -32,9 +32,18 @@ const (
 	// subscription "forfait" path). Without it an OAuth request 401s with
 	// "x-api-key header is required". It is sent INSTEAD OF anthropicBetaValue
 	// for bearer sessions — OAuth sessions reject the caching betas (see the
-	// beta-header branch in StreamResponse). DEV-PURPOSE ONLY: reusing the
-	// Claude Code subscription token from a non-Claude-Code client is outside
-	// Anthropic's Consumer Terms; do not use on cloud/production/full-automation.
+	// beta-header branch in StreamResponse).
+	//
+	// DEV-PURPOSE ONLY, AND EFFECTIVELY UNUSABLE. Reusing the Claude Code
+	// subscription token from this (non-Claude-Code) client is outside
+	// Anthropic's Consumer Terms. In practice it authenticates but the forfait
+	// rate-limiter throttles non-Claude-Code clients to ~zero: requests 429
+	// immediately (rate_limit_error, no Retry-After), even with fresh daily
+	// quota, whereas the official `claude` CLI on the same token+model works.
+	// The gap is the Claude Code client identity (User-Agent / client headers),
+	// which this client deliberately does NOT spoof. Use an API key or another
+	// provider for real work; this path exists only so a local dev box without
+	// an ANTHROPIC_API_KEY can still authenticate for experiments.
 	anthropicOAuthBetaValue = "oauth-2025-04-20"
 
 	// defaultMaxRetries is the maximum number of retry attempts for retryable

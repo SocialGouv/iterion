@@ -64,6 +64,24 @@ Code OAuth file — that path uses the user's "forfait" subscription
 instead of metered API calls. Without OAuth, `claw` is preferred:
 same auth (ANTHROPIC_API_KEY) but in-process and faster.
 
+> ⚠️ **The Claude Code forfait is usable only through the `claude_code`
+> backend, not `claw`.** `claw` can *authenticate* with the forfait OAuth
+> token (set `ANTHROPIC_AUTH_TOKEN` to the `claudeAiOauth.accessToken`
+> from `~/.claude/.credentials.json`, no `ANTHROPIC_API_KEY`; claw then
+> sends `Authorization: Bearer` + the `anthropic-beta: oauth-2025-04-20`
+> header), but it is **effectively unusable**: the forfait rate-limiter
+> throttles non-Claude-Code clients to ~zero, so a `claw` request `429`s
+> immediately (`rate_limit_error`, no `Retry-After`) even with fresh daily
+> quota — while the official `claude` CLI on the same token + model works.
+> Anthropic scopes the forfait to Claude Code (Consumer Terms). What `claw`
+> "lacks" is the Claude Code client identity (User-Agent / client headers);
+> reproducing it would be spoofing, not a fix, so iterion does not. iterion
+> emits a one-time stderr warning if you wire this path anyway. For an
+> `anthropic/*` model on `claw`, use `ANTHROPIC_API_KEY`, z.ai
+> (`ZAI_API_KEY`), or another provider. (The OpenAI/ChatGPT forfait via
+> `claw` *does* work — see below — because there is no equivalent
+> client-identity gate on that path today.)
+
 ### Overriding the order
 
 Set `ITERION_BACKEND_PREFERENCE` to a comma-separated list:
