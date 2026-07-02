@@ -253,6 +253,11 @@ type runConn struct {
 	// process (e.g. a dispatcher-spawned run). Called on unsubscribe
 	// and on connection close. Guarded by mu alongside sub.
 	fileSrcRelease func()
+	// logSrcRelease is the run.log twin of fileSrcRelease: releases the
+	// on-demand run.log tailer started by EnsureLogSource when logs are
+	// subscribed for an active run not produced in this process. Called on
+	// log-unsubscribe and on connection close. Guarded by mu.
+	logSrcRelease func()
 }
 
 // authCtx returns a fresh background ctx with the tenant/user
@@ -297,6 +302,10 @@ func (c *runConn) close() {
 		if c.fileSrcRelease != nil {
 			c.fileSrcRelease()
 			c.fileSrcRelease = nil
+		}
+		if c.logSrcRelease != nil {
+			c.logSrcRelease()
+			c.logSrcRelease = nil
 		}
 		c.mu.Unlock()
 		_ = c.conn.Close()

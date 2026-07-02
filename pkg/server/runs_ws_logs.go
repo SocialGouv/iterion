@@ -41,15 +41,28 @@ func (c *runConn) handleSubscribeLogs(env runWSEnvelope) {
 		return
 	}
 	buf := c.server.runs.GetLogBuffer(c.runID)
+	if buf == nil && !c.server.runs.Active(c.runID) {
+		// No live buffer AND not produced in this process. buf==nil used to be
+		// treated as "terminated", but an ACTIVE run launched elsewhere (an
+		// external `iterion run`/`resume`, the dispatcher) also has no buffer
+		// here — for those the one-shot replay was the whole bug: new lines
+		// never streamed and the studio needed a full page refresh. Mirror the
+		// events path (EnsureEventSource): if the run is still active, start an
+		// on-demand run.log tailer and live-stream it. A terminal run falls
+		// through to the one-shot replay below.
+		if run, err := c.server.runs.LoadRun(c.runID); err == nil && !run.Status.IsTerminal() {
+			if rel, live := c.server.runs.EnsureLogSource(c.runID); live != nil {
+				c.logSrcRelease = rel
+				buf = live
+			}
+		}
+	}
 	if buf == nil {
-		// Terminated run — no live buffer. Replay the persisted log
-		// file via the same wsTypeLogChunk envelope so the client
-		// renders it identically to a live tail. Without this, the
-		// studio's RunLogPanel showed "No log captured" on opening
-		// any failed/finished run after-the-fact, even when run.log
-		// existed on disk. Skip silently if the file is missing
-		// (e.g. very early failure before any log was written) — the
-		// terminator still tells the client the stream is over.
+		// Terminated run (or no source could start) — no live buffer. Replay
+		// the persisted run.log via the same wsTypeLogChunk envelope so the
+		// client renders it identically to a live tail, then terminate. Skip
+		// silently if the file is missing (very early failure before any log
+		// was written) — the terminator still tells the client it's over.
 		c.mu.Unlock()
 		c.sendAck(env.AckID)
 		c.replayPersistedLog(req.FromOffset)
@@ -216,6 +229,10 @@ func (c *runConn) handleUnsubscribeLogs(env runWSEnvelope) {
 	if c.logSub != nil {
 		c.logSub.Cancel()
 		c.logSub = nil
+	}
+	if c.logSrcRelease != nil {
+		c.logSrcRelease()
+		c.logSrcRelease = nil
 	}
 	c.logSubscribed = false
 	c.mu.Unlock()

@@ -4,9 +4,64 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
+
+// EnsureLogSource guarantees a run.log tailer is feeding a live RunLogBuffer
+// for runID — the log-stream twin of EnsureEventSource. For a run this process
+// did NOT launch (an external `iterion run`/`resume`, a dispatcher-spawned
+// run, or one re-attached across a restart) GetLogBuffer is nil, so the WS log
+// subscribe used to fall back to a one-shot replay of run.log and the studio
+// needed a full page refresh to see new lines. This starts a fresh in-memory
+// buffer plus an fsnotify tailer (disk run.log → buffer) and returns the buffer
+// to subscribe to, along with a refcounted release the caller MUST invoke once
+// when its subscription ends (the tailer + buffer are dropped on the last
+// release). A nil buffer means no source could be started.
+//
+// Guard the same way as EnsureEventSource: only call for runs that are NOT
+// active in-process (those feed their buffer directly via the logger tee) and
+// are NOT terminal (a finished run's static run.log wants the one-shot replay,
+// not a lingering tailer).
+func (s *Service) EnsureLogSource(runID string) (release func(), buf *RunLogBuffer) {
+	s.fileSrcMu.Lock()
+	if s.logSrcs == nil {
+		s.logSrcs = make(map[string]*fileSrcHandle)
+	}
+	h := s.logSrcs[runID]
+	if h == nil {
+		h = &fileSrcHandle{done: make(chan struct{})}
+		s.logSrcs[runID] = h
+		s.prepareRunLogNoFile(runID)     // in-memory buffer GetLogBuffer will return
+		startLogSource(s, runID, h.done) // fsnotify tail run.log → buffer
+	}
+	h.refs++
+	s.fileSrcMu.Unlock()
+
+	buf = s.GetLogBuffer(runID)
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.fileSrcMu.Lock()
+			cur := s.logSrcs[runID]
+			last := false
+			if cur != nil {
+				cur.refs--
+				if cur.refs <= 0 {
+					close(cur.done)
+					delete(s.logSrcs, runID)
+					last = true
+				}
+			}
+			s.fileSrcMu.Unlock()
+			if last {
+				s.dropRunLog(runID)
+			}
+		})
+	}, buf
+}
 
 // GetLogBuffer returns the live log buffer for runID, or nil if the
 // run is not held by this process. Valid only while the run is

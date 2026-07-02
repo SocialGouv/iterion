@@ -376,6 +376,12 @@ type Service struct {
 	// subscribers; the tailer stops when the last subscriber releases.
 	fileSrcMu sync.Mutex
 	fileSrcs  map[string]*fileSrcHandle
+	// logSrcs is the run.log twin of fileSrcs: on-demand run.log tailers
+	// started by EnsureLogSource for active runs not produced in this process,
+	// so the WS log stream is live instead of a one-shot replay. Guarded by
+	// fileSrcMu (same low-contention lock). Refcounted; the tailer + buffer are
+	// torn down when the last WS subscriber releases.
+	logSrcs map[string]*fileSrcHandle
 
 	// maxCostPerDayUSD configures the per-(store, UTC-day) LLM spend cap
 	// enforced across every run this service launches. 0 disables it.
