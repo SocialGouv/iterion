@@ -260,24 +260,46 @@ export default function LogLinesView({
   // keep it.
   const nodeFiltered = useMemo<AnnotatedLine[]>(() => {
     if (!filterNodeId) return annotated;
-    const tagPrefix = `[${filterNodeId}#${filterIteration ?? 0}/`;
-    const tagPrefixLen = tagPrefix.length;
-    const out: AnnotatedLine[] = [];
-    let headerMatched = false;
+    // The log line tag is `[<node>#<task.Iteration>/<component>]`, where
+    // task.Iteration is the backend's raw scalar iteration. The exec's
+    // `loop_iteration` we filter on is derived from iteration_path (nested-loop
+    // aware), so the two numbers can diverge under recovery/nested loops — an
+    // exact `#<iter>/` match then yields ZERO lines and the per-node Logs tab
+    // reads as empty even though the node is streaming. So accumulate BOTH the
+    // iteration-scoped lines and the node-only lines (any iteration), and fall
+    // back to node-only when the scoped set is empty — the tab is then never
+    // wrongly blank; the iteration stays visible in the fallback so the
+    // operator can see which attempt each line belongs to.
+    const iterPrefix = `[${filterNodeId}#${filterIteration ?? 0}/`;
+    const iterPrefixLen = iterPrefix.length;
+    const nodePrefix = `[${filterNodeId}#`;
+    const iterOut: AnnotatedLine[] = [];
+    const nodeOut: AnnotatedLine[] = [];
+    let iterMatched = false;
+    let nodeMatched = false;
     for (const line of annotated) {
       if (line.isContinuation) {
-        if (headerMatched) out.push(line);
+        if (iterMatched) iterOut.push(line);
+        if (nodeMatched) nodeOut.push(line);
         continue;
       }
       const idx = line.text.indexOf("[");
-      headerMatched = idx >= LOG_TAG_MIN_OFFSET && line.text.startsWith(tagPrefix, idx);
-      if (headerMatched) {
+      const tagged = idx >= LOG_TAG_MIN_OFFSET;
+      iterMatched = tagged && line.text.startsWith(iterPrefix, idx);
+      nodeMatched = tagged && line.text.startsWith(nodePrefix, idx);
+      if (iterMatched) {
+        // Scoped view: the `<node>#<iter>/` segment is redundant — strip it to
+        // the bare `[<component>]`.
         const stripped =
-          line.text.slice(0, idx + 1) + line.text.slice(idx + tagPrefixLen);
-        out.push({ ...line, text: stripped });
+          line.text.slice(0, idx + 1) + line.text.slice(idx + iterPrefixLen);
+        iterOut.push({ ...line, text: stripped });
+      }
+      if (nodeMatched) {
+        // Fallback view keeps `#<iter>/` so mixed iterations stay legible.
+        nodeOut.push(line);
       }
     }
-    return out;
+    return iterOut.length > 0 ? iterOut : nodeOut;
   }, [annotated, filterNodeId, filterIteration]);
 
   // Custom Scroller for Virtuoso so we can opt in to horizontal scroll
