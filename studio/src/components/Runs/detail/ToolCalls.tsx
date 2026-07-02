@@ -47,7 +47,7 @@ interface ToolCall {
 // body if the call fit under the threshold, otherwise the 4 KB head
 // preview the backend included alongside the sidecar blob ref. Returns
 // undefined when neither is set (e.g. an empty input/output).
-function pickInlinePayload(
+export function pickInlinePayload(
   data: Record<string, unknown>,
   kind: "input" | "output",
 ): string | undefined {
@@ -62,7 +62,7 @@ function pickInlinePayload(
 // pickRef returns the sidecar blob ref (= tool_use_id) when present.
 // The presence of a ref tells the studio "there's more to fetch beyond
 // the preview" — render the Load more affordance.
-function pickRef(
+export function pickRef(
   data: Record<string, unknown>,
   kind: "input" | "output",
 ): string | undefined {
@@ -73,7 +73,7 @@ function pickRef(
 // pickSize returns the total byte size of the original tool payload as
 // declared on the event (`{kind}_size`). Used to size Load more progress
 // affordances. Returns undefined when the event predates this plumbing.
-function pickSize(
+export function pickSize(
   data: Record<string, unknown>,
   kind: "input" | "output",
 ): number | undefined {
@@ -165,7 +165,7 @@ const FETCH_CHUNK_BYTES = 64 * 1024;
 // The fetched bytes are appended in-component (not in the run store)
 // so reopening the same card later re-fetches — keeps the in-memory
 // event cache lean.
-function ToolPayloadBlock({
+export function ToolPayloadBlock({
   label,
   value,
   runId,
