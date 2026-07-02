@@ -88,6 +88,13 @@ const (
 // detail they used to produce.
 var fallbackKeys = []string{"file_path", "path", "pattern", "command"}
 
+// headerDetailMax is the byte budget for the single-line header detail.
+// Shared by HeaderDetail (which truncates to it) and BlockBody (which
+// surfaces the full value as an expandable body once the header exceeds it),
+// so the "clip in the header, expand for the whole thing" contract stays in
+// one place.
+const headerDetailMax = 100
+
 // HeaderDetail returns the single-line detail string appended after the
 // tool name in console logs, e.g. "🔧 WebFetch https://example.com/api".
 // Returns "" when no informative argument can be extracted.
@@ -124,7 +131,7 @@ func HeaderDetail(toolName string, input []byte, keys map[string][]string) strin
 			}
 		default:
 			if s := stringFromInput(raw[k]); s != "" {
-				return truncate(firstLine(shortenWorktreePath(s)), 100)
+				return truncate(firstLine(shortenWorktreePath(s)), headerDetailMax)
 			}
 		}
 	}
@@ -177,11 +184,21 @@ func BlockBody(toolName string, input []byte) string {
 		}
 		return ""
 	}
-	if c, ok := raw["command"].(string); ok && strings.ContainsRune(c, '\n') {
-		return c
-	}
-	if s, ok := raw["script"].(string); ok && strings.ContainsRune(s, '\n') {
-		return s
+	// Generic: when the one-line header had to clip (multi-line) or truncate
+	// (over headerDetailMax) the tool's primary argument — a long single-line
+	// Bash command, a multi-line script, an over-long path/pattern — surface
+	// the FULL value as the expandable body so the operator can read it whole
+	// in-context (the studio's LogBlock renders it under a "▸ expand"). Empty
+	// when the header already shows everything, so short calls stay one-liners.
+	for _, k := range fallbackKeys {
+		s, ok := raw[k].(string)
+		if !ok || s == "" {
+			continue
+		}
+		if strings.ContainsRune(s, '\n') || len(firstLine(shortenWorktreePath(s))) > headerDetailMax {
+			return s
+		}
+		return ""
 	}
 	return ""
 }

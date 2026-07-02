@@ -236,6 +236,30 @@ func TestBlockBody_NonStructured(t *testing.T) {
 	}
 }
 
+func TestBlockBody_LongSingleLineCommand(t *testing.T) {
+	// A long single-line Bash command (over the header budget) must surface
+	// the FULL command as an expandable body — the header only shows the
+	// first 100 bytes, so without this the operator can't read the rest.
+	cmd := "grep -rn \"APPIMAGE\" /home/jo/lab/ai/iterion/.iterion/worktrees/019f2247-2100-77bf-b21a-49ac6573cdf1/cmd/iterion-desktop/updater_apply_linux.go"
+	if len(cmd) <= headerDetailMax {
+		t.Fatalf("test fixture must exceed the header budget (%d)", headerDetailMax)
+	}
+	got := BlockBody("Bash", mustJSON(t, map[string]any{"command": cmd}))
+	if got != cmd {
+		t.Fatalf("expected full command as body, got %q", got)
+	}
+}
+
+func TestBlockBody_LongPathExpands(t *testing.T) {
+	// A path so long it truncates in the header expands too. A short path
+	// (TestBlockBody_NonStructured) stays a one-liner.
+	longPath := "/some/deeply/nested/" + strings.Repeat("segment/", 20) + "file.go"
+	got := BlockBody("Read", mustJSON(t, map[string]any{"file_path": longPath}))
+	if got != longPath {
+		t.Fatalf("expected full long path as body, got %q", got)
+	}
+}
+
 func TestBlockBody_Agent(t *testing.T) {
 	prompt := "Step 1: investigate the auth handler.\nStep 2: report back."
 	for _, name := range []string{"Agent", "Task", "agent", "task"} {
