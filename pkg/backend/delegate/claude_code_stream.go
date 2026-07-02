@@ -434,6 +434,13 @@ func (b *ClaudeCodeBackend) handleUserMessage(m *claudesdk.UserMessage, task Tas
 		return nil
 	}
 	emitToolHooks(task.Hooks, m.Message.Content, inFlightTools)
+	// Log the tool RESULTS (📤/❌). handleAssistantMessage logs the tool USE +
+	// assistant text; the results echo back in this user message, so mirror
+	// the logging here — otherwise the run log shows what each tool was asked
+	// to do but never what it returned. Reuses logAssistantContent's
+	// ToolResultBlock case (user content carries no tool_use/text blocks, so
+	// the other cases are no-ops — no double logging with the assistant path).
+	logAssistantContent(b.Logger, task.NodeID, task.Iteration, m.Message.Content)
 	for _, block := range m.Message.Content {
 		if tr, ok := block.(*claudesdk.ToolResultBlock); ok {
 			if tr.IsError {
@@ -528,7 +535,10 @@ func toolResultContentText(content any) string {
 }
 
 // logAssistantContent emits human-readable info logs for tool calls, tool
-// errors, and text deltas from a single assistant message.
+// results, and text deltas from a single message's content blocks. Called for
+// both AssistantMessage content (tool USE + text) and UserMessage content
+// (tool RESULTS) — each message kind only carries its own block types, so the
+// switch naturally logs the right side without overlap.
 func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, blocks []claudesdk.ContentBlock) {
 	for _, block := range blocks {
 		switch bl := block.(type) {
