@@ -18,7 +18,41 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
+
+// outputBodyMax bounds the tool-result body attached to a log block. The full
+// result still lives on the structured tool_called event (sidecar-blob
+// paginated in the studio Tools tab); the log keeps a generous but bounded
+// slice so a multi-MB command dump can't blow the in-memory 1 MB log ring.
+const outputBodyMax = 4096
+
+// ResultDisplay splits a tool result string into a one-line header detail
+// (truncated to headerDetailMax) and an expandable body. The body is the full
+// result — bounded to outputBodyMax — whenever the header can't show it whole
+// (multi-line, or longer than the header budget); "" when the header already
+// says it all, so short results stay one-liners with no needless "▸ expand".
+//
+// Shared by the claude_code and claw tool-result log paths so a tool's output
+// renders identically on both backends (claw⇄claude_code parity).
+func ResultDisplay(output string) (header, body string) {
+	output = strings.TrimRight(output, "\n")
+	if output == "" {
+		return "", ""
+	}
+	header = truncate(firstLine(output), headerDetailMax)
+	if strings.ContainsRune(output, '\n') || len(firstLine(output)) > headerDetailMax {
+		body = output
+		if len(body) > outputBodyMax {
+			b := body[:outputBodyMax]
+			for len(b) > 0 && !utf8.RuneStart(b[len(b)-1]) {
+				b = b[:len(b)-1]
+			}
+			body = b + "\n… (truncated — full result in the run's Tools tab)"
+		}
+	}
+	return header, body
+}
 
 // CamelCaseKeys maps the CamelCase tool name surfaced by the Claude Code
 // SDK (and the OpenAI-shaped codex SDK) to the ordered list of input

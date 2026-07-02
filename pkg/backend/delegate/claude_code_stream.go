@@ -543,8 +543,24 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 			header := fmt.Sprintf("[%s#%d/claude-code] 🔧 %s %s", nodeID, iteration, displayName, toolUseDetail(displayName, bl.Input))
 			logger.LogBlock(iterlog.LevelInfo, "ℹ️ ", header, toolUseBody(displayName, bl.Input))
 		case *claudesdk.ToolResultBlock:
-			if bl.IsError {
-				logger.Info("[%s#%d/claude-code] ❌ tool error: %v", nodeID, iteration, bl.Content)
+			// Log the tool RESULT as an expandable block (📤 on success, ❌ on
+			// error): a truncated one-line preview in the header, the full
+			// (bounded) output folded underneath — symmetric with the tool
+			// INPUT logged above, and identical to the claw path via the shared
+			// tooldisplay.ResultDisplay.
+			text := toolResultContentText(bl.Content)
+			if text != "" || bl.IsError {
+				header, body := tooldisplay.ResultDisplay(text)
+				glyph := "📤"
+				if bl.IsError {
+					glyph = "❌"
+					if header == "" {
+						header = "tool error"
+					}
+				}
+				logger.LogBlock(iterlog.LevelInfo, "ℹ️ ",
+					fmt.Sprintf("[%s#%d/claude-code] %s %s", nodeID, iteration, glyph, header),
+					body)
 			}
 		case *claudesdk.TextBlock:
 			if bl.Text != "" {

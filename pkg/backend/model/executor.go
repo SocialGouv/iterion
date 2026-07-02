@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
 	"github.com/SocialGouv/iterion/pkg/backend/secretguard"
 	"github.com/SocialGouv/iterion/pkg/backend/tool"
+	"github.com/SocialGouv/iterion/pkg/backend/tooldisplay"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
@@ -578,7 +579,13 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 		fn := e.hooks.OnToolStarted
 		h.OnToolStarted = func(toolName string, toolUseID string, input json.RawMessage) {
 			if logForClaw {
-				e.logger.Info("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(input))
+				// LogBlock (not Info) so a long/multi-line input folds under the
+				// truncated header as an expandable "▸" block — parity with
+				// claude_code. clawToolHint keeps the one-line header; BlockBody
+				// supplies the full body when it had to clip.
+				e.logger.LogBlock(iterlog.LevelInfo, "ℹ️ ",
+					fmt.Sprintf("[%s#%d/claw] 🔧 %s %s", nodeID, iteration, toolName, clawToolHint(input)),
+					tooldisplay.BlockBody(toolName, input))
 			}
 			if fn != nil {
 				fn(nodeID, LLMToolStartedInfo{
@@ -594,11 +601,21 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 		fn := e.hooks.OnToolCall
 		h.OnToolCalled = func(toolName string, toolUseID string, isError bool, output string) {
 			if logForClaw {
-				marker := "✓"
+				// Log the tool RESULT as an expandable block (📤 success, ❌
+				// error): truncated preview in the header, full (bounded) output
+				// folded underneath — symmetric with the input above and
+				// identical to claude_code via tooldisplay.ResultDisplay.
+				glyph := "📤"
 				if isError {
-					marker = "✗"
+					glyph = "❌"
 				}
-				e.logger.Info("[%s#%d/claw] %s %s (%d bytes)", nodeID, iteration, marker, toolName, len(output))
+				header, body := tooldisplay.ResultDisplay(output)
+				if header == "" {
+					header = fmt.Sprintf("(%d bytes)", len(output))
+				}
+				e.logger.LogBlock(iterlog.LevelInfo, "ℹ️ ",
+					fmt.Sprintf("[%s#%d/claw] %s %s %s", nodeID, iteration, glyph, toolName, header),
+					body)
 			}
 			if fn != nil {
 				info := LLMToolCallInfo{

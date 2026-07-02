@@ -250,6 +250,34 @@ func TestBlockBody_LongSingleLineCommand(t *testing.T) {
 	}
 }
 
+func TestResultDisplay(t *testing.T) {
+	// short single-line result → header only, no body.
+	if h, b := ResultDisplay("done"); h != "done" || b != "" {
+		t.Fatalf("short result: got (%q,%q), want (done, empty)", h, b)
+	}
+	// empty → nothing.
+	if h, b := ResultDisplay(""); h != "" || b != "" {
+		t.Fatalf("empty result: got (%q,%q), want empty", h, b)
+	}
+	// multi-line → header = first line, body = full.
+	multi := "line1\nline2\nline3"
+	if h, b := ResultDisplay(multi); h != "line1" || b != multi {
+		t.Fatalf("multiline: got (%q,%q), want (line1, full)", h, b)
+	}
+	// long single line → header truncated, body = full.
+	long := strings.Repeat("x", headerDetailMax+50)
+	h, b := ResultDisplay(long)
+	if len(h) > headerDetailMax || b != long {
+		t.Fatalf("long single line: header=%d body-eq-full=%v", len(h), b == long)
+	}
+	// over the body cap → bounded body with a truncation note.
+	huge := strings.Repeat("y", outputBodyMax+1000)
+	_, hb := ResultDisplay(huge)
+	if len(hb) >= len(huge) || !strings.Contains(hb, "truncated") {
+		t.Fatalf("huge result should be bounded + noted, got len=%d", len(hb))
+	}
+}
+
 func TestBlockBody_LongPathExpands(t *testing.T) {
 	// A path so long it truncates in the header expands too. A short path
 	// (TestBlockBody_NonStructured) stays a one-liner.
