@@ -4,19 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/gorilla/websocket"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -186,6 +183,15 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	rc := newRunConn(s, conn, runID)
 	rc.xStore = xStore
 	rc.xStorePath = xStorePath
+	// One store-agnostic streaming source per connection (ADR-053): a
+	// per-conn FileSource for cross-store observation (this conn owns
+	// its Close), the Service's shared source otherwise.
+	if xStore != nil {
+		rc.src = runstream.NewFileSource(xStore, xStorePath, s.logger)
+		rc.srcOwned = true
+	} else {
+		rc.src = s.runs.StreamSource()
+	}
 	// Snapshot the authenticated tenant identity so every per-WS store
 	// call (Snapshot, LoadEvents, CancelInactive, LoadRun) carries the
 	// same tenant_id that requireAuth stamped on the upgrade request.
@@ -240,24 +246,19 @@ type runConn struct {
 	// mode stamps a super-admin identity, which the gate lets through.
 	identity auth.Identity
 
+	// src is the store-agnostic streaming source every subscription on
+	// this connection goes through (ADR-053). srcOwned marks the
+	// per-connection cross-store FileSource this conn must Close.
+	src      runstream.Source
+	srcOwned bool
+
 	mu            sync.Mutex
 	subscribed    bool
-	sub           *runview.EventSubscription
+	eventSub      runstream.EventSubscription
 	logSubscribed bool
-	logSub        *runview.RunLogSubscription
+	logSub        runstream.LogSubscription
 	closeOnce     sync.Once
 	closed        chan struct{}
-
-	// fileSrcRelease, when non-nil, releases the refcounted file event
-	// source started on subscribe for a run not produced in this
-	// process (e.g. a dispatcher-spawned run). Called on unsubscribe
-	// and on connection close. Guarded by mu alongside sub.
-	fileSrcRelease func()
-	// logSrcRelease is the run.log twin of fileSrcRelease: releases the
-	// on-demand run.log tailer started by EnsureLogSource when logs are
-	// subscribed for an active run not produced in this process. Called on
-	// log-unsubscribe and on connection close. Guarded by mu.
-	logSrcRelease func()
 }
 
 // authCtx returns a fresh background ctx with the tenant/user
@@ -291,23 +292,18 @@ func (c *runConn) close() {
 	c.closeOnce.Do(func() {
 		close(c.closed)
 		c.mu.Lock()
-		if c.sub != nil {
-			c.sub.Cancel()
-			c.sub = nil
+		if c.eventSub != nil {
+			_ = c.eventSub.Close()
+			c.eventSub = nil
 		}
 		if c.logSub != nil {
-			c.logSub.Cancel()
+			_ = c.logSub.Close()
 			c.logSub = nil
 		}
-		if c.fileSrcRelease != nil {
-			c.fileSrcRelease()
-			c.fileSrcRelease = nil
-		}
-		if c.logSrcRelease != nil {
-			c.logSrcRelease()
-			c.logSrcRelease = nil
-		}
 		c.mu.Unlock()
+		if c.srcOwned && c.src != nil {
+			_ = c.src.Close()
+		}
 		_ = c.conn.Close()
 		if c.server.cfg.Metrics != nil {
 			c.server.cfg.Metrics.WSConnections.Dec()
@@ -365,10 +361,12 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 	}
 }
 
-// handleSubscribe registers the connection with the broker and sends
-// the catch-up sequence: snapshot first, then any persisted events
-// with seq >= from_seq, then the live tail. Calling subscribe twice
-// on the same connection is a no-op (acked but nothing changes); use
+// handleSubscribe registers the connection's event subscription and
+// sends the catch-up sequence: snapshot first, then (with
+// replay_history) any persisted events with seq >= from_seq, then the
+// live tail — all delivered by the connection's store-agnostic source
+// (ADR-053), whatever mode produced the run. Calling subscribe twice on
+// the same connection is a no-op (acked but nothing changes); use
 // unsubscribe + subscribe to re-anchor at a different from_seq.
 func (c *runConn) handleSubscribe(env runWSEnvelope) {
 	var req wsSubscribeRequest
@@ -385,39 +383,10 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 		c.sendAck(env.AckID)
 		return
 	}
-	// Cross-store mode skips the in-process broker entirely (the
-	// foreign run's events are persisted by a different daemon and
-	// never reach this process's broker). We tail the foreign
-	// events.jsonl directly via streamEventsCrossStore below.
-	//
-	// In cloud mode (Mongo change-stream source wired) we also skip
-	// the broker — the Mongo source handles both historical replay
-	// and live tail in a single Subscribe call.
-	//
-	// In local same-store mode we keep the broker so multi-WS clients
-	// on the same process share the same fan-out cursor.
-	if c.xStore == nil && !c.server.runs.HasEventSource() {
-		c.sub = c.server.runs.Broker().Subscribe(c.runID)
-		// Dispatcher-spawned (and any other not-in-process) runs write
-		// events to disk but never publish to this broker, so live WS
-		// delivery would stall after the connect-time replay until the
-		// client refreshes. Bridge events.jsonl -> broker for them. In-
-		// process Launch runs already feed the broker via the runtime
-		// observer, so skip those to avoid double-publishing.
-		if !c.server.runs.Active(c.runID) {
-			c.fileSrcRelease = c.server.runs.EnsureEventSource(c.runID)
-		}
-	}
 	c.subscribed = true
 	c.mu.Unlock()
 
-	var snap *runview.RunSnapshot
-	var err error
-	if c.xStore != nil {
-		snap, err = runview.BuildSnapshot(context.Background(), c.xStore, c.runID)
-	} else {
-		snap, err = c.server.runs.SnapshotCtx(c.authCtx(), c.runID)
-	}
+	snap, err := c.snapshot()
 	if err != nil {
 		c.sendError("snapshot_failed", err.Error(), env.AckID)
 		return
@@ -425,447 +394,60 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 	c.sendEnvelope(wsTypeSnapshot, snap, env.AckID)
 
 	// Lazy mode: advance the effective replay floor past the snapshot
-	// so both the local pagination loop and the cloud event-source
-	// see "nothing to replay". Live tail still flows unaffected. The
-	// frontend pulls history on demand via /api/runs/{id}/events.
+	// so the source sees "nothing to replay". Live tail still flows
+	// unaffected. The frontend pulls history on demand via
+	// /api/runs/{id}/events.
 	effectiveFromSeq := req.FromSeq
 	if !req.ReplayHistory && snap.LastSeq != runview.NoEventsSeq {
 		effectiveFromSeq = snap.LastSeq + 1
 	}
-	go c.streamEvents(effectiveFromSeq, snap.LastSeq)
-}
 
-// streamEvents replays historical events then tails the live source.
-// Two implementations behind the same WS contract:
-//
-//   - local broker mode: replay via store.LoadEvents(fromSeq, snap+1),
-//     then drain the in-process EventBroker channel until the run
-//     terminates (channel closes).
-//   - cloud event-source mode: a single eventstream.Source subscription
-//     handles both phases — the source emits historical first, then
-//     transitions to a Mongo change-stream tail, with no boundary
-//     dedup needed (the source itself avoids the gap).
-//
-// Plan §F (T-21).
-func (c *runConn) streamEvents(fromSeq, snapshotSeq int64) {
-	if c.xStore != nil {
-		c.streamEventsCrossStore(fromSeq, snapshotSeq)
-		return
-	}
-	if c.server.runs.HasEventSource() {
-		c.streamEventsCloud(fromSeq)
-		return
-	}
-	c.streamEventsLocal(fromSeq, snapshotSeq)
-}
-
-// replayEventPages drains the paginated replay window
-// [fromSeq, snapshotSeq+1) in runview.MaxEventsPerPage batches, shipping
-// each non-empty page as one wsTypeEventBatch envelope. It is the shared
-// spine of the broker-backed (streamEventsLocal) and cross-store
-// (streamEventsCrossStore) replay loops, which differ only in the storage
-// backend — supplied here as the loadPage closure.
-//
-// It returns true when the caller must stop the WHOLE stream and NOT
-// proceed to live-tailing: either the peer closed (sendEnvelope failed) or
-// loadPage signalled a fatal stop (e.g. a corrupted event log, after the
-// closure has already shipped its own partial batch + error envelope). It
-// returns false when replay ended normally (load error, short page, or the
-// snapshot boundary) and the caller should proceed to its tail.
-//
-// loadPage returns (events, stop, err):
-//   - events: the next page; shipped by this helper only when stop is false
-//     and err is nil (closures drop events they don't want shipped)
-//   - stop:   the closure already sent its own envelopes and the whole
-//     stream must end now (corruption path)
-//   - err:    a non-fatal load error — replay ends, caller still tails
-func (c *runConn) replayEventPages(
-	fromSeq, snapshotSeq int64,
-	loadPage func(next int64) (events []*store.Event, stop bool, err error),
-) bool {
-	if snapshotSeq != runview.NoEventsSeq && (fromSeq > 0 || snapshotSeq > 0) {
-		next := fromSeq
-		for {
-			events, stop, err := loadPage(next)
-			if stop {
-				return true
-			}
-			if len(events) > 0 {
-				if !c.sendEnvelope(wsTypeEventBatch, events, "") {
-					return true
-				}
-			}
-			if err != nil {
-				break
-			}
-			if len(events) < runview.MaxEventsPerPage {
-				break
-			}
-			next = events[len(events)-1].Seq + 1
-			if next > snapshotSeq {
-				break
-			}
-		}
-	}
-	return false
-}
-
-// streamEventsCrossStore is the read-only cross-store path: replay
-// historical events from the foreign store's events.jsonl, then tail
-// the file via fsnotify (with a polling fallback) for new events. The
-// foreign run is being driven by a different daemon or CLI process —
-// this daemon has no broker subscription for it, but the file is the
-// authoritative source of truth and live-tailing it gives the WS
-// client the same live-update UX as in-process subscriptions.
-//
-// Terminal detection: the loop watches the run.json status alongside
-// the events file. Once the status reaches a terminal value
-// (finished / failed / cancelled) the function sends wsTypeTerminated
-// and returns. Without this, the tail would run forever on a finished
-// run (the file simply stops growing, which is indistinguishable from
-// "still working" by file watch alone).
-func (c *runConn) streamEventsCrossStore(fromSeq, snapshotSeq int64) {
-	if c.xStorePath == "" {
-		c.sendError("cross_store_unconfigured", "xStorePath empty", "")
-		return
-	}
-
-	// 1. Replay historical events [fromSeq, snapshotSeq+1) via the
-	//    foreign store's paginated range API.
-	if c.replayEventPages(fromSeq, snapshotSeq, func(next int64) ([]*store.Event, bool, error) {
-		events, err := c.xStore.LoadEventsRange(context.Background(), c.runID, next, snapshotSeq+1, runview.MaxEventsPerPage)
-		if err != nil {
-			c.server.logger.Warn("runs_ws: cross-store replay (%s): %v", c.runID, err)
-			return nil, false, err // end replay; the caller still tails the file
-		}
-		return events, false, nil
-	}) {
-		return
-	}
-
-	// 2. Tail the foreign events.jsonl for new appends. Snapshot the
-	//    last replayed seq so the tail dedups any overlap with the
-	//    replay window above (events written between the snapshot
-	//    moment and now).
-	lastSeq := snapshotSeq
-	c.tailCrossStoreEvents(&lastSeq)
-}
-
-// crossStoreTailPollInterval is the wide defensive poll cadence —
-// fsnotify is the fast path; the polling tier catches missed events
-// when the inotify queue overflows under high-throughput appends.
-const crossStoreTailPollInterval = 2 * time.Second
-
-// crossStoreTerminalCheckInterval bounds how often we re-read run.json
-// to check for terminal status. Cheap — it's a tiny file — but no need
-// to re-stat every event.
-const crossStoreTerminalCheckInterval = 5 * time.Second
-
-// tailCrossStoreEvents is the long-running tail loop. Reads any bytes
-// appended past the recorded offset, parses each complete line as a
-// store.Event, dedups by seq against *lastSeq, ships via wsTypeEvent.
-// Returns when c.closed fires or the run reaches a terminal status.
-func (c *runConn) tailCrossStoreEvents(lastSeq *int64) {
-	eventsPath := filepath.Join(c.xStorePath, "runs", c.runID, "events.jsonl")
-
-	watcher, watcherErr := fsnotify.NewWatcher()
-	if watcherErr != nil {
-		c.server.logger.Warn("runs_ws: cross-store tail (%s): fsnotify unavailable, polling: %v", c.runID, watcherErr)
-		c.tailCrossStoreEventsPolling(eventsPath, lastSeq)
-		return
-	}
-	defer watcher.Close()
-
-	dir := filepath.Dir(eventsPath)
-	if err := watcher.Add(dir); err != nil {
-		c.server.logger.Warn("runs_ws: cross-store tail (%s): watcher.Add(%q): %v — polling", c.runID, dir, err)
-		c.tailCrossStoreEventsPolling(eventsPath, lastSeq)
-		return
-	}
-
-	var offset int64
-	offset = c.drainNewCrossStoreEvents(eventsPath, offset, lastSeq)
-
-	pollTicker := time.NewTicker(crossStoreTailPollInterval)
-	defer pollTicker.Stop()
-	terminalTicker := time.NewTicker(crossStoreTerminalCheckInterval)
-	defer terminalTicker.Stop()
-
-	// Snapshot the Errors channel so we can nil our reference if fsnotify
-	// closes it (a fatal backend error closes both Events and Errors). A
-	// closed channel is always ready to receive, which would spin this
-	// select on the brief window before the closed Events case returns.
-	// Mirrors the cloud event-stream path (streamEventsCloud).
-	errs := watcher.Errors
-
-	for {
-		select {
-		case <-c.closed:
-			return
-		case <-terminalTicker.C:
-			if c.checkCrossStoreTerminal(eventsPath, &offset, lastSeq) {
-				return
-			}
-		case ev, ok := <-watcher.Events:
-			if !ok {
-				return
-			}
-			if filepath.Clean(ev.Name) != filepath.Clean(eventsPath) {
-				continue
-			}
-			if ev.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-				offset = c.drainNewCrossStoreEvents(eventsPath, offset, lastSeq)
-			}
-		case <-pollTicker.C:
-			offset = c.drainNewCrossStoreEvents(eventsPath, offset, lastSeq)
-		case err, ok := <-errs:
-			if !ok {
-				errs = nil // fsnotify closed Errors; stop selecting on it
-				continue
-			}
-			c.server.logger.Warn("runs_ws: cross-store tail (%s): watcher error: %v", c.runID, err)
-		}
-	}
-}
-
-// tailCrossStoreEventsPolling is the fsnotify-less fallback (rare —
-// only fires on hosts where inotify isn't available, e.g. some
-// container filesystems).
-func (c *runConn) tailCrossStoreEventsPolling(eventsPath string, lastSeq *int64) {
-	var offset int64
-	offset = c.drainNewCrossStoreEvents(eventsPath, offset, lastSeq)
-
-	pollTicker := time.NewTicker(500 * time.Millisecond)
-	defer pollTicker.Stop()
-	terminalTicker := time.NewTicker(crossStoreTerminalCheckInterval)
-	defer terminalTicker.Stop()
-
-	for {
-		select {
-		case <-c.closed:
-			return
-		case <-terminalTicker.C:
-			if c.checkCrossStoreTerminal(eventsPath, &offset, lastSeq) {
-				return
-			}
-		case <-pollTicker.C:
-			offset = c.drainNewCrossStoreEvents(eventsPath, offset, lastSeq)
-		}
-	}
-}
-
-// drainNewCrossStoreEvents reads bytes appended past `offset`, splits
-// on newlines, parses each complete line as a store.Event, sends it
-// to the WS (deduped against *lastSeq). Trailing partial line bytes
-// stay in the file for the next call — the returned offset advances
-// only past COMPLETE lines so we never lose a half-written event when
-// the producer flushes mid-line.
-//
-// File truncation / rotation: if Stat shows the file is shorter than
-// the recorded offset (rare; happens if the producer rewrites the
-// file from scratch on resume), we reset to 0 and replay everything.
-// The dedup-by-seq logic above ensures the WS client doesn't see
-// duplicates from the replay window.
-func (c *runConn) drainNewCrossStoreEvents(eventsPath string, offset int64, lastSeq *int64) int64 {
-	f, err := os.Open(eventsPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			c.server.logger.Warn("runs_ws: cross-store tail (%s): open: %v", c.runID, err)
-		}
-		return offset
-	}
-	defer f.Close()
-
-	st, err := f.Stat()
-	if err != nil {
-		return offset
-	}
-	if st.Size() < offset {
-		// File was rotated / truncated — restart from the top.
-		offset = 0
-	}
-	if st.Size() == offset {
-		return offset // nothing new
-	}
-
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		c.server.logger.Warn("runs_ws: cross-store tail (%s): seek %d: %v", c.runID, offset, err)
-		return offset
-	}
-
-	// Read all remaining bytes (typically a few KB per drain — events
-	// are tiny JSON lines). Sidecar blobs (large tool I/O) live in
-	// runs/<id>/tools/, not inline in events.jsonl, so this stays
-	// bounded.
-	body, err := io.ReadAll(f)
-	if err != nil {
-		c.server.logger.Warn("runs_ws: cross-store tail (%s): read: %v", c.runID, err)
-		return offset
-	}
-
-	// Find the last newline; bytes past it are a partial line we'll
-	// pick up on the next drain.
-	lastNL := -1
-	for i := len(body) - 1; i >= 0; i-- {
-		if body[i] == '\n' {
-			lastNL = i
-			break
-		}
-	}
-	if lastNL < 0 {
-		// All accumulated bytes are still a partial line — don't
-		// advance offset.
-		return offset
-	}
-	complete := body[:lastNL+1]
-
-	// Process each complete line.
-	start := 0
-	for i := 0; i < len(complete); i++ {
-		if complete[i] != '\n' {
-			continue
-		}
-		line := complete[start:i]
-		start = i + 1
-		if len(line) == 0 {
-			continue
-		}
-		var ev store.Event
-		if err := json.Unmarshal(line, &ev); err != nil {
-			c.server.logger.Warn("runs_ws: cross-store tail (%s): bad event line: %v", c.runID, err)
-			continue
-		}
-		if ev.Seq <= *lastSeq {
-			continue
-		}
-		if !c.sendEnvelope(wsTypeEvent, &ev, "") {
-			return offset + int64(len(complete))
-		}
-		*lastSeq = ev.Seq
-	}
-	return offset + int64(len(complete))
-}
-
-// checkCrossStoreTerminal re-reads run.json and, if the status is
-// terminal, drains any final events from the file, sends wsTypeTerminated,
-// and returns true. The caller stops tailing in that case.
-func (c *runConn) checkCrossStoreTerminal(eventsPath string, offset *int64, lastSeq *int64) bool {
-	run, err := c.xStore.LoadRun(context.Background(), c.runID)
-	if err != nil {
-		return false
-	}
-	switch run.Status {
-	case store.RunStatusFinished, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		*offset = c.drainNewCrossStoreEvents(eventsPath, *offset, lastSeq)
-		c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
-		return true
-	}
-	return false
-}
-
-// streamEventsLocal is the original broker-backed path: replay disk
-// events [fromSeq, snapshotSeq+1) then drain the broker channel,
-// dedup'ing against the replay window.
-//
-// LoadEvents caps at runview.MaxEventsPerPage so for runs whose
-// replay window exceeds the cap we MUST paginate — otherwise the
-// tail of the events stream silently disappears, including any
-// terminal run_failed/run_finished events, which leaves the
-// studio's status pill stuck on whatever pre-terminal status the
-// last replayed event implied.
-func (c *runConn) streamEventsLocal(fromSeq, snapshotSeq int64) {
-	// Ship each page as one batch envelope: cuts per-envelope marshal +
-	// WS-frame overhead by the page size (up to MaxEventsPerPage×). The
-	// frontend dispatches one state update per page instead of one per event.
-	if c.replayEventPages(fromSeq, snapshotSeq, func(next int64) ([]*store.Event, bool, error) {
-		events, err := c.server.runs.LoadEventsCtx(c.authCtx(), c.runID, next, snapshotSeq+1)
-		// LoadEventsCtx returns both partial events AND
-		// ErrEventsCorrupted when a run's events.jsonl is too
-		// damaged to trust. Surface that to the client as an
-		// error envelope BEFORE stopping so the studio can
-		// raise a banner instead of silently rendering a
-		// truncated history as if it were complete. stop=true so the
-		// whole stream ends here (no live tail on a corrupt log).
-		if errors.Is(err, store.ErrEventsCorrupted) {
-			if len(events) > 0 {
-				_ = c.sendEnvelope(wsTypeEventBatch, events, "")
-			}
-			c.sendError("events_corrupted", err.Error(), "")
-			return nil, true, err
-		}
-		if err != nil {
-			return nil, false, err // end replay; the caller still tails the broker
-		}
-		return events, false, nil
-	}) {
-		return
-	}
-
-	c.mu.Lock()
-	sub := c.sub
-	c.mu.Unlock()
-	if sub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-c.closed:
-			return
-		case ev, ok := <-sub.C:
-			if !ok {
-				c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
-				return
-			}
-			// Run-health alert events (store.EventAlert) are in-process
-			// only: the alert Manager publishes them straight to the
-			// broker WITHOUT a seq (Seq=0) and they are never persisted
-			// to events.jsonl. They must bypass the snapshot dedup guard
-			// below — once the run has emitted any real event,
-			// snapshotSeq is past 0, so the guard would otherwise drop
-			// every alert (Seq=0 <= snapshotSeq), silently breaking the
-			// browser toast + notification-dot delivery path. They arrive
-			// once on the live tail only, so there is no replay/dedup risk.
-			if ev.Type != store.EventAlert && snapshotSeq != runview.NoEventsSeq && ev.Seq <= snapshotSeq {
-				continue
-			}
-			if !c.sendEnvelope(wsTypeEvent, ev, "") {
-				return
-			}
-		}
-	}
-}
-
-// streamEventsCloud subscribes to the Mongo change-stream source. The
-// source emits historical replay events (seq >= fromSeq) followed by
-// live ones from the change stream; no dedup or boundary tracking is
-// needed on this side — the source guarantees no gaps and no
-// duplicates. The subscription's Errors channel is drained but not
-// fatal: a transient change-stream blip is logged and the WS stays
-// open until c.closed fires. The source's underlying ctx is bound to
-// c.closed via Close() in the defer, so we don't need a separate
-// goroutine to translate the channel into a cancel.
-func (c *runConn) streamEventsCloud(fromSeq int64) {
-	sub, err := c.server.runs.SubscribeEventStream(c.authCtx(), c.runID, fromSeq)
+	sub, err := c.src.SubscribeEvents(c.authCtx(), c.runID, effectiveFromSeq)
 	if err != nil {
 		c.sendError("event_stream_failed", err.Error(), "")
 		return
 	}
-	defer func() { _ = sub.Close() }()
+	c.mu.Lock()
+	c.eventSub = sub
+	c.mu.Unlock()
+	go c.pumpEvents(sub)
+}
 
+// snapshot builds the subscribe-time snapshot from whichever store this
+// connection observes — the only remaining storage difference in the
+// WS layer (the foreign store has no Service wrapper to ask).
+func (c *runConn) snapshot() (*runview.RunSnapshot, error) {
+	if c.xStore != nil {
+		return runview.BuildSnapshot(context.Background(), c.xStore, c.runID)
+	}
+	return c.server.runs.SnapshotCtx(c.authCtx(), c.runID)
+}
+
+// pumpEvents forwards the subscription to the WS: replay pages ship as
+// event_batch envelopes (one frame per page instead of one per event),
+// live deliveries as single event envelopes. The Events channel closing
+// means the stream ended — a corrupted event log (surfaced on Errors
+// right before the close) becomes an events_corrupted error envelope,
+// any other end becomes terminated. Transient source errors (e.g. a
+// change-stream reconnect notice) are logged and the stream stays open.
+func (c *runConn) pumpEvents(sub runstream.EventSubscription) {
+	defer func() { _ = sub.Close() }()
 	events := sub.Events()
 	errs := sub.Errors()
+	var fatal error
 	for {
 		select {
 		case <-c.closed:
 			return
 		case batch, ok := <-events:
 			if !ok {
-				c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
+				if errors.Is(fatal, store.ErrEventsCorrupted) {
+					c.sendError("events_corrupted", fatal.Error(), "")
+				} else {
+					c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
+				}
 				return
 			}
-			// Replay pages arrive as multi-event batches (ship the bulk
-			// envelope); live tail deliveries carry one event each.
 			if len(batch) == 1 {
 				if !c.sendEnvelope(wsTypeEvent, batch[0], "") {
 					return
@@ -877,14 +459,13 @@ func (c *runConn) streamEventsCloud(fromSeq int64) {
 			}
 		case err, ok := <-errs:
 			if !ok {
-				// Source closed Errors but may keep Events open (the
-				// "transient blip, keep the WS open" case the doc comment
-				// describes). Nil the channel so this select case stops
-				// firing — a closed channel is always ready to receive,
-				// which would otherwise spin a CPU core.
+				// Source closed Errors but may keep Events open. Nil the
+				// channel so this case stops firing — a closed channel
+				// is always ready to receive, which would spin a core.
 				errs = nil
 				continue
 			}
+			fatal = err
 			if c.server.logger != nil {
 				c.server.logger.Warn("server: ws event stream %s: %v", c.runID, err)
 			}
@@ -894,13 +475,9 @@ func (c *runConn) streamEventsCloud(fromSeq int64) {
 
 func (c *runConn) handleUnsubscribe(env runWSEnvelope) {
 	c.mu.Lock()
-	if c.sub != nil {
-		c.sub.Cancel()
-		c.sub = nil
-	}
-	if c.fileSrcRelease != nil {
-		c.fileSrcRelease()
-		c.fileSrcRelease = nil
+	if c.eventSub != nil {
+		_ = c.eventSub.Close()
+		c.eventSub = nil
 	}
 	c.subscribed = false
 	c.mu.Unlock()

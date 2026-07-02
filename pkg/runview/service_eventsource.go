@@ -13,7 +13,7 @@ type fileSrcHandle struct {
 	done chan struct{}
 }
 
-// EnsureEventSource guarantees a file-backed event tailer is feeding
+// ensureEventSource guarantees a file-backed event tailer is feeding
 // the broker for runID, bridging events.jsonl -> broker so WS
 // subscribers receive LIVE events for runs this process didn't launch
 // in-process. Returns a release func the caller MUST invoke exactly
@@ -25,7 +25,7 @@ type fileSrcHandle struct {
 // local same-store mode. For in-process Launch runs the broker is fed
 // directly (service_launch.go), so a file tailer would double-publish
 // (harmless for the seq-dedup'd WS layer, but wasteful).
-func (s *Service) EnsureEventSource(runID string) (release func()) {
+func (s *Service) ensureEventSource(runID string) (release func()) {
 	s.fileSrcMu.Lock()
 	if s.fileSrcs == nil {
 		s.fileSrcs = make(map[string]*fileSrcHandle)
@@ -60,7 +60,7 @@ func (s *Service) EnsureEventSource(runID string) (release func()) {
 // Active reports whether runID is being produced in-process by this
 // service's lifecycle manager (a studio / CLI Launch). Dispatcher-
 // spawned runs are not registered with the manager and return false —
-// which is exactly the signal EnsureEventSource keys off.
+// which is exactly the signal ensureEventSource keys off.
 func (s *Service) Active(runID string) bool {
 	return s.manager != nil && s.manager.Active(runID)
 }

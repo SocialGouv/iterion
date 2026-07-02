@@ -2,7 +2,6 @@ package runview
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -371,14 +370,14 @@ type Service struct {
 	streamSrc runstream.Source
 
 	// fileSrcs tracks on-demand events.jsonl tailers started by
-	// EnsureEventSource for runs not produced in this process (e.g.
+	// ensureEventSource for runs not produced in this process (e.g.
 	// dispatcher-spawned in-process runs, whose runtime observer feeds
 	// the dispatcher heartbeat — not this broker). Refcounted across WS
 	// subscribers; the tailer stops when the last subscriber releases.
 	fileSrcMu sync.Mutex
 	fileSrcs  map[string]*fileSrcHandle
 	// logSrcs is the run.log twin of fileSrcs: on-demand run.log tailers
-	// started by EnsureLogSource for active runs not produced in this process,
+	// started by ensureLogSource for active runs not produced in this process,
 	// so the WS log stream is live instead of a one-shot replay. Guarded by
 	// fileSrcMu (same low-contention lock). Refcounted; the tailer + buffer are
 	// torn down when the last WS subscriber releases.
@@ -750,25 +749,6 @@ func (s *Service) RunStore() store.RunStore {
 		return nil
 	}
 	return s.store
-}
-
-// HasEventSource reports whether an alternative streaming source has
-// been wired (i.e. cloud mode). The WS handler keys its branch
-// selection on this. Returns false for the default broker path.
-// Interim shim until the handlers move onto StreamSource (ADR-053
-// step 5).
-func (s *Service) HasEventSource() bool { return s.streamSrc != nil }
-
-// SubscribeEventStream opens a runstream.Source event subscription
-// when one is installed. Returns nil + a typed error when the service
-// is in local broker mode — callers branch on HasEventSource before
-// calling this. Interim shim until the handlers move onto StreamSource
-// (ADR-053 step 5).
-func (s *Service) SubscribeEventStream(ctx context.Context, runID string, fromSeq int64) (runstream.EventSubscription, error) {
-	if s.streamSrc == nil {
-		return nil, errors.New("runview: no stream source wired (local broker mode)")
-	}
-	return s.streamSrc.SubscribeEvents(ctx, runID, fromSeq)
 }
 
 // validatePathComponent delegates to store.SanitizePathComponent so

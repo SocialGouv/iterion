@@ -11,7 +11,7 @@ import (
 )
 
 // TestEnsureLogSource_LiveTailAndRelease verifies the log-stream twin of
-// EnsureEventSource: for a run this process didn't launch, EnsureLogSource
+// ensureEventSource: for a run this process didn't launch, ensureLogSource
 // stands up a live buffer fed by an fsnotify tailer of run.log, and the
 // refcounted release tears it down. This is the fix for external/dispatcher
 // runs whose logs used to only one-shot replay (studio needed a page refresh).
@@ -32,12 +32,12 @@ func TestEnsureLogSource_LiveTailAndRelease(t *testing.T) {
 		t.Fatalf("seed run.log: %v", err)
 	}
 
-	rel, buf := svc.EnsureLogSource(runID)
+	rel, buf := svc.ensureLogSource(runID)
 	if buf == nil {
-		t.Fatal("EnsureLogSource returned a nil buffer")
+		t.Fatal("ensureLogSource returned a nil buffer")
 	}
 	if svc.GetLogBuffer(runID) == nil {
-		t.Fatal("GetLogBuffer nil right after EnsureLogSource")
+		t.Fatal("GetLogBuffer nil right after ensureLogSource")
 	}
 
 	sub := buf.Subscribe()
@@ -88,8 +88,8 @@ func TestEnsureLogSource_Refcount(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	rel1, buf1 := svc.EnsureLogSource(runID)
-	rel2, buf2 := svc.EnsureLogSource(runID)
+	rel1, buf1 := svc.ensureLogSource(runID)
+	rel2, buf2 := svc.ensureLogSource(runID)
 	if buf1 == nil || buf2 == nil || buf1 != buf2 {
 		t.Fatal("both holders must share the same live buffer")
 	}

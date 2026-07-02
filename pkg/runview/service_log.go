@@ -9,8 +9,8 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
-// EnsureLogSource guarantees a run.log tailer is feeding a live RunLogBuffer
-// for runID — the log-stream twin of EnsureEventSource. For a run this process
+// ensureLogSource guarantees a run.log tailer is feeding a live RunLogBuffer
+// for runID — the log-stream twin of ensureEventSource. For a run this process
 // did NOT launch (an external `iterion run`/`resume`, a dispatcher-spawned
 // run, or one re-attached across a restart) GetLogBuffer is nil, so the WS log
 // subscribe used to fall back to a one-shot replay of run.log and the studio
@@ -20,11 +20,11 @@ import (
 // when its subscription ends (the tailer + buffer are dropped on the last
 // release). A nil buffer means no source could be started.
 //
-// Guard the same way as EnsureEventSource: only call for runs that are NOT
+// Guard the same way as ensureEventSource: only call for runs that are NOT
 // active in-process (those feed their buffer directly via the logger tee) and
 // are NOT terminal (a finished run's static run.log wants the one-shot replay,
 // not a lingering tailer).
-func (s *Service) EnsureLogSource(runID string) (release func(), buf *RunLogBuffer) {
+func (s *Service) ensureLogSource(runID string) (release func(), buf *RunLogBuffer) {
 	s.fileSrcMu.Lock()
 	if s.logSrcs == nil {
 		s.logSrcs = make(map[string]*fileSrcHandle)

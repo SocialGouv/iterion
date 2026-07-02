@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -62,10 +61,10 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 	// already feed the broker via the runtime observer.
 	var release func()
 	if !s.Active(runID) {
-		release = s.EnsureEventSource(runID)
+		release = s.ensureEventSource(runID)
 	}
 
-	sub := newFsSub[[]*store.Event]()
+	sub := runstream.NewEventPipe()
 	cleanup := func() {
 		brokerSub.Cancel()
 		if release != nil {
@@ -74,7 +73,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 	}
 
 	go func() {
-		defer sub.finish(cleanup)
+		defer sub.Finish(cleanup)
 
 		// Phase 1 — paginated replay of the persisted backlog. A partial
 		// page ships before a corruption error surfaces (fatal); other
@@ -85,7 +84,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 		for {
 			page, err := s.store.LoadEventsRange(ctx, runID, next, 0, runstream.MaxEventsPerPage)
 			if len(page) > 0 {
-				if !sub.ship(ctx, page) {
+				if !sub.Ship(ctx, page) {
 					return
 				}
 				if last := page[len(page)-1].Seq; last > maxReplayed {
@@ -93,7 +92,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 				}
 			}
 			if errors.Is(err, store.ErrEventsCorrupted) {
-				sub.fatal(err)
+				sub.Fatal(err)
 				return
 			}
 			if err != nil || len(page) < runstream.MaxEventsPerPage {
@@ -109,7 +108,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 			select {
 			case <-ctx.Done():
 				return
-			case <-sub.done:
+			case <-sub.Done():
 				return
 			case ev, ok := <-brokerSub.C:
 				if !ok {
@@ -118,7 +117,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 				if ev.Type != store.EventAlert && ev.Seq <= maxReplayed {
 					continue
 				}
-				if !sub.ship(ctx, []*store.Event{ev}) {
+				if !sub.Ship(ctx, []*store.Event{ev}) {
 					return
 				}
 				if ev.Seq > maxReplayed {
@@ -128,7 +127,7 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 		}
 	}()
 
-	return fsEventSub{sub}, nil
+	return sub, nil
 }
 
 // SubscribeLogs delivers log bytes from fromOffset. Local resolution
@@ -145,9 +144,9 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 		// Interim cloud behaviour until the run_logs pipeline lands:
 		// no log stream will ever exist — close immediately so the
 		// client renders its "no log captured" state.
-		sub := newFsSub[runstream.LogChunk]()
-		sub.finish(nil)
-		return fsLogSub{sub}, nil
+		sub := runstream.NewLogPipe()
+		sub.Finish(nil)
+		return sub, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -161,26 +160,26 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 		// still active, stand up the on-demand tailer (refcounted); a
 		// terminal run falls through to the one-shot replay below.
 		if run, err := s.LoadRun(runID); err == nil && !run.Status.IsTerminal() {
-			release, buf = s.EnsureLogSource(runID)
+			release, buf = s.ensureLogSource(runID)
 		}
 	}
 
 	if buf == nil {
-		sub := newFsSub[runstream.LogChunk]()
+		sub := runstream.NewLogPipe()
 		go func() {
-			defer sub.finish(nil)
+			defer sub.Finish(nil)
 			data, total := s.readPersistedLogRange(runID, fromOffset, 0)
 			if len(data) > 0 {
-				sub.ship(ctx, runstream.LogChunk{Offset: fromOffset, Data: data, Total: total})
+				sub.Ship(ctx, runstream.LogChunk{Offset: fromOffset, Data: data, Total: total})
 			}
 		}()
-		return fsLogSub{sub}, nil
+		return sub, nil
 	}
 
 	// Subscribe BEFORE Snapshot so chunks landing during the read are
 	// dedup'd by offset on our side rather than lost.
 	logSub := buf.Subscribe()
-	sub := newFsSub[runstream.LogChunk]()
+	sub := runstream.NewLogPipe()
 	cleanup := func() {
 		logSub.Cancel()
 		if release != nil {
@@ -189,7 +188,7 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 	}
 
 	go func() {
-		defer sub.finish(cleanup)
+		defer sub.Finish(cleanup)
 
 		startOffset, snapshot, _ := buf.Snapshot(fromOffset)
 
@@ -199,7 +198,7 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 		// just degrades to the ring's window.
 		if startOffset > fromOffset {
 			if data, _ := s.readPersistedLogRange(runID, fromOffset, startOffset); len(data) > 0 {
-				if !sub.ship(ctx, runstream.LogChunk{
+				if !sub.Ship(ctx, runstream.LogChunk{
 					Offset: fromOffset,
 					Data:   data,
 					Total:  fromOffset + int64(len(data)),
@@ -211,7 +210,7 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 
 		cutoff := startOffset + int64(len(snapshot))
 		if len(snapshot) > 0 {
-			if !sub.ship(ctx, runstream.LogChunk{Offset: startOffset, Data: snapshot, Total: cutoff}) {
+			if !sub.Ship(ctx, runstream.LogChunk{Offset: startOffset, Data: snapshot, Total: cutoff}) {
 				return
 			}
 		}
@@ -221,7 +220,7 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 			select {
 			case <-ctx.Done():
 				return
-			case <-sub.done:
+			case <-sub.Done():
 				return
 			case chunk, ok := <-logSub.C:
 				if !ok {
@@ -239,7 +238,7 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 					data = data[skip:]
 					offset = cutoff
 				}
-				if !sub.ship(ctx, runstream.LogChunk{
+				if !sub.Ship(ctx, runstream.LogChunk{
 					Offset: offset,
 					Data:   data,
 					Total:  offset + int64(len(data)),
@@ -251,7 +250,7 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 		}
 	}()
 
-	return fsLogSub{sub}, nil
+	return sub, nil
 }
 
 // readPersistedLogRange reads bytes [from, until) of the run's persisted
@@ -292,78 +291,3 @@ func (s *Service) readPersistedLogRange(runID string, from, until int64) ([]byte
 	}
 	return buf[:n], from + int64(n)
 }
-
-// fsSub is the generic subscription handle shared by the local event
-// and log paths: a delivery channel, an error channel, a done signal
-// for Close, and once-guarded teardown.
-type fsSub[T any] struct {
-	ch     chan T
-	errs   chan error
-	done   chan struct{}
-	closeO sync.Once  // user-facing Close
-	finO   sync.Once  // channel close + cleanup (producer side)
-	fatalO sync.Once  // at most one fatal error
-}
-
-func newFsSub[T any]() *fsSub[T] {
-	return &fsSub[T]{
-		ch:   make(chan T, 8),
-		errs: make(chan error, 4),
-		done: make(chan struct{}),
-	}
-}
-
-// ship delivers one value, aborting on cancellation. Returns false when
-// the subscription is over and the producer must stop.
-func (s *fsSub[T]) ship(ctx context.Context, v T) bool {
-	select {
-	case s.ch <- v:
-		return true
-	case <-ctx.Done():
-		return false
-	case <-s.done:
-		return false
-	}
-}
-
-// fatal surfaces a terminal error; the producer must return right after
-// (finish closes the channels, which is the "stream over" signal).
-func (s *fsSub[T]) fatal(err error) {
-	s.fatalO.Do(func() {
-		select {
-		case s.errs <- err:
-		default:
-		}
-	})
-}
-
-// finish closes the channels and runs cleanup exactly once. Called by
-// the producer goroutine on exit; also invoked via Close for producers
-// that already returned.
-func (s *fsSub[T]) finish(cleanup func()) {
-	s.finO.Do(func() {
-		if cleanup != nil {
-			cleanup()
-		}
-		close(s.ch)
-		close(s.errs)
-	})
-}
-
-func (s *fsSub[T]) Close() error {
-	s.closeO.Do(func() { close(s.done) })
-	return nil
-}
-
-func (s *fsSub[T]) Errors() <-chan error { return s.errs }
-
-// fsEventSub / fsLogSub adapt the generic handle to the runstream
-// interfaces (Go can't declare methods on a generic instantiation, so
-// each stream kind gets a thin named wrapper).
-type fsEventSub struct{ *fsSub[[]*store.Event] }
-
-func (s fsEventSub) Events() <-chan []*store.Event { return s.ch }
-
-type fsLogSub struct{ *fsSub[runstream.LogChunk] }
-
-func (s fsLogSub) Chunks() <-chan runstream.LogChunk { return s.ch }

@@ -38,7 +38,7 @@ func (s *Service) ObserveRun(ctx context.Context, runID string) (<-chan *store.E
 	var releaseSrc func()
 	if !s.Active(runID) {
 		// Bridge events.jsonl -> broker for runs not produced in-process.
-		releaseSrc = s.EnsureEventSource(runID)
+		releaseSrc = s.ensureEventSource(runID)
 	}
 	sub := s.broker.Subscribe(runID)
 
