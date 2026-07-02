@@ -61,7 +61,6 @@ func (e *Engine) execSpecialNode(
 	}
 
 	rs.outputs[nodeID] = output
-	delete(rs.nodeAttempts, nodeID)
 
 	if err := e.validateNodeOutput(nodeID, node, output); err != nil {
 		return "", err
@@ -81,7 +80,12 @@ func (e *Engine) execSpecialNode(
 		e.logger.Error("failed to save checkpoint after %s %q: %v", kind, nodeID, err)
 	}
 
-	return e.selectEdgeRS(rs, nodeID, output)
+	nextNodeID, err := e.selectEdgeRS(rs, nodeID, output)
+	if err != nil {
+		return "", err
+	}
+	delete(rs.nodeAttempts, nodeID)
+	return nextNodeID, nil
 }
 
 // executeSpecialNodeForBranch dispatches the executor-less special node kinds
