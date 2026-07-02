@@ -22,6 +22,11 @@ func TestIsRateLimitMessage(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "anthropic forfait SESSION limit (real-world, run 019f2247)",
+			text: "You've hit your session limit · resets 10:30am (UTC)",
+			want: true,
+		},
+		{
 			name: "bare rate_limit_error substring NOT matched — left to SDK error path",
 			text: "Error: rate_limit_error: too many requests",
 			want: false,

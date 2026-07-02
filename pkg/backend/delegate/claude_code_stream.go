@@ -564,6 +564,14 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 // shapes so far:
 //   - Anthropic forfait quota: "You've hit your limit · resets …" —
 //     short standalone assistant text, no HTTP 429.
+//   - Anthropic forfait SESSION quota: "You've hit your session limit ·
+//     resets 10:30am (UTC)" — same shape, different noun. The "session"
+//     between "your" and "limit" defeats the "hit your limit" substring,
+//     so it needs its own signal (observed on a claude-sonnet-5 fixer
+//     node mid-run — without it the 53-char notice sailed through as a
+//     normal result and failed structured-output validation with a
+//     misleading "missing required field", crashing the run instead of a
+//     clean resumable rate-limit; see docs/bot-runs/whole-improve-loop.md).
 //   - ZAI / Anthropic-shaped facade: "API Error: Request rejected (429)
 //     · Usage limit reached for 5 hour. Your limit will reset at …" —
 //     the CLI relays the upstream 429 into assistant text.
@@ -574,6 +582,7 @@ func logAssistantContent(logger *iterlog.Logger, nodeID string, iteration int, b
 // these phrases mid-paragraph.
 var rateLimitSignals = []string{
 	"hit your limit",
+	"hit your session limit",
 	"rate limit exceeded",
 	"quota exceeded",
 	"usage limit reached",
