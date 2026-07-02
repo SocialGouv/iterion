@@ -47,6 +47,39 @@ source and the resolved default in full:
 
 ![Studio settings — detected LLM backend credentials and resolved default](images/studio/settings-backends.png)
 
+### Launch-time per-node/-group overrides
+
+Above step 1 sits an explicit **launch-time override**: you can retarget
+which model and/or backend specific nodes use for a single run, **without
+editing the `.bot`**. Because the operator is deliberately re-pointing the
+bot at launch, these win over the node's own DSL `backend:`/`model:`.
+
+- **Studio** — the Launch form's "Model & backend per node" section lists
+  the bot's LLM nodes (agents + judges) with a model input (suggesting
+  detected providers' models) and a backend select; leave a field on
+  *inherit* to keep the DSL default.
+- **CLI** — repeatable `--model` / `--backend`, each a `selector=value` (or
+  a bare `value` for every LLM node). A selector matches by exact node id
+  (`reviewer_claude`), id glob (`reviewer_*`, `fix_*`), or node kind
+  (`agent`|`judge`). Most specific match wins; resolution is per-field so
+  `--model` and `--backend` compose:
+
+  ```bash
+  # cheap model for reviewers, stronger for fixers, all on claw
+  iterion run bots/whole-improve-loop/main.bot \
+    --model 'reviewer_*=anthropic/claude-fable-5' \
+    --model 'fix_*=anthropic/claude-sonnet-5' \
+    --backend '*=claw'
+  ```
+
+- **HTTP** — `POST /api/runs` accepts `model_overrides: [{selector, model,
+  backend}]`.
+
+This composes with the mono/dual `--review-mode` topology (ADR-052): the
+review mode chooses *which family* runs (one or two), the override chooses
+*which model/backend* each running node uses. Overrides are not yet
+re-applied on `iterion resume` (same limitation as `--backend`/`--compress`).
+
 ## Default preference order
 
 ```

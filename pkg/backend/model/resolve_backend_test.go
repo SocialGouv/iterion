@@ -75,6 +75,29 @@ func TestResolveBackend_NodeExplicit(t *testing.T) {
 	}
 }
 
+func TestResolveBackend_ModelOverrideBeatsNodeDSL(t *testing.T) {
+	resetEnvForResolve(t)
+	e := newExecutorForResolveTest("claude_code")
+	// A launch-time override targeting the reviewer group must win over the
+	// node's own DSL backend: — the operator explicitly retargeted it.
+	var mo ModelOverrides
+	mo.SetBackend("reviewer_*", "claw")
+	e.modelOverrides = mo
+
+	matched := nodeWithBackend("claude_code") // node pins claude_code in DSL
+	matched.ID = "reviewer_gpt"
+	if got := e.resolveBackendName(matched); got != "claw" {
+		t.Fatalf("override should beat node DSL backend: got %q, want claw", got)
+	}
+
+	// A node the selector doesn't match keeps its DSL backend.
+	unmatched := nodeWithBackend("codex")
+	unmatched.ID = "fix_gpt"
+	if got := e.resolveBackendName(unmatched); got != "codex" {
+		t.Fatalf("non-matching node keeps DSL backend: got %q, want codex", got)
+	}
+}
+
 func TestResolveBackend_AutoStringTriggersDetect(t *testing.T) {
 	resetEnvForResolve(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
