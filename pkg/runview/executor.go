@@ -75,6 +75,12 @@ type ExecutorSpec struct {
 	// resolution chain). Used by the studio launch UI to A/B a
 	// workflow against different backends without editing the .bot.
 	Backend string
+	// ModelOverrides are launch-time per-node/-group backend+model+provider
+	// overrides (studio Launch dropdowns, CLI --model/--backend selector=spec).
+	// Unlike Backend (a run-level default below node DSL), these target nodes
+	// explicitly and win over the node's DSL backend:/model:, so a run can
+	// re-target the bot per node-group without editing the .bot. Empty = no-op.
+	ModelOverrides model.ModelOverrides
 	// BotID is the stable bundle/bot identifier used to qualify
 	// structured visibility=bot memory. Empty falls back to Workflow.Name.
 	BotID string
@@ -198,6 +204,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if spec.Backend != "" {
 		opts = append(opts, model.WithDefaultBackend(spec.Backend))
+	}
+	if !spec.ModelOverrides.Empty() {
+		opts = append(opts, model.WithModelOverrides(spec.ModelOverrides))
 	}
 	if spec.BotID != "" {
 		opts = append(opts, model.WithBotID(spec.BotID))

@@ -26,6 +26,11 @@ import (
 // Step 4 is what makes the studio's empty default template "just work" when
 // the user has any credential configured.
 func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
+	// Launch-time override wins over everything — the operator explicitly
+	// re-targeted this node at launch (studio dropdown / CLI --backend).
+	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Backend != "" {
+		return ov.Backend
+	}
 	var backend string
 	switch n := node.(type) {
 	case *ir.AgentNode:
@@ -109,6 +114,10 @@ func (e *ClawExecutor) resolveProvider(node ir.Node) string {
 // duplicate steps are collapsed. The chain is never empty: an
 // unset/blank field yields a single auto attempt.
 func (e *ClawExecutor) resolveProviderChain(node ir.Node) []providerStep {
+	// Launch-time provider override collapses the chain to the chosen hint.
+	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Provider != "" {
+		return []providerStep{{Provider: ov.Provider}}
+	}
 	var raw string
 	switch n := node.(type) {
 	case *ir.AgentNode:

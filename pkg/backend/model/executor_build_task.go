@@ -407,6 +407,12 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	compactRatio, compactPreserve := resolveCompaction(f.compaction, e.wfCompaction)
 
 	resolvedModel := ir.ExpandEnvWithDefault(f.model)
+	// Launch-time model override wins over the node's DSL model: (studio
+	// dropdown / CLI --model). Applied before the claw suggested-model
+	// fallback so an override of "" is impossible (the parser rejects it).
+	if ov := e.modelOverrides.ForNode(node.NodeID(), node.NodeKind()); ov.Model != "" {
+		resolvedModel = ov.Model
+	}
 	if resolvedModel == "" && backendName == delegate.BackendClaw {
 		resolvedModel = e.detectorSuggestedModel()
 	}

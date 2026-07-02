@@ -17,6 +17,8 @@ var runOpts struct {
 	logLevel            string
 	noInteractive       bool
 	varFlags            []string
+	modelFor            []string
+	backendFor          []string
 	background          bool
 	mergeInto           string
 	branchName          string
@@ -66,6 +68,8 @@ var runCmd = &cobra.Command{
 			PermissionAsk:       runOpts.permissionAsk,
 			PermissionDeny:      runOpts.permissionDeny,
 			ReviewMode:          runOpts.reviewMode,
+			ModelFor:            runOpts.modelFor,
+			BackendFor:          runOpts.backendFor,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          runOpts.maxCostUSD,
 				MaxTokens:           runOpts.maxTokens,
@@ -110,6 +114,8 @@ func init() {
 	f.StringArrayVar(&runOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls always pause for approval. Additive to the workflow ask: list.")
 	f.StringArrayVar(&runOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked, even in ask mode. Additive to the workflow deny: list.")
 	f.StringVar(&runOpts.reviewMode, "review-mode", "", "For bi-model review-loop bots (whole-improve-loop, branch-improve-loop, feature-dev, docs-refresh, secured-renovacy): \"mono\" (one model family, ~half the calls), \"dual\" (alternate two families), or \"auto\" (default: dual when two provider families are detected, else mono). No-op for bots that don't declare a review_mode var.")
+	f.StringArrayVar(&runOpts.modelFor, "model", nil, "Per-node/-group model override (repeatable): \"selector=model\" or a bare \"model\" for every LLM node. Selector = node id (reviewer_claude), id glob (reviewer_*, fix_*), or node kind (agent|judge). Wins over the node's DSL model:. E.g. --model 'reviewer_*=anthropic/claude-fable-5' --model 'fix_*=claude-sonnet-5'. Composes with --review-mode.")
+	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code). Same selector syntax as --model; wins over the node's DSL backend:.")
 	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches)
 	rootCmd.AddCommand(runCmd)
 }

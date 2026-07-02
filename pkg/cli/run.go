@@ -105,6 +105,14 @@ type RunOptions struct {
 	// detected provider credentials at launch (pkg/reviewtopology);
 	// "mono"/"dual" force the topology. See docs on review topology.
 	ReviewMode string
+	// ModelFor / BackendFor are launch-time per-node/-group model+backend
+	// overrides (repeatable --model / --backend flags), each a
+	// "selector=value" (or a bare "value" targeting every LLM node). They win
+	// over the node's DSL model:/backend: so a run can re-target the bot per
+	// node-group without editing the .bot. Parsed via model.ParseModelOverrides
+	// in buildRunExecutor. See model_override.go.
+	ModelFor   []string
+	BackendFor []string
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -401,6 +409,10 @@ func buildRunExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	if err != nil {
+		return nil, err
+	}
 	execSpec := runview.ExecutorSpec{
 		Workflow:        wf,
 		Vars:            opts.Vars,
@@ -413,6 +425,7 @@ func buildRunExecutor(
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
+		ModelOverrides:  modelOverrides,
 		// Wire the operator-message inbox so queued messages (a CLI
 		// `iterion supervise` attach, a DSL-declared supervisor, or a
 		// future CLI chatbox) are drained at the agent's turn boundaries.

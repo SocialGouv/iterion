@@ -48,11 +48,17 @@ type ClawExecutor struct {
 	workDir         string // working directory for backend subprocesses
 	repoRoot        string // source-of-truth repo path (project-rooted memory uses this)
 	defaultBackend  string // workflow-level default backend (empty = use "claw")
-	wfCompaction    *ir.Compaction
-	wfCapabilities  []string // workflow-level default host capabilities (nil = none)
-	botID           string   // stable bot/workflow id used for bot-scoped memory
-	storeDir        string   // dispatcher store root (empty = backend default)
-	lifecycleHooks  *hooks.Runner
+	// modelOverrides are launch-time per-node/-group backend+model+provider
+	// overrides (studio Launch dropdowns, CLI --model/--backend). They sit at
+	// the TOP of the resolution chain — above the node's DSL backend:/model: —
+	// so a run can re-target the bot without editing the .bot. Empty applies
+	// nothing (backward-compatible). See model_override.go.
+	modelOverrides ModelOverrides
+	wfCompaction   *ir.Compaction
+	wfCapabilities []string // workflow-level default host capabilities (nil = none)
+	botID          string   // stable bot/workflow id used for bot-scoped memory
+	storeDir       string   // dispatcher store root (empty = backend default)
+	lifecycleHooks *hooks.Runner
 
 	// Command-output compression (the rewriter plugin chain). wfCompress is
 	// the workflow-level `compress:` DSL value; compressOverride is the
@@ -199,6 +205,13 @@ func WithWorkDir(dir string) ClawExecutorOption {
 // WithDefaultBackend sets the workflow-level default backend.
 func WithDefaultBackend(name string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.defaultBackend = name }
+}
+
+// WithModelOverrides sets the launch-time per-node/-group backend+model+
+// provider overrides (studio Launch dropdowns / CLI --model/--backend). They
+// take precedence over the node's DSL backend:/model:. Empty is a no-op.
+func WithModelOverrides(o ModelOverrides) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.modelOverrides = o }
 }
 
 // WithCompressOverride sets the run-level compression override (CLI --compress

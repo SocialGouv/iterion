@@ -115,18 +115,19 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	_, runLogger := s.prepareRunLog(runID)
 
 	executor, err := BuildExecutor(ExecutorSpec{
-		Workflow:      wf,
-		Vars:          spec.Vars,
-		Store:         s.store,
-		RunID:         runID,
-		Logger:        runLogger,
-		StoreDir:      s.storeDir,
-		Inbox:         s.inboxBinder(),
-		Backend:       spec.Backend,
-		BotID:         spec.BotID,
-		BoardRegister: s.boardRegister,
-		Compress:      spec.Compress,
-		Permission:    spec.Permission,
+		Workflow:       wf,
+		Vars:           spec.Vars,
+		Store:          s.store,
+		RunID:          runID,
+		Logger:         runLogger,
+		StoreDir:       s.storeDir,
+		Inbox:          s.inboxBinder(),
+		Backend:        spec.Backend,
+		ModelOverrides: toModelOverrides(spec.ModelOverrides),
+		BotID:          spec.BotID,
+		BoardRegister:  s.boardRegister,
+		Compress:       spec.Compress,
+		Permission:     spec.Permission,
 	})
 	if err != nil {
 		s.dropRunLog(runID)

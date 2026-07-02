@@ -90,6 +90,12 @@ type LaunchSpec struct {
 	// / "auto" resolves from detected provider credentials at launch;
 	// "mono"/"dual" force it. See pkg/reviewtopology.
 	ReviewMode string
+	// ModelOverrides are launch-time per-node/-group backend+model overrides
+	// (studio Launch dropdowns). Each entry targets nodes by selector (node id,
+	// id glob, or kind keyword agent|judge) and wins over the node's DSL
+	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
+	// model_override.go.
+	ModelOverrides []ModelOverrideEntry
 	// ParentRunID, ShardIndex, ShardCount, ShardLabel are set when a
 	// parent run dispatches this as a shard child (see Cap. 3 in
 	// docs/security-bots-distributed.md). The cloudpublisher copies
@@ -136,6 +142,34 @@ type LaunchSpec struct {
 	// secret id) for this run, overriding the org bot-secret binding. Set by
 	// webhook launches carrying per-webhook secret bindings. See docs/byok.md.
 	SecretOverrides map[string]string
+}
+
+// ModelOverrideEntry is one launch-time per-node/-group model+backend
+// override directive (studio Launch dropdowns). Selector matches a node by
+// exact id, id glob ("reviewer_*"), or kind keyword ("agent"|"judge"). Empty
+// Backend/Model/Provider fields leave that dimension unchanged.
+type ModelOverrideEntry struct {
+	Selector string `json:"selector"`
+	Backend  string `json:"backend,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// toModelOverrides folds the launch entries into the engine's ModelOverrides.
+func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
+	var o model.ModelOverrides
+	for _, e := range entries {
+		if e.Backend != "" {
+			o.SetBackend(e.Selector, e.Backend)
+		}
+		if e.Model != "" {
+			o.SetModel(e.Selector, e.Model)
+		}
+		if e.Provider != "" {
+			o.SetProvider(e.Selector, e.Provider)
+		}
+	}
+	return o
 }
 
 // ResumeSpec describes a resume request.

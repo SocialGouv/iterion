@@ -141,6 +141,11 @@ type launchRunRequest struct {
 	// ("auto"|"mono"|"dual") for bi-model review-loop bots. Empty/"auto"
 	// resolves from detected providers at launch. See pkg/reviewtopology.
 	ReviewMode string `json:"review_mode,omitempty"`
+	// ModelOverrides are launch-time per-node/-group backend+model overrides
+	// (studio Launch dropdowns). Each targets nodes by selector (node id, id
+	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
+	// See runview.ModelOverrideEntry.
+	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
 	// Cap. 3 sharding fields. When ParentRunID is non-empty, this
 	// launch is a shard child of an existing parent run; the server
 	// propagates the fields to the persisted Run document and (in
@@ -308,6 +313,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Compress:           req.Compress,
 		Permission:         req.Permission,
 		ReviewMode:         req.ReviewMode,
+		ModelOverrides:     req.ModelOverrides,
 		ParentRunID:        req.ParentRunID,
 		ShardIndex:         req.ShardIndex,
 		ShardCount:         req.ShardCount,
