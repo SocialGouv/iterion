@@ -132,8 +132,7 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 	// Resolution is lazy — here rather than in NewClient — so callers that
 	// construct a Client directly (bypassing the provider adapters) still
 	// get the identity + env-override behaviour.
-	userAgent := ResolveUserAgent(c.UserAgent)
-	extraHeaders, err := ResolveExtraHeaders(c.ExtraHeaders)
+	identity, err := ResolveIdentity(c.UserAgent, DefaultUserAgent(), c.ExtraHeaders)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +181,7 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 		httpReq.Header.Set("accept", "text/event-stream")
 		// Identity last, so ExtraHeaders (ANTHROPIC_CUSTOM_HEADERS parity)
 		// can override any default header, including the User-Agent.
-		ApplyIdentityHeaders(httpReq.Header, userAgent, extraHeaders)
+		identity.Apply(httpReq.Header)
 
 		// Telemetry: record request started
 		if c.Tracer != nil {

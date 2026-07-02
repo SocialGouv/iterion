@@ -88,20 +88,19 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		apiKey = strings.TrimSpace(os.Getenv("AZURE_OPENAI_API_KEY"))
 	}
 
-	extraHeaders, err := api.ResolveExtraHeaders(cfg.ExtraHeaders)
+	identity, err := api.ResolveIdentity(cfg.UserAgent, api.DefaultUserAgent(), cfg.ExtraHeaders)
 	if err != nil {
 		return nil, err
 	}
 
 	c := &Client{
-		Endpoint:     endpoint,
-		Deployment:   deployment,
-		APIVersion:   apiVersion,
-		APIKey:       apiKey,
-		MaxTokens:    cfg.MaxTokens,
-		HTTPClient:   api.NewStreamingHTTPClient(),
-		UserAgent:    api.ResolveUserAgent(cfg.UserAgent),
-		ExtraHeaders: extraHeaders,
+		Endpoint:   endpoint,
+		Deployment: deployment,
+		APIVersion: apiVersion,
+		APIKey:     apiKey,
+		MaxTokens:  cfg.MaxTokens,
+		HTTPClient: api.NewStreamingHTTPClient(),
+		Identity:   identity,
 	}
 
 	// If no API key, prepare an Azure AD credential. We acquire the bearer
@@ -148,8 +147,7 @@ type Client struct {
 	MaxTokens  int
 	HTTPClient *http.Client
 
-	UserAgent    string // resolved at NewClient (override → env → claw default)
-	ExtraHeaders map[string]string
+	Identity api.Identity // resolved at NewClient (override → env → claw default)
 }
 
 // endpoint returns the chat completions URL for this client.
@@ -255,7 +253,7 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 	if err := c.applyAuth(ctx, httpReq); err != nil {
 		return nil, err
 	}
-	api.ApplyIdentityHeaders(httpReq.Header, c.UserAgent, c.ExtraHeaders)
+	c.Identity.Apply(httpReq.Header)
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {

@@ -999,12 +999,8 @@ var providerCredentialEnvVars = []string{
 	"AWS_ACCESS_KEY_ID",
 	"AWS_SECRET_ACCESS_KEY",
 	"AWS_SESSION_TOKEN",
-	// Client-identity overrides (docs/backends.md § Client identity):
-	// ITERION_LLM_USER_AGENT feeds withClientIdentity in registry.go;
-	// CLAW_USER_AGENT / ANTHROPIC_CUSTOM_HEADERS are read by claw itself.
-	// Some Anthropic-compatible endpoints (z.ai Coding Plan) gate service
-	// on the tool fingerprint, so the override must reach the in-container
-	// runner too.
+	// Client-identity overrides — must reach the in-container runner too
+	// (docs/backends.md § Client identity).
 	"ITERION_LLM_USER_AGENT",
 	"CLAW_USER_AGENT",
 	"ANTHROPIC_CUSTOM_HEADERS",

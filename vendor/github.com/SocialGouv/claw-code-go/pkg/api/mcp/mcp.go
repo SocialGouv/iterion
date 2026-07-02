@@ -18,9 +18,9 @@ type TransportType = mcppkg.TransportType
 // MCP resource introspection surface (used by list_mcp_resources,
 // read_mcp_resource, mcp_auth tools).
 type (
-	ResourceClient    = mcppkg.ResourceClient
-	ServerStatus      = mcppkg.ServerStatus
-	Provider          = mcppkg.Provider
+	ResourceClient     = mcppkg.ResourceClient
+	ServerStatus       = mcppkg.ServerStatus
+	Provider           = mcppkg.Provider
 	McpResourceInfo    = mcppkg.McpResourceInfo
 	McpResourceContent = mcppkg.McpResourceContent
 )
@@ -34,7 +34,7 @@ const (
 	TransportSDK          = mcppkg.TransportSDK
 )
 
-func NewRegistry() *Registry  { return mcppkg.NewRegistry() }
+func NewRegistry() *Registry   { return mcppkg.NewRegistry() }
 func NewAuthState() *AuthState { return mcppkg.NewAuthState() }
 
 // NewRegistryProvider bundles a *Registry + *AuthState into a Provider.

@@ -60,13 +60,6 @@ type AnalyticsEvent = apikit.AnalyticsEvent
 // SessionTraceRecord is an individual trace within a session.
 type SessionTraceRecord = apikit.SessionTraceRecord
 
-// ClientIdentity identifies the client application for the User-Agent
-// and embedded telemetry attributes.
-type ClientIdentity = apikit.ClientIdentity
-
-// AnthropicRequestProfile holds Anthropic-specific request configuration.
-type AnthropicRequestProfile = apikit.AnthropicRequestProfile
-
 // TelemetryEvent type-discriminator constants.
 const (
 	EventTypeHTTPRequestStarted   = apikit.EventTypeHTTPRequestStarted
@@ -79,11 +72,3 @@ const (
 // NewAnalyticsEvent creates an AnalyticsEvent with the given namespace
 // and action. Properties are initialised to an empty map.
 var NewAnalyticsEvent = apikit.NewAnalyticsEvent
-
-// NewClientIdentity creates a ClientIdentity with the default runtime
-// (DefaultRuntime, "go").
-var NewClientIdentity = apikit.NewClientIdentity
-
-// NewAnthropicRequestProfile creates a profile with the default betas
-// (agentic + prompt-caching-scope).
-var NewAnthropicRequestProfile = apikit.NewAnthropicRequestProfile

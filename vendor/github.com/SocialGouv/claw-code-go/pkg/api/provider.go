@@ -13,12 +13,14 @@ type APIClient = api.APIClient
 // Provider is the interface all AI providers must implement.
 type Provider = api.Provider
 
-// Client identity helpers (see internal/api/identity.go for the contract):
-// every provider sends an honest "claw-code-go/<version>" User-Agent by
-// default, overridable via ProviderConfig.UserAgent, the CLAW_USER_AGENT
-// environment variable, or ANTHROPIC_CUSTOM_HEADERS (Claude Code parity).
+// Client identity (see internal/api/identity.go for the contract): every
+// provider sends an honest "claw-code-go/<version>" User-Agent by default,
+// overridable via ProviderConfig.UserAgent, the CLAW_USER_AGENT environment
+// variable, or ANTHROPIC_CUSTOM_HEADERS (Claude Code parity).
+type Identity = api.Identity
+
 var (
 	DefaultUserAgent   = api.DefaultUserAgent
-	ResolveUserAgent   = api.ResolveUserAgent
+	ResolveIdentity    = api.ResolveIdentity
 	ParseCustomHeaders = api.ParseCustomHeaders
 )

@@ -231,13 +231,9 @@ func (r *Registry) registerDefaults() {
 	}
 }
 
-// withClientIdentity injects the operator's client-identity override into a
-// claw ProviderConfig. ITERION_LLM_USER_AGENT is the iterion-branded surface;
-// claw itself then resolves cfg.UserAgent → CLAW_USER_AGENT →
-// "claw-code-go/<version>" and merges ANTHROPIC_CUSTOM_HEADERS (Claude Code
-// parity) last. Useful against Anthropic-compatible endpoints that gate
-// service on the calling tool's fingerprint (e.g. z.ai's Coding Plan
-// risk-control); see docs/backends.md § Client identity.
+// withClientIdentity injects ITERION_LLM_USER_AGENT (the iterion-branded
+// User-Agent override) into a claw ProviderConfig; claw resolves the rest of
+// the precedence chain. See docs/backends.md § Client identity.
 func withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
 	cfg.UserAgent = os.Getenv("ITERION_LLM_USER_AGENT")
 	return cfg

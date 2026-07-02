@@ -86,24 +86,43 @@ func cleanModuleVersion(v string) string {
 // DefaultUserAgent returns the honest claw identity, "claw-code-go/<version>".
 func DefaultUserAgent() string { return defaultUserAgent() }
 
-// ResolveUserAgent returns the User-Agent to send: the explicit config value
-// when set, else the CLAW_USER_AGENT environment override, else the default
-// claw identity.
-func ResolveUserAgent(explicit string) string {
-	return ResolveUserAgentWithDefault(explicit, DefaultUserAgent())
+// Identity is a resolved client identity: the User-Agent plus the extra
+// headers applied last on every outgoing request.
+type Identity struct {
+	UserAgent    string
+	ExtraHeaders map[string]string
 }
 
-// ResolveUserAgentWithDefault is ResolveUserAgent with a caller-supplied
-// fallback identity, for paths whose protocol requires a specific default
-// (the ChatGPT-Codex backend expects the codex_cli_rs identity).
-func ResolveUserAgentWithDefault(explicit, fallback string) string {
-	if explicit != "" {
-		return explicit
+// ResolveIdentity resolves the full client identity from explicit config +
+// environment. User-Agent precedence: explicit → CLAW_USER_AGENT env →
+// fallback (DefaultUserAgent for most providers; paths whose protocol
+// requires a specific identity, like ChatGPT-Codex, pass their own).
+// ExtraHeaders merge ANTHROPIC_CUSTOM_HEADERS under the explicit map.
+func ResolveIdentity(explicitUA, fallbackUA string, explicitExtra map[string]string) (Identity, error) {
+	extra, err := resolveExtraHeaders(explicitExtra)
+	if err != nil {
+		return Identity{}, err
 	}
-	if ua := strings.TrimSpace(os.Getenv(EnvUserAgent)); ua != "" {
-		return ua
+	ua := explicitUA
+	if ua == "" {
+		ua = strings.TrimSpace(os.Getenv(EnvUserAgent))
 	}
-	return fallback
+	if ua == "" {
+		ua = fallbackUA
+	}
+	return Identity{UserAgent: ua, ExtraHeaders: extra}, nil
+}
+
+// Apply sets the User-Agent and then the extra headers on h. It must run
+// after all default headers so that extra headers — like Claude Code's
+// ANTHROPIC_CUSTOM_HEADERS — can override any of them.
+func (id Identity) Apply(h http.Header) {
+	if id.UserAgent != "" {
+		h.Set("User-Agent", id.UserAgent)
+	}
+	for name, value := range id.ExtraHeaders {
+		h.Set(name, value)
+	}
 }
 
 // ParseCustomHeaders parses ANTHROPIC_CUSTOM_HEADERS-format text —
@@ -130,10 +149,10 @@ func ParseCustomHeaders(raw string) (map[string]string, error) {
 	return headers, nil
 }
 
-// ResolveExtraHeaders merges the ANTHROPIC_CUSTOM_HEADERS environment
+// resolveExtraHeaders merges the ANTHROPIC_CUSTOM_HEADERS environment
 // variable with the explicit config headers; explicit entries win over
 // environment entries on name collision.
-func ResolveExtraHeaders(explicit map[string]string) (map[string]string, error) {
+func resolveExtraHeaders(explicit map[string]string) (map[string]string, error) {
 	merged, err := ParseCustomHeaders(os.Getenv(EnvCustomHeaders))
 	if err != nil {
 		return nil, err
@@ -148,16 +167,4 @@ func ResolveExtraHeaders(explicit map[string]string) (map[string]string, error) 
 		merged[name] = value
 	}
 	return merged, nil
-}
-
-// ApplyIdentityHeaders sets the User-Agent and then the extra headers on h.
-// It must run after all default headers so that extra headers — like Claude
-// Code's ANTHROPIC_CUSTOM_HEADERS — can override any of them.
-func ApplyIdentityHeaders(h http.Header, userAgent string, extra map[string]string) {
-	if userAgent != "" {
-		h.Set("User-Agent", userAgent)
-	}
-	for name, value := range extra {
-		h.Set(name, value)
-	}
 }

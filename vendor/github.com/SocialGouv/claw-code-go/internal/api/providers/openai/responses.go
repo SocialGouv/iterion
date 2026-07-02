@@ -195,7 +195,7 @@ func (c *Client) streamResponses(ctx context.Context, req api.CreateMessageReque
 	c.setAuthHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
-	c.applyIdentityHeaders(httpReq)
+	c.Identity.Apply(httpReq.Header)
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
