@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { isSafeStoreParam, type RunEvent, type RunSnapshot } from "@/api/runs";
 import { toastForEvent } from "@/hooks/useRunToasts";
@@ -379,15 +379,20 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
     };
   }, [runId, reconnectToken]);
 
-  return {
-    send: (env) => {
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(env));
-      }
-    },
-    subscribeLogs: (fromOffset) => {
-      logSubscriberCountRef.current += 1;
+  // Stable handle: every callback closes over refs only (no props/state), so
+  // useCallback([]) keeps their identity constant across renders, and useMemo
+  // keeps the returned object identity stable. Consumers (e.g. LogLinesView)
+  // subscribe/unsubscribe in a mount-only effect keyed on these — an unstable
+  // handle made that effect tear down and re-run on every render, churning
+  // subscribe_logs/unsubscribe_logs and re-anchoring the backend log tail.
+  const send = useCallback((env: WsEnvelope) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(env));
+    }
+  }, []);
+  const subscribeLogs = useCallback((fromOffset?: number) => {
+    logSubscriberCountRef.current += 1;
       if (logSubscriberCountRef.current > 1) return;
       logsRequestedRef.current = true;
       const ws = wsRef.current;
@@ -424,19 +429,23 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
         } satisfies WsEnvelope),
       );
       runStoreRef.current.getState().setLogSubscribed(true);
-    },
-    unsubscribeLogs: () => {
-      if (logSubscriberCountRef.current === 0) return;
-      logSubscriberCountRef.current -= 1;
-      if (logSubscriberCountRef.current > 0) return;
-      logsRequestedRef.current = false;
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({ type: "unsubscribe_logs" } satisfies WsEnvelope),
-        );
-      }
-      runStoreRef.current.getState().setLogSubscribed(false);
-    },
-  };
+    }, []);
+  const unsubscribeLogs = useCallback(() => {
+    if (logSubscriberCountRef.current === 0) return;
+    logSubscriberCountRef.current -= 1;
+    if (logSubscriberCountRef.current > 0) return;
+    logsRequestedRef.current = false;
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({ type: "unsubscribe_logs" } satisfies WsEnvelope),
+      );
+    }
+    runStoreRef.current.getState().setLogSubscribed(false);
+  }, []);
+
+  return useMemo(
+    () => ({ send, subscribeLogs, unsubscribeLogs }),
+    [send, subscribeLogs, unsubscribeLogs],
+  );
 }

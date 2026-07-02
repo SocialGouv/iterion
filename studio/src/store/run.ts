@@ -21,7 +21,7 @@ export const NO_EVENTS_SEQ = -1;
 // marker due to React 18's concurrent rendering.
 const inflightHistoryFetches = new Map<string, Promise<void>>();
 
-import { MAX_LOG_BYTES, LOG_TRIM_TARGET, utf8Len } from "./run/logBuffer";
+import { MAX_LOG_BYTES, LOG_TRIM_TARGET, utf8Len, sliceFromByteOffset } from "./run/logBuffer";
 import {
   execKey,
   mergeQueuedMessage,
@@ -642,48 +642,57 @@ export function createRunStore() {
     set((s) => {
       if (!chunk.text) return s;
       const { log } = s;
-      // The end byte of this chunk in the backend's byte-keyed stream.
-      // utf8Len (NOT text.length) so the cursor stays byte-accurate —
-      // see RunLogState.nextByte.
-      const incomingEndByte = chunk.offset + utf8Len(chunk.text);
-      const incomingEnd = chunk.offset + chunk.text.length;
-      if (incomingEnd <= log.start) return s;
+      // Everything here is reasoned in BYTES — start, nextByte, total and
+      // chunk.offset are all byte offsets in the backend's byte-keyed stream.
+      // The buffer currently covers [log.start, log.nextByte). The chunk's
+      // string is sliced via sliceFromByteOffset so byte overlaps convert to
+      // the right UTF-16 code-unit cut (mixing bytes with String.length here
+      // was what duplicated/dropped log segments after a WS reconnect resent
+      // an overlapping tail of multi-byte glyphs).
+      const chunkBytes = utf8Len(chunk.text);
+      const incomingEndByte = chunk.offset + chunkBytes;
 
-      const currentEnd = log.start + log.text.length;
+      // A total bump we should always propagate even when nothing is appended.
+      const bumpTotal = (over: number) =>
+        chunk.total !== undefined && chunk.total > over ? chunk.total : Math.max(log.total, over);
+
+      // Chunk ends at or before what we already retain: pure resend / stale.
+      if (incomingEndByte <= log.nextByte) {
+        const t = bumpTotal(incomingEndByte);
+        return t !== log.total ? { log: { ...log, total: t } } : s;
+      }
+
       let appendText: string;
-      if (chunk.offset >= currentEnd) {
+      if (chunk.offset >= log.nextByte) {
+        // Contiguous with (or, defensively, ahead of) our tail — append whole.
         appendText = chunk.text;
       } else {
-        const skip = currentEnd - chunk.offset;
-        if (skip >= chunk.text.length) {
-          if (chunk.total !== undefined && chunk.total > log.total) {
-            return { log: { ...log, total: chunk.total } };
-          }
-          return s;
-        }
-        appendText = chunk.text.slice(skip);
+        // Partial overlap: drop the leading bytes we already have.
+        appendText = sliceFromByteOffset(chunk.text, log.nextByte - chunk.offset);
+      }
+      if (!appendText) {
+        const t = bumpTotal(incomingEndByte);
+        return t !== log.total ? { log: { ...log, total: t } } : s;
       }
 
       let nextText = log.text + appendText;
       let nextStart = log.start;
-      if (nextText.length > MAX_LOG_BYTES) {
-        const drop = nextText.length - LOG_TRIM_TARGET;
-        nextText = nextText.slice(drop);
-        nextStart += drop;
+      let nextByte = Math.max(log.nextByte, incomingEndByte);
+      // Trim the retained window by BYTES (both constants are byte counts).
+      const totalBytes = utf8Len(nextText);
+      if (totalBytes > MAX_LOG_BYTES) {
+        const trimmed = sliceFromByteOffset(nextText, totalBytes - LOG_TRIM_TARGET);
+        nextStart += totalBytes - utf8Len(trimmed);
+        nextText = trimmed;
       }
-
-      const nextTotal =
-        chunk.total !== undefined && chunk.total > incomingEnd
-          ? chunk.total
-          : Math.max(log.total, incomingEnd);
 
       return {
         log: {
           ...log,
           start: nextStart,
-          nextByte: Math.max(log.nextByte, incomingEndByte),
+          nextByte,
           text: nextText,
-          total: nextTotal,
+          total: bumpTotal(nextByte),
           terminated: false,
         },
       };

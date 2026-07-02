@@ -37,7 +37,7 @@ export default function FanoutFrame({ data }: NodeProps<FanoutFrameType>) {
       }}
     >
       <div
-        className="absolute -top-2.5 left-3 px-2 py-0.5 rounded bg-info-soft text-info-fg text-[10px] font-medium border border-info/50 whitespace-nowrap shadow-sm"
+        className="absolute -top-2.5 left-3 px-2 py-0.5 rounded bg-info-soft text-info-fg text-caption font-medium border border-info/50 whitespace-nowrap shadow-sm"
         style={{ pointerEvents: "none" }}
         title={
           total != null

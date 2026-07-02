@@ -28,3 +28,30 @@ export function utf8Len(s: string): number {
   }
   return bytes;
 }
+
+// sliceFromByteOffset returns `s` with its leading `byteSkip` UTF-8 bytes
+// removed, cutting on a code-point boundary. The backend keys log offsets in
+// bytes while a JS string is indexed in UTF-16 code units, so overlap/trim
+// arithmetic on the log tail must convert a byte count into the matching
+// code-unit slice — using String.prototype.slice(byteSkip) directly corrupts
+// any tail containing multi-byte glyphs. If byteSkip lands inside a multi-byte
+// code point (a chunk split mid-character) the whole code point is skipped, so
+// the result never begins with a partial character. byteSkip ≤ 0 returns `s`;
+// byteSkip ≥ its byte length returns "".
+export function sliceFromByteOffset(s: string, byteSkip: number): string {
+  if (byteSkip <= 0) return s;
+  let bytes = 0;
+  let unit = 0; // UTF-16 code-unit index reached
+  for (let i = 0; i < s.length; i++) {
+    if (bytes >= byteSkip) break;
+    const c = s.charCodeAt(i);
+    if (c < 0x80) bytes += 1;
+    else if (c < 0x800) bytes += 2;
+    else if (c >= 0xd800 && c <= 0xdbff) {
+      bytes += 4;
+      i++; // consume paired low surrogate
+    } else bytes += 3;
+    unit = i + 1;
+  }
+  return s.slice(unit);
+}

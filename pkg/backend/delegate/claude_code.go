@@ -253,10 +253,24 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// while it streams thinking tokens or reads files: the runtime
 	// emits nothing between "Delegation started" and the final
 	// AssistantMessage, which can be many minutes for Opus xhigh/max.
-	var stderrBuf strings.Builder
+	// The SDK invokes WithStderrCallback from its own drainStderr goroutine,
+	// which cmd.Wait() does not synchronise with — so it can still be writing
+	// when we read stderrBuf.String() after runSession returns. Guard both
+	// sides with a mutex (strings.Builder is not concurrency-safe).
+	var (
+		stderrMu  sync.Mutex
+		stderrBuf strings.Builder
+	)
+	readStderr := func() string {
+		stderrMu.Lock()
+		defer stderrMu.Unlock()
+		return stderrBuf.String()
+	}
 	opts = append(opts, claudesdk.WithStderrCallback(func(line string) {
+		stderrMu.Lock()
 		stderrBuf.WriteString(line)
 		stderrBuf.WriteString("\n")
+		stderrMu.Unlock()
 		if line != "" {
 			b.Logger.Info("[%s#%d/claude-code:err] %s", task.NodeID, task.Iteration, line)
 		}
@@ -327,17 +341,17 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// which we must not treat as a failure.
 	if q, ok := pendingQuestion.Load().(string); ok && q != "" {
 		marker, _ := pendingPermission.Load().(map[string]any)
-		return b.buildAskUserPendingResult(task, q, marker, rm, sessMeta, currentFingerprint, duration, stderrBuf.String()), nil
+		return b.buildAskUserPendingResult(task, q, marker, rm, sessMeta, currentFingerprint, duration, readStderr()), nil
 	}
 
 	if streamErr != nil {
-		return b.buildStreamErrorResult(rm, sessMeta, streamErr, stderrBuf.String(), duration, task)
+		return b.buildStreamErrorResult(rm, sessMeta, streamErr, readStderr(), duration, task)
 	}
 
 	result = Result{
 		Duration:           duration,
 		ExitCode:           0,
-		Stderr:             stderrBuf.String(),
+		Stderr:             readStderr(),
 		BackendName:        BackendClaudeCode,
 		SessionID:          rm.SessionID,
 		SessionFingerprint: currentFingerprint,

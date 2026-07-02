@@ -150,7 +150,12 @@ func (p *chromiumPipe) Close() error {
 	}
 	if p.cmd != nil && p.cmd.Process != nil {
 		_ = p.cmd.Process.Kill()
-		_, _ = p.cmd.Process.Wait()
+		// cmd.Wait (NOT Process.Wait): Stdout/Stderr are io.Discard, so
+		// os/exec allocated parent-side pipes + copy goroutines that only
+		// cmd.Wait closes/reaps. Process.Wait reaps the process but leaks
+		// those two fds until their finalizers run — one leak per browser
+		// pane open/close.
+		_ = p.cmd.Wait()
 	}
 	if err := p.read.Close(); err != nil && firstErr == nil {
 		firstErr = err

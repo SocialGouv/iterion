@@ -342,3 +342,36 @@ describe("session board todo history", () => {
     expect(timeline.map((e) => e.exec?.ir_node_id)).toEqual(["plan", "implement"]);
   });
 });
+
+describe("applyLogChunk — byte-keyed overlap/dedup", () => {
+  beforeEach(() => runStore.getState().clearLog());
+
+  it("appends contiguous chunks and tracks byte cursor with multi-byte glyphs", () => {
+    const s = runStore.getState();
+    s.applyLogChunk({ offset: 0, text: "🔧a" }); // 🔧=4 bytes, a=1 → 5 bytes
+    let log = runStore.getState().log;
+    expect(log.text).toBe("🔧a");
+    expect(log.nextByte).toBe(5);
+
+    runStore.getState().applyLogChunk({ offset: 5, text: "b" });
+    log = runStore.getState().log;
+    expect(log.text).toBe("🔧ab");
+    expect(log.nextByte).toBe(6);
+  });
+
+  it("drops a fully-overlapping resend without duplicating", () => {
+    runStore.getState().applyLogChunk({ offset: 0, text: "🔧ab" }); // 6 bytes
+    runStore.getState().applyLogChunk({ offset: 0, text: "🔧ab" }); // exact resend
+    expect(runStore.getState().log.text).toBe("🔧ab");
+  });
+
+  it("skips the overlapping byte prefix on a partial resend after reconnect", () => {
+    // Server resends a tail starting inside the multi-byte-preceded region.
+    runStore.getState().applyLogChunk({ offset: 0, text: "🔧abc" }); // bytes: 4+1+1+1 = 7
+    // Reconnect resends from byte 5 ("bc") plus new "d".
+    runStore.getState().applyLogChunk({ offset: 5, text: "bcd" });
+    const log = runStore.getState().log;
+    expect(log.text).toBe("🔧abcd"); // no dup of "bc", "d" appended
+    expect(log.nextByte).toBe(8);
+  });
+});
