@@ -35,6 +35,19 @@ type ProviderConfig struct {
 	// the locally installed Codex CLI version. Empty defaults to a baseline
 	// version embedded in the provider.
 	OpenAIClientVersion string
+
+	// UserAgent overrides the User-Agent header sent on every request.
+	// Empty = the CLAW_USER_AGENT environment variable, then the honest
+	// default "claw-code-go/<version>" (except the ChatGPT-OAuth path,
+	// whose protocol-required default is the codex_cli_rs identity). See
+	// identity.go for the rationale and the operator-override contract.
+	UserAgent string
+
+	// ExtraHeaders are arbitrary headers applied LAST on every request,
+	// so they can override any default (including User-Agent) — same
+	// semantics as Claude Code's ANTHROPIC_CUSTOM_HEADERS environment
+	// variable, which is merged underneath these (explicit wins).
+	ExtraHeaders map[string]string
 }
 
 // APIClient is the interface all provider clients must implement.

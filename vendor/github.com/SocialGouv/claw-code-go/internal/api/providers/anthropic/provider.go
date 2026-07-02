@@ -32,6 +32,8 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if cfg.OAuthToken != "" {
 		client.OAuthToken = cfg.OAuthToken
 	}
+	client.UserAgent = cfg.UserAgent
+	client.ExtraHeaders = cfg.ExtraHeaders
 	return client, nil
 }
 

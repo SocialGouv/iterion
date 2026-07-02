@@ -77,6 +77,17 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 	if clientVersion == "" {
 		clientVersion = chatgptFallbackVersion
 	}
+	// The ChatGPT-Codex backend requires the codex_cli_rs identity, so it is
+	// the fallback there; an explicit UserAgent / CLAW_USER_AGENT override
+	// still wins (operator decision), matching every other provider.
+	defaultUA := api.DefaultUserAgent()
+	if authMode == AuthModeChatGPTOAuth {
+		defaultUA = chatgptOriginator + "/" + clientVersion
+	}
+	extraHeaders, err := api.ResolveExtraHeaders(cfg.ExtraHeaders)
+	if err != nil {
+		return nil, err
+	}
 	return &Client{
 		APIKey:           cfg.APIKey,
 		OAuthToken:       cfg.OAuthToken,
@@ -86,6 +97,8 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		MaxTokens:        cfg.MaxTokens,
 		ChatGPTAccountID: cfg.OpenAIChatGPTAccountID,
 		ClientVersion:    clientVersion,
+		UserAgent:        api.ResolveUserAgentWithDefault(cfg.UserAgent, defaultUA),
+		ExtraHeaders:     extraHeaders,
 		HTTPClient:       api.NewStreamingHTTPClient(),
 	}, nil
 }
@@ -102,6 +115,8 @@ type Client struct {
 	MaxTokens        int
 	ChatGPTAccountID string // only used in AuthModeChatGPTOAuth
 	ClientVersion    string // only used in AuthModeChatGPTOAuth
+	UserAgent        string // resolved at NewClient (override → env → mode default)
+	ExtraHeaders     map[string]string
 	HTTPClient       *http.Client
 }
 
@@ -208,6 +223,7 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 	c.setAuthHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	c.applyIdentityHeaders(httpReq)
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -289,17 +305,23 @@ func (c *Client) shouldRequestStreamUsage() bool {
 
 // setAuthHeaders writes the Authorization header (and, in ChatGPT-OAuth mode,
 // the masquerading headers required by the ChatGPT-Codex backend) onto req.
-// Callers still set Content-Type, Accept, and any per-endpoint headers.
+// Callers still set Content-Type, Accept, and any per-endpoint headers, then
+// finish with applyIdentityHeaders.
 func (c *Client) setAuthHeaders(req *http.Request) {
 	if c.AuthMode == AuthModeChatGPTOAuth {
 		req.Header.Set("Authorization", "Bearer "+c.OAuthToken)
 		req.Header.Set("ChatGPT-Account-ID", c.ChatGPTAccountID)
 		req.Header.Set("originator", chatgptOriginator)
 		req.Header.Set("version", c.ClientVersion)
-		req.Header.Set("User-Agent", chatgptOriginator+"/"+c.ClientVersion)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+}
+
+// applyIdentityHeaders sets the resolved User-Agent and the extra headers.
+// Must run after every other header so extras can override any of them.
+func (c *Client) applyIdentityHeaders(req *http.Request) {
+	api.ApplyIdentityHeaders(req.Header, c.UserAgent, c.ExtraHeaders)
 }
 
 // responsesEndpoint returns the full URL to POST to for the /responses

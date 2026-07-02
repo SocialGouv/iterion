@@ -457,6 +457,54 @@ families internally.
   unchanged so token counts are still reported, but the dollar
   estimates are not accurate until a per-provider rate card lands.
 
+## Client identity (User-Agent + custom headers) — claw backend
+
+Every claw provider (anthropic, openai, vertex, foundry) sends an
+honest **`User-Agent: claw-code-go/<version>`** by default. Before
+2026-07 no UA was set at all, so Go's `Go-http-client/2.0` leaked onto
+the wire — the worst possible fingerprint against endpoints that gate
+service on the calling tool (z.ai's Coding Plan risk-control flags
+"SDK-based access" traffic; repeated violations can suspend the
+account). Two exceptions: the **ChatGPT-OAuth** path keeps its
+protocol-required `codex_cli_rs/<codex version>` identity, and
+**bedrock** requests carry the aws-sdk UA (SigV4-signed).
+
+Override precedence (first non-empty wins), identical on the
+in-process claw path and the sandboxed `__claw-runner` (the three env
+vars below are forwarded into the container):
+
+1. `ITERION_LLM_USER_AGENT` — iterion surface, injected into every claw
+   provider factory ([pkg/backend/model/registry.go](../pkg/backend/model/registry.go)
+   `withClientIdentity`).
+2. `CLAW_USER_AGENT` — claw's own env override (works for any
+   claw-code-go embedder).
+3. The per-path default (`claw-code-go/<version>`, or
+   `codex_cli_rs/<version>` in ChatGPT-OAuth mode).
+
+For arbitrary headers, claw honours **`ANTHROPIC_CUSTOM_HEADERS`** with
+Claude Code's exact semantics: newline-separated `Name: Value` pairs,
+applied **last** on every request so they can override any default
+header — including the User-Agent:
+
+```bash
+# ~/.iterion/env — identify as a specific tool against a gated endpoint
+ITERION_LLM_USER_AGENT="my-tool/1.0"
+# or arbitrary headers, Claude Code style (overrides UA too):
+ANTHROPIC_CUSTOM_HEADERS="User-Agent: my-tool/1.0
+X-My-Header: value"
+```
+
+A malformed `ANTHROPIC_CUSTOM_HEADERS` line (no `Name:` part) fails the
+request with an explicit parse error rather than being silently dropped.
+
+**ToS caveat.** Presenting as another tool is a decision between you
+and the endpoint you target (e.g. your z.ai subscription's supported-
+tools policy) — iterion/claw default to the honest identity and never
+spoof on their own. This does **not** change the Anthropic-forfait
+posture above: the Claude Code subscription remains scoped to Claude
+Code by Anthropic's Consumer Terms, and claw's OAuth path stays
+dev-purpose-only regardless of the UA you configure.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

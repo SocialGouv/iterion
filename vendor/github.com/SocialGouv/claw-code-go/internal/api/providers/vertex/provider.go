@@ -80,14 +80,21 @@ func (p *Provider) NewClient(cfg api.ProviderConfig) (api.APIClient, error) {
 		return nil, fmt.Errorf("vertex provider: failed to obtain Application Default Credentials: %w (run `gcloud auth application-default login`)", err)
 	}
 
+	extraHeaders, err := api.ResolveExtraHeaders(cfg.ExtraHeaders)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Client{
-		Project:     project,
-		Region:      region,
-		Model:       model,
-		MaxTokens:   cfg.MaxTokens,
-		TokenSource: tokenSource,
-		HTTPClient:  api.NewStreamingHTTPClient(),
-		BaseURL:     cfg.BaseURL, // optional override; empty means compute from region
+		Project:      project,
+		Region:       region,
+		Model:        model,
+		MaxTokens:    cfg.MaxTokens,
+		TokenSource:  tokenSource,
+		HTTPClient:   api.NewStreamingHTTPClient(),
+		BaseURL:      cfg.BaseURL, // optional override; empty means compute from region
+		UserAgent:    api.ResolveUserAgent(cfg.UserAgent),
+		ExtraHeaders: extraHeaders,
 	}, nil
 }
 
@@ -161,6 +168,9 @@ type Client struct {
 	// BaseURL optionally overrides the computed
 	// "https://{region}-aiplatform.googleapis.com" host (useful for tests).
 	BaseURL string
+
+	UserAgent    string // resolved at NewClient (override → env → claw default)
+	ExtraHeaders map[string]string
 }
 
 // endpoint returns the full streamRawPredict URL for this client.
@@ -255,6 +265,7 @@ func (c *Client) StreamResponse(ctx context.Context, req api.CreateMessageReques
 	httpReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	api.ApplyIdentityHeaders(httpReq.Header, c.UserAgent, c.ExtraHeaders)
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {

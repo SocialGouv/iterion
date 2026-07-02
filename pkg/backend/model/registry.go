@@ -130,7 +130,7 @@ func (r *Registry) registerDefaults() {
 					"Use ANTHROPIC_API_KEY, z.ai (ZAI_API_KEY), or another provider for real runs.")
 			})
 		}
-		return p.NewClient(cfg)
+		return p.NewClient(withClientIdentity(cfg))
 	}
 	r.providersWithKey["anthropic"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := anthropicprovider.New()
@@ -138,11 +138,11 @@ func (r *Registry) registerDefaults() {
 		// per-tenant base-URL override should ride alongside the BYOK
 		// key record once the cloud-side z.ai BYOK lands — see
 		// .plans/zai-glm-oauth.md.
-		return p.NewClient(api.ProviderConfig{
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,
 			BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
-		})
+		}))
 	}
 	r.providers["openai"] = func(modelID string) (api.APIClient, error) {
 		p := openaiprovider.New()
@@ -187,19 +187,19 @@ func (r *Registry) registerDefaults() {
 				cfg.OAuthToken = view.Tokens.AccessToken
 				cfg.OpenAIChatGPTAccountID = view.Tokens.AccountID
 				cfg.OpenAIClientVersion = codexCLIVersion()
-				return p.NewClient(cfg)
+				return p.NewClient(withClientIdentity(cfg))
 			}
 		}
 		cfg.APIKey = apiKey
-		return p.NewClient(cfg)
+		return p.NewClient(withClientIdentity(cfg))
 	}
 	r.providersWithKey["openai"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := openaiprovider.New()
-		return p.NewClient(api.ProviderConfig{
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
 			APIKey:  apiKey,
 			Model:   modelID,
 			BaseURL: os.Getenv("OPENAI_BASE_URL"),
-		})
+		}))
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
 	// (AWS_REGION, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, profile,
@@ -213,22 +213,34 @@ func (r *Registry) registerDefaults() {
 	// GOOGLE_CLOUD_REGION defaults to us-east5.
 	r.providers["vertex"] = func(modelID string) (api.APIClient, error) {
 		p := vertexprovider.New()
-		return p.NewClient(api.ProviderConfig{Model: modelID})
+		return p.NewClient(withClientIdentity(api.ProviderConfig{Model: modelID}))
 	}
 	// Azure Foundry (Azure OpenAI Service) — auth via AZURE_OPENAI_API_KEY
 	// or azidentity DefaultAzureCredential. Requires AZURE_OPENAI_ENDPOINT
 	// and AZURE_OPENAI_DEPLOYMENT (or modelID is treated as the deployment).
 	r.providers["foundry"] = func(modelID string) (api.APIClient, error) {
 		p := foundryprovider.New()
-		return p.NewClient(api.ProviderConfig{
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
 			APIKey: os.Getenv("AZURE_OPENAI_API_KEY"),
 			Model:  modelID,
-		})
+		}))
 	}
 	r.providersWithKey["foundry"] = func(modelID, apiKey string) (api.APIClient, error) {
 		p := foundryprovider.New()
-		return p.NewClient(api.ProviderConfig{APIKey: apiKey, Model: modelID})
+		return p.NewClient(withClientIdentity(api.ProviderConfig{APIKey: apiKey, Model: modelID}))
 	}
+}
+
+// withClientIdentity injects the operator's client-identity override into a
+// claw ProviderConfig. ITERION_LLM_USER_AGENT is the iterion-branded surface;
+// claw itself then resolves cfg.UserAgent → CLAW_USER_AGENT →
+// "claw-code-go/<version>" and merges ANTHROPIC_CUSTOM_HEADERS (Claude Code
+// parity) last. Useful against Anthropic-compatible endpoints that gate
+// service on the calling tool's fingerprint (e.g. z.ai's Coding Plan
+// risk-control); see docs/backends.md § Client identity.
+func withClientIdentity(cfg api.ProviderConfig) api.ProviderConfig {
+	cfg.UserAgent = os.Getenv("ITERION_LLM_USER_AGENT")
+	return cfg
 }
 
 // codexCLIVersion resolves the Codex CLI version string to send in the
