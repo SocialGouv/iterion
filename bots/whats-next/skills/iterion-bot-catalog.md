@@ -326,7 +326,7 @@ fix, and stops on cross-family double-approval.
   Use when an existing branch/PR needs a rigorous review + fix +
   commit before merge. Scopes to git diff base_ref...HEAD and commits
   a semantic message; pass base_ref for a non-main integration base.
-- **Vars**: `base_ref` (string), `chunk_dir` (string), `chunk_max_loc` (int), `chunk_threshold_loc` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `chunk_dir` (string), `chunk_max_loc` (int), `chunk_threshold_loc` (int), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `dep-update-guard` — Vetty
@@ -419,7 +419,7 @@ STEP-0 preamble).
   code↔doc drift — or when a repo has NO docs yet and needs an initial
   set authored from the code. Fixes the DOCS only (never code logic)
   and commits.
-- **Vars**: `audit_cache_path` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_recovery_iterations` (int), `max_review_chunk_docs` (int), `max_review_iterations` (int), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `audit_cache_path` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_recovery_iterations` (int), `max_review_chunk_docs` (int), `max_review_iterations` (int), `mono_family` (string), `review_mode` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `evolve` — Evoly
@@ -483,7 +483,7 @@ loop until two consecutive cross-family approvals.
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `feature_prompt` (string, required), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `feature_prompt` (string, required), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini
@@ -664,7 +664,7 @@ family approval.
   lockfiles, version bumps. MUTATES dependency manifests/lockfiles and
   aligns consuming code on breaking changes. Ask before running with
   major_policy: attempt.
-- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_packages_per_run` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
+- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_packages_per_run` (int), `mono_family` (string), `override_install_cmd` (string), `override_upgrade_cmd` (string), `review_mode` (string), `scope` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
 - **Path**: `bots/secured-renovacy/main.bot`
 
 ### `supply-shield` — Shieldy
@@ -815,7 +815,7 @@ failing forever. See docs/adr/011-whole-improve-loop-context-chunking.md.
   production-readiness audit across the whole workspace, or to drive
   iterative improvement on a specific axis (pass improvement_prompt).
   No new capability — just better/cleaner code.
-- **Vars**: `context_mode` (string), `improvement_prompt` (string), `max_review_chunk_tokens` (int), `max_review_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `reviewer_context_percent` (int), `reviewer_context_tokens` (int), `scope_globs` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `context_mode` (string), `improvement_prompt` (string), `max_review_chunk_tokens` (int), `max_review_passes` (int), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `reviewer_context_percent` (int), `reviewer_context_tokens` (int), `scope_globs` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->
