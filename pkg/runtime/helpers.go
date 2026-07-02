@@ -236,6 +236,7 @@ func (e *Engine) failRunWithCode(ctx context.Context, runID, nodeID, reason stri
 
 // buildCheckpoint creates a Checkpoint from the current runState.
 func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
+	tokens, cost, iterations, elapsed := rs.budget.Snapshot()
 	return &store.Checkpoint{
 		NodeID:             nodeID,
 		Outputs:            rs.outputs,
@@ -246,7 +247,40 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 		ArtifactVersions:   rs.artifactVersions,
 		Vars:               rs.vars,
 		NodeAttempts:       serializeNodeAttempts(rs.nodeAttempts),
+		// Persist run-scoped accounting so resume continues from consumed
+		// budget/spend instead of a fresh allowance (see Checkpoint docs).
+		BudgetTokensUsed:     tokens,
+		BudgetCostUSD:        cost,
+		BudgetIterationsUsed: iterations,
+		BudgetElapsedNS:      elapsed.Nanoseconds(),
+		CostUSDTotal:         rs.costUSDTotal,
 	}
+}
+
+// cloneIntMap returns a shallow copy of a map[string]int (nil in → nil out),
+// used to isolate a resumed run's mutable counter maps from the persisted
+// checkpoint maps the engine would otherwise write in place.
+func cloneIntMap(src map[string]int) map[string]int {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]int, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// restoreBudgetAccounting seeds a resumed run's SharedBudget consumption and
+// cumulative cost from the checkpoint so the resume continues from what was
+// already spent instead of a fresh allowance. No-op when cp is nil (a
+// from-entry restart) or the checkpoint predates these fields (all zero).
+func restoreBudgetAccounting(rs *runState, cp *store.Checkpoint) {
+	if cp == nil {
+		return
+	}
+	rs.budget.Restore(cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed, time.Duration(cp.BudgetElapsedNS))
+	rs.costUSDTotal = cp.CostUSDTotal
 }
 
 // serializeNodeAttempts converts the runState's typed-key bucket into a

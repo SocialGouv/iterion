@@ -471,6 +471,82 @@ func TestNoBudgetNoInterference(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Test: budget consumption survives a resume (Snapshot/Restore roundtrip)
+// ---------------------------------------------------------------------------
+
+func TestBudgetSnapshotRestoreRoundtrip(t *testing.T) {
+	b := newSharedBudget(&ir.Budget{MaxTokens: 1000, MaxCostUSD: 10, MaxIterations: 5, MaxDuration: "1h"}, nil)
+	if b == nil {
+		t.Fatal("expected a budget")
+	}
+	b.RecordUsage(300, 4.0) // 1 iteration
+	b.RecordUsage(200, 1.5) // 2 iterations
+
+	tokens, cost, iters, elapsed := b.Snapshot()
+	if tokens != 500 || cost != 5.5 || iters != 2 {
+		t.Fatalf("snapshot = (%d,%v,%d), want (500,5.5,2)", tokens, cost, iters)
+	}
+	if elapsed <= 0 {
+		t.Fatalf("expected positive elapsed, got %v", elapsed)
+	}
+
+	// A fresh budget (as newRunState builds on resume) starts at zero...
+	resumed := newSharedBudget(&ir.Budget{MaxTokens: 1000, MaxCostUSD: 10, MaxIterations: 5, MaxDuration: "1h"}, nil)
+	if t0, _, _, _ := resumed.Snapshot(); t0 != 0 {
+		t.Fatalf("fresh budget should start at 0 tokens, got %d", t0)
+	}
+	// ...until Restore seeds it from the checkpoint.
+	resumed.Restore(tokens, cost, iters, elapsed)
+	rt, rc, ri, _ := resumed.Snapshot()
+	if rt != 500 || rc != 5.5 || ri != 2 {
+		t.Fatalf("restored = (%d,%v,%d), want (500,5.5,2)", rt, rc, ri)
+	}
+	// One more iteration on the resumed budget must exhaust max_iterations (5)
+	// counting from the restored 2, not from 0 — the runaway-loop guard.
+	resumed.RecordUsage(0, 0) // 3
+	resumed.RecordUsage(0, 0) // 4
+	checks := resumed.RecordUsage(0, 0) // 5 → exceeded
+	if findExceeded(checks) == nil {
+		t.Fatal("expected iterations budget exceeded after restore+3 (2+3=5), got none")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: buildCheckpoint captures accounting; restoreBudgetAccounting rehydrates
+// ---------------------------------------------------------------------------
+
+func TestCheckpointCarriesBudgetAccounting(t *testing.T) {
+	rs := &runState{
+		runID:        "r1",
+		budget:       newSharedBudget(&ir.Budget{MaxTokens: 1000, MaxCostUSD: 10}, nil),
+		costUSDTotal: 7.25,
+	}
+	rs.budget.RecordUsage(400, 3.0)
+
+	cp := buildCheckpoint(rs, "n1")
+	if cp.BudgetTokensUsed != 400 || cp.BudgetCostUSD != 3.0 || cp.BudgetIterationsUsed != 1 {
+		t.Fatalf("checkpoint accounting = (%d,%v,%d), want (400,3,1)", cp.BudgetTokensUsed, cp.BudgetCostUSD, cp.BudgetIterationsUsed)
+	}
+	if cp.CostUSDTotal != 7.25 {
+		t.Fatalf("checkpoint CostUSDTotal = %v, want 7.25", cp.CostUSDTotal)
+	}
+
+	// Rehydrate into a fresh runState (as a resume would).
+	resumed := &runState{
+		runID:  "r1",
+		budget: newSharedBudget(&ir.Budget{MaxTokens: 1000, MaxCostUSD: 10}, nil),
+	}
+	restoreBudgetAccounting(resumed, cp)
+	if resumed.costUSDTotal != 7.25 {
+		t.Fatalf("resumed costUSDTotal = %v, want 7.25", resumed.costUSDTotal)
+	}
+	tok, cost, _, _ := resumed.budget.Snapshot()
+	if tok != 400 || cost != 3.0 {
+		t.Fatalf("resumed budget = (%d,%v), want (400,3)", tok, cost)
+	}
+}
+
 // ===========================================================================
 // Workspace mutation safety tests
 // ===========================================================================

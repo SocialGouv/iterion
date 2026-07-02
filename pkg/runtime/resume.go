@@ -138,7 +138,10 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	outputs[humanNodeID] = answers
 
 	// Persist artifact if the human node has publish, then mark it finished.
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cp.ArtifactVersions)
+	// Pass a CLONE of the checkpoint's version map: materializeHumanArtifact
+	// bumps it in place, and the engine mutates it further during the run —
+	// both would otherwise write r.Checkpoint's map under a concurrent HTTP read.
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cloneIntMap(cp.ArtifactVersions))
 	if err != nil {
 		return err
 	}
@@ -188,6 +191,15 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 		}
 		loopErr := e.reInvokeBackend(ctx, rs, humanNodeID, node, ni, answers, 0)
 		e.evictRunSessions(runID, loopErr)
+		// A delegate-pause resume drives the rest of the graph to a terminal
+		// node here, so it needs the SAME worktree finalization the normal
+		// edge-select path below performs — otherwise a `worktree: auto` run
+		// that paused on an agent/judge ask_user finishes with its commits
+		// reachable only via reflog (GC-eligible), the exact F-RT-1 failure
+		// finalizeOnExit exists to prevent.
+		if wtCtx := e.reconstructWorktreeContext(r); wtCtx != nil {
+			e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
+		}
 		return loopErr
 	}
 
@@ -315,14 +327,16 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	runID := r.ID
 	humanNodeID := cp.NodeID
 
-	// Init maps when the checkpoint deserialised with omitted fields
-	// (Mongo bson omitempty, legacy stores) — a nil map here would
-	// crash selectEdgeRS the first time it tries `rs.loopCounters[X]++`.
-	loopCounters := cp.LoopCounters
+	// Clone (not alias) the counter maps: the engine mutates them in place
+	// during the resumed run, so aliasing r.Checkpoint's maps would race a
+	// concurrent HTTP read of the run pointer. cloneIntMap(nil) returns nil,
+	// so fall back to a fresh map — a nil map would crash selectEdgeRS the
+	// first time it does `rs.loopCounters[X]++`.
+	loopCounters := cloneIntMap(cp.LoopCounters)
 	if loopCounters == nil {
 		loopCounters = make(map[string]int)
 	}
-	roundRobinCounters := cp.RoundRobinCounters
+	roundRobinCounters := cloneIntMap(cp.RoundRobinCounters)
 	if roundRobinCounters == nil {
 		roundRobinCounters = make(map[string]int)
 	}
@@ -405,6 +419,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.artifactVersions = artifactVersions
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
+	restoreBudgetAccounting(rs, cp)
 
 	// Push the freshly-resolved vars into the executor so substitutions
 	// in tool commands and prompt templates see the same map the engine
@@ -543,20 +558,26 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 			rs.outputs = make(map[string]map[string]interface{})
 		}
 		rs.artifacts = e.rebuildArtifacts(rs.outputs)
-		// Each below: init when the checkpoint deserialised with omitted
-		// fields, otherwise selectEdgeRS / loop-counter increments
-		// panic on the first write.
+		// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
+		// mutate loopCounters/roundRobinCounters and artifactVersions in
+		// place, so aliasing cp.* (== r.Checkpoint.*) would let the engine
+		// write a map an HTTP read still holding the run pointer could
+		// iterate concurrently — a fatal concurrent map read+write. Same
+		// sibling-isolation reasoning as the copyOutputs above. A nil source
+		// leaves the empty map newRunState allocated (avoids a first-write nil
+		// panic).
 		if cp.LoopCounters != nil {
-			rs.loopCounters = cp.LoopCounters
+			rs.loopCounters = cloneIntMap(cp.LoopCounters)
 		}
 		if cp.RoundRobinCounters != nil {
-			rs.roundRobinCounters = cp.RoundRobinCounters
+			rs.roundRobinCounters = cloneIntMap(cp.RoundRobinCounters)
 		}
 		if cp.ArtifactVersions != nil {
-			rs.artifactVersions = cp.ArtifactVersions
+			rs.artifactVersions = cloneIntMap(cp.ArtifactVersions)
 		}
 		rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 		restoreLoopSnapshots(rs, cp)
+		restoreBudgetAccounting(rs, cp)
 		// Fork rehydration: when the checkpoint carries a backend
 		// conversation (claw) or session id (claude_code), pin them to
 		// runState so the first execution of cp.NodeID injects them

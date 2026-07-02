@@ -101,8 +101,27 @@ func WithOnNodeFinished(fn func(runID, nodeID string, output map[string]interfac
 // concurrent use; the callback runs in the goroutine that emitted the
 // event. Use it to fan out events to non-store observers (Prometheus,
 // custom metrics) without changing the persistence layer.
+//
+// Observers CHAIN: multiple WithEventObserver options all fire (in
+// registration order), so registering e.g. both the studio WS broker and
+// the run-health alert manager delivers events to both. (Previously the
+// last registration silently overwrote the earlier ones — enabling
+// alerting would have killed the live console feed.)
 func WithEventObserver(fn func(evt store.Event)) EngineOption {
-	return func(e *Engine) { e.onEvent = fn }
+	return func(e *Engine) {
+		if fn == nil {
+			return
+		}
+		prev := e.onEvent
+		if prev == nil {
+			e.onEvent = fn
+			return
+		}
+		e.onEvent = func(evt store.Event) {
+			prev(evt)
+			fn(evt)
+		}
+	}
 }
 
 // WithRecoveryDispatch installs the dispatcher consulted when a node's

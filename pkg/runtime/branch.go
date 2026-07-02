@@ -43,10 +43,14 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 	runID := rs.runID
 
 	// branchCostUSD is this branch's cumulative LLM spend, recorded into the
-	// shared daily-cap ledger under a per-branch key ("<runID>#<branchID>")
-	// so concurrent branches don't clobber each other's monotonic-max entry
-	// (see recordBranchUsage).
+	// shared daily-cap ledger under ledgerKey. The key carries a per-invocation
+	// sequence ("<runID>#<branchID>#<seq>") so concurrent branches don't
+	// clobber each other's monotonic-max entry AND a fan-out re-run inside a
+	// loop gets a fresh key each iteration (branchID alone repeats across
+	// iterations, which would make the monotonic-max keep only the costliest
+	// one instead of summing) — see recordBranchUsage.
 	var branchCostUSD float64
+	ledgerKey := fmt.Sprintf("%s#%s#%d", runID, branchID, rs.branchLedgerSeq.Add(1))
 
 	// Emit branch_started (best-effort — branch can proceed without the event).
 	if err := e.emitBranch(ctx, runID, branchID, store.EventBranchStarted, startEdge.To, nil); err != nil {
@@ -115,7 +119,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 			return result
 		}
 
-		if e.recordBranchUsage(ctx, rs, runID, branchID, currentNodeID, output, &branchCostUSD, result) {
+		if e.recordBranchUsage(ctx, rs, runID, branchID, ledgerKey, currentNodeID, output, &branchCostUSD, result) {
 			return result
 		}
 
@@ -293,12 +297,12 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 // exceeded. The daily-cap key is "<runID>#<branchID>" so concurrent branches
 // accumulate independently; the per-run budget pause decision stays on the
 // trunk's pre-exec path, branches only contribute spend.
-func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, output map[string]interface{}, branchCostUSD *float64, result *branchResult) bool {
+func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]interface{}, branchCostUSD *float64, result *branchResult) bool {
 	tokens, costUSD := extractUsage(output)
 
 	if e.dailyCap != nil && costUSD > 0 {
 		*branchCostUSD += costUSD
-		if _, err := e.dailyCap.Record(ctx, runID+"#"+branchID, *branchCostUSD); err != nil {
+		if _, err := e.dailyCap.Record(ctx, ledgerKey, *branchCostUSD); err != nil {
 			e.logger.Warn("branch %s: daily spend cap record failed: %v", branchID, err)
 		}
 	}

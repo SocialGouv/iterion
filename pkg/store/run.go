@@ -514,6 +514,25 @@ type Checkpoint struct {
 	// that resume preserves the recovery dispatcher's retry budget. Outer key
 	// is the node ID, inner key is the runtime error code (string-typed).
 	NodeAttempts map[string]map[string]int `json:"node_attempts,omitempty" bson:"node_attempts,omitempty"`
+
+	// BudgetTokensUsed / BudgetCostUSD / BudgetIterationsUsed / BudgetElapsedNS
+	// persist the run-scoped SharedBudget consumption so a resume continues
+	// from what was already spent instead of re-granting the full
+	// max_tokens / max_cost_usd / max_iterations / max_duration allowance.
+	// Without them a run that auto-resumes (dispatcher retry, transient
+	// failure) could spend an unbounded multiple of its declared budget, and
+	// the max_iterations runaway-loop guard would reset on every resume.
+	// Zero/omitted on legacy checkpoints (a fresh budget — the prior behaviour).
+	BudgetTokensUsed     int   `json:"budget_tokens_used,omitempty" bson:"budget_tokens_used,omitempty"`
+	BudgetCostUSD        float64 `json:"budget_cost_usd,omitempty" bson:"budget_cost_usd,omitempty"`
+	BudgetIterationsUsed int   `json:"budget_iterations_used,omitempty" bson:"budget_iterations_used,omitempty"`
+	BudgetElapsedNS      int64 `json:"budget_elapsed_ns,omitempty" bson:"budget_elapsed_ns,omitempty"`
+	// CostUSDTotal is the run's cumulative LLM spend across ALL execution
+	// segments. Persisted so the daily-spend-cap ledger (a monotonic max of
+	// the per-run cumulative) keeps climbing after a resume instead of
+	// restarting from 0 — otherwise post-resume spend stays invisible to the
+	// cap until it re-exceeds the pre-pause peak.
+	CostUSDTotal float64 `json:"cost_usd_total,omitempty" bson:"cost_usd_total,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

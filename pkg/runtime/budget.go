@@ -80,6 +80,37 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 	}
 }
 
+// Snapshot returns the budget's consumed amounts and elapsed active time so
+// they can be persisted in a checkpoint and restored on resume. Safe on a nil
+// budget (returns zeros). elapsed is time.Since(startedAt) at call time.
+func (b *SharedBudget) Snapshot() (tokens int, cost float64, iterations int, elapsed time.Duration) {
+	if b == nil {
+		return 0, 0, 0, 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.tokensUsed, b.costUsed, b.iterationsUsed, time.Since(b.startedAt)
+}
+
+// Restore seeds a freshly-built budget with consumption carried over from a
+// checkpoint so a resumed run continues from where it left off rather than
+// with a full allowance. elapsed shifts startedAt back so the duration budget
+// counts prior active time (the pause gap itself is excluded). Safe on a nil
+// budget (no-op). Called once, before the resumed run executes any node.
+func (b *SharedBudget) Restore(tokens int, cost float64, iterations int, elapsed time.Duration) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.tokensUsed = tokens
+	b.costUsed = cost
+	b.iterationsUsed = iterations
+	if elapsed > 0 {
+		b.startedAt = time.Now().Add(-elapsed)
+	}
+}
+
 // budgetCheckResult holds the outcome of a single dimension check.
 type budgetCheckResult struct {
 	exceeded    bool

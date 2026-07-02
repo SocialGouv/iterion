@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"sync/atomic"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
@@ -203,6 +204,14 @@ type runState struct {
 	// and incremented on the post-exec path (recordAndCheckBudget);
 	// recorded into the shared daily ledger via Engine.dailyCap.
 	costUSDTotal float64
+
+	// branchLedgerSeq hands each execBranch invocation a unique suffix for
+	// its daily-cap ledger key. Without it, a fan-out INSIDE a loop reuses
+	// the same "<runID>#<branchID>" key every iteration (branchID encodes
+	// router+index, not the iteration), and the ledger's monotonic-max would
+	// keep only the single costliest iteration instead of summing them.
+	// Atomic: incremented concurrently from parallel branch goroutines.
+	branchLedgerSeq atomic.Uint64
 
 	// nodeAttempts counts prior failed attempts per (nodeID, ErrorCode)
 	// so the recovery dispatcher can apply per-class retry budgets and
