@@ -85,12 +85,30 @@ is a privileged-insider vector, not an anonymous one.
   `managed_secret_id` is now `json:"-"` on `Connection`, `RepoIntegration`, and
   `ProvisionResult`.
 
-## Deferred follow-ons
+## Follow-ons — done (second pass)
 
-- **H1-full** — per-single-repo creation-time token + moving the github_app
-  runtime credential to per-integration minting (connection-managed-secret +
-  refresh-model refactor).
-- **H4** — make the GitHub-App connect path the recommended default over the
-  broad OAuth-App `repo` path in the studio UI (UX only; does not change which
-  token is minted).
-- **H3-UI** — display requested scopes in the OAuth-app registration UI.
+- **H1 creation-narrowing — DONE.** `forge.Orchestrator.narrowGitHubAppSecret`
+  (injected `GitHubAppMinter` = server's `forgeAppMinter`) re-mints the managed
+  github_app token scoped to the connection's provisioned repo set + minimal
+  permissions after *each* provision — so the runtime token tracks exactly the
+  repos iterion operates on immediately, instead of the whole installation until
+  the ~55-min refresh. Best-effort (a mint failure keeps the prior minimal-
+  permission token; never blocks a provision) and multi-repo safe (re-scopes to
+  the full current set every time). Test: `TestNarrowGitHubAppSecret`.
+- **H4 — DONE.** The studio connect form (`ConnectForm.tsx`) makes the
+  least-privilege **GitHub App** path the recommended default for GitHub
+  (auto-selected when a server App is configured, listed first with a
+  "Recommended" badge + a least-privilege note) over the broad OAuth-App `repo`.
+- **H3-UI — DONE.** The OAuth-app registration form (`RegisterOAuthAppForm.tsx`)
+  shows the exact scope set the app will request per provider as chips
+  (`DEFAULT_OAUTH_SCOPES` in `forgeShared.ts`, mirroring the Go `DefaultScopes`),
+  flagging GitHub's broad `repo` and steering to the GitHub-App path.
+
+## Still deferred
+
+- **H1 per-single-repo** — scoping each bot's token to only *its* repo (rather
+  than the connection's repo set) would require per-integration secrets instead
+  of the shared connection-level managed secret (a store + refresh-model
+  refactor). Accepted limitation: the current per-repo-**set** scope + minimal
+  permissions + egress lock already keeps the token within one team's operated
+  repos; per-single-repo is marginal defense-in-depth at high refactor cost.

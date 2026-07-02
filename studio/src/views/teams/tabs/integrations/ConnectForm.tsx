@@ -6,6 +6,7 @@ import {
   type ForgeProvider,
   connectForge,
 } from "@/api/forgeConnections";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Radio } from "@/components/ui/Radio";
@@ -48,12 +49,21 @@ export function ConnectForm({
     );
   const oauthAvailable = appExists(provider, baseURL);
 
-  // Steer to OAuth when an app exists for the selected (provider, instance),
-  // else PAT — re-runs when the match flips, unless the user overrode it.
+  // The least-privilege GitHub-App path (operator-selected repos, minimal fixed
+  // permissions) is the recommended default for GitHub when the server has an
+  // App configured; otherwise steer to OAuth when an app exists, else PAT.
+  const bestMode = (p: ForgeProvider, base: string): "oauth" | "pat" | "app" => {
+    if (p === "github" && githubAppConfigured) return "app";
+    return appExists(p, base) ? "oauth" : "pat";
+  };
+
+  // Re-steer to the best default when the inputs flip, unless the user overrode
+  // it.
   useEffect(() => {
     if (modeTouched.current) return;
-    setMode(oauthAvailable ? "oauth" : "pat");
-  }, [oauthAvailable]);
+    setMode(bestMode(provider, baseURL));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [oauthAvailable, provider, githubAppConfigured]);
 
   const pickMode = (m: "oauth" | "pat" | "app") => {
     modeTouched.current = true;
@@ -65,7 +75,7 @@ export function ConnectForm({
     // Re-steer to the new provider's best default (also clears a stale,
     // github-only "app" mode when switching away).
     modeTouched.current = false;
-    setMode(appExists(p, baseURL) ? "oauth" : "pat");
+    setMode(bestMode(p, baseURL));
   };
 
   const connect = async () => {
@@ -145,7 +155,17 @@ export function ConnectForm({
         />
       </div>
 
-      <div className="flex gap-3 text-sm">
+      <div className="flex gap-3 text-sm items-center flex-wrap">
+        {/* Least-privilege path first + flagged recommended (GitHub only). */}
+        {provider === "github" && githubAppConfigured && (
+          <label className="flex items-center gap-1">
+            <Radio checked={mode === "app"} onChange={() => pickMode("app")} />
+            Install GitHub App
+            <Badge variant="accent" size="sm">
+              Recommended
+            </Badge>
+          </label>
+        )}
         <label
           className={`flex items-center gap-1 ${oauthAvailable ? "" : "opacity-50"}`}
           title={
@@ -168,13 +188,15 @@ export function ConnectForm({
           />
           Paste a token
         </label>
-        {provider === "github" && githubAppConfigured && (
-          <label className="flex items-center gap-1">
-            <Radio checked={mode === "app"} onChange={() => pickMode("app")} />
-            Install GitHub App
-          </label>
-        )}
       </div>
+
+      {provider === "github" && githubAppConfigured && mode === "app" && (
+        <p className="text-caption text-fg-muted">
+          Least privilege: the GitHub App gets only the repositories you select
+          and a minimal fixed permission set (contents, pull requests,
+          webhooks) — not your account's full <code>repo</code> scope.
+        </p>
+      )}
 
       {mode === "pat" && (
         <div>

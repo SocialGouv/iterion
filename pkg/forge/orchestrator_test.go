@@ -178,6 +178,68 @@ func sameSet(a, b []string) bool {
 
 // --- tests ---
 
+// narrowGitHubAppSecret re-mints the managed forge token scoped to the
+// connection's provisioned repos (least-privilege), rewriting the secret in
+// place; a minter error is a best-effort no-op that keeps the prior token, and
+// the egress lock (AllowedHosts) survives the rewrite.
+func TestNarrowGitHubAppSecret(t *testing.T) {
+	o, _, sealer := newTestOrch(t)
+	ctx := context.Background()
+
+	connID := "gh-conn"
+	sealed, err := SealOAuthTokens(sealer, connID, "ghs_broad", "", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := Connection{
+		ID: connID, TenantID: "t1", Provider: ProviderGitHub, Kind: KindGitHubApp,
+		InstallationID: 42, Status: StatusActive, SealedPayload: sealed,
+	}
+	if err := o.Connections.Create(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	secID, err := o.ensureManagedSecret(ctx, &conn, "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Initially holds the broad connect-time token, egress-locked to github.com.
+	gs, _ := o.Secrets.Get(ctx, secID)
+	if pt, _ := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret); string(pt) != "ghs_broad" {
+		t.Fatalf("pre-narrow token = %q, want ghs_broad", pt)
+	}
+	if !sameSet(gs.AllowedHosts, []string{"github.com"}) {
+		t.Fatalf("pre-narrow AllowedHosts = %v", gs.AllowedHosts)
+	}
+
+	// A scoped minter narrows the token in place.
+	o.GitHubAppMinter = func(_ context.Context, c Connection) (string, error) {
+		if c.Kind != KindGitHubApp {
+			t.Errorf("minter got kind %q", c.Kind)
+		}
+		return "ghs_scoped", nil
+	}
+	o.narrowGitHubAppSecret(ctx, &conn)
+	gs2, _ := o.Secrets.Get(ctx, secID)
+	if pt, _ := secrets.OpenGenericSecret(sealer, secID, gs2.SealedSecret); string(pt) != "ghs_scoped" {
+		t.Fatalf("post-narrow token = %q, want ghs_scoped", pt)
+	}
+	if !sameSet(gs2.AllowedHosts, []string{"github.com"}) {
+		t.Errorf("egress lock lost after narrowing: %v", gs2.AllowedHosts)
+	}
+
+	// Best-effort: a minter error keeps the prior (scoped) token.
+	o.GitHubAppMinter = func(context.Context, Connection) (string, error) { return "", fmt.Errorf("boom") }
+	o.narrowGitHubAppSecret(ctx, &conn)
+	gs3, _ := o.Secrets.Get(ctx, secID)
+	if pt, _ := secrets.OpenGenericSecret(sealer, secID, gs3.SealedSecret); string(pt) != "ghs_scoped" {
+		t.Fatalf("minter error must not change token, got %q", pt)
+	}
+
+	// oauth/pat connection with no minter → no-op (never panics).
+	pat := seedConn(t, o, sealer)
+	o.narrowGitHubAppSecret(ctx, &pat) // KindPAT → early return
+}
+
 func TestProvision_SingleBot(t *testing.T) {
 	o, fa, sealer := newTestOrch(t)
 	seedConn(t, o, sealer)

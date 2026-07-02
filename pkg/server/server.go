@@ -296,16 +296,17 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.forgeStates = newForgeStateStore(10 * time.Minute)
 		}
 		s.forgeOrchestrator = &forge.Orchestrator{
-			Connections:  s.forgeConnections,
-			Integrations: s.forgeIntegrations,
-			Webhooks:     s.webhookConfigs,
-			Secrets:      s.genericSecrets,
-			Sealer:       s.sealer,
-			Bots:         s.forgeBotForge,
-			Invocations:  s.forgeBotInvocations,
-			Schedules:    cfg.ScheduledBots,
-			AdminFor:     s.forgeAdminFor,
-			PublicURL:    cfg.PublicURL,
+			Connections:     s.forgeConnections,
+			Integrations:    s.forgeIntegrations,
+			Webhooks:        s.webhookConfigs,
+			Secrets:         s.genericSecrets,
+			Sealer:          s.sealer,
+			Bots:            s.forgeBotForge,
+			Invocations:     s.forgeBotInvocations,
+			Schedules:       cfg.ScheduledBots,
+			AdminFor:        s.forgeAdminFor,
+			GitHubAppMinter: s.forgeAppMinter,
+			PublicURL:       cfg.PublicURL,
 		}
 	}
 	s.hub = NewHub(logger)

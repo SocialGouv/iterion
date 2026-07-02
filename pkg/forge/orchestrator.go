@@ -53,8 +53,17 @@ type Orchestrator struct {
 	// AdminFor builds the outbound client for a connection (opens its sealed
 	// token). Injected so the orchestrator stays provider-agnostic and
 	// testable with a fake admin.
-	AdminFor  func(ctx context.Context, conn Connection) (Admin, error)
-	PublicURL string
+	AdminFor func(ctx context.Context, conn Connection) (Admin, error)
+	// GitHubAppMinter, when set, mints a fresh least-privilege installation
+	// token (scoped to the connection's provisioned repos + minimal
+	// permissions) for a github_app connection's managed forge token. Called
+	// after each repo provision to narrow the runtime token to the exact repo
+	// set. Best-effort: on error the previously-stored (already minimal-
+	// permission) token is kept, so a mint failure never blocks a provision.
+	// nil (oauth/pat, or no github app configured) → no-op. Injected by the
+	// server so the orchestrator stays free of the github package + App key.
+	GitHubAppMinter func(ctx context.Context, conn Connection) (string, error)
+	PublicURL       string
 
 	// Optional injection points for tests (default to time.Now / uuid).
 	Now   func() time.Time
@@ -351,6 +360,11 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		}
 	}
 
+	// github_app: narrow the runtime forge token to the now-current provisioned
+	// repo set (least-privilege). Best-effort — see narrowGitHubAppSecret; runs
+	// after Integrations.Create so the just-provisioned repo is in the set.
+	o.narrowGitHubAppSecret(ctx, &conn)
+
 	// Materialise cloud schedules for the enabled bots' schedule invocations.
 	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, invByBot, req.ScheduleCrons, req.ActorID); err != nil {
 		return ProvisionResult{}, err
@@ -415,6 +429,37 @@ func forgeTokenEgressHosts(conn *Connection) []string {
 		return nil
 	}
 	return []string{h}
+}
+
+// narrowGitHubAppSecret best-effort re-mints a github_app connection's managed
+// forge token scoped to its now-current provisioned repo set + minimal
+// permissions (least-privilege), rewriting the managed secret's plaintext in
+// place (AllowedHosts and every other field preserved). It runs after each
+// provision so the runtime token tracks exactly the repos iterion operates on,
+// rather than the whole installation until the refresh worker next rotates it.
+// A nil minter (oauth/pat, or no github app configured) or any error is a
+// no-op: the previously-stored token — already pinned to minimal permissions —
+// stays, so narrowing never blocks a provision.
+func (o *Orchestrator) narrowGitHubAppSecret(ctx context.Context, conn *Connection) {
+	if conn.Kind != KindGitHubApp || o.GitHubAppMinter == nil || conn.ManagedSecretID == "" {
+		return
+	}
+	token, err := o.GitHubAppMinter(ctx, *conn)
+	if err != nil || token == "" {
+		return
+	}
+	gs, err := o.Secrets.Get(ctx, conn.ManagedSecretID)
+	if err != nil {
+		return
+	}
+	sealed, err := secrets.SealGenericSecret(o.Sealer, gs.ID, []byte(token))
+	if err != nil {
+		return
+	}
+	gs.SealedSecret = sealed
+	gs.Last4 = secrets.Last4(token)
+	gs.Fingerprint = secrets.FingerprintSHA256(token)
+	_ = o.Secrets.Update(ctx, gs)
 }
 
 // ensureManagedSecret creates (once per connection) the team-scoped generic

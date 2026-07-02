@@ -321,6 +321,28 @@ func (s *Server) forgeConnRepoNames(ctx context.Context, conn forge.Connection) 
 	return names
 }
 
+// forgeAppMinter mints a fresh github_app installation token scoped to the
+// connection's provisioned repo set + minimal permissions — the orchestrator's
+// GitHubAppMinter, used to narrow the managed forge token at provision time.
+// Returns an error when no github app is available for the connection (the
+// orchestrator treats that as best-effort and keeps the prior token).
+func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (string, error) {
+	if conn.Kind != forge.KindGitHubApp {
+		return "", fmt.Errorf("forge: not a github_app connection")
+	}
+	cfg, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
+	if !ok {
+		return "", fmt.Errorf("forge: no github app available for this connection")
+	}
+	tok, _, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
+		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),
+		&forgegithub.InstallationTokenOptions{
+			Repositories: s.forgeConnRepoNames(ctx, conn),
+			Permissions:  forgegithub.RuntimeInstallationPermissions(),
+		})
+	return tok, err
+}
+
 // forgeRefresherFor returns the token refresher for a connection, or nil
 // when it cannot/should-not refresh (PAT, GitHub-App, or a provider with no
 // configured OAuth app). The per-provider OAuth clients implement both

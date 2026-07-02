@@ -20,6 +20,18 @@ export function canonicalBase(provider: ForgeProvider, raw: string): string {
 // (installation-token) is a separate connect mode handled server-side.
 export const CONNECTABLE: ForgeProvider[] = ["gitlab", "github", "forgejo"];
 
+// DEFAULT_OAUTH_SCOPES mirrors each provider's Go DefaultScopes
+// (pkg/forge/<provider>/oauth.go) so the OAuth-app registration form can show
+// operators exactly what an app will request BEFORE they authorize it. Keep in
+// sync with the Go source (least-privilege: GitHub is `repo` only — no
+// read:org). GitHub's broad `repo` is why the least-privilege GitHub-App
+// connect path is recommended over an OAuth App.
+export const DEFAULT_OAUTH_SCOPES: Record<ForgeProvider, string[]> = {
+  gitlab: ["api"],
+  github: ["repo"],
+  forgejo: ["write:repository", "read:user"],
+};
+
 export function statusTone(
   status: ForgeConnection["status"],
 ): "success" | "warning" | "danger" {

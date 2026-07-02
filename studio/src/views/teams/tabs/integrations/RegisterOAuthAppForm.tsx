@@ -10,9 +10,12 @@ import {
   startGitHubOrgsPicker,
 } from "@/api/forgeConnections";
 import { Button } from "@/components/ui/Button";
+import { Chip } from "@/components/ui/Chip";
 import { Input } from "@/components/ui/Input";
 import { Radio } from "@/components/ui/Radio";
 import { Select } from "@/components/ui/Select";
+
+import { DEFAULT_OAUTH_SCOPES } from "./forgeShared";
 
 type RegisterMode = "auto" | "auto_from_connection" | "manual";
 
@@ -168,6 +171,25 @@ export function RegisterOAuthAppForm({
             {p}
           </Button>
         ))}
+      </div>
+
+      {/* Show operators exactly what OAuth scope(s) the app will request before
+          they create/authorize it (mirrors the Go DefaultScopes). */}
+      <div className="flex items-center gap-1.5 flex-wrap text-caption text-fg-muted">
+        <span>
+          Requests scope{DEFAULT_OAUTH_SCOPES[provider].length > 1 ? "s" : ""}:
+        </span>
+        {DEFAULT_OAUTH_SCOPES[provider].map((s) => (
+          <Chip key={s}>
+            <code>{s}</code>
+          </Chip>
+        ))}
+        {provider === "github" && (
+          <span>
+            — broad; prefer installing a GitHub App (least privilege) over an
+            OAuth app where possible.
+          </span>
+        )}
       </div>
 
       {provider === "github" && (
