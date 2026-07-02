@@ -53,6 +53,15 @@ func (p *pipe[T]) Fatal(err error) {
 	})
 }
 
+// Warn surfaces a non-fatal error (e.g. a reconnect notice) —
+// best-effort, dropped when the errors channel is saturated.
+func (p *pipe[T]) Warn(err error) {
+	select {
+	case p.errs <- err:
+	default:
+	}
+}
+
 // Finish closes the channels and runs cleanup exactly once. Called by
 // the producer goroutine on exit.
 func (p *pipe[T]) Finish(cleanup func()) {

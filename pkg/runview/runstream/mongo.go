@@ -46,18 +46,21 @@ import (
 // docker-compose.cloud.yml stack initiates `rs0` automatically.
 type MongoSource struct {
 	events  *mongo.Collection
+	runLogs *mongo.Collection // nil disables log streaming (Capabilities.Logs)
+	runs    *mongo.Collection // terminal-status polling for the log stream
 	logger  *iterlog.Logger
 	metrics *metrics.Registry
 }
 
-// NewMongo builds a Source backed by the supplied events collection —
-// the same one the Mongo RunStore writes to (store/mongo.Store's
-// EventsCollection accessor).
-func NewMongo(events *mongo.Collection, logger *iterlog.Logger) *MongoSource {
+// NewMongo builds a Source backed by the store's collections (the
+// Mongo RunStore's EventsCollection / RunLogsCollection /
+// RunsCollection accessors). runLogs and runs may be nil to disable
+// log streaming (Capabilities().Logs == false).
+func NewMongo(events, runLogs, runs *mongo.Collection, logger *iterlog.Logger) *MongoSource {
 	if logger == nil {
 		logger = iterlog.New(iterlog.LevelInfo, nil)
 	}
-	return &MongoSource{events: events, logger: logger}
+	return &MongoSource{events: events, runLogs: runLogs, runs: runs, logger: logger}
 }
 
 // WithMetrics attaches a Prometheus registry so each delivered event
@@ -68,22 +71,15 @@ func (m *MongoSource) WithMetrics(reg *metrics.Registry) *MongoSource {
 	return m
 }
 
-// Capabilities advertises live tail + historical range. Logs stays
-// false until the run_logs pipeline is wired (ADR-053 step 7); callers
-// fall back to their no-log behaviour in the interim.
+// Capabilities advertises live tail + historical range for both
+// streams; Logs reflects whether the run_logs collection was wired.
 func (m *MongoSource) Capabilities() Capabilities {
-	return Capabilities{LiveTail: true, HistoricalRange: true}
+	return Capabilities{LiveTail: true, HistoricalRange: true, Logs: m.runLogs != nil}
 }
 
 // Close is a no-op — the source itself owns no long-lived resources.
 // Subscriptions own their cursors + change streams.
 func (m *MongoSource) Close() error { return nil }
-
-// SubscribeLogs is unsupported until the run_logs collection + change
-// stream land (ADR-053 step 7).
-func (m *MongoSource) SubscribeLogs(ctx context.Context, runID string, fromOffset int64) (LogSubscription, error) {
-	return nil, ErrLogsUnsupported
-}
 
 // SubscribeEvents spawns the watch-first pipeline described on
 // MongoSource. The returned subscription is usable immediately;

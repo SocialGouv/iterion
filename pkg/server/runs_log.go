@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 func (s *Server) registerRunLogRoutes() {
@@ -66,6 +68,30 @@ func (s *Server) handleGetRunLog(w http.ResponseWriter, r *http.Request) {
 
 	storeDir := s.runs.StoreDir()
 	if storeDir == "" {
+		// Cloud mode: no filesystem, no in-memory buffer — serve the
+		// persisted run_logs chunks through the store's RunLogStore
+		// (ADR-053 parity for the REST log endpoint).
+		if ls := store.AsRunLogStore(s.runs.RunStore()); ls != nil {
+			total, err := ls.RunLogSize(r.Context(), id)
+			if err != nil {
+				s.httpErrorFor(w, r, http.StatusInternalServerError, "log size: %v", err)
+				return
+			}
+			if total == 0 {
+				s.httpErrorFor(w, r, http.StatusNotFound, "no log captured for run %q", id)
+				return
+			}
+			data, err := ls.ReadRunLogRange(r.Context(), id, from, 0)
+			if err != nil {
+				s.httpErrorFor(w, r, http.StatusInternalServerError, "read log: %v", err)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("X-Iterion-Log-Offset", strconv.FormatInt(from, 10))
+			w.Header().Set("X-Iterion-Log-Total", strconv.FormatInt(total, 10))
+			_, _ = w.Write(data)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "no log buffer for run %q", id)
 		return
 	}

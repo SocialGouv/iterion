@@ -276,7 +276,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// Mongo change-stream source so the WS handler streams runner-pod
 	// events (the local broker would only see this process's writes).
 	// ADR-053: logs ride the same seam once run_logs is wired.
-	streamSrc := runstream.NewMongo(st.EventsCollection(), logger).WithMetrics(mreg)
+	streamSrc := runstream.NewMongo(st.EventsCollection(), st.RunLogsCollection(), st.RunsCollection(), logger).WithMetrics(mreg)
 
 	disableAuth, _ := strconv.ParseBool(os.Getenv("ITERION_DISABLE_AUTH"))
 
