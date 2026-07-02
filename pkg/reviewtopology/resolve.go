@@ -1,7 +1,8 @@
 // Package reviewtopology resolves the mono/dual review topology for
 // bi-model review-loop bots (whole-improve-loop, branch-improve-loop,
-// feature-dev, docs-refresh, secured-renovacy) from detected provider
-// credentials, and injects the resolved review_mode / mono_family vars
+// feature-dev, docs-refresh, secured-renovacy) from detected credentials
+// (provider keys AND usable backends — e.g. the claude_code forfait), and
+// injects the resolved review_mode / mono_family vars
 // into a run's inputs when the target workflow opts in by declaring a
 // review_mode var.
 //
@@ -59,12 +60,38 @@ func familyOf(provider string) string {
 	}
 }
 
+// familyOfBackend maps an available backend to the review family its
+// nodes run on, or "" for backends that don't imply a family. This is what
+// lets a *backend* credential back a family even when no provider-style key
+// is present: the claude_code forfait (OAuth in ~/.claude) is a backend
+// cred, not an anthropic provider key, yet the bots' claude-family nodes
+// (backend: claude_code) run on it. Without this, a forfait-only host detects
+// no "claude" family, so mono/auto route to gpt and running claude models on
+// the forfait needs a manual per-node backend override (see
+// docs/bot-runs/whole-improve-loop.md, 2026-07-02). codex→gpt is included for
+// symmetry (usually redundant with the openai provider probe). claw is
+// provider-routed, so it backs no family on its own.
+func familyOfBackend(backend string) string {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case detect.BackendClaudeCode:
+		return FamilyClaude
+	case detect.BackendCodex:
+		return FamilyGPT
+	default:
+		return ""
+	}
+}
+
 // monoPreference is the order a single family is picked in when resolving
 // mono: prefer claude, then gpt. (Parameterisable later if needed.)
 var monoPreference = []string{FamilyClaude, FamilyGPT}
 
 // availableFamilies returns the set of distinct review families backed by
-// an available provider credential in the detection report.
+// an available credential in the detection report — either a participating
+// provider key (anthropic/zai→claude, openai→gpt) OR a usable backend whose
+// nodes run that family (claude_code→claude, codex→gpt). The union is what
+// makes a forfait-only host (claude_code OAuth, no anthropic key) resolve a
+// "claude" family, so mono picks claude and auto can go dual.
 func availableFamilies(rep detect.Report) map[string]bool {
 	fams := make(map[string]bool, 2)
 	for _, p := range rep.Providers {
@@ -72,6 +99,14 @@ func availableFamilies(rep detect.Report) map[string]bool {
 			continue
 		}
 		if f := familyOf(p.Name); f != "" {
+			fams[f] = true
+		}
+	}
+	for _, b := range rep.Backends {
+		if !b.Available {
+			continue
+		}
+		if f := familyOfBackend(b.Name); f != "" {
 			fams[f] = true
 		}
 	}

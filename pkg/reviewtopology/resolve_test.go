@@ -15,6 +15,57 @@ func prov(name string, avail bool) detect.ProviderStatus {
 	return detect.ProviderStatus{Name: name, Available: avail}
 }
 
+// repB builds a report from backend statuses (no provider creds), used to
+// cover the forfait case: a claude_code backend OAuth with no anthropic key.
+func repB(backends ...detect.BackendStatus) detect.Report {
+	return detect.Report{Backends: backends}
+}
+
+func backendSt(name string, avail bool) detect.BackendStatus {
+	return detect.BackendStatus{Name: name, Available: avail}
+}
+
+// TestResolve_BackendFamilies covers families backed by a usable BACKEND
+// (not a provider key) — the claude_code forfait being the motivating case.
+func TestResolve_BackendFamilies(t *testing.T) {
+	tests := []struct {
+		name       string
+		report     detect.Report
+		override   string
+		wantMode   string
+		wantFamily string
+	}{
+		// forfait-only host: claude_code backend, no anthropic provider key.
+		// Must now resolve a claude family (was gpt/none before the fix).
+		{"forfait claude_code → mono claude", repB(backendSt(detect.BackendClaudeCode, true)), "mono", ModeMono, FamilyClaude},
+		{"forfait claude_code auto → mono claude", repB(backendSt(detect.BackendClaudeCode, true)), "auto", ModeMono, FamilyClaude},
+		// claude_code forfait + openai provider → two families → auto dual.
+		{
+			"forfait + openai provider → dual",
+			detect.Report{
+				Providers: []detect.ProviderStatus{prov("openai", true)},
+				Backends:  []detect.BackendStatus{backendSt(detect.BackendClaudeCode, true)},
+			},
+			"auto", ModeDual, "",
+		},
+		// codex backend → gpt family (symmetry).
+		{"codex backend → mono gpt", repB(backendSt(detect.BackendCodex, true)), "mono", ModeMono, FamilyGPT},
+		// claw backend backs no family on its own.
+		{"claw backend only → no family (dual fallback)", repB(backendSt(detect.BackendClaw, true)), "auto", ModeDual, ""},
+		// unavailable backend is ignored.
+		{"unavailable claude_code ignored", repB(backendSt(detect.BackendClaudeCode, false)), "auto", ModeDual, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mode, family := Resolve(tt.report, tt.override)
+			if mode != tt.wantMode || family != tt.wantFamily {
+				t.Fatalf("Resolve(%q) = (%q, %q), want (%q, %q)",
+					tt.override, mode, family, tt.wantMode, tt.wantFamily)
+			}
+		})
+	}
+}
+
 func TestResolve(t *testing.T) {
 	tests := []struct {
 		name       string
