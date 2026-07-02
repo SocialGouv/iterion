@@ -126,6 +126,17 @@ func (s *Server) dispatchInvocation(
 			// Dispatcher active: gate (per-org quota), create the card in the
 			// eligible state, and let the dispatcher own execution + state
 			// transitions — no direct launch (else the card would run twice).
+			//
+			// Idempotency BEFORE metering: gateLaunch performs the per-org
+			// quota CAS increment, and ensureBoardCard is idempotent on the
+			// per-comment label only AFTER that. So a webhook redelivery would
+			// re-charge the quota while creating no new card. Short-circuit to
+			// a "carded" replay when the card already exists, before gating.
+			if s.boardCardExists(cfg, meta) {
+				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+				writeJSONStatus(w, http.StatusOK, map[string]string{"status": "carded", "bot": route.BotID})
+				return
+			}
 			if d := s.gateLaunch(ctx); d != nil {
 				s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 				s.writeLaunchDenial(w, r, d)
@@ -148,12 +159,34 @@ func (s *Server) dispatchInvocation(
 // duplicate it. Best-effort — a board error never fails the command (the run
 // still launches). The card is assigned to the bot (Assignee + Bot) and
 // carries the command args as bot_args.
+// boardCardLabel is the per-comment idempotency label a board-mode command
+// card carries — the single dedupe key shared by boardCardExists and
+// ensureBoardCard.
+func boardCardLabel(meta webhookEventMeta) string { return "cmd:" + meta.SubjectID }
+
+// boardCardExists reports whether a tracking card for this comment already
+// exists on the tenant's cloud board. Used to short-circuit a webhook
+// redelivery BEFORE it charges the per-org quota. A store/query error is
+// treated as "does not exist" so a transient blip never suppresses a genuine
+// first launch (ensureBoardCard's own label check remains the backstop).
+func (s *Server) boardCardExists(cfg webhooks.Config, meta webhookEventMeta) bool {
+	if s.cfg.CloudBoardFor == nil {
+		return false
+	}
+	store := s.cfg.CloudBoardFor(cfg.TenantID)
+	if store == nil {
+		return false
+	}
+	existing, err := store.List(native.ListFilter{Labels: []string{boardCardLabel(meta)}})
+	return err == nil && len(existing) > 0
+}
+
 func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route webhooks.CommandRoute, vars map[string]string, meta webhookEventMeta, initialState, repoURL, repoRef string) {
 	store := s.cfg.CloudBoardFor(cfg.TenantID)
 	if store == nil {
 		return
 	}
-	label := "cmd:" + meta.SubjectID
+	label := boardCardLabel(meta)
 	if existing, err := store.List(native.ListFilter{Labels: []string{label}}); err == nil && len(existing) > 0 {
 		return // already materialised for this comment
 	}

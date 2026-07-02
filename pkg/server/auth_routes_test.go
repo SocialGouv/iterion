@@ -99,6 +99,10 @@ func TestSafeNext(t *testing.T) {
 		{"protocol-relative path", "//evil/x", ""},
 		{"non-root path", "dashboard", ""},
 		{"trailing slash root", "/", "/"},
+		{"backslash leading", "/\\evil.com", ""},
+		{"backslash scheme-relative", "\\\\evil.com", ""},
+		{"backslash mixed", "/\\/evil.com", ""},
+		{"backslash in path", "/foo\\bar", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

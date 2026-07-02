@@ -971,6 +971,18 @@ func safeNext(v string) string {
 	if v == "" {
 		return ""
 	}
+	// Reject backslashes outright: WHATWG-compliant browsers fold "\" to
+	// "/", so "/\evil.com" (which url.Parse reads as an empty-host path)
+	// becomes "//evil.com" — a protocol-relative redirect to another
+	// origin. Checking the raw input closes that normalization gap.
+	if strings.ContainsRune(v, '\\') {
+		return ""
+	}
+	// The raw value must start with a single "/": a leading "//" (or the
+	// backslash variant above) is protocol-relative and escapes the origin.
+	if !strings.HasPrefix(v, "/") || strings.HasPrefix(v, "//") {
+		return ""
+	}
 	u, err := url.Parse(v)
 	if err != nil {
 		return ""

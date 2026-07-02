@@ -295,16 +295,22 @@ func forgeDefaultOAuthScopes(p forge.Provider) []string {
 // forgeConnRepoNames returns the short repo names (GitHub installation-token
 // `repositories` form — "api", not "org/api") of the repos a connection has
 // provisioned, so the github_app runtime forge token is scoped to that set
-// (least-privilege) instead of the whole installation. Empty (→ whole
-// installation, still minimal permissions) when nothing is provisioned yet or
-// the store is unavailable.
-func (s *Server) forgeConnRepoNames(ctx context.Context, conn forge.Connection) []string {
+// (least-privilege) instead of the whole installation.
+//
+// (nil, nil) legitimately means "narrow to nothing known" → whole installation
+// (still minimal permissions): no integration store wired, or nothing
+// provisioned yet. A non-nil error means the provisioned set could NOT be
+// determined (transient store failure); callers MUST fail closed and NOT mint a
+// whole-installation token in that case, or a Mongo blip would silently broaden
+// the token's repo scope — the opposite of the least-privilege narrowing this
+// exists for.
+func (s *Server) forgeConnRepoNames(ctx context.Context, conn forge.Connection) ([]string, error) {
 	if s.forgeIntegrations == nil {
-		return nil
+		return nil, nil
 	}
 	ints, err := s.forgeIntegrations.ListByConnection(store.WithTenant(ctx, conn.TenantID), conn.TenantID, conn.ID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	names := make([]string, 0, len(ints))
 	seen := make(map[string]bool, len(ints))
@@ -318,7 +324,7 @@ func (s *Server) forgeConnRepoNames(ctx context.Context, conn forge.Connection) 
 			names = append(names, name)
 		}
 	}
-	return names
+	return names, nil
 }
 
 // forgeAppMinter mints a fresh github_app installation token scoped to the
@@ -334,10 +340,18 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	if !ok {
 		return "", fmt.Errorf("forge: no github app available for this connection")
 	}
+	// Fail closed: if the provisioned repo set can't be determined (transient
+	// store error), do NOT fall back to a whole-installation token. The
+	// orchestrator treats this error as best-effort and keeps the prior
+	// (narrower) token rather than widening scope.
+	repos, err := s.forgeConnRepoNames(ctx, conn)
+	if err != nil {
+		return "", fmt.Errorf("forge: cannot determine provisioned repos for least-privilege token: %w", err)
+	}
 	tok, _, err := forgegithub.MintInstallationToken(ctx, s.forgeHTTPClient(),
 		forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC(),
 		&forgegithub.InstallationTokenOptions{
-			Repositories: s.forgeConnRepoNames(ctx, conn),
+			Repositories: repos,
 			Permissions:  forgegithub.RuntimeInstallationPermissions(),
 		})
 	return tok, err

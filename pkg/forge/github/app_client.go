@@ -265,10 +265,11 @@ type AppRefresher struct {
 	// Repos, when set, returns the short repo names (e.g. "api", not
 	// "org/api") this connection actually operates on, so the runtime
 	// forge_token is scoped to that repo set (least-privilege) instead of the
-	// whole installation. Nil/empty → whole-installation (still minimal
-	// permissions). Injected by the server so the refresher stays free of a
-	// store dependency.
-	Repos func(ctx context.Context, conn forge.Connection) []string
+	// whole installation. A nil slice with a nil error → whole-installation
+	// (still minimal permissions). A non-nil error means the set could not be
+	// determined; Refresh fails closed rather than minting a broader token.
+	// Injected by the server so the refresher stays free of a store dependency.
+	Repos func(ctx context.Context, conn forge.Connection) ([]string, error)
 }
 
 func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ string) (forge.RefreshedToken, error) {
@@ -280,7 +281,14 @@ func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ stri
 	// permission set, scoped to the connection's provisioned repos when known.
 	opts := &InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()}
 	if r.Repos != nil {
-		opts.Repositories = r.Repos(ctx, conn)
+		repos, err := r.Repos(ctx, conn)
+		if err != nil {
+			// Fail closed: keep the prior (narrower) token by failing the
+			// refresh rather than minting a whole-installation token when the
+			// provisioned repo set is momentarily unknown.
+			return forge.RefreshedToken{}, err
+		}
+		opts.Repositories = repos
 	}
 	tok, exp, err := MintInstallationToken(ctx, r.HTTP, APIBaseFor(conn.BaseURL()), r.Cfg, conn.InstallationID, now, opts)
 	if err != nil {

@@ -182,16 +182,36 @@ func (s *Server) insertAndLaunchWebhook(
 	payloadHash string,
 	srcIP string,
 ) {
-	// 1. Run-launch admission. Checked BEFORE the idempotency insert so
-	// a denied event still writes a terminal row (under a random key)
-	// and a later forge retry can launch once the quota resets.
+	// 1. Idempotency replay check — BEFORE metering. gateLaunch performs the
+	// per-org quota CAS *increment* (the increment IS the metering), so a
+	// forge redelivery of an already-processed event (lost ack, operator
+	// "Redeliver") must be caught here or it re-charges the org's monthly
+	// run/cost budget and then fails on the insert with nothing launched.
+	// Denied events are recorded under a random key (see step 3), never
+	// under idemKey, so this lookup misses them and a retry-after-reset
+	// still launches.
+	if s.webhookDeliveries != nil {
+		if existing, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil {
+			s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+			writeJSONStatus(w, http.StatusOK, map[string]string{
+				"status": webhooks.StatusDuplicate, "run_id": existing.RunID, "delivery_id": existing.ID,
+			})
+			return
+		}
+	}
+
+	// 2. Run-launch admission. Only reached for a genuinely new delivery
+	// (replays were filtered in step 1), so the quota CAS fires once per
+	// distinct event. A denied event writes a terminal row under a random
+	// key so a later forge retry can launch once the quota resets.
 	if d := s.gateLaunch(ctx); d != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
 
-	// 2. Idempotency insert.
+	// 3. Idempotency insert (durable dedupe backstop for concurrent
+	// deliveries of the same event that both passed step 1).
 	delivery := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	delivery.IdempotencyKey = idemKey
 	delivery.BotID = botID
