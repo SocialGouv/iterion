@@ -10,6 +10,51 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-02 — validated the launch-time per-node model/backend override (mono fable/sonnet) (run 019f2236)
+
+- Status: **validated** (feature end-to-end); review loop **converged** (2 clean
+  passes, `stop=true`, no oscillation). Run itself left running into verify_build.
+- Versions: bot whole-improve-loop v0.5.0 · iterion `e64513b` (main)
+- Method: `iterion run` (CLI, background, static binary), sandbox
+  `iterion-sandbox-full:edge`, worktree:auto, store = workspace `.iterion`
+  (studio :5199 observable). Flags exercising the new feature:
+  ```
+  --var scope_globs=pkg/reviewtopology --review-mode mono \
+  --backend 'judge=claude_code' --model 'judge=claude-fable-5' \
+  --backend 'agent=claude_code' --model 'agent=claude-sonnet-5' \
+  --merge-into none
+  ```
+- Result: reviewer (fable-5) approved the chunk with a genuine agentic review
+  (read both files in full, probed 2 edge cases, no blockers, high confidence);
+  2nd pass same → `clean_streak=2` → `stop`. verify_build then ran on sonnet-5.
+  No code changes (reviewtopology is clean) → nothing to commit; main untouched.
+- **Value**: proved the per-node/-group override
+  (`pkg/backend/model.ModelOverrides`, studio dropdowns / CLI `--model`/`--backend`
+  / HTTP `model_overrides`). Log evidence: `Delegation started [reviewer_gpt]:
+  backend=claude_code` + `claude … --model claude-fable-5` (backend AND model
+  override, by **kind selector** `judge=`/`agent=`, top-precedence over the
+  node's DSL `backend: claw`/`model: openai/gpt-5.5`). Composes with `--review-mode`.
+- **Finding (topology on a forfait-only host)**: `reviewtopology` resolves
+  families from detected **provider** creds (API-key style), NOT from the
+  `claude_code` forfait OAuth (a *backend* cred). With only codex ChatGPT-OAuth
+  present, the sole detected family is **gpt**, so `--review-mode mono` (and
+  `auto`) route to `reviewer_gpt`/`fix_gpt` — and `InjectIfDeclared` clobbers any
+  explicit `--var mono_family=claude` with the resolver's pick. The per-node
+  **backend override is exactly the escape hatch**: re-target the running (gpt-
+  family) nodes onto `claude_code` to run claude models (fable/sonnet) on the
+  forfait. (First attempt `--model judge=claude-fable-5` alone failed —
+  `reviewer_gpt`'s DSL backend stayed `claw`, which rejects a bare
+  `claude-fable-5`: claw needs `provider/model`. Fixed by also overriding the
+  backend. Lesson: when overriding a claude model onto a claw-default node,
+  override the backend too — or use the `anthropic/` prefix for claw.)
+- Misses / bot quirks (unrelated to the feature): `verify_build` invokes a
+  `Skill verify-build` that the bundle doesn't ship → non-fatal tool error, the
+  sonnet agent recovers and runs the build directly.
+- Lessons for next run: consider making `reviewtopology` treat a usable
+  `claude_code` forfait as a "claude" family so mono/auto can pick claude without
+  a manual backend override; and let an explicit `--var mono_family` win over the
+  resolver (today it's always overwritten).
+
 ## 2026-07-01 — dogfood surfaced (and fixed) a claw+gpt explore-mode façade; grounded reviews restored (runs 019f1cf7, 019f1d24)
 
 - Status: **high value** — the run itself is secondary; it exposed a real engine
