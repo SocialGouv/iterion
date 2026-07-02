@@ -130,6 +130,14 @@ func (c *Coordinator) run() {
 
 	var debounce *time.Timer
 	var debounceC <-chan time.Time
+	// Stop the debounce timer on every exit path (ctx cancel, event-channel
+	// close, terminal event) so a run that ends mid-debounce doesn't leave a
+	// live timer until it fires.
+	defer func() {
+		if debounce != nil {
+			debounce.Stop()
+		}
+	}()
 	armDebounce := func() {
 		if debounce == nil {
 			debounce = time.NewTimer(turnDebounce)
