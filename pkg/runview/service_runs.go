@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -242,7 +243,11 @@ func (s *Service) SnapshotCtx(ctx context.Context, runID string) (*RunSnapshot, 
 // both paginate, so this is a per-page knob, not a hard ceiling).
 // Callers paginate by passing the next page's `from` as
 // previous_last.Seq+1; len(out) == cap means "more available".
-const MaxEventsPerPage = 25000
+//
+// The canonical constant lives in runstream (the streaming seam batches
+// replay pages at the same size); this alias keeps the historical
+// runview.MaxEventsPerPage name working for the HTTP/WS layer.
+const MaxEventsPerPage = runstream.MaxEventsPerPage
 
 // LoadEvents returns events in [from, to] (inclusive on from, exclusive
 // on to), capped at MaxEventsPerPage. Pass to=0 for "no upper bound".

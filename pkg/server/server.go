@@ -346,8 +346,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		if cfg.LaunchPublisher != nil {
 			opts = append(opts, runview.WithLaunchPublisher(cfg.LaunchPublisher))
 		}
-		if cfg.EventSource != nil {
-			opts = append(opts, runview.WithEventSource(cfg.EventSource))
+		if cfg.StreamSource != nil {
+			opts = append(opts, runview.WithStreamSource(cfg.StreamSource))
 		}
 		if cfg.Alerts != nil {
 			opts = append(opts, runview.WithAlerts(*cfg.Alerts))

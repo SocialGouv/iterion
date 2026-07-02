@@ -23,6 +23,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -226,11 +227,11 @@ type Config struct {
 	// (T-31, T-32, T-33).
 	LaunchPublisher runview.LaunchPublisher
 
-	// EventSource, when non-nil, replaces the in-process EventBroker
-	// for live + historical WS event delivery. Cloud mode wires a
-	// Mongo change-stream source so the WS handler sees runner-pod
-	// writes. Plan §F (T-21).
-	EventSource runview.EventStreamSource
+	// StreamSource, when non-nil, replaces the in-process EventBroker /
+	// RunLogBuffer machinery for live + historical WS delivery. Cloud
+	// mode wires a Mongo change-stream source so the WS handler sees
+	// runner-pod writes. ADR-053.
+	StreamSource runstream.Source
 
 	// ReadinessChecks, when non-nil, are invoked by /readyz to verify
 	// every external dependency (Mongo, NATS, S3) is reachable. Each

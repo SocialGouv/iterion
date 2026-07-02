@@ -859,13 +859,21 @@ func (c *runConn) streamEventsCloud(fromSeq int64) {
 		select {
 		case <-c.closed:
 			return
-		case ev, ok := <-events:
+		case batch, ok := <-events:
 			if !ok {
 				c.sendEnvelope(wsTypeTerminated, map[string]string{"run_id": c.runID}, "")
 				return
 			}
-			if !c.sendEnvelope(wsTypeEvent, ev, "") {
-				return
+			// Replay pages arrive as multi-event batches (ship the bulk
+			// envelope); live tail deliveries carry one event each.
+			if len(batch) == 1 {
+				if !c.sendEnvelope(wsTypeEvent, batch[0], "") {
+					return
+				}
+			} else if len(batch) > 0 {
+				if !c.sendEnvelope(wsTypeEventBatch, batch, "") {
+					return
+				}
 			}
 		case err, ok := <-errs:
 			if !ok {

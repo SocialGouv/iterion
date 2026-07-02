@@ -37,7 +37,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/pat"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
-	"github.com/SocialGouv/iterion/pkg/runview/eventstream"
+	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
@@ -227,7 +227,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		_ = st.Close(closeCtx)
 	}()
 
-	// Prometheus registry: built early so cloudpublisher + eventstream
+	// Prometheus registry: built early so cloudpublisher + runstream
 	// + the run-console WS handler all share the same registry.
 	mreg := metrics.New()
 
@@ -273,11 +273,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
 	}
 
-	// Mongo change-stream event source so the WS handler streams
-	// runner-pod events (the local broker would only see this
-	// process's writes). Plan §F (T-21, T-22).
-	mongoSource := eventstream.NewMongo(st.EventsCollection(), logger).WithMetrics(mreg)
-	eventSrc := runview.NewEventSourceAdapter(mongoSource)
+	// Mongo change-stream source so the WS handler streams runner-pod
+	// events (the local broker would only see this process's writes).
+	// ADR-053: logs ride the same seam once run_logs is wired.
+	streamSrc := runstream.NewMongo(st.EventsCollection(), logger).WithMetrics(mreg)
 
 	disableAuth, _ := strconv.ParseBool(os.Getenv("ITERION_DISABLE_AUTH"))
 
@@ -373,7 +372,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		OrgPurgeSweeper:        orgPurgeSweeper,
 		Alerts:                 alertSettings,
 		LaunchPublisher:        pub,
-		EventSource:            eventSrc,
+		StreamSource:           streamSrc,
 		Mode:                   string(iterconfig.ModeCloud),
 		AuthService:            authStack.authSvc,
 		AuthSigner:             authStack.signer,
