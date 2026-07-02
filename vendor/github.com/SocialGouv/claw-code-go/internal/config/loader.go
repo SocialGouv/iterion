@@ -26,6 +26,11 @@ type Settings struct {
 	// FallbackModels configures the provider fallback chain.
 	FallbackModels *SettingsFallbackModels `json:"providerFallbacks,omitempty"`
 
+	// Prompt holds the system-prompt section toggles. Merged field-wise
+	// across settings layers (tri-state *bool), NOT via RawJSON — RawJSON
+	// only preserves the last-loaded file.
+	Prompt *RuntimePromptConfig `json:"prompt,omitempty"`
+
 	// RawJSON preserves the original raw JSON bytes for feature extraction
 	// and validation. Not serialized back — use ExtractFeatureConfig() for
 	// typed access to all fields including those not in Settings struct.
@@ -138,9 +143,56 @@ func merge(dst, src *Settings) {
 	if src.FallbackModels != nil {
 		dst.FallbackModels = src.FallbackModels
 	}
+	if src.Prompt != nil {
+		dst.Prompt = mergePromptConfig(dst.Prompt, src.Prompt)
+	}
 	if len(src.RawJSON) > 0 {
 		dst.RawJSON = src.RawJSON
 	}
+}
+
+// mergePromptConfig merges src into dst field-wise: a non-nil src field wins.
+// This keeps tri-state semantics across settings layers (a project file that
+// sets only "minimal" must not erase a user-global "gitStatus": false).
+func mergePromptConfig(dst, src *RuntimePromptConfig) *RuntimePromptConfig {
+	if dst == nil {
+		merged := *src
+		return &merged
+	}
+	if src.Minimal != nil {
+		dst.Minimal = src.Minimal
+	}
+	if src.Environment != nil {
+		dst.Environment = src.Environment
+	}
+	if src.GitStatus != nil {
+		dst.GitStatus = src.GitStatus
+	}
+	if src.ProjectInstructions != nil {
+		dst.ProjectInstructions = src.ProjectInstructions
+	}
+	if src.McpTools != nil {
+		dst.McpTools = src.McpTools
+	}
+	if src.CompactionSummary != nil {
+		dst.CompactionSummary = src.CompactionSummary
+	}
+	if src.MemoryWalkUp != nil {
+		dst.MemoryWalkUp = src.MemoryWalkUp
+	}
+	if src.MemoryImports != nil {
+		dst.MemoryImports = src.MemoryImports
+	}
+	if src.AutoMemory != nil {
+		dst.AutoMemory = src.AutoMemory
+	}
+	if src.Posture != nil {
+		dst.Posture = src.Posture
+	}
+	if src.MemoryMaxBytes != 0 {
+		dst.MemoryMaxBytes = src.MemoryMaxBytes
+	}
+	return dst
 }
 
 // WriteProject writes settings to .claude/settings.json, merging with any

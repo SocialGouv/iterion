@@ -2,11 +2,12 @@ package runtime
 
 import (
 	"fmt"
-	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	clawctx "github.com/SocialGouv/claw-code-go/internal/context"
 )
 
 // Session file format constants.
@@ -110,12 +111,11 @@ func newSessionControlSessionError(msg string, cause error) *SessionControlError
 }
 
 // WorkspaceFingerprint produces a stable 16-char hex digest of the workspace
-// path using FNV-1a (64-bit). This matches the Rust implementation exactly
-// (same constants: offset=0xcbf29ce484222325, prime=0x100000001b3).
+// path using FNV-1a (64-bit). Delegates to the canonical implementation in
+// internal/context (shared with auto-memory); the Rust-parity constants live
+// there.
 func WorkspaceFingerprint(workspaceRoot string) string {
-	h := fnv.New64a()
-	h.Write([]byte(workspaceRoot))
-	return fmt.Sprintf("%016x", h.Sum64())
+	return clawctx.WorkspaceFingerprint(workspaceRoot)
 }
 
 // NewSessionStoreFromCWD builds a SessionStore from the server's current

@@ -96,6 +96,7 @@ var topLevelFields = []fieldSpec{
 	{"enabledPlugins", "object"},
 	{"plugins", "object"},
 	{"sandbox", "object"},
+	{"prompt", "object"},
 	{"env", "object"},
 	{"aliases", "object"},
 	{"providerFallbacks", "object"},
@@ -134,6 +135,20 @@ var sandboxFields = []fieldSpec{
 	{"networkIsolation", "boolean"},
 	{"filesystemMode", "string"},
 	{"allowedMounts", "array"},
+}
+
+var promptFields = []fieldSpec{
+	{"minimal", "boolean"},
+	{"environment", "boolean"},
+	{"gitStatus", "boolean"},
+	{"projectInstructions", "boolean"},
+	{"mcpTools", "boolean"},
+	{"compactionSummary", "boolean"},
+	{"memoryWalkUp", "boolean"},
+	{"memoryImports", "boolean"},
+	{"autoMemory", "boolean"},
+	{"posture", "boolean"},
+	{"memoryMaxBytes", "number"},
 }
 
 var oauthFields = []fieldSpec{
@@ -246,6 +261,20 @@ func ValidateSettingsJSON(data []byte, filePath string) ValidationResult {
 		}
 	}
 
+	if promptRaw, ok := raw["prompt"]; ok {
+		var prompt map[string]json.RawMessage
+		if json.Unmarshal(promptRaw, &prompt) == nil {
+			validateObjectKeys(prompt, promptFields, "prompt.", filePath, data, &result)
+		} else {
+			result.Errors = append(result.Errors, ConfigDiagnostic{
+				Path:  filePath,
+				Field: "prompt",
+				Line:  findKeyLine(data, "prompt"),
+				Kind:  WrongTypeDiag{Expected: "object", Got: jsonTypeName(promptRaw)},
+			})
+		}
+	}
+
 	if oauthRaw, ok := raw["oauth"]; ok {
 		var oauth map[string]json.RawMessage
 		if json.Unmarshal(oauthRaw, &oauth) == nil {
@@ -273,23 +302,6 @@ func ValidateSettingsJSON(data []byte, filePath string) ValidationResult {
 		}
 	}
 
-	// Type-check top-level fields.
-	for _, spec := range topLevelFields {
-		val, ok := raw[spec.name]
-		if !ok {
-			continue
-		}
-		gotType := jsonTypeName(val)
-		if gotType != spec.jsonType && gotType != "null" {
-			result.Errors = append(result.Errors, ConfigDiagnostic{
-				Path:  filePath,
-				Field: spec.name,
-				Line:  findKeyLine(data, spec.name),
-				Kind:  WrongTypeDiag{Expected: spec.jsonType, Got: gotType},
-			})
-		}
-	}
-
 	return result
 }
 
@@ -307,14 +319,24 @@ func FormatDiagnostics(result *ValidationResult) string {
 
 func validateObjectKeys(obj map[string]json.RawMessage, known []fieldSpec, prefix, filePath string, source []byte, result *ValidationResult) {
 	knownNames := make([]string, len(known))
-	knownSet := make(map[string]bool, len(known))
+	knownSet := make(map[string]fieldSpec, len(known))
 	for i, f := range known {
 		knownNames[i] = f.name
-		knownSet[f.name] = true
+		knownSet[f.name] = f
 	}
 
-	for key := range obj {
-		if knownSet[key] {
+	for key, val := range obj {
+		if spec, ok := knownSet[key]; ok {
+			// Known key: type-check the value.
+			gotType := jsonTypeName(val)
+			if gotType != spec.jsonType && gotType != "null" {
+				result.Errors = append(result.Errors, ConfigDiagnostic{
+					Path:  filePath,
+					Field: prefix + key,
+					Line:  findKeyLine(source, key),
+					Kind:  WrongTypeDiag{Expected: spec.jsonType, Got: gotType},
+				})
+			}
 			continue
 		}
 		// Skip deprecated fields (handled separately).

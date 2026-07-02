@@ -169,7 +169,7 @@ func NewConversationLoop(cfg *Config, client api.APIClient) *ConversationLoop {
 		},
 		Permissions:    DefaultPermissions(),
 		Config:         cfg,
-		CtxAssembler:   clawctx.NewAssembler(workDir),
+		CtxAssembler:   clawctx.NewAssemblerWithOptions(workDir, cfg.PromptOrDefault().AssembleOptions()),
 		Usage:          usage.NewTracker(cfg.Model),
 		TaskRegistry:   task.NewRegistry(),
 		TeamRegistry:   team.NewTeamRegistry(),
@@ -217,8 +217,16 @@ func (loop *ConversationLoop) SystemPrompt() string {
 // systemPrompt returns the system prompt, optionally injecting project context,
 // compaction summary, and MCP tool context.
 func (loop *ConversationLoop) systemPrompt() string {
+	p := loop.Config.PromptOrDefault()
+
 	var parts []string
 	parts = append(parts, systemPromptBase)
+
+	// Inject the authored operating-posture section (gated: it is the
+	// heaviest fixed section for small models).
+	if p.Posture {
+		parts = append(parts, clawctx.OperatingPosture)
+	}
 
 	// Inject project context (Phase 12): environment, git status, CLAUDE.md.
 	if loop.CtxAssembler != nil {
@@ -228,12 +236,12 @@ func (loop *ConversationLoop) systemPrompt() string {
 	}
 
 	// Inject compaction summary when the session has one (Phase 6).
-	if loop.Session != nil && loop.Session.CompactionSummary != "" {
+	if p.CompactionSummary && loop.Session != nil && loop.Session.CompactionSummary != "" {
 		parts = append(parts, FormatCompactSummary(loop.Session.CompactionSummary))
 	}
 
 	// Append MCP tool list if any servers are connected.
-	if loop.MCPRegistry != nil {
+	if p.McpTools && loop.MCPRegistry != nil {
 		mcpTools := loop.MCPRegistry.AllTools()
 		if len(mcpTools) > 0 {
 			names := make([]string, len(mcpTools))

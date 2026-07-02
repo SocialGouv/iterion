@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/internal/apikit"
@@ -27,24 +25,6 @@ const (
 	// rotating field flips and pay full input-token cost every call.
 	anthropicBetaValue     = "prompt-caching-2024-07-31,prompt-caching-scope-2026-01-05"
 	anthropicVersionHeader = "anthropic-version"
-	// anthropicOAuthBetaValue is the beta token the Anthropic API requires to
-	// accept an OAuth *bearer* token on /v1/messages (the Claude Code
-	// subscription "forfait" path). Without it an OAuth request 401s with
-	// "x-api-key header is required". It is sent INSTEAD OF anthropicBetaValue
-	// for bearer sessions — OAuth sessions reject the caching betas (see the
-	// beta-header branch in StreamResponse).
-	//
-	// DEV-PURPOSE ONLY, AND EFFECTIVELY UNUSABLE. Reusing the Claude Code
-	// subscription token from this (non-Claude-Code) client is outside
-	// Anthropic's Consumer Terms. In practice it authenticates but the forfait
-	// rate-limiter throttles non-Claude-Code clients to ~zero: requests 429
-	// immediately (rate_limit_error, no Retry-After), even with fresh daily
-	// quota, whereas the official `claude` CLI on the same token+model works.
-	// The gap is the Claude Code client identity (User-Agent / client headers),
-	// which this client deliberately does NOT spoof. Use an API key or another
-	// provider for real work; this path exists only so a local dev box without
-	// an ANTHROPIC_API_KEY can still authenticate for experiments.
-	anthropicOAuthBetaValue = "oauth-2025-04-20"
 
 	// defaultMaxRetries is the maximum number of retry attempts for retryable
 	// HTTP errors (429, 5xx). The first attempt is attempt 1.
@@ -52,12 +32,6 @@ const (
 
 	// retryBaseDelay is the initial backoff delay between retries.
 	retryBaseDelay = 500 * time.Millisecond
-
-	// maxRetryDelay caps how long a single retry wait can be, so honoring a
-	// server-sent Retry-After can never block one request for minutes. The
-	// documented, service-respecting behavior on 429/503 is to wait the delay
-	// the server returns; this cap just bounds a pathological value.
-	maxRetryDelay = 60 * time.Second
 )
 
 // Client is the Anthropic HTTP API client.
@@ -148,14 +122,6 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 		// the more-recent beta enables.
 		if c.Auth.Kind != AuthSourceBearer && c.OAuthToken == "" {
 			httpReq.Header.Set(anthropicBetaHeader, anthropicBetaValue)
-		} else {
-			// OAuth/Bearer session (Claude Code subscription forfait,
-			// dev-purpose): the API only accepts the bearer token on
-			// /v1/messages when the oauth beta header is present — omitting
-			// it 401s with "x-api-key header is required". Send ONLY the
-			// oauth token, not the caching betas (which OAuth sessions
-			// reject with 400, per the comment above).
-			httpReq.Header.Set(anthropicBetaHeader, anthropicOAuthBetaValue)
 		}
 		httpReq.Header.Set("content-type", "application/json")
 		httpReq.Header.Set("accept", "text/event-stream")
@@ -247,17 +213,8 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateMessageRequest) (
 			}
 		}
 
-		// Backoff before next attempt. Honor a server-sent Retry-After
-		// header (429/503) — the documented, service-respecting behavior —
-		// falling back to exponential backoff when absent. Capped by
-		// maxRetryDelay so a pathological value can't block indefinitely.
+		// Exponential backoff before next attempt.
 		delay := retryBaseDelay * time.Duration(1<<(attempt-1))
-		if ra := retryAfterDelay(resp.Header); ra > 0 {
-			delay = ra
-		}
-		if delay > maxRetryDelay {
-			delay = maxRetryDelay
-		}
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
@@ -560,29 +517,6 @@ func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 // transient error suitable for retry (408, 429, and 5xx).
 func isRetryableStatus(code int) bool {
 	return code == 408 || code == 429 || code >= 500
-}
-
-// retryAfterDelay parses a Retry-After response header into a wait duration.
-// Per RFC 7231 the value is either an integer count of seconds or an HTTP-date;
-// both forms are honored. Returns 0 when the header is absent or unparseable
-// (caller then uses its own backoff). A past HTTP-date yields 0.
-func retryAfterDelay(h http.Header) time.Duration {
-	v := strings.TrimSpace(h.Get("Retry-After"))
-	if v == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(v); err == nil {
-		if secs <= 0 {
-			return 0
-		}
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
 }
 
 // stripInternalFields returns a shallow copy of in with internal-only

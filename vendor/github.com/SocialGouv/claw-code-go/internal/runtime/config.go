@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/SocialGouv/claw-code-go/internal/config"
+	clawctx "github.com/SocialGouv/claw-code-go/internal/context"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -91,14 +94,194 @@ type Config struct {
 	// OutputFormat controls output mode: "text" (default), "json", "stream-json".
 	// Maps to Rust's --output-format flag.
 	OutputFormat string
+
+	// Prompt holds the resolved system-prompt section toggles.
+	// nil means "all defaults" (every section on) — callers constructing a
+	// Config by hand keep today's behavior without setting anything.
+	Prompt *PromptConfig
+}
+
+// PromptConfig holds the resolved (non-tri-state) system-prompt section
+// toggles. The zero value disables everything; use DefaultPromptConfig for
+// the all-on default.
+type PromptConfig struct {
+	Environment         bool
+	GitStatus           bool
+	ProjectInstructions bool
+	McpTools            bool
+	CompactionSummary   bool
+	MemoryWalkUp        bool
+	MemoryImports       bool
+	AutoMemory          bool
+	Posture             bool
+	// MemoryMaxBytes caps the combined injected memory content (0 = default).
+	MemoryMaxBytes int
+}
+
+// DefaultPromptConfig returns the all-on default (Claude Code parity).
+func DefaultPromptConfig() PromptConfig {
+	return PromptConfig{
+		Environment:         true,
+		GitStatus:           true,
+		ProjectInstructions: true,
+		McpTools:            true,
+		CompactionSummary:   true,
+		MemoryWalkUp:        true,
+		MemoryImports:       true,
+		AutoMemory:          true,
+		Posture:             true,
+	}
+}
+
+// MinimalPromptConfig returns the all-off preset (small-model mode): only the
+// base identity sentence is sent, no automatic context sections.
+func MinimalPromptConfig() PromptConfig {
+	return PromptConfig{}
+}
+
+// AssembleOptions maps the resolved prompt config onto the context
+// assembler's section toggles — the single place the mapping lives.
+func (p PromptConfig) AssembleOptions() clawctx.AssembleOptions {
+	return clawctx.AssembleOptions{
+		Environment:         p.Environment,
+		GitStatus:           p.GitStatus,
+		ProjectInstructions: p.ProjectInstructions,
+		AutoMemory:          p.AutoMemory,
+		Memory: clawctx.MemoryOptions{
+			WalkUp:   p.MemoryWalkUp,
+			Imports:  p.MemoryImports,
+			MaxBytes: p.MemoryMaxBytes,
+		},
+	}
+}
+
+// ResolvePromptConfig resolves a tri-state settings block into a concrete
+// PromptConfig: each section is its explicit value when set, else on unless
+// "minimal" flips the default off.
+func ResolvePromptConfig(p *config.RuntimePromptConfig) PromptConfig {
+	if p == nil {
+		return DefaultPromptConfig()
+	}
+	def := p.Minimal == nil || !*p.Minimal
+	pick := func(v *bool) bool {
+		if v != nil {
+			return *v
+		}
+		return def
+	}
+	return PromptConfig{
+		Environment:         pick(p.Environment),
+		GitStatus:           pick(p.GitStatus),
+		ProjectInstructions: pick(p.ProjectInstructions),
+		McpTools:            pick(p.McpTools),
+		CompactionSummary:   pick(p.CompactionSummary),
+		MemoryWalkUp:        pick(p.MemoryWalkUp),
+		MemoryImports:       pick(p.MemoryImports),
+		AutoMemory:          pick(p.AutoMemory),
+		Posture:             pick(p.Posture),
+		MemoryMaxBytes:      p.MemoryMaxBytes,
+	}
+}
+
+// promptSections is the single registry of toggleable sections: canonical
+// (kebab-case) name + PromptConfig field accessor. Lookups normalize the
+// input (lowercase, "-"/"_" stripped), so "git-status" == "gitStatus".
+var promptSections = []struct {
+	canonical string
+	field     func(*PromptConfig) *bool
+}{
+	{"environment", func(p *PromptConfig) *bool { return &p.Environment }},
+	{"git-status", func(p *PromptConfig) *bool { return &p.GitStatus }},
+	{"project-instructions", func(p *PromptConfig) *bool { return &p.ProjectInstructions }},
+	{"mcp-tools", func(p *PromptConfig) *bool { return &p.McpTools }},
+	{"compaction-summary", func(p *PromptConfig) *bool { return &p.CompactionSummary }},
+	{"memory-walk-up", func(p *PromptConfig) *bool { return &p.MemoryWalkUp }},
+	{"memory-imports", func(p *PromptConfig) *bool { return &p.MemoryImports }},
+	{"auto-memory", func(p *PromptConfig) *bool { return &p.AutoMemory }},
+	{"posture", func(p *PromptConfig) *bool { return &p.Posture }},
+}
+
+func normalizePromptSection(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, "-", "")
+	return strings.ReplaceAll(name, "_", "")
+}
+
+// promptSectionField resolves a user-supplied section name to its
+// PromptConfig field accessor.
+func promptSectionField(name string) (func(*PromptConfig) *bool, bool) {
+	normalized := normalizePromptSection(name)
+	for _, s := range promptSections {
+		if normalizePromptSection(s.canonical) == normalized {
+			return s.field, true
+		}
+	}
+	return nil, false
+}
+
+// PromptSectionNames returns the canonical section names accepted by
+// ApplyPromptSectionOverrides (for help text and error messages).
+func PromptSectionNames() []string {
+	names := make([]string, len(promptSections))
+	for i, s := range promptSections {
+		names[i] = s.canonical
+	}
+	return names
+}
+
+// ApplyPromptSectionOverrides applies CLI/frontmatter-style section overrides
+// onto cfg.Prompt. A non-empty `only` list enables exclusively the listed
+// sections (implies minimal); `minimal` alone disables everything; `disable`
+// turns the listed sections off, applied last. Section names are matched
+// case-insensitively with "-"/"_" ignored. Returns an error naming the first
+// unknown section.
+func ApplyPromptSectionOverrides(cfg *Config, minimal bool, only, disable []string) error {
+	base := DefaultPromptConfig()
+	if cfg.Prompt != nil {
+		base = *cfg.Prompt
+	}
+	if minimal || len(only) > 0 {
+		keep := base.MemoryMaxBytes
+		base = MinimalPromptConfig()
+		base.MemoryMaxBytes = keep
+	}
+	set := func(names []string, val bool) error {
+		for _, name := range names {
+			field, ok := promptSectionField(name)
+			if !ok {
+				return fmt.Errorf("unknown prompt section %q (valid: %s)",
+					name, strings.Join(PromptSectionNames(), ", "))
+			}
+			*field(&base) = val
+		}
+		return nil
+	}
+	if err := set(only, true); err != nil {
+		return err
+	}
+	if err := set(disable, false); err != nil {
+		return err
+	}
+	cfg.Prompt = &base
+	return nil
+}
+
+// PromptOrDefault returns the resolved prompt config, defaulting to all-on
+// when unset.
+func (c *Config) PromptOrDefault() PromptConfig {
+	if c != nil && c.Prompt != nil {
+		return *c.Prompt
+	}
+	return DefaultPromptConfig()
 }
 
 // LoadConfig reads configuration from layered settings files and environment
 // variables and applies defaults. Load order (later overrides earlier):
 //  1. Defaults
 //  2. Layered settings files (user global → project → local)
-//  3. Environment variables
-//  4. CLI flags (applied by the caller after this function returns)
+//  3. CLAUDE.md frontmatter overrides (cwd)
+//  4. Environment variables
+//  5. CLI flags (applied by the caller after this function returns)
 func LoadConfig() *Config {
 	cfg := &Config{
 		Model:                DefaultModel,
@@ -133,6 +316,17 @@ func LoadConfig() *Config {
 	// Plugin configuration
 	if s.EnabledPlugins != nil {
 		cfg.EnabledPlugins = s.EnabledPlugins
+	}
+
+	// Prompt section toggles (tri-state settings → resolved bools).
+	promptCfg := ResolvePromptConfig(s.Prompt)
+	cfg.Prompt = &promptCfg
+
+	// CLAUDE.md frontmatter overrides (cwd; --work-dir was applied by the
+	// caller via os.Chdir before LoadConfig). Sits between settings files
+	// and environment variables.
+	if cwd, err := os.Getwd(); err == nil {
+		applyFrontmatter(cfg, config.LoadFrontmatterForDir(cwd))
 	}
 
 	// Environment variables override settings files.
@@ -191,6 +385,28 @@ func LoadConfig() *Config {
 	cfg.MCPServers = loadMCPServers(homeDir)
 
 	return cfg
+}
+
+// applyFrontmatter overlays CLAUDE.md frontmatter overrides onto cfg.
+func applyFrontmatter(cfg *Config, fm *config.FrontmatterConfig) {
+	if fm == nil {
+		return
+	}
+	if fm.Model != nil {
+		cfg.Model = *fm.Model
+	}
+	if fm.PermissionMode != nil {
+		cfg.PermissionMode = *fm.PermissionMode
+	}
+	if len(fm.AllowedTools) > 0 {
+		cfg.AllowedTools = fm.AllowedTools
+	}
+	minimal := fm.MinimalPrompt != nil && *fm.MinimalPrompt
+	if minimal || len(fm.PromptSections) > 0 || len(fm.DisablePromptSections) > 0 {
+		if err := ApplyPromptSectionOverrides(cfg, minimal, fm.PromptSections, fm.DisablePromptSections); err != nil {
+			fmt.Fprintf(os.Stderr, "config warning: CLAUDE.md frontmatter: %v\n", err)
+		}
+	}
 }
 
 // loadMCPServers reads MCP server configurations from the settings file and
