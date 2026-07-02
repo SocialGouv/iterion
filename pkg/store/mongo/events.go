@@ -45,6 +45,13 @@ func (s *Store) AppendEvent(ctx context.Context, runID string, evt store.Event) 
 	}
 	evt.RunID = runID
 	stampTenantOnEvent(ctx, &evt)
+	// Stamp the run's current log byte position when the runner wired a
+	// callback (SetLogPositionFn) — the cloud twin of the filesystem
+	// store's stamping, powering the studio's per-node log slicing.
+	// Only when the caller didn't pre-fill LogOffset.
+	if evt.LogOffset == 0 {
+		evt.LogOffset = s.logPositionFor(runID)
+	}
 
 	var lastSeq int64
 	var lastErr error

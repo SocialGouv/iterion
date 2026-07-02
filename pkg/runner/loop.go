@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -442,6 +443,12 @@ type Runner struct {
 	mu      sync.Mutex
 	current *inFlight          // non-nil while a run is being processed; guarded by mu
 	cancel  context.CancelFunc // loop-context canceller installed by Run; guarded by mu
+
+	// logWriters maps an in-flight run to its RunLogStore batching
+	// writer so the store's LogPositionFn hook (logWriterTotal) can
+	// stamp Event.LogOffset. See runlog_writer.go.
+	logWritersMu sync.Mutex
+	logWriters   map[string]*runLogWriter
 }
 
 type inFlight struct {
@@ -528,6 +535,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	// signal in their own dashboards without competing with the scaler.
 	if r.cfg.Metrics != nil {
 		go r.pollPending(loopCtx)
+	}
+	// Stamp Event.LogOffset from the per-run log writer on stores that
+	// support the hook (mongo + filesystem both do) — the cloud twin of
+	// the runview Service wiring, powering per-node log slicing.
+	if setter, ok := r.cfg.Store.(logPositionSetter); ok {
+		setter.SetLogPositionFn(r.logWriterTotal)
 	}
 
 	for {
@@ -1047,8 +1060,28 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	// cancelled and failed attempts incurred real LLM spend.
 	defer r.recordOrgSpend(msg, usage)
 
+	// Per-run log persistence (ADR-053): tee the engine logger into the
+	// store's RunLogStore so the server pod can live-stream and replay
+	// the run's log without a shared filesystem. The offset seed makes a
+	// resumed/redelivered run append after the persisted tail. Flushes
+	// ride a background ctx carrying the run's tenant identity — NOT the
+	// run ctx — so a cancelled run still flushes its final lines.
+	runLogger := r.cfg.Logger
+	if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
+		idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+		seed, serr := ls.RunLogSize(idCtx, msg.RunID)
+		if serr != nil {
+			r.cfg.Logger.Warn("runner: run %s: seed log offset: %v — starting at 0", msg.RunID, serr)
+		}
+		w := newRunLogWriter(idCtx, ls, msg.RunID, seed, r.cfg.Logger)
+		defer func() { _ = w.Close() }()
+		r.registerLogWriter(msg.RunID, w)
+		defer r.unregisterLogWriter(msg.RunID)
+		runLogger = iterlog.New(r.cfg.Logger.Level(), io.MultiWriter(r.cfg.Logger.Writer(), w))
+	}
+
 	engineOpts := []runtime.EngineOption{
-		runtime.WithLogger(r.cfg.Logger),
+		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(msg.WorkflowHash),
 		runtime.WithWorkDir(workDir),
 		// Sandbox defaults from the operator config (ITERION_SANDBOX_DEFAULT /

@@ -1,6 +1,9 @@
 package store
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -66,4 +69,97 @@ func TeeRunLog(logger *iterlog.Logger, level iterlog.Level, storeRoot, runID str
 		return logger, nil
 	}
 	return iterlog.New(level, io.MultiWriter(os.Stderr, logFile)), logFile
+}
+
+// runLogPath validates runID and returns <root>/runs/<runID>/run.log.
+func (s *FilesystemRunStore) runLogPath(runID string) (string, error) {
+	if err := SanitizePathComponent("run ID", runID); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.root, "runs", runID, "run.log"), nil
+}
+
+// AppendRunLog implements RunLogStore over runs/<id>/run.log. Bytes are
+// written at their absolute offset (WriteAt, not O_APPEND) so an
+// idempotent redelivery of an already-persisted chunk rewrites the same
+// bytes instead of corrupting the stream. The normal local writer is
+// the RunLogBuffer file tee — this method exists for store-API parity
+// (a runner pointed at a filesystem store).
+func (s *FilesystemRunStore) AppendRunLog(_ context.Context, runID string, offset int64, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	if offset < 0 {
+		return fmt.Errorf("store: AppendRunLog(%s): negative offset %d", runID, offset)
+	}
+	logPath, err := s.runLogPath(runID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), dirPerm); err != nil {
+		return fmt.Errorf("store: AppendRunLog(%s): mkdir: %w", runID, err)
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, filePerm)
+	if err != nil {
+		return fmt.Errorf("store: AppendRunLog(%s): open: %w", runID, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteAt(data, offset); err != nil {
+		return fmt.Errorf("store: AppendRunLog(%s): write at %d: %w", runID, offset, err)
+	}
+	return nil
+}
+
+// ReadRunLogRange implements RunLogStore: bytes [from, until) of
+// runs/<id>/run.log, until <= 0 meaning "to end". A missing file is
+// (nil, nil) — the run produced no log.
+func (s *FilesystemRunStore) ReadRunLogRange(_ context.Context, runID string, from, until int64) ([]byte, error) {
+	logPath, err := s.runLogPath(runID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: ReadRunLogRange(%s): open: %w", runID, err)
+	}
+	defer f.Close()
+	if from < 0 {
+		from = 0
+	}
+	if until <= 0 {
+		st, err := f.Stat()
+		if err != nil {
+			return nil, fmt.Errorf("store: ReadRunLogRange(%s): stat: %w", runID, err)
+		}
+		until = st.Size()
+	}
+	if from >= until {
+		return nil, nil
+	}
+	buf := make([]byte, until-from)
+	n, err := f.ReadAt(buf, from)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("store: ReadRunLogRange(%s): read at %d: %w", runID, from, err)
+	}
+	return buf[:n], nil
+}
+
+// RunLogSize implements RunLogStore: the persisted byte count of
+// runs/<id>/run.log (0 when missing).
+func (s *FilesystemRunStore) RunLogSize(_ context.Context, runID string) (int64, error) {
+	logPath, err := s.runLogPath(runID)
+	if err != nil {
+		return 0, err
+	}
+	st, err := os.Stat(logPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("store: RunLogSize(%s): stat: %w", runID, err)
+	}
+	return st.Size(), nil
 }

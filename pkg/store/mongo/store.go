@@ -12,6 +12,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -37,6 +38,7 @@ const (
 	colRuns         = "runs"
 	colEvents       = "events"
 	colRunSeq       = "run_seq"
+	colRunLogs      = "run_logs"
 	colInteractions = "interactions"
 	colUserMessages = "user_messages"
 )
@@ -88,12 +90,19 @@ type Store struct {
 	runs               *mongo.Collection
 	events             *mongo.Collection
 	runSeq             *mongo.Collection
+	runLogs            *mongo.Collection
 	interactions       *mongo.Collection
 	userMessages       *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
 	maxAttachmentBytes int64
+
+	// logPositionFn stamps Event.LogOffset at AppendEvent time from the
+	// runner's per-run log writer total (the cloud twin of the
+	// filesystem store's hook). nil disables stamping. See runlogs.go.
+	logPositionMu sync.Mutex
+	logPositionFn store.LogPositionFn
 }
 
 // New connects to Mongo, pings to validate credentials, then ensures
@@ -134,6 +143,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runs:               db.Collection(colRuns),
 		events:             db.Collection(colEvents),
 		runSeq:             db.Collection(colRunSeq),
+		runLogs:            db.Collection(colRunLogs),
 		interactions:       db.Collection(colInteractions),
 		userMessages:       db.Collection(colUserMessages),
 		blob:               cfg.Blob,
@@ -259,6 +269,30 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	_, err = s.events.Indexes().CreateMany(ctx, eventIdx)
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure events indexes: %w", err)
+	}
+
+	// run_logs collection (ADR-053): unique (run_id, offset) is the
+	// single-writer / redelivery safety net; (tenant_id, run_id, offset)
+	// accelerates tenant-scoped range reads + change-stream filters.
+	// Log chunks share the events retention knob — both are derived
+	// observability streams of the same run.
+	runLogIdx := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "offset", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_offset_unique")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "offset", Value: 1}}, Options: options.Index().SetName("tenant_run_offset").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+	}
+	if eventsTTLDays > 0 {
+		secs := int64(eventsTTLDays) * 86400
+		const maxTTLSeconds = int64(1<<31 - 1)
+		if secs > maxTTLSeconds {
+			secs = maxTTLSeconds
+		}
+		runLogIdx = append(runLogIdx, mongo.IndexModel{
+			Keys:    bson.D{{Key: "ts", Value: 1}},
+			Options: options.Index().SetName("run_logs_ttl").SetExpireAfterSeconds(int32(secs)),
+		})
+	}
+	if _, err := s.runLogs.Indexes().CreateMany(ctx, runLogIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_logs indexes: %w", err)
 	}
 
 	// interactions: query by run_id (the composite _id has run_id as a

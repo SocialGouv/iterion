@@ -68,6 +68,70 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
+	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
+}
+
+// testRunLogStore exercises the optional RunLogStore surface (ADR-053)
+// when the backend implements it: append/read/size round-trip, offset
+// windows crossing chunk boundaries, idempotent duplicate-offset
+// redelivery, and empty-log semantics.
+func testRunLogStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ls := store.AsRunLogStore(s)
+	if ls == nil {
+		t.Skip("backend does not implement RunLogStore")
+	}
+	ctx := testCtx()
+	const runID = "run_logstore"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Empty log: size 0, nil range.
+	if n, err := ls.RunLogSize(ctx, runID); err != nil || n != 0 {
+		t.Fatalf("RunLogSize(empty) = %d, %v; want 0, nil", n, err)
+	}
+	if data, err := ls.ReadRunLogRange(ctx, runID, 0, 0); err != nil || len(data) != 0 {
+		t.Fatalf("ReadRunLogRange(empty) = %q, %v; want empty, nil", data, err)
+	}
+
+	// Sequential appends.
+	if err := ls.AppendRunLog(ctx, runID, 0, []byte("hello ")); err != nil {
+		t.Fatalf("AppendRunLog #1: %v", err)
+	}
+	if err := ls.AppendRunLog(ctx, runID, 6, []byte("world")); err != nil {
+		t.Fatalf("AppendRunLog #2: %v", err)
+	}
+	if n, err := ls.RunLogSize(ctx, runID); err != nil || n != 11 {
+		t.Fatalf("RunLogSize = %d, %v; want 11, nil", n, err)
+	}
+	if data, err := ls.ReadRunLogRange(ctx, runID, 0, 0); err != nil || string(data) != "hello world" {
+		t.Fatalf("ReadRunLogRange(all) = %q, %v; want %q", data, err, "hello world")
+	}
+	// Window crossing the chunk boundary, sliced on both edges.
+	if data, err := ls.ReadRunLogRange(ctx, runID, 4, 9); err != nil || string(data) != "o wor" {
+		t.Fatalf("ReadRunLogRange(4,9) = %q, %v; want %q", data, err, "o wor")
+	}
+	// From-offset to end.
+	if data, err := ls.ReadRunLogRange(ctx, runID, 6, 0); err != nil || string(data) != "world" {
+		t.Fatalf("ReadRunLogRange(6,0) = %q, %v; want %q", data, err, "world")
+	}
+	// Past-the-end window.
+	if data, err := ls.ReadRunLogRange(ctx, runID, 11, 0); err != nil || len(data) != 0 {
+		t.Fatalf("ReadRunLogRange(past end) = %q, %v; want empty, nil", data, err)
+	}
+
+	// Idempotent redelivery: re-appending an already-persisted chunk at
+	// the same offset must succeed without corrupting the stream.
+	if err := ls.AppendRunLog(ctx, runID, 6, []byte("world")); err != nil {
+		t.Fatalf("AppendRunLog(duplicate) = %v; want idempotent nil", err)
+	}
+	if data, err := ls.ReadRunLogRange(ctx, runID, 0, 0); err != nil || string(data) != "hello world" {
+		t.Fatalf("after duplicate append: ReadRunLogRange = %q, %v; want %q", data, err, "hello world")
+	}
+	if n, err := ls.RunLogSize(ctx, runID); err != nil || n != 11 {
+		t.Fatalf("after duplicate append: RunLogSize = %d, %v; want 11", n, err)
+	}
 }
 
 // testDeleteRun proves DeleteRun removes a run (with events) from both

@@ -245,6 +245,40 @@ func AsToolBlobStore(s RunStore) ToolBlobStore {
 	return t
 }
 
+// RunLogStore is an optional interface implemented by stores that
+// persist the run's raw log byte stream (ADR-053). The filesystem
+// store backs it with runs/<id>/run.log (the same file the local
+// logger tee writes); the Mongo store backs it with the append-only
+// run_logs chunk collection the cloud runner writes and the server
+// pod's change-stream log source tails.
+//
+// Offsets are allocated by the single writer per run (locally the
+// RunLogBuffer's running total, in cloud the runner's batching writer
+// seeded from RunLogSize at claim time), so implementations treat a
+// duplicate (run_id, offset) append as an idempotent redelivery.
+type RunLogStore interface {
+	// AppendRunLog persists one chunk of log bytes at the given
+	// absolute byte offset.
+	AppendRunLog(ctx context.Context, runID string, offset int64, data []byte) error
+	// ReadRunLogRange returns bytes [from, until); until <= 0 means
+	// "to the current end". A missing log yields (nil, nil) — the run
+	// simply produced no log yet.
+	ReadRunLogRange(ctx context.Context, runID string, from, until int64) ([]byte, error)
+	// RunLogSize returns the total persisted byte count — i.e. the
+	// offset the next append should use. 0 for a run with no log.
+	RunLogSize(ctx context.Context, runID string) (int64, error)
+}
+
+// AsRunLogStore returns s as RunLogStore when the backend persists run
+// logs, or nil otherwise. Callers MUST nil-check.
+func AsRunLogStore(s RunStore) RunLogStore {
+	if s == nil {
+		return nil
+	}
+	l, _ := s.(RunLogStore)
+	return l
+}
+
 // TurnStore is an optional interface implemented by stores that
 // persist per-LLM-turn checkpoints. The interactivity feature set
 // (operator pause, fork-from-here, per-node timeline) anchors on
