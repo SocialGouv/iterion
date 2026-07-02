@@ -70,6 +70,29 @@ func resolveStreamHotTimeout() time.Duration {
 	return envDurationOr("ITERION_CLAUDE_CODE_STREAM_IDLE_TIMEOUT", defaultStreamHotTimeout)
 }
 
+// defaultOrchStallTimeout bounds how long the session may sit idle while the
+// model is BLOCKED on an orchestration tool (TaskOutput / Monitor) that it
+// reached WITHOUT having spawned a subagent (Task) first. That is the exact
+// shape of the observed deadlock: a reviewer called TaskOutput(block:true) on
+// a background task that never existed and hung until the 15-min hot timeout,
+// producing zero events meanwhile. Waiting on a task it never spawned can
+// never make progress, so we abort fast — on this short budget instead of the
+// hot budget — and, because the error still carries "session idle for", the
+// executor's retry loop auto-re-executes the node on a fresh subprocess (no
+// manual resume). A LEGITIMATE TaskOutput that follows a real Task spawn keeps
+// the full hot budget: a working subagent can legitimately take minutes.
+const defaultOrchStallTimeout = 4 * time.Minute
+
+func resolveOrchStallTimeout() time.Duration {
+	return envDurationOr("ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT", defaultOrchStallTimeout)
+}
+
+// isBlockingOrchestrationTool reports whether a tool name is one that BLOCKS
+// waiting on a subagent task (as opposed to Task, which spawns and returns).
+func isBlockingOrchestrationTool(name string) bool {
+	return name == "TaskOutput" || name == "Monitor"
+}
+
 // sessionMeta captures cross-cutting metadata extracted from the Claude
 // Code message stream that the runtime needs to surface upstream: the
 // resolved effective model (after env/settings overrides) and the peak
@@ -200,12 +223,28 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	idle := time.NewTimer(currentTimeout)
 	defer idle.Stop()
 
+	// Deadlock guard (see defaultOrchStallTimeout): spawnedTask records whether
+	// the model ever spawned a subagent; awaitingBlockingTool records whether
+	// its most recent turn left it blocked on TaskOutput/Monitor. Blocked on a
+	// blocking orchestration tool with no prior Task spawn == a hung wait that
+	// can never return → short-circuit the idle budget.
+	spawnedTask := false
+	awaitingBlockingTool := false
+	orchStall := resolveOrchStallTimeout()
+
 	for {
 		// Pick the timeout that matches the current phase and reset
 		// the timer for this iteration. Any progress (assistant
 		// tokens, tool calls, tool results) flips us into hot mode
 		// and grants the longer budget on every subsequent wait.
 		currentTimeout = resetIdleTimer(idle, receivedAny, coldTimeout, hotTimeout)
+		// If the model is blocked on TaskOutput/Monitor without ever having
+		// spawned a Task, clamp the wait to the short orchestration-stall
+		// budget: that wait cannot make progress.
+		if awaitingBlockingTool && !spawnedTask && orchStall > 0 && (currentTimeout <= 0 || orchStall < currentTimeout) {
+			currentTimeout = orchStall
+			idle.Reset(orchStall)
+		}
 
 		select {
 		case it, ok := <-items:
@@ -244,7 +283,26 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				if err := b.handleAssistantMessage(m, task, inFlightTools, &meta, &lastAssistantText, lastItemTime, cancelStream); err != nil {
 					return result, meta, err
 				}
+				// Track subagent orchestration for the deadlock guard: a Task
+				// call means real subagents are in play (legit long waits ahead);
+				// a TaskOutput/Monitor call leaves this turn blocked awaiting a
+				// result. Reset awaiting on each assistant turn so only the LATEST
+				// blocking call counts.
+				awaitingBlockingTool = false
+				if m.Message != nil {
+					for _, blk := range m.Message.Content {
+						if tu, ok := blk.(*claudesdk.ToolUseBlock); ok {
+							if tu.Name == "Task" {
+								spawnedTask = true
+							} else if isBlockingOrchestrationTool(tu.Name) {
+								awaitingBlockingTool = true
+							}
+						}
+					}
+				}
 			case *claudesdk.UserMessage:
+				// A tool result came back — the blocking wait (if any) returned.
+				awaitingBlockingTool = false
 				if err := b.handleUserMessage(m, task, inFlightTools, &consecutiveToolErrors, maxToolErrors, cancelStream); err != nil {
 					return result, meta, err
 				}
@@ -264,6 +322,14 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				continue
 			}
 			cancelStream()
+			// Deadlock case: blocked on TaskOutput/Monitor with no Task spawned.
+			// Keep "session idle for" in the message so isDelegateRetryable still
+			// classifies it retryable → the executor auto-re-executes the node.
+			if awaitingBlockingTool && !spawnedTask {
+				b.Logger.Warn("[%s#%d/claude-code] 🪤 blocked on an orchestration tool (TaskOutput/Monitor) with no subagent spawned for %s — likely a deadlock, aborting for auto-retry",
+					task.NodeID, task.Iteration, currentTimeout)
+				return result, meta, fmt.Errorf("claude session idle for %s — blocked on an orchestration tool (TaskOutput/Monitor) with no subagent spawned (likely deadlock); aborting for auto-retry (tune ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT, 0 to disable)", currentTimeout)
+			}
 			phase := "cold"
 			envHint := "ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT"
 			if receivedAny {
