@@ -183,7 +183,7 @@ func (s *Store) Ping(ctx context.Context) error {
 func (s *Store) RunsCollection() *mongo.Collection { return s.runs }
 
 // EventsCollection exposes the events collection so the runview
-// MongoSource (pkg/runview/eventstream/mongo.go) can open change
+// MongoSource (pkg/runview/runstream/mongo.go) can open change
 // streams against the same database the store writes to. Same
 // caveat as RunsCollection — short-term shortcut, not the API.
 func (s *Store) EventsCollection() *mongo.Collection { return s.events }

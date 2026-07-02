@@ -20,9 +20,10 @@ const subscriberBufferSize = 256
 // handlers subscribe via broker.Subscribe(runID).
 //
 // The broker does NOT read from disk. Callers that need historical
-// events (catch-up replay) should LoadEvents(runID) first, then drain
-// the live channel and dedup by seq — see Service.Subscribe for the
-// canonical recipe.
+// events (catch-up replay) should subscribe through the streaming seam
+// — Service.StreamSource().SubscribeEvents — which does the paginated
+// replay + live-splice dedup (service_stream.go). Direct broker
+// subscriptions only see events published after Subscribe.
 type EventBroker struct {
 	mu          sync.RWMutex
 	subscribers map[string][]*eventSub // run_id → active subscribers
@@ -77,7 +78,8 @@ func (s *EventSubscription) Drops() int {
 
 // Subscribe registers a new subscriber for runID and returns its
 // handle. The subscription only delivers events received AFTER this
-// call returns; for catch-up + live replay use Service.Subscribe.
+// call returns; for catch-up + live replay use the streaming seam
+// (Service.StreamSource().SubscribeEvents).
 func (b *EventBroker) Subscribe(runID string) *EventSubscription {
 	sub := &eventSub{ch: make(chan *store.Event, subscriberBufferSize)}
 

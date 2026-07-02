@@ -497,10 +497,10 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /
-	// reattached / non-Active runs via drainNewEvents). Without this
+	// reattached / non-Active runs via the runstream file tailer). Without this
 	// observer the alert Manager would never see budget / failure events
 	// or advance its stall heartbeat for the default in-process path.
-	// Detached runs are fed via drainNewEvents instead; the two paths do
+	// Detached runs are fed via the runstream file tailer instead; the two paths do
 	// not overlap (an Active in-process run never gets a file tailer), so
 	// there is no double-observe.
 	if s.alertManager != nil {

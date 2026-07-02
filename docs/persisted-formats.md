@@ -10,7 +10,9 @@ These formats are considered **stable for V1** — tooling may rely on them.
   <run_id>/
     run.json                            # Run metadata & checkpoint
     events.jsonl                        # Append-only event log
-    run.log                             # Free-form runtime log (best-effort)
+    run.log                             # Free-form runtime log (best-effort; cloud stores
+                                        # persist the same byte stream as run_logs chunk
+                                        # documents in Mongo — see ADR-053)
     .pid                                # Detached-runner PID (Phase 2 only)
     artifacts/
       <node_id>/

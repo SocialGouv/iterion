@@ -629,7 +629,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 // buildAlertManager wires the alert Manager's sinks (webhook, optional
 // desktop, and the always-on browser-broker sink), the run-name lookup,
 // and the deep-link base URL. The manager itself is fed events by the
-// file-event tail (see drainNewEvents).
+// file-event tail (see runstream.TailEventsFile).
 func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 	var sinks []alert.Sink
 	if wh := alert.NewWebhookSink(set.WebhookURL, s.logger); wh != nil {
