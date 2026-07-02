@@ -20,6 +20,8 @@ var resumeOpts struct {
 	permissionAllow []string
 	permissionAsk   []string
 	permissionDeny  []string
+	modelFor        []string
+	backendFor      []string
 
 	maxCostUSD          float64
 	maxTokens           int
@@ -46,6 +48,8 @@ var resumeCmd = &cobra.Command{
 			PermissionAllow: resumeOpts.permissionAllow,
 			PermissionAsk:   resumeOpts.permissionAsk,
 			PermissionDeny:  resumeOpts.permissionDeny,
+			ModelFor:        resumeOpts.modelFor,
+			BackendFor:      resumeOpts.backendFor,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          resumeOpts.maxCostUSD,
 				MaxTokens:           resumeOpts.maxTokens,
@@ -81,6 +85,8 @@ func init() {
 	f.StringArrayVar(&resumeOpts.permissionAllow, "permission-allow", nil, "permission allow rule (repeatable), e.g. 'Bash(go build:*)'. Authorize an action the run paused on, then it proceeds on resume.")
 	f.StringArrayVar(&resumeOpts.permissionAsk, "permission-ask", nil, "permission ask rule (repeatable): matching calls pause for approval.")
 	f.StringArrayVar(&resumeOpts.permissionDeny, "permission-deny", nil, "permission deny rule (repeatable): matching calls are always blocked.")
+	f.StringArrayVar(&resumeOpts.modelFor, "model", nil, "Re-apply a per-node/-group model override on resume (repeatable): \"selector=model\" or a bare \"model\". Resume does NOT persist the launch overrides, so pass the same --model flags used at run to keep e.g. reviewers on their chosen model. Selector = node id, id glob (reviewer_*), or kind (agent|judge).")
+	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code). Same selector syntax as --model.")
 	registerBudgetFlags(f, &resumeOpts.maxCostUSD, &resumeOpts.maxTokens, &resumeOpts.maxDuration, &resumeOpts.maxIterations, &resumeOpts.maxParallelBranches)
 	mustMarkRequired(resumeCmd, "run-id")
 	rootCmd.AddCommand(resumeCmd)

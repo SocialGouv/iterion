@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -108,6 +109,10 @@ func buildResumeExecutor(
 	if opts.Executor != nil {
 		return opts.Executor, nil
 	}
+	modelOverrides, err := model.ParseModelOverrides(opts.ModelFor, opts.BackendFor)
+	if err != nil {
+		return nil, err
+	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Workflow:        wf,
 		Vars:            nil,
@@ -119,6 +124,7 @@ func buildResumeExecutor(
 		PermissionAllow: opts.PermissionAllow,
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
+		ModelOverrides:  modelOverrides,
 	})
 	if err != nil {
 		return nil, err

@@ -55,6 +55,14 @@ type ResumeOptions struct {
 	PermissionAllow []string
 	PermissionAsk   []string
 	PermissionDeny  []string
+	// ModelFor / BackendFor re-apply the launch-time per-node/-group model+
+	// backend overrides on resume (repeatable --model / --backend,
+	// "selector=value" or bare "value"). Resume does NOT persist the original
+	// run's overrides, so a run launched with e.g. `--model 'judge=...'` falls
+	// back to the node's DSL model unless the same flags are passed again here.
+	// Parsed via model.ParseModelOverrides in buildResumeExecutor.
+	ModelFor   []string
+	BackendFor []string
 }
 
 // RunResumeWithFile resumes a paused run using a workflow file and answers.
