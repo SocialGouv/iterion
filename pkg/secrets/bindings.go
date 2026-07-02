@@ -190,8 +190,10 @@ func ResolveGenericWithBindings(
 	// highest precedence. Lets a webhook pin a specific stored secret — e.g. a
 	// distinct forge_token / bot identity — over the org binding, mirroring the
 	// BYOK keyOverrides path. See docs/byok.md. The override carries no
-	// binding-level AllowedHosts, so egress falls back to the workflow's own
-	// secret host declaration.
+	// binding-level AllowedHosts of its own, but the resolved secret's OWN
+	// egress lock (GenericSecret.AllowedHosts, seeded in buildGenericResolution)
+	// still applies — so a managed forge token pinned to its forge host stays
+	// egress-locked even when bound via a Tier-0 override.
 	overrideByName := make(map[string]GenericSecret)
 	for name, secretID := range secretOverrides {
 		if !want[name] || strings.TrimSpace(secretID) == "" {
@@ -226,7 +228,10 @@ func ResolveGenericWithBindings(
 		if b, ok := bindingByName[name]; ok {
 			if r, ok := buildGenericResolution(b.sec, sealer, userID); ok {
 				r.SourceScope = "binding"
-				r.AllowedHosts = b.hosts
+				// Intersect the binding's egress hosts with the secret's own
+				// lock (buildGenericResolution seeded r.AllowedHosts from the
+				// secret) so a binding narrows, never broadens.
+				r.AllowedHosts = IntersectHosts(r.AllowedHosts, b.hosts)
 				out[name] = r
 				continue
 			}

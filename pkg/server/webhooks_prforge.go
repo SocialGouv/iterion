@@ -137,7 +137,7 @@ func (s *Server) realWebhookPRForgeCommandGate(ctx context.Context, cfg webhooks
 	if refusal != "" {
 		return false, refusal, nil
 	}
-	api := prforgeReplierClient(provider, s.httpClient, baseURL, token)
+	api := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
 	if id, err := api.WhoAmI(ctx); err == nil && id.Login != "" && strings.EqualFold(id.Login, p.AuthorLogin) {
 		return false, "self comment (loop-guard)", nil
 	}

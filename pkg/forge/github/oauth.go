@@ -13,10 +13,17 @@ import (
 )
 
 // DefaultScopes is the OAuth-App scope set a GitHub connection requests.
-// `repo` covers reading the diff + posting PR comments + managing repo
-// webhooks (it subsumes admin:repo_hook); `read:org` lets ListRepos see
-// org repositories.
-var DefaultScopes = []string{"repo", "read:org"}
+// `repo` covers the whole job iterion's OAuth-App path needs: read the diff,
+// post PR comments, and manage repo webhooks (it subsumes admin:repo_hook).
+//
+// Least-privilege: `read:org` is deliberately NOT requested. ListRepos
+// already surfaces org repositories via `/user/repos?affiliation=…,
+// organization_member`, which `repo` alone authorizes; `read:org` only adds
+// org/team-membership *enumeration* (the user's full org graph) that iterion
+// does not use here. Dropping it keeps the connection token off the user's
+// org-membership data. Operators wanting curated org-repo access should use
+// the least-privilege GitHub-App connect flow (operator-selected repos).
+var DefaultScopes = []string{"repo"}
 
 // OAuthApp drives the GitHub OAuth-App authorization-code flow for one
 // GitHub instance (github.com or GHE). Classic OAuth Apps issue

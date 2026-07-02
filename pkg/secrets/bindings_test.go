@@ -55,6 +55,59 @@ func TestMemoryBotSecretBindingStore(t *testing.T) {
 	}
 }
 
+// A secret's OWN egress lock (GenericSecret.AllowedHosts — the managed
+// forge-token case) must be enforced through every resolution tier, and a
+// binding may only narrow it further, never broaden it.
+func TestResolveGenericWithBindings_SecretOwnEgressLock(t *testing.T) {
+	ctx := context.Background()
+	sealer := newSealer(t)
+	secStore := NewMemoryGenericSecretStore()
+	bindStore := NewMemoryBotSecretBindingStore()
+
+	// A managed forge token pinned to github.com, bound via a Tier-0 override.
+	id := NewGenericSecretID()
+	sealed, err := SealGenericSecret(sealer, id, []byte("ghs_tok"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := secStore.Create(ctx, GenericSecret{
+		ID: id, ScopeTeamID: "team", Name: "forge_token",
+		SealedSecret: sealed, AllowedHosts: []string{"github.com"},
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) Tier-0 override carries no binding hosts, but the secret's own lock
+	// must still apply so the token can't egress off github.com.
+	got, err := ResolveGenericWithBindings(ctx, secStore, bindStore, "team", "", "billy",
+		[]string{"forge_token"}, map[string]string{"forge_token": id}, sealer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got["forge_token"]
+	if r.SourceScope != "webhook-override" {
+		t.Fatalf("want override tier, got %q", r.SourceScope)
+	}
+	if len(r.AllowedHosts) != 1 || r.AllowedHosts[0] != "github.com" {
+		t.Fatalf("secret self-lock not enforced through override: %v", r.AllowedHosts)
+	}
+
+	// (b) A binding narrows further (disjoint host → deny-all, empty result).
+	if err := bindStore.Create(ctx, BotSecretBinding{
+		ID: "b1", TenantID: "team", BotID: "billy", SecretID: id,
+		SecretNameForWorkflow: "forge_token", AllowedHosts: []string{"evil.com"},
+		CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = ResolveGenericWithBindings(ctx, secStore, bindStore, "team", "", "billy",
+		[]string{"forge_token"}, nil, sealer)
+	if hosts := got["forge_token"].AllowedHosts; len(hosts) != 0 {
+		t.Fatalf("binding must narrow (github.com ∩ evil.com = ∅), got %v", hosts)
+	}
+}
+
 func TestResolveGenericWithBindings_TierOrdering(t *testing.T) {
 	ctx := context.Background()
 	sealer := newSealer(t)

@@ -210,6 +210,11 @@ func TestProvision_SingleBot(t *testing.T) {
 	if err != nil || string(pt) != testPATToken {
 		t.Errorf("managed secret plaintext = %q (err %v), want the PAT", string(pt), err)
 	}
+	// Least-privilege egress lock: the managed forge token is pinned to the
+	// connection's forge host so a compromised bot can't exfiltrate it off-forge.
+	if len(gs.AllowedHosts) != 1 || gs.AllowedHosts[0] != "gitlab.example.com" {
+		t.Errorf("managed secret AllowedHosts = %v, want [gitlab.example.com]", gs.AllowedHosts)
+	}
 
 	// webhook config.
 	cfg, err := o.Webhooks.Get(ctx, res.WebhookID)

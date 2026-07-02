@@ -96,7 +96,7 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	conv, err := forgegithub.ConvertManifest(r.Context(), s.httpClient, pending.ForgeBaseURL, code)
+	conv, err := forgegithub.ConvertManifest(r.Context(), s.forgeHTTPClient(), pending.ForgeBaseURL, code)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "%v", err)
 		return

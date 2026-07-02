@@ -30,10 +30,12 @@ type RepoIntegration struct {
 	BotIDs           []string `bson:"bot_ids" json:"bot_ids"`
 	EventsNormalized []string `bson:"events_normalized" json:"events_normalized"`
 
-	WebhookID       string `bson:"webhook_id" json:"webhook_id"`                 // -> webhooks.Config._id
-	HookID          string `bson:"hook_id" json:"hook_id"`                       // forge-side hook id
-	HookURL         string `bson:"hook_url,omitempty" json:"hook_url,omitempty"` // the inbound URL we registered
-	ManagedSecretID string `bson:"managed_secret_id,omitempty" json:"managed_secret_id,omitempty"`
+	WebhookID string `bson:"webhook_id" json:"webhook_id"`                 // -> webhooks.Config._id
+	HookID    string `bson:"hook_id" json:"hook_id"`                       // forge-side hook id
+	HookURL   string `bson:"hook_url,omitempty" json:"hook_url,omitempty"` // the inbound URL we registered
+	// ManagedSecretID is an internal store reference; never exposed via the
+	// API (useless without the master key, but no reason to surface it).
+	ManagedSecretID string `bson:"managed_secret_id,omitempty" json:"-"`
 
 	// SyncIssuesEnabled, when true, makes the forge→board sync worker mirror
 	// this repo's forge issues into the team's kanban board (one-way: forge is

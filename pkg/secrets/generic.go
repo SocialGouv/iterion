@@ -30,6 +30,15 @@ type GenericSecret struct {
 	CreatedAt    time.Time  `bson:"created_at" json:"created_at"`
 	LastUsedAt   *time.Time `bson:"last_used_at,omitempty" json:"last_used_at,omitempty"`
 	Fingerprint  string     `bson:"fingerprint,omitempty" json:"fingerprint,omitempty"`
+	// AllowedHosts, when non-empty, pins the egress host allowlist this
+	// secret may ever be materialised toward (parent-domain match, e.g.
+	// "github.com" also permits "api.github.com"). A managed forge token is
+	// created with its forge host here so a prompt-injected bot cannot
+	// exfiltrate it off-forge. It is the secret's OWN egress lock: it travels
+	// through every resolution tier (buildGenericResolution) and is
+	// intersected — never broadened — with any binding/workflow host policy
+	// downstream (IntersectHosts / model.effectiveSecretHosts).
+	AllowedHosts []string `bson:"allowed_hosts,omitempty" json:"allowed_hosts,omitempty"`
 }
 
 type GenericSecretStore interface {
@@ -132,6 +141,9 @@ func buildGenericResolution(s GenericSecret, sealer Sealer, currentUserID string
 		SecretID:    s.ID,
 		SealedBlob:  s.SealedSecret,
 		SourceScope: scope,
+		// The secret's own egress lock is the baseline for every tier; a
+		// binding/workflow policy can only narrow it further, never broaden it.
+		AllowedHosts: append([]string(nil), s.AllowedHosts...),
 	}
 	if sealer == nil {
 		return r, true

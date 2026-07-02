@@ -181,8 +181,14 @@ func TestForgeIntegration_PATConnectEnableDisable(t *testing.T) {
 	if cfg.ProvisionedBy != "forge:"+connID {
 		t.Errorf("provisioned_by = %q", cfg.ProvisionedBy)
 	}
-	if cfg.SecretOverrides["forge_token"] != res.ManagedSecretID {
-		t.Errorf("secret override not pinned: %v", cfg.SecretOverrides)
+	// ManagedSecretID is an internal store ref (json:"-"), so read it from the
+	// connection rather than the API response.
+	provConn, err := s.forgeConnections.Get(ctx, connID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provConn.ManagedSecretID == "" || cfg.SecretOverrides["forge_token"] != provConn.ManagedSecretID {
+		t.Errorf("secret override not pinned to managed secret: override=%v managed=%q", cfg.SecretOverrides, provConn.ManagedSecretID)
 	}
 
 	// 3. A managed webhook cannot be deleted via the webhook CRUD (409).

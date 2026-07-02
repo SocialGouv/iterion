@@ -1,8 +1,10 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,9 +25,40 @@ type AppConfig struct {
 
 func (c AppConfig) Configured() bool { return c.AppID != 0 && c.PrivateKeyPEM != "" }
 
+// RuntimeInstallationPermissions is the least-privilege permission subset an
+// installation token minted for iterion is pinned to — exactly what the forge
+// layer needs (read/push code, open+comment PRs, manage the per-repo webhook,
+// the mandatory metadata baseline) and nothing more. Mirrors the App manifest
+// (BuildAppManifest); pinning it at mint time means a token stays minimal even
+// if the installation is later granted broader permissions on the forge.
+func RuntimeInstallationPermissions() map[string]string {
+	return map[string]string{
+		"contents":         "write",
+		"pull_requests":    "write",
+		"metadata":         "read",
+		"repository_hooks": "write",
+	}
+}
+
+// InstallationTokenOptions narrows a minted installation token below the
+// installation's full grant (least-privilege). Both fields are optional; a nil
+// field means "don't constrain that dimension" (GitHub returns the
+// installation's full set).
+//
+//   - Repositories: short repo names (e.g. "api", NOT "org/api") the token may
+//     touch. Empty → all repositories in the installation.
+//   - Permissions: the permission subset (a subset of the installation's own
+//     grants). Empty → the installation's full permission set.
+type InstallationTokenOptions struct {
+	Repositories []string
+	Permissions  map[string]string
+}
+
 // MintInstallationToken trades the App JWT for a short-lived (≈1h)
-// installation access token. apiBase is the REST API base (APIBaseFor).
-func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, installationID int64, now time.Time) (string, time.Time, error) {
+// installation access token. apiBase is the REST API base (APIBaseFor). opts
+// may be nil for an unconstrained (whole-installation) token, or narrow it to
+// specific repositories + a permission subset (least-privilege).
+func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, installationID int64, now time.Time, opts *InstallationTokenOptions) (string, time.Time, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
@@ -33,10 +66,30 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	var body io.Reader
+	if opts != nil {
+		payload := map[string]any{}
+		if len(opts.Repositories) > 0 {
+			payload["repositories"] = opts.Repositories
+		}
+		if len(opts.Permissions) > 0 {
+			payload["permissions"] = opts.Permissions
+		}
+		if len(payload) > 0 {
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				return "", time.Time{}, err
+			}
+			body = bytes.NewReader(raw)
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		apiBase+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", nil)
+		apiBase+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", body)
 	if err != nil {
 		return "", time.Time{}, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -97,7 +150,11 @@ func (a *AppClient) rest(ctx context.Context) (*AdminClient, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.token == "" || a.clock().After(a.exp.Add(-60*time.Second)) {
-		tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock())
+		// Least-privilege: pin the management token to iterion's minimal
+		// permission set (webhook + metadata + code + PR), never the
+		// installation's full grant.
+		tok, exp, err := MintInstallationToken(ctx, a.HTTP, a.apiBase(), a.Cfg, a.InstallationID, a.clock(),
+			&InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()})
 		if err != nil {
 			return nil, err
 		}
@@ -205,6 +262,13 @@ type AppRefresher struct {
 	HTTP *http.Client
 	Cfg  AppConfig
 	Now  func() time.Time
+	// Repos, when set, returns the short repo names (e.g. "api", not
+	// "org/api") this connection actually operates on, so the runtime
+	// forge_token is scoped to that repo set (least-privilege) instead of the
+	// whole installation. Nil/empty → whole-installation (still minimal
+	// permissions). Injected by the server so the refresher stays free of a
+	// store dependency.
+	Repos func(ctx context.Context, conn forge.Connection) []string
 }
 
 func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ string) (forge.RefreshedToken, error) {
@@ -212,7 +276,13 @@ func (r AppRefresher) Refresh(ctx context.Context, conn forge.Connection, _ stri
 	if r.Now != nil {
 		now = r.Now()
 	}
-	tok, exp, err := MintInstallationToken(ctx, r.HTTP, APIBaseFor(conn.BaseURL()), r.Cfg, conn.InstallationID, now)
+	// Least-privilege: the runtime forge token carries only iterion's minimal
+	// permission set, scoped to the connection's provisioned repos when known.
+	opts := &InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()}
+	if r.Repos != nil {
+		opts.Repositories = r.Repos(ctx, conn)
+	}
+	tok, exp, err := MintInstallationToken(ctx, r.HTTP, APIBaseFor(conn.BaseURL()), r.Cfg, conn.InstallationID, now, opts)
 	if err != nil {
 		return forge.RefreshedToken{}, err
 	}

@@ -59,13 +59,14 @@ func BuildAppManifest(name, homeURL, redirectURL string) AppManifest {
 		SetupOnUpdate: true,
 		Public:        false,
 		DefaultEvents: []string{},
-		DefaultPermissions: map[string]string{
-			"contents":         "write", // clone + read the diff AND push branches/commits
-			"pull_requests":    "write", // open PRs + post review comments
-			"metadata":         "read",  // mandatory baseline
-			"repository_hooks": "write", // auto-provision the per-repo inbound webhook
-		},
-		HookAttributes: map[string]any{"url": homeURL, "active": false},
+		// The App's granted permissions ARE iterion's least-privilege runtime
+		// set — single source of truth, so the manifest and every minted
+		// installation token can never drift apart. (contents: clone + diff +
+		// push; pull_requests: open + comment; metadata: baseline;
+		// repository_hooks: per-repo inbound webhook. Deliberately no
+		// `administration`.)
+		DefaultPermissions: RuntimeInstallationPermissions(),
+		HookAttributes:     map[string]any{"url": homeURL, "active": false},
 	}
 }
 

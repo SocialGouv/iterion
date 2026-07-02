@@ -68,12 +68,41 @@ func TestMintInstallationToken(t *testing.T) {
 	}))
 	defer srv.Close()
 	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr, AppSlug: "iterion"}
-	tok, exp, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Unix(1700000000, 0))
+	tok, exp, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Unix(1700000000, 0), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tok != "ghs_inst" || exp.Year() != 2099 {
 		t.Errorf("token=%q exp=%v", tok, exp)
+	}
+}
+
+// A least-privilege mint sends a body scoping the token to the given repos +
+// permission subset (the whole-installation default sends no body).
+func TestMintInstallationToken_NarrowsScope(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("content-type = %q, want application/json", ct)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": "ghs_scoped", "expires_at": "2099-01-01T00:00:00Z"})
+	}))
+	defer srv.Close()
+	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr}
+	_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Unix(1700000000, 0),
+		&InstallationTokenOptions{Repositories: []string{"api"}, Permissions: RuntimeInstallationPermissions()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos, _ := gotBody["repositories"].([]any)
+	if len(repos) != 1 || repos[0] != "api" {
+		t.Errorf("repositories body = %v, want [api]", gotBody["repositories"])
+	}
+	perms, _ := gotBody["permissions"].(map[string]any)
+	if perms["repository_hooks"] != "write" || perms["administration"] != nil {
+		t.Errorf("permissions body = %v, want minimal set without administration", perms)
 	}
 }
 

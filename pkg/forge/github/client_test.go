@@ -135,8 +135,12 @@ func TestGitHubOAuth_AuthorizeAndExchange(t *testing.T) {
 	if !strings.Contains(u, "/login/oauth/authorize") || strings.Contains(u, "code_challenge") {
 		t.Errorf("authorize url wrong (pkce must be absent): %s", u)
 	}
-	if !strings.Contains(u, "scope=repo+read%3Aorg") {
-		t.Errorf("default scopes missing: %s", u)
+	// Least-privilege: `repo` only — read:org is deliberately not requested.
+	if !strings.Contains(u, "scope=repo&") && !strings.HasSuffix(u, "scope=repo") {
+		t.Errorf("default scope should be exactly repo: %s", u)
+	}
+	if strings.Contains(u, "read%3Aorg") {
+		t.Errorf("read:org must not be requested: %s", u)
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

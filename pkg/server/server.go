@@ -115,6 +115,12 @@ type Server struct {
 	webhookPRForgeCommandGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (authorized bool, reason string, err error)
 	httpClient                *http.Client
 
+	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
+	// once (its strict flag is startup-fixed) so connection pooling is
+	// preserved across forge operations. Use forgeHTTPClient().
+	forgeHTTP     *http.Client
+	forgeHTTPOnce sync.Once
+
 	// detector is the cached LLM credential detector backing
 	// /api/backends/detect. Lazily constructed on first request.
 	detector     *detect.CachedDetector

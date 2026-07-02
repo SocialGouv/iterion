@@ -22,6 +22,7 @@ import (
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
 	forgegitlab "github.com/SocialGouv/iterion/pkg/forge/gitlab"
 	"github.com/SocialGouv/iterion/pkg/internal/strutil"
+	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -145,16 +146,39 @@ func (s *Server) forgeBotInvocations(botID string) ([]bundle.Invocation, error) 
 	return entry.Invocations, nil
 }
 
+// forgeHTTPClient is the SSRF-guarded HTTP client for ALL outbound forge
+// calls (token exchange, WhoAmI, hook + app provisioning, installation-token
+// mint). In strict mode (cloud, or a non-loopback-bound local server) its
+// transport re-resolves and rejects any host that isn't public-unicast on
+// EVERY dial — including redirect hops — so an operator-supplied self-hosted
+// forge base URL can't be aimed at loopback / RFC1918 / link-local / cloud
+// metadata (169.254.169.254), and DNS-rebinding can't slip past a check.
+// Loopback-bound single-tenant servers stay permissive (a forge on a private
+// LAN is legitimate there). Redirects ARE followed (forge APIs may 3xx); each
+// hop re-enters the guarded dialer, unlike the preview proxy which must not.
+//
+// Built once (outboundStrict() is startup-fixed) so its transport's connection
+// pool is reused across forge operations.
+func (s *Server) forgeHTTPClient() *http.Client {
+	s.forgeHTTPOnce.Do(func() {
+		s.forgeHTTP = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: httpdial.SafeTransport(s.outboundStrict()),
+		}
+	})
+	return s.forgeHTTP
+}
+
 // forgeAdminForToken builds an outbound admin client from a raw token
 // (used at connect time before a Connection exists).
 func (s *Server) forgeAdminForToken(provider forge.Provider, baseURL, token string) (forge.Admin, error) {
 	switch provider {
 	case forge.ProviderGitLab:
-		return forgegitlab.New(s.httpClient, baseURL, token), nil
+		return forgegitlab.New(s.forgeHTTPClient(), baseURL, token), nil
 	case forge.ProviderGitHub:
-		return forgegithub.New(s.httpClient, baseURL, token), nil
+		return forgegithub.New(s.forgeHTTPClient(), baseURL, token), nil
 	case forge.ProviderForgejo:
-		return forgeforgejo.New(s.httpClient, baseURL, token), nil
+		return forgeforgejo.New(s.forgeHTTPClient(), baseURL, token), nil
 	default:
 		return nil, fmt.Errorf("forge: provider %q is not yet supported", provider)
 	}
@@ -170,7 +194,7 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 			return nil, fmt.Errorf("forge: no github app available for this connection")
 		}
 		return &forgegithub.AppClient{
-			HTTP: s.httpClient, WebBaseURL: conn.BaseURL(),
+			HTTP: s.forgeHTTPClient(), WebBaseURL: conn.BaseURL(),
 			Cfg: cfg, InstallationID: conn.InstallationID,
 		}, nil
 	}
@@ -222,11 +246,11 @@ func (s *Server) forgeOAuthAppFor(ctx context.Context, tenantID string, provider
 	}
 	switch provider {
 	case forge.ProviderGitLab:
-		return &forgegitlab.OAuthApp{HTTP: s.httpClient, BaseURL: base, ClientID: app.ClientID, ClientSecret: secret}, true
+		return &forgegitlab.OAuthApp{HTTP: s.forgeHTTPClient(), BaseURL: base, ClientID: app.ClientID, ClientSecret: secret}, true
 	case forge.ProviderGitHub:
-		return &forgegithub.OAuthApp{HTTP: s.httpClient, BaseURL: base, ClientID: app.ClientID, ClientSecret: secret}, true
+		return &forgegithub.OAuthApp{HTTP: s.forgeHTTPClient(), BaseURL: base, ClientID: app.ClientID, ClientSecret: secret}, true
 	case forge.ProviderForgejo:
-		return &forgeforgejo.OAuthApp{HTTP: s.httpClient, BaseURL: base, ClientID: app.ClientID, ClientSecret: secret}, true
+		return &forgeforgejo.OAuthApp{HTTP: s.forgeHTTPClient(), BaseURL: base, ClientID: app.ClientID, ClientSecret: secret}, true
 	default:
 		return nil, false
 	}
@@ -268,6 +292,35 @@ func forgeDefaultOAuthScopes(p forge.Provider) []string {
 	}
 }
 
+// forgeConnRepoNames returns the short repo names (GitHub installation-token
+// `repositories` form — "api", not "org/api") of the repos a connection has
+// provisioned, so the github_app runtime forge token is scoped to that set
+// (least-privilege) instead of the whole installation. Empty (→ whole
+// installation, still minimal permissions) when nothing is provisioned yet or
+// the store is unavailable.
+func (s *Server) forgeConnRepoNames(ctx context.Context, conn forge.Connection) []string {
+	if s.forgeIntegrations == nil {
+		return nil
+	}
+	ints, err := s.forgeIntegrations.ListByConnection(store.WithTenant(ctx, conn.TenantID), conn.TenantID, conn.ID)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(ints))
+	seen := make(map[string]bool, len(ints))
+	for _, ri := range ints {
+		name := ri.RepoFullName
+		if i := strings.LastIndexByte(name, '/'); i >= 0 {
+			name = name[i+1:]
+		}
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // forgeRefresherFor returns the token refresher for a connection, or nil
 // when it cannot/should-not refresh (PAT, GitHub-App, or a provider with no
 // configured OAuth app). The per-provider OAuth clients implement both
@@ -278,7 +331,7 @@ func (s *Server) forgeRefresherFor(conn forge.Connection) forge.TokenRefresher {
 		if !ok {
 			return nil
 		}
-		return forgegithub.AppRefresher{HTTP: s.httpClient, Cfg: cfg}
+		return forgegithub.AppRefresher{HTTP: s.forgeHTTPClient(), Cfg: cfg, Repos: s.forgeConnRepoNames}
 	}
 	if conn.Kind != forge.KindOAuthApp {
 		return nil
@@ -580,7 +633,11 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	}
 	base := forge.DefaultBaseURL(forge.ProviderGitHub)
 	now := time.Now().UTC()
-	tok, exp, err := forgegithub.MintInstallationToken(r.Context(), s.httpClient, forgegithub.APIBaseFor(base), cfg, installationID, now)
+	// Least-privilege: the initial connect-time token carries only iterion's
+	// minimal permission set (no repositories scope yet — none provisioned;
+	// the refresh worker re-scopes to the provisioned repo set thereafter).
+	tok, exp, err := forgegithub.MintInstallationToken(r.Context(), s.forgeHTTPClient(), forgegithub.APIBaseFor(base), cfg, installationID, now,
+		&forgegithub.InstallationTokenOptions{Permissions: forgegithub.RuntimeInstallationPermissions()})
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "could not mint installation token: %v", err)
 		return

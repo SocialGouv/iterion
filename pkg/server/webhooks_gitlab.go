@@ -469,7 +469,7 @@ func (s *Server) realWebhookCommandGate(ctx context.Context, cfg webhooks.Config
 	if refusal != "" {
 		return false, refusal, nil
 	}
-	api := gitlab.API{HTTP: s.httpClient, BaseURL: baseURL, Token: token}
+	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
 	if bot, berr := api.CurrentUser(ctx); berr == nil && bot.ID == p.AuthorID {
 		return false, "self note (loop-guard)", nil
 	}
@@ -548,7 +548,7 @@ func (s *Server) realWebhookNoteGate(ctx context.Context, cfg webhooks.Config, p
 	if refusal != "" {
 		return false, false, "", refusal, nil
 	}
-	api := gitlab.API{HTTP: s.httpClient, BaseURL: baseURL, Token: token}
+	api := gitlab.API{HTTP: s.forgeHTTPClient(), BaseURL: baseURL, Token: token}
 	bot, berr := api.CurrentUser(ctx)
 	// Loop-guard: never act on the bot's own notes (else its reply re-fires).
 	if berr == nil && bot.ID == p.AuthorID {

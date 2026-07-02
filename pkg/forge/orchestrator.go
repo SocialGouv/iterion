@@ -92,7 +92,7 @@ type ProvisionResult struct {
 	IntegrationID   string   `json:"integration_id"`
 	WebhookID       string   `json:"webhook_id"`
 	HookID          string   `json:"hook_id"`
-	ManagedSecretID string   `json:"managed_secret_id"`
+	ManagedSecretID string   `json:"-"`
 	BotIDs          []string `json:"bot_ids"`
 	// Created is false when the call was a fully idempotent no-op (the repo
 	// already had exactly these bots + events enabled).
@@ -400,6 +400,23 @@ func (o *Orchestrator) rollbackConfig(ctx context.Context, created bool, webhook
 	}
 }
 
+// forgeTokenEgressHosts returns the egress host allowlist a connection's
+// managed forge token is pinned to — the connection's forge host. The
+// secret guard's parent-domain match (host.go: "github.com" also permits
+// "api.github.com"/"codeload.github.com") means this single host covers the
+// API + git + upload subdomains a forge token legitimately needs, while
+// blocking exfiltration to any off-forge host. Without it a prompt-injected
+// bot holding the token could ship it to an arbitrary host. Empty (→ nil,
+// unrestricted) only if the connection resolves no host, which should not
+// happen.
+func forgeTokenEgressHosts(conn *Connection) []string {
+	h := hostOf(conn.BaseURL())
+	if h == "" {
+		return nil
+	}
+	return []string{h}
+}
+
 // ensureManagedSecret creates (once per connection) the team-scoped generic
 // secret holding the connection's admin token as the bot-runtime forge
 // token, stamping its id onto the connection. Reused across every repo/bot
@@ -430,6 +447,7 @@ func (o *Orchestrator) ensureManagedSecret(ctx context.Context, conn *Connection
 		Last4:        secrets.Last4(token),
 		Fingerprint:  secrets.FingerprintSHA256(token),
 		SealedSecret: sealed,
+		AllowedHosts: forgeTokenEgressHosts(conn), // egress lock, see forgeTokenEgressHosts
 		CreatedBy:    actor,
 		CreatedAt:    now,
 	}

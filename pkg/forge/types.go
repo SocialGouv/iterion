@@ -117,7 +117,8 @@ type Connection struct {
 	// to hold the bot-runtime forge token. The refresh worker rewrites that
 	// secret's plaintext on rotation, so downstream resolver code needs no
 	// changes. Empty until the first repo is enabled on this connection.
-	ManagedSecretID string `bson:"managed_secret_id,omitempty" json:"managed_secret_id,omitempty"`
+	// Internal store reference — never exposed via the API.
+	ManagedSecretID string `bson:"managed_secret_id,omitempty" json:"-"`
 
 	CreatedBy string    `bson:"created_by" json:"created_by"`
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
