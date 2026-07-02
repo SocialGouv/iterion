@@ -504,8 +504,8 @@ func TestBudgetSnapshotRestoreRoundtrip(t *testing.T) {
 	}
 	// One more iteration on the resumed budget must exhaust max_iterations (5)
 	// counting from the restored 2, not from 0 — the runaway-loop guard.
-	resumed.RecordUsage(0, 0) // 3
-	resumed.RecordUsage(0, 0) // 4
+	resumed.RecordUsage(0, 0)           // 3
+	resumed.RecordUsage(0, 0)           // 4
 	checks := resumed.RecordUsage(0, 0) // 5 → exceeded
 	if findExceeded(checks) == nil {
 		t.Fatal("expected iterations budget exceeded after restore+3 (2+3=5), got none")
