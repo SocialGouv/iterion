@@ -445,6 +445,20 @@ export interface CreateRunRequest {
   // pauses for human approval on any tool not allow-listed; "deny" hard-
   // blocks it. See docs/permissions.md.
   permission?: string;
+  // Per-node/-group model+backend overrides (Launch dropdowns). Each entry
+  // targets nodes by selector (node id, id glob "reviewer_*", or kind
+  // keyword "agent"|"judge") and wins over the node's DSL backend:/model:.
+  // Composes with review_mode. See pkg/backend/model.ModelOverrides.
+  model_overrides?: ModelOverrideEntry[];
+}
+
+// ModelOverrideEntry is one Launch-time per-node/-group model+backend
+// override. Empty backend/model/provider leave that dimension unchanged.
+export interface ModelOverrideEntry {
+  selector: string;
+  backend?: string;
+  model?: string;
+  provider?: string;
 }
 
 export interface CreateRunResponse {

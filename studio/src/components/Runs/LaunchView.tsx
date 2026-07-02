@@ -22,6 +22,10 @@ import { isVarMissing } from "@/lib/varValidation";
 
 import AttachmentsSection from "./launchView/AttachmentsSection";
 import LaunchBar from "./launchView/LaunchBar";
+import ModelOverridesSection, {
+  type LLMNode,
+  type NodeOverride,
+} from "./launchView/ModelOverridesSection";
 import PresetSection from "./launchView/PresetSection";
 import RunSettingsSection from "./launchView/RunSettingsSection";
 import VarFieldsSection from "./launchView/VarFieldsSection";
@@ -85,6 +89,9 @@ export default function LaunchView() {
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
+  // Per-node model/backend overrides, keyed by node name. Empty fields =
+  // inherit the bot's DSL default. Folded into createRun.model_overrides.
+  const [modelOverrides, setModelOverrides] = useState<Record<string, NodeOverride>>({});
   const backendReport = useBackendDetectStore((s) => s.report);
 
   useEffect(() => {
@@ -128,6 +135,25 @@ export default function LaunchView() {
   }, [filePath, setCurrentSource]);
 
   const fields = pickVars(doc);
+
+  // LLM nodes (agents + judges) the operator can retarget per run. Names are
+  // the exact node ids used as override selectors. Judges first so the review
+  // side reads top-down in the section.
+  const llmNodes = useMemo<LLMNode[]>(() => {
+    const judges: LLMNode[] = (doc?.judges ?? []).map((j) => ({
+      name: j.name,
+      kind: "judge",
+      model: j.model,
+      backend: j.backend,
+    }));
+    const agents: LLMNode[] = (doc?.agents ?? []).map((a) => ({
+      name: a.name,
+      kind: "agent",
+      model: a.model,
+      backend: a.backend,
+    }));
+    return [...judges, ...agents];
+  }, [doc]);
 
   // Prefer the bot schema's presets (the union of in-source `presets:` and
   // file-based presets/<name>.md, carrying display_name / description / prompt
@@ -292,6 +318,16 @@ export default function LaunchView() {
         backend: backendOverride || undefined,
         compress: compressOverride || undefined,
         permission: permissionOverride || undefined,
+        model_overrides: (() => {
+          const entries = Object.entries(modelOverrides)
+            .map(([selector, o]) => ({
+              selector,
+              model: o.model?.trim() || undefined,
+              backend: o.backend || undefined,
+            }))
+            .filter((e) => e.model || e.backend);
+          return entries.length > 0 ? entries : undefined;
+        })(),
       });
       setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
     } catch (e) {
@@ -420,6 +456,17 @@ export default function LaunchView() {
               onBackendChange={setBackendOverride}
               onCompressChange={setCompressOverride}
               onPermissionChange={setPermissionOverride}
+            />
+            <ModelOverridesSection
+              nodes={llmNodes}
+              overrides={modelOverrides}
+              backendReport={backendReport}
+              onChange={(name, patch) =>
+                setModelOverrides((prev) => ({
+                  ...prev,
+                  [name]: { ...prev[name], ...patch },
+                }))
+              }
             />
             <WorktreeFinalizationSection
               showAdvanced={showAdvanced}
