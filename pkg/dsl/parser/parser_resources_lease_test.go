@@ -70,3 +70,47 @@ workflow t:
 		t.Errorf("round-trip godot members = %q, want godot-s1,godot-s2,godot-s3", got)
 	}
 }
+
+// `needs:` on a subbot node must parse like on agent/tool nodes. Regression
+// test: `needs` is a keyword token (TokenNeeds), but parseSubbotDecl used to
+// match it as TokenIdent — so every subbot `needs:` raised E012 even though
+// the AST, the runtime lease wiring, and the docs all support it.
+func TestParseSubbotNeeds(t *testing.T) {
+	src := `subbot child:
+  source: "child.bot"
+  with { id: "1" }
+  output: o
+  needs: slot
+
+schema o:
+  ok: bool
+
+workflow t:
+  entry: child
+  resources:
+    slot: 2
+  child -> done
+`
+	res := parser.Parse("test.bot", src)
+	for _, d := range res.Diagnostics {
+		t.Fatalf("unexpected diagnostic: %s", d.Error())
+	}
+	if len(res.File.Subbots) != 1 {
+		t.Fatalf("expected 1 subbot, got %d", len(res.File.Subbots))
+	}
+	sd := res.File.Subbots[0]
+	if got := strings.Join(sd.Needs, ","); got != "slot" {
+		t.Errorf("subbot needs = %q, want slot", got)
+	}
+
+	// Bracketed-list form must parse too (parseNeedsList handles both).
+	src2 := strings.Replace(src, "needs: slot", "needs: [slot, other]", 1)
+	src2 = strings.Replace(src2, "slot: 2", "slot: 2\n    other: 1", 1)
+	res2 := parser.Parse("test.bot", src2)
+	for _, d := range res2.Diagnostics {
+		t.Fatalf("unexpected diagnostic (list form): %s", d.Error())
+	}
+	if got := strings.Join(res2.File.Subbots[0].Needs, ","); got != "slot,other" {
+		t.Errorf("subbot needs (list form) = %q, want slot,other", got)
+	}
+}

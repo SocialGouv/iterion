@@ -799,7 +799,7 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			p.next()
 			p.expect(TokenColon)
 			sd.Source = p.expectString()
-		case t.Type == TokenIdent && t.Value == "needs":
+		case t.Type == TokenNeeds:
 			p.next()
 			p.expect(TokenColon)
 			sd.Needs = p.parseNeedsList()
