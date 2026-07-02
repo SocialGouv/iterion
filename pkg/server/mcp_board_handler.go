@@ -188,6 +188,16 @@ type mcpRespError struct {
 	Message string `json:"message"`
 }
 
+// serve authorizes a run token and dispatches one JSON-RPC board call.
+//
+// SECURITY INVARIANT: a grant carries capabilities + expiry only, and every
+// call dispatches into the SAME single h.store. This is safe ONLY because that
+// store is single-tenant (the local/desktop native tracker); cloud multi-tenant
+// boards go through the separate per-tenant CloudBoardFor path, not this
+// handler. If this handler is ever wired to a shared multi-tenant native store
+// (the pending C082 HTTP board-path work), the grant MUST also carry the run's
+// tenant/board id and dispatchHTTP MUST select the store by it — otherwise any
+// valid run token could operate on another tenant's board by id.
 func (h *boardMCPHandler) serve(w http.ResponseWriter, r *http.Request) {
 	token := r.Header.Get("X-Iterion-Run")
 	if token == "" {

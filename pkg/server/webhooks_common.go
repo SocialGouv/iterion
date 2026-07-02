@@ -17,6 +17,14 @@ import (
 // OOM on a malformed gigabyte of JSON.
 const maxWebhookBodyBytes = 5 << 20
 
+// forgeProjectionSem bounds concurrent best-effort forge→board projection
+// goroutines. A burst of webhooks would otherwise spawn one 30s goroutine
+// each without limit. Acquisition is non-blocking: when the cap is reached
+// the fast-path refresh is skipped and the periodic forge→board sweep
+// reconciles the board, so correctness is preserved and the request never
+// blocks.
+var forgeProjectionSem = make(chan struct{}, 16)
+
 // defaultWebhookBotReviewPR is the bot iterion auto-selects when a
 // review-PR-shaped delivery (GitLab MR open/reopen, GitLab Note /revi,
 // GitHub PR open, Forgejo PR open) lands on a wildcard webhook with no
@@ -272,14 +280,24 @@ func (s *Server) insertAndLaunchWebhook(
 	// it never delays the webhook ack; best-effort, no-op without the cloud board.
 	if s.cfg.CloudBoardFor != nil && s.forgeIntegrations != nil {
 		repo := meta.ProjectPath
-		go func() {
-			// Fresh background context (not derived from the request ctx) so the
-			// goroutine neither is cancelled by the response nor keeps the
-			// request's scoped values alive for its 30s lifetime.
-			pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			s.projectForgeWebhookToBoard(pctx, repo)
-		}()
+		select {
+		case forgeProjectionSem <- struct{}{}:
+			go func() {
+				defer func() { <-forgeProjectionSem }()
+				// Fresh background context (not derived from the request ctx) so the
+				// goroutine neither is cancelled by the response nor keeps the
+				// request's scoped values alive for its 30s lifetime.
+				pctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				s.projectForgeWebhookToBoard(pctx, repo)
+			}()
+		default:
+			// Concurrency cap reached — skip the fast path; the periodic
+			// forge→board sweep will reconcile this repo's cards.
+			if s.logger != nil {
+				s.logger.Debug("webhooks: forge→board fast-path projection skipped for %s (concurrency cap); periodic sweep will reconcile", repo)
+			}
+		}
 	}
 
 	if s.logger != nil {

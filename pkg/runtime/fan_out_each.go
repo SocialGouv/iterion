@@ -116,6 +116,14 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	if len(items) == 0 {
 		rs.outputs[routerNodeID]["count"] = 0
 		if convergence == "" {
+			// No reconvergence node: the template subgraph runs ONCE with
+			// router.count=0 and no item/index binding. Warn so this isn't
+			// silent — a template that dereferences {{item}} will see an
+			// empty value. (Control flow is preserved to avoid regressing
+			// bots whose fan_out_each legitimately feeds a terminal.)
+			if e.logger != nil {
+				e.logger.Warn("fan_out_each from %s: 'over' resolved to an empty array and the template has no convergence node — running the template once with no item binding (count=0)", routerNodeID)
+			}
 			return tmplEdge.To, nil
 		}
 		if e.logger != nil {
