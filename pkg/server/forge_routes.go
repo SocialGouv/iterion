@@ -33,6 +33,14 @@ type ForgeGitHubAppConfig struct {
 	AppID      int64
 	PrivateKey string // PEM
 	AppSlug    string // for the install URL github.com/apps/<slug>/installations/new
+	// ClientID/ClientSecret are the App's user-authorization OAuth
+	// credentials (ITERION_FORGE_GITHUB_APP_CLIENT_ID/_CLIENT_SECRET).
+	// Optional. When set — and the App has "Request user authorization
+	// during installation" enabled — the install callback verifies the
+	// completing user owns the installation before minting a token (closes
+	// the installation_id IDOR on the shared-app path).
+	ClientID     string
+	ClientSecret string
 }
 
 func (c ForgeGitHubAppConfig) Configured() bool {
@@ -40,7 +48,13 @@ func (c ForgeGitHubAppConfig) Configured() bool {
 }
 
 func (s *Server) githubAppConfig() forgegithub.AppConfig {
-	return forgegithub.AppConfig{AppID: s.forgeGitHubApp.AppID, PrivateKeyPEM: s.forgeGitHubApp.PrivateKey, AppSlug: s.forgeGitHubApp.AppSlug}
+	return forgegithub.AppConfig{
+		AppID:         s.forgeGitHubApp.AppID,
+		PrivateKeyPEM: s.forgeGitHubApp.PrivateKey,
+		AppSlug:       s.forgeGitHubApp.AppSlug,
+		ClientID:      s.forgeGitHubApp.ClientID,
+		ClientSecret:  s.forgeGitHubApp.ClientSecret,
+	}
 }
 
 // forgeAgentBindingCookie is the per-flow CSRF-binding cookie for the
@@ -189,7 +203,7 @@ func (s *Server) forgeAdminForToken(provider forge.Provider, baseURL, token stri
 // the App private key on demand; every other kind opens its sealed token.
 func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forge.Admin, error) {
 	if conn.Kind == forge.KindGitHubApp {
-		cfg, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
+		cfg, _, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
 		if !ok {
 			return nil, fmt.Errorf("forge: no github app available for this connection")
 		}
@@ -210,21 +224,27 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 // path. It prefers the tenant's own manifest-created App (its sealed private
 // key), falling back to the platform App (ITERION_FORGE_GITHUB_APP_*). ok is
 // false when neither is available.
-func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) (forgegithub.AppConfig, bool) {
+//
+// shared reports whether the returned config is the SHARED platform App (the
+// fallback). It matters for the install callback: a per-tenant App's private
+// key is tenant-scoped, so it can only mint tokens for that tenant's own
+// installations, whereas the shared App's key can mint for ANY installation —
+// so the shared path (and only it) must verify installation ownership.
+func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) (cfg forgegithub.AppConfig, shared bool, ok bool) {
 	if s.forgeOAuthApps != nil {
 		base := forge.CanonicalBaseURL(forge.ProviderGitHub, "")
 		if app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, base); err == nil && len(app.SealedPrivateKey) > 0 {
 			if pem, err := forge.OpenForgeAppPrivateKey(s.sealer, app.ID, app.SealedPrivateKey); err == nil && pem != "" {
 				if appID, _ := strconv.ParseInt(app.ProviderAppID, 10, 64); appID != 0 {
-					return forgegithub.AppConfig{AppID: appID, PrivateKeyPEM: pem, AppSlug: app.AppSlug}, true
+					return forgegithub.AppConfig{AppID: appID, PrivateKeyPEM: pem, AppSlug: app.AppSlug}, false, true
 				}
 			}
 		}
 	}
 	if s.forgeGitHubApp.Configured() {
-		return s.githubAppConfig(), true
+		return s.githubAppConfig(), true, true
 	}
-	return forgegithub.AppConfig{}, false
+	return forgegithub.AppConfig{}, false, false
 }
 
 // forgeOAuthAppFor builds a provider's OAuth client for a (tenant, provider,
@@ -336,7 +356,7 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	if conn.Kind != forge.KindGitHubApp {
 		return "", fmt.Errorf("forge: not a github_app connection")
 	}
-	cfg, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
+	cfg, _, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
 	if !ok {
 		return "", fmt.Errorf("forge: no github app available for this connection")
 	}
@@ -363,7 +383,7 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 // OAuthExchanger and TokenRefresher.
 func (s *Server) forgeRefresherFor(conn forge.Connection) forge.TokenRefresher {
 	if conn.Kind == forge.KindGitHubApp {
-		cfg, ok := s.githubAppConfigForTenant(context.Background(), conn.TenantID)
+		cfg, _, ok := s.githubAppConfigForTenant(context.Background(), conn.TenantID)
 		if !ok {
 			return nil
 		}
@@ -455,7 +475,7 @@ func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, r *http.Request, t
 		httpError(w, http.StatusBadRequest, "the app mode is GitHub-only")
 		return
 	}
-	cfg, ok := s.githubAppConfigForTenant(r.Context(), teamID)
+	cfg, _, ok := s.githubAppConfigForTenant(r.Context(), teamID)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "no GitHub App available — first create one (Register an OAuth app → Create a GitHub App), or use OAuth/PAT")
 		return
@@ -662,12 +682,44 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusBadRequest, "invalid installation_id")
 		return
 	}
-	cfg, ok := s.githubAppConfigForTenant(r.Context(), pending.TenantID)
+	cfg, shared, ok := s.githubAppConfigForTenant(r.Context(), pending.TenantID)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "no github app available for this org")
 		return
 	}
 	base := forge.DefaultBaseURL(forge.ProviderGitHub)
+
+	// Installation-ownership check (IDOR guard). installation_id is an
+	// enumerable integer taken verbatim from the callback URL; the signed
+	// state only proves the flow was started by this team, NOT that the team
+	// owns this installation. The SHARED platform App's key can mint a token
+	// for ANY installation, so without a check an attacker could substitute a
+	// victim org's installation_id and capture its repos. When user-auth OAuth
+	// creds are configured we verify the completing user actually has access to
+	// the installation (mandatory — an attacker can't bypass by dropping the
+	// code, because a missing/invalid code fails closed). Per-tenant Apps
+	// (shared==false) are key-scoped and can't reach another tenant's
+	// installation, so they skip this. See VerifyInstallationOwnership.
+	if shared {
+		if cfg.UserAuthConfigured() {
+			code := r.URL.Query().Get("code")
+			if verr := forgegithub.VerifyInstallationOwnership(r.Context(), s.forgeHTTPClient(), base, cfg, code, installationID); verr != nil {
+				if errors.Is(verr, forgegithub.ErrInstallationNotOwned) {
+					httpError(w, http.StatusForbidden, "installation is not owned by the authorizing user")
+					return
+				}
+				httpError(w, http.StatusBadGateway, "could not verify installation ownership: %v", verr)
+				return
+			}
+		} else if s.logger != nil {
+			// Opt-in hardening not configured: the shared-App install path
+			// cannot verify ownership. Log loudly so operators enable it
+			// (ITERION_FORGE_GITHUB_APP_CLIENT_ID/_CLIENT_SECRET + "Request
+			// user authorization during installation" on the App).
+			s.logger.Warn("forge: github-app install accepted WITHOUT installation-ownership verification (shared platform app, no user-auth client creds) — set ITERION_FORGE_GITHUB_APP_CLIENT_ID/_CLIENT_SECRET to close the installation_id IDOR")
+		}
+	}
+
 	now := time.Now().UTC()
 	// Least-privilege: the initial connect-time token carries only iterion's
 	// minimal permission set (no repositories scope yet — none provisioned;

@@ -138,6 +138,12 @@ func forgeGitHubAppFromEnv() server.ForgeGitHubAppConfig {
 		AppID:      appID,
 		PrivateKey: key,
 		AppSlug:    strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_SLUG")),
+		// Optional user-auth OAuth creds: when set (+ "Request user
+		// authorization during installation" enabled on the App), the install
+		// callback verifies installation ownership before minting a token,
+		// closing the installation_id IDOR on the shared-app path.
+		ClientID:     strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_CLIENT_ID")),
+		ClientSecret: strings.TrimSpace(os.Getenv("ITERION_FORGE_GITHUB_APP_CLIENT_SECRET")),
 	}
 }
 

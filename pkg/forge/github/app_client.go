@@ -21,9 +21,21 @@ type AppConfig struct {
 	AppID         int64
 	PrivateKeyPEM string
 	AppSlug       string // for the install URL github.com/apps/<slug>/installations/new
+	// ClientID/ClientSecret are the App's user-authorization OAuth
+	// credentials. Optional: when both are set (and the App has "Request
+	// user authorization (OAuth) during installation" enabled on GitHub),
+	// the install callback verifies the completing user actually owns the
+	// installation before minting a token for it — see
+	// VerifyInstallationOwnership. Empty → verification is unavailable.
+	ClientID     string
+	ClientSecret string
 }
 
 func (c AppConfig) Configured() bool { return c.AppID != 0 && c.PrivateKeyPEM != "" }
+
+// UserAuthConfigured reports whether the App carries the OAuth client
+// credentials needed to verify installation ownership at connect time.
+func (c AppConfig) UserAuthConfigured() bool { return c.ClientID != "" && c.ClientSecret != "" }
 
 // RuntimeInstallationPermissions is the least-privilege permission subset an
 // installation token minted for iterion is pinned to — exactly what the forge
