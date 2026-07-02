@@ -13,7 +13,8 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 ## 2026-07-02 — validated the launch-time per-node model/backend override (mono fable/sonnet) (run 019f2236)
 
 - Status: **validated** (feature end-to-end); review loop **converged** (2 clean
-  passes, `stop=true`, no oscillation). Run itself left running into verify_build.
+  passes, `stop=true`, no oscillation); run **finished** in 12.8m (verify_build on
+  sonnet-5 + verify_run passed).
 - Versions: bot whole-improve-loop v0.5.0 · iterion `e64513b` (main)
 - Method: `iterion run` (CLI, background, static binary), sandbox
   `iterion-sandbox-full:edge`, worktree:auto, store = workspace `.iterion`
@@ -26,8 +27,14 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
   ```
 - Result: reviewer (fable-5) approved the chunk with a genuine agentic review
   (read both files in full, probed 2 edge cases, no blockers, high confidence);
-  2nd pass same → `clean_streak=2` → `stop`. verify_build then ran on sonnet-5.
-  No code changes (reviewtopology is clean) → nothing to commit; main untouched.
+  2nd pass same → `clean_streak=2` → `stop`. verify_build (sonnet-5) + verify_run
+  passed. No fix to the scoped `pkg/reviewtopology` (it was clean), but
+  `commit_changes` swept up one incidental change the engine made in the worktree:
+  a **bot-catalog regeneration** (`iterion-bot-catalog.md`, 5/5, adding the
+  `review_mode`/`mono_family` vars — the committed catalog had gone stale since
+  ADR-052). Landed on storage branch `iterion/run/feral-jive-auroraflux-9e69`
+  (`24fa534`, `--merge-into none`); verified byte-identical to `iterion bots
+  regen-catalog` and **rapatriated to main** @22e5aae03.
 - **Value**: proved the per-node/-group override
   (`pkg/backend/model.ModelOverrides`, studio dropdowns / CLI `--model`/`--backend`
   / HTTP `model_overrides`). Log evidence: `Delegation started [reviewer_gpt]:
@@ -50,10 +57,11 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 - Misses / bot quirks (unrelated to the feature): `verify_build` invokes a
   `Skill verify-build` that the bundle doesn't ship → non-fatal tool error, the
   sonnet agent recovers and runs the build directly.
-- Lessons for next run: consider making `reviewtopology` treat a usable
-  `claude_code` forfait as a "claude" family so mono/auto can pick claude without
-  a manual backend override; and let an explicit `--var mono_family` win over the
-  resolver (today it's always overwritten).
+- Lessons for next run: **DONE** — `reviewtopology` now treats a usable
+  `claude_code` forfait as a "claude" family (@7d44eaea7), so on a forfait-only
+  host `--review-mode mono` alone routes to claude (no manual backend override
+  needed). Still open: let an explicit `--var mono_family` win over the resolver
+  (today `InjectIfDeclared` always overwrites it).
 
 ## 2026-07-01 — dogfood surfaced (and fixed) a claw+gpt explore-mode façade; grounded reviews restored (runs 019f1cf7, 019f1d24)
 
