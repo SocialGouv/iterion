@@ -449,6 +449,15 @@ type Runner struct {
 	// stamp Event.LogOffset. See runlog_writer.go.
 	logWritersMu sync.Mutex
 	logWriters   map[string]*runLogWriter
+
+	// runEngines maps an in-flight run to its Engine so the store's
+	// ActiveDurationFn hook (activeDurationTotal) can stamp
+	// Event.ActiveMs with the run's monotonic SharedBudget elapsed —
+	// the cloud twin of the runview Service wiring. Guarded by its own
+	// mutex (the engine is registered slightly later than the log
+	// writer, in processOne after construction). See runlog_writer.go.
+	runEnginesMu sync.Mutex
+	runEngines   map[string]*runtime.Engine
 }
 
 type inFlight struct {
@@ -541,6 +550,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// the runview Service wiring, powering per-node log slicing.
 	if setter, ok := r.cfg.Store.(logPositionSetter); ok {
 		setter.SetLogPositionFn(r.logWriterTotal)
+	}
+	// Same seam: stamp Event.ActiveMs from the run's monotonic
+	// SharedBudget elapsed so the studio active timer excludes OS-suspend.
+	if setter, ok := r.cfg.Store.(activeDurationSetter); ok {
+		setter.SetActiveDurationFn(r.activeDurationTotal)
 	}
 
 	for {
@@ -1115,6 +1129,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		engineOpts = append(engineOpts, runtime.WithForceResume(true))
 	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
+	// Publish the engine so the store's Event.ActiveMs stamping reads
+	// this run's monotonic active elapsed; drop it when the run returns.
+	r.registerRunEngine(msg.RunID, engine)
+	defer r.unregisterRunEngine(msg.RunID)
 
 	var runErr error
 	if msg.Resume != nil {

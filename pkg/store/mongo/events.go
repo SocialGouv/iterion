@@ -52,6 +52,12 @@ func (s *Store) AppendEvent(ctx context.Context, runID string, evt store.Event) 
 	if evt.LogOffset == 0 {
 		evt.LogOffset = s.logPositionFor(runID)
 	}
+	// Stamp the run's monotonic active duration (engine SharedBudget
+	// elapsed) — the cloud twin of the filesystem store's ActiveMs
+	// stamping, powering the studio's suspend-excluded active timer.
+	if evt.ActiveMs == 0 {
+		evt.ActiveMs = s.activeDurationFor(runID)
+	}
 
 	var lastSeq int64
 	var lastErr error

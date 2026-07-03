@@ -23,11 +23,22 @@ export function IterationCrumb({
   const idx = executions.findIndex((e) => e.execution_id === exec.execution_id);
   const position = idx >= 0 ? idx + 1 : 1;
   const total = executions.length;
+  // Primary number is the SEMANTIC loop iteration (loop_iteration =
+  // review_loop.iteration), which is exactly what the runtime stamps on
+  // each execution and prints in its `node#N` log label. The physical
+  // execution index (position) drifts ABOVE it because a resume RE-RUNS
+  // a mid-loop iteration, so the same loop_iteration can appear twice in
+  // `executions`. Showing loop_iteration makes the crumb next to a
+  // reviewer that logged `#48` read 48, not 49. For a plain single non-
+  // loop execution (loop_iteration 0, one record) we keep the terse
+  // 1-based position so common nodes still read "iter: 1", not "iter: 0".
+  const isLooped = total > 1 || exec.loop_iteration > 0;
+  const iterLabel = isLooped ? exec.loop_iteration : position;
   // Declared before the single-execution early return so the hook is
   // unconditional (rules-of-hooks); unused when total <= 1.
   const [open, setOpen] = useState(false);
   if (total <= 1) {
-    return <span>iter: {position}</span>;
+    return <span title={`execution ${position} of ${total}`}>iter: {iterLabel}</span>;
   }
   return (
     <Popover
@@ -40,9 +51,9 @@ export function IterationCrumb({
         <button
           type="button"
           className="hover:text-fg-default underline-offset-2 hover:underline"
-          title="Jump to a different iteration"
+          title={`Jump to a different iteration · execution ${position} of ${total}`}
         >
-          iter: {position}/{total}
+          iter: {iterLabel}
         </button>
       }
     >
@@ -65,6 +76,9 @@ export function IterationCrumb({
                 }`}
               >
                 <span className="font-mono w-6 shrink-0">#{i + 1}</span>
+                <span className="text-fg-subtle shrink-0">
+                  iter {e.loop_iteration}
+                </span>
                 <StatusBadge status={e.status} />
                 {duration && (
                   <span className="text-fg-subtle ml-auto">{duration}</span>

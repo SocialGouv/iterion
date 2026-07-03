@@ -251,4 +251,18 @@ type Event struct {
 	// log up to this offset to show "what was logged at the moment
 	// this event fired" without parsing log line timestamps.
 	LogOffset int64 `json:"log_offset,omitempty" bson:"log_offset,omitempty"`
+	// ActiveMs is the run's monotonic active duration (milliseconds
+	// since run start) at the moment this event was persisted, sourced
+	// from the engine's SharedBudget CLOCK_MONOTONIC clock — NOT from
+	// wall-clock event timestamps. This is the engine-authoritative
+	// active time: OS-suspend windows are EXCLUDED (the monotonic clock
+	// freezes while the machine sleeps) while long LLM thinking is
+	// counted, and prior active time is preserved across resume. The
+	// runview snapshot reducer treats a non-zero value as the
+	// authoritative base for the displayed active_duration_ms, falling
+	// back to the (suspend-inflating) wall-clock accumulation only for
+	// pre-fix events that carry 0. Stamped by the store when the
+	// runview Service / runner wired a callback; 0 when unknown (no
+	// callback, or the workflow declares no budget).
+	ActiveMs int64 `json:"active_ms,omitempty" bson:"active_ms,omitempty"`
 }

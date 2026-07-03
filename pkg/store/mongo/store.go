@@ -103,6 +103,11 @@ type Store struct {
 	// filesystem store's hook). nil disables stamping. See runlogs.go.
 	logPositionMu sync.Mutex
 	logPositionFn store.LogPositionFn
+	// activeDurationFn stamps Event.ActiveMs at AppendEvent time from the
+	// runner's per-run engine monotonic SharedBudget elapsed (the cloud
+	// twin of the filesystem store's hook). Guarded by logPositionMu.
+	// nil disables stamping. See runlogs.go.
+	activeDurationFn store.ActiveDurationFn
 }
 
 // New connects to Mongo, pings to validate credentials, then ensures

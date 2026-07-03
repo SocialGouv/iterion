@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -784,5 +785,120 @@ func TestSnapshotReducer_TimerSetRunPreservesCounters(t *testing.T) {
 	}
 	if snap.Run.CurrentRunStart != nil {
 		t.Errorf("CurrentRunStart = %v, want nil preserved (run is paused)", snap.Run.CurrentRunStart)
+	}
+}
+
+// evtAt builds an event with an explicit timestamp + monotonic ActiveMs
+// stamp, so the active-duration tests can decouple wall-clock from the
+// engine's monotonic clock (the whole point of BUG A).
+func evtAt(seq int64, t store.EventType, node string, tsSec int64, activeMs int64, data map[string]interface{}) *store.Event {
+	return &store.Event{
+		Seq:       seq,
+		Timestamp: time.Unix(tsSec, 0).UTC(),
+		Type:      t,
+		NodeID:    node,
+		ActiveMs:  activeMs,
+		Data:      data,
+	}
+}
+
+// TestSnapshotReducer_ActiveDurationMonotonicExcludesSuspend is the BUG A
+// regression: when events carry the engine's monotonic Event.ActiveMs,
+// the reducer must report that value and MUST NOT inflate it by a large
+// wall-clock timestamp gap between two events (an OS suspend). Here the
+// machine "slept" ~6h between two events but the monotonic clock only
+// advanced 500ms — the displayed active duration must track the 500ms,
+// not the 6h.
+func TestSnapshotReducer_ActiveDurationMonotonicExcludesSuspend(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	const t0 = int64(1_000_000)
+	events := []*store.Event{
+		evtAt(0, store.EventRunStarted, "", t0, 0, nil),
+		evtAt(1, store.EventNodeStarted, "work", t0+1, 1000,
+			map[string]interface{}{"kind": "agent"}),
+		// 6h wall-clock gap (suspend) but only +500ms monotonic active.
+		evtAt(2, store.EventLLMRequest, "work", t0+1+6*3600, 1500, nil),
+		evtAt(3, store.EventRunFinished, "", t0+2+6*3600, 2000, nil),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	snap := b.Snapshot()
+	if got := snap.Run.ActiveDurationMs; got != 2000 {
+		t.Fatalf("ActiveDurationMs = %d, want 2000 (monotonic) — a wall-clock derivation would report ~%d", got, 6*3600*1000)
+	}
+	if snap.Run.CurrentRunStart != nil {
+		t.Errorf("CurrentRunStart = %v, want nil after run_finished", snap.Run.CurrentRunStart)
+	}
+}
+
+// TestSnapshotReducer_ActiveDurationWallClockFallbackLegacy proves the
+// pre-fix behaviour is preserved for OLD runs whose events carry no
+// ActiveMs (all zero): the reducer still sums the wall-clock event
+// windows so historical runs render sensibly.
+func TestSnapshotReducer_ActiveDurationWallClockFallbackLegacy(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		evt(1, store.EventNodeStarted, "", "a", map[string]interface{}{"kind": "agent"}),
+		evt(5, store.EventRunFinished, "", "", nil),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	snap := b.Snapshot()
+	// evt() stamps ts = seq seconds; run_started@0 → run_finished@5 = 5s.
+	if got := snap.Run.ActiveDurationMs; got != 5000 {
+		t.Fatalf("legacy ActiveDurationMs = %d, want 5000 (wall-clock fallback)", got)
+	}
+}
+
+// TestSnapshotReducer_LoopIndicatorSemanticNotExecCount is the addendum
+// regression: the run-level Loops indicator must report the SEMANTIC max
+// loop iteration (e.g. 48, matching the runtime's node#N log label), NOT
+// the count of node executions — resume re-executes mid-loop iterations,
+// so the physical execution count drifts above the true loop counter.
+func TestSnapshotReducer_LoopIndicatorSemanticNotExecCount(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
+	// run_started carries the declared bound (as float64, mimicking the
+	// JSON round-trip events undergo on replay).
+	b.Apply(&store.Event{
+		Seq:  0,
+		Type: store.EventRunStarted,
+		Data: map[string]interface{}{"loops": map[string]interface{}{"review_loop": float64(50)}},
+	})
+	seq := int64(1)
+	fire := func(iter int) {
+		b.Apply(&store.Event{
+			Seq:    seq,
+			Type:   store.EventNodeStarted,
+			NodeID: "reviewer",
+			Data: map[string]interface{}{
+				"kind":           "judge",
+				"iteration":      iter,
+				"iteration_path": "review_loop=" + strconv.Itoa(iter),
+			},
+		})
+		seq++
+	}
+	// Iterations 0..48 (49 distinct), THEN a resume re-runs 45..48 again
+	// (4 re-executions). Total node_started events = 53, but the true
+	// loop counter only ever reaches 48.
+	for i := 0; i <= 48; i++ {
+		fire(i)
+	}
+	for i := 45; i <= 48; i++ {
+		fire(i)
+	}
+	loops := b.Snapshot().Run.Loops
+	p, ok := loops["review_loop"]
+	if !ok {
+		t.Fatalf("Loops missing review_loop; got %+v", loops)
+	}
+	if p.Current != 48 {
+		t.Errorf("Loops[review_loop].Current = %d, want 48 (semantic max, not the 53 node_started events)", p.Current)
+	}
+	if p.Max != 50 {
+		t.Errorf("Loops[review_loop].Max = %d, want 50 (declared bound)", p.Max)
 	}
 }

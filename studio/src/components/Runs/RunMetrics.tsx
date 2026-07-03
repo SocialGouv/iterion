@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { useRunMetrics } from "@/hooks/useRunMetrics";
+import { useRunStore } from "@/store/run";
 import { LiveDot } from "@/components/ui/LiveDot";
 import { formatCost, formatMs, formatTokens } from "@/lib/format";
 
@@ -34,6 +35,10 @@ export const STALL_DANGER_SECONDS = 300;
 export default function RunMetrics({ active, onJumpToFailed, bare = false }: Props) {
   const nowMs = useNow(active ? 1000 : null);
   const m = useRunMetrics(nowMs);
+  // Run-level "real loops" indicator: the SEMANTIC per-named-loop
+  // iteration counter (matching the `node#N` log label), distinct from
+  // the per-node execution count. Absent for runs with no named loops.
+  const loops = useRunStore((s) => s.snapshot?.run.loops);
 
   // Staleness — surface the silent-stuck case the 2026-05-21 internet
   // outage exposed. When a run is `running` but the backend has stopped
@@ -126,6 +131,25 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
       {m.llmStepCount > 0 && (
         <Metric label="llm steps" value={String(m.llmStepCount)} />
       )}
+      {loops &&
+        Object.entries(loops)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, p]) => (
+            <span
+              key={name}
+              className="inline-flex items-center gap-1"
+              title={`Named loop "${name}" is on iteration ${p.current}${
+                p.max ? ` of a ${p.max}-iteration cap` : " (unbounded)"
+              }. This is the semantic loop counter (matches the run's node#N log label), not the per-node execution count.`}
+              aria-label={`loop ${name}: ${p.current}${p.max ? ` of ${p.max}` : ""}`}
+            >
+              <span className="text-fg-subtle">⟳ {name}</span>
+              <span className="font-mono font-semibold text-fg-default">
+                {p.current}
+                {p.max ? `/${p.max}` : ""}
+              </span>
+            </span>
+          ))}
       <Metric label="nodes" value={String(m.nodeCount)} />
       {m.branchCountActive > 0 && (
         <Metric

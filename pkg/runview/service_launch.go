@@ -390,10 +390,14 @@ func (s *Service) spawnRun(
 		opts = append(opts, runtime.WithPauseSignal(pauseCh))
 	}
 	eng := runtime.New(wf, s.store, executor, opts...)
+	// Publish the engine so the store's Event.ActiveMs stamping can read
+	// this run's monotonic active elapsed. Removed when the goroutine exits.
+	s.registerRunEngine(runID, eng)
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer s.unregisterRunEngine(runID)
 		defer s.dropRunLog(runID)
 		defer s.broker.CloseRun(runID)
 		defer s.manager.Deregister(runID)

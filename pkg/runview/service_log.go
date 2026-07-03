@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
 // ensureLogSource guarantees a run.log tailer is feeding a live RunLogBuffer
@@ -85,6 +86,37 @@ func (s *Service) logPositionForRun(runID string) int64 {
 		return 0
 	}
 	return buf.Total()
+}
+
+// registerRunEngine publishes the live Engine for runID so
+// activeDurationForRun can read its monotonic active elapsed. Shares
+// the runLogs lifecycle + mutex.
+func (s *Service) registerRunEngine(runID string, eng *runtime.Engine) {
+	s.runLogsMu.Lock()
+	s.runEngines[runID] = eng
+	s.runLogsMu.Unlock()
+}
+
+// unregisterRunEngine drops the Engine for runID once its goroutine exits.
+func (s *Service) unregisterRunEngine(runID string) {
+	s.runLogsMu.Lock()
+	delete(s.runEngines, runID)
+	s.runLogsMu.Unlock()
+}
+
+// activeDurationForRun is the store.ActiveDurationFn: returns the run's
+// monotonic active duration in ms (engine SharedBudget elapsed), or 0
+// when the run isn't held by this process or declares no budget. The
+// value is CLOCK_MONOTONIC-derived (suspend-excluded) — never
+// recomputed from wall-clock timestamps.
+func (s *Service) activeDurationForRun(runID string) int64 {
+	s.runLogsMu.RLock()
+	eng := s.runEngines[runID]
+	s.runLogsMu.RUnlock()
+	if eng == nil {
+		return 0
+	}
+	return eng.ActiveElapsed().Milliseconds()
 }
 
 // prepareRunLog creates a per-run log buffer (also persisting to

@@ -332,6 +332,12 @@ type Service struct {
 	// runlog.go and the /api/runs/{id}/log endpoint.
 	runLogsMu sync.RWMutex
 	runLogs   map[string]*RunLogBuffer
+	// runEngines holds the live in-process Engine for each active run so
+	// the active-duration stamping callback (activeDurationForRun) can
+	// read the run's monotonic SharedBudget elapsed. Registered in
+	// spawnRun, removed when the run goroutine exits. Same lifecycle as
+	// runLogs, so it shares runLogsMu.
+	runEngines map[string]*runtime.Engine
 
 	// draining is set by Drain at the start of graceful shutdown.
 	// Once true, Launch and Resume early-return runtime.ErrServerDraining
@@ -539,6 +545,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		manager:          NewManager(),
 		recoveryDispatch: recovery.Dispatch(recovery.DefaultRecipes()),
 		runLogs:          make(map[string]*RunLogBuffer),
+		runEngines:       make(map[string]*runtime.Engine),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -573,6 +580,9 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	// buffer to attach.
 	if fs, ok := s.store.(*store.FilesystemRunStore); ok {
 		fs.SetLogPositionFn(s.logPositionForRun)
+		// Same seam: stamp Event.ActiveMs from the run's monotonic
+		// SharedBudget so the studio active timer excludes OS-suspend.
+		fs.SetActiveDurationFn(s.activeDurationForRun)
 	}
 
 	// Session-board curation needs an on-disk dir to persist specs

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -91,6 +92,43 @@ func (r *Runner) logWriterTotal(runID string) int64 {
 // types.
 type logPositionSetter interface {
 	SetLogPositionFn(store.LogPositionFn)
+}
+
+// registerRunEngine / unregisterRunEngine publish the in-flight Engine
+// so activeDurationTotal can read its monotonic active elapsed.
+func (r *Runner) registerRunEngine(runID string, eng *runtime.Engine) {
+	r.runEnginesMu.Lock()
+	if r.runEngines == nil {
+		r.runEngines = make(map[string]*runtime.Engine)
+	}
+	r.runEngines[runID] = eng
+	r.runEnginesMu.Unlock()
+}
+
+func (r *Runner) unregisterRunEngine(runID string) {
+	r.runEnginesMu.Lock()
+	delete(r.runEngines, runID)
+	r.runEnginesMu.Unlock()
+}
+
+// activeDurationTotal is the store.ActiveDurationFn the runner installs:
+// the run's monotonic active duration in ms (engine SharedBudget
+// elapsed), 0 when no engine is active for that run or it declares no
+// budget. Monotonic-derived (suspend-excluded), never wall-clock.
+func (r *Runner) activeDurationTotal(runID string) int64 {
+	r.runEnginesMu.Lock()
+	eng := r.runEngines[runID]
+	r.runEnginesMu.Unlock()
+	if eng == nil {
+		return 0
+	}
+	return eng.ActiveElapsed().Milliseconds()
+}
+
+// activeDurationSetter matches the SetActiveDurationFn hook both store
+// backends expose, mirroring logPositionSetter.
+type activeDurationSetter interface {
+	SetActiveDurationFn(store.ActiveDurationFn)
 }
 
 // newRunLogWriter starts the background flusher. seed is the absolute

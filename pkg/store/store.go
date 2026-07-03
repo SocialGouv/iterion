@@ -272,6 +272,11 @@ type FilesystemRunStore struct {
 	// lifecycle outlives any single store option pass.
 	logPositionMu sync.RWMutex
 	logPositionFn LogPositionFn
+	// activeDurationFn is stamped onto Event.ActiveMs at AppendEvent
+	// time; guarded by logPositionMu (same lifecycle — both are wired
+	// once by the runview Service after the engine is ready). See
+	// SetActiveDurationFn.
+	activeDurationFn ActiveDurationFn
 }
 
 // LogPositionFn is the callback signature the store uses to stamp
@@ -279,6 +284,14 @@ type FilesystemRunStore struct {
 // buffer at the moment of invocation; 0 when no buffer exists yet
 // for runID (early bootstrap events before the buffer is created).
 type LogPositionFn func(runID string) int64
+
+// ActiveDurationFn is the callback signature the store uses to stamp
+// Event.ActiveMs. Returns the run's monotonic active duration in
+// milliseconds (engine SharedBudget elapsed), or 0 when unknown (run
+// not held by this process, or the workflow declares no budget). The
+// value MUST be monotonic-derived (CLOCK_MONOTONIC, suspend-excluded),
+// never recomputed from wall-clock timestamps.
+type ActiveDurationFn func(runID string) int64
 
 // StoreOption configures a FilesystemRunStore.
 type StoreOption func(*FilesystemRunStore)
@@ -297,6 +310,17 @@ func WithLogger(l *iterlog.Logger) StoreOption {
 func (s *FilesystemRunStore) SetLogPositionFn(fn LogPositionFn) {
 	s.logPositionMu.Lock()
 	s.logPositionFn = fn
+	s.logPositionMu.Unlock()
+}
+
+// SetActiveDurationFn installs (or replaces) the callback AppendEvent
+// uses to stamp Event.ActiveMs with the run's monotonic active duration
+// (engine SharedBudget elapsed). Same lifecycle rationale as
+// SetLogPositionFn — wired by the runview Service once the per-run
+// engine is registered. Pass nil to disable stamping.
+func (s *FilesystemRunStore) SetActiveDurationFn(fn ActiveDurationFn) {
+	s.logPositionMu.Lock()
+	s.activeDurationFn = fn
 	s.logPositionMu.Unlock()
 }
 
@@ -725,6 +749,19 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 		s.logPositionMu.RUnlock()
 		if fn != nil {
 			evt.LogOffset = fn(runID)
+		}
+	}
+
+	// Stamp the run's monotonic active duration (engine SharedBudget
+	// elapsed) so the studio can display suspend-excluded active time
+	// instead of re-deriving it from wall-clock event windows. Only
+	// when the caller didn't pre-fill it (Mongo replays / test events).
+	if evt.ActiveMs == 0 {
+		s.logPositionMu.RLock()
+		afn := s.activeDurationFn
+		s.logPositionMu.RUnlock()
+		if afn != nil {
+			evt.ActiveMs = afn(runID)
 		}
 	}
 

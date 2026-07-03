@@ -176,3 +176,26 @@ func (s *Store) logPositionFor(runID string) int64 {
 	}
 	return fn(runID)
 }
+
+// SetActiveDurationFn installs the callback AppendEvent uses to stamp
+// Event.ActiveMs — the cloud twin of FilesystemRunStore's hook. The
+// runner wires it to its per-run engine's monotonic SharedBudget
+// elapsed. Pass nil to disable stamping.
+func (s *Store) SetActiveDurationFn(fn store.ActiveDurationFn) {
+	s.logPositionMu.Lock()
+	s.activeDurationFn = fn
+	s.logPositionMu.Unlock()
+}
+
+// activeDurationFor returns the run's monotonic active duration in ms,
+// or 0 when no callback is installed (server pods, tests) or the run
+// isn't held by this process.
+func (s *Store) activeDurationFor(runID string) int64 {
+	s.logPositionMu.Lock()
+	fn := s.activeDurationFn
+	s.logPositionMu.Unlock()
+	if fn == nil {
+		return 0
+	}
+	return fn(runID)
+}

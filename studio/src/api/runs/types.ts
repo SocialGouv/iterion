@@ -234,6 +234,19 @@ export interface RunHeader {
   // reads it as the primary watch-list source; absent for legacy runs
   // that predate the field (the UI then falls back to event derivation).
   watched_issue_ids?: string[];
+  // loops is the run-level "real loops" indicator: one entry per
+  // declared named loop (e.g. "review_loop"), reporting the SEMANTIC
+  // iteration counter (matching the runtime's `node#N` log label), NOT
+  // the count of node executions. Absent for runs with no named loops.
+  loops?: Record<string, RunLoopProgress>;
+}
+
+// RunLoopProgress reports a named loop's semantic progress: the current
+// iteration counter and its declared bound (max 0/absent = unbounded or
+// unknown).
+export interface RunLoopProgress {
+  current: number;
+  max?: number;
 }
 
 export interface RunSource {

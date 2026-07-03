@@ -9,6 +9,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,6 +133,23 @@ type RunHeader struct {
 	// WatchPanel reads it as the primary watch-list source, falling back
 	// to its event-derived list for legacy runs that predate the field.
 	WatchedIssueIDs []string `json:"watched_issue_ids,omitempty"`
+	// Loops is the run-level "real loops" indicator: one entry per
+	// declared named loop (e.g. "review_loop"), reporting the SEMANTIC
+	// iteration counter (matching the runtime's `node#N` log label and
+	// review_loop.iteration), NOT the count of node executions — a
+	// resume re-runs a mid-loop iteration, so the physical execution
+	// count drifts above the true loop counter. Current is the max
+	// iteration observed across the loop's node_started events
+	// (iteration_path); Max is the declared bound (0 = unbounded /
+	// expression cap / unknown). Absent for runs with no named loops.
+	Loops map[string]RunLoopProgress `json:"loops,omitempty"`
+}
+
+// RunLoopProgress reports a named loop's semantic progress at the run
+// level: the current iteration counter and its declared bound.
+type RunLoopProgress struct {
+	Current int `json:"current"`
+	Max     int `json:"max,omitempty"`
 }
 
 // RunSnapshot is the structured view returned by GET /api/runs/{id} and
@@ -194,6 +212,21 @@ type SnapshotBuilder struct {
 	// lastResumedSeq (no resume happened during the replay), so the
 	// existing.LastSeq comparison fails and the guard still kicks in.
 	lastResumedSeq int64
+	// monotonicActive is set once any applied event carries a non-zero
+	// Event.ActiveMs (the engine's monotonic SharedBudget elapsed). In
+	// that mode the authoritative active-duration base is adopted
+	// directly from ActiveMs and accumulateActive stops summing
+	// wall-clock event windows (which over-counted OS-suspend time —
+	// BUG A). Legacy runs (all ActiveMs == 0) keep the wall-clock path.
+	monotonicActive bool
+	// loopCurrent / loopBound back the run-level "real loops" indicator:
+	// the max SEMANTIC iteration seen per named loop (from each
+	// node_started's iteration_path — dedup-safe against resume
+	// re-executions because it's a max, not a count) and the declared
+	// bound (from run_started's `loops` payload). Combined into
+	// RunHeader.Loops on Snapshot.
+	loopCurrent map[string]int
+	loopBound   map[string]int
 }
 
 // NewSnapshotBuilder seeds a builder from the persisted Run metadata.
@@ -206,6 +239,8 @@ func NewSnapshotBuilder(run *store.Run) *SnapshotBuilder {
 		lastExecID:     make(map[string]map[string]string),
 		lastSeq:        NoEventsSeq,
 		lastResumedSeq: NoEventsSeq,
+		loopCurrent:    make(map[string]int),
+		loopBound:      make(map[string]int),
 	}
 	if run != nil {
 		b.header = headerFromRun(run)
@@ -246,6 +281,21 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 	}
 	b.lastSeq = evt.Seq
 
+	// Authoritative monotonic active-duration base (BUG A fix): when the
+	// engine stamped Event.ActiveMs (SharedBudget CLOCK_MONOTONIC
+	// elapsed, suspend-excluded), adopt it directly instead of summing
+	// wall-clock event windows, which counted OS-suspend time as active.
+	// Monotonic within a run and across resume, so max() is just a guard
+	// against a cosmetic live tail that briefly ran ahead. Once seen,
+	// the run is in monotonic mode (accumulateActive stops adding
+	// wall-clock windows); legacy runs (all ActiveMs == 0) are unchanged.
+	if evt.ActiveMs > 0 {
+		b.monotonicActive = true
+		if evt.ActiveMs > b.header.ActiveDurationMs {
+			b.header.ActiveDurationMs = evt.ActiveMs
+		}
+	}
+
 	branch := evt.BranchID
 	if branch == "" {
 		branch = MainBranch
@@ -267,6 +317,7 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 	case store.EventRunResumed:
 		b.handleRunResumed(evt)
 	case store.EventRunStarted:
+		b.recordLoopBounds(evt)
 		b.anchorActive(evt.Timestamp)
 	case store.EventRunFinished:
 		b.accumulateActive(evt.Timestamp)
@@ -299,11 +350,35 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 			execs = append(execs, *e)
 		}
 	}
+	header := b.header
+	header.Loops = b.buildLoopProgress()
 	return &RunSnapshot{
-		Run:        b.header,
+		Run:        header,
 		Executions: execs,
 		LastSeq:    b.lastSeq,
 	}
+}
+
+// buildLoopProgress assembles the run-level named-loop indicator from
+// the observed per-loop max iteration (loopCurrent) and declared bounds
+// (loopBound). Returns nil when no named loop has been observed, so
+// runs without loops (and legacy runs) render nothing. The union of
+// keys is taken so a bound with no observed iteration yet still shows
+// (current 0), and vice-versa.
+func (b *SnapshotBuilder) buildLoopProgress() map[string]RunLoopProgress {
+	if len(b.loopCurrent) == 0 && len(b.loopBound) == 0 {
+		return nil
+	}
+	out := make(map[string]RunLoopProgress, len(b.loopCurrent))
+	for name, cur := range b.loopCurrent {
+		out[name] = RunLoopProgress{Current: cur, Max: b.loopBound[name]}
+	}
+	for name, max := range b.loopBound {
+		if _, seen := out[name]; !seen {
+			out[name] = RunLoopProgress{Current: 0, Max: max}
+		}
+	}
+	return out
 }
 
 // LastSeq exposes the highest seq applied so far so live subscribers
@@ -330,6 +405,9 @@ func (b *SnapshotBuilder) handleNodeStarted(evt *store.Event, branch string) {
 	if evt.NodeID == "" {
 		return
 	}
+	// Run-level loop indicator: fold this node's iteration_path into the
+	// per-named-loop max counter (the semantic loop iteration).
+	b.recordLoopIteration(evt)
 	iter := b.resolveIteration(branch, evt)
 	// Exec-id disambiguation: when the runtime stamps `iteration_path`
 	// (a stable encoding of EVERY containing loop's counter) we key on
@@ -586,10 +664,78 @@ func (b *SnapshotBuilder) accumulateActive(at time.Time) {
 	if b.header.CurrentRunStart == nil {
 		return
 	}
-	if delta := at.Sub(*b.header.CurrentRunStart); delta > 0 {
-		b.header.ActiveDurationMs += delta.Milliseconds()
+	// In monotonic mode the authoritative base is already set from
+	// Event.ActiveMs; only freeze the live tail (clear the anchor).
+	// Adding the wall-clock window here would re-introduce the suspend
+	// over-count BUG A fixes. Legacy runs (no ActiveMs) still sum it.
+	if !b.monotonicActive {
+		if delta := at.Sub(*b.header.CurrentRunStart); delta > 0 {
+			b.header.ActiveDurationMs += delta.Milliseconds()
+		}
 	}
 	b.header.CurrentRunStart = nil
+}
+
+// recordLoopBounds folds the run_started `loops` payload (name → max
+// iterations) into loopBound. No-op when the event carries no loops
+// (runs with no named loops, or legacy events pre-dating the field).
+func (b *SnapshotBuilder) recordLoopBounds(evt *store.Event) {
+	raw, ok := evt.Data["loops"]
+	if !ok {
+		return
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return
+	}
+	for name, v := range m {
+		b.loopBound[name] = toInt(v)
+	}
+}
+
+// recordLoopIteration folds a node_started's iteration_path
+// ("loop=count;loop2=count2") into loopCurrent, keeping the MAX counter
+// seen per named loop. Using max (not a count of executions) is what
+// makes the indicator report the semantic loop iteration (e.g. 48) and
+// stay immune to resume re-executions that repeat the same iteration.
+func (b *SnapshotBuilder) recordLoopIteration(evt *store.Event) {
+	raw, ok := evt.Data["iteration_path"]
+	if !ok {
+		return
+	}
+	path, ok := raw.(string)
+	if !ok || path == "" {
+		return
+	}
+	for _, part := range strings.Split(path, ";") {
+		eq := strings.IndexByte(part, '=')
+		if eq <= 0 {
+			continue
+		}
+		name := part[:eq]
+		count, err := strconv.Atoi(part[eq+1:])
+		if err != nil {
+			continue
+		}
+		if count > b.loopCurrent[name] {
+			b.loopCurrent[name] = count
+		}
+	}
+}
+
+// toInt coerces a JSON-decoded numeric (int / int64 / float64) to int;
+// 0 for anything else. Event.Data round-trips through JSON so integer
+// payloads surface as float64 on replay.
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }
 
 // If a window is already open (rare race like a missing pause event),

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/backend/recipe"
@@ -108,6 +109,35 @@ type Engine struct {
 	callbackAnswerNode       string                // optional: node whose latest artifact holds the run's final answer; set via WithCallback
 	boardMCPHandler          http.Handler          // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
 	subbotRunner             SubbotRunner          // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
+
+	// activeBudget points at the SharedBudget of the run currently
+	// executing in this engine, published atomically by newRunState so an
+	// out-of-band observer (the runview/runner active-duration stamping
+	// callback) can read the run's monotonic active elapsed without
+	// locking the run loop. nil until a run starts, and whenever the
+	// workflow declares no budget (then ActiveElapsed returns 0 and the
+	// studio falls back to the wall-clock display for that run). One run
+	// per engine, so a single slot suffices.
+	activeBudget atomic.Pointer[SharedBudget]
+}
+
+// ActiveElapsed returns the monotonic active time consumed by the run
+// currently executing in this engine, or 0 when no run is active or the
+// workflow declares no budget. The value comes from the run's
+// SharedBudget (CLOCK_MONOTONIC via startedAt): OS-suspend time is
+// EXCLUDED (the monotonic clock freezes while the machine sleeps), long
+// LLM thinking IS counted, and prior active time is preserved across
+// resume (Restore shifts startedAt back). This is the engine-
+// authoritative active-duration source the studio surfaces via
+// Event.ActiveMs, replacing the wall-clock event-window derivation that
+// miscounted suspend. Safe for concurrent use.
+func (e *Engine) ActiveElapsed() time.Duration {
+	b := e.activeBudget.Load()
+	if b == nil {
+		return 0
+	}
+	_, _, _, elapsed := b.Snapshot()
+	return elapsed
 }
 
 // SubbotRequest is the payload a SubbotNode hands to the host-supplied
@@ -266,7 +296,7 @@ func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, 
 // then overwrite specific fields (outputs, loop counters, vars, etc.)
 // from the persisted checkpoint.
 func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runState {
-	return &runState{
+	rs := &runState{
 		runID:              runID,
 		runInputs:          inputs,
 		outputs:            make(map[string]map[string]interface{}),
@@ -283,6 +313,34 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 		resourceSemaphores: buildResourceSemaphores(e.workflow.Resources, e.workflow.ResourceMembers),
 		events:             newRunEvents(),
 	}
+	// Publish the run's budget so the active-duration stamping callback
+	// (runview Service / runner) can read its monotonic elapsed. nil when
+	// the workflow declares no budget — ActiveElapsed then returns 0.
+	e.activeBudget.Store(rs.budget)
+	return rs
+}
+
+// loopBoundsPayload builds the run_started event payload carrying each
+// named loop's iteration bound (MaxIterations), so the runview snapshot
+// can render a run-level loop indicator (current/max). Returns nil when
+// the workflow has no declared loops (payload stays absent). Literal
+// caps only — expression / unbounded caps report 0 (max unknown), which
+// the studio renders as a bare current count.
+func loopBoundsPayload(wf *ir.Workflow) map[string]interface{} {
+	if wf == nil || len(wf.Loops) == 0 {
+		return nil
+	}
+	bounds := make(map[string]interface{}, len(wf.Loops))
+	for name, loop := range wf.Loops {
+		if loop == nil {
+			continue
+		}
+		bounds[name] = loop.MaxIterations
+	}
+	if len(bounds) == 0 {
+		return nil
+	}
+	return map[string]interface{}{"loops": bounds}
 }
 
 // leaseInputKey is the node-input key under which a node's acquired
