@@ -307,10 +307,10 @@ func writeMarker(path, hash string) error {
 	return nil
 }
 
-// overwriteFile replaces dst's content with src's content atomically
-// via a sibling temp + rename. Unlike copyFile which uses O_EXCL,
-// this is intended for the refresh path where we've confirmed it's
-// safe to clobber.
+// overwriteFile replaces dst's content with src's content via a durable
+// atomic write (store.WriteFileAtomic: write-temp → fsync → rename →
+// dir-fsync). Unlike copyFile which uses O_EXCL, this is intended for the
+// refresh path where we've confirmed it's safe to clobber.
 func overwriteFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -321,27 +321,12 @@ func overwriteFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("runtime/bundle: stat %s: %w", src, err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".tmp-*")
+	data, err := io.ReadAll(in)
 	if err != nil {
-		return fmt.Errorf("runtime/bundle: tempfile %s: %w", dst, err)
+		return fmt.Errorf("runtime/bundle: read %s: %w", src, err)
 	}
-	tmpName := tmp.Name()
-	if _, err := io.Copy(tmp, in); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("runtime/bundle: copy %s → %s: %w", src, tmpName, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("runtime/bundle: close %s: %w", tmpName, err)
-	}
-	if err := os.Chmod(tmpName, info.Mode().Perm()); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("runtime/bundle: chmod %s: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, dst); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("runtime/bundle: rename %s → %s: %w", tmpName, dst, err)
+	if err := store.WriteFileAtomic(dst, data, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("runtime/bundle: write %s → %s: %w", src, dst, err)
 	}
 	return nil
 }
