@@ -17,9 +17,6 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
-// DefaultProtocolVersion is the MCP version advertised by Iterion.
-const DefaultProtocolVersion = "2025-06-18"
-
 // ToolInfo is the MCP tool description returned by tools/list.
 type ToolInfo struct {
 	Name        string          `json:"name"`
