@@ -16,6 +16,7 @@ var runOpts struct {
 	timeout             time.Duration
 	logLevel            string
 	noInteractive       bool
+	skipMCPHealth       bool
 	varFlags            []string
 	modelFor            []string
 	backendFor          []string
@@ -55,6 +56,7 @@ var runCmd = &cobra.Command{
 			Timeout:             runOpts.timeout,
 			LogLevel:            runOpts.logLevel,
 			NoInteractive:       runOpts.noInteractive,
+			SkipMCPHealth:       runOpts.skipMCPHealth,
 			Background:          runOpts.background,
 			MergeInto:           runOpts.mergeInto,
 			BranchName:          runOpts.branchName,
@@ -101,6 +103,7 @@ func init() {
 	f.DurationVar(&runOpts.timeout, "timeout", 0, "Maximum run duration (e.g. 30s, 5m, 1h)")
 	f.StringVar(&runOpts.logLevel, "log-level", "", "Log verbosity: error, warn, info, debug, trace")
 	f.BoolVar(&runOpts.noInteractive, "no-interactive", false, "Don't prompt on TTY; exit on human pause")
+	f.BoolVar(&runOpts.skipMCPHealth, "skip-mcp-health", false, "Don't abort the run when an MCP server fails its startup health-check — log the failure as a warning and continue. Also enabled by ITERION_SKIP_MCP_HEALTH=1. Use when a declared MCP server (e.g. an HTTP-OAuth one) is unreachable/unauthorized in this environment but the run does not depend on it.")
 	f.BoolVar(&runOpts.background, "background", false, "Internal: managed-runner mode for the studio server (writes .pid, suppresses interactive prompts)")
 	_ = f.MarkHidden("background")
 	f.StringVar(&runOpts.mergeInto, "merge-into", "", "For worktree:auto runs, branch to merge into after the run (\"\"/\"current\"=current branch, \"none\"=skip, or a branch name)")

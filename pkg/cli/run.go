@@ -119,6 +119,21 @@ type RunOptions struct {
 	// (capped exponential backoff) and re-invokes resume in-process up to N
 	// times, re-using this run's exact overrides. See auto_resume.go.
 	AutoResume int
+	// SkipMCPHealth downgrades a failing MCP startup health-check from a
+	// fatal error to a warning: the check still runs (its diagnostics are
+	// logged) but a failure no longer aborts the run. Set by --skip-mcp-health
+	// or a truthy ITERION_SKIP_MCP_HEALTH env var. Useful when the project
+	// .mcp.json declares a server that is unreachable/unauthorized in this
+	// environment (e.g. an HTTP-OAuth MCP) but the run does not depend on it.
+	SkipMCPHealth bool
+}
+
+// skipMCPHealthFromEnv reports whether ITERION_SKIP_MCP_HEALTH is truthy, so
+// the toggle also applies without the CLI flag — e.g. to launcher scripts
+// that export it, and to any entry point that reuses RunRun.
+func skipMCPHealthFromEnv() bool {
+	v := os.Getenv("ITERION_SKIP_MCP_HEALTH")
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -244,7 +259,11 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 		}()
 	}
 	if err := runview.MCPHealthCheck(ctx, executor, wf.ActiveMCPServers); err != nil {
-		return err
+		if opts.SkipMCPHealth || skipMCPHealthFromEnv() {
+			logger.Warn("MCP health-check failed but tolerated (--skip-mcp-health / ITERION_SKIP_MCP_HEALTH): %v", err)
+		} else {
+			return err
+		}
 	}
 
 	// Wire the subbot runner so `subbot` nodes can run a child .bot as a
