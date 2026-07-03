@@ -4,14 +4,11 @@ Companion to the `whole_improve_loop` workflow ([`main.bot`](main.bot)).
 This is a **design journal**: what the mechanism is, why it is shaped this
 way, and what is still open.
 
-## What it does (ADR-057)
+## What it does — one agent, its natural flow, minimal framing
 
-`whole_improve_loop` runs an **axis-driven work-list sweep**:
-`improvement_prompt` is **THE AXIS** — one determined improvement applied
-across the whole codebase, **site by site, verified and committed**. It is
-the operator's own proven manual Claude Code loop (write a todo work-list,
-then apply + commit each item incrementally), amplified with a deterministic
-per-item build/test gate and cross-family review of every change.
+`whole_improve_loop` runs a whole-codebase improvement **campaign** on one
+axis. `improvement_prompt` is **THE AXIS** — one determined improvement
+applied everywhere it applies, **site by site, verified and committed**.
 
 Examples of an axis:
 
@@ -20,157 +17,135 @@ Examples of an axis:
 - `make every public function validate its inputs the same way`
 - `extract a store-agnostic streaming package`
 
-Each is **one axis applied to every matching site**, committed site-by-site —
-not "review each chunk for whatever is wrong". That open-ended review is what
-the **retired** chunked loop (ADR-011 + ADR-055) did; on a whole repo it
-never converged (there is always another local issue in the next chunk) and
-structurally could not produce a **global, cross-cutting** change, because no
-reviewer handed a slice ever held the whole system. See
-[docs/adr/057-axis-driven-work-list-sweep.md](../../docs/adr/057-axis-driven-work-list-sweep.md)
-for the full rationale.
+The mechanism is deliberately **minimal**: give ONE capable agent a mission +
+standing autonomy and let it work in its natural flow — the way a productive
+human-driven Claude Code session actually looks
+([docs/references/productive-session-patterns.md](../../docs/references/productive-session-patterns.md)):
+a **living todo list** born from a brief exploration (never frozen upfront
+phases), and for each site the repeated unit **locate → smallest change →
+build → test → COMMIT**, a few edits per commit, validation *before* the
+commit, committing each site **as it finishes** (never batch).
+
+### Why v2 replaced the v1 axis-sweep
+
+v1 (ADR-057) was an axis-driven work-list **sweep**: a ~16-node graph
+(`enumerate → next_item → transform → verify → review → commit → advance →
+re_enumerate`) plus a persisted `worklist.json` + cursor. Two things broke:
+
+- **It over-framed the work.** The rigid multi-node graph fought the agent's
+  native productivity — the productive-session data is blunt: *"the deficit is
+  framing, not capability"*, *"once framed, a campaign runs itself"*. A capable
+  agent works better as one flow than as an assembly line of single-step nodes.
+- **Its blocking upfront `enumerate` timed out on large repos.** An exhaustive
+  whole-repo scan *before any work* is exactly the wrong opening; the human
+  pattern explores briefly, then starts committing.
+
+v2 keeps what the data says matters — the verified per-site commit cadence
+(G8), the deterministic build/test gate (rule 8), the baseline (G5), the
+termination contract (G2) — and drops the graph machinery around it.
 
 ## The graph
 
 ```
-next_item ─(needs_enumerate)─▶ enumerate ─┐   (writes the ordered work-list)
-    ▲                                       │
-    │  (has an item)                        ▼
-    ├───────────────────────────────▶ transform  (apply the axis at THIS site)
-    │                                       │
-    │                                       ▼
-    │                                verify_build ⇄ verify_run   (deterministic
-    │                                       │        build/test gate; red →
-    │                                       │        bounded fix retry → skip)
-    │                              (green)  ▼
-    │                                     alt ─▶ reviewer_claude / reviewer_gpt
-    │                                       │     (ONE cross-family reviewer,
-    │                                       ▼      ADR-052 mono/dual)
-    │                                  review_gate
-    │                        (approve)  │      │  (reject w/ blocker → transform)
-    │                                   ▼      ▼
-    │                             commit_item  transform (bounded re-try)
-    │                                   │
-    │  (advance +1)              advance│  (cursor+1 for the next item)
-    └───────────────────────────────────┘
-    │
-    └─(exhausted)─▶ re_enumerate ─(found more → append)─▶ next_item
-                          │
-                          └─(nothing left)─▶ mr_gate ─▶ (finalize_mr) ─▶ done
+campaign ──▶ verify_build ──▶ verify_run ──▶ gate
+   ▲   (one adaptive agent:   (writes         (deterministic
+   │    axis + standing        <scratch>/      build/test gate)
+   │    autonomy, commits       verify.sh)          │
+   │    each site in stride)                        │
+   │                                                │
+   │  (not converged: RED → fix / green but more    │
+   └────────────── work → next pass) ◀──────────────┤
+                                                     │  (converged:
+                                                     ▼   green ∧ axis_complete)
+                                              mr_gate ──▶ (finalize_mr) ──▶ done
 ```
 
-- **`enumerate`** (adaptive, claude_code, whole-repo, full tools) reads the
-  codebase *by its real structure* — grep/glob/read, never chunks — and
-  **writes** `<scratch_dir>/worklist.json` (out-of-tree scratch): an ordered list of
-  `{id, title, targets, change_spec}`. An item with no concrete, nameable
-  target is **dropped, not guessed** (belt-and-suspenders: `next_item`
-  deterministically drops target-less items too).
-- **`next_item`** (deterministic tool, the sweep's **entry**) reads the
-  work-list + the cursor and emits THIS item + the routing flags
-  (`needs_enumerate` / `capped` / `exhausted` / `has_item`).
-- **`transform`** (adaptive fixer, whole-repo context) applies the axis to
-  the current item's targets, and only those.
+- **`campaign`** (adaptive, claude_code, whole-repo, full tools) is the whole
+  engine: it reads `git log`, builds a living todo list from a brief
+  exploration, and applies the axis one site at a time — locate → smallest
+  change → build → test → **commit** (`git add -A` incl. untracked, semantic
+  message) — until the pass has applied the axis everywhere it can. It emits a
+  **termination contract** (`axis_complete`, `commits_this_pass`,
+  `sites_remaining`, …). It may pause for the operator on a genuine mid-flight
+  decision (kept rare).
 - **`verify_build` → `verify_run`** is the **deterministic, stack-agnostic**
-  build/test gate (unchanged from the retired design): an adaptive agent
-  reads the `verify-build` skill and writes `<scratch_dir>/verify.sh`
-  from the repo's own tooling; a tool node re-runs it and gates on the REAL
-  exit code. Red → bounded `verify_loop(3)` fix retry; still red → **skip the
-  item uncommitted** (never land broken code) and advance.
-- **`review`** is **ONE cross-family reviewer** (the ADR-052 mono/dual
-  `condition` router + `review_mode`/`mono_family`) confirming the transform
-  **correctly + safely applies the axis at this site** (correctness /
-  consistency / no regression) — *not* an open-ended re-audit. Approve →
-  commit; reject with a **concrete blocker** → back to `transform` (bounded).
-- **`commit_item`** lands **one incremental commit per item** (`git add -A`
-  incl. untracked, empty-guarded); message `refactor(improve): <item title>`.
-  The bot's scratch files live out-of-tree under `scratch_dir`, so `git add -A`
-  never sees them (no unstage step needed).
-- **`re_enumerate`** is the **done-oracle**: when the work-list is exhausted
-  it re-scans for remaining sites, appends any it finds, and the sweep
-  continues; when a fresh scan finds nothing the axis is fully applied → done.
+  build/test gate: an adaptive agent reads the `verify-build` skill and writes
+  the repo's real build+test into `<scratch_dir>/verify.sh`; a tool node
+  re-runs it and gates on the **real exit code** (no LLM judgment). This is
+  both the tight real-feedback loop AND the anti-Goodhart truth oracle — the
+  agent can't self-certify. `verify_build` does **not** fix code.
+- **`gate`** (deterministic compute) decides continuation: `converged =`
+  the gate is **green** AND the campaign reported **`axis_complete`**. Not
+  converged → back to `campaign`; a RED gate carries the failure log so the
+  agent fixes what it broke, a green-but-more-work pass carries an empty log so
+  the agent simply continues.
+- **`mr_gate` → `finalize_mr`** is the opt-in MR/PR path shipping the series of
+  per-pass commits (`open_mr`).
 
 ## Convergence & bounding
 
-- **Done-oracle:** the axis is fully applied **iff** `re_enumerate` finds no
-  remaining sites — a finite, monotone condition (as opposed to an
-  unreachable clean-sweep streak over a whole repo).
-- **`max_items` cap:** `next_item` stops the run and ships when the cursor
-  reaches `max_items` (default 120), so a pathological / unbounded axis can't
-  run forever.
-- Every loop is **declared and bounded** (`sweep_loop`, `transform_loop`,
-  `verify_loop(3)`) — `iterion validate` reports **no undeclared cycle**.
+- **Done-oracle:** the run converges when the campaign reports `axis_complete`
+  (a fresh re-scan finds no remaining site) **and** the deterministic gate is
+  green.
+- **`max_passes` cap:** the single declared continuation loop
+  (`campaign → verify_build → verify_run → gate → campaign`) is capped by
+  `max_passes` (default 8); on exhaustion it ships what is banked.
+- `iterion validate` reports **no undeclared cycle** (one declared loop).
 
-## Crash-safe / resumable
+## git is the state (crash-safe / resumable)
 
-- The **work-list** is persisted to `<scratch_dir>/worklist.json` (the
-  enumerate/re_enumerate agents own it) and the **cursor** to
-  `<scratch_dir>/state` (`next_item` owns it). Both live **out-of-tree** under
-  `scratch_dir` (default `${PROJECT_SCRATCH_DIR}/whole-improve-loop`, engine-
-  resolved to `~/.iterion/projects/<key>/scratch/…` on the host or the
-  container-writable `/tmp/iterion-scratch` under a sandbox) — **never inside
-  the target repo**, so no `.gitignore` entry is needed and `commit_item`
-  can't commit them. Under a sandbox this scratch is per-run (ephemeral), so a
-  re-dispatch simply re-enumerates.
-- `next_item` persists the cursor it is **USING** (not an eager +1); the
-  advance rides the `advance` compute (`cursor+1`) on the commit/skip return
-  paths. So a run that dies mid-item leaves the cursor **at** that item and a
-  re-dispatch **re-processes** it — a half-applied item is never credited.
-- `next_item` is the entry, so a re-dispatch **resumes mid-sweep**: it finds
-  the persisted work-list + cursor and routes straight to `transform`; only a
-  fresh run (no work-list) routes to `enumerate`.
-
-(Implementation note: the advance goes through the `advance` compute rather
-than reading `outputs.next_item.next_cursor` on the loop-back edge — reading a
-loop-head node's own output on its back-edge returns a loop-entry-frozen
-value, so the return edge reads `outputs.advance.carry_next` instead, the same
-discipline the old bot used with `streak_check.carry_*`.)
+There is **no worklist/cursor scratch file** any more — **git is the durable
+state**. The campaign commits each site in stride, so an interrupted /
+budget-capped run keeps every committed site, and a re-dispatch simply re-runs
+`campaign`, which reads `git log` and continues from those commits. The only
+out-of-tree scratch is the deterministic gate's `<scratch_dir>/verify.sh` +
+`verify.log` (default `${PROJECT_SCRATCH_DIR}/whole-improve-loop`,
+engine-resolved off the repo — never inside the target worktree).
 
 ## Right artifact (anti-Goodhart)
 
-`transform`'s work lives in the **uncommitted working tree**; the commit
-happens only *after* review passes. So the reviewers `git add -N .`
-(intent-to-add) then diff `git diff HEAD` — **never** `git diff HEAD^..HEAD`
-(the base commit, which would make them conclude "nothing was done" and loop
-forever), and `commit_item` stages untracked files. See
+The campaign commits the **uncommitted working tree** after its own build+test
+passes, staging untracked files (`git add -A`) so a change that **adds** files
+actually lands (`git diff HEAD` omits untracked). The deterministic
+`verify_build`/`verify_run` gate then re-checks the committed tree. See
 [docs/workflow_authoring_pitfalls.md](../../docs/workflow_authoring_pitfalls.md).
 
 ## Stack- & repo-agnostic
 
-The **axis + the repo** define the sites. No language / package-manager
-literal and no iterion-specific target path appears in any var default,
-command body, or schema — `enumerate` / `transform` / `verify_build` are
-adaptive agents that read whatever repo they are pointed at (CLAUDE.md
-"Catalog bots are repo-agnostic" + "Universal code bots"). The
-`verify_build`/`verify_run` gate stays deterministic while remaining
-universal: the agent writes the repo's own build/test into
-`<scratch_dir>/verify.sh`, the tool node runs it and gates on the exit
-code.
+The **axis + the repo** define the work. No language / package-manager literal
+and no iterion-specific target path appears in any var default, command body,
+or schema — `campaign` and `verify_build` are adaptive agents that read
+whatever repo they are pointed at (CLAUDE.md "Catalog bots are repo-agnostic" +
+"Universal code bots"). The `verify_build`/`verify_run` gate stays deterministic
+while remaining universal: the agent writes the repo's own build/test into
+`<scratch_dir>/verify.sh`, the tool node runs it and gates on the exit code.
 
 ## Vars
 
 | Var | Meaning |
 |---|---|
-| `improvement_prompt` | **THE AXIS**. Empty = enumerate picks the single highest-value cross-cutting improvement it can name for the repo. |
+| `improvement_prompt` | **THE AXIS**. Empty = the campaign picks the single highest-value cross-cutting improvement it can name for the repo. |
 | `scope_globs` | Path scope (the WHERE): comma/space-separated fnmatch globs; empty = whole workspace. |
-| `scope_notes` | Free-form extra context for the enumerate/transform agents. |
-| `max_items` | Hard cap on items processed per run (default 120) — the convergence backstop; also sizes the declared loop caps. |
-| `review_mode` / `mono_family` | ADR-052 mono/dual topology, resolved at launch by `pkg/reviewtopology`. |
-| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | Opt-in MR/PR path shipping the series of per-item commits. |
+| `scope_notes` | Free-form extra context for the campaign agent. |
+| `baseline` | **G5** — known pre-existing failures / flaky tests the campaign must SKIP (empty = it establishes the baseline once cheaply, then skips what predates its work). |
+| `max_passes` | Hard cap on continuation passes (default 8) — the convergence backstop; sizes the declared loop. |
+| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | Opt-in MR/PR path shipping the series of per-pass commits. |
 | `workspace_dir` | Target repo (defaults to `${PROJECT_DIR}` → the run's worktree). |
-| `scratch_dir` | Out-of-tree working files (work-list / cursor / verify.sh / verify.log). Default `${PROJECT_SCRATCH_DIR}/whole-improve-loop`, engine-resolved off the repo (host `~/.iterion/projects/<key>/scratch`, sandbox `/tmp/iterion-scratch`) — never inside the target worktree. |
+| `scratch_dir` | Out-of-tree working files (the gate's `verify.sh` / `verify.log` only — git is the state). Default `${PROJECT_SCRATCH_DIR}/whole-improve-loop`, engine-resolved off the repo — never inside the target worktree. |
 
 ## Presets
 
 The `presets/` frame the axis: `code-quality`, `improve-quality` (SRE),
 `production-ready`, `rgaa` (accessibility), `rgpd` (GDPR). Each sets
-`improvement_prompt` (and skills) so the sweep enumerates + transforms the
-sites that preset targets. They compose with the sweep unchanged — a preset
-is just a pre-filled axis.
+`improvement_prompt` (and skills) so the campaign works the sites that preset
+targets. They compose with the campaign unchanged — a preset is just a
+pre-filled axis.
 
 ## Large axes span passes (and sometimes runs)
 
-A big axis on a large repo may exceed one run's `max_items` / budget. Such a
-run makes **bounded progress**, **commits every item it lands**, and either
-hits the `max_items` cap (ships what is banked) or exhausts a declared loop.
-Because the work-list + cursor are persisted, a re-dispatch **resumes
-mid-sweep** and keeps banking committed items. Raise `max_items` (with the
+A big axis on a large repo may exceed one run's `max_passes` / budget. Such a
+run makes **bounded progress**, **commits every site it lands**, and either
+hits the `max_passes` cap (ships what is banked) or exhausts the budget.
+Because git is the state, a re-dispatch re-runs the campaign, which reads
+`git log` and continues banking committed sites. Raise `max_passes` (with the
 budget) to finish a larger axis in one run.

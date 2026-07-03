@@ -16,9 +16,15 @@ import (
 // or reintroduces a `mode: round_robin` router directive.
 //
 // When a genuinely new review-loop bot is added, add it here.
+//
+// whole-improve-loop is intentionally NOT in this set: its v2 shape (one
+// adaptive `campaign` agent that self-reviews via the deterministic build/test
+// gate + its own judgment, the operator's proven manual pattern) has no
+// cross-family reviewer nodes and no `condition` review router, so the ADR-052
+// mono/dual topology invariant does not apply to it. See
+// bots/whole-improve-loop/main.bot.
 var reviewLoopBots = []string{
 	"branch-improve-loop",
-	"whole-improve-loop",
 	"feature-dev",
 	"docs-refresh",
 	"secured-renovacy",

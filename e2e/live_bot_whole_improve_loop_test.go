@@ -121,35 +121,26 @@ func Multiply(a, b int) int {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 
-	// ADR-057 axis sweep: count the sweep drivers (transform + a reviewer)
-	// rather than the retired streak_check. A small axis may only alternate one
-	// family, so assert the sweep ran (a transform + a review + a next_item),
-	// not that both families fired.
+	// v2 campaign: count the campaign + verify gate drivers rather than the
+	// retired transform/reviewer/next_item nodes. A small axis may converge in a
+	// single pass, so assert the campaign ran and the deterministic gate checked
+	// it (a campaign + a verify_run), not a minimum pass count.
 	finished := eventNodeIDs(events, store.EventNodeFinished)
-	claudeReviewed, gptReviewed := 0, 0
-	transforms, sweeps := 0, 0
+	campaigns, verifies := 0, 0
 	for _, id := range finished {
 		switch id {
-		case "reviewer_claude":
-			claudeReviewed++
-		case "reviewer_gpt":
-			gptReviewed++
-		case "transform":
-			transforms++
-		case "next_item":
-			sweeps++
+		case "campaign":
+			campaigns++
+		case "verify_run":
+			verifies++
 		}
 	}
-	t.Logf("Counts: reviewer_claude=%d reviewer_gpt=%d transform=%d next_item=%d",
-		claudeReviewed, gptReviewed, transforms, sweeps)
-	if claudeReviewed+gptReviewed == 0 {
-		t.Errorf("expected at least one reviewer to fire (claude=%d gpt=%d)", claudeReviewed, gptReviewed)
+	t.Logf("Counts: campaign=%d verify_run=%d", campaigns, verifies)
+	if campaigns == 0 {
+		t.Errorf("expected the campaign agent to run at least once, got 0")
 	}
-	if transforms == 0 {
-		t.Errorf("expected the sweep to transform at least one work-item, got 0")
-	}
-	if sweeps < 2 {
-		t.Errorf("expected ≥2 next_item passes (the sweep advanced), got %d", sweeps)
+	if verifies == 0 {
+		t.Errorf("expected the deterministic verify gate to run at least once, got 0")
 	}
 
 	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)

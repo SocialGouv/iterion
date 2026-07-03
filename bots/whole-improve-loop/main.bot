@@ -1,531 +1,333 @@
 ## ─────────────────────────────────────────────────────────────────
-## whole_improve_loop
+## whole_improve_loop  (v2 — one agent, its natural flow, minimal framing)
 ##
-## AXIS-DRIVEN WORK-LIST SWEEP (ADR-057). `improvement_prompt` is THE
-## AXIS — one determined improvement applied across the whole codebase,
-## site by site, verified and committed (e.g. "split every file > 600
-## lines into cohesive units", "converge duplicated X onto a shared
-## helper", "make error handling use pattern Y"). This is a campaign
+## `improvement_prompt` is THE AXIS — one determined improvement applied
+## across a whole codebase (e.g. "split every file over 600 lines into
+## cohesive units", "converge duplicated retry logic onto a shared helper",
+## "make error handling use pattern Y"). This is a refactoring-CAMPAIGN
 ## engine, not a scanner.
 ##
-## The mechanism is the operator's own proven manual Claude Code loop —
-## write a todo work-list, then apply + commit each item incrementally —
-## amplified with what a human can't cheaply do: a deterministic per-item
-## build/test gate and a cross-family review of every transform. It
-## REPLACES the ADR-011/ADR-055 chunked-review mechanism, which could
-## neither converge on a whole repo (there is always another local issue
-## in the next byte/package chunk) nor produce a GLOBAL, cross-cutting
-## change (no reviewer handed a slice ever holds the whole system).
+## WHY THIS SHAPE. The v1 axis-sweep (ADR-057) OVER-FRAMED the work: a rigid
+## ~16-node graph (enumerate → next_item → transform → verify → review →
+## commit → advance → re_enumerate …) that fought the agent's native
+## productivity, and whose BLOCKING upfront `enumerate` (an exhaustive
+## whole-repo scan before any work) timed out on a large repo. The mined
+## signature of a PRODUCTIVE human session says to do the opposite (see
+## docs/references/productive-session-patterns.md): "the deficit is framing,
+## not capability"; "once framed, a campaign runs itself". So v2 gives ONE
+## capable agent a mission + STANDING AUTONOMY and lets it work in its
+## natural flow — a living todo list, one verified commit per site, in
+## stride — instead of a multi-node assembly line.
 ##
-## GRAPH (see the workflow block for the wiring):
-##   enumerate       — whole-repo adaptive agent reads the codebase BY ITS
-##                     REAL STRUCTURE (grep/glob/read — never chunks) and
-##                     writes an ORDERED work-list of concrete sites for
-##                     THE AXIS: [{id, title, targets, change_spec}]. An
-##                     item with no nameable target is dropped, not guessed.
-##   next_item       — deterministic cursor/work-list reader (the sweep's
-##                     entry + per-item state node, mirroring the retired
-##                     snapshot_chunk). Emits THIS item + advances the
-##                     cursor CRASH-SAFELY (persists the cursor it is USING,
-##                     not an eager +1; the advance rides the `advance` compute
-##                     on the commit/skip paths, so a crash re-processes the
-##                     in-flight item). Resumes mid-sweep on re-dispatch.
-##   transform       — adaptive fixer (whole-repo context, full tools)
-##                     applies the axis change for THIS item's targets.
-##   verify_build    — adaptive, stack-agnostic build/test repair; writes
-##     + verify_run    <scratch_dir>/verify.sh, a DETERMINISTIC tool
-##                     node re-runs it and gates on the REAL exit code. Red
-##                     → bounded verify-fix retry; still red → SKIP the item
-##                     UNCOMMITTED (never land broken code) and advance.
-##   review          — ONE cross-family reviewer (ADR-052 mono/dual condition
-##                     router) confirms the transform CORRECTLY + SAFELY
-##                     applies the axis at THIS site (consistency + no
-##                     regression) — NOT an open-ended re-audit. Approve →
-##                     commit; reject with a concrete blocker → transform
-##                     (bounded).
-##   commit_item     — ONE incremental commit per item (git add -A incl.
-##                     untracked; scratch lives out-of-tree, empty-guarded); message =
-##                     `refactor(improve): <item title>`.
-##   re_enumerate    — when the work-list is exhausted, re-scan for any
-##                     remaining sites matching the axis (the DONE-ORACLE:
-##                     the axis is fully applied iff a fresh scan finds
-##                     nothing). New sites → appended to the work-list,
-##                     sweep continues; none → done.
+## GRAPH (see the workflow block):
+##   campaign     — ONE adaptive agent (claude_code, full tools, whole-repo
+##                  context). Mission = the AXIS + a standing-autonomy
+##                  contract that reproduces the productive-session shape
+##                  AGENT-SIDE: a LIVING todo list born from a brief
+##                  exploration (never frozen upfront phases); the repeated
+##                  unit locate → smallest change → build → test → COMMIT,
+##                  ~a few edits per commit, validation BEFORE the commit;
+##                  commit each site AS it finishes (never batch). git IS the
+##                  durable state — a re-dispatch just re-runs `campaign`,
+##                  which reads `git log` and continues. No worklist/cursor
+##                  scratch file. Termination output (G2): {axis_complete,
+##                  commits_this_pass, sites_remaining, …}.
+##   verify_build — adaptive, stack-agnostic: reads the `verify-build` skill
+##     + verify_run  and writes the repo's real build+test into an OUT-OF-TREE
+##                  <scratch_dir>/verify.sh; a DETERMINISTIC tool node
+##                  re-runs it and gates on the REAL exit code (no LLM
+##                  judgment). This is the tight real-feedback loop AND the
+##                  anti-Goodhart truth oracle: the agent can't self-certify.
+##   gate         — deterministic compute: green AND axis_complete → converged
+##                  → ship; else loop back to `campaign` (RED → with the
+##                  failure log so the agent fixes what it broke; green but
+##                  sites remain → another pass). No LLM, no shell.
+##   mr_gate      — deterministic: open the optional MR/PR (the series of
+##     + finalize_mr per-pass commits) when open_mr, else finish.
 ##
-## CONVERGES BY CONSTRUCTION. Done = "re_enumerate finds no remaining
-## sites" — a finite, monotone condition — bounded by a `max_items` cap
-## (next_item stops the run at the cap) and a declared sweep loop, so a
-## pathological axis can't run forever (validate reports NO undeclared
-## cycle). LANDS CONTINUOUSLY: one verified commit per item, so an
-## interrupted / budget-capped run has banked every completed item.
+## CONTINUATION IS BOUNDED. The single declared loop
+## (campaign→verify_build→verify_run→gate→campaign) is capped by
+## `max_passes`; on exhaustion it ships what is banked. `iterion validate`
+## reports NO undeclared cycle. LANDS CONTINUOUSLY: the agent commits each
+## site in stride, so an interrupted / budget-capped run has banked every
+## committed site (git is the state).
 ##
-## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): verify + review
-## judge the UNCOMMITTED working tree the transform just produced; the
-## reviewers `git add -N .` so a feature that ADDS files is visible in
-## `git diff HEAD`, and commit_item stages untracked files.
+## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign commits
+## the UNCOMMITTED working tree AFTER its own build+test passes, staging
+## untracked files (`git add -A`) so a change that ADDS files actually lands;
+## the deterministic verify gate then re-checks the committed tree.
 ##
 ## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
-## "Universal code bots"): the AXIS + the repo define the sites. No
-## language / package-manager literal, and no iterion-specific target
-## path, appears in any var default, command body, or schema — enumerate,
-## transform and verify_build are adaptive agents that read whatever repo
-## they are pointed at.
+## "Universal code bots"): the AXIS + the repo define the work. No language /
+## package-manager literal, and no iterion-specific target path, appears in
+## any var default, command body, or schema — campaign / verify_build are
+## adaptive agents that read whatever repo they are pointed at.
 ##
-## RETIRED (git history / ADR-011 + ADR-055 have the design): the
-## snapshot_chunk byte/package chunker, the per-chunk streak, the
-## partial-view anti-fragmentation guard (2b), the coherent-unit packing,
-## num_chunks. The chunked-review "find-unknown-issues" mode is NOT kept
-## as a fallback — the two mechanisms share almost no graph, so carrying
-## both would double the node/edge count and the cycle surface for a mode
-## the operator wants demoted. Point a review-loop bot (branch-improve-loop
-## / a review pass) at the tree if you want the old find-the-unknown audit.
+## RETIRED FROM v1 (ADR-057; git history has the design): enumerate,
+## next_item, transform, the per-item cross-family review NODES
+## (alt / reviewer_claude / reviewer_gpt / review_gate — the campaign
+## self-reviews via build/test + its own judgment, like the manual
+## pattern), commit_item, advance, re_enumerate, and the worklist.json /
+## cursor scratch STATE (git is the state now). The ADR-052 mono/dual review
+## topology no longer applies to this bot (no reviewer nodes); it stays on
+## the other review-loop bots.
 ## ─────────────────────────────────────────────────────────────────
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
-  ## Out-of-tree, sandbox-writable scratch for the sweep's working files —
-  ## the work-list, the crash-safe cursor, and the verify script/log. The
-  ## engine resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/scratch
+  ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
+  ## verify script/log ONLY (no worklist/cursor any more — git is the state).
+  ## The engine resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/scratch
   ## non-sandboxed and to the container-writable /tmp/iterion-scratch under a
   ## sandbox (never hardcode ~/.iterion here — the -full image's pinned
-  ## non-host User cannot write a host-owned path → EACCES, the exact bug the
-  ## sec-audit-deps var comment documents). Keeping these OUT of the target
-  ## worktree is also the repo-agnostic rule: the sweep must not pollute (or
-  ## risk committing) scratch into someone else's tree. NOTE: under a sandbox
-  ## this scratch is per-run (ephemeral), so a re-dispatch finds no work-list
-  ## and simply re-enumerates from scratch — acceptable because next_item
-  ## routes to enumerate whenever the work-list file is absent.
+  ## non-host User cannot write a host-owned path → EACCES). Keeping it OUT of
+  ## the target worktree is the repo-agnostic rule: never pollute someone
+  ## else's tree.
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/whole-improve-loop"
 
-  ## ─── Review topology (mono/dual) — ADR-052, see branch-improve-loop ─
-  ## dual = alternate claude ↔ gpt per item (robust, two families); mono =
-  ## one family (mono_family), ~half the LLM calls; auto = resolved at
-  ## LAUNCH by pkg/reviewtopology (dual if two provider families detected,
-  ## else mono) and injected via CLI --review-mode / studio / dispatcher.
-  ## Left "auto" without that resolution behaves as dual (a pure
-  ## non-regression). The per-item review is a SINGLE gate (approve →
-  ## commit), not a streak, so MONO needs no stop OR-in here — it just
-  ## reviews each transform with the single family. mono_family is filled
-  ## by the resolver.
-  review_mode: string = "auto"
-  mono_family: string = ""
-
-  ## THE AXIS (ADR-057). The determined improvement to apply across the
-  ## whole codebase, site by site — passed as improvement_prompt. Examples:
-  ## "split every source file over 600 lines into cohesive smaller files",
-  ## "converge every hand-rolled retry onto a shared backoff helper", "make
-  ## every public function validate its inputs the same way". Empty
-  ## (default) = enumerate identifies and sweeps the single highest-value
-  ## cross-cutting improvement it can name for THIS repo. scope_notes adds
+  ## THE AXIS. The determined improvement to apply across the whole codebase,
+  ## site by site — passed as improvement_prompt. Empty (default) = the
+  ## campaign identifies and sweeps the single highest-value cross-cutting
+  ## improvement it can concretely name for THIS repo. scope_notes adds
   ## free-form context; scope_globs restricts WHERE (below).
   improvement_prompt: string = ""
   scope_notes: string = ""
-  ## Optional path-scope filter (focused runs). A comma/space-separated
-  ## list of fnmatch globs matched against workspace-relative paths; empty
-  ## (default) = the WHOLE workspace. A bare directory, or a `dir/**` /
-  ## `dir/*` form, also matches everything under that directory. It narrows
-  ## WHERE enumerate/re_enumerate look for sites (the WHAT is the axis);
-  ## kept as guidance passed to those agents. Example:
-  ## --var scope_globs="pkg/runtime,pkg/store".
+  ## Optional path-scope filter (focused runs). A comma/space-separated list
+  ## of fnmatch globs matched against workspace-relative paths; empty
+  ## (default) = the WHOLE workspace. It narrows WHERE the campaign applies
+  ## the axis (the WHAT is the axis); passed as guidance to the agent.
+  ## Example: --var scope_globs="pkg/runtime,pkg/store".
   scope_globs: string = ""
 
-  ## Hard cap on the number of work-items the sweep processes in a run —
-  ## the convergence backstop for a pathological axis (next_item stops the
-  ## run and ships when the cursor reaches it, before re_enumerate can grow
-  ## the list without bound). Also sizes the declared sweep/transform loop
-  ## caps. Persisted state (cursor + work-list) lets a large axis finish
-  ## over successive re-dispatches, banking committed items each run. Raise
-  ## it (with the budget) for a big axis on a large repo.
-  max_items: int = 120
+  ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
+  ## pre-existing test failures / flaky tests the campaign must SKIP rather
+  ## than burn budget proving they aren't its own. Empty (default) = the
+  ## campaign establishes it once cheaply (a `git stash`-based check) then
+  ## skips what predates its work. The dispatcher/operator can pre-fill it.
+  baseline: string = ""
+
+  ## Hard cap on continuation PASSES — the convergence backstop. Each pass is
+  ## one campaign→verify cycle; the run stops (shipping what is banked) when
+  ## the axis is reported complete + the tree is green, or when this cap is
+  ## hit. Sizes the declared continuation loop. Raise it (with the budget) for
+  ## a big axis on a large repo; the agent commits in stride, so every pass
+  ## banks real, landed work.
+  max_passes: int = 8
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────
-  ## When open_mr=true, after the sweep converges the finalize_mr node
-  ## pushes the run's HEAD (the SERIES of per-item commits) to the forge and
-  ## opens a merge/pull request. Off by default so a plain local run just
-  ## leaves the commits on the operator's branch. The comment→MR trigger
-  ## sets this true. This bot runs in a per-run git worktree (engine default
-  ## `worktree: auto`), so the per-item commits advance the worktree HEAD
-  ## and finalize_mr pushes that branch; in cloud the worktree is carved
-  ## from a fresh clone. Requires a forge_token secret (or host-authenticated
-  ## gh/glab) and a push remote.
+  ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
+  ## (the SERIES of per-pass commits) to the forge and opens a merge/pull
+  ## request. Off by default so a plain local run just leaves the commits on
+  ## the operator's branch. The comment→MR trigger sets this true. This bot
+  ## runs in a per-run git worktree (engine default `worktree: auto`), so the
+  ## commits advance the worktree HEAD and finalize_mr pushes that branch.
+  ## Requires a forge_token secret (or host-authenticated gh/glab).
   open_mr: bool = false
-  ## Branch name to push + open the MR from. Empty = derive a stable
-  ## name from the run (iterion/improve/<run-id>).
+  ## Branch name to push + open the MR from. Empty = derive a stable name
+  ## from the run (iterion/improve/<run-id>).
   mr_branch: string = ""
   ## Integration base the MR targets. Empty = the repo's default branch.
   mr_base: string = ""
   ## Optional back-link target: the source issue this run answers, as
-  ## "native:<id>" (local board) or a forge issue URL. When set,
-  ## finalize_mr posts the opened MR's URL back as a comment on it.
+  ## "native:<id>" (local board) or a forge issue URL. When set, finalize_mr
+  ## posts the opened MR's URL back as a comment on it.
   source_issue_ref: string = ""
 
 secrets:
-  ## Forge access for push + MR creation + the issue back-link. Mounted
-  ## as a read-only file the gh/glab CLI authenticates from; never read
-  ## into a prompt. optional:true so manual/local runs that rely on
-  ## host-authenticated gh/glab still work. See skills/forge-mr-create.md.
+  ## Forge access for push + MR creation + the issue back-link. Mounted as a
+  ## read-only file the gh/glab CLI authenticates from; never read into a
+  ## prompt. optional:true so manual/local runs relying on host-authenticated
+  ## gh/glab still work. See skills/forge-mr-create.md.
   forge_token:
     as: file
     optional: true
 
 ## ─── Prompts ────────────────────────────────────────────────────
 
-prompt enumerate_system:
-  You are a staff engineer planning ONE determined improvement axis across
-  a whole codebase — the "write the to-do list" step of a disciplined
-  refactoring campaign. You do NOT change any code; you produce an ORDERED
-  work-list of concrete SITES where the axis applies.
+prompt campaign_system:
+  You are a senior engineer running a focused improvement CAMPAIGN on ONE
+  axis across a whole codebase — working EXACTLY as you would in a
+  productive, human-driven engineering session. You have the full repo in
+  front of you and full tools (read, edit, shell, git). No one micro-manages
+  you; you own this pass end to end.
 
-  READ THE REPO BY ITS REAL STRUCTURE — like a human taking over the
-  codebase. Use your read / glob / grep / list tools to search for the
-  sites the axis names. NEVER partition the repo into arbitrary byte or
-  size chunks; follow the code's own structure (files, packages, symbols,
-  call sites) to find every place the axis applies. On a LARGE repo,
-  fan out read-only sub-agents (the Task/agent tool, when available) to
-  sweep candidate areas in parallel and keep your own context for
-  consolidating the work-list.
+  THE AXIS is in your user prompt (`improvement_prompt`). It is the ONE
+  determined improvement to apply everywhere it applies (e.g. "split every
+  source file over 600 lines into cohesive units", "converge duplicated retry
+  logic onto a shared helper", "make error handling use pattern Y"). If it is
+  EMPTY, identify the single HIGHEST-VALUE cross-cutting improvement you can
+  concretely name for THIS repo (a real, repeated, mechanical-enough pattern,
+  not a vague "make it better"), state it in `summary`, and sweep THAT.
 
-  THE AXIS is in your user prompt (`improvement_prompt`). If it is EMPTY,
-  identify the single HIGHEST-VALUE cross-cutting improvement you can
-  concretely name for THIS repo (a real, repeated, mechanical-enough
-  pattern — not a vague "make it better") and treat THAT as the axis; state
-  it in `summary`.
+  HOW TO WORK — reproduce the shape of a productive session, agent-side:
 
-  EMIT the work-list by WRITING a JSON file at exactly
-  `{{vars.scratch_dir}}/worklist.json` (create the `{{vars.scratch_dir}}`
-  directory first if it does not exist — `mkdir -p {{vars.scratch_dir}}`). It
-  is an OUT-OF-TREE scratch path, NOT inside the repo, so it never pollutes the
-  worktree. It MUST be a JSON array; each element is an object:
-    {
-      "id":          "short-stable-slug",
-      "title":       "one concise line naming the site + the change",
-      "targets":     "the CONCRETE, nameable target(s): file path(s),
-                      symbol(s), or call site(s) — never a vague area.
-                      REQUIRED and non-empty.",
-      "change_spec": "what to change at this site and the done-state, in a
-                      sentence or two — enough for a fixer to apply it and a
-                      reviewer to check it."
-    }
+  1. LIVING TODO LIST, not frozen phases. Start with a BRIEF exploration
+     (grep/glob/read, or read-only sub-agents on a large repo) to find the
+     concrete sites the axis touches, and build a todo list from what you
+     find. Keep it DENSE and MOVING — re-prioritize, append, and defer items
+     as you learn. Do NOT write 5–6 coarse upfront phases and tick them: the
+     list is a metronome born from exploration, not a plan frozen before it.
 
-  RULES that keep the sweep honest (Goodhart/façade resistance):
-  1. ORDER the list so dependencies/foundations come first (e.g. introduce
-     a shared helper before converging call sites onto it).
-  2. Each item is ONE cohesive, independently-committable change at a
-     NAMED site. Split a large site into several items rather than one
-     mega-item.
-  3. DROP any candidate you cannot point to a concrete target for — an
-     item whose `targets` would be empty or hand-wavy is guessed, not
-     found, and is left out. Better a short honest list than a padded one.
-  4. Do NOT include sites that already satisfy the axis. The work-list is
-     the REMAINING work.
-  5. If the axis genuinely does not apply anywhere in scope, write `[]`
-     (an empty array) and say so in `summary` — never invent work.
+  2. THE REPEATED UNIT, one site at a time: locate the exact site → make the
+     SMALLEST change that applies the axis there → build → run the tests →
+     COMMIT it with a semantic message (`refactor(improve): <precise site>`,
+     or the `type(scope):` that fits — `fix(...)` for a bug axis, etc.). A few
+     edits per commit, validation BEFORE the commit — never commit code you
+     have not built and tested green.
 
-  When `scope_globs` is set (see the user prompt), only look for sites
-  under those paths. Set `total_items` to the number of items you wrote.
-  A deterministic reader validates and drops any target-less item, so be
-  concrete.
+  3. COMMIT EACH SITE AS YOU FINISH IT — never batch. Stage everything
+     including new files (`git add -A`, so a change that ADDS files actually
+     lands) and commit before moving on. git IS your durable state: an
+     interrupted run keeps every site you committed, and a fresh pass just
+     reads `git log` and continues where you left off. Do NOT keep a separate
+     worklist / cursor file — the todo list lives in your working memory, the
+     commits are the record.
 
-prompt enumerate_user:
-  Repository to plan: {{vars.workspace_dir}}
+  4. BASELINE — don't chase failures you didn't cause. Pre-existing test
+     failures / known-flaky tests are in your user prompt (`baseline`). Do NOT
+     try to fix or investigate those; if a test was already red before your
+     change, SKIP it and note it. If the baseline is empty, do ONE cheap
+     `git stash`-based check to establish which failures pre-date your work,
+     then stop investigating them. Don't burn budget proving a failure isn't
+     yours.
+
+  5. ASK ONLY ON A REAL DECISION. You MAY pause for the operator (the
+     ask-user tool) on a genuine decision you cannot make on your own — an
+     ambiguous axis, a destructive trade-off, a policy call. Keep it RARE:
+     most of the time you decide and keep moving.
+
+  KEEP GOING, one site at a time, until this pass has applied the axis
+  everywhere you can within your budget. Then STOP and report.
+
+  TERMINATION CONTRACT (required structured output — this is how the engine
+  detects completion; an under-specified end just gets re-poked):
+    - axis_complete: true ONLY when a fresh re-scan finds NO remaining site
+      where the axis still applies. false if sites remain (a later pass
+      continues from your commits).
+    - commits_this_pass: how many commits you landed this pass.
+    - sites_remaining: a concise note of what still needs the axis (empty when
+      axis_complete).
+    - needs_human / human_note: set if you paused or need an operator decision.
+    - summary: what you changed and how it applies the axis.
+
+  Be honest. A DETERMINISTIC build/test gate re-checks the tree after you and
+  the run loops you back for another pass until you report axis_complete AND
+  the tree is green — so under-reporting only costs a pass, and over-reporting
+  lands you right back here.
+
+prompt campaign_user:
+  Repository: {{vars.workspace_dir}}
 
   THE IMPROVEMENT AXIS (empty = pick the single highest-value cross-cutting
-  improvement you can concretely name for this repo, and state it in
-  summary):
+  improvement you can concretely name for this repo, and state it in summary):
   {{vars.improvement_prompt}}
 
   Extra context / notes:
   {{vars.scope_notes}}
 
-  Path scope (empty = the whole workspace; otherwise only look for sites
-  under these globs):
+  Path scope (empty = the whole workspace; otherwise only apply the axis under
+  these globs):
   {{vars.scope_globs}}
 
-  Search the codebase by its real structure and WRITE the ordered work-list
-  to `{{vars.scratch_dir}}/worklist.json` (an out-of-tree scratch path — see
-  the system prompt for the exact format). Return total_items (how many you
-  wrote) and a short summary (the axis you settled on + how you found the
-  sites).
+  BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
+  establish it once cheaply, then skip what predates your work):
+  {{vars.baseline}}
 
-prompt re_enumerate_system:
-  You are the same staff engineer, now doing a CONVERGENCE pass. The sweep
-  has processed every item currently on the work-list. Your single job: do
-  a FRESH scan of the codebase (by its real structure — read/glob/grep) for
-  any REMAINING sites where the axis still applies but that are NOT yet on
-  the work-list, and APPEND them.
+  Deterministic gate feedback from the PREVIOUS pass (empty on the first pass;
+  when present, the build/test tree was RED after your last pass — FIX exactly
+  what this shows before continuing the axis):
+  {{input.fail_log}}
 
-  This is the done-oracle: the axis is fully applied iff a fresh scan finds
-  nothing left. Be rigorous — a missed site means the campaign stops
-  early; a hallucinated site means it never stops.
-
-  PROCEDURE:
-  1. Read the existing work-list at
-     `{{vars.scratch_dir}}/worklist.json` (an out-of-tree scratch JSON
-     array) so you don't re-add sites already listed.
-  2. Scan for sites matching the axis that are (a) NOT already in the list
-     and (b) do NOT already satisfy the axis (many earlier items have been
-     applied — those sites are DONE, don't re-add them).
-  3. If you find genuinely new, concrete, nameable sites: APPEND them to
-     the SAME JSON array (same object shape: id/title/targets/change_spec —
-     targets REQUIRED and concrete) and write the file back. Set
-     found_more=true and appended_count to how many you added.
-  4. If a fresh scan finds NOTHING left (the axis is fully applied): leave
-     the file unchanged, set found_more=false, appended_count=0, and say so
-     in summary. Do NOT invent work to keep the loop alive — reporting
-     "done" IS the success signal.
-
-  Same honesty rules as enumeration: drop any candidate without a concrete
-  target; never re-add a site that already satisfies the axis. Honour
-  `scope_globs` when set.
-
-prompt re_enumerate_user:
-  Repository: {{vars.workspace_dir}}
-  Axis: {{vars.improvement_prompt}}
-  Notes: {{vars.scope_notes}}
-  Path scope (empty = whole workspace): {{vars.scope_globs}}
-
-  Read the existing `{{vars.scratch_dir}}/worklist.json`, re-scan for any
-  REMAINING sites matching the axis (not already listed, not already
-  applied), APPEND the new ones and write the file back — or, if the axis
-  is fully applied, change nothing and report found_more=false. Return
-  found_more, appended_count and a short summary.
-
-prompt transform_system:
-  You are an expert developer applying ONE determined improvement to ONE
-  site in a codebase. You hold whole-repo context, but you change ONLY
-  what this item names.
-
-  You are given: the AXIS, and the current work-item (its title, concrete
-  targets, and change_spec). Apply the axis change to those targets and
-  bring them to the item's done-state. Read the targets and anything they
-  interact with; make the SMALLEST change that correctly and completely
-  applies the axis at THIS site. If applying it changes a signature or
-  contract, update ALL callers — a missed caller breaks the build, which
-  the deterministic verify gate will catch and bounce back to you.
-
-  STAY ON THIS ITEM. Do NOT opportunistically refactor other sites the axis
-  also touches — they are their own work-items and will get their own
-  reviewed, committed pass. Widening scope here defeats the one-commit-per-
-  site discipline and makes the review unable to judge the change.
-
-  If a reviewer previously REJECTED your change for this item, its concrete
-  blockers + fix_plan are in your user prompt — fix exactly those, do not
-  re-litigate resolved points.
-
-  FINALIZE — no work-in-progress placeholder. Your structured output is the
-  FINAL result of this turn. Finish the edits (do not stop halfway), then
-  set applied=true and make `summary` state the concrete files/symbols you
-  changed and why the change correctly applies the axis at this site. Do
-  NOT run the full build here — a deterministic gate does that next; just
-  make the change correct and complete.
-
-prompt transform_user:
-  Repository: {{vars.workspace_dir}}
-
-  THE AXIS:
-  {{vars.improvement_prompt}}
-
-  THIS WORK-ITEM:
-    id:          {{input.item_id}}
-    title:       {{input.item_title}}
-    targets:     {{input.item_targets}}
-    change_spec: {{input.item_change_spec}}
-
-  Apply the axis to THIS item's targets and bring them to the item's
-  done-state. Change only this site.
-
-  Reviewer blockers from a PRIOR attempt on this same item (empty on the
-  first attempt — when present, fix exactly these):
-  {{input.blockers}}
-
-  Prior fix plan (empty on the first attempt):
-  {{input.fix_plan}}
-
-  Output applied=true once the edits are in the tree, and a concise summary
-  of what you changed and why it applies the axis correctly.
-
-prompt review_system:
-  You are a demanding reviewer with a TIGHTLY SCOPED job: confirm that the
-  change just applied CORRECTLY and SAFELY applies the improvement AXIS at
-  THIS ONE SITE. You are NOT doing an open-ended production-readiness audit
-  of the repo — only judging this item's transform.
-
-  You are given the AXIS and the work-item (title, concrete targets,
-  change_spec). Judge ONLY:
-  1. CORRECTNESS — does the change actually apply the axis to the named
-     targets, and reach the item's done-state? (Not a different change, not
-     a partial one.)
-  2. CONSISTENCY — is it applied the same way the axis is applied elsewhere
-     in the codebase (naming, shape, the shared helper it should use)?
-  3. NO REGRESSION — does it preserve behaviour / not break callers? (The
-     deterministic build/test gate already ran green before you; you are
-     the semantic check on top of it.)
-
-  RIGHT ARTIFACT — you MUST review the UNCOMMITTED working tree, which is
-  where the transform's work lives (the commit happens only AFTER you
-  approve). Before diffing, run `git add -N .` (intent-to-add) so files the
-  transform ADDED are visible, then read `git diff HEAD` (working tree vs
-  HEAD) — NEVER `git diff HEAD^..HEAD` (that is the previous commit, not
-  this change, and would make you conclude "nothing was done" and reject
-  forever). Read the changed files in full where the diff is not enough.
-
-  APPROVE (approved=true) when the change correctly + safely applies the
-  axis at this site — even if you can imagine OTHER improvements: those are
-  out of scope for this item. REJECT (approved=false) ONLY with a CONCRETE
-  blocker: the axis is misapplied, incomplete, inconsistent with the rest
-  of the codebase, or it breaks something. Put the specific, smallest-change
-  fix in `fix_plan` so the transform can fix exactly that. Do NOT reject for
-  style/taste, for work that belongs to a DIFFERENT site, or to demand a
-  broader refactor.
-
-  Set `confidence` honestly (high = you can point to the exact problem;
-  low = a hunch with no concrete evidence). A low-confidence rejection with
-  no concrete blocker is treated as approval downstream — so only spend a
-  rejection when you have a real, named blocker.
-
-  Set `family` to your own family ("claude" or "gpt" — see your user
-  prompt).
-
-prompt review_user_claude:
-  Confirm the change for THIS work-item correctly + safely applies the axis
-  at its site. Workspace: {{vars.workspace_dir}}
-
-  THE AXIS:
-  {{vars.improvement_prompt}}
-
-  THIS WORK-ITEM:
-    title:       {{input.item_title}}
-    targets:     {{input.item_targets}}
-    change_spec: {{input.item_change_spec}}
-
-  Review the UNCOMMITTED change: `git add -N .` then `git diff HEAD` (never
-  `HEAD^..HEAD`), reading the changed/added files as needed. Judge only
-  correctness / consistency / no-regression FOR THIS ITEM. Output:
-    - approved:   true when the axis is correctly + safely applied here
-    - family:     "claude" for this reviewer
-    - blockers:   concrete blockers IN THIS CHANGE (empty when approved)
-    - fix_plan:   the smallest-change fix for the blockers (empty when approved)
-    - confidence: "low" / "medium" / "high"
-
-prompt review_user_gpt:
-  Confirm the change for THIS work-item correctly + safely applies the axis
-  at its site. Workspace: {{vars.workspace_dir}}
-
-  THE AXIS:
-  {{vars.improvement_prompt}}
-
-  THIS WORK-ITEM:
-    title:       {{input.item_title}}
-    targets:     {{input.item_targets}}
-    change_spec: {{input.item_change_spec}}
-
-  Review the UNCOMMITTED change: `git add -N .` then `git diff HEAD` (never
-  `HEAD^..HEAD`), reading the changed/added files as needed. Judge only
-  correctness / consistency / no-regression FOR THIS ITEM. Output:
-    - approved:   true when the axis is correctly + safely applied here
-    - family:     "gpt" for this reviewer
-    - blockers:   concrete blockers IN THIS CHANGE (empty when approved)
-    - fix_plan:   the smallest-change fix for the blockers (empty when approved)
-    - confidence: "low" / "medium" / "high"
+  Work the axis one site at a time — locate → smallest change → build → test →
+  commit — until this pass has applied it everywhere you can. Read `git log`
+  first to see what earlier passes already landed. Then report the termination
+  contract (axis_complete, commits_this_pass, sites_remaining).
 
 ## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
-## Reused verbatim from the ADR-055 design: an ADAPTIVE agent (verify_build)
-## reads the verify-build skill, builds+tests the repo with its OWN tooling,
-## and writes a re-runnable <scratch_dir>/verify.sh; a DETERMINISTIC
-## tool node (verify_run) re-runs that script and gates on the REAL exit
-## code (no LLM judgment). No language / package manager is named here — the
-## gate stays universal while the verdict stays deterministic. It runs
-## PER ITEM, so every incremental commit is build+test green on its own.
+## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
+## the repo's real build+test into <scratch_dir>/verify.sh; a DETERMINISTIC
+## tool node (verify_run) re-runs it and gates on the REAL exit code. No
+## language / package manager is named here — the gate stays universal while
+## the verdict stays deterministic. verify_build does NOT fix code: a RED gate
+## routes back to `campaign` (the one capable agent) to fix what it broke.
 
 prompt verify_system:
-  You are a release engineer. A change was just applied to ONE site of this
-  repository. Your single job: make the repository actually BUILD and its
-  tests PASS using the repo's OWN tooling, and leave a script the
-  deterministic gate can re-run.
+  You are a release engineer. A campaign pass just applied changes across
+  this repository and committed them. Your single job: capture how THIS repo
+  builds and tests itself into a re-runnable script the deterministic gate
+  will execute. You do NOT change code.
 
   STEPS:
   1. Detect how THIS repo builds and tests itself — read the `verify-build`
-     skill. Use the repo's own toolchain (a task runner / Makefile target, a
+     skill. Use the repo's OWN toolchain (a task runner / Makefile target, a
      package-manager test script, or a language build+test command),
      HONOURING any pinned toolchain (version managers, lockfiles, devbox,
      GOTOOLCHAIN). Do NOT assume a language.
-  2. Write an executable POSIX-sh script to
-     `{{vars.scratch_dir}}/verify.sh` (an OUT-OF-TREE scratch path, NOT
-     inside the repo — create `{{vars.scratch_dir}}` first if needed with
-     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND its
-     tests (or the closest fast equivalent) and exits non-zero on any
-     failure. Keep it to the commands a developer of THIS repo would run; no
-     network-heavy or destructive steps.
-  3. Run it. If it FAILS, first read the error: a failure in code the
-     just-applied change touches is almost always introduced by it — FIX it
-     at the source (update the missed caller, correct the signature, fix the
-     test) with the SMALLEST change that restores build+tests. Do NOT
-     refactor or change behaviour beyond what is needed to compile and pass.
-     Re-run until green.
-  4. PRE-EXISTING failures: some repos are already red on the base tree,
-     before this run touched anything. If a failure looks unrelated to the
-     item, attribute it CHEAPLY ONCE (e.g. `git stash` the item's diff,
-     re-run just that failing target, `git stash pop`). A failure that also
-     occurs without the change is OUT OF SCOPE: do NOT fix it and do NOT
-     keep investigating it — scope `verify.sh` to the build plus the test
-     targets the item's change actually affects (package/module-level), so
-     the gate measures THIS item, and list the excluded pre-existing
-     failures in your summary. Never let a red base tree absorb the run.
-  5. If the repo genuinely has no build/test system (pure docs/config),
-     write a script that echoes that and exits 0, and say so.
+  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
+     (an OUT-OF-TREE scratch path, NOT inside the repo — create it first with
+     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND its tests
+     (or the closest fast equivalent) and exits non-zero on any failure. Keep
+     it to the commands a developer of THIS repo would run; no network-heavy
+     or destructive steps.
+  3. PRE-EXISTING failures: some repos are already red on the base tree,
+     before this run touched anything. Scope `verify.sh` to the build plus the
+     test targets the campaign's changes actually affect (package/module
+     level), so the gate measures THIS run's work and a red base can't absorb
+     it — and list any excluded pre-existing failures in your summary.
+  4. Run it ONCE to confirm the script itself is valid (the commands resolve).
+     You do NOT fix code here: if the build is RED because the campaign broke
+     something, the deterministic gate reports it and the campaign fixes it on
+     the next pass. Just make `verify.sh` faithfully run the repo's real
+     build+test.
+  5. If the repo genuinely has no build/test system (pure docs/config), write
+     a script that echoes that and exits 0, and say so.
 
-  A deterministic tool node RE-RUNS your script and gates the commit on its
-  real exit code, so claiming "it passes" without making it pass is
-  pointless. Output prepared=true once `{{vars.scratch_dir}}/verify.sh`
-  exists and reflects the repo's real build+test; summary = the command you
-  settled on and what you fixed.
+  A deterministic tool node RE-RUNS your script and gates the run on its real
+  exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh` exists
+  and reflects the repo's real build+test; summary = the command you settled
+  on and any pre-existing failures you scoped out.
 
 prompt verify_user:
   Repository to verify: {{vars.workspace_dir}}
 
-  Make it build + test green with its OWN tooling and write
-  `{{vars.scratch_dir}}/verify.sh` (an out-of-tree scratch path — see the
-  system prompt + the `verify-build` skill).
-
-  Output from the PREVIOUS verify attempt's deterministic gate (empty on
-  the first attempt — when present, fix exactly what it shows, it is the
-  real build/test failure):
-  {{input.fail_log}}
+  Capture the repo's real build + test into `{{vars.scratch_dir}}/verify.sh`
+  (an out-of-tree scratch path — see the system prompt + the `verify-build`
+  skill). Do NOT change code; the deterministic gate runs your script and the
+  campaign fixes any red on the next pass.
 
 ## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
 
 prompt finalize_mr_system:
-  You finalize a converged improvement run by opening ONE merge/pull
-  request for the SERIES of per-item commits this run produced, then
-  (optionally) posting the MR link back to the source issue. You make NO
-  further code changes.
+  You finalize a converged improvement run by opening ONE merge/pull request
+  for the SERIES of per-pass commits this run produced, then (optionally)
+  posting the MR link back to the source issue. You make NO further code
+  changes.
 
   Read the `forge-mr-create` skill FIRST — it tells you how to detect the
-  forge, authenticate from the mounted forge_token, push the branch, and
-  open the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+  forge, authenticate from the mounted forge_token, push the branch, and open
+  the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
 
   Procedure:
-    1. Confirm there are commits to ship: the run's HEAD must be ahead of
-       the base (`git rev-list --count <base>..HEAD` > 0). If not, set
+    1. Confirm there are commits to ship: the run's HEAD must be ahead of the
+       base (`git rev-list --count <base>..HEAD` > 0). If not, set
        opened=false with skipped_reason "no commits ahead of base" — do NOT
        open an empty MR.
     2. Determine the branch name (mr_branch if set, else a stable
        iterion/improve/<run-id> name) and the base (mr_base if set, else the
        repo's default branch — see the skill).
     3. Authenticate the matching forge CLI from the mounted forge_token file
-       when present; otherwise assume host auth. If neither is available,
-       set opened=false with a precise skipped_reason — never pretend.
-    4. Push HEAD to the branch on the origin remote, then open the MR/PR
-       from that branch into the base, with a clear title + body
-       summarising the improvement axis and the items landed (use
-       scope_notes for context).
-    5. If source_issue_ref is set, post the opened MR URL back to it: a
-       forge issue URL → comment via the same forge CLI; a "native:<id>"
-       ref → use the board comment tool. Set back_linked accordingly.
+       when present; otherwise assume host auth. If neither is available, set
+       opened=false with a precise skipped_reason — never pretend.
+    4. Push HEAD to the branch on the origin remote, then open the MR/PR from
+       that branch into the base, with a clear title + body summarising the
+       improvement axis and the sites landed (use scope_notes for context).
+    5. If source_issue_ref is set, post the opened MR URL back to it: a forge
+       issue URL → comment via the same forge CLI; a "native:<id>" ref → use
+       the board comment tool. Set back_linked accordingly.
 
-  Return opened, url, branch, back_linked, skipped_reason and a short
-  summary. Be honest: report exactly what happened.
+  Return opened, url, branch, back_linked, skipped_reason and a short summary.
+  Be honest: report exactly what happened.
 
 prompt finalize_mr_user:
   Workspace: {{input.workspace_dir}}
@@ -534,124 +336,48 @@ prompt finalize_mr_user:
   Source issue to back-link (may be empty): {{input.source_issue_ref}}
   Context / scope: {{input.scope_notes}}
 
-  Push the branch, open the MR/PR, post the back-link when a source issue
-  is given, and return the structured result.
+  Push the branch, open the MR/PR, post the back-link when a source issue is
+  given, and return the structured result.
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
-## next_item's input: the edge-relayed cursor. incoming_cursor is the
-## `advance` compute's carry_next (cursor+1) on the advancing return paths;
-## absent on entry / enumerate-return / re-enum-continue, where next_item
-## seeds from <scratch_dir>/state (the crash-safe disk cursor), else 0.
-schema next_item_input:
-  incoming_cursor: int
-
-## next_item's output: THIS item + deterministic routing flags + the cursor
-## the `advance` compute reads to emit cursor+1.
-schema next_item_output:
-  ## Routing flags (mutually exclusive by construction — see the node):
-  needs_enumerate: bool      ## no work-list on disk yet → run enumerate
-  capped: bool               ## cursor >= max_items → stop + ship (hard cap)
-  exhausted: bool            ## work-list processed → run re_enumerate
-  has_item: bool             ## an item is ready to transform (the fallthrough)
-  ## The current item (empty when has_item is false):
-  item_id: string
-  item_title: string
-  item_targets: string
-  item_change_spec: string
-  ## The index this pass is USING (persisted crash-safe to disk). `advance`
-  ## reads it (in the loop body, fresh) to emit cursor+1 for the next item.
-  cursor: int
-  total_items: int
-  max_items: int
-  ## Declared-loop caps, scaled to max_items so a pathological axis can't
-  ## grind past the bound (the cycle-declaration satisfiers + backstops).
-  sweep_max: int
-  transform_max: int
-
-schema enumerate_output:
-  total_items: int
-  summary: string
-
-schema enumerate_input:
-  workspace_dir: string
-
-schema re_enumerate_output:
-  found_more: bool
-  appended_count: int
-  summary: string
-
-schema transform_input:
-  item_id: string
-  item_title: string
-  item_targets: string
-  item_change_spec: string
-  ## Filled only on a review-reject re-transform of the SAME item.
-  blockers: string[]
-  fix_plan: string
-
-schema transform_output:
-  applied: bool
-  summary: string
-
-schema review_input:
-  item_title: string
-  item_targets: string
-  item_change_spec: string
-
-schema verdict_output:
-  approved: bool
-  ## family is enum-constrained so a hallucinated third value can't bypass
-  ## the family-aware routing and fall through the graph — the validator
-  ## rejects it and the parse_fallback retry forces a valid family.
-  family: string [enum: "claude", "gpt"]
-  blockers: string[]
-  fix_plan: string
-  confidence: string [enum: "low", "medium", "high"]
-
-## review_gate normalises the reviewer verdict into the commit/re-transform
-## decision. `approved` is SOFT — a rejection with NO concrete blocker, or a
-## low-confidence rejection, is treated as approval (nothing concrete to
-## fix, so commit rather than spin the transform). Only a
-## medium/high-confidence rejection WITH a concrete blocker routes back to
-## transform.
-schema review_state:
-  approved: bool
-  family: string
-  blockers: string[]
-  fix_plan: string
-
-## advance computes the NEXT cursor (cursor+1) for the sweep's advancing
-## return paths (commit / verify-skip / review-skip). It exists to keep the
-## advance value OFF the loop-back edge's own head node: reading
-## outputs.next_item on a next_item→…→next_item back-edge returns a stale
-## (loop-entry-frozen) value, so the return edge reads outputs.advance.carry
-## instead — the same discipline the old bot used with streak_check.carry_*.
-## next_item's disk cursor is the crash-safe source of truth; this only
-## supplies the +1 the advancing paths hand back.
-schema advance_state:
-  carry_next: int
-
-schema verify_input:
+## campaign's input: the deterministic gate's failure log from the PREVIOUS
+## pass (empty on the first pass and on a green-but-more-work continuation).
+schema campaign_input:
   fail_log: string
 
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
+## keys convergence on. axis_complete is the done-oracle (a fresh re-scan
+## finds nothing left); the rest is observability.
+schema campaign_output:
+  axis_complete: bool
+  commits_this_pass: int
+  sites_remaining: string
+  needs_human: bool
+  human_note: string
+  summary: string
+
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
 schema verify_plan:
   prepared: bool
   summary: string
 
 ## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
-## the real process exit code of re-running <scratch_dir>/verify.sh —
-## NOT an LLM judgment. `skipped` is true only when no verify script was
-## produced (treated as pass but surfaced loudly, never a silent façade).
+## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
+## LLM judgment. `skipped` is true only when no verify script was produced
+## (treated as pass but surfaced loudly, never a silent façade).
 schema verify_result:
   passed: bool
   skipped: bool
   exit_code: int
   log_tail: string
 
-schema commit_result:
-  success: bool
-  output: string
+## gate is the deterministic continuation decision. converged = the tree is
+## green AND the campaign reported the axis fully applied. fail_log relays the
+## real build failure to the campaign on a RED pass (empty when green).
+schema gate_state:
+  converged: bool
+  fail_log: string
 
 schema mr_gate_output:
   open_mr: bool
@@ -673,199 +399,33 @@ schema finalize_mr_output:
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
-## next_item (ADR-057) — the deterministic work-list + cursor reader and
-## the sweep's ENTRY. It mirrors the retired snapshot_chunk's role: it is
-## the ONLY filesystem writer of the cursor, it runs at the START of every
-## item, and it persists the cursor it is USING (NOT an eager +1) so a crash
-## re-processes the in-flight item. The advance rides the `advance` compute
-## (cursor+1) on the commit/skip return paths; a re-transform stays on the
-## same item, and an enumerate/re-enum return re-seeds from the persisted disk
-## cursor. It reads the work-list written by enumerate/re_enumerate and
-## DETERMINISTICALLY drops any item without a concrete target (ADR-057: an
-## item with no nameable target is dropped, not guessed), so a fuzzy
-## enumeration can't inject work.
-##
-## Resumability: on a re-dispatch the work-list file and the cursor are on
-## disk, so next_item (the entry) resumes mid-sweep — has_item routes
-## straight to transform without re-enumerating; a fresh run finds no
-## work-list → needs_enumerate → enumerate.
-##
-## sh -c is dash on some hosts / bash in devbox — the body is plain POSIX +
-## python3 (the verify-build toolchain). Keep it double-quote-free so
-## `python3 -c "..."` stays intact, and NO backticks inside (the E012
-## raw-string gotcha).
-tool next_item:
-  command: `SCRATCH={{vars.scratch_dir}} MAXITEMS={{vars.max_items}} STATE_CURSOR={{input.incoming_cursor}} python3 -c "
-import os, json
-
-scratch = os.environ.get('SCRATCH', '.')
-try:
-    max_items = int(os.environ.get('MAXITEMS', '120') or '120')
-except (ValueError, TypeError):
-    max_items = 120
-if max_items <= 0:
-    max_items = 120
-
-# Out-of-tree scratch (engine-resolved ${PROJECT_SCRATCH_DIR}); ensure it
-# exists before writing the crash-safe cursor. Absent worklist -> a fresh
-# (or ephemeral-sandbox re-dispatched) run re-enumerates, which is correct.
-try:
-    os.makedirs(scratch, exist_ok=True)
-except OSError:
-    pass
-
-worklist_path = os.path.join(scratch, 'worklist.json')
-state_path = os.path.join(scratch, 'state')
-
-# --- load + validate the work-list (written by enumerate / re_enumerate) ---
-# ADR-057: drop any item without a concrete, nameable target -- a target-less
-# item is guessed, not found. A missing / unreadable / non-array file means no
-# work-list yet -> needs_enumerate.
-items = []
-have_worklist = os.path.exists(worklist_path)
-if have_worklist:
-    try:
-        with open(worklist_path, 'r', encoding='utf-8') as wf:
-            raw = json.load(wf)
-        if not isinstance(raw, list):
-            raise ValueError('worklist is not a JSON array')
-        for it in raw:
-            if not isinstance(it, dict):
-                continue
-            targets = str(it.get('targets', '') or '').strip()
-            if not targets:
-                continue
-            title = str(it.get('title', '') or '').strip()
-            items.append({
-                'id': str(it.get('id', '') or ('item-' + str(len(items) + 1))),
-                'title': title or targets[:60],
-                'targets': targets,
-                'change_spec': str(it.get('change_spec', '') or '').strip(),
-            })
-    except (OSError, IOError, ValueError, TypeError):
-        items = []
-        have_worklist = False
-
-total_items = len(items)
-
-# --- cursor (crash-safe, non-eager; the snapshot_chunk discipline) ---
-cursor = 0
-try:
-    with open(state_path, 'r', encoding='utf-8') as sf:
-        st = json.load(sf)
-    if isinstance(st, dict):
-        cursor = int(st.get('cursor', 0) or 0)
-except (OSError, IOError, ValueError, TypeError):
-    cursor = 0
-if cursor < 0:
-    cursor = 0
-# The edge-fed carry wins (verdict-coupled advance), else disk on a fresh
-# dispatch. float() tolerates a value the expr engine stringifies as '6'/'6.0';
-# an empty/literal placeholder (entry, no inbound edge) parse-fails -> disk.
-try:
-    incoming = int(float((os.environ.get('STATE_CURSOR', '') or '').strip()))
-    if incoming >= 0:
-        cursor = incoming
-except (ValueError, TypeError):
-    pass
-
-# Persist the cursor this pass is USING -- NOT cursor+1. The advance rides the
-# commit/skip loop-return edge as the advance compute carry_next, so a run
-# that dies mid-item leaves the cursor AT that item and a re-dispatch
-# re-processes it. enumerate/re-enum returns carry NO cursor and re-seed from
-# this persisted value (the crash-safe disk cursor).
-try:
-    with open(state_path, 'w', encoding='utf-8') as sf:
-        json.dump({'cursor': int(cursor)}, sf)
-except (OSError, IOError):
-    pass
-
-needs_enumerate = (not have_worklist)
-capped = (have_worklist and cursor >= max_items)
-exhausted = (have_worklist and not capped and cursor >= total_items)
-has_item = (have_worklist and not capped and cursor < total_items)
-
-item = items[cursor] if has_item else {'id': '', 'title': '', 'targets': '', 'change_spec': ''}
-
-# Loop caps scaled to max_items. Worst-case sweep advances ~= commits/skips
-# (<= max_items) + re-enum rounds (<= max_items, >=1 item each) + enumerate(1);
-# transform re-loops are review-reject retries across the run. Generous
-# headroom -- next_item's capped -> stop is the primary cap; these are the
-# cycle-declaration satisfiers + backstops.
-sweep_max = 2 * max_items + 30
-transform_max = 2 * max_items + 20
-
-print(json.dumps({
-    'needs_enumerate': needs_enumerate,
-    'capped': capped,
-    'exhausted': exhausted,
-    'has_item': has_item,
-    'item_id': item['id'],
-    'item_title': item['title'],
-    'item_targets': item['targets'],
-    'item_change_spec': item['change_spec'],
-    'cursor': int(cursor),
-    'total_items': int(total_items),
-    'max_items': int(max_items),
-    'sweep_max': int(sweep_max),
-    'transform_max': int(transform_max),
-}))
-"`
-  output: next_item_output
-
-## enumerate — whole-repo adaptive agent that WRITES the ordered work-list.
-## claude_code (full native toolset) so it reads the repo by its real
-## structure like native Claude Code. Writes
-## <scratch_dir>/worklist.json (next_item reads it) — the same
-## "adaptive agent writes a file, deterministic node reads it" pattern as
-## verify_build/verify_run.
-agent enumerate:
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset (read/edit/shell/git) so it works exactly like a native Claude
+## Code session: a living todo list + one verified commit per site, in
+## stride. session: fresh — a fresh pass re-derives its todo list from the
+## repo + `git log` (git is the durable state). reasoning_effort high, not
+## max: the productive-session data says the working SHAPE, not the model
+## tier, is the lever (framing > capability). interaction: human — the agent
+## may pause for the operator on a genuine mid-flight decision (kept rare by
+## the contract).
+agent campaign:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: enumerate_input
-  output: enumerate_output
-  system: enumerate_system
-  user: enumerate_user
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
   session: fresh
   interaction: human
 
-## re_enumerate — the convergence pass. Same agent shape as enumerate; it
-## re-scans for remaining sites and APPENDS them to the work-list, or
-## reports found_more=false (the done-oracle).
-agent re_enumerate:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: enumerate_input
-  output: re_enumerate_output
-  system: re_enumerate_system
-  user: re_enumerate_user
-  session: fresh
-  interaction: human
-
-## transform — the adaptive fixer. claude_code (full tools, whole-repo
-## context) applies the axis for THIS item's targets. session: fresh — each
-## item is an independent change.
-agent transform:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: transform_input
-  output: transform_output
-  system: transform_system
-  user: transform_user
-  session: fresh
-  interaction: human
-
-## verify_build — adaptive, stack-agnostic build/test repair (writes
-## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not an
-## item session. high, not max: mechanical build-repair, not deep review.
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-site
+## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  input: verify_input
   output: verify_plan
   system: verify_system
   user: verify_user
@@ -873,11 +433,10 @@ agent verify_build:
   interaction: human
 
 ## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
-## <scratch_dir>/verify.sh and reports the REAL exit code. No language
-## / package manager appears here — it executes whatever verify_build wrote,
-## so the gate stays universal while the verdict stays deterministic.
-## python3 for safe JSON + subprocess capture; double-quote-free body, no
-## backticks (E012).
+## <scratch_dir>/verify.sh and reports the REAL exit code. No language /
+## package manager appears here — it executes whatever verify_build wrote, so
+## the gate stays universal while the verdict stays deterministic. python3 for
+## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
 tool verify_run:
   command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
 import os, subprocess, json
@@ -912,85 +471,18 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 "`
   output: verify_result
 
-## Family selector (ADR-052, see branch-improve-loop): condition (NEVER
-## round_robin — it ignores `when` guards) so a MONO run routes to a single
-## family. The GPT edge is topology-guarded; the CLAUDE edge is the
-## unconditional default (C012). DUAL alternation rides
-## loop.sweep_loop.iteration parity (per item).
-router alt:
-  mode: condition
-
-judge reviewer_claude:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: review_input
-  output: verdict_output
-  ## Persist the verdict as a versioned artifact so each item's approval /
-  ## blockers is inspectable in the studio's Artifact tab.
-  publish: verdict_claude
-  system: review_system
-  user: review_user_claude
-  session: fresh
-  interaction: human
-
-judge reviewer_gpt:
-  ## Explicit backend pin: "openai/gpt-5.5" only works via claw; without it
-  ## the auto-resolver would route the node through claude_code, which
-  ## doesn't recognise openai/* models.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: review_input
-  output: verdict_output
-  publish: verdict_gpt
-  system: review_system
-  user: review_user_gpt
-  session: fresh
-  ## claw needs snake_case tool names to read the workspace + run git.
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  interaction: human
-
-## review_gate — deterministic commit/re-transform decision. No LLM, no
-## shell. Soft-approve: a rejection with no concrete blocker (or a
-## low-confidence one) commits rather than spinning the transform.
-compute review_gate:
-  output: review_state
-  expr:
-    approved: "input.approved || length(input.blockers) == 0 || input.confidence == 'low'"
-    family: "input.family"
-    blockers: "input.blockers"
-    fix_plan: "input.fix_plan"
-
-## advance — the cursor-advance compute. Reads the current cursor from
-## next_item's output (fresh, read in the loop BODY — not on the loop-back
-## edge) and emits cursor+1. The advancing return paths (commit_item,
-## verify-skip, review-skip) route THROUGH it, and the advance→next_item
-## loop-back edge reads outputs.advance.carry_next — never next_item's own
-## output on its back-edge (that reads a loop-entry-frozen value). No LLM,
+## gate — the deterministic continuation decision. Reads the real gate result
+## (outputs.verify_run.passed) AND the campaign's termination output
+## (outputs.campaign.axis_complete), both fresh in the loop BODY (the same
+## discipline the retired `advance` compute used to read the loop-head safely).
+## converged = green AND the axis is fully applied. On a RED pass fail_log
+## carries the real build failure to the campaign; empty when green. No LLM,
 ## no shell.
-compute advance:
-  output: advance_state
+compute gate:
+  output: gate_state
   expr:
-    carry_next: "outputs.next_item.cursor + 1"
-
-## commit_item (ADR-057 incremental commit) — ONE commit per work-item.
-## Reuses the retired commit_unit git logic: `git add -A` stages UNTRACKED
-## files too (the right-artifact rule: `git diff HEAD` omits untracked, so
-## commits MUST include them or a feature that ADDS files never lands). The
-## sweep's scratch (work-list / cursor / verify script+log) now lives
-## OUT-OF-TREE under {{vars.scratch_dir}}, so `git add -A` never sees it —
-## the old `reset -- .whole_improve_loop.*` unstage step is gone (nothing to
-## exclude). Message carries the item's title: assign it to a QUOTED shell
-## var first (`LABEL="..."`) so a title with spaces/colons/slashes/parens is
-## one value — an unquoted `LABEL=<title> git ...` env-prefix would word-split
-## the title into a bogus command. `${LABEL:-workspace}` guards an empty one.
-## No-op-safe: `diff --cached --quiet` makes no empty commit when a transform
-## changed nothing.
-tool commit_item:
-  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} diff --cached --quiet || { LABEL="{{input.item_title}}"; git -C {{vars.workspace_dir}} commit -m "refactor(improve): ${LABEL:-workspace}"; }; }`
-  output: commit_result
+    converged: "outputs.verify_run.passed && outputs.campaign.axis_complete"
+    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
 
 ## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
 ## edges use the C012-exhaustive simple form. No LLM, no shell.
@@ -999,9 +491,9 @@ compute mr_gate:
   expr:
     open_mr: "vars.open_mr"
 
-## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-item
-## commits. claude_code so the bundled forge-mr-create skill is mirrored and
-## the board comment tool (native back-link) is available.
+## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-pass commits.
+## claude_code so the bundled forge-mr-create skill is mirrored and the board
+## comment tool (native back-link) is available.
 agent finalize_mr:
   backend: "claude_code"
   model: "${ITERION_WHOLE_IMPROVE_MR_MODEL:-claude-opus-4-8}"
@@ -1017,15 +509,16 @@ agent finalize_mr:
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow whole_improve_loop:
-  ## Entry is the deterministic work-list/cursor reader. On a fresh run it
-  ## finds no work-list → routes to enumerate; on a re-dispatch it finds the
-  ## persisted work-list + cursor and resumes mid-sweep.
-  entry: next_item
+  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
+  ## (no blocking upfront enumerate to time out on a large repo). A fresh
+  ## dispatch starts a pass from a clean tree; a re-dispatch's campaign reads
+  ## `git log` and continues from the commits earlier passes banked.
+  entry: campaign
 
-  ## Container isolation. transform/verify run the repo's build, tests,
-  ## linters; reviewers run git. Inline sandbox config (vs `mode: auto`) so
-  ## the post_create that installs claude inside the container is honoured —
-  ## see feature_dev/main.bot for the full rationale.
+  ## Container isolation. campaign runs the repo's build, tests, linters and
+  ## git; verify runs the build/test. Inline sandbox config (vs `mode: auto`)
+  ## so the post_create that installs claude inside the container is honoured
+  ## — see feature_dev/main.bot for the full rationale.
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "1000:1000"
@@ -1043,119 +536,32 @@ workflow whole_improve_loop:
     threshold: 0.9
     preserve_recent: 8
 
-  ## ── next_item routing (first-match-wins; the fallthrough = has an item)
-  ## No work-list on disk → build it. (Fresh run only; a re-dispatch finds
-  ## the persisted work-list and skips this.)
-  next_item -> enumerate when needs_enumerate
-  ## Hard cap reached → stop and ship what is banked (the convergence
-  ## backstop for a pathological / unbounded axis).
-  next_item -> mr_gate when capped
-  ## Work-list processed → convergence pass (the done-oracle).
-  next_item -> re_enumerate when exhausted
-  ## Otherwise an item is ready → apply the axis to its targets.
-  next_item -> transform
-
-  ## enumerate wrote the work-list → start the sweep. No incoming_cursor: on a
-  ## fresh run next_item's disk cursor is 0 (persisted by the needs_enumerate
-  ## pass), so the sweep starts at item 0. This closes the
-  ## next_item→enumerate→next_item cycle → declared sweep_loop; on loop-cap
-  ## exhaustion it falls through to `fail`.
-  enumerate -> next_item as sweep_loop("{{outputs.next_item.sweep_max}}")
-  enumerate -> fail
-
-  ## transform applied the axis → deterministic build/test gate. verify_build
-  ## adapts to the repo's own tooling + writes the verify script; verify_run
-  ## re-runs it and gates on the REAL exit code.
-  transform -> verify_build with { fail_log: "" }
+  ## Each pass: the campaign applies the axis (committing each site in
+  ## stride), then the deterministic build/test gate re-checks the tree.
+  campaign -> verify_build
   verify_build -> verify_run
-  ## Green → review the change (route into the family selector).
-  verify_run -> alt when passed
-  ## Red → loop back to verify_build to fix the breakage, bounded (mirror of
-  ## the ADR-055 verify_loop(3)). The gate's log_tail is the failure to fix.
-  verify_run -> verify_build as verify_loop(3) with {
-    fail_log: "{{outputs.verify_run.log_tail}}"
-  }
-  ## Still red after the bounded retries → SKIP the item WITHOUT committing
-  ## broken code (never land a red build) and ADVANCE the cursor (via the
-  ## `advance` compute). Its uncommitted changes stay in the tree for the
-  ## operator; the sweep moves on. Unconditional fallthrough after the
-  ## verify_loop(3) retries are spent.
-  verify_run -> advance
+  verify_run -> gate
 
-  ## Family selector: DUAL alternates claude ↔ gpt by sweep-iteration parity;
-  ## MONO routes to mono_family. The GPT edge is topology-guarded (ADR-052 —
-  ## round_robin would ignore this `when`); the CLAUDE edge is the
-  ## unconditional default. (transform/verify/review all read
-  ## {{outputs.next_item.*}} for the current item, so a re-transform loop
-  ## keeps the same item without threading its fields on every edge.)
-  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.sweep_loop.iteration % 2 == 1)" with {
-    item_title: "{{outputs.next_item.item_title}}",
-    item_targets: "{{outputs.next_item.item_targets}}",
-    item_change_spec: "{{outputs.next_item.item_change_spec}}"
+  ## Converged (green AND the campaign reports the axis fully applied) → ship
+  ## what is banked (optional MR, else finish).
+  gate -> mr_gate when converged
+  ## Not converged → another campaign pass. RED carries the failure log so the
+  ## agent fixes what it broke; green-but-more-work carries an empty log so the
+  ## agent simply continues the axis. This closes the single declared loop
+  ## (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
+  ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
+  ## output on its back-edge, which would read a loop-entry-frozen value).
+  gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
+    fail_log: "{{outputs.gate.fail_log}}"
   }
-  alt -> reviewer_claude with {
-    item_title: "{{outputs.next_item.item_title}}",
-    item_targets: "{{outputs.next_item.item_targets}}",
-    item_change_spec: "{{outputs.next_item.item_change_spec}}"
-  }
+  ## continuation_loop exhausted (max_passes hit while sites still remain) →
+  ## ship what is banked anyway (every committed site is real, landed work).
+  ## Unconditional fallthrough after the loop-back retries are spent.
+  gate -> mr_gate
 
-  ## Both reviewers feed the deterministic gate.
-  reviewer_claude -> review_gate with {
-    approved: "{{outputs.reviewer_claude.approved}}",
-    family: "{{outputs.reviewer_claude.family}}",
-    blockers: "{{outputs.reviewer_claude.blockers}}",
-    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}"
-  }
-  reviewer_gpt -> review_gate with {
-    approved: "{{outputs.reviewer_gpt.approved}}",
-    family: "{{outputs.reviewer_gpt.family}}",
-    blockers: "{{outputs.reviewer_gpt.blockers}}",
-    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}"
-  }
-
-  ## Approved → commit this item incrementally.
-  review_gate -> commit_item when approved with {
-    item_title: "{{outputs.next_item.item_title}}"
-  }
-  ## Rejected with a concrete blocker → back to transform to fix exactly
-  ## that, bounded (transform_max, run-wide). This closes the
-  ## transform→verify→alt→reviewer→review_gate→transform cycle → declared
-  ## transform_loop. transform re-reads {{outputs.next_item.*}} for the item.
-  review_gate -> transform as transform_loop("{{outputs.next_item.transform_max}}") with {
-    blockers: "{{outputs.review_gate.blockers}}",
-    fix_plan: "{{outputs.review_gate.fix_plan}}"
-  }
-  ## transform_loop exhausted (a stubborn item the reviewer never approves) →
-  ## SKIP it (advance the cursor, leave it uncommitted) so one item can never
-  ## block the sweep. Unconditional fallthrough after the transform_loop
-  ## retries are spent.
-  review_gate -> advance
-
-  ## Item committed → advance the cursor (via `advance`) and take the next item.
-  commit_item -> advance
-
-  ## advance emitted carry_next = cursor+1 → hand it back to next_item and take
-  ## the next item. Read from outputs.advance (NOT next_item's own output on its
-  ## back-edge, which reads a loop-entry-frozen value). Declared sweep_loop; on
-  ## exhaustion → fail.
-  advance -> next_item as sweep_loop("{{outputs.next_item.sweep_max}}") with {
-    incoming_cursor: "{{outputs.advance.carry_next}}"
-  }
-  advance -> fail
-
-  ## Convergence pass: re_enumerate re-scanned. Found more sites (appended to
-  ## the work-list) → continue the sweep WITHOUT advancing (next_item's disk
-  ## cursor still points at the first new item = the old total, so no
-  ## incoming_cursor is passed). Declared sweep_loop; on exhaustion → fail.
-  re_enumerate -> mr_gate when not found_more
-  re_enumerate -> next_item as sweep_loop("{{outputs.next_item.sweep_max}}")
-  re_enumerate -> fail
-
-  ## Converged (or capped) → optional MR path, else finish. finalize_mr
-  ## pushes the run's HEAD (the series of per-item commits) + opens the
-  ## MR/PR and (when source_issue_ref is set) posts the URL back.
+  ## Converged (or capped) → optional MR path, else finish. finalize_mr pushes
+  ## the run's HEAD (the series of per-pass commits) + opens the MR/PR and
+  ## (when source_issue_ref is set) posts the URL back.
   mr_gate -> finalize_mr when open_mr with {
     workspace_dir:    "{{vars.workspace_dir}}",
     mr_branch:        "{{vars.mr_branch}}",

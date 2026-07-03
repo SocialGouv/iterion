@@ -799,43 +799,40 @@ claw-code-go's agentic loop against OpenAI.
 
 ### `whole-improve-loop` — Willy
 
-Axis-driven work-list sweep across a whole codebase (ADR-057).
-`improvement_prompt` is THE AXIS — one determined improvement applied to
-every matching site, verified and committed site by site (e.g. "split
-every file over 600 lines into cohesive units", "converge duplicated X
-onto a shared helper", "make error handling use pattern Y"). It is a
-refactoring-campaign engine, not a scanner. A whole-repo adaptive agent
-reads the codebase by its real structure (grep/glob/read) and writes an
-ordered work-list of concrete sites; the sweep then, one item at a time,
-applies the axis (transform), gates the change on a deterministic
-stack-agnostic build+test verify (red → bounded fix retry → skip
-uncommitted, never landing broken code), has ONE cross-family reviewer
-(mono/dual, ADR-052) confirm the axis is correctly + safely applied at
-that site, and commits it — one incremental commit per item. When the
-work-list is exhausted a re-scan looks for any remaining sites (the
-done-oracle: the axis is fully applied iff a fresh scan finds nothing);
-new sites are appended and the sweep continues, else it converges.
-Bounded by a max_items cap so a pathological axis terminates. An
-interrupted / budget-capped run keeps every item it committed; the
-work-list + cursor are persisted (.whole_improve_loop.worklist.json /
-.state) so a large axis resumes mid-sweep across re-dispatches. Optional
-MR/PR path ships the series of per-item commits. Replaces the ADR-011 /
-ADR-055 chunked review-fix loop. See
-docs/adr/057-axis-driven-work-list-sweep.md.
+Whole-codebase improvement CAMPAIGN on one axis — one capable agent, its
+natural flow, minimal framing. `improvement_prompt` is THE AXIS: one
+determined improvement applied everywhere it applies (e.g. "split every file
+over 600 lines into cohesive units", "converge duplicated X onto a shared
+helper", "make error handling use pattern Y"). It is a refactoring-campaign
+engine, not a scanner. A single adaptive agent (claude_code, full tools,
+whole-repo context) works exactly as in a productive human session: a LIVING
+todo list born from a brief exploration (never frozen upfront phases), and
+for each site the repeated unit locate → smallest change → build → test →
+COMMIT, ~a few edits per commit, validation BEFORE the commit, committing
+each site AS it finishes (never batch). A deterministic, stack-agnostic
+build/test gate re-checks the tree after each pass (the anti-Goodhart truth
+oracle: the agent can't self-certify); RED routes back to the agent with the
+failure log to fix what it broke, green + axis-complete converges. git IS the
+durable state — an interrupted / budget-capped run keeps every committed
+site, and a re-dispatch re-runs the campaign, which reads `git log` and
+continues (no worklist/cursor scratch). Bounded by a max_passes cap so a
+pathological axis terminates. Optional MR/PR path ships the series of
+per-pass commits. Supersedes the v1 axis-sweep (ADR-057). See
+docs/references/productive-session-patterns.md.
 
 - **Use when**:
-  Use on EXISTING code to apply one determined, cross-cutting improvement
-  AXIS across the whole codebase, site by site — the campaigns a human runs
-  as a todo-list + frequent incremental commits (split the largest files,
-  converge N call sites onto a shared primitive, make a pattern consistent
-  everywhere). Pass the axis as improvement_prompt (empty = it picks the
-  single highest-value cross-cutting improvement it can name). It commits
-  each site incrementally and converges when a re-scan finds no remaining
-  sites, so long runs always leave landed, reviewable commits. For an
-  open-ended "find whatever is wrong" production-readiness audit (no single
-  axis), point a review-loop bot at the tree instead — this bot needs an
-  axis to sweep.
-- **Vars**: `improvement_prompt` (string), `max_items` (int), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `scope_globs` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
+  Use on EXISTING code to apply one determined, cross-cutting improvement AXIS
+  across the whole codebase, site by site — the campaigns a human runs as a
+  todo-list + frequent incremental commits (split the largest files, converge
+  N call sites onto a shared primitive, make a pattern consistent everywhere).
+  Pass the axis as improvement_prompt (empty = it picks the single
+  highest-value cross-cutting improvement it can name). One capable agent
+  commits each site in stride and the run converges when the agent reports the
+  axis fully applied and a deterministic build/test gate is green, so long runs
+  always leave landed, reviewable commits. For an open-ended "find whatever is
+  wrong" production-readiness audit (no single axis), point a review-loop bot
+  at the tree instead — this bot needs an axis to sweep.
+- **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->
