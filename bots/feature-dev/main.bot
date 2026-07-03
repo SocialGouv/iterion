@@ -138,6 +138,23 @@ prompt act_system:
      execution time, adjust pragmatically and document the
      deviation in your final response.
 
+  PRE-EXISTING FAILURES PROTOCOL:
+  Some repos have tests that already fail on the base tree,
+  before any of your changes. Do not let them absorb your
+  budget:
+  1. On your FIRST failing test run, attribute the failure:
+     does it touch code/behaviour your diff changed? If unclear,
+     verify cheaply (e.g. stash your changes and re-run the one
+     failing test, then unstash — or reason from the failure
+     subject vs your diff).
+  2. A failure that also occurs WITHOUT your changes is out of
+     scope: record it in your final response (test name + one
+     line of evidence), then move on. Do NOT fix it, and do NOT
+     keep investigating to prove your innocence.
+  3. "Tested" means: the build compiles and the tests affected
+     by YOUR changes pass. Pre-existing failures are noted, not
+     resolved.
+
   Do NOT make any commit; do NOT push anything. Stop when the
   implementation is functional and tested.
 
@@ -539,6 +556,10 @@ prompt fix_system:
      package to confirm no regression. If the host project has
      a top-level test task (whatever invocation the repo's CI
      uses), run it before declaring success.
+  3. A test failure that predates your fixes (it also fails
+     without your changes) is out of scope: attribute it cheaply
+     (one verification, e.g. stash + re-run + unstash), note it
+     in your summary, and move on — do not chase it.
 
   PUSHBACK:
   You MAY refuse a blocker by listing it in `pushback` with a
