@@ -225,6 +225,17 @@ type finalizeResult struct {
 	//   "skipped"  — explicit opt-out (mergeInto=none) or no commits
 	//   "failed"   — merge attempted but failed (logged, run still ok)
 	MergeStatus string
+	// WipBanked is true when finalize found UNCOMMITTED changes in the
+	// worktree and auto-committed them (a "wip" bank commit) so the
+	// storage branch preserves them. A wip-banked HEAD is never merged
+	// into the operator's branch — MergeStatus is forced to "skipped".
+	WipBanked bool
+	// PreserveWorktree is true when finalize could NOT secure the
+	// worktree's uncommitted changes (the wip bank commit failed).
+	// The caller must skip the worktree cleanup so the operator can
+	// recover the files by hand — removing it would silently destroy
+	// finished work.
+	PreserveWorktree bool
 }
 
 // finalizeWorktree promotes the worktree's HEAD onto a persistent
@@ -241,6 +252,46 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 			logger.Warn("runtime: finalize: cannot read worktree HEAD at %s — skipping promotion", wc.wtPath)
 		}
 		return res
+	}
+
+	// 1b. Bank uncommitted work before it can be destroyed. A bot that
+	// exits through a non-commit edge (a gated commit node not reached,
+	// a "hold for later" outcome, an agent that edited but never
+	// committed) leaves finished work as a dirty working tree; the
+	// cleanup that follows finalize is `git worktree remove --force`,
+	// which would silently destroy it — the exact stranded-work failure
+	// mode observed across the pre-ADR-055 bot-session corpus. Commit it
+	// as an explicit wip bank so the storage branch preserves it; the
+	// operator reviews it there (it is NEVER merged into their branch —
+	// see step 5).
+	if clean, cleanErr := workdirIsClean(wc.wtPath); cleanErr != nil {
+		if logger != nil {
+			logger.Warn("runtime: finalize: cannot probe worktree cleanliness: %v — proceeding without wip bank", cleanErr)
+		}
+	} else if !clean {
+		msg := "wip(iterion): auto-banked uncommitted run output"
+		if opts.runName != "" {
+			msg += " (" + opts.runName + ")"
+		}
+		if err := runGitInDir(wc.wtPath, "add", "-A"); err != nil {
+			if logger != nil {
+				logger.Warn("runtime: finalize: wip bank `git add -A` failed: %v — preserving worktree at %s", err, wc.wtPath)
+			}
+			res.PreserveWorktree = true
+		} else if err := runGitInDir(wc.wtPath, "commit", "-m", msg); err != nil {
+			if logger != nil {
+				logger.Warn("runtime: finalize: wip bank commit failed: %v — preserving worktree at %s", err, wc.wtPath)
+			}
+			res.PreserveWorktree = true
+		} else {
+			res.WipBanked = true
+			if banked := readHEAD(wc.wtPath); banked != "" {
+				finalSHA = banked
+			}
+			if logger != nil {
+				logger.Warn("runtime: finalize: worktree had UNCOMMITTED changes — banked as wip commit %s (review it on the storage branch; it will not be merged)", shortSHA(finalSHA))
+			}
+		}
 	}
 
 	// 2. No commits produced → nothing to promote.
@@ -294,7 +345,18 @@ func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.
 		logger.Info("runtime: finalize: created branch %s → %s", finalName, shortSHA(finalSHA))
 	}
 
-	// 5. Decide the merge target branch.
+	// 5. Decide the merge target branch. A wip-banked HEAD is never a
+	// merge candidate: the bank commit is unreviewed, un-verified output
+	// the run itself chose not to commit — fast-forwarding or squashing
+	// it into the operator's branch would land it silently. Storage
+	// branch only.
+	if res.WipBanked {
+		res.MergeStatus = "skipped"
+		if logger != nil {
+			logger.Info("runtime: finalize: merge skipped (wip-banked HEAD); review branch %s", finalName)
+		}
+		return res
+	}
 	target := resolveMergeTarget(opts.mergeInto, wc.originalBranch)
 	if target == "" {
 		// Explicit opt-out, or no candidate (detached HEAD at start with

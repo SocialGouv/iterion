@@ -409,6 +409,16 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 			e.logger.Info("runtime: finalize: run already finalized at review gate (status=%s, branch=%s); skipping",
 				r.MergeStatus, r.FinalBranch)
 		}
+		// The gate finalized COMMITS, but post-gate work may sit
+		// uncommitted in the worktree — removing it would destroy that
+		// work silently. Preserve instead; the operator recovers via the
+		// studio commit-and-finalize action.
+		if clean, cleanErr := workdirIsClean(wtCtx.wtPath); cleanErr == nil && !clean {
+			if e.logger != nil {
+				e.logger.Warn("runtime: finalize: worktree has uncommitted changes after review-gate finalize — preserving %s for inspection", wtCtx.wtPath)
+			}
+			return
+		}
 		if cleanup != nil {
 			cleanup()
 		}
@@ -446,6 +456,14 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 		}); err != nil && e.logger != nil {
 			e.logger.Warn("runtime: emit worktree_branch_failed event for %s: %v", runID, err)
 		}
+	}
+	if finRes.PreserveWorktree {
+		// finalize could not bank the worktree's uncommitted changes —
+		// removing it now would silently destroy finished work.
+		if e.logger != nil {
+			e.logger.Warn("runtime: worktree preserved (unbanked uncommitted changes): %s", e.workDir)
+		}
+		return
 	}
 	if cleanup != nil {
 		cleanup()

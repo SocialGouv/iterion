@@ -678,3 +678,94 @@ func TestRecoverFinalize_CancelledRun(t *testing.T) {
 		t.Errorf("FinalBranch = %q", r.FinalBranch)
 	}
 }
+
+// TestFinalizeWorktree_WipBanksDirtyWorktree — a run that finished with
+// UNCOMMITTED changes and an unchanged HEAD (bot exited through a
+// non-commit edge). Before the wip-bank fix this was silent total loss:
+// finalize no-op'd ("no commits produced") and the force-remove cleanup
+// destroyed the files. Now finalize banks the dirty tree as a wip commit
+// on the storage branch — and NEVER merges it into the operator's branch.
+func TestFinalizeWorktree_WipBanksDirtyWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	// Uncommitted work: one new file + one modified tracked file.
+	writeFile(t, filepath.Join(wt, "new_feature.go"), "package main\n")
+	writeFile(t, filepath.Join(wt, "README.md"), "init\nmodified\n")
+
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "wip-bank-test", runID: "run_w", autoMerge: true, mergeStrategy: "merge"}, nil)
+
+	if !res.WipBanked {
+		t.Fatalf("expected WipBanked=true, got %+v", res)
+	}
+	if res.PreserveWorktree {
+		t.Fatalf("bank succeeded — PreserveWorktree must be false, got %+v", res)
+	}
+	if res.FinalCommit == "" || res.FinalCommit == originalTip {
+		t.Fatalf("expected a banked commit distinct from originalTip, got %+v", res)
+	}
+	if res.FinalBranch == "" {
+		t.Fatalf("expected a storage branch on the banked commit, got %+v", res)
+	}
+	if res.MergeStatus != "skipped" || res.MergedInto != "" {
+		t.Fatalf("a wip-banked HEAD must never merge (want skipped), got %+v", res)
+	}
+	// The operator's branch must NOT have moved.
+	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	if mainTip != originalTip {
+		t.Fatalf("main moved to %s — a wip bank must never touch the operator's branch", mainTip)
+	}
+	// The banked commit really contains the uncommitted work.
+	show := string(mustOutput(t, repo, "git", "show", "--stat", "--format=%s", res.FinalCommit))
+	if !strings.Contains(show, "wip(iterion)") || !strings.Contains(show, "new_feature.go") || !strings.Contains(show, "README.md") {
+		t.Fatalf("banked commit missing expected content:\n%s", show)
+	}
+}
+
+// TestFinalizeWorktree_WipBankResidueOnTopOfCommits — the run committed
+// work AND left extra uncommitted residue. The residue is banked as a
+// child wip commit; the storage branch holds both, and because the tip
+// is a wip bank the merge is skipped (the real commits stay reviewable
+// on the branch, nothing lands silently).
+func TestFinalizeWorktree_WipBankResidueOnTopOfCommits(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	mustRun(t, repo, "git", "worktree", "add", wt, "HEAD")
+	t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "worktree", "remove", "--force", wt).Run() })
+
+	agentSHA := addCommit(t, wt, "feature.go", "package main\n", "feat: real work")
+	writeFile(t, filepath.Join(wt, "residue.go"), "package main\n")
+
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         wt,
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "wip-residue-test", runID: "run_r", autoMerge: true, mergeStrategy: "merge"}, nil)
+
+	if !res.WipBanked {
+		t.Fatalf("expected WipBanked=true, got %+v", res)
+	}
+	if res.FinalCommit == agentSHA || res.FinalCommit == originalTip {
+		t.Fatalf("expected banked tip above the agent commit, got %+v", res)
+	}
+	// The banked tip's parent is the agent's real commit.
+	parent := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", res.FinalCommit+"^")))
+	if parent != agentSHA {
+		t.Fatalf("banked commit parent = %s, want agent commit %s", parent, agentSHA)
+	}
+	if res.MergeStatus != "skipped" || res.MergedInto != "" {
+		t.Fatalf("wip-banked tip must skip the merge, got %+v", res)
+	}
+	mainTip := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "main")))
+	if mainTip != originalTip {
+		t.Fatalf("main moved to %s — must stay at %s", mainTip, originalTip)
+	}
+}
