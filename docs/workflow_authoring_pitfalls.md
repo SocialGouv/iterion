@@ -9,6 +9,10 @@ you imagined.** If your verdict criteria, scanner, and prompts can be
 satisfied by a façade, an agent will produce a façade — even when a fresh
 human reading the same goal would never consider it.
 
+This is the "what fails" half. The "what works" half — the measured shape of
+productive human-driven sessions and the authoring rules derived from it — is
+[references/productive-session-patterns.md](references/productive-session-patterns.md).
+
 ---
 
 ## The cheating LLM is the workflow's fault

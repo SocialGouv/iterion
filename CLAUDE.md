@@ -656,6 +656,11 @@ under-specified, and concrete rules for prompts, scanners, and judges
 that resist metric-gaming. Skipping it has a real cost — the
 goai → claw-code-go migration ran for 3 hours and produced a
 96%-parity-reported façade because these lessons weren't yet codified.
+Its "what works" companion is
+[docs/references/productive-session-patterns.md](docs/references/productive-session-patterns.md) —
+the measured shape of productive operator sessions (commit cadence,
+work-list discipline, termination contracts) distilled into authoring
+rules; ADR-055/ADR-057 encode its core finding.
 
 ### Review loops must converge to an asymptote
 
