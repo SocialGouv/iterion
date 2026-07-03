@@ -2,8 +2,16 @@
 ## whole_improve_loop
 ##
 ## Whole-codebase improvement loop, UNIT-CONVERGENT + INCREMENTAL-COMMIT
-## (ADR-055). The workspace is split by package/folder into chunks
-## ("units"); the loop processes ONE unit at a time — alternating
+## (ADR-055). The workspace is split by DIRECTORY into COHERENT-UNIT chunks
+## ("units", ADR-055 2b): a chunk is a package / directory subtree, and only
+## cohesive siblings under a shared parent dir are combined (and only while
+## they fit the budget) — never an arbitrary byte slice of unrelated code.
+## When a single package genuinely exceeds the budget it is split into
+## `partial` sub-chunks that STILL carry the full package file index, and the
+## reviewer/fixer are guarded to NOT judge whole-package completeness (dead/
+## unused) from a partial view — the anti-fragmentation guard that keeps a
+## byte-slice reviewer from false-flagging an unseen-part symbol as dead and
+## looping forever. The loop processes ONE unit at a time — alternating
 ## Claude / GPT review with a deterministic per-unit "two consecutive
 ## clean reviews" stability gate — and COMMITS each unit as soon as IT
 ## converges, BEFORE moving the cursor to the next unit. When a verdict
@@ -430,6 +438,17 @@ prompt review_user_claude:
   Chunk {{input.chunk_index}} of {{input.num_chunks}}  ·  label: {{input.chunk_label}}
   Chunked this run: {{input.chunked}}  ·  context delivery mode: {{input.context_mode}}
 
+  ## PARTIAL-VIEW GUARD (ADR-055 2b) — ANTI-FRAGMENTATION
+  partial: {{input.partial}}  ·  unit: {{input.unit_label}}  ·  part {{input.unit_part}}/{{input.unit_parts}}
+  When `partial` is true you are seeing ONE PART of package
+  {{input.unit_label}}; you MUST NOT flag any symbol as dead/unused/
+  unreferenced or make ANY whole-package completeness judgement — the
+  other parts (ALL files of the package are in the index / chunk_file_list
+  below, read them on demand) and the deterministic build/test gate cover
+  the rest. Read the other files in the provided index before making ANY
+  cross-file claim. When `partial` is false this chunk is a WHOLE coherent
+  unit and normal completeness judgements apply.
+
   Files in this chunk:
   {{input.chunk_files}}
 
@@ -508,6 +527,17 @@ prompt review_user_gpt:
   ## THIS PASS'S CHUNK (context-budget chunking)
   Chunk {{input.chunk_index}} of {{input.num_chunks}}  ·  label: {{input.chunk_label}}
   Chunked this run: {{input.chunked}}  ·  context delivery mode: {{input.context_mode}}
+
+  ## PARTIAL-VIEW GUARD (ADR-055 2b) — ANTI-FRAGMENTATION
+  partial: {{input.partial}}  ·  unit: {{input.unit_label}}  ·  part {{input.unit_part}}/{{input.unit_parts}}
+  When `partial` is true you are seeing ONE PART of package
+  {{input.unit_label}}; you MUST NOT flag any symbol as dead/unused/
+  unreferenced or make ANY whole-package completeness judgement — the
+  other parts (ALL files of the package are in the index / chunk_file_list
+  below, read them on demand) and the deterministic build/test gate cover
+  the rest. Read the other files in the provided index before making ANY
+  cross-file claim. When `partial` is false this chunk is a WHOLE coherent
+  unit and normal completeness judgements apply.
 
   Files in this chunk:
   {{input.chunk_files}}
@@ -701,6 +731,20 @@ prompt fix_user:
   bulk-read or sweep the rest of the repo: other chunks are
   reviewed and fixed on their own passes.
 
+  PARTIAL-VIEW GUARD (ADR-055 2b) — partial:
+  {{outputs.snapshot_chunk.partial}} · unit:
+  {{outputs.snapshot_chunk.unit_label}} · part
+  {{outputs.snapshot_chunk.unit_part}}/{{outputs.snapshot_chunk.unit_parts}}.
+  When partial is true these blockers were raised against ONE PART of
+  package {{outputs.snapshot_chunk.unit_label}}. You MUST NOT delete or
+  narrow a symbol as "dead/unused/unreferenced" on the strength of a
+  partial-view finding, and you MUST NOT make any whole-package
+  completeness change — an unseen part of this package may define or call
+  it. Read the other files of the package (they are all in the chunk index)
+  before applying any cross-file change; when unsure, `pushback` the item
+  with that reason. When partial is false the unit is whole and normal
+  fixes apply.
+
   Reported blockers:
   {{input.blockers}}
 
@@ -769,6 +813,17 @@ schema review_input:
   chunk_index: int
   num_chunks: int
   chunked: bool
+  ## ADR-055 2b partial-view fields (from snapshot_chunk, relayed on the
+  ## alt -> reviewer edge). partial: this chunk is ONE part of an oversize
+  ## package -> the reviewer MUST NOT flag any symbol dead/unused or make ANY
+  ## whole-package completeness call (the other parts + the deterministic gate
+  ## cover the rest); chunk_file_list here is the FULL package index, read the
+  ## rest on demand. False = a whole coherent unit, normal judgements apply.
+  ## unit_label names the package; unit_part/unit_parts locate this slice.
+  partial: bool
+  unit_label: string
+  unit_part: int
+  unit_parts: int
 
 ## snapshot_output is the deterministic workspace-snapshot tool's
 ## contract. It is the shared chunking surface for the reviewer (reads
@@ -796,6 +851,17 @@ schema snapshot_output:
   chunk_index: int
   num_chunks: int
   chunked: bool
+  ## ADR-055 2b coherent-unit chunking. partial: this chunk is ONE part of a
+  ## package that genuinely exceeded the budget (the overflow-fallback, issue
+  ## #12) -- its chunk_file_list carries the FULL package index so the reviewer
+  ## can read the rest on demand and MUST NOT judge whole-package completeness.
+  ## False for a whole coherent unit (one package, or cohesive same-parent
+  ## siblings combined under budget). unit_label names the package; unit_part /
+  ## unit_parts locate this slice (e.g. 2 of 3).
+  partial: bool
+  unit_label: string
+  unit_part: int
+  unit_parts: int
   file_count: int
   chunk_tokens: int
   total_files: int
@@ -947,11 +1013,21 @@ schema fix_output:
 ## snapshot_chunk (issue #12) — the deterministic workspace-snapshot /
 ## chunking node, shared by the reviewer (which reads the emitted
 ## chunk_content) and, via session inheritance, the fixer. It groups
-## source files by package/folder (Go-package boundary == directory)
-## into chunks of at most {{vars.max_review_chunk_tokens}} estimated
-## tokens, then emits EXACTLY ONE chunk for this pass. A package larger
-## than the budget is split by file-size budget (the "package boundary
-## first, then file-size" heuristic). The unit (chunk) the cursor points
+## source files by DIRECTORY (never by language — SOURCE_EXTS spans many;
+## a package boundary == a directory) into COHERENT-UNIT chunks
+## (ADR-055 2b): a chunk is a package / directory subtree, and only
+## COHESIVE SIBLINGS (packages under the SAME immediate parent dir) are
+## combined, and only while together they fit {{vars.max_review_chunk_tokens}}
+## estimated tokens — unrelated top-level packages are NEVER bundled. It
+## emits EXACTLY ONE chunk for this pass. A SINGLE package that GENUINELY
+## exceeds the budget (the overflow-fallback, issue #12) is still split by
+## file-size, BUT each sub-chunk is flagged `partial` and carries the FULL
+## package file index (all files, not just the slice) + unit_label /
+## unit_part / unit_parts, so a reviewer of one part still SEES the rest and
+## can never mistake an unseen-part definition/caller for dead code (the
+## false positive that broke convergence). A package that fits is a WHOLE
+## unit (partial=false) -> full completeness judgements allowed. The unit
+## (chunk) the cursor points
 ## at is selected via a persisted JSON state file (.whole_improve_loop.state
 ## at the workspace root, add it to .gitignore) which ALSO carries the
 ## per-unit tuple (unit_streak + unit_passes + units_done), so a
@@ -1206,35 +1282,85 @@ for root, dirs, names in os.walk(ws):
 
 
 def pack(pkgs, budget):
+    # ADR-055 2b -- COHERENT-UNIT chunking. A chunk is a coherent UNIT (a
+    # package / directory subtree the reviewer can hold whole), NEVER an
+    # arbitrary byte slice of unrelated code. Two behaviours:
+    #   (1) COMBINE only COHESIVE SIBLINGS -- packages sharing the SAME
+    #       immediate parent dir -- and only while together they fit budget.
+    #       This keeps many tiny leaf packages from exploding num_chunks WITHOUT
+    #       ever bundling unrelated top-level packages together (the old
+    #       byte-packer combined ANY adjacent dirs up to budget, so a reviewer
+    #       got a grab-bag of cmd/ + docs/ + e2e/ and lost coherence). The unit
+    #       is the atom; combining is a bounded COUNT-control measure for
+    #       cohesive neighbours only.
+    #   (2) A SINGLE package that GENUINELY exceeds budget (the real
+    #       overflow-fallback, issue #12) is still emitted as sub-chunks, BUT
+    #       each sub-chunk is marked partial and carries the FULL package file
+    #       index (index_files = EVERY file of the package, not just the slice),
+    #       plus unit_label / unit_part / unit_parts. So a reviewer handed one
+    #       part still SEES the rest of the package and can read it on demand --
+    #       it can never mistake an unseen-part definition or caller for dead
+    #       code (the exact false positive that broke convergence). A package
+    #       that FITS the budget is a WHOLE unit (partial False) -> full
+    #       completeness judgements allowed.
     chunks = []
-    cur = {'files': [], 'tokens': 0, 'dirs': []}
+    cur = None  # cohesive-sibling combine buffer (None = empty)
 
     def flush():
         nonlocal cur
-        if cur['files']:
+        if cur and cur['files']:
             chunks.append(cur)
-            cur = {'files': [], 'tokens': 0, 'dirs': []}
+        cur = None
 
     for d in sorted(pkgs.keys()):
         files = pkgs[d]
         pkg_tokens = sum(t for _, t in files)
+        parent = os.path.dirname(d)  # immediate parent dir ('' for top-level)
         if pkg_tokens <= budget:
-            if cur['tokens'] + pkg_tokens > budget and cur['files']:
+            # Whole coherent unit. Fold into the current buffer ONLY when it is
+            # a cohesive sibling (identical immediate parent) AND the two still
+            # fit the budget together; otherwise start a fresh chunk. index_files
+            # == files for a whole unit (nothing hidden).
+            if (cur is not None and cur['parent'] == parent
+                    and not cur['partial']
+                    and cur['tokens'] + pkg_tokens <= budget):
+                cur['files'].extend(files)
+                cur['index_files'].extend(files)
+                cur['tokens'] += pkg_tokens
+                cur['dirs'].append(d)
+            else:
                 flush()
-            cur['files'].extend(files)
-            cur['tokens'] += pkg_tokens
-            cur['dirs'].append(d)
+                cur = {'files': list(files), 'index_files': list(files),
+                       'tokens': pkg_tokens, 'dirs': [d], 'parent': parent,
+                       'partial': False, 'unit_label': d,
+                       'unit_part': 1, 'unit_parts': 1}
         else:
+            # Genuine overflow: ONE package bigger than the budget. Split by
+            # file-size budget into parts, but every part carries the WHOLE
+            # package index (list(files)) and is flagged partial so no reviewer
+            # ever judges completeness from a truncated view.
             flush()
-            sub = {'files': [], 'tokens': 0, 'dirs': [d]}
+            parts = []
+            sub = []
+            sub_tok = 0
             for rel, tok in files:
-                if sub['tokens'] + tok > budget and sub['files']:
-                    chunks.append(sub)
-                    sub = {'files': [], 'tokens': 0, 'dirs': [d]}
-                sub['files'].append((rel, tok))
-                sub['tokens'] += tok
-            if sub['files']:
-                chunks.append(sub)
+                if sub and sub_tok + tok > budget:
+                    parts.append(sub)
+                    sub = []
+                    sub_tok = 0
+                sub.append((rel, tok))
+                sub_tok += tok
+            if sub:
+                parts.append(sub)
+            nparts = len(parts)
+            for i, part in enumerate(parts):
+                chunks.append({
+                    'files': part,                # this part's focus (inline src)
+                    'index_files': list(files),   # FULL package index (all files)
+                    'tokens': sum(t for _, t in part),
+                    'dirs': [d], 'parent': parent, 'partial': True,
+                    'unit_label': d, 'unit_part': i + 1, 'unit_parts': nparts,
+                })
     flush()
     return chunks
 
@@ -1268,6 +1394,8 @@ if num_chunks == 0:
         'chunk_content': '(no source files found in workspace)',
         'files': '', 'chunk_file_list': [], 'chunk_index_path': '',
         'chunk_label': 'empty', 'chunk_index': 0,
+        # ADR-055 2b: the empty workspace is a whole (empty) unit, never partial.
+        'partial': False, 'unit_label': 'empty', 'unit_part': 1, 'unit_parts': 1,
         'num_chunks': 1, 'loop_max': 2 + max_passes, 'chunked': False, 'file_count': 0,
         'chunk_tokens': 0, 'total_files': 0, 'total_tokens': 0,
         'skipped_oversize': 0, 'persisted_unit_streak': int(clean_streak),
@@ -1295,10 +1423,25 @@ try:
 except (OSError, IOError):
     pass
 
-file_list_arr = [rel for rel, _ in chunk['files']]
+# ADR-055 2b unit metadata for this chunk. index_files is the FULL visibility
+# set (== the chunk's files for a whole unit; the WHOLE package for a partial
+# sub-chunk) -- it drives chunk_file_list, the explore-mode index and the
+# streak_check engagement guard, so a reviewer of a partial chunk can read (and
+# cite) any package file without tripping the subset guard. chunk['files'] is
+# this pass's FOCUS slice (== index_files for a whole unit) and is what inline
+# mode renders + what chunk_tokens measures, keeping per-pass work bounded.
+partial = bool(chunk.get('partial', False))
+unit_label = chunk.get('unit_label') or (chunk['dirs'][0] if chunk['dirs'] else '.')
+unit_part = int(chunk.get('unit_part', 1))
+unit_parts = int(chunk.get('unit_parts', 1))
+index_arr = [rel for rel, _ in chunk['index_files']]
+focus_set = set(rel for rel, _ in chunk['files'])
+file_list_arr = index_arr  # full-visibility set (reviewer file list + guard)
 file_list = '\n'.join(file_list_arr)
 dirs = chunk['dirs']
-if len(dirs) == 1:
+if partial:
+    label = '%s [part %d/%d]' % (unit_label, unit_part, unit_parts)
+elif len(dirs) == 1:
     label = dirs[0]
 else:
     label = '%s (+%d more dirs)' % (dirs[0], len(dirs) - 1)
@@ -1312,10 +1455,24 @@ try:
     ilines = ['# Review chunk index', '',
               'Chunk %d of %d  -  %s' % (idx, num_chunks, label),
               'Read each file below with your read tool, then judge. List the',
-              'paths you read VERBATIM in files_reviewed.', '',
-              '| file | ~tokens |', '| --- | --- |']
-    for rel, tok in chunk['files']:
-        ilines.append('| %s | %d |' % (rel, tok))
+              'paths you read VERBATIM in files_reviewed.']
+    if partial:
+        # ADR-055 2b anti-fragmentation guard: this is ONE part of a package too
+        # big for one pass. The WHOLE package is listed below (focus rows marked)
+        # so a cross-file claim is always checkable -- never call a symbol dead
+        # from a partial view.
+        ilines += ['',
+                   'PARTIAL VIEW -- part %d/%d of package %s. You are seeing '
+                   'ONE part of a larger package; the ENTIRE package is listed '
+                   'below (rows marked FOCUS are this part). Do NOT flag any '
+                   'symbol dead/unused/unreferenced or make ANY whole-package '
+                   'completeness call -- read the other files first; the '
+                   'remaining parts and the deterministic build/test gate cover '
+                   'the rest.' % (unit_part, unit_parts, unit_label)]
+    ilines += ['', '| file | ~tokens | |', '| --- | --- | --- |']
+    for rel, tok in chunk['index_files']:
+        mark = 'FOCUS' if (partial and rel in focus_set) else ''
+        ilines.append('| %s | %d | %s |' % (rel, tok, mark))
     ilines.append('')
     with open(index_path, 'w', encoding='utf-8') as xf:
         xf.write('\n'.join(ilines))
@@ -1359,7 +1516,16 @@ print(json.dumps({
     'chunk_index': idx,
     'num_chunks': num_chunks,
     'chunked': num_chunks > 1,
-    'file_count': len(chunk['files']),
+    # ADR-055 2b coherent-unit fields. partial=True when this chunk is ONE part
+    # of a package too big for the budget (the reviewer/fixer MUST NOT judge
+    # whole-package completeness); False when the chunk is a whole coherent unit
+    # (one package, or cohesive same-parent siblings). unit_label names the
+    # package; unit_part/unit_parts locate this slice (e.g. 2/3).
+    'partial': partial,
+    'unit_label': unit_label,
+    'unit_part': unit_part,
+    'unit_parts': unit_parts,
+    'file_count': len(file_list_arr),
     'chunk_tokens': chunk['tokens'],
     'total_files': total_files,
     'total_tokens': total_tokens,
@@ -1977,7 +2143,11 @@ workflow whole_improve_loop:
     chunk_label: "{{outputs.snapshot_chunk.chunk_label}}",
     chunk_index: "{{outputs.snapshot_chunk.chunk_index}}",
     num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    chunked: "{{outputs.snapshot_chunk.chunked}}"
+    chunked: "{{outputs.snapshot_chunk.chunked}}",
+    partial: "{{outputs.snapshot_chunk.partial}}",
+    unit_label: "{{outputs.snapshot_chunk.unit_label}}",
+    unit_part: "{{outputs.snapshot_chunk.unit_part}}",
+    unit_parts: "{{outputs.snapshot_chunk.unit_parts}}"
   }
   alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
@@ -1992,7 +2162,11 @@ workflow whole_improve_loop:
     chunk_label: "{{outputs.snapshot_chunk.chunk_label}}",
     chunk_index: "{{outputs.snapshot_chunk.chunk_index}}",
     num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    chunked: "{{outputs.snapshot_chunk.chunked}}"
+    chunked: "{{outputs.snapshot_chunk.chunked}}",
+    partial: "{{outputs.snapshot_chunk.partial}}",
+    unit_label: "{{outputs.snapshot_chunk.unit_label}}",
+    unit_part: "{{outputs.snapshot_chunk.unit_part}}",
+    unit_parts: "{{outputs.snapshot_chunk.unit_parts}}"
   }
 
   ## Both reviewers feed into streak_check. The loop is attached

@@ -12,8 +12,14 @@ Alternate two reviewers from distinct model families (Claude Opus via
 production-ready state — **unit-convergent and incremental-commit**
 (ADR-055):
 
-- The workspace is split by package into token-budgeted chunks
-  ("units"); the loop processes **one unit at a time**.
+- The workspace is split by **directory** into **coherent-unit** chunks
+  ("units", ADR-055 2b): a chunk is a package/directory subtree, and only
+  **cohesive siblings under a shared parent dir** are combined (and only
+  while they fit the budget) — never an arbitrary byte slice of unrelated
+  code. An oversize package is split into `partial` sub-chunks that still
+  carry the **full package file index**, and the reviewer/fixer are guarded
+  not to judge whole-package completeness (dead/unused) from a partial view.
+  The loop processes **one unit at a time**.
 - A fixer per family that inherits the corresponding reviewer's session
   (cache savings + context continuity)
 - **Per-unit convergence**: a unit loops review → fix → re-review until IT
@@ -67,13 +73,28 @@ tree. Instead:
 
 - A deterministic `snapshot_chunk` **tool** node (Python, no LLM) is the
   workflow entry and runs once per pass. It groups source files by
-  **package/folder boundary first**, then bin-packs them into chunks of
-  at most **`max_review_chunk_tokens` (default 30000)** estimated tokens
-  (~4 bytes/token). A package larger than the budget is split by file
-  size. It emits **one chunk** per pass with its source inline.
-- The reviewer audits **that one chunk** (the source is in its prompt;
-  read tools are for narrow cross-references only, never bulk reads), so
-  a single review can never exceed the chunk budget.
+  **directory** (never by language) into **coherent units** (ADR-055 2b):
+  a chunk is a package/directory subtree, and only **cohesive siblings
+  under the same immediate parent dir** are combined, and only while
+  together they fit **`max_review_chunk_tokens` (default 16000)** estimated
+  tokens (~4 bytes/token) — unrelated top-level packages are never bundled.
+  It emits **one chunk** per pass.
+- **Overflow-fallback (issue #12), fragmentation-safe:** a *single* package
+  that genuinely exceeds the budget is still split into sub-chunks, BUT each
+  sub-chunk is marked **`partial`** and carries the **FULL package file
+  index** (every file of the package, not just the slice) plus
+  `unit_label` / `unit_part` / `unit_parts`. The reviewer and fixer prompts
+  add an explicit guard: with `partial` true you are seeing ONE part of the
+  package, you MUST NOT flag any symbol dead/unused/unreferenced or make any
+  whole-package completeness call — read the other files in the provided
+  index first (the remaining parts + the deterministic build/test gate cover
+  the rest). This directly prevents the false positive where a reviewer
+  handed a byte-slice sees a symbol's definition but not its unseen-slice
+  caller and correctly-but-wrongly rejects it as dead code, looping forever.
+  A package that *fits* the budget is a whole unit (`partial=false`) → full
+  completeness judgements apply.
+- The reviewer audits **that one chunk**, so a single review can never
+  exceed the chunk budget.
 - The cursor points at the **current unit** and advances only when that
   unit converges (or is force-skipped); the per-unit tuple (unit_streak /
   unit_passes / units_done) is persisted alongside it in a single JSON

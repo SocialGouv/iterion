@@ -47,13 +47,19 @@ func wilToInt(v interface{}) int {
 func stubSnapshotChunk(exec *scenarioExecutor) {
 	exec.on("snapshot_chunk", func(in map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{
-			"chunk_content":         "// stub chunk source",
-			"files":                 "stub.go",
-			"chunk_label":           "stub",
-			"chunk_index":           0,
-			"num_chunks":            1,
-			"loop_max":              3, // small fixed bound for the test; real node emits 2*num_chunks+max_passes
-			"chunked":               false,
+			"chunk_content": "// stub chunk source",
+			"files":         "stub.go",
+			"chunk_label":   "stub",
+			"chunk_index":   0,
+			"num_chunks":    1,
+			"loop_max":      3, // small fixed bound for the test; real node emits 2*num_chunks+max_passes
+			"chunked":       false,
+			// ADR-055 2b coherent-unit fields: the stub models a single WHOLE
+			// unit (never partial), so the partial-view guard is inert.
+			"partial":               false,
+			"unit_label":            "stub",
+			"unit_part":             1,
+			"unit_parts":            1,
 			"file_count":            1,
 			"chunk_tokens":          10,
 			"total_files":           1,
@@ -468,6 +474,7 @@ func TestWholeImproveLoop_PerUnitConvergesCommitsAndAdvances(t *testing.T) {
 		return map[string]interface{}{
 			"chunk_content": "// stub", "files": "stub.go", "chunk_label": "stub",
 			"chunk_index": cur % 3, "num_chunks": 3, "loop_max": 8, "chunked": true,
+			"partial": false, "unit_label": "stub", "unit_part": 1, "unit_parts": 1,
 			"file_count": 1, "chunk_tokens": 10, "total_files": 3, "total_tokens": 30,
 			"skipped_oversize": 0, "persisted_unit_streak": streak,
 			"persisted_unit_passes": passes, "persisted_units_done": units,
@@ -534,6 +541,7 @@ func TestWholeImproveLoop_PerUnitVerifyGatesCommit(t *testing.T) {
 		return map[string]interface{}{
 			"chunk_content": "// stub", "files": "stub.go", "chunk_label": "stub",
 			"chunk_index": cur % 2, "num_chunks": 2, "loop_max": 12, "chunked": true,
+			"partial": false, "unit_label": "stub", "unit_part": 1, "unit_parts": 1,
 			"file_count": 1, "chunk_tokens": 10, "total_files": 2, "total_tokens": 20,
 			"skipped_oversize": 0, "persisted_unit_streak": wilToInt(in["incoming_unit_streak"]),
 			"persisted_unit_passes": wilToInt(in["incoming_unit_passes"]),
