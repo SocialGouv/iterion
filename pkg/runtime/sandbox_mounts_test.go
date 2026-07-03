@@ -164,7 +164,9 @@ func TestApplyHostStateMounts_HomeNestedBindParentsWritable(t *testing.T) {
 // TestHomeNestedBindParents unit-tests the helper that decides which
 // HOME-nested bind parents need a user-owned tmpfs. Direct children of
 // $HOME (.claude/.iterion) need none — their parent is $HOME itself, which
-// is already a tmpfs; only strictly-nested binds (.cache/go-build) do.
+// is already a tmpfs; strictly-nested binds need EVERY strict ancestor
+// under $HOME re-laid (.local/share/pnpm → .local AND .local/share),
+// shallowest-first so the tmpfs layers stack in mount order.
 func TestHomeNestedBindParents(t *testing.T) {
 	home := "/home/jo"
 	mounts := []string{
@@ -172,13 +174,17 @@ func TestHomeNestedBindParents(t *testing.T) {
 		"source=/h/.claude,target=/home/jo/.claude,type=bind",            // direct child → skip
 		"source=/h/.gitconfig,target=/home/jo/.gitconfig,type=bind",      // direct child file → skip
 		"source=/h/gb,target=/home/jo/.cache/go-build,type=bind",         // nested → .cache
-		"source=/h/mod,target=/home/jo/go/pkg/mod,type=bind",             // nested → go
+		"source=/h/mod,target=/home/jo/go/pkg/mod,type=bind",             // nested → go, go/pkg
 		"source=/h/x,target=/home/jo/.cache/other,type=bind",             // nested, same parent → dedup
+		"source=/h/pnpm,target=/home/jo/.local/share/pnpm,type=bind",     // deep-nested → .local, .local/share
 		"source=/etc/foo,target=/etc/foo,type=bind",                      // outside HOME → skip
 		"source=/h/bin,target=/usr/local/bin/iterion,type=bind,readonly", // outside HOME → skip
 	}
 	got := homeNestedBindParents(home, mounts)
-	want := []string{"/home/jo/.cache", "/home/jo/go"}
+	want := []string{
+		"/home/jo/.cache", "/home/jo/.local", "/home/jo/go",
+		"/home/jo/.local/share", "/home/jo/go/pkg",
+	}
 	if len(got) != len(want) {
 		t.Fatalf("homeNestedBindParents = %v, want %v", got, want)
 	}

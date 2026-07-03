@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -148,8 +149,19 @@ func applyHostStateMounts(
 	// absolute path; they nest on the tmpfs HOME like the .iterion/.claude
 	// binds. Gated under host_state (off for host_state=none / cloud), and
 	// best-effort — a missing cache dir is simply skipped (cold, as before).
+	// Same rationale for the Node package caches: without them every
+	// sandboxed run re-downloads its packages over the network (session
+	// mining showed agents burning whole turns on cold `pnpm install`
+	// failures — the one sandbox-provisioning complaint still live in
+	// 2026-07). npm/pnpm/yarn caches are content-addressed and safe to
+	// share; same host_state gate + best-effort skip when absent.
 	if homeDir != "" {
-		for _, rel := range []string{".cache/go-build", "go/pkg/mod"} {
+		for _, rel := range []string{
+			".cache/go-build", "go/pkg/mod", // Go build + module caches
+			".npm",              // npm cache (_cacache)
+			".local/share/pnpm", // pnpm home: store + global bins
+			".cache/yarn",       // yarn cache
+		} {
 			p := filepath.Join(homeDir, rel)
 			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
 				spec.Mounts = append(spec.Mounts, fmt.Sprintf("source=%s,target=%s,type=bind", p, p))
@@ -238,14 +250,18 @@ func applyHostStateMounts(
 }
 
 // homeNestedBindParents returns, for every bind mount in mounts whose
-// target is strictly nested under homeDir (i.e. $HOME/<top>/<more…>), the
-// unique "$HOME/<top>" parent dir. Docker/runc creates these intermediate
-// parents as root:root, so they must be re-laid as user-owned tmpfs for
+// target is strictly nested under homeDir (i.e. $HOME/<top>/<more…>),
+// every strict ancestor dir between $HOME (exclusive) and the target
+// (exclusive) — e.g. a $HOME/.local/share/pnpm bind yields $HOME/.local
+// AND $HOME/.local/share. Docker/runc creates these intermediate parents
+// as root:root, so they must each be re-laid as user-owned tmpfs for
 // devbox/npm/pip/go to create siblings next to the bind (e.g.
-// $HOME/.cache/devbox alongside a $HOME/.cache/go-build bind, or
+// $HOME/.cache/devbox alongside a $HOME/.cache/go-build bind,
+// $HOME/.local/share/fnm alongside a $HOME/.local/share/pnpm bind, or
 // $HOME/go/bin alongside the $HOME/go/pkg/mod bind). Direct children
 // ($HOME/<x>) are excluded — their parent is $HOME itself, already a
-// user-owned tmpfs.
+// user-owned tmpfs. Results are deduped and ordered shallowest-first so
+// the tmpfs layers stack in mount order.
 func homeNestedBindParents(homeDir string, mounts []string) []string {
 	if homeDir == "" {
 		return nil
@@ -265,12 +281,22 @@ func homeNestedBindParents(homeDir string, mounts []string) []string {
 		if len(parts) < 2 {
 			continue // direct child of $HOME — parent is $HOME itself
 		}
-		parent := filepath.Join(homeDir, parts[0])
-		if !seen[parent] {
-			seen[parent] = true
-			out = append(out, parent)
+		for depth := 1; depth < len(parts); depth++ {
+			ancestor := filepath.Join(append([]string{homeDir}, parts[:depth]...)...)
+			if !seen[ancestor] {
+				seen[ancestor] = true
+				out = append(out, ancestor)
+			}
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		di := strings.Count(out[i], string(filepath.Separator))
+		dj := strings.Count(out[j], string(filepath.Separator))
+		if di != dj {
+			return di < dj
+		}
+		return out[i] < out[j]
+	})
 	return out
 }
 

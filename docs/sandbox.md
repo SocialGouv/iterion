@@ -114,7 +114,18 @@ Permission denied`) as well as `go install` (`$HOME/go/bin`). With the
 parents re-laid user-owned, the whole `$HOME` subtree is writable, so
 version-manager wrappers (`devbox`, `asdf`, `mise`) and `go`/`npm`/`pip`
 caches all work inside the sandbox. The nested binds still overlay at
-their deeper paths and persist to the host.
+their deeper paths and persist to the host. Deeply-nested binds get
+every intermediate ancestor re-laid (`$HOME/.local/share/pnpm` →
+`$HOME/.local` and `$HOME/.local/share`), so siblings like
+`$HOME/.local/share/fnm` stay writable too.
+
+**Warm package caches.** Alongside the Go build/module caches, the Node
+package caches (`~/.npm`, `~/.local/share/pnpm`, `~/.cache/yarn`) are
+bind-mounted read-write at the same path when they exist on the host —
+without them every sandboxed run re-downloads its packages over the
+network on a cold `npm ci`/`pnpm install`. All content-addressed and
+safe to share across parallel runs; gated under `host_state` and
+skipped when absent.
 
 **Overlap handling:** when the workspace bind-mount already contains
 one of the candidate paths (typically a project-local `<repo>/.iterion/`
