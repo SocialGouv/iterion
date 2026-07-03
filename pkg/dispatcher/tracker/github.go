@@ -381,21 +381,10 @@ func quoteLabel(l string) string {
 	return l
 }
 
+// parseGitHubID rejects non-positive issue numbers: a "#-5" would become a
+// `gh issue edit -5 …` flag injection.
 func parseGitHubID(repo, id string) (int, bool) {
-	prefix := "github:" + repo + "#"
-	if !strings.HasPrefix(id, prefix) {
-		return 0, false
-	}
-	var n int
-	if _, err := fmt.Sscanf(strings.TrimPrefix(id, prefix), "%d", &n); err != nil {
-		return 0, false
-	}
-	if n <= 0 {
-		// Reject non-positive issue numbers: a "#-5" would become a
-		// `gh issue edit -5 …` flag injection.
-		return 0, false
-	}
-	return n, true
+	return parsePrefixedID("github:"+repo+"#", id)
 }
 
 // runGH is the default Command — shells out to the user's `gh` install.

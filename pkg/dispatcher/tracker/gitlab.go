@@ -292,16 +292,5 @@ func (a *GitLabAdapter) do(ctx context.Context, method, path string, in any, out
 
 // parseGitLabID expects "gitlab:<host>/<owner>/<repo>#<iid>".
 func parseGitLabID(host, repo, id string) (int, bool) {
-	prefix := "gitlab:" + trimHost(host) + "/" + repo + "#"
-	if !strings.HasPrefix(id, prefix) {
-		return 0, false
-	}
-	var n int
-	if _, err := fmt.Sscanf(strings.TrimPrefix(id, prefix), "%d", &n); err != nil {
-		return 0, false
-	}
-	if n <= 0 {
-		return 0, false
-	}
-	return n, true
+	return parsePrefixedID("gitlab:"+trimHost(host)+"/"+repo+"#", id)
 }
