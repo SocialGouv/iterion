@@ -134,29 +134,15 @@ func (a *GitLabAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 // RefreshStates fetches each issue and re-derives its state from current
 // labels.
 func (a *GitLabAdapter) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
-	out := make(map[string]string, len(ids))
-	for _, id := range ids {
-		num, ok := parseGitLabID(a.opts.Host, a.opts.Repo, id)
-		if !ok {
-			continue
-		}
+	fetchState := func(num int) (string, error) {
 		var r gitlabIssue
 		if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/projects/%s/issues/%d", a.pid, num), nil, &r); err != nil {
-			// Log + skip on per-issue errors so a transient network blip
-			// on one issue doesn't make the dispatcher treat the rest as
-			// "disappeared from tracker" (which would cancel their
-			// in-flight runs).
-			if a.opts.Logger != nil {
-				a.opts.Logger.Warn("dispatcher: gitlab RefreshStates: issue %d: %v", num, err)
-			}
-			continue
+			return "", err
 		}
-		iss := a.toIssue(r)
-		if iss.WorkflowState != "" {
-			out[id] = iss.WorkflowState
-		}
+		return a.toIssue(r).WorkflowState, nil
 	}
-	return out, nil
+	parseID := func(id string) (int, bool) { return parseGitLabID(a.opts.Host, a.opts.Repo, id) }
+	return refreshStateByID(ids, parseID, fetchState, a.opts.Logger, "dispatcher: gitlab RefreshStates"), nil
 }
 
 // UpdateState replaces an issue's labels with the include set from the

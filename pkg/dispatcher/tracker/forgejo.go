@@ -131,29 +131,15 @@ func (a *ForgejoAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 // RefreshStates fetches each issue and re-derives its state from
 // current labels.
 func (a *ForgejoAdapter) RefreshStates(ctx context.Context, ids []string) (map[string]string, error) {
-	out := make(map[string]string, len(ids))
-	for _, id := range ids {
-		num, ok := parseForgejoID(a.opts.Host, a.opts.Repo, id)
-		if !ok {
-			continue
-		}
+	fetchState := func(num int) (string, error) {
 		var r forgejoIssue
 		if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", a.opts.Repo, num), nil, &r); err != nil {
-			// Log + skip on per-issue errors so a transient network
-			// blip on one issue doesn't make the dispatcher treat the
-			// rest as "disappeared from tracker" (which would cancel
-			// their in-flight runs).
-			if a.opts.Logger != nil {
-				a.opts.Logger.Warn("dispatcher: forgejo RefreshStates: issue %d: %v", num, err)
-			}
-			continue
+			return "", err
 		}
-		iss := a.toIssue(r)
-		if iss.WorkflowState != "" {
-			out[id] = iss.WorkflowState
-		}
+		return a.toIssue(r).WorkflowState, nil
 	}
-	return out, nil
+	parseID := func(id string) (int, bool) { return parseForgejoID(a.opts.Host, a.opts.Repo, id) }
+	return refreshStateByID(ids, parseID, fetchState, a.opts.Logger, "dispatcher: forgejo RefreshStates"), nil
 }
 
 // UpdateState replaces an issue's labels with the include set from the
