@@ -1,12 +1,9 @@
 package tracker
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -46,7 +43,7 @@ type GitLabOptions struct {
 // ID resolution needed, unlike Forgejo).
 type GitLabAdapter struct {
 	opts GitLabOptions
-	hc   *http.Client
+	rc   *restClient
 
 	// pid is the URL-encoded project path used in every endpoint. Since
 	// ValidateRepoPath restricts repo to [A-Za-z0-9._-] segments joined
@@ -71,7 +68,17 @@ func NewGitLab(opts GitLabOptions) (*GitLabAdapter, error) {
 	}
 	opts.Host = strings.TrimRight(opts.Host, "/")
 	pid := strings.ReplaceAll(opts.Repo, "/", "%2F")
-	return &GitLabAdapter{opts: opts, hc: hc, pid: pid}, nil
+	rc := &restClient{
+		baseURL:   opts.Host + "/api/v4",
+		hc:        hc,
+		errPrefix: "gitlab",
+		setAuth: func(req *http.Request) {
+			if opts.Token != "" {
+				req.Header.Set("PRIVATE-TOKEN", opts.Token)
+			}
+		},
+	}
+	return &GitLabAdapter{opts: opts, rc: rc, pid: pid}, nil
 }
 
 // Name implements Tracker.
@@ -277,56 +284,10 @@ func (a *GitLabAdapter) resolveState(labels []string) string {
 	return resolveStateByLabels(labels, a.opts.StateMapping)
 }
 
-// do performs an authenticated request against the GitLab v4 API. The
-// response body is decoded into out (when non-nil). 404 maps to
-// ErrNotFound; other non-2xx statuses return a wrapped error with the
-// body excerpt for diagnostics.
+// do performs an authenticated request against the GitLab v4 API. See
+// restClient.do for the shared request/error-mapping behavior.
 func (a *GitLabAdapter) do(ctx context.Context, method, path string, in any, out any) error {
-	var body io.Reader
-	if in != nil {
-		data, err := json.Marshal(in)
-		if err != nil {
-			return fmt.Errorf("gitlab: marshal: %w", err)
-		}
-		body = bytes.NewReader(data)
-	}
-	endpoint := a.opts.Host + "/api/v4" + path
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return fmt.Errorf("gitlab: build request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	if a.opts.Token != "" {
-		req.Header.Set("PRIVATE-TOKEN", a.opts.Token)
-	}
-	resp, err := a.hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("gitlab: do: %w", err)
-	}
-	// Drain before close on every return path: the 404 case below returns
-	// without reading the body, which prevents the keep-alive connection
-	// from being reused (the transport can only reuse a fully-drained
-	// connection).
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return ErrNotFound
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		if out == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			return nil
-		}
-		return json.NewDecoder(resp.Body).Decode(out)
-	default:
-		buf, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("gitlab: %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(buf)))
-	}
+	return a.rc.do(ctx, method, path, in, out)
 }
 
 // parseGitLabID expects "gitlab:<host>/<owner>/<repo>#<iid>".

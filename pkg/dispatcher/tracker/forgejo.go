@@ -1,12 +1,9 @@
 package tracker
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -43,7 +40,7 @@ type ForgejoOptions struct {
 // equivalent of `gh` for Forgejo.
 type ForgejoAdapter struct {
 	opts ForgejoOptions
-	hc   *http.Client
+	rc   *restClient
 
 	labelMu  sync.RWMutex
 	labelIDs map[string]int64 // name → ID cache, lazily populated on first Claim/Release
@@ -65,7 +62,18 @@ func NewForgejo(opts ForgejoOptions) (*ForgejoAdapter, error) {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
 	opts.Host = strings.TrimRight(opts.Host, "/")
-	return &ForgejoAdapter{opts: opts, hc: hc}, nil
+	rc := &restClient{
+		baseURL:     opts.Host + "/api/v1",
+		hc:          hc,
+		errPrefix:   "forgejo",
+		conflictErr: errForgejoConflict,
+		setAuth: func(req *http.Request) {
+			if opts.Token != "" {
+				req.Header.Set("Authorization", "token "+opts.Token)
+			}
+		},
+	}
+	return &ForgejoAdapter{opts: opts, rc: rc}, nil
 }
 
 // Name implements Tracker.
@@ -363,57 +371,10 @@ func (a *ForgejoAdapter) replaceLabels(ctx context.Context, num int, labels []st
 	return a.do(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/issues/%d/labels", a.opts.Repo, num), in, nil)
 }
 
-// do performs an authenticated request against the Forgejo API. The
-// response body is decoded into out (when non-nil). 404 maps to
-// ErrNotFound; other non-2xx statuses return a wrapped error with the
-// body excerpt for diagnostics.
+// do performs an authenticated request against the Forgejo API. See
+// restClient.do for the shared request/error-mapping behavior.
 func (a *ForgejoAdapter) do(ctx context.Context, method, path string, in any, out any) error {
-	var body io.Reader
-	if in != nil {
-		data, err := json.Marshal(in)
-		if err != nil {
-			return fmt.Errorf("forgejo: marshal: %w", err)
-		}
-		body = bytes.NewReader(data)
-	}
-	endpoint := a.opts.Host + "/api/v1" + path
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return fmt.Errorf("forgejo: build request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	if a.opts.Token != "" {
-		req.Header.Set("Authorization", "token "+a.opts.Token)
-	}
-	resp, err := a.hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("forgejo: do: %w", err)
-	}
-	// Drain before close on every return path: the 404/409 cases below return
-	// without reading the body, which prevents the keep-alive connection from
-	// being reused (the transport can only reuse a fully-drained connection).
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-	switch {
-	case resp.StatusCode == http.StatusNotFound:
-		return ErrNotFound
-	case resp.StatusCode == http.StatusConflict:
-		return errForgejoConflict
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		if out == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			return nil
-		}
-		return json.NewDecoder(resp.Body).Decode(out)
-	default:
-		buf, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("forgejo: %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(buf)))
-	}
+	return a.rc.do(ctx, method, path, in, out)
 }
 
 // errForgejoConflict signals a 409 from a Forgejo write — typically a
