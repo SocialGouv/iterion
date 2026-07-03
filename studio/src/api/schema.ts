@@ -3490,7 +3490,6 @@ export interface components {
             kind: string;
             /** Format: date-time */
             last_refreshed_at?: string;
-            managed_secret_id?: string;
             namespace?: string;
             provider: string;
             scopes?: string[];
