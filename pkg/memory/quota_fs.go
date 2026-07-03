@@ -107,11 +107,7 @@ func writeSidecar(path string, s usageSidecar) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return store.WriteFileAtomic(path, data, 0o644)
 }
 
 // acquireQuotaLock takes the global quota lock, blocking (with a short
