@@ -224,9 +224,9 @@ func (a apiIssue) toGhIssue() ghIssue {
 // matching state mapping. Best-effort: if newState has no label
 // mapping configured, returns ErrTransitionRejected.
 func (a *GitHubAdapter) UpdateState(ctx context.Context, id, newState string) error {
-	sel, ok := a.opts.StateMapping[newState]
-	if !ok {
-		return fmt.Errorf("%w: no label mapping for state %q", ErrTransitionRejected, newState)
+	sel, err := resolveLabelSelector(a.opts.StateMapping, newState)
+	if err != nil {
+		return err
 	}
 	num, ok := parseGitHubID(a.opts.Repo, id)
 	if !ok {

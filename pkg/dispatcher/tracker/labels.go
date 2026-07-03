@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 )
@@ -59,6 +60,17 @@ func filterOutString(in []string, drop string) []string {
 		}
 	}
 	return out
+}
+
+// resolveLabelSelector looks up newState in mapping, returning
+// ErrTransitionRejected wrapped with the state name when absent. Shared
+// by all three adapters' UpdateState.
+func resolveLabelSelector(mapping map[string]LabelSelector, newState string) (LabelSelector, error) {
+	sel, ok := mapping[newState]
+	if !ok {
+		return LabelSelector{}, fmt.Errorf("%w: no label mapping for state %q", ErrTransitionRejected, newState)
+	}
+	return sel, nil
 }
 
 // applyLabelDiff returns have with sel's excludes removed and includes

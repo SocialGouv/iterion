@@ -163,9 +163,9 @@ func (a *GitLabAdapter) RefreshStates(ctx context.Context, ids []string) (map[st
 // matching state mapping. Returns ErrTransitionRejected if newState has
 // no mapping.
 func (a *GitLabAdapter) UpdateState(ctx context.Context, id, newState string) error {
-	sel, ok := a.opts.StateMapping[newState]
-	if !ok {
-		return fmt.Errorf("%w: no label mapping for state %q", ErrTransitionRejected, newState)
+	sel, err := resolveLabelSelector(a.opts.StateMapping, newState)
+	if err != nil {
+		return err
 	}
 	num, ok := parseGitLabID(a.opts.Host, a.opts.Repo, id)
 	if !ok {

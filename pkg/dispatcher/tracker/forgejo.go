@@ -160,9 +160,9 @@ func (a *ForgejoAdapter) RefreshStates(ctx context.Context, ids []string) (map[s
 // matching state mapping. Returns ErrTransitionRejected if newState
 // has no mapping.
 func (a *ForgejoAdapter) UpdateState(ctx context.Context, id, newState string) error {
-	sel, ok := a.opts.StateMapping[newState]
-	if !ok {
-		return fmt.Errorf("%w: no label mapping for state %q", ErrTransitionRejected, newState)
+	sel, err := resolveLabelSelector(a.opts.StateMapping, newState)
+	if err != nil {
+		return err
 	}
 	num, ok := parseForgejoID(a.opts.Host, a.opts.Repo, id)
 	if !ok {
