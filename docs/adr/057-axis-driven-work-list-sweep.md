@@ -130,3 +130,31 @@ sweep is the default and the primary mechanism.
 - Validation needs a live dogfood on a concrete axis (e.g. "split files > N
   lines") — stub e2e proves the graph/flow, the live run proves the sweep
   actually enumerates + transforms + lands across the codebase.
+
+## Family rollout (follow-on, after the whole_improve_loop pilot is proven)
+
+The axis-sweep mechanism generalizes to the loop-bot family — but only where the
+job is *"systematically apply a determined change across a body of code"*, NOT
+everywhere. Align by fit, not blanket:
+
+- **`branch_improve_loop` (Billy)** — YES, the natural sibling: an axis sweep
+  whose **scope is the branch's touched files** (`git diff <base>..HEAD` name
+  set) instead of the whole workspace. `enumerate` runs the axis over that file
+  set; everything else (transform/verify/review/commit_item/re_enumerate) is
+  identical. It shares whole_improve_loop's convergence machinery today, so it
+  inherits the rewrite most directly.
+- **The shared review machinery** — the `alt`→`reviewer_*`→`streak_check` +
+  ADR-052 mono/dual topology is currently common to both improve loops; factor
+  the reusable sweep pieces (verify gate, `commit_item`, re-enumeration
+  done-oracle, work-list state) so both bots and any future sweep share one
+  implementation rather than diverging copies.
+- **Does NOT fit** (leave as-is): `feature_dev` (build ONE feature — a
+  goal-directed task, not a codebase-wide axis), and any pure diff/PR *review*
+  bot (judge a given change, not enumerate-and-transform). `docs-refresh` is a
+  borderline case — "align docs with code" is axis-like and MAY adopt the sweep
+  (enumerate stale-doc sites → transform), evaluate after Billy.
+
+Rollout order: (1) whole_improve_loop (this ADR), prove live; (2)
+branch_improve_loop as the branch-scoped sweep, factoring the shared pieces; (3)
+evaluate docs-refresh. Each step keeps the ADR-052 topology + universality +
+right-artifact invariants and its own dogfood bilan.
