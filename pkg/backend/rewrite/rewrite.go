@@ -76,29 +76,14 @@ func ParseMode(s string) Mode {
 	}
 }
 
-// IsValidValue reports whether s is an accepted `compress:` DSL value. Empty is
-// valid (field unset). Used by the IR validator to flag typos.
-func IsValidValue(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "on", "off", "ultra":
-		return true
-	default:
-		return false
-	}
-}
-
-// Resolve picks the effective mode from iterion's precedence chain, highest
-// priority first: run override (CLI --compress / studio) > node DSL > workflow
-// DSL > ITERION_COMPRESS env default > Off. "" means "unset — defer".
-func Resolve(override, node, workflow, envDefault string) Mode {
-	return ResolveWithDefault(override, node, workflow, envDefault, Off)
-}
-
-// ResolveWithDefault is Resolve with an explicit fallback used when every level
-// is unset. It lets compression be opt-OUT on LLM (agent/judge) nodes — default
-// On when a rewriter plugin is enabled and its binary is present — while an
-// explicit "off" at any precedence level (run override, node, workflow, or the
-// ITERION_COMPRESS env) still wins. First non-empty level wins; all empty → def.
+// ResolveWithDefault picks the effective mode from iterion's precedence chain,
+// highest priority first: run override (CLI --compress / studio) > node DSL >
+// workflow DSL > ITERION_COMPRESS env default > an explicit fallback def used
+// when every level is unset. It lets compression be opt-OUT on LLM (agent/
+// judge) nodes — default On when a rewriter plugin is enabled and its binary
+// is present — while an explicit "off" at any precedence level (run override,
+// node, workflow, or the ITERION_COMPRESS env) still wins. First non-empty
+// level wins; all empty → def.
 func ResolveWithDefault(override, node, workflow, envDefault string, def Mode) Mode {
 	for _, s := range []string{override, node, workflow, envDefault} {
 		if strings.TrimSpace(s) != "" {

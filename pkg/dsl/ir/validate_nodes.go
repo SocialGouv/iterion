@@ -61,7 +61,8 @@ func (c *compiler) validateArtifactLabels(w *Workflow) {
 // whitespace-trimmed.
 //
 // Kept inline (no import of pkg/backend/rewrite) so the dsl layer stays
-// dependency-free; keep in sync with rewrite.IsValidValue.
+// dependency-free; keep in sync with the accepted values in
+// rewrite.ParseMode.
 func (c *compiler) validateCompress(w *Workflow) {
 	valid := func(v string) bool {
 		switch strings.ToLower(strings.TrimSpace(v)) {
