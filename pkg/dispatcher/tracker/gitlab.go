@@ -59,13 +59,8 @@ func NewGitLab(opts GitLabOptions) (*GitLabAdapter, error) {
 	if err := ValidateRepoPath(opts.Repo); err != nil {
 		return nil, fmt.Errorf("gitlab tracker: %w", err)
 	}
-	if opts.ClaimedLabel == "" {
-		opts.ClaimedLabel = "iterion-claimed"
-	}
-	hc := opts.HTTPClient
-	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
-	}
+	opts.ClaimedLabel = defaultClaimedLabel(opts.ClaimedLabel)
+	hc := defaultHTTPTrackerClient(opts.HTTPClient)
 	opts.Host = strings.TrimRight(opts.Host, "/")
 	pid := strings.ReplaceAll(opts.Repo, "/", "%2F")
 	rc := &restClient{

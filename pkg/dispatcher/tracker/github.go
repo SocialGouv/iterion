@@ -72,9 +72,7 @@ func NewGitHub(opts GitHubOptions) (*GitHubAdapter, error) {
 	if err := ValidateRepoPath(opts.Repo); err != nil {
 		return nil, fmt.Errorf("github tracker: %w", err)
 	}
-	if opts.ClaimedLabel == "" {
-		opts.ClaimedLabel = "iterion-claimed"
-	}
+	opts.ClaimedLabel = defaultClaimedLabel(opts.ClaimedLabel)
 	if opts.Command == nil {
 		opts.Command = runGH
 	}

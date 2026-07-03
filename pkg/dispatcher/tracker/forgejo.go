@@ -54,13 +54,8 @@ func NewForgejo(opts ForgejoOptions) (*ForgejoAdapter, error) {
 	if err := ValidateRepoPath(opts.Repo); err != nil {
 		return nil, fmt.Errorf("forgejo tracker: %w", err)
 	}
-	if opts.ClaimedLabel == "" {
-		opts.ClaimedLabel = "iterion-claimed"
-	}
-	hc := opts.HTTPClient
-	if hc == nil {
-		hc = &http.Client{Timeout: 30 * time.Second}
-	}
+	opts.ClaimedLabel = defaultClaimedLabel(opts.ClaimedLabel)
+	hc := defaultHTTPTrackerClient(opts.HTTPClient)
 	opts.Host = strings.TrimRight(opts.Host, "/")
 	rc := &restClient{
 		baseURL:     opts.Host + "/api/v1",
