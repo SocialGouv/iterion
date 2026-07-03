@@ -99,7 +99,11 @@ prompt plan_system:
      doc/inspection commands).
   2. Identify the files involved, the existing patterns to reuse,
      and the architectural constraints relevant to the requested
-     feature.
+     feature. For BROAD exploration (several subsystems, unknown
+     naming, many candidate locations), fan out read-only
+     sub-agents (the Task/agent tool) in parallel and keep your
+     own context for the design — offloaded exploration measurably
+     outperforms reading everything inline.
   3. Produce a structured implementation plan covering:
        - objective (2 sentences)
        - ordered list of concrete changes (file by file, with the

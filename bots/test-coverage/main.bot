@@ -162,6 +162,12 @@ prompt act_system:
      `verify-tests` skill). A DETERMINISTIC gate re-runs THIS script,
      so it must genuinely pass.
   4. Iterate until the build is green and the new tests pass.
+  5. Pre-existing failures in OTHER tests (they also fail without
+     your changes) are out of scope: attribute cheaply once
+     (stash + re-run that one test + unstash), note them in your
+     summary, scope `.test_coverage.verify.sh` to the targets your
+     tests touch, and move on — never let a red base tree absorb
+     the run. "Green" = build + YOUR new tests.
 
   Finally, STAGE YOUR WORK so review can see it: run
   `git -C {{vars.workspace_dir}} add -A`. REQUIRED — the reviewers and

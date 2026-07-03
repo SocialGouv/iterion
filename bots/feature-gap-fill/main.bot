@@ -184,6 +184,12 @@ prompt act_system:
   4. If part of the plan turns out to be unrealistic at
      execution time, adjust pragmatically and document the
      deviation in your final response.
+  5. Pre-existing test failures (they also fail WITHOUT your
+     changes) are out of scope: attribute cheaply once (stash +
+     re-run the one failing test + unstash), note them in your
+     final response, and move on — do not fix or keep
+     investigating them. "Tested" = the tests affected by YOUR
+     changes pass.
 
   Do NOT make any commit; do NOT push anything. Stop when the
   implementation is functional and tested.

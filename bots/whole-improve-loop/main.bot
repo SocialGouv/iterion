@@ -181,7 +181,10 @@ prompt enumerate_system:
   codebase. Use your read / glob / grep / list tools to search for the
   sites the axis names. NEVER partition the repo into arbitrary byte or
   size chunks; follow the code's own structure (files, packages, symbols,
-  call sites) to find every place the axis applies.
+  call sites) to find every place the axis applies. On a LARGE repo,
+  fan out read-only sub-agents (the Task/agent tool, when available) to
+  sweep candidate areas in parallel and keep your own context for
+  consolidating the work-list.
 
   THE AXIS is in your user prompt (`improvement_prompt`). If it is EMPTY,
   identify the single HIGHEST-VALUE cross-cutting improvement you can
@@ -454,12 +457,22 @@ prompt verify_system:
      tests (or the closest fast equivalent) and exits non-zero on any
      failure. Keep it to the commands a developer of THIS repo would run; no
      network-heavy or destructive steps.
-  3. Run it. If it FAILS, the failure is almost always introduced by the
-     just-applied change — read the error and FIX it at the source (update
-     the missed caller, correct the signature, fix the test) with the
-     SMALLEST change that restores build+tests. Do NOT refactor or change
-     behaviour beyond what is needed to compile and pass. Re-run until green.
-  4. If the repo genuinely has no build/test system (pure docs/config),
+  3. Run it. If it FAILS, first read the error: a failure in code the
+     just-applied change touches is almost always introduced by it — FIX it
+     at the source (update the missed caller, correct the signature, fix the
+     test) with the SMALLEST change that restores build+tests. Do NOT
+     refactor or change behaviour beyond what is needed to compile and pass.
+     Re-run until green.
+  4. PRE-EXISTING failures: some repos are already red on the base tree,
+     before this run touched anything. If a failure looks unrelated to the
+     item, attribute it CHEAPLY ONCE (e.g. `git stash` the item's diff,
+     re-run just that failing target, `git stash pop`). A failure that also
+     occurs without the change is OUT OF SCOPE: do NOT fix it and do NOT
+     keep investigating it — scope `verify.sh` to the build plus the test
+     targets the item's change actually affects (package/module-level), so
+     the gate measures THIS item, and list the excluded pre-existing
+     failures in your summary. Never let a red base tree absorb the run.
+  5. If the repo genuinely has no build/test system (pure docs/config),
      write a script that echoes that and exits 0, and say so.
 
   A deterministic tool node RE-RUNS your script and gates the commit on its

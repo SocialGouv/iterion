@@ -1309,8 +1309,13 @@ prompt validate_upgrade_system:
        audit, pip-audit, govulncheck, …).
     5. Emit:
          stable: true iff all chosen commands passed (or the only
-                 failures are known-flaky and unrelated to the
-                 package upgraded).
+                 failures are known-flaky OR pre-existing and
+                 unrelated to the package upgraded — pre-existing
+                 means it also fails WITHOUT the upgrade: attribute
+                 cheaply ONCE by stashing the upgrade diff,
+                 re-running just that failing target, restoring;
+                 then note it in the verdict and move on, never
+                 fix or keep investigating base-tree failures).
          blockers: concrete, specific issues with file paths and
                  error excerpts. Empty when stable.
          fix_plan: short ordered plan the next agent can apply.

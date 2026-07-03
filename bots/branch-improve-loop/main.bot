@@ -575,6 +575,10 @@ prompt fix_user:
       minor optimisation, etc.): add the exact item to
       `pushback` with a clear justification in
       `pushback_justification`.
+    - A test failure that predates your fixes (it also fails
+      without your changes) is out of scope: attribute it
+      cheaply once (stash + re-run that one test + unstash),
+      note it in your summary, and move on — do not chase it.
 
   Output:
     - applied: true if at least one fix was applied
