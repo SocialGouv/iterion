@@ -63,7 +63,7 @@ func CaptureLaunchEnv() map[string]string {
 		if !hasCapturedPrefix(name) {
 			continue
 		}
-		if isSecretName(name) {
+		if IsSecretEnvName(name) {
 			out[name] = "[redacted]"
 		} else {
 			out[name] = value
@@ -82,10 +82,6 @@ func hasCapturedPrefix(name string) bool {
 		}
 	}
 	return false
-}
-
-func isSecretName(name string) bool {
-	return IsSecretEnvName(name)
 }
 
 // IsSecretEnvName reports whether an environment variable name looks
