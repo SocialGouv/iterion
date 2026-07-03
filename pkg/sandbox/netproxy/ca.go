@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -148,11 +147,4 @@ func randSerial() (*big.Int, error) {
 	// Clear the top bit so the serial stays positive.
 	sum[0] &= 0x7f
 	return new(big.Int).SetBytes(sum[:16]), nil
-}
-
-// caFingerprint returns a short stable id for logging which CA a run
-// used, without exposing key material.
-func (ca *EphemeralCA) caFingerprint() string {
-	sum := sha256.Sum256(ca.cert.Raw)
-	return fmt.Sprintf("%x", binary.BigEndian.Uint32(sum[:4]))
 }
