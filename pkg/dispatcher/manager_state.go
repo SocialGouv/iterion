@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // DesiredState is the operator's last-known intent for the dispatcher
@@ -74,9 +76,10 @@ func loadDesiredState(path string) (DesiredState, error) {
 	}
 }
 
-// saveDesiredState writes the operator's intent atomically (write to
-// .tmp, then rename) so a crash mid-write can't leave a half-flushed
-// JSON file that loadDesiredState would reject.
+// saveDesiredState writes the operator's intent durably: the atomic
+// write goes through store.WriteFileAtomic (write-temp → fsync → rename
+// → dir-fsync) so a crash mid-write can't leave a half-flushed JSON
+// file that loadDesiredState would reject.
 //
 // Best-effort: the parent dir is created if missing. A nil error
 // means the desired state is durably persisted; callers can ignore
@@ -91,12 +94,8 @@ func saveDesiredState(path string, desired DesiredState) error {
 		return fmt.Errorf("dispatcher: marshal runtime state: %w", err)
 	}
 	body = append(body, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, body, 0o644); err != nil {
-		return fmt.Errorf("dispatcher: write runtime state tmp: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("dispatcher: rename runtime state: %w", err)
+	if err := store.WriteFileAtomic(path, body, 0o644); err != nil {
+		return fmt.Errorf("dispatcher: write runtime state: %w", err)
 	}
 	return nil
 }
