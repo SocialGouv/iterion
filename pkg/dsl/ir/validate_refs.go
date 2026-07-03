@@ -406,19 +406,11 @@ func (c *compiler) validateOutputsRef(w *Workflow, rc refContext, predecessors m
 	}
 
 	// C036: referenced node must be reachable before consumer.
-	if preds, ok := predecessors[rc.NodeID]; ok {
-		reachable := preds[targetNodeID]
-		// For edge with-mappings, the source node itself has finished, so
-		// it and its predecessors are all available.
-		if !reachable && rc.IncludeSelf && targetNodeID == rc.NodeID {
-			reachable = true
-		}
-		if !reachable {
-			c.errorf(DiagRefNodeNotReachable,
-				"%s: reference %s targets node %q which is not reachable before %q",
-				rc.Location, rc.Ref.Raw, targetNodeID, rc.NodeID)
-			return
-		}
+	if !checkReachable(rc, predecessors, targetNodeID) {
+		c.errorf(DiagRefNodeNotReachable,
+			"%s: reference %s targets node %q which is not reachable before %q",
+			rc.Location, rc.Ref.Raw, targetNodeID, rc.NodeID)
+		return
 	}
 
 	// Field-level validation (only when accessing a specific field).
@@ -515,15 +507,26 @@ func (c *compiler) validateArtifactsRef(w *Workflow, rc refContext, predecessors
 	}
 
 	// C036: producer must be reachable before consumer.
-	if preds, ok := predecessors[rc.NodeID]; ok {
-		reachable := preds[producerID]
-		if !reachable && rc.IncludeSelf && producerID == rc.NodeID {
-			reachable = true
-		}
-		if !reachable {
-			c.errorf(DiagRefNodeNotReachable,
-				"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
-				rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
-		}
+	if !checkReachable(rc, predecessors, producerID) {
+		c.errorf(DiagRefNodeNotReachable,
+			"%s: reference %s targets artifact %q published by node %q which is not reachable before %q",
+			rc.Location, rc.Ref.Raw, artifactName, producerID, rc.NodeID)
 	}
+}
+
+// checkReachable reports whether targetID is reachable from rc.NodeID's
+// predecessor set. When predecessors has no entry for rc.NodeID (reachability
+// wasn't computed for it), the check is skipped and this returns true — the
+// caller then does not error. For edge with-mappings, the source node itself
+// has finished, so it and its predecessors are all available (IncludeSelf).
+func checkReachable(rc refContext, predecessors map[string]map[string]bool, targetID string) bool {
+	preds, ok := predecessors[rc.NodeID]
+	if !ok {
+		return true
+	}
+	reachable := preds[targetID]
+	if !reachable && rc.IncludeSelf && targetID == rc.NodeID {
+		reachable = true
+	}
+	return reachable
 }
