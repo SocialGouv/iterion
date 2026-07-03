@@ -10,6 +10,37 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-03 — v2 MINIMAL-FRAMING (ADR-058) live-proven: one agent, its natural flow, clean in-stride commits (run 019f288b)
+
+- Status: **validated** — the v2 campaign bot (ADR-058, "lean on the agent")
+  proven live. ONE agent, given the axis + standing autonomy, worked in its
+  natural flow (explore → living todo → per-site fix/build/test/commit in stride)
+  and converged — no rigid enumerate/transform/review graph, no worktree scratch.
+- Versions: bot whole-improve-loop **v2.0.0** (8 nodes) · iterion `e66918bc2`.
+- Method: `iterion run`, sandbox full, mono claude sonnet-5
+  (`--model agent=claude-sonnet-5`), `--merge-into none`, `ITERION_FORFAIT_CAP_PCT=90`,
+  `--auto-resume 20`. **Axis**: route hand-rolled tmp+rename writes through
+  `store.WriteFileAtomic`. Scope: `pkg/memory,pkg/sessionboard` (2 known real
+  sites still present on main — the earlier 019f27d4 fixes landed on a storage
+  branch, main untouched).
+- Result: **status finished**, **2 commits on `iterion/run/arctic-sparkle-midnightkazoo-6feb`**,
+  one per site, **each with a precise semantic message the AGENT wrote itself**:
+  `refactor(sessionboard): route spec writes through store.WriteFileAtomic` +
+  `refactor(memory): route quota sidecar writes through store.WriteFileAtomic`.
+  Both real WriteFileAtomic conversions, branch build-green, main untouched.
+  Cost: negligible (7d forfait stayed at 86%).
+- Value: closes the arc. The v1 axis-sweep (16 nodes) STALLED on a whole-repo run
+  (019f2829: enumerate ran 75min without finishing → 0 commits). v2 removes the
+  framing that caused it: the agent commits in stride, so work lands continuously.
+  The v1 "workspace" commit-label bug is GONE — v2 has no deterministic
+  commit_item node; the agent writes its own semantic messages (the manual
+  pattern). This is the operator's proven Claude-Code campaign, encoded with
+  minimal framing (ADR-058).
+- Lessons for next run: v2 is ready for a broader/whole-repo axis run when forfait
+  allows — the enumerate stall is gone, so `--auto-resume` + incremental commits
+  should carry a long campaign that banks work continuously and resumes from git.
+  Next: align branch_improve_loop as the branch-scoped campaign (ADR-058 rollout).
+
 ## 2026-07-03 — LIVE PROOF of the ADR-057 axis-sweep: enumerates + transforms + commits a real cross-cutting refactor across 4 packages, converges (run 019f27d4)
 
 - Status: **validated** — the axis-driven work-list sweep (ADR-057, the operator's
