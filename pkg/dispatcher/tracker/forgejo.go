@@ -320,7 +320,7 @@ func (a *ForgejoAdapter) toIssue(r forgejoIssue) Issue {
 		Identifier:    fmt.Sprintf("%s#%d", a.opts.Repo, r.Number),
 		Title:         r.Title,
 		Body:          r.Body,
-		WorkflowState: a.resolveState(labels),
+		WorkflowState: resolveStateByLabels(labels, a.opts.StateMapping),
 		CreatedAt:     r.CreatedAt,
 		UpdatedAt:     r.UpdatedAt,
 		Labels:        labels,
@@ -331,10 +331,6 @@ func (a *ForgejoAdapter) toIssue(r forgejoIssue) Issue {
 			"author":        r.User.Login,
 		},
 	}
-}
-
-func (a *ForgejoAdapter) resolveState(labels []string) string {
-	return resolveStateByLabels(labels, a.opts.StateMapping)
 }
 
 func (a *ForgejoAdapter) replaceLabels(ctx context.Context, num int, labels []string) error {

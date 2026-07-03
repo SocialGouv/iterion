@@ -240,7 +240,7 @@ func (a *GitLabAdapter) toIssue(r gitlabIssue) Issue {
 		Identifier:    fmt.Sprintf("%s#%d", a.opts.Repo, r.IID),
 		Title:         r.Title,
 		Body:          r.Description,
-		WorkflowState: a.resolveState(labels),
+		WorkflowState: resolveStateByLabels(labels, a.opts.StateMapping),
 		CreatedAt:     r.CreatedAt,
 		UpdatedAt:     r.UpdatedAt,
 		Labels:        labels,
@@ -251,10 +251,6 @@ func (a *GitLabAdapter) toIssue(r gitlabIssue) Issue {
 			"author":       r.Author.Username,
 		},
 	}
-}
-
-func (a *GitLabAdapter) resolveState(labels []string) string {
-	return resolveStateByLabels(labels, a.opts.StateMapping)
 }
 
 // do performs an authenticated request against the GitLab v4 API. See

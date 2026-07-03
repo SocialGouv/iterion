@@ -326,7 +326,7 @@ func (a *GitHubAdapter) toIssue(g ghIssue) Issue {
 	if len(g.Assignees) > 0 {
 		assignee = g.Assignees[0].Login
 	}
-	state := a.resolveState(labels)
+	state := resolveStateByLabels(labels, a.opts.StateMapping)
 
 	return Issue{
 		ID:            id,
@@ -344,11 +344,6 @@ func (a *GitHubAdapter) toIssue(g ghIssue) Issue {
 			"author":       g.Author.Login,
 		},
 	}
-}
-
-// resolveState delegates to the shared label helper.
-func (a *GitHubAdapter) resolveState(labels []string) string {
-	return resolveStateByLabels(labels, a.opts.StateMapping)
 }
 
 func (a *GitHubAdapter) env() []string {
