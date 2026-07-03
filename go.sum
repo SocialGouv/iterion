@@ -14,12 +14,6 @@ github.com/AzureAD/microsoft-authentication-extensions-for-go/cache v0.1.1 h1:WJ
 github.com/AzureAD/microsoft-authentication-extensions-for-go/cache v0.1.1/go.mod h1:tCcJZ0uHAmvjsVYzEFivsRTN00oz5BEsRgQHu5JZ9WE=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 h1:XRzhVemXdgvJqCH0sFfrBUTnUJSBrBf7++ypk+twtRs=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0/go.mod h1:HKpQxkWaGLJ+D/5H8QRpyQXA1eKjxkFlOMwck5+33Jk=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260630065455-1d45debd8c14 h1:wRDB4gjqccSVSCyrJqV6AVZfkc0gO/yo/CNlueB+RIM=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260630065455-1d45debd8c14/go.mod h1:hquBysL8+24vrlr2eVE0rXO4mFg+8TnjYxO4g9MrzCg=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260702084906-776a069ae96d h1:UHFjSxprS8pnoDuH7wPTuaEQ+6XCm++A/smBBdgsSVU=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260702084906-776a069ae96d/go.mod h1:hquBysL8+24vrlr2eVE0rXO4mFg+8TnjYxO4g9MrzCg=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260702092447-05398ca7f79e h1:OQwUDj6yR9dCWaBkL3rIJLu6JnJ8gVgOa6oxQiR+oNk=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260702092447-05398ca7f79e/go.mod h1:hquBysL8+24vrlr2eVE0rXO4mFg+8TnjYxO4g9MrzCg=
 github.com/SocialGouv/claw-code-go v0.1.1-0.20260702094037-dad0827ec028 h1:oI86t60oWoME0QaVDJ6edmSQoQeALzPtbuDYa8EzjlQ=
 github.com/SocialGouv/claw-code-go v0.1.1-0.20260702094037-dad0827ec028/go.mod h1:hquBysL8+24vrlr2eVE0rXO4mFg+8TnjYxO4g9MrzCg=
 github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e2uP9jiw=
