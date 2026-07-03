@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -19,10 +18,6 @@ import (
 // aggregate (GetCIStatus) and per-context statuses for history
 // (ListCIHistory) — which is portable across Gitea and every Forgejo version.
 var _ forge.PullClient = (*AdminClient)(nil)
-
-// issueRefPattern extracts "#<n>" issue references from a PR title/body for
-// best-effort LinkedIssues parsing.
-var issueRefPattern = regexp.MustCompile(`#(\d+)`)
 
 type forgejoBranchInfo struct {
 	Ref string `json:"ref"`
@@ -73,25 +68,10 @@ func (p forgejoPull) toRef() forge.PullRef {
 	if p.Updated != nil {
 		ref.UpdatedAt = *p.Updated
 	}
-	ref.LinkedIssues = parseLinkedIssues(p.Title, p.Body)
+	// A literal "#0" is discarded (skipNonPositive=true) — Forgejo/Gitea issue
+	// numbers start at 1, so "#0" is never a real reference.
+	ref.LinkedIssues = forge.ParseIssueRefs(true, p.Title, p.Body)
 	return ref
-}
-
-// parseLinkedIssues extracts unique "#<n>" references from a PR's title+body.
-func parseLinkedIssues(title, body string) []int {
-	seen := map[int]bool{}
-	var out []int
-	for _, text := range []string{title, body} {
-		for _, m := range issueRefPattern.FindAllStringSubmatch(text, -1) {
-			n, err := strconv.Atoi(m[1])
-			if err != nil || n <= 0 || seen[n] {
-				continue
-			}
-			seen[n] = true
-			out = append(out, n)
-		}
-	}
-	return out
 }
 
 // ListPullRequests lists PRs for a repo. state defaults to "open".

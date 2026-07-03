@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -31,11 +30,6 @@ type gitlabMR struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
-// issueRefRe matches "#<n>" issue references in an MR title/description so
-// LinkedIssues can be parsed best-effort (GitLab has no first-class field for
-// arbitrary linkage in the MR payload).
-var issueRefRe = regexp.MustCompile(`#(\d+)`)
-
 // toRef normalizes a GitLab MR onto forge.PullRef. state "opened"→"open",
 // "merged"/"closed" pass through; draft is the OR of the two GitLab flags.
 func (mr gitlabMR) toRef() forge.PullRef {
@@ -51,7 +45,9 @@ func (mr gitlabMR) toRef() forge.PullRef {
 		Draft:        mr.Draft || mr.WorkInProgress,
 		CreatedAt:    mr.CreatedAt,
 		UpdatedAt:    mr.UpdatedAt,
-		LinkedIssues: parseLinkedIssues(mr.Title + " " + mr.Description),
+		// GitLab has no first-class field for arbitrary issue linkage in the
+		// MR payload, so LinkedIssues is parsed best-effort from title+body.
+		LinkedIssues: forge.ParseIssueRefs(false, mr.Title, mr.Description),
 	}
 }
 
@@ -77,26 +73,6 @@ func mrStateQuery(state string) string {
 	default:
 		return ""
 	}
-}
-
-// parseLinkedIssues extracts distinct "#<n>" issue numbers from free text,
-// preserving first-seen order.
-func parseLinkedIssues(text string) []int {
-	matches := issueRefRe.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	seen := map[int]bool{}
-	var out []int
-	for _, m := range matches {
-		n, err := strconv.Atoi(m[1])
-		if err != nil || seen[n] {
-			continue
-		}
-		seen[n] = true
-		out = append(out, n)
-	}
-	return out
 }
 
 // ListPullRequests lists a project's merge requests, normalized to forge.PullRef.
