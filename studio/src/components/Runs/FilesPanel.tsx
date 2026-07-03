@@ -328,30 +328,43 @@ function ModeSegmented({
   worktreeGone,
   count,
 }: ModeSegmentedProps) {
+  // Worktree torn down (a finished run whose worktree was cleaned up): the
+  // uncommitted + combined views need a live worktree to compute, so only the
+  // branch diff is reachable. Rather than show two greyed, unclickable
+  // segments — which reads as "something is broken / where are my changes" —
+  // collapse to the single reachable Branch view with an inline reason.
+  if (worktreeGone) {
+    return (
+      <div className="inline-flex items-center gap-2 text-caption">
+        <div className="inline-flex overflow-hidden rounded-md border border-border-default">
+          <SegmentButton
+            active
+            onClick={() => onChange("branch")}
+            label="Branch"
+            tooltip="All changes this run introduced, vs. the source branch (base..HEAD)."
+            count={count}
+          />
+        </div>
+        <span className="text-fg-subtle" title={WORKTREE_GONE_TIP}>
+          worktree cleaned up — branch diff only
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="inline-flex overflow-hidden rounded-md border border-border-default text-caption">
       <SegmentButton
         active={mode === "combined"}
-        disabled={worktreeGone}
         onClick={() => onChange("combined")}
         label="All changes"
-        tooltip={
-          worktreeGone
-            ? WORKTREE_GONE_TIP
-            : "All changes this run made — committed commits plus uncommitted working-tree edits, vs. the source branch. Tinted by status."
-        }
+        tooltip="All changes this run made — committed commits plus uncommitted working-tree edits, vs. the source branch. Tinted by status."
         count={mode === "combined" ? count : undefined}
       />
       <SegmentButton
         active={mode === "uncommitted"}
-        disabled={worktreeGone}
         onClick={() => onChange("uncommitted")}
         label="Uncommitted"
-        tooltip={
-          worktreeGone
-            ? WORKTREE_GONE_TIP
-            : "Files modified but not yet committed (git status)."
-        }
+        tooltip="Files modified but not yet committed (git status)."
         count={mode === "uncommitted" ? count : undefined}
       />
       <SegmentButton
