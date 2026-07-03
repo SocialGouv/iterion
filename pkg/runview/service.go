@@ -391,8 +391,7 @@ type Service struct {
 
 	// maxCostPerDayUSD configures the per-(store, UTC-day) LLM spend cap
 	// enforced across every run this service launches. 0 disables it.
-	// Set via WithDailyCostCap or the ITERION_MAX_COST_PER_DAY_USD env
-	// default (the latter only when no explicit option is passed).
+	// Set via the ITERION_MAX_COST_PER_DAY_USD env default.
 	maxCostPerDayUSD float64
 	// dailyCap is the shared spend-cap guard built from maxCostPerDayUSD
 	// + the wired SpendStore. nil when the cap is disabled (no limit, or
@@ -414,16 +413,6 @@ func WithWorkDir(dir string) ServiceOption {
 	return func(s *Service) {
 		s.workDir = dir
 	}
-}
-
-// WithDailyCostCap sets the per-(store, UTC-day) LLM spend ceiling in
-// USD enforced across all runs this service launches. Zero (the default)
-// disables the cap; the ITERION_MAX_COST_PER_DAY_USD env var supplies a
-// fallback when this option is omitted. The cap is overridable per day
-// via the /api/v1/limits/cost/override endpoint and auto-resets at the
-// next UTC day.
-func WithDailyCostCap(limitUSD float64) ServiceOption {
-	return func(s *Service) { s.maxCostPerDayUSD = limitUSD }
 }
 
 // WithLogger sets the logger used for service-level diagnostics.
@@ -468,33 +457,6 @@ func WithAlerts(set AlertSettings) ServiceOption {
 // AlertManager returns the service's alert Manager, or nil when alerts
 // are disabled. Exposed for tests + shutdown.
 func (s *Service) AlertManager() *alert.Manager { return s.alertManager }
-
-// WithBroker injects an existing event broker. When omitted, the
-// service creates its own.
-func WithBroker(b *EventBroker) ServiceOption {
-	return func(s *Service) {
-		if b != nil {
-			s.broker = b
-		}
-	}
-}
-
-// WithManager injects an existing lifecycle manager. When omitted,
-// the service creates its own.
-func WithManager(m *Manager) ServiceOption {
-	return func(s *Service) {
-		if m != nil {
-			s.manager = m
-		}
-	}
-}
-
-// WithExtraEventObservers adds observers chained alongside the
-// broker.Publish observer. Use this to wire Prometheus / OTLP
-// exporters into the HTTP service's run goroutines.
-func WithExtraEventObservers(observers ...func(store.Event)) ServiceOption {
-	return func(s *Service) { s.extraObservers = append(s.extraObservers, observers...) }
-}
 
 // WithLaunchPublisher wires the cloud-mode publisher; when nil the
 // service stays in local-mode (in-process engine).
@@ -595,10 +557,10 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		}
 	}
 
-	// Build the daily spend-cap guard. The env default only applies when
-	// no explicit WithDailyCostCap was passed. NewDailyCapGuard returns
-	// nil (cap disabled) when the limit is non-positive or the store
-	// can't persist a ledger (cloud Mongo stores).
+	// Build the daily spend-cap guard from the ITERION_MAX_COST_PER_DAY_USD
+	// env default. NewDailyCapGuard returns nil (cap disabled) when the
+	// limit is non-positive or the store can't persist a ledger (cloud
+	// Mongo stores).
 	if s.maxCostPerDayUSD <= 0 {
 		s.maxCostPerDayUSD = envDailyCostCap()
 	}
