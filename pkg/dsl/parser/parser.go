@@ -97,25 +97,6 @@ func (p *parser) skipToNextTopLevel() {
 	}
 }
 
-// consumeBlock skips an entire indented block (INDENT ... DEDENT).
-func (p *parser) consumeBlock() {
-	depth := 0
-	for {
-		t := p.next()
-		switch t.Type {
-		case TokenIndent:
-			depth++
-		case TokenDedent:
-			if depth == 0 {
-				return
-			}
-			depth--
-		case TokenEOF:
-			return
-		}
-	}
-}
-
 // ---- file ----
 
 // isReservedName reports whether name collides with a reserved target
