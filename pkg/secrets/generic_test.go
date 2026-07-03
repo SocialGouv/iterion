@@ -29,40 +29,6 @@ func mkGenericSecret(t *testing.T, store *MemoryGenericSecretStore, sealer Seale
 	return rec
 }
 
-func TestResolveGeneric_PrioritizesUserOverTeam(t *testing.T) {
-	store := NewMemoryGenericSecretStore()
-	sealer := newSealer(t)
-	mkGenericSecret(t, store, sealer, "team", "", "kubeconfig", "team-secret")
-	user := mkGenericSecret(t, store, sealer, "team", "alice", "kubeconfig", "user-secret")
-
-	got, err := ResolveGeneric(context.Background(), store, "team", "alice", []string{"kubeconfig"}, sealer)
-	if err != nil {
-		t.Fatalf("ResolveGeneric: %v", err)
-	}
-	r, ok := got["kubeconfig"]
-	if !ok {
-		t.Fatal("no kubeconfig resolution")
-	}
-	if r.SecretID != user.ID || string(r.Plaintext) != "user-secret" || r.SourceScope != "user" {
-		t.Fatalf("expected user secret, got %+v", r)
-	}
-}
-
-func TestResolveGeneric_FallsBackToTeam(t *testing.T) {
-	store := NewMemoryGenericSecretStore()
-	sealer := newSealer(t)
-	team := mkGenericSecret(t, store, sealer, "team", "", "deploy_key", "team-secret")
-
-	got, err := ResolveGeneric(context.Background(), store, "team", "bob", []string{"deploy_key"}, sealer)
-	if err != nil {
-		t.Fatalf("ResolveGeneric: %v", err)
-	}
-	r := got["deploy_key"]
-	if r.SecretID != team.ID || string(r.Plaintext) != "team-secret" || r.SourceScope != "team" {
-		t.Fatalf("expected team secret, got %+v", r)
-	}
-}
-
 func TestGenericSecretAADBound(t *testing.T) {
 	sealer := newSealer(t)
 	sealed, err := SealGenericSecret(sealer, "a", []byte("payload"))

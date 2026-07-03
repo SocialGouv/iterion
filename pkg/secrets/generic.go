@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -69,66 +67,6 @@ type GenericResolution struct {
 	// (model.effectiveSecretHosts) so a binding can only narrow, never
 	// broaden, the policy.
 	AllowedHosts []string
-}
-
-func ResolveGeneric(
-	ctx context.Context,
-	secretStore GenericSecretStore,
-	teamID, userID string,
-	names []string,
-	sealer Sealer,
-) (map[string]GenericResolution, error) {
-	if secretStore == nil {
-		return map[string]GenericResolution{}, nil
-	}
-	if teamID == "" {
-		return nil, fmt.Errorf("secrets: team id required for generic secret resolve")
-	}
-	if len(names) == 0 {
-		return map[string]GenericResolution{}, nil
-	}
-	visible, err := secretStore.ListByTeam(ctx, teamID, userID)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(visible, func(i, j int) bool {
-		ai := genericSecretRank(visible[i], userID)
-		aj := genericSecretRank(visible[j], userID)
-		if ai != aj {
-			return ai < aj
-		}
-		return visible[i].CreatedAt.Before(visible[j].CreatedAt)
-	})
-	want := make(map[string]bool, len(names))
-	for _, name := range names {
-		if name = strings.TrimSpace(name); name != "" {
-			want[name] = true
-		}
-	}
-	out := make(map[string]GenericResolution, len(want))
-	for _, s := range visible {
-		if !want[s.Name] {
-			continue
-		}
-		if _, exists := out[s.Name]; exists {
-			continue
-		}
-		r, ok := buildGenericResolution(s, sealer, userID)
-		if ok {
-			out[s.Name] = r
-		}
-	}
-	return out, nil
-}
-
-func genericSecretRank(s GenericSecret, currentUserID string) int {
-	if currentUserID != "" && s.ScopeUserID == currentUserID {
-		return 0
-	}
-	if s.ScopeUserID == "" {
-		return 1
-	}
-	return 99
 }
 
 func buildGenericResolution(s GenericSecret, sealer Sealer, currentUserID string) (GenericResolution, bool) {
