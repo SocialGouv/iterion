@@ -10,6 +10,32 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-03 — v2 on an AMBITIOUS axis: agent self-plans a 7-commit dedup refactor, build+test green, converges (run 019f28ae)
+
+- Status: **validated** (ambitious) — v2 proven on non-trivial, judgment-heavy
+  work, not just a mechanical sweep.
+- Versions: bot v2.0.0 · iterion `e66918bc2`. Method: mono claude sonnet-5,
+  sandbox full, `--merge-into none`, cap 90. **Axis**: open-ended code-quality /
+  real-duplication convergence. Scope: `pkg/dispatcher/tracker` (the 3 forge
+  adapters the architect survey flagged as duplicated, #2).
+- Result: **finished (converged, not capped)**, **7 commits on
+  `iterion/run/ember-bound-ashglyph-10d3`**, each a distinct real dedup the agent
+  identified and named itself: converge github/gitlab/forgejo issue-ID parsing →
+  `parsePrefixedID`; REST plumbing → shared `restClient`; UpdateState label-diff →
+  `applyLabelDiff`; state-mapping → `resolveLabelSelector`; RefreshStates loop →
+  `refreshStateByID`; constructor defaulting; inline byte-identical `resolveState`
+  wrappers. 8 files, +263/−245. **`go test ./pkg/dispatcher/tracker` GREEN** — the
+  refactor preserved each adapter's per-provider auth/sentinels/wire structs
+  (the verify gate held). main untouched, ~0 forfait cost.
+- Value: validates the ADR-058 thesis on AMBITIOUS work — given the axis +
+  autonomy + a verify gate, the agent self-plans (living todo) a coherent
+  multi-commit refactor, judges real-vs-incidental duplication, and keeps it
+  green — exactly the operator's manual campaign, minimal framing. This IS the
+  architect-survey #2 finding, landed autonomously.
+- Lessons: v2 handles self-directed refactor campaigns, not just mechanical
+  sweeps. Cherry-pick the tracker dedup to main after review (it's a genuine
+  quality win). Ready for a whole-repo quality run when forfait allows.
+
 ## 2026-07-03 — v2 MINIMAL-FRAMING (ADR-058) live-proven: one agent, its natural flow, clean in-stride commits (run 019f288b)
 
 - Status: **validated** — the v2 campaign bot (ADR-058, "lean on the agent")
