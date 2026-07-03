@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -89,19 +88,6 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		ctx = store.WithIdentity(ctx, id.TeamID, id.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// requireRole wraps next, ensuring the principal has at least the
-// given role *in their active team*. Super-admins always pass.
-func (s *Server) requireRole(want identity.Role, next http.Handler) http.Handler {
-	return s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := auth.FromContext(r.Context())
-		if !id.HasRole(want) {
-			httpError(w, http.StatusForbidden, "insufficient permissions")
-			return
-		}
-		next.ServeHTTP(w, r)
-	}))
 }
 
 // requireSuperAdmin wraps next, allowing only platform super-admins.
