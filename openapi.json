@@ -42,9 +42,6 @@
             "format": "date-time",
             "type": "string"
           },
-          "managed_secret_id": {
-            "type": "string"
-          },
           "namespace": {
             "type": "string"
           },
