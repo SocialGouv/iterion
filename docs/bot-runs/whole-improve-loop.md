@@ -10,6 +10,48 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-03 — LIVE PROOF of the ADR-055 redesign: converges + lands a real fix + terminates (runs 019f2750, 019f275e)
+
+- Status: **validated** — the redesign (increments 1 + 2a + 2c) proven live on
+  bounded scopes: the bot now **converges, lands verified commits, and stops**,
+  inverting the same-day 019f2247 failure (9h / 48 iterations / 0 commits /
+  never converged).
+- Versions: bot whole-improve-loop v0.7.0 · iterion `7f96e620f` (main)
+- Method: `iterion run` CLI (static `ITERION_BIN`), sandbox
+  `iterion-sandbox-full:edge`, dual review (opus-4.8 ⇄ gpt), worktree:auto,
+  `--auto-resume 20`, `--merge-into none`, `--store-dir $PWD/.iterion`
+  (observable in the operator's studio). NB: `iterion run` WITHOUT `--store-dir`
+  persists to a per-bot store `~/.iterion/projects/<bot-key>`, NOT the workspace
+  `.iterion` — pass `--store-dir` explicitly for studio observability (the
+  CLAUDE.md "omit --store-dir" note is misleading; a 404 in the studio diffs
+  panel is the symptom).
+- **Run 019f2750** (scope `pkg/reviewtopology`, default grid): converged in **2
+  cross-family reviews (~2 min)**, both approved, `done`. **0 commits** — the
+  package was already clean, so the empty-commit guard correctly committed
+  nothing. Proves **termination** (the old "grinds forever" bug is dead) but the
+  target was too clean to exercise the fix→commit path.
+- **Run 019f275e** (scope `pkg/dispatcher/native/boardops,pkg/backend/forfait`,
+  explicit code-quality axis): num_chunks=1. Flow:
+  `reviewer_claude(REJECT: "Dead exported code boardops.Tools()" + redundant
+  guard) → fix_claude(applies fix) → reviewer_gpt → reviewer_claude(APPROVE) →
+  verify_build → verify_run → commit_changes → done`. **Landed commit
+  `b3e4c174e`** on storage branch `iterion/run/pixel-blink-cryomantle-a741`:
+  removed the dead `boardops.Tools()` + simplified `ToolsFor`/`Call` (−10 net
+  lines), **build+test verified** before commit. main untouched.
+- Value: proves the full real-agent inversion — find real blocker → fix →
+  cross-family re-review → deterministic verify gate → verified commit →
+  terminate. Combined cost of both runs: **~+6% of the 5h forfait**.
+- Note on commit_unit vs commit_changes: both runs were single-unit
+  (num_chunks=1), so the sole unit's convergence is the stop → it finalizes via
+  verify_build/verify_run/**commit_changes** (by design — commit_unit fires for
+  units 0..n-1). The per-unit `commit_unit` path (multi-unit) is proven by the
+  e2e tests `PerUnitConvergesCommitsAndAdvances` (commit_unit fires exactly
+  twice on a 3-unit run) + `PerUnitVerifyGatesCommit`.
+- Lessons for next run: to exercise `commit_unit` live, use a scope large enough
+  for ≥2 chunks with fixable issues in the non-last chunk. Remaining redesign
+  work: ADR-055 increment 2b (adaptive coherent-unit worker replacing blind
+  byte-slice chunks) — needs its own live dogfood.
+
 ## 2026-07-03 — whole-repo production-readiness, mono sonnet-5: real hardening but did NOT converge → harvested + triggered ADR-055 redesign (run 019f2247)
 
 - Status: **partial** — produced genuinely good hardening, but the bot

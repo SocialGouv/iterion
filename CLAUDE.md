@@ -960,10 +960,15 @@ Global flags: `--json` (machine output), `--help`
 ### Live dogfood runs MUST be visible in the operator's studio
 
 When you test or dogfood a catalog bot with a real run, launch it into the
-store the operator's running `iterion studio` reads — the workspace default
-(`<workspace>/.iterion`, i.e. **omit `--store-dir`** or point it explicitly at
-that path) — **never** a throwaway `--store-dir /tmp/...` the operator cannot
-see. A run the operator can't watch in the UI does not count as validated.
+store the operator's running `iterion studio` reads — **pass `--store-dir
+"$PWD/.iterion"` explicitly** (the workspace store). Do **not** rely on omitting
+`--store-dir`: `iterion run` with no `--store-dir` does **not** default to the
+workspace `.iterion` — it persists to a per-bot project store under
+`~/.iterion/projects/<bot-path-key>/`, which the operator's studio (bound to
+`<workspace>/.iterion`) cannot see, producing a `run not found … run.json: no
+such file or directory` 404 in the studio's run/diffs panel. And **never** use a
+throwaway `--store-dir /tmp/...`. A run the operator can't watch in the UI does
+not count as validated.
 
 Contain side-effects with per-run **flags**, not by hiding the run in a
 separate store:
