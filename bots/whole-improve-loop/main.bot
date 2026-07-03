@@ -969,12 +969,14 @@ compute advance:
 ## sweep's scratch (work-list / cursor / verify script+log) now lives
 ## OUT-OF-TREE under {{vars.scratch_dir}}, so `git add -A` never sees it —
 ## the old `reset -- .whole_improve_loop.*` unstage step is gone (nothing to
-## exclude). Message carries the item's title (LABEL= shell-escapes a
-## space/paren-bearing title as one token; ${LABEL:-workspace} guards an
-## empty one). No-op-safe: `diff --cached --quiet` makes no empty commit when
-## a transform changed nothing.
+## exclude). Message carries the item's title: assign it to a QUOTED shell
+## var first (`LABEL="..."`) so a title with spaces/colons/slashes/parens is
+## one value — an unquoted `LABEL=<title> git ...` env-prefix would word-split
+## the title into a bogus command. `${LABEL:-workspace}` guards an empty one.
+## No-op-safe: `diff --cached --quiet` makes no empty commit when a transform
+## changed nothing.
 tool commit_item:
-  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} diff --cached --quiet || LABEL={{input.item_title}} git -C {{vars.workspace_dir}} commit -m "refactor(improve): ${LABEL:-workspace}"; }`
+  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} diff --cached --quiet || { LABEL="{{input.item_title}}"; git -C {{vars.workspace_dir}} commit -m "refactor(improve): ${LABEL:-workspace}"; }; }`
   output: commit_result
 
 ## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
