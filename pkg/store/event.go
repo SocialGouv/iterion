@@ -37,6 +37,17 @@ const (
 	EventRunPaused            EventType = "run_paused"
 	EventHumanAnswersRecorded EventType = "human_answers_recorded"
 	EventRunResumed           EventType = "run_resumed"
+	// EventRunAutoResumed marks a bounded run-level auto-resume (the
+	// `--auto-resume N` / ITERION_AUTO_RESUME loop). Distinct from
+	// EventRunResumed (operator-initiated) so the timeline shows the
+	// automation. Data:
+	//   - attempt: 1-based auto-resume attempt
+	//   - max: the configured N
+	//   - code: the RuntimeError code that triggered it (EXECUTION_FAILED,
+	//     BUDGET_EXCEEDED, TIMEOUT, RATE_LIMITED, NETWORK_TRANSIENT, …)
+	//   - delay_ms: backoff waited before this attempt
+	//   - reason: "auto"
+	EventRunAutoResumed EventType = "run_auto_resumed"
 	// Review-&-merge gate events (interaction: review). The gate runs a
 	// companion↔human dialogue and squash-merges during the pause.
 	EventReviewTurn     EventType = "review_turn"    // data: {interaction_id, role, turn}

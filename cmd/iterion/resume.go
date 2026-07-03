@@ -28,6 +28,7 @@ var resumeOpts struct {
 	maxDuration         string
 	maxIterations       int
 	maxParallelBranches int
+	autoResume          int
 }
 
 var resumeCmd = &cobra.Command{
@@ -50,6 +51,7 @@ var resumeCmd = &cobra.Command{
 			PermissionDeny:  resumeOpts.permissionDeny,
 			ModelFor:        resumeOpts.modelFor,
 			BackendFor:      resumeOpts.backendFor,
+			AutoResume:      resumeOpts.autoResume,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          resumeOpts.maxCostUSD,
 				MaxTokens:           resumeOpts.maxTokens,
@@ -88,6 +90,7 @@ func init() {
 	f.StringArrayVar(&resumeOpts.modelFor, "model", nil, "Re-apply a per-node/-group model override on resume (repeatable): \"selector=model\" or a bare \"model\". Resume does NOT persist the launch overrides, so pass the same --model flags used at run to keep e.g. reviewers on their chosen model. Selector = node id, id glob (reviewer_*), or kind (agent|judge).")
 	f.StringArrayVar(&resumeOpts.backendFor, "backend", nil, "Re-apply a per-node/-group backend override on resume (repeatable): \"selector=backend\" or a bare \"backend\" (claw|claude_code). Same selector syntax as --model.")
 	registerBudgetFlags(f, &resumeOpts.maxCostUSD, &resumeOpts.maxTokens, &resumeOpts.maxDuration, &resumeOpts.maxIterations, &resumeOpts.maxParallelBranches)
+	registerAutoResumeFlag(f, &resumeOpts.autoResume)
 	mustMarkRequired(resumeCmd, "run-id")
 	rootCmd.AddCommand(resumeCmd)
 }

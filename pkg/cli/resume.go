@@ -63,6 +63,11 @@ type ResumeOptions struct {
 	// Parsed via model.ParseModelOverrides in buildResumeExecutor.
 	ModelFor   []string
 	BackendFor []string
+	// AutoResume is the bounded run-level auto-resume budget N
+	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). Mirrors
+	// RunOptions.AutoResume so `iterion resume` can itself keep re-driving a
+	// transient-failing run without a human in the loop. See auto_resume.go.
+	AutoResume int
 }
 
 // RunResumeWithFile resumes a paused run using a workflow file and answers.
@@ -251,6 +256,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 	}
 
 	err = eng.Resume(ctx, opts.RunID, answers)
+	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
 	return reportResumeOutcome(p, s, opts.RunID, err, map[string]interface{}{
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,

@@ -156,7 +156,14 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.MemoryStore != nil {
 		clawOpts = append(clawOpts, model.WithMemoryStore(spec.MemoryStore))
 	}
-	clawBackend := model.NewClawBackend(reg, hooks, model.RetryPolicy{}, clawOpts...)
+	// LAYER-1 in-executor transient-retry budget (env-configurable via
+	// ITERION_NODE_MAX_TRANSIENT_RETRIES / ITERION_NODE_MAX_RETRIES; defaults
+	// preserved when unset). The same policy is handed to both the claw
+	// backend's own retry loop and the executor's delegate-retry loop below so
+	// a rate-limit / network / idle blip is ridden out before it surfaces as a
+	// run-level failed_resumable.
+	retryPolicy := model.RetryPolicyFromEnv()
+	clawBackend := model.NewClawBackend(reg, hooks, retryPolicy, clawOpts...)
 	backendReg.Register(delegate.BackendClaw, clawBackend)
 
 	toolReg := tool.NewRegistry()
@@ -185,6 +192,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 
 	opts := []model.ClawExecutorOption{
 		model.WithBackendRegistry(backendReg),
+		model.WithRetryPolicy(retryPolicy),
 		model.WithEventHooks(hooks),
 		model.WithToolRegistry(toolReg),
 		model.WithLogger(spec.Logger),

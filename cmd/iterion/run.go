@@ -38,6 +38,7 @@ var runOpts struct {
 	maxDuration         string
 	maxIterations       int
 	maxParallelBranches int
+	autoResume          int
 }
 
 var runCmd = &cobra.Command{
@@ -70,6 +71,7 @@ var runCmd = &cobra.Command{
 			ReviewMode:          runOpts.reviewMode,
 			ModelFor:            runOpts.modelFor,
 			BackendFor:          runOpts.backendFor,
+			AutoResume:          runOpts.autoResume,
 			Budget: cli.BudgetOverrides{
 				MaxCostUSD:          runOpts.maxCostUSD,
 				MaxTokens:           runOpts.maxTokens,
@@ -117,6 +119,7 @@ func init() {
 	f.StringArrayVar(&runOpts.modelFor, "model", nil, "Per-node/-group model override (repeatable): \"selector=model\" or a bare \"model\" for every LLM node. Selector = node id (reviewer_claude), id glob (reviewer_*, fix_*), or node kind (agent|judge). Wins over the node's DSL model:. E.g. --model 'reviewer_*=anthropic/claude-fable-5' --model 'fix_*=claude-sonnet-5'. Composes with --review-mode.")
 	f.StringArrayVar(&runOpts.backendFor, "backend", nil, "Per-node/-group backend override (repeatable): \"selector=backend\" or a bare \"backend\" for every LLM node (claw|claude_code). Same selector syntax as --model; wins over the node's DSL backend:.")
 	registerBudgetFlags(f, &runOpts.maxCostUSD, &runOpts.maxTokens, &runOpts.maxDuration, &runOpts.maxIterations, &runOpts.maxParallelBranches)
+	registerAutoResumeFlag(f, &runOpts.autoResume)
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -125,6 +128,13 @@ func init() {
 // (the documented "raise the cap + resume" recovery needs them on resume too).
 // Each flag's zero value means "inherit the workflow/recipe budget"; a
 // non-zero value overrides that dimension (see cli.applyBudgetOverrides).
+// registerAutoResumeFlag wires the bounded run-level auto-resume flag onto a
+// command's flag set. Shared by `run` and `resume` (the latter can itself
+// keep re-driving a transient-failing run). 0 = off (env: ITERION_AUTO_RESUME).
+func registerAutoResumeFlag(f *pflag.FlagSet, n *int) {
+	f.IntVar(n, "auto-resume", 0, "Auto-resume a failed_resumable run with a retryable cause (transient backend error, budget/timeout with a raised --max-* cap, rate-limit) up to N times with capped exponential backoff (0 = off; env: ITERION_AUTO_RESUME). Respects the forfait usage cap (ITERION_FORFAIT_CAP_PCT).")
+}
+
 func registerBudgetFlags(f *pflag.FlagSet, cost *float64, tokens *int, duration *string, iterations, parallel *int) {
 	f.Float64Var(cost, "max-cost-usd", 0, "Override the workflow budget's max_cost_usd (USD; 0 = inherit the bot's budget)")
 	f.IntVar(tokens, "max-tokens", 0, "Override the workflow budget's max_tokens (0 = inherit)")

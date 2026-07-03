@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
@@ -50,6 +53,50 @@ type RetryPolicy struct {
 	MaxAttemptsTransient int
 	// BackoffBase is the base delay for exponential backoff. Default: 1s.
 	BackoffBase time.Duration
+}
+
+// RetryPolicyFromEnv builds the in-executor per-node retry budget from the
+// environment, falling back to the built-in defaults (DefaultMaxAttempts /
+// DefaultMaxAttemptsTransient) for any dimension left unset. This is the
+// LAYER-1 knob: it bounds how many times a transient backend failure
+// (rate-limit, session-limit, idle-watchdog, network/5xx) is retried
+// IN-EXECUTOR with exponential backoff before the failure bubbles up to a
+// run-level failed_resumable (which the LAYER-2 auto-resume then handles).
+//
+// The env values are RETRY counts (they exclude the initial attempt), so
+// ITERION_NODE_MAX_TRANSIENT_RETRIES=8 yields 9 attempts. A value of 0 means
+// "no retry" (fail-fast); a negative or non-numeric value is ignored (keeps
+// the default) rather than silently disabling retries.
+//
+//   - ITERION_NODE_MAX_TRANSIENT_RETRIES → the connectivity/transient budget
+//     (network blips, upstream 5xx, rate-limit, idle hang). Default: 5 retries
+//     (6 attempts).
+//   - ITERION_NODE_MAX_RETRIES → the standard budget for deterministic-but-
+//     retryable errors (signal kill). Default: 2 retries (3 attempts).
+func RetryPolicyFromEnv() RetryPolicy {
+	rp := RetryPolicy{}
+	if n, ok := envRetryCount("ITERION_NODE_MAX_RETRIES"); ok {
+		rp.MaxAttempts = n + 1
+	}
+	if n, ok := envRetryCount("ITERION_NODE_MAX_TRANSIENT_RETRIES"); ok {
+		rp.MaxAttemptsTransient = n + 1
+	}
+	return rp
+}
+
+// envRetryCount reads a non-negative retry count from env. Returns (0, false)
+// when unset, blank, non-numeric, or negative — the caller then keeps the
+// built-in default rather than treating a typo as "disable retries".
+func envRetryCount(key string) (int, bool) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func (rp RetryPolicy) maxAttempts() int {

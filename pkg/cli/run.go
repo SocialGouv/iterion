@@ -113,6 +113,12 @@ type RunOptions struct {
 	// in buildRunExecutor. See model_override.go.
 	ModelFor   []string
 	BackendFor []string
+	// AutoResume is the bounded run-level auto-resume budget N
+	// (`--auto-resume`, env ITERION_AUTO_RESUME; default 0 = off). When the
+	// run exits failed_resumable with a retryable cause, the CLI waits
+	// (capped exponential backoff) and re-invokes resume in-process up to N
+	// times, re-using this run's exact overrides. See auto_resume.go.
+	AutoResume int
 }
 
 // RunRun executes a workflow or recipe and reports the outcome.
@@ -341,6 +347,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 
 	err = eng.Run(ctx, runID, inputs)
 	err = runInteractiveResumeLoop(ctx, eng, s, runID, opts.NoInteractive, err)
+	err = autoResumeLoop(ctx, eng, s, runID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
 
 	runResult := map[string]interface{}{
 		"run_id":   runID,

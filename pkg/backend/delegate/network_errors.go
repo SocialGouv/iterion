@@ -51,6 +51,15 @@ var networkErrorSignatures = []string{
 	"connection aborted", "connection closed", "upstream connect error",
 	"service unavailable", "bad gateway", "gateway timeout",
 	"overloaded", "internal server error",
+	// CLI-verbatim + HTTP/2 connectivity markers. These are the phrases
+	// the run-level recovery.Classify already treats as NETWORK_TRANSIENT;
+	// mirroring them here lets the FAST in-executor retry loop absorb the
+	// blip instead of it only being caught by the slower run-level recovery
+	// dispatch. False positives cost one bounded backed-off retry (see the
+	// asymmetry note above) — the gap they close is a missed fast retry.
+	"unable to connect to api", "failedtoopensocket", "http: eof",
+	"http2: timeout", "http2: server sent goaway",
+	"server closed idle connection",
 }
 
 // MatchesNetworkSignature reports whether s (an error message or a captured
