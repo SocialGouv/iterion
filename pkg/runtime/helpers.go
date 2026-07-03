@@ -257,18 +257,23 @@ func buildCheckpoint(rs *runState, nodeID string) *store.Checkpoint {
 	}
 }
 
+// cloneMap returns a shallow copy of m (nil in → nil out).
+func cloneMap[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return nil
+	}
+	dst := make(map[K]V, len(m))
+	for k, v := range m {
+		dst[k] = v
+	}
+	return dst
+}
+
 // cloneIntMap returns a shallow copy of a map[string]int (nil in → nil out),
 // used to isolate a resumed run's mutable counter maps from the persisted
 // checkpoint maps the engine would otherwise write in place.
 func cloneIntMap(src map[string]int) map[string]int {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]int, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
+	return cloneMap(src)
 }
 
 // restoreBudgetAccounting seeds a resumed run's SharedBudget consumption and

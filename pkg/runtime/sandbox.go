@@ -941,14 +941,7 @@ func expandSandboxSpec(s *sandbox.Spec, repoRoot string) {
 }
 
 func cloneStringMap(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
+	return cloneMap(m)
 }
 
 // containsClawNode reports whether any agent/judge node in the workflow
