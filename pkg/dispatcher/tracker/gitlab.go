@@ -177,15 +177,7 @@ func (a *GitLabAdapter) UpdateState(ctx context.Context, id, newState string) er
 	if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/projects/%s/issues/%d", a.pid, num), nil, &current); err != nil {
 		return err
 	}
-	have := slices.Clone(current.Labels)
-	for _, l := range sel.LabelsExclude {
-		have = filterOutString(have, l)
-	}
-	for _, l := range sel.LabelsInclude {
-		if !slices.Contains(have, l) {
-			have = append(have, l)
-		}
-	}
+	have := applyLabelDiff(slices.Clone(current.Labels), sel)
 	// GitLab replaces the full label set when `labels` is sent (comma-joined).
 	in := map[string]string{"labels": strings.Join(have, ",")}
 	return a.do(ctx, http.MethodPut, fmt.Sprintf("/projects/%s/issues/%d", a.pid, num), in, nil)

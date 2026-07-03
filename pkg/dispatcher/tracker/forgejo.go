@@ -174,15 +174,7 @@ func (a *ForgejoAdapter) UpdateState(ctx context.Context, id, newState string) e
 	if err := a.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d", a.opts.Repo, num), nil, &current); err != nil {
 		return err
 	}
-	have := labelNames(current.Labels)
-	for _, l := range sel.LabelsExclude {
-		have = filterOutString(have, l)
-	}
-	for _, l := range sel.LabelsInclude {
-		if !slices.Contains(have, l) {
-			have = append(have, l)
-		}
-	}
+	have := applyLabelDiff(labelNames(current.Labels), sel)
 	return a.replaceLabels(ctx, num, have)
 }
 

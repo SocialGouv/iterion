@@ -60,3 +60,20 @@ func filterOutString(in []string, drop string) []string {
 	}
 	return out
 }
+
+// applyLabelDiff returns have with sel's excludes removed and includes
+// added (each include only if not already present). Used by UpdateState
+// on adapters whose only state-transition mechanism is a full label
+// rewrite (gitlab, forgejo) — read the current labels, apply the diff,
+// write the full set back.
+func applyLabelDiff(have []string, sel LabelSelector) []string {
+	for _, l := range sel.LabelsExclude {
+		have = filterOutString(have, l)
+	}
+	for _, l := range sel.LabelsInclude {
+		if !slices.Contains(have, l) {
+			have = append(have, l)
+		}
+	}
+	return have
+}
