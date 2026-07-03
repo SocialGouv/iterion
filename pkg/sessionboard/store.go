@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Store loads and saves the per-run board spec. The interface keeps the
@@ -74,21 +76,8 @@ func (s *FileStore) Save(runID string, spec Spec) error {
 	if err != nil {
 		return fmt.Errorf("sessionboard: encode spec: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".sessionboard-*.tmp")
-	if err != nil {
-		return fmt.Errorf("sessionboard: temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+	if err := store.WriteFileAtomic(path, data, 0o644); err != nil {
 		return fmt.Errorf("sessionboard: write spec: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("sessionboard: close spec: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("sessionboard: rename spec: %w", err)
 	}
 	return nil
 }
