@@ -32,11 +32,24 @@ const (
 	// OOM the runner. 10 MB is well above any realistic tool input
 	// while still cheap to fail loud on.
 	maxToolInputJSONSize = 10 * 1024 * 1024
+
+	// maxTextBlockSize caps the accumulated text_delta/thinking_delta
+	// content for a single content block. Same rationale as
+	// maxToolInputJSONSize: a misbehaving provider (or a malformed
+	// stream that never sends content_block_stop) would otherwise grow
+	// bs.text without bound and OOM the runner. 50 MB comfortably
+	// covers even a very large extended-thinking transcript while
+	// still cheap to fail loud on.
+	maxTextBlockSize = 50 * 1024 * 1024
 )
 
 // ErrToolInputTooLarge signals that a streamed tool_use block's
 // accumulated input JSON exceeded maxToolInputJSONSize.
 var ErrToolInputTooLarge = errors.New("aggregateStream: tool_use input exceeded max size")
+
+// ErrTextBlockTooLarge signals that a streamed text/thinking block's
+// accumulated content exceeded maxTextBlockSize.
+var ErrTextBlockTooLarge = errors.New("aggregateStream: text/thinking block exceeded max size")
 
 // ---------------------------------------------------------------------------
 // Stream aggregation
@@ -68,6 +81,18 @@ type blockState struct {
 	stopped       bool
 	thinkingStart time.Time // when a thinking block opened (zero for non-thinking)
 	thinkingMs    int       // finalized thinking duration (set on content_block_stop)
+}
+
+// growText appends delta to bs.text, enforcing maxTextBlockSize. Shared by
+// the text_delta and thinking_delta cases so a misbehaving provider (or a
+// malformed stream that never sends content_block_stop) can't grow either
+// buffer without bound — the same protection input_json_delta already has.
+func (bs *blockState) growText(delta string) error {
+	if len(bs.text)+len(delta) > maxTextBlockSize {
+		return fmt.Errorf("%w: %d bytes", ErrTextBlockTooLarge, maxTextBlockSize)
+	}
+	bs.text += delta
+	return nil
 }
 
 // aggregateStream reads all events from ch and builds an aggregatedResponse.
@@ -161,9 +186,17 @@ func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedR
 				}
 				switch event.Delta.Type {
 				case "text_delta":
-					bs.text += event.Delta.Text
+					if growErr := bs.growText(event.Delta.Text); growErr != nil {
+						res.err = growErr
+						res.text, res.toolUses, res.thinkingText, res.thinkingMs = collectBlocks(blocks)
+						return res
+					}
 				case "thinking_delta":
-					bs.text += event.Delta.Thinking
+					if growErr := bs.growText(event.Delta.Thinking); growErr != nil {
+						res.err = growErr
+						res.text, res.toolUses, res.thinkingText, res.thinkingMs = collectBlocks(blocks)
+						return res
+					}
 				case "signature_delta":
 					// Signature signs the thinking block for cross-turn replay;
 					// it carries no token/timing signal, so we ignore it here.
