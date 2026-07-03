@@ -10,6 +10,52 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-03 — LIVE PROOF of the ADR-057 axis-sweep: enumerates + transforms + commits a real cross-cutting refactor across 4 packages, converges (run 019f27d4)
+
+- Status: **validated** — the axis-driven work-list sweep (ADR-057, the operator's
+  manual campaign pattern encoded) proven end-to-end on a real axis. The bot now
+  applies a determined improvement axis across the whole codebase, site by site,
+  verified and committed — a GLOBAL cross-cutting change chunked review could not
+  express.
+- Versions: bot whole-improve-loop v1.0.0 (axis-sweep) · iterion `a1b3a83f8`
+  (run predates the same-day scratch-relocation `e75db90af`, engine loop-edge fix
+  `4b3243074`, and commit-label fix `f68d90aac` — all landed after).
+- Method: `iterion run` (static ITERION_BIN), sandbox `iterion-sandbox-full:edge`,
+  dual review (opus-4.8 ⇄ gpt), worktree:auto, `--store-dir $PWD/.iterion`,
+  `--auto-resume 20`, `--merge-into none`. **Axis** (`improvement_prompt`): "route
+  every hand-rolled temp-file + os.Rename write lacking an fsync through
+  store.WriteFileAtomic". Scope: `pkg/dispatcher,pkg/memory,pkg/sessionboard,pkg/runtime`.
+- Flow (node trace): `enumerate` → work-list of **4 concrete sites** (exactly the
+  ones the architect survey named: quota_fs.go / manager_state.go /
+  sessionboard/store.go / bundle.go) → per item: `next_item → transform →
+  verify_build → verify_run → alt → reviewer_{gpt,claude} → review_gate →
+  commit_item → advance` → `re_enumerate` finds none → **done**.
+- Result: **4 incremental commits on `iterion/run/magnetic-surge-prismpunk-bd28`**,
+  one per site, each a genuine `os.Rename`/`CreateTemp`→`store.WriteFileAtomic`
+  durability conversion, **build+test-verified before each commit** and
+  cross-family reviewed (2 claude + 2 gpt, alternating by sweep-iteration parity).
+  Converged and terminated. main untouched. Cost: ~15% of the 5h forfait.
+- Value: the inversion completed — the whole-improve-loop does the operator's
+  proven manual Claude-Code campaign (axis → enumerate sites → fix each → commit
+  incrementally → converge), amplified by a deterministic per-item verify gate +
+  cross-family review. Contrast with the same-day 019f2247 (chunked review: 9h,
+  48 iterations, 0 commits, never converged): 019f27d4 landed 4 verified commits
+  and terminated.
+- Findings / misses / fixes it surfaced:
+  1. **commit_item message = "workspace"** — `LABEL={{item_title}}` (unquoted
+     env-prefix) word-split a title with spaces/colons → empty → fallback. Fixed
+     `f68d90aac` (quoted `LABEL="..."`). The changes themselves were correct.
+  2. **Scratch files in the worktree** — worklist.json/state/verify.sh/log were
+     written to the worktree (visible as `??`). Fixed `e75db90af`
+     (`${PROJECT_SCRATCH_DIR}` out-of-tree).
+  3. **Engine loop-edge merge bug** (surfaced authoring the bot) — fixed
+     `4b3243074`, benefits every loop bot.
+- Lessons for next run: the 4 WriteFileAtomic commits on the storage branch are
+  genuinely good durability fixes (from the survey backlog) — cherry-pick to main
+  after review. Re-run with the fixed bot to confirm commit_item now carries the
+  real item title. The survey's candidate axes (`.iterion/candidate-axes.md`:
+  twin Memory/Mongo stores, tracker↔forge HTTP core, etc.) are the next campaigns.
+
 ## 2026-07-03 — LIVE PROOF of the ADR-055 redesign: converges + lands a real fix + terminates (runs 019f2750, 019f275e)
 
 - Status: **validated** — the redesign (increments 1 + 2a + 2c) proven live on
