@@ -45,64 +45,28 @@ func (m *MongoSource) SubscribeLogs(ctx context.Context, runID string, fromOffse
 		fromOffset = 0
 	}
 	subCtx, cancel := context.WithCancel(ctx)
-	pipe := NewLogPipe()
+	pipe := NewLogPipeWithClose(cancel)
 	go func() {
 		defer cancel()
 		m.runLogStream(subCtx, runID, fromOffset, pipe)
 	}()
-	return logPipeCloser{LogPipe: pipe, cancel: cancel}, nil
+	return pipe, nil
 }
 
-// logPipeCloser propagates a consumer Close to the subscription ctx so
-// the producer goroutine (blocked in stream.Next) unwinds promptly.
-type logPipeCloser struct {
-	LogPipe
-	cancel context.CancelFunc
-}
-
-func (c logPipeCloser) Close() error {
-	c.cancel()
-	return c.LogPipe.Close()
-}
-
-// runLogStream is the subscription pump: watch-first rounds with
-// exponential reconnect backoff, terminal-status polling, and a final
+// runLogStream is the subscription pump: watch-first rounds driven by
+// the shared reconnect loop, with terminal-status polling and a final
 // backfill so every chunk persisted before the terminal flip is
 // delivered before the channel closes.
 func (m *MongoSource) runLogStream(ctx context.Context, runID string, fromOffset int64, pipe LogPipe) {
 	defer pipe.Finish(nil)
-
-	const baseBackoff = 250 * time.Millisecond
-	const maxBackoff = 30 * time.Second
-	backoff := baseBackoff
 	delivered := fromOffset
-
-	for {
-		if ctx.Err() != nil {
-			return
-		}
+	reconnectLoop(ctx, func(delay time.Duration, err error) {
+		pipe.Warn(fmt.Errorf("runstream/mongo: log stream (will reconnect in %s): %w", delay, err))
+	}, func() (bool, error) {
 		next, terminal, err := m.streamLogsOnce(ctx, runID, delivered, pipe)
 		delivered = next
-		if terminal {
-			return
-		}
-		if err == nil {
-			return // parent ctx cancelled cleanly
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return
-		}
-		pipe.Warn(fmt.Errorf("runstream/mongo: log stream (will reconnect in %s): %w", backoff, err))
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-	}
+		return terminal, err // nil error without terminal = parent ctx ended
+	})
 }
 
 // streamLogsOnce runs one watch-first attempt: open the change stream,
@@ -163,7 +127,7 @@ func (m *MongoSource) streamLogsOnce(ctx context.Context, runID string, from int
 			continue
 		}
 		var ok bool
-		if delivered, ok = shipLogChunk(roundCtx, pipe, doc.FullDocument, delivered); !ok {
+		if delivered, ok = ShipLogChunk(roundCtx, pipe, doc.FullDocument.Offset, doc.FullDocument.Data, delivered); !ok {
 			return delivered, false, nil
 		}
 	}
@@ -184,11 +148,23 @@ func (m *MongoSource) streamLogsOnce(ctx context.Context, runID string, from int
 }
 
 // backfillLogs ships persisted chunks whose end is past `from`, sliced
-// at the boundary, in offset order. Returns the new delivered offset.
+// at the boundary, in offset order. The query is bounded below by the
+// anchor chunk straddling `from` (chunks are contiguous, so everything
+// starting before the anchor ends at or before it) — without the bound,
+// every reconnect round and terminal drain would re-fetch and decode
+// the run's entire chunk history just to discard it client-side.
+// Returns the new delivered offset.
 func (m *MongoSource) backfillLogs(ctx context.Context, runID string, from int64, pipe LogPipe) (int64, error) {
-	filter := bson.M{"run_id": runID}
+	base := bson.M{"run_id": runID}
 	if tenantID, ok := store.TenantFromContext(ctx); ok {
-		filter["tenant_id"] = tenantID
+		base["tenant_id"] = tenantID
+	}
+	filter := bson.M{"run_id": base["run_id"]}
+	for k, v := range base {
+		filter[k] = v
+	}
+	if anchor, ok := logAnchorOffset(ctx, m.runLogs, base, from); ok {
+		filter["offset"] = bson.M{"$gte": anchor}
 	}
 	cur, err := m.runLogs.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "offset", Value: 1}}))
 	if err != nil {
@@ -203,31 +179,35 @@ func (m *MongoSource) backfillLogs(ctx context.Context, runID string, from int64
 			return delivered, err
 		}
 		var ok bool
-		if delivered, ok = shipLogChunk(ctx, pipe, doc, delivered); !ok {
+		if delivered, ok = ShipLogChunk(ctx, pipe, doc.Offset, doc.Data, delivered); !ok {
 			return delivered, ctx.Err()
 		}
 	}
 	return delivered, cur.Err()
 }
 
-// shipLogChunk delivers one chunk deduped/sliced against the delivered
-// high-water offset. Returns the new offset and false when the
-// subscription is over.
-func shipLogChunk(ctx context.Context, pipe LogPipe, doc runLogChunkDoc, delivered int64) (int64, bool) {
-	end := doc.Offset + int64(len(doc.Data))
-	if end <= delivered {
-		return delivered, true
+// logAnchorOffset locates the start of the newest chunk at or before
+// `from` via the (run_id, offset) index — the lower bound for an exact
+// window read over contiguous chunks. ok=false when no such chunk
+// exists (read from the beginning).
+func logAnchorOffset(ctx context.Context, coll *mongo.Collection, base bson.M, from int64) (int64, bool) {
+	if from <= 0 {
+		return 0, false
 	}
-	data := doc.Data
-	off := doc.Offset
-	if off < delivered {
-		data = data[delivered-off:]
-		off = delivered
+	anchorFilter := bson.M{"offset": bson.M{"$lte": from}}
+	for k, v := range base {
+		anchorFilter[k] = v
 	}
-	if !pipe.Ship(ctx, LogChunk{Offset: off, Data: data, Total: end}) {
-		return delivered, false
+	var doc struct {
+		Offset int64 `bson:"offset"`
 	}
-	return end, true
+	err := coll.FindOne(ctx, anchorFilter,
+		options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}}).SetProjection(bson.M{"offset": 1}),
+	).Decode(&doc)
+	if err != nil {
+		return 0, false
+	}
+	return doc.Offset, true
 }
 
 // runIsTerminal reads the run document's status. Errors (including

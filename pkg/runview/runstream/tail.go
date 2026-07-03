@@ -57,9 +57,16 @@ func TailEventsFile(path string, done <-chan struct{}, emit func(store.Event), l
 // TailLogFile tails a run.log at path, invoking emit(offset, chunk) for
 // every appended byte span (chunks capped at logChunkBudget), until done
 // closes. On truncation/rotation the offset restarts at 0.
+//
+// The chunk slice is only valid for the duration of the emit call (it
+// aliases the tailer's scratch buffer) — consumers that retain it past
+// the call must copy. The hottest consumer, RunLogBuffer.Write, already
+// copies internally; making the copy the retainer's job avoids a second
+// full copy of every chunk on that path.
 func TailLogFile(path string, done <-chan struct{}, emit func(offset int64, chunk []byte), logger *iterlog.Logger) {
+	scratch := make([]byte, logChunkBudget)
 	drain := func(offset int64) int64 {
-		return drainNewLogBytes(path, offset, emit, logger)
+		return drainNewLogBytes(path, offset, scratch, emit, logger)
 	}
 	tailFile(path, done, drain, logger)
 }
@@ -67,11 +74,10 @@ func TailLogFile(path string, done <-chan struct{}, emit func(offset int64, chun
 // tailFile is the shared watch loop: wait for the file, prefer fsnotify,
 // fall back to polling, re-drain defensively, final-drain on done.
 func tailFile(path string, done <-chan struct{}, drain func(offset int64) int64, logger *iterlog.Logger) {
-	if !waitForFile(path, done, 5*time.Second) {
-		// File didn't appear in the bounded window, but that doesn't
-		// terminate us — the producer may still be starting. Fall
-		// through into the watch loop with the file potentially missing.
-	}
+	// Wait (bounded) for the file to appear. A file still missing after
+	// the window doesn't terminate us — the producer may be starting;
+	// the watch loop below tolerates a missing file.
+	waitForFile(path, done, 5*time.Second)
 
 	watcher, watcherErr := fsnotify.NewWatcher()
 	if watcherErr != nil {
@@ -202,8 +208,9 @@ func drainNewEvents(path string, offset int64, emit func(store.Event), logger *i
 // drainNewLogBytes reads any bytes appended past offset and emits them
 // in chunks of at most logChunkBudget, tagged with their absolute file
 // offset. Truncation (file shorter than offset) resets to 0 so the
-// consumer re-anchors.
-func drainNewLogBytes(path string, offset int64, emit func(offset int64, chunk []byte), logger *iterlog.Logger) int64 {
+// consumer re-anchors. Chunks alias the caller-owned scratch buffer —
+// see TailLogFile's emit contract.
+func drainNewLogBytes(path string, offset int64, scratch []byte, emit func(offset int64, chunk []byte), logger *iterlog.Logger) int64 {
 	f, err := os.Open(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -225,13 +232,10 @@ func drainNewLogBytes(path string, offset int64, emit func(offset int64, chunk [
 		offset = 0
 	}
 
-	chunk := make([]byte, logChunkBudget)
 	for {
-		n, readErr := f.Read(chunk)
+		n, readErr := f.Read(scratch)
 		if n > 0 {
-			out := make([]byte, n)
-			copy(out, chunk[:n])
-			emit(offset, out)
+			emit(offset, scratch[:n])
 			offset += int64(n)
 		}
 		if readErr != nil {
@@ -240,29 +244,28 @@ func drainNewLogBytes(path string, offset int64, emit func(offset int64, chunk [
 			}
 			return offset
 		}
-		if n < len(chunk) {
+		if n < len(scratch) {
 			return offset
 		}
 	}
 }
 
 // waitForFile blocks until path exists, until done is closed, or until
-// budget elapses — whichever comes first. Returns true when the file
-// became visible.
-func waitForFile(path string, done <-chan struct{}, budget time.Duration) bool {
+// budget elapses — whichever comes first.
+func waitForFile(path string, done <-chan struct{}, budget time.Duration) {
 	deadline := time.Now().Add(budget)
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
 	for {
 		if _, err := os.Stat(path); err == nil {
-			return true
+			return
 		}
 		select {
 		case <-done:
-			return false
+			return
 		case <-t.C:
 			if time.Now().After(deadline) {
-				return false
+				return
 			}
 		}
 	}

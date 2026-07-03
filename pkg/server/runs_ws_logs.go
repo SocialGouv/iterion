@@ -69,7 +69,7 @@ func (c *runConn) pumpLogs(sub runstream.LogSubscription) {
 			if !c.sendEnvelope(wsTypeLogChunk, wsLogChunkPayload{
 				Offset: chunk.Offset,
 				Text:   string(chunk.Data),
-				Total:  chunk.Total,
+				Total:  chunk.Offset + int64(len(chunk.Data)),
 			}, "") {
 				return
 			}

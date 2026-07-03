@@ -45,10 +45,6 @@ func NewFileSource(st store.RunStore, root string, logger *iterlog.Logger) *File
 	return &FileSource{store: st, root: root, logger: logger, closed: make(chan struct{})}
 }
 
-func (f *FileSource) Capabilities() Capabilities {
-	return Capabilities{LiveTail: true, HistoricalRange: true, Logs: true}
-}
-
 // Close cancels every subscription spawned from this source.
 func (f *FileSource) Close() error {
 	f.closeOnce.Do(func() { close(f.closed) })
@@ -72,26 +68,9 @@ func (f *FileSource) SubscribeEvents(ctx context.Context, runID string, fromSeq 
 		// Phase 1 — paginated replay. Load errors are non-fatal for a
 		// foreign store (the file tail below is the authoritative
 		// fallback); they just end the replay early.
-		maxReplayed := fromSeq - 1
-		next := fromSeq
-		for {
-			page, err := f.store.LoadEventsRange(ctx, runID, next, 0, MaxEventsPerPage)
-			if len(page) > 0 {
-				if !pipe.Ship(ctx, page) {
-					return
-				}
-				if last := page[len(page)-1].Seq; last > maxReplayed {
-					maxReplayed = last
-				}
-			}
-			if err != nil {
-				f.logger.Warn("runstream: cross-store replay (%s): %v", runID, err)
-				break
-			}
-			if len(page) < MaxEventsPerPage {
-				break
-			}
-			next = maxReplayed + 1
+		maxReplayed, err := ReplayEvents(ctx, f.store, runID, fromSeq, pipe)
+		if err != nil {
+			f.logger.Warn("runstream: cross-store replay (%s): %v", runID, err)
 		}
 
 		// Phase 2 — live file tail. lastSeq is only touched from the
@@ -136,18 +115,19 @@ func (f *FileSource) SubscribeLogs(ctx context.Context, runID string, fromOffset
 	go func() {
 		defer pipe.Finish(nil)
 
-		// The tailer drains from byte 0; slice away the client-held
-		// prefix so fromOffset semantics match every other backend.
+		// The tailer drains from byte 0; dedup/slice against the
+		// delivered high-water mark so fromOffset semantics match every
+		// other backend. The chunk aliases the tailer's scratch buffer
+		// (TailLogFile's emit contract) — copy before shipping, since
+		// the pipe retains it.
+		delivered := fromOffset
 		emit := func(off int64, chunk []byte) {
-			end := off + int64(len(chunk))
-			if end <= fromOffset {
+			if off+int64(len(chunk)) <= delivered {
 				return
 			}
-			if off < fromOffset {
-				chunk = chunk[fromOffset-off:]
-				off = fromOffset
-			}
-			pipe.Ship(ctx, LogChunk{Offset: off, Data: chunk, Total: off + int64(len(chunk))})
+			cp := make([]byte, len(chunk))
+			copy(cp, chunk)
+			delivered, _ = ShipLogChunk(ctx, pipe, off, cp, delivered)
 		}
 		f.tailUntilTerminal(ctx, runID, pipe.Done(), func(done <-chan struct{}) {
 			TailLogFile(logPath, done, emit, f.logger)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -46,7 +45,7 @@ import (
 // docker-compose.cloud.yml stack initiates `rs0` automatically.
 type MongoSource struct {
 	events  *mongo.Collection
-	runLogs *mongo.Collection // nil disables log streaming (Capabilities.Logs)
+	runLogs *mongo.Collection // nil makes SubscribeLogs return ErrLogsUnsupported
 	runs    *mongo.Collection // terminal-status polling for the log stream
 	logger  *iterlog.Logger
 	metrics *metrics.Registry
@@ -54,8 +53,7 @@ type MongoSource struct {
 
 // NewMongo builds a Source backed by the store's collections (the
 // Mongo RunStore's EventsCollection / RunLogsCollection /
-// RunsCollection accessors). runLogs and runs may be nil to disable
-// log streaming (Capabilities().Logs == false).
+// RunsCollection accessors).
 func NewMongo(events, runLogs, runs *mongo.Collection, logger *iterlog.Logger) *MongoSource {
 	if logger == nil {
 		logger = iterlog.New(iterlog.LevelInfo, nil)
@@ -69,12 +67,6 @@ func NewMongo(events, runLogs, runs *mongo.Collection, logger *iterlog.Logger) *
 func (m *MongoSource) WithMetrics(reg *metrics.Registry) *MongoSource {
 	m.metrics = reg
 	return m
-}
-
-// Capabilities advertises live tail + historical range for both
-// streams; Logs reflects whether the run_logs collection was wired.
-func (m *MongoSource) Capabilities() Capabilities {
-	return Capabilities{LiveTail: true, HistoricalRange: true, Logs: m.runLogs != nil}
 }
 
 // Close is a no-op — the source itself owns no long-lived resources.
@@ -92,55 +84,26 @@ func (m *MongoSource) SubscribeEvents(ctx context.Context, runID string, fromSeq
 		return nil, err
 	}
 	subCtx, cancel := context.WithCancel(ctx)
-	sub := &mongoEventSub{
-		events: make(chan []*store.Event, 8),
-		errors: make(chan error, 4),
-		cancel: cancel,
-	}
-	go m.runEvents(subCtx, runID, fromSeq, sub)
-	return sub, nil
+	pipe := NewEventPipeWithClose(cancel)
+	go func() {
+		defer cancel()
+		m.runEvents(subCtx, runID, fromSeq, pipe)
+	}()
+	return pipe, nil
 }
 
-// runEvents is the subscription pump: streamEventsOnce with exponential
-// reconnect backoff (250ms → 30s ceiling). fromSeq advances past every
-// delivered event so a reconnect neither loses nor re-delivers.
-func (m *MongoSource) runEvents(ctx context.Context, runID string, fromSeq int64, sub *mongoEventSub) {
-	defer close(sub.events)
-	defer close(sub.errors)
-
-	const baseBackoff = 250 * time.Millisecond
-	const maxBackoff = 30 * time.Second
-	backoff := baseBackoff
-
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		nextSeq, err := m.streamEventsOnce(ctx, runID, fromSeq, sub)
-		if err == nil {
-			// Clean exit — ctx cancelled.
-			return
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return
-		}
-		// Surface the error (non-fatal) and reconnect.
-		select {
-		case sub.errors <- fmt.Errorf("runstream/mongo: events stream (will reconnect in %s): %w", backoff, err):
-		default:
-			m.logger.Warn("runstream/mongo: errors channel full; dropping reconnect notice")
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
+// runEvents is the subscription pump: streamEventsOnce driven by the
+// shared reconnect loop. fromSeq advances past every delivered event so
+// a reconnect neither loses nor re-delivers.
+func (m *MongoSource) runEvents(ctx context.Context, runID string, fromSeq int64, pipe EventPipe) {
+	defer pipe.Finish(nil)
+	reconnectLoop(ctx, func(delay time.Duration, err error) {
+		pipe.Warn(fmt.Errorf("runstream/mongo: events stream (will reconnect in %s): %w", delay, err))
+	}, func() (bool, error) {
+		nextSeq, err := m.streamEventsOnce(ctx, runID, fromSeq, pipe)
 		fromSeq = nextSeq
-	}
+		return err == nil, err // nil error = clean ctx-cancelled exit
+	})
 }
 
 // streamEventsOnce runs one open-watch-first attempt: change stream
@@ -148,7 +111,7 @@ func (m *MongoSource) runEvents(ctx context.Context, runID string, fromSeq int64
 // pumped with a seq <= maxBackfilled dedup. Returns the seq the next
 // attempt should resume from (last delivered + 1). A nil error means
 // ctx was cancelled cleanly; non-nil means backoff + reconnect.
-func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSeq int64, sub *mongoEventSub) (int64, error) {
+func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSeq int64, pipe EventPipe) (int64, error) {
 	matchExpr := bson.M{
 		"operationType":       "insert",
 		"fullDocument.run_id": runID,
@@ -168,7 +131,7 @@ func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSe
 	}
 	defer stream.Close(ctx)
 
-	maxSeq, err := m.backfillEvents(ctx, runID, fromSeq, sub)
+	maxSeq, err := m.backfillEvents(ctx, runID, fromSeq, pipe)
 	if err != nil {
 		// Whatever was shipped is accounted for in maxSeq; resume past it.
 		return maxSeq + 1, fmt.Errorf("backfill: %w", err)
@@ -181,19 +144,14 @@ func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSe
 		if err := stream.Decode(&doc); err != nil {
 			// A single bad doc is not fatal — log and continue rather
 			// than tearing down the whole stream.
-			select {
-			case sub.errors <- fmt.Errorf("runstream/mongo: decode change: %w", err):
-			default:
-			}
+			pipe.Warn(fmt.Errorf("runstream/mongo: decode change: %w", err))
 			continue
 		}
 		if doc.FullDocument.Seq <= maxSeq {
 			continue // overlap with the backfill window
 		}
 		evt := doc.FullDocument
-		select {
-		case sub.events <- []*store.Event{&evt}:
-		case <-ctx.Done():
+		if !pipe.Ship(ctx, []*store.Event{&evt}) {
 			return maxSeq + 1, nil
 		}
 		maxSeq = evt.Seq
@@ -214,7 +172,7 @@ func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSe
 // backfillEvents drains the events collection for runID, seq >= fromSeq,
 // into the subscription in batches of up to MaxEventsPerPage. Returns
 // the highest seq shipped (fromSeq-1 when nothing matched).
-func (m *MongoSource) backfillEvents(ctx context.Context, runID string, fromSeq int64, sub *mongoEventSub) (int64, error) {
+func (m *MongoSource) backfillEvents(ctx context.Context, runID string, fromSeq int64, pipe EventPipe) (int64, error) {
 	filter := bson.M{
 		"run_id": runID,
 		"seq":    bson.M{"$gte": fromSeq},
@@ -238,13 +196,11 @@ func (m *MongoSource) backfillEvents(ctx context.Context, runID string, fromSeq 
 		if len(batch) == 0 {
 			return nil
 		}
-		select {
-		case sub.events <- batch:
-			batch = make([]*store.Event, 0, 256)
-			return nil
-		case <-ctx.Done():
+		if !pipe.Ship(ctx, batch) {
 			return ctx.Err()
 		}
+		batch = make([]*store.Event, 0, 256)
+		return nil
 	}
 	for cur.Next(ctx) {
 		var e store.Event
@@ -268,18 +224,4 @@ func (m *MongoSource) backfillEvents(ctx context.Context, runID string, fromSeq 
 		return maxSeq, err
 	}
 	return maxSeq, nil
-}
-
-type mongoEventSub struct {
-	events chan []*store.Event
-	errors chan error
-	cancel context.CancelFunc
-	once   sync.Once
-}
-
-func (s *mongoEventSub) Events() <-chan []*store.Event { return s.events }
-func (s *mongoEventSub) Errors() <-chan error          { return s.errors }
-func (s *mongoEventSub) Close() error {
-	s.once.Do(s.cancel)
-	return nil
 }

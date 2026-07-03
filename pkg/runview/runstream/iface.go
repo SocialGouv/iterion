@@ -8,7 +8,7 @@
 // Implementations:
 //
 //   - MongoSource (this package) — cloud: change streams over the events
-//     (and, once wired, run_logs) collections of the Mongo store.
+//     and run_logs collections of the Mongo store.
 //   - FileSource (this package) — a foreign filesystem store root
 //     (cross-store observation): fsnotify tailers + run.json terminal poll.
 //   - runview.Service's own source — the primary local store, backed by
@@ -31,9 +31,9 @@ import (
 // most this many events. Aliased by pkg/runview.MaxEventsPerPage.
 const MaxEventsPerPage = 25000
 
-// ErrLogsUnsupported is returned by SubscribeLogs on sources that cannot
-// stream logs (Capabilities().Logs == false). Callers treat it as "no
-// log stream will ever exist here", not as a transient failure.
+// ErrLogsUnsupported is returned by SubscribeLogs on a source that was
+// constructed without a log backend (a MongoSource with no run_logs
+// collection — a wiring error, not a runtime condition).
 var ErrLogsUnsupported = errors.New("runstream: this source does not stream logs")
 
 // Source is the long-lived streaming gateway for one store. Open one per
@@ -50,12 +50,8 @@ type Source interface {
 	// SubscribeLogs delivers log bytes from fromOffset, offset-tagged.
 	// Consumers dedup/slice by offset (chunks may overlap on reconnect,
 	// and a truncated/rotated producer file re-anchors at a lower
-	// offset). Returns ErrLogsUnsupported when Capabilities().Logs is
-	// false.
+	// offset).
 	SubscribeLogs(ctx context.Context, runID string, fromOffset int64) (LogSubscription, error)
-	// Capabilities advertises what this source can do so callers can
-	// degrade gracefully.
-	Capabilities() Capabilities
 	// Close releases pooled resources. Safe to call multiple times.
 	// Open subscriptions are cancelled.
 	Close() error
@@ -75,15 +71,12 @@ type EventSubscription interface {
 	Close() error
 }
 
-// LogChunk is one delivered span of the run's log byte stream.
+// LogChunk is one delivered span of the run's log byte stream. Offset
+// is the absolute byte position of Data[0] in the run's log; the
+// producer's running total at emit time is Offset + len(Data).
 type LogChunk struct {
-	// Offset is the absolute byte position of Data[0] in the run's log.
 	Offset int64
 	Data   []byte
-	// Total is the producer's running byte counter at emit time
-	// (Offset + len(Data) for in-order delivery). Lets clients detect
-	// drops and re-anchor.
-	Total int64
 }
 
 // LogSubscription is one client's view of a run's log stream. Chunks()
@@ -93,18 +86,4 @@ type LogSubscription interface {
 	Chunks() <-chan LogChunk
 	Errors() <-chan error
 	Close() error
-}
-
-// Capabilities describes what a Source implementation can do.
-type Capabilities struct {
-	// LiveTail is true when the source pushes new data as soon as it is
-	// persisted (fsnotify, Mongo change stream).
-	LiveTail bool
-	// HistoricalRange is true when the source can serve a from→end
-	// backfill before transitioning to live.
-	HistoricalRange bool
-	// Logs is true when SubscribeLogs is functional. False routes
-	// callers to their no-log fallback (migration gate while the cloud
-	// log pipeline lands).
-	Logs bool
 }

@@ -3,7 +3,6 @@ package runner
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -40,10 +39,9 @@ type runLogWriter struct {
 	mu     sync.Mutex
 	buf    []byte
 	offset int64 // absolute offset of buf[0]
-	total  int64 // running bytes-written counter (flushed or pending)
 	closed bool
 
-	dropped atomic.Int64
+	dropped int64 // bytes dropped after exhausted retries; flusher-only
 
 	flushCh chan struct{}
 	stopCh  chan struct{}
@@ -105,7 +103,6 @@ func newRunLogWriter(ctx context.Context, ls store.RunLogStore, runID string, se
 		runID:   runID,
 		logger:  logger,
 		offset:  seed,
-		total:   seed,
 		flushCh: make(chan struct{}, 1),
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
@@ -126,7 +123,6 @@ func (w *runLogWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	w.buf = append(w.buf, p...)
-	w.total += int64(len(p))
 	full := len(w.buf) >= runLogFlushBytes
 	w.mu.Unlock()
 	if full {
@@ -138,13 +134,14 @@ func (w *runLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Total returns the running bytes-written counter (flushed or pending)
-// — the value AppendEvent stamps as Event.LogOffset so the studio's
-// per-node log slicing lines up with the byte stream.
+// Total returns the running bytes-written counter (flushed or pending,
+// == offset of the next byte) — the value AppendEvent stamps as
+// Event.LogOffset so the studio's per-node log slicing lines up with
+// the byte stream.
 func (w *runLogWriter) Total() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.total
+	return w.offset + int64(len(w.buf))
 }
 
 // Close stops the flusher after a final flush of the pending tail.
@@ -207,7 +204,7 @@ func (w *runLogWriter) flush() {
 			return
 		}
 	}
-	total := w.dropped.Add(int64(len(data)))
+	w.dropped += int64(len(data))
 	w.logger.Error("runner: run %s: DROPPING %d log bytes at offset %d after %d attempts: %v (total dropped this run: %d)",
-		w.runID, len(data), off, runLogFlushRetries, err, total)
+		w.runID, len(data), off, runLogFlushRetries, err, w.dropped)
 }

@@ -71,8 +71,27 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 		return nil, nil
 	}
 	filter := withTenantFilter(ctx, bson.M{"run_id": runID})
+	// Bound the scan below by the anchor chunk straddling `from`
+	// (chunks are contiguous, so everything starting before it ends at
+	// or before it) — a tail-poll with a growing `from` must not
+	// re-fetch and decode the run's whole chunk history on every read.
+	offsetRange := bson.M{}
+	if from > 0 {
+		anchorFilter := withTenantFilter(ctx, bson.M{"run_id": runID, "offset": bson.M{"$lte": from}})
+		var anchor struct {
+			Offset int64 `bson:"offset"`
+		}
+		if err := s.runLogs.FindOne(ctx, anchorFilter,
+			options.FindOne().SetSort(bson.D{{Key: "offset", Value: -1}}).SetProjection(bson.M{"offset": 1}),
+		).Decode(&anchor); err == nil {
+			offsetRange["$gte"] = anchor.Offset
+		}
+	}
 	if until > 0 {
-		filter["offset"] = bson.M{"$lt": until}
+		offsetRange["$lt"] = until
+	}
+	if len(offsetRange) > 0 {
+		filter["offset"] = offsetRange
 	}
 	cur, err := s.runLogs.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "offset", Value: 1}}))
 	if err != nil {
@@ -81,6 +100,9 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 	defer cur.Close(ctx)
 
 	var out []byte
+	if until > 0 {
+		out = make([]byte, 0, until-from)
+	}
 	for cur.Next(ctx) {
 		var doc runLogDoc
 		if err := cur.Decode(&doc); err != nil {
@@ -88,7 +110,7 @@ func (s *Store) ReadRunLogRange(ctx context.Context, runID string, from, until i
 		}
 		end := doc.Offset + int64(len(doc.Data))
 		if end <= from {
-			continue // fully before the window (offset index can't pre-filter by chunk END)
+			continue // the anchor chunk itself may end exactly at `from`
 		}
 		data := doc.Data
 		off := doc.Offset

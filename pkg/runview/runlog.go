@@ -247,8 +247,8 @@ func (b *RunLogBuffer) Subscribe() *RunLogSubscription {
 // silently dropped to avoid surfacing benign races as errors.
 func (b *RunLogBuffer) Close() {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.closed {
-		b.mu.Unlock()
 		return
 	}
 	b.closed = true
@@ -258,8 +258,13 @@ func (b *RunLogBuffer) Close() {
 		_ = b.file.Close()
 		b.file = nil
 	}
-	b.mu.Unlock()
 
+	// Close under the lock: Subscribe's cancel closure also writes
+	// sub.closed / closes sub.ch under b.mu. Doing it after Unlock left
+	// no happens-before with a concurrent Cancel for the same sub — a
+	// data race on sub.closed and, worse, a double close(sub.ch) panic.
+	// Same fix as EventBroker.CloseRun; close() is cheap and Write's
+	// sends are non-blocking, so holding the lock is safe.
 	for _, sub := range subs {
 		if !sub.closed {
 			sub.closed = true

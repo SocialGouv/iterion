@@ -184,11 +184,10 @@ func (s *Server) handleRunWebSocket(w http.ResponseWriter, r *http.Request) {
 	rc.xStore = xStore
 	rc.xStorePath = xStorePath
 	// One store-agnostic streaming source per connection (ADR-053): a
-	// per-conn FileSource for cross-store observation (this conn owns
-	// its Close), the Service's shared source otherwise.
+	// per-conn FileSource for cross-store observation (closed with the
+	// conn — see close()), the Service's shared source otherwise.
 	if xStore != nil {
 		rc.src = runstream.NewFileSource(xStore, xStorePath, s.logger)
-		rc.srcOwned = true
 	} else {
 		rc.src = s.runs.StreamSource()
 	}
@@ -247,10 +246,9 @@ type runConn struct {
 	identity auth.Identity
 
 	// src is the store-agnostic streaming source every subscription on
-	// this connection goes through (ADR-053). srcOwned marks the
-	// per-connection cross-store FileSource this conn must Close.
-	src      runstream.Source
-	srcOwned bool
+	// this connection goes through (ADR-053). Cross-store conns own a
+	// per-connection FileSource, closed with the conn.
+	src runstream.Source
 
 	mu            sync.Mutex
 	subscribed    bool
@@ -301,8 +299,8 @@ func (c *runConn) close() {
 			c.logSub = nil
 		}
 		c.mu.Unlock()
-		if c.srcOwned && c.src != nil {
-			_ = c.src.Close()
+		if c.xStore != nil && c.src != nil {
+			_ = c.src.Close() // per-connection cross-store FileSource
 		}
 		_ = c.conn.Close()
 		if c.server.cfg.Metrics != nil {
@@ -388,6 +386,9 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 
 	snap, err := c.snapshot()
 	if err != nil {
+		c.mu.Lock()
+		c.subscribed = false
+		c.mu.Unlock()
 		c.sendError("snapshot_failed", err.Error(), env.AckID)
 		return
 	}
@@ -404,6 +405,9 @@ func (c *runConn) handleSubscribe(env runWSEnvelope) {
 
 	sub, err := c.src.SubscribeEvents(c.authCtx(), c.runID, effectiveFromSeq)
 	if err != nil {
+		c.mu.Lock()
+		c.subscribed = false
+		c.mu.Unlock()
 		c.sendError("event_stream_failed", err.Error(), "")
 		return
 	}

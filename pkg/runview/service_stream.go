@@ -3,9 +3,6 @@ package runview
 import (
 	"context"
 	"errors"
-	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -20,23 +17,22 @@ import (
 // branches on how a run was produced.
 
 // StreamSource returns the store-agnostic streaming source for the
-// primary store. The returned value is cheap and stateless — callers
-// may fetch it per connection.
+// primary store: the injected cloud source when one was wired
+// (WithStreamSource — a construction-time fact), the Service's own
+// broker/buffer-backed filesystem source otherwise.
 func (s *Service) StreamSource() runstream.Source {
+	if s.streamSrc != nil {
+		return s.streamSrc
+	}
 	return &svcSource{s: s}
 }
 
+// svcSource is the filesystem-store source: the in-process
+// EventBroker / RunLogBuffer fan-out behind the runstream contract.
 type svcSource struct{ s *Service }
 
-func (v *svcSource) Capabilities() runstream.Capabilities {
-	if v.s.streamSrc != nil {
-		return v.s.streamSrc.Capabilities()
-	}
-	return runstream.Capabilities{LiveTail: true, HistoricalRange: true, Logs: true}
-}
-
-// Close is a no-op: the underlying machinery (broker, buffers, injected
-// cloud source) is owned by the Service lifecycle, not by this handle.
+// Close is a no-op: the underlying machinery (broker, buffers) is owned
+// by the Service lifecycle, not by this handle.
 func (v *svcSource) Close() error { return nil }
 
 // SubscribeEvents delivers seq >= fromSeq: paginated store replay first,
@@ -46,9 +42,6 @@ func (v *svcSource) Close() error { return nil }
 // events (store.EventAlert, Seq==0, never persisted) bypass the dedup —
 // they only ever arrive on the live tail.
 func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq int64) (runstream.EventSubscription, error) {
-	if v.s.streamSrc != nil {
-		return v.s.streamSrc.SubscribeEvents(ctx, runID, fromSeq)
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -76,29 +69,14 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 		defer sub.Finish(cleanup)
 
 		// Phase 1 — paginated replay of the persisted backlog. A partial
-		// page ships before a corruption error surfaces (fatal); other
-		// load errors end the replay but the live tail still runs (the
-		// disk history may be unreadable while the broker still works).
-		maxReplayed := fromSeq - 1
-		next := fromSeq
-		for {
-			page, err := s.store.LoadEventsRange(ctx, runID, next, 0, runstream.MaxEventsPerPage)
-			if len(page) > 0 {
-				if !sub.Ship(ctx, page) {
-					return
-				}
-				if last := page[len(page)-1].Seq; last > maxReplayed {
-					maxReplayed = last
-				}
-			}
-			if errors.Is(err, store.ErrEventsCorrupted) {
-				sub.Fatal(err)
-				return
-			}
-			if err != nil || len(page) < runstream.MaxEventsPerPage {
-				break
-			}
-			next = maxReplayed + 1
+		// page ships before a corruption error surfaces (fatal — no live
+		// tail on a corrupt log); other load errors end the replay but
+		// the live tail still runs (the disk history may be unreadable
+		// while the broker still works).
+		maxReplayed, err := runstream.ReplayEvents(ctx, s.store, runID, fromSeq, sub)
+		if errors.Is(err, store.ErrEventsCorrupted) {
+			sub.Warn(err)
+			return
 		}
 
 		// Phase 2 — live broker tail. The channel closes at run
@@ -137,17 +115,6 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 // persisted run.log for a terminal run (stream closes right after — a
 // missing file just closes immediately).
 func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset int64) (runstream.LogSubscription, error) {
-	if src := v.s.streamSrc; src != nil {
-		if src.Capabilities().Logs {
-			return src.SubscribeLogs(ctx, runID, fromOffset)
-		}
-		// Interim cloud behaviour until the run_logs pipeline lands:
-		// no log stream will ever exist — close immediately so the
-		// client renders its "no log captured" state.
-		sub := runstream.NewLogPipe()
-		sub.Finish(nil)
-		return sub, nil
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -168,9 +135,8 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 		sub := runstream.NewLogPipe()
 		go func() {
 			defer sub.Finish(nil)
-			data, total := s.readPersistedLogRange(runID, fromOffset, 0)
-			if len(data) > 0 {
-				sub.Ship(ctx, runstream.LogChunk{Offset: fromOffset, Data: data, Total: total})
+			if data := s.readPersistedLogRange(ctx, runID, fromOffset, 0); len(data) > 0 {
+				sub.Ship(ctx, runstream.LogChunk{Offset: fromOffset, Data: data})
 			}
 		}()
 		return sub, nil
@@ -197,12 +163,8 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 		// run.log, the authoritative source. Best-effort: a missing file
 		// just degrades to the ring's window.
 		if startOffset > fromOffset {
-			if data, _ := s.readPersistedLogRange(runID, fromOffset, startOffset); len(data) > 0 {
-				if !sub.Ship(ctx, runstream.LogChunk{
-					Offset: fromOffset,
-					Data:   data,
-					Total:  fromOffset + int64(len(data)),
-				}) {
+			if data := s.readPersistedLogRange(ctx, runID, fromOffset, startOffset); len(data) > 0 {
+				if !sub.Ship(ctx, runstream.LogChunk{Offset: fromOffset, Data: data}) {
 					return
 				}
 			}
@@ -210,12 +172,13 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 
 		cutoff := startOffset + int64(len(snapshot))
 		if len(snapshot) > 0 {
-			if !sub.Ship(ctx, runstream.LogChunk{Offset: startOffset, Data: snapshot, Total: cutoff}) {
+			if !sub.Ship(ctx, runstream.LogChunk{Offset: startOffset, Data: snapshot}) {
 				return
 			}
 		}
 
-		// Live tail with cutoff slicing so bytes never go out twice.
+		// Live tail deduped/sliced against the cutoff so bytes never go
+		// out twice (chunk.Bytes is already a per-subscriber copy).
 		for {
 			select {
 			case <-ctx.Done():
@@ -228,24 +191,10 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 					// the log stream is over.
 					return
 				}
-				data := chunk.Bytes
-				offset := chunk.Offset
-				if offset < cutoff {
-					skip := int(cutoff - offset)
-					if skip >= len(data) {
-						continue
-					}
-					data = data[skip:]
-					offset = cutoff
-				}
-				if !sub.Ship(ctx, runstream.LogChunk{
-					Offset: offset,
-					Data:   data,
-					Total:  offset + int64(len(data)),
-				}) {
+				var shipped bool
+				if cutoff, shipped = runstream.ShipLogChunk(ctx, sub, chunk.Offset, chunk.Bytes, cutoff); !shipped {
 					return
 				}
-				cutoff = offset + int64(len(data))
 			}
 		}
 	}()
@@ -253,41 +202,19 @@ func (v *svcSource) SubscribeLogs(ctx context.Context, runID string, fromOffset 
 	return sub, nil
 }
 
-// readPersistedLogRange reads bytes [from, until) of the run's persisted
-// run.log; until <= 0 means "to end of file". Returns the bytes plus the
-// end offset of what was read (from + len). Best-effort: a missing or
-// unreadable file returns nil.
-func (s *Service) readPersistedLogRange(runID string, from, until int64) ([]byte, int64) {
-	if s.storeDir == "" {
-		return nil, from
+// readPersistedLogRange reads bytes [from, until) of the run's
+// persisted log through the store's RunLogStore (the canonical run.log
+// reader). Best-effort: a store without log persistence or a read
+// error yields nil (the caller degrades to the ring's window).
+func (s *Service) readPersistedLogRange(ctx context.Context, runID string, from, until int64) []byte {
+	ls := store.AsRunLogStore(s.store)
+	if ls == nil {
+		return nil
 	}
-	if from < 0 {
-		from = 0
-	}
-	logPath := filepath.Join(s.storeDir, "runs", runID, "run.log")
-	f, err := os.Open(logPath)
+	data, err := ls.ReadRunLogRange(ctx, runID, from, until)
 	if err != nil {
-		return nil, from
+		s.logger.Warn("runview: read persisted log %s [%d,%d): %v", runID, from, until, err)
+		return nil
 	}
-	defer f.Close()
-
-	if until <= 0 {
-		st, err := f.Stat()
-		if err != nil {
-			return nil, from
-		}
-		until = st.Size()
-	}
-	if from >= until {
-		return nil, from
-	}
-	if _, err := f.Seek(from, io.SeekStart); err != nil {
-		return nil, from
-	}
-	buf := make([]byte, until-from)
-	n, _ := io.ReadFull(f, buf)
-	if n == 0 {
-		return nil, from
-	}
-	return buf[:n], from + int64(n)
+	return data
 }

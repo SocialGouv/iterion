@@ -30,24 +30,7 @@ func dialRunWS(t *testing.T, hs *httptest.Server, runID string) *websocket.Conn 
 // types so tests don't have to handle ack/error noise.
 func readEnvelope(t *testing.T, c *websocket.Conn, allowedTypes ...string) runWSEnvelope {
 	t.Helper()
-	allowed := map[string]bool{}
-	for _, a := range allowedTypes {
-		allowed[a] = true
-	}
-	for {
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, raw, err := c.ReadMessage()
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		var env runWSEnvelope
-		if err := json.Unmarshal(raw, &env); err != nil {
-			t.Fatalf("unmarshal envelope: %v", err)
-		}
-		if len(allowed) == 0 || allowed[env.Type] {
-			return env
-		}
-	}
+	return readEnvelopeWithin(t, c, 2*time.Second, allowedTypes...)
 }
 
 func writeJSONMessage(t *testing.T, c *websocket.Conn, env runWSEnvelope) {

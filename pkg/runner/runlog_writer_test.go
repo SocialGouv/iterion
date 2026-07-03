@@ -71,6 +71,25 @@ func (f *fakeRunLogStore) assembled() string {
 	return buf.String()
 }
 
+// syncBuffer is a mutex-guarded bytes.Buffer: the flusher goroutine
+// writes log lines while the test polls String().
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func waitForCondition(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -142,15 +161,19 @@ func TestRunLogWriter_OffsetSeedContinuity(t *testing.T) {
 
 func TestRunLogWriter_RetryThenDropKeepsOffsets(t *testing.T) {
 	fs := &fakeRunLogStore{failNext: runLogFlushRetries} // first batch fails every attempt → dropped
-	logBuf := &bytes.Buffer{}
+	logBuf := &syncBuffer{}
 	logger := iterlog.New(iterlog.LevelError, logBuf)
 	w := newRunLogWriter(context.Background(), fs, "r1", 0, logger)
 
 	if _, err := w.Write([]byte("lost!")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	// Wait until the failing batch has been retried and dropped.
-	waitForCondition(t, 5*time.Second, "drop after retries", func() bool { return w.dropped.Load() == 5 })
+	// Wait until the failing batch has been retried and dropped (the
+	// loud ERROR line is the observable signal; `dropped` is
+	// flusher-private).
+	waitForCondition(t, 5*time.Second, "drop after retries", func() bool {
+		return strings.Contains(logBuf.String(), "DROPPING")
+	})
 
 	if _, err := w.Write([]byte("kept")); err != nil {
 		t.Fatalf("Write: %v", err)
