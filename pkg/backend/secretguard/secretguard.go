@@ -416,6 +416,66 @@ func (g *Guard) MaterializeShell(s string) string {
 	return s
 }
 
+// MaterializeShellEnv is MaterializeShell's env-indirected counterpart: for
+// every placeholder that appears in its single-quoted form
+// ('__ITERION_SECRET_X__' — the shape the template layer produces for a
+// normal {{secrets.X}} ref, see resolveTemplateWith), it swaps the whole
+// quoted token for a double-quoted shell variable reference
+// ("$__ITERION_SECRET_X__") instead of inlining the raw value, and returns
+// the real values in a name->value map the caller must export into the
+// CHILD PROCESS's environment (never the current process's, and never a
+// value visible to the parent's own os.Environ()).
+//
+// This keeps the secret out of the exec'd command's own argv: a command
+// line is visible to any co-resident local process via `ps`/
+// `/proc/<pid>/cmdline` for the entire lifetime of the subprocess, whereas
+// envp is only readable via /proc/<pid>/environ by the owning user or
+// root — a materially smaller disclosure surface. The placeholder text is
+// already a valid POSIX environment-variable name (see
+// defaultPlaceholder: `__ITERION_SECRET_<NAME>__`, `[A-Za-z0-9_]` only),
+// so it doubles as the variable name — no separate naming scheme needed.
+//
+// A placeholder that survives outside its single-quoted form (e.g. an
+// explicit {{!secrets.X}} raw/bang ref, which intentionally opts out of
+// quoting so the author's own shell snippet controls interpretation)
+// falls back to plain MaterializeShell's inline substitution for that
+// occurrence — env-indirection only replaces the common, quoted case this
+// targets, never silently drops a reference. The same fallback applies,
+// conservatively, when a placeholder appears BOTH quoted and bare in the
+// same command (an unusual mix of {{secrets.X}} and {{!secrets.X}} for
+// the same secret): converting only the quoted occurrence would leave a
+// blind substitution for the bare one that could corrupt the
+// just-inserted "$PLACEHOLDER" token, since the placeholder name is a
+// substring of it — so that placeholder is left entirely to the inline
+// path instead.
+func (g *Guard) MaterializeShellEnv(s string) (string, map[string]string) {
+	if g == nil || s == "" || len(g.placeholderValue) == 0 {
+		return s, nil
+	}
+	var env map[string]string
+	for ph, val := range g.placeholderValue {
+		quoted := "'" + ph + "'"
+		quotedCount := strings.Count(s, quoted)
+		if quotedCount == 0 || strings.Count(s, ph) > quotedCount {
+			continue
+		}
+		if env == nil {
+			env = make(map[string]string, len(g.placeholderValue))
+		}
+		env[ph] = val
+		s = strings.ReplaceAll(s, quoted, `"$`+ph+`"`)
+	}
+	for ph, val := range g.placeholderValue {
+		if _, converted := env[ph]; converted {
+			continue
+		}
+		if strings.Contains(s, ph) {
+			s = strings.ReplaceAll(s, ph, strings.ReplaceAll(val, "'", `'\''`))
+		}
+	}
+	return s, env
+}
+
 // ResolveSecretRef renders a {{secrets.NAME}} reference. With
 // placeholders enabled (default) it returns the opaque placeholder —
 // the agent never sees the real value, which Materialize swaps in at

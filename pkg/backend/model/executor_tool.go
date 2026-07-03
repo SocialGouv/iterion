@@ -354,10 +354,16 @@ func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input
 			return resolved
 		},
 		func(resolved string) (*exec.Cmd, func(), error) {
-			// Materialise secret placeholders ONLY into the command actually
-			// executed — `resolved` (placeholder form) is what the hooks/logs
-			// persist, so the real value never hits the store.
-			return e.toolNodeCommand(ctx, e.secretGuard.MaterializeShell(resolved)), nil, nil
+			// Materialise secret placeholders into the command actually
+			// executed via env-var indirection, not by inlining the raw
+			// value into the command string: `resolved` (placeholder
+			// form) is what the hooks/logs persist, and the exec'd
+			// command line itself must not carry the plaintext secret
+			// either — a command line is visible to any co-resident
+			// local process via `ps`/`/proc/<pid>/cmdline` for the
+			// subprocess's whole lifetime, unlike envp.
+			materialized, env := e.secretGuard.MaterializeShellEnv(resolved)
+			return e.toolNodeCommand(ctx, materialized, env), nil, nil
 		}
 }
 
@@ -547,6 +553,15 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 // the sandbox via [sandbox.Run.Command]; otherwise it is the
 // pre-sandbox host invocation.
 //
+// env carries any secret values materialised by MaterializeShellEnv,
+// keyed by the env-var name `resolved` references as "$NAME" — it is
+// applied to the CHILD PROCESS's environment only (sandbox.ExecOpts.Env
+// on the sandboxed branch, cmd.Env on the host branch), never inlined
+// into `resolved` itself. This is what keeps a secret out of the exec'd
+// command's own argv, which — unlike envp — is visible to any
+// co-resident local process via `ps`/`/proc/<pid>/cmdline` for the
+// subprocess's whole lifetime.
+//
 // Per-node opt-out lets a workflow run mostly sandboxed but cherry-pick
 // a tool node that needs host access (e.g. `gh` configured against
 // the host's keychain).
@@ -561,11 +576,17 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 // bash is genuinely absent (extremely minimal containers), the recipe
 // author should either install bash via post_create or rewrite the
 // tool body in POSIX shell.
-func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string) *exec.Cmd {
+func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env map[string]string) *exec.Cmd {
 	if e.sandbox != nil && !e.nodeOptsOutOfSandbox(toolNodeOptOut) {
-		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{})
+		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}

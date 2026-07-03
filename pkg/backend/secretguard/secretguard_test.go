@@ -142,6 +142,109 @@ func TestMaterializeShell_SingleQuoteInjection(t *testing.T) {
 	}
 }
 
+// TestMaterializeShellEnv_KeepsSecretOutOfCommandText guards the fix for
+// the "secret value in subprocess argv" finding: inlining a materialised
+// secret INTO the exec'd command string makes it visible via ps /
+// /proc/<pid>/cmdline to any co-resident local process for the
+// subprocess's lifetime. MaterializeShellEnv instead swaps the quoted
+// placeholder for an env-var reference and returns the real value
+// out-of-band, so the command text itself never carries the plaintext
+// secret — regardless of what characters the value contains, since
+// double-quoted parameter expansion does not re-parse the substituted
+// value for shell metacharacters.
+func TestMaterializeShellEnv_KeepsSecretOutOfCommandText(t *testing.T) {
+	const evil = `x'; id # $(whoami) "quoted"`
+	g := newTestGuard(t, Secret{Name: "tok", Value: evil})
+	ph := defaultPlaceholder("tok")
+	cmd := `deploy --token '` + ph + `'`
+
+	gotCmd, env := g.MaterializeShellEnv(cmd)
+
+	if strings.Contains(gotCmd, evil) {
+		t.Fatalf("secret value leaked into command text: %q", gotCmd)
+	}
+	// The placeholder NAME is expected to survive — it doubles as the
+	// env-var name in the "$NAME" reference. What must NOT survive is
+	// its single-quoted (inline-value) form.
+	if strings.Contains(gotCmd, "'"+ph+"'") {
+		t.Errorf("quoted placeholder was not converted to an env reference: %q", gotCmd)
+	}
+	want := `deploy --token "$` + ph + `"`
+	if gotCmd != want {
+		t.Errorf("gotCmd = %q, want %q", gotCmd, want)
+	}
+	if env[ph] != evil {
+		t.Errorf("env[%q] = %q, want raw value %q", ph, env[ph], evil)
+	}
+}
+
+// TestMaterializeShellEnv_MultipleSecrets verifies every quoted
+// placeholder present in the command is swapped, each into its own env
+// entry.
+func TestMaterializeShellEnv_MultipleSecrets(t *testing.T) {
+	g := newTestGuard(t, Secret{Name: "user", Value: "alice"}, Secret{Name: "pass", Value: "s3cr3t!"})
+	userPh, passPh := defaultPlaceholder("user"), defaultPlaceholder("pass")
+	cmd := `login --user '` + userPh + `' --pass '` + passPh + `'`
+
+	gotCmd, env := g.MaterializeShellEnv(cmd)
+
+	if strings.Contains(gotCmd, "alice") || strings.Contains(gotCmd, "s3cr3t!") {
+		t.Fatalf("secret values leaked into command text: %q", gotCmd)
+	}
+	want := `login --user "$` + userPh + `" --pass "$` + passPh + `"`
+	if gotCmd != want {
+		t.Errorf("gotCmd = %q, want %q", gotCmd, want)
+	}
+	if env[userPh] != "alice" || env[passPh] != "s3cr3t!" {
+		t.Errorf("env map incomplete: %#v", env)
+	}
+}
+
+// TestMaterializeShellEnv_MixedQuotedAndBareFallsBackToInline covers the
+// unusual case where the SAME secret is referenced both as
+// {{secrets.X}} (quoted) and {{!secrets.X}} (bare) within one command:
+// converting only the quoted occurrence to an env-reference while
+// leaving the bare one for a later blind substitution would corrupt the
+// just-inserted "$PLACEHOLDER" token (the placeholder name is a
+// substring of it), so this case conservatively falls back to inline
+// materialisation for every occurrence of that placeholder — matching
+// MaterializeShell's existing, still-safe (just not argv-hidden) behaviour.
+func TestMaterializeShellEnv_MixedQuotedAndBareFallsBackToInline(t *testing.T) {
+	g := newTestGuard(t, Secret{Name: "tok", Value: "plain-value"})
+	ph := defaultPlaceholder("tok")
+	cmd := `echo '` + ph + `' ` + ph
+
+	gotCmd, env := g.MaterializeShellEnv(cmd)
+
+	want := `echo 'plain-value' plain-value`
+	if gotCmd != want {
+		t.Errorf("gotCmd = %q, want %q", gotCmd, want)
+	}
+	if len(env) != 0 {
+		t.Errorf("expected no env entries for the mixed-usage fallback, got %#v", env)
+	}
+}
+
+// TestMaterializeShellEnv_UnquotedFallsBackToInline covers the
+// {{!secrets.X}} raw/bang form: the template layer never wraps that
+// placeholder in single quotes, so env-indirection has no quoted token to
+// swap and must fall back to plain MaterializeShell's inline (escaped)
+// substitution rather than silently leaving the placeholder unresolved.
+func TestMaterializeShellEnv_UnquotedFallsBackToInline(t *testing.T) {
+	g := newTestGuard(t, Secret{Name: "tok", Value: "plain-value"})
+	ph := defaultPlaceholder("tok")
+	cmd := "echo " + ph // no surrounding quotes — the bang/raw form's shape
+
+	gotCmd, env := g.MaterializeShellEnv(cmd)
+
+	if gotCmd != "echo plain-value" {
+		t.Errorf("expected inline fallback, got %q", gotCmd)
+	}
+	if len(env) != 0 {
+		t.Errorf("expected no env entries for the inline fallback path, got %#v", env)
+	}
+}
+
 func TestContainsSecret_DeterministicGate(t *testing.T) {
 	g := newTestGuard(t, Secret{Name: "k", Value: fakeKey})
 	if !g.ContainsSecret("payload=" + fakeKey) {
