@@ -258,6 +258,29 @@ func mergeCatalog(project map[string]*ServerConfig, explicit map[string]*ir.MCPS
 	return catalog, nil
 }
 
+// applyServerOverrides applies cfg's Servers (add) and Disable (remove)
+// lists onto set, erroring on any name absent from catalog. Shared by
+// resolveWorkflowActiveServers and resolveNodeActiveServers, which only
+// differ in how the initial set is seeded.
+func applyServerOverrides(set *orderedSet, cfg *ir.MCPConfig, catalog map[string]*ServerConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for _, name := range cfg.Servers {
+		if _, ok := catalog[name]; !ok {
+			return fmt.Errorf("unknown MCP server %q", name)
+		}
+		set.Add(name)
+	}
+	for _, name := range cfg.Disable {
+		if _, ok := catalog[name]; !ok {
+			return fmt.Errorf("unknown MCP server %q", name)
+		}
+		set.Remove(name)
+	}
+	return nil
+}
+
 func resolveWorkflowActiveServers(cfg *ir.MCPConfig, projectNames []string, catalog map[string]*ServerConfig) ([]string, error) {
 	autoload := true
 	if cfg != nil && cfg.AutoloadProject != nil {
@@ -271,21 +294,9 @@ func resolveWorkflowActiveServers(cfg *ir.MCPConfig, projectNames []string, cata
 		}
 	}
 
-	if cfg != nil {
-		for _, name := range cfg.Servers {
-			if _, ok := catalog[name]; !ok {
-				return nil, fmt.Errorf("unknown MCP server %q", name)
-			}
-			set.Add(name)
-		}
-		for _, name := range cfg.Disable {
-			if _, ok := catalog[name]; !ok {
-				return nil, fmt.Errorf("unknown MCP server %q", name)
-			}
-			set.Remove(name)
-		}
+	if err := applyServerOverrides(set, cfg, catalog); err != nil {
+		return nil, err
 	}
-
 	return set.Values(), nil
 }
 
@@ -301,19 +312,8 @@ func resolveNodeActiveServers(cfg *ir.MCPConfig, workflowActive []string, catalo
 			set.Add(name)
 		}
 	}
-	if cfg != nil {
-		for _, name := range cfg.Servers {
-			if _, ok := catalog[name]; !ok {
-				return nil, fmt.Errorf("unknown MCP server %q", name)
-			}
-			set.Add(name)
-		}
-		for _, name := range cfg.Disable {
-			if _, ok := catalog[name]; !ok {
-				return nil, fmt.Errorf("unknown MCP server %q", name)
-			}
-			set.Remove(name)
-		}
+	if err := applyServerOverrides(set, cfg, catalog); err != nil {
+		return nil, err
 	}
 	return set.Values(), nil
 }
