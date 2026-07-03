@@ -762,12 +762,40 @@ func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, e
 	if !c.cfg.Load().Workspace.Persist.shouldCleanupOnSuccess() {
 		return
 	}
+	// Stranded-work guard: the external workspace is a detached-HEAD
+	// worktree with NO finalize/commit stage of its own. A bot without
+	// `worktree: auto` writes straight into it — if it exits without
+	// committing, the teardown below (`git worktree remove --force` via
+	// the before_remove hook + directory removal) would silently destroy
+	// finished work, unrecoverable even from the reflog. Keep the
+	// workspace instead and say so; the operator inspects/commits by
+	// hand. Probe failures (non-git workspace, git missing) fall through
+	// to normal cleanup — the guard only bites on positive evidence.
+	if dirty, err := workspaceIsDirty(entry.WorkspacePath); err == nil && dirty {
+		c.logger.Warn("dispatcher: workspace %s has UNCOMMITTED changes — keeping %s (inspect and commit by hand; cleanup skipped)",
+			entry.Identifier, entry.WorkspacePath)
+		return
+	}
 	if err := beforeRemove.Run(context.Background(), c.logger, "before_remove", entry.WorkspacePath, env); err != nil {
 		c.logger.Warn("dispatcher: before_remove hook for %s: %v", entry.Identifier, err)
 	}
 	if err := c.workspaces.Remove(entry.IssueID); err != nil {
 		c.logger.Warn("dispatcher: cleanup workspace %s: %v", entry.Identifier, err)
 	}
+}
+
+// workspaceIsDirty reports whether the workspace's git working tree has
+// uncommitted changes (`git status --porcelain` non-empty). An error means
+// the probe itself failed (not a git checkout, git absent) — callers treat
+// that as "unknown", not as dirty.
+func workspaceIsDirty(path string) (bool, error) {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = path
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	return len(bytes.TrimSpace(out)) > 0, nil
 }
 
 // cmdRetryDue fires when a retry timer expires. We simply drop the

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -171,5 +172,51 @@ func TestFinishRun_DefersWorkspaceTeardownToWorker(t *testing.T) {
 
 	if _, err := os.Stat(wsPath); err != nil {
 		t.Fatalf("finishRun deleted the workspace on the actor path (stat err=%v) — teardown must defer to the worker", err)
+	}
+}
+
+// TestCleanupWorkspace_KeepsDirtyGitWorkspace is the stranded-work guard:
+// when the external workspace is a git checkout with UNCOMMITTED changes
+// (a bot without `worktree: auto` that edited but never committed), cleanup
+// must be skipped — the before_remove hook must NOT fire and the directory
+// must survive, so the operator can recover the work by hand. Destroying it
+// (git worktree remove --force + rmdir) would lose finished work forever.
+func TestCleanupWorkspace_KeepsDirtyGitWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	wsRoot := filepath.Join(dir, "ws")
+	c, ws := newCleanupTestDispatcher(t, WorkspacePersistCleanupOnDone, wsRoot)
+
+	issueID := "fake:cleanup-dirty"
+	wsPath, _, err := ws.Create(issueID)
+	if err != nil {
+		t.Fatalf("ws.Create: %v", err)
+	}
+	// Make the workspace a git checkout with uncommitted changes.
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wsPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(wsPath, "uncommitted.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write uncommitted file: %v", err)
+	}
+
+	sentinel := filepath.Join(dir, "before_remove_ran")
+	hook := &Hook{Script: fmt.Sprintf(`printf ran > %q`, sentinel)}
+	entry := &runningEntry{IssueID: issueID, Identifier: "fake#cleanup-dirty", WorkspacePath: wsPath}
+
+	c.cleanupWorkspace(entry, hook, c.dispatchEnv(entry, DispatchSpec{WorkspacePath: wsPath}))
+
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatal("before_remove ran on a dirty workspace — teardown must be skipped to preserve uncommitted work")
+	}
+	if _, err := os.Stat(filepath.Join(wsPath, "uncommitted.go")); err != nil {
+		t.Fatalf("dirty workspace was destroyed (uncommitted.go gone: %v) — it must be preserved for recovery", err)
 	}
 }

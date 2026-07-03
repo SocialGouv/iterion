@@ -283,7 +283,11 @@ prompt final_review_instructions:
 
   - **ship** — accept the work; iterion commits it and the run ends.
   - **request_changes** — send it back to James with your notes.
-  - **hold_for_later** — stop without committing (keep the worktree).
+  - **hold_for_later** — stop without a ship commit. Any code James
+    wrote is preserved: the engine auto-banks the uncommitted worktree
+    as a `wip(iterion)` commit on the run's storage branch (it is NOT
+    merged into your branch — review it there). Use this when the work
+    is real but not ready to ship as-is.
 
 ## ═══ Schemas ═════════════════════════════════════════════════════
 
