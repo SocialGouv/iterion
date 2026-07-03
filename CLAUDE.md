@@ -605,14 +605,19 @@ refresh for upgrade cases) is documented in
 
 Current bundles and their skills:
 - [bots/whats-next/skills/](bots/whats-next/skills/) —
-  8 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
+  10 skills: `whats-next` (operating playbook), `iterion-bot-catalog`,
   `iterion-dsl-quickref`, `iterion-board` (board capabilities
   reference for the claude_code / claw `board.*` tools),
-  `repo-survey`, `roadmap-synthesis`, `priority-elicitation`, and
-  `session-continuity` (iterion workspace memory — `memory_read` /
-  `memory_write` / `memory_list` for the cross-run knowledge tree
-  under `~/.iterion/projects/<key>/memory/<scope>/`). Six of the
-  eight were produced by a dogfood run of claw +
+  `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
+  `priority-elicitation`, `session-continuity` (iterion workspace
+  memory — `memory_read` / `memory_write` / `memory_list` for the
+  cross-run knowledge tree under
+  `~/.iterion/projects/<key>/memory/<scope>/`), and `dogfood-cycle`
+  (the operator's measured ritual for validating a bot by a real
+  run — launch visible, monitor actively, fix both bot and engine,
+  land + bilan; from the session-mining work behind
+  [docs/references/productive-session-patterns.md](docs/references/productive-session-patterns.md)).
+  Six of the original eight were produced by a dogfood run of claw +
   `openai/gpt-5.5` against this repo; `iterion-board` was added by
   the board-capabilities work and `session-continuity` by the
   workspace-memory work — see
