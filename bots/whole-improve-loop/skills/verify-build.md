@@ -57,10 +57,13 @@ Prefer the **fast** path: compile the whole module (a compile error is the
 common breakage) + run the unit tests. Skip slow integration / e2e / live
 suites unless they are the only tests the repo has.
 
-## 2. Write `.whole_improve_loop.verify.sh`
+## 2. Write the verify script to the scratch dir
 
-Write an executable POSIX-sh script at the **workspace root** that runs the
-build AND tests you settled on and **exits non-zero on any failure**. Example
+Write an executable POSIX-sh script at the exact `verify.sh` path your task
+prompt gives you — an **out-of-tree scratch dir** (`scratch_dir`), NOT the
+target repo. Create that directory first if it does not exist (`mkdir -p` its
+parent). The script runs the build AND tests you settled on and **exits
+non-zero on any failure**. Example
 *shape* (adapt to the repo — illustration, not a fixed command):
 
 ```sh

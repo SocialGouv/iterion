@@ -46,7 +46,7 @@ func wilEqualInts(a, b []int) bool {
 }
 
 // sweepState models the ADR-057 work-list + cursor the real bot persists to
-// disk (.whole_improve_loop.worklist.json + .whole_improve_loop.state). The
+// its out-of-tree scratch dir (scratch_dir/worklist.json + scratch_dir/state). The
 // e2e executor cannot run next_item's embedded-python reader or the adaptive
 // enumerate agent, so this in-memory model stands in for them and drives the
 // one property the sweep's control-flow depends on: the deterministic
@@ -57,7 +57,7 @@ type sweepState struct {
 	items      []string // work-item titles; empty until enumerate "writes" them
 	maxItems   int
 	enumerated bool  // flips true once enumerate runs (the work-list now exists)
-	diskCursor int   // models .whole_improve_loop.state (the crash-safe disk cursor)
+	diskCursor int   // models scratch_dir/state (the crash-safe disk cursor)
 	cursors    []int // the cursor each next_item pass USED (assertions)
 }
 

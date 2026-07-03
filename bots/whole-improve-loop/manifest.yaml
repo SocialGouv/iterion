@@ -1,6 +1,9 @@
 name: whole-improve-loop
 display_name: Willy
-version: 1.0.0
+version: 1.0.1
+## 1.0.1 — scratch files (work-list / cursor / verify.sh / verify.log) moved
+## OUT-OF-TREE to scratch_dir (${PROJECT_SCRATCH_DIR}) so they no longer
+## pollute or risk committing into the target worktree.
 description: |
   Axis-driven work-list sweep across a whole codebase (ADR-057).
   `improvement_prompt` is THE AXIS — one determined improvement applied to
@@ -20,8 +23,9 @@ description: |
   new sites are appended and the sweep continues, else it converges.
   Bounded by a max_items cap so a pathological axis terminates. An
   interrupted / budget-capped run keeps every item it committed; the
-  work-list + cursor are persisted (.whole_improve_loop.worklist.json /
-  .state) so a large axis resumes mid-sweep across re-dispatches. Optional
+  work-list + cursor are persisted OUT-OF-TREE under scratch_dir
+  (${PROJECT_SCRATCH_DIR}, engine-resolved — never the target worktree) so a
+  large axis resumes mid-sweep across re-dispatches. Optional
   MR/PR path ships the series of per-item commits. Replaces the ADR-011 /
   ADR-055 chunked review-fix loop. See
   docs/adr/057-axis-driven-work-list-sweep.md.

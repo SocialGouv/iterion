@@ -60,7 +60,7 @@ next_item ─(needs_enumerate)─▶ enumerate ─┐   (writes the ordered work
 
 - **`enumerate`** (adaptive, claude_code, whole-repo, full tools) reads the
   codebase *by its real structure* — grep/glob/read, never chunks — and
-  **writes** `.whole_improve_loop.worklist.json`: an ordered list of
+  **writes** `<scratch_dir>/worklist.json` (out-of-tree scratch): an ordered list of
   `{id, title, targets, change_spec}`. An item with no concrete, nameable
   target is **dropped, not guessed** (belt-and-suspenders: `next_item`
   deterministically drops target-less items too).
@@ -71,7 +71,7 @@ next_item ─(needs_enumerate)─▶ enumerate ─┐   (writes the ordered work
   the current item's targets, and only those.
 - **`verify_build` → `verify_run`** is the **deterministic, stack-agnostic**
   build/test gate (unchanged from the retired design): an adaptive agent
-  reads the `verify-build` skill and writes `.whole_improve_loop.verify.sh`
+  reads the `verify-build` skill and writes `<scratch_dir>/verify.sh`
   from the repo's own tooling; a tool node re-runs it and gates on the REAL
   exit code. Red → bounded `verify_loop(3)` fix retry; still red → **skip the
   item uncommitted** (never land broken code) and advance.
@@ -81,8 +81,9 @@ next_item ─(needs_enumerate)─▶ enumerate ─┐   (writes the ordered work
   consistency / no regression) — *not* an open-ended re-audit. Approve →
   commit; reject with a **concrete blocker** → back to `transform` (bounded).
 - **`commit_item`** lands **one incremental commit per item** (`git add -A`
-  incl. untracked, minus the bot's scratch files, empty-guarded); message
-  `refactor(improve): <item title>`.
+  incl. untracked, empty-guarded); message `refactor(improve): <item title>`.
+  The bot's scratch files live out-of-tree under `scratch_dir`, so `git add -A`
+  never sees them (no unstage step needed).
 - **`re_enumerate`** is the **done-oracle**: when the work-list is exhausted
   it re-scans for remaining sites, appends any it finds, and the sweep
   continues; when a fresh scan finds nothing the axis is fully applied → done.
@@ -100,10 +101,15 @@ next_item ─(needs_enumerate)─▶ enumerate ─┐   (writes the ordered work
 
 ## Crash-safe / resumable
 
-- The **work-list** is persisted to `.whole_improve_loop.worklist.json` (the
+- The **work-list** is persisted to `<scratch_dir>/worklist.json` (the
   enumerate/re_enumerate agents own it) and the **cursor** to
-  `.whole_improve_loop.state` (`next_item` owns it — **add both to your
-  `.gitignore`**; `commit_item` never commits them).
+  `<scratch_dir>/state` (`next_item` owns it). Both live **out-of-tree** under
+  `scratch_dir` (default `${PROJECT_SCRATCH_DIR}/whole-improve-loop`, engine-
+  resolved to `~/.iterion/projects/<key>/scratch/…` on the host or the
+  container-writable `/tmp/iterion-scratch` under a sandbox) — **never inside
+  the target repo**, so no `.gitignore` entry is needed and `commit_item`
+  can't commit them. Under a sandbox this scratch is per-run (ephemeral), so a
+  re-dispatch simply re-enumerates.
 - `next_item` persists the cursor it is **USING** (not an eager +1); the
   advance rides the `advance` compute (`cursor+1`) on the commit/skip return
   paths. So a run that dies mid-item leaves the cursor **at** that item and a
@@ -136,7 +142,7 @@ adaptive agents that read whatever repo they are pointed at (CLAUDE.md
 "Catalog bots are repo-agnostic" + "Universal code bots"). The
 `verify_build`/`verify_run` gate stays deterministic while remaining
 universal: the agent writes the repo's own build/test into
-`.whole_improve_loop.verify.sh`, the tool node runs it and gates on the exit
+`<scratch_dir>/verify.sh`, the tool node runs it and gates on the exit
 code.
 
 ## Vars
@@ -150,6 +156,7 @@ code.
 | `review_mode` / `mono_family` | ADR-052 mono/dual topology, resolved at launch by `pkg/reviewtopology`. |
 | `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | Opt-in MR/PR path shipping the series of per-item commits. |
 | `workspace_dir` | Target repo (defaults to `${PROJECT_DIR}` → the run's worktree). |
+| `scratch_dir` | Out-of-tree working files (work-list / cursor / verify.sh / verify.log). Default `${PROJECT_SCRATCH_DIR}/whole-improve-loop`, engine-resolved off the repo (host `~/.iterion/projects/<key>/scratch`, sandbox `/tmp/iterion-scratch`) — never inside the target worktree. |
 
 ## Presets
 

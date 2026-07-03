@@ -33,7 +33,7 @@
 ##   transform       — adaptive fixer (whole-repo context, full tools)
 ##                     applies the axis change for THIS item's targets.
 ##   verify_build    — adaptive, stack-agnostic build/test repair; writes
-##     + verify_run    .whole_improve_loop.verify.sh, a DETERMINISTIC tool
+##     + verify_run    <scratch_dir>/verify.sh, a DETERMINISTIC tool
 ##                     node re-runs it and gates on the REAL exit code. Red
 ##                     → bounded verify-fix retry; still red → SKIP the item
 ##                     UNCOMMITTED (never land broken code) and advance.
@@ -44,7 +44,7 @@
 ##                     commit; reject with a concrete blocker → transform
 ##                     (bounded).
 ##   commit_item     — ONE incremental commit per item (git add -A incl.
-##                     untracked, minus scratch, empty-guarded); message =
+##                     untracked; scratch lives out-of-tree, empty-guarded); message =
 ##                     `refactor(improve): <item title>`.
 ##   re_enumerate    — when the work-list is exhausted, re-scan for any
 ##                     remaining sites matching the axis (the DONE-ORACLE:
@@ -83,6 +83,20 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
+
+  ## Out-of-tree, sandbox-writable scratch for the sweep's working files —
+  ## the work-list, the crash-safe cursor, and the verify script/log. The
+  ## engine resolves ${PROJECT_SCRATCH_DIR} to ~/.iterion/projects/<key>/scratch
+  ## non-sandboxed and to the container-writable /tmp/iterion-scratch under a
+  ## sandbox (never hardcode ~/.iterion here — the -full image's pinned
+  ## non-host User cannot write a host-owned path → EACCES, the exact bug the
+  ## sec-audit-deps var comment documents). Keeping these OUT of the target
+  ## worktree is also the repo-agnostic rule: the sweep must not pollute (or
+  ## risk committing) scratch into someone else's tree. NOTE: under a sandbox
+  ## this scratch is per-run (ephemeral), so a re-dispatch finds no work-list
+  ## and simply re-enumerates from scratch — acceptable because next_item
+  ## routes to enumerate whenever the work-list file is absent.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/whole-improve-loop"
 
   ## ─── Review topology (mono/dual) — ADR-052, see branch-improve-loop ─
   ## dual = alternate claude ↔ gpt per item (robust, two families); mono =
@@ -176,8 +190,10 @@ prompt enumerate_system:
   it in `summary`.
 
   EMIT the work-list by WRITING a JSON file at exactly
-  `{{vars.workspace_dir}}/.whole_improve_loop.worklist.json`. It MUST be a
-  JSON array; each element is an object:
+  `{{vars.scratch_dir}}/worklist.json` (create the `{{vars.scratch_dir}}`
+  directory first if it does not exist — `mkdir -p {{vars.scratch_dir}}`). It
+  is an OUT-OF-TREE scratch path, NOT inside the repo, so it never pollutes the
+  worktree. It MUST be a JSON array; each element is an object:
     {
       "id":          "short-stable-slug",
       "title":       "one concise line naming the site + the change",
@@ -224,9 +240,10 @@ prompt enumerate_user:
   {{vars.scope_globs}}
 
   Search the codebase by its real structure and WRITE the ordered work-list
-  to `.whole_improve_loop.worklist.json` (see the system prompt for the
-  exact format). Return total_items (how many you wrote) and a short
-  summary (the axis you settled on + how you found the sites).
+  to `{{vars.scratch_dir}}/worklist.json` (an out-of-tree scratch path — see
+  the system prompt for the exact format). Return total_items (how many you
+  wrote) and a short summary (the axis you settled on + how you found the
+  sites).
 
 prompt re_enumerate_system:
   You are the same staff engineer, now doing a CONVERGENCE pass. The sweep
@@ -241,7 +258,7 @@ prompt re_enumerate_system:
 
   PROCEDURE:
   1. Read the existing work-list at
-     `{{vars.workspace_dir}}/.whole_improve_loop.worklist.json` (a JSON
+     `{{vars.scratch_dir}}/worklist.json` (an out-of-tree scratch JSON
      array) so you don't re-add sites already listed.
   2. Scan for sites matching the axis that are (a) NOT already in the list
      and (b) do NOT already satisfy the axis (many earlier items have been
@@ -265,7 +282,7 @@ prompt re_enumerate_user:
   Notes: {{vars.scope_notes}}
   Path scope (empty = whole workspace): {{vars.scope_globs}}
 
-  Read the existing `.whole_improve_loop.worklist.json`, re-scan for any
+  Read the existing `{{vars.scratch_dir}}/worklist.json`, re-scan for any
   REMAINING sites matching the axis (not already listed, not already
   applied), APPEND the new ones and write the file back — or, if the axis
   is fully applied, change nothing and report found_more=false. Return
@@ -412,7 +429,7 @@ prompt review_user_gpt:
 ## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
 ## Reused verbatim from the ADR-055 design: an ADAPTIVE agent (verify_build)
 ## reads the verify-build skill, builds+tests the repo with its OWN tooling,
-## and writes a re-runnable .whole_improve_loop.verify.sh; a DETERMINISTIC
+## and writes a re-runnable <scratch_dir>/verify.sh; a DETERMINISTIC
 ## tool node (verify_run) re-runs that script and gates on the REAL exit
 ## code (no LLM judgment). No language / package manager is named here — the
 ## gate stays universal while the verdict stays deterministic. It runs
@@ -431,10 +448,12 @@ prompt verify_system:
      HONOURING any pinned toolchain (version managers, lockfiles, devbox,
      GOTOOLCHAIN). Do NOT assume a language.
   2. Write an executable POSIX-sh script to
-     `{{vars.workspace_dir}}/.whole_improve_loop.verify.sh` that runs the
-     repo's build AND its tests (or the closest fast equivalent) and exits
-     non-zero on any failure. Keep it to the commands a developer of THIS
-     repo would run; no network-heavy or destructive steps.
+     `{{vars.scratch_dir}}/verify.sh` (an OUT-OF-TREE scratch path, NOT
+     inside the repo — create `{{vars.scratch_dir}}` first if needed with
+     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND its
+     tests (or the closest fast equivalent) and exits non-zero on any
+     failure. Keep it to the commands a developer of THIS repo would run; no
+     network-heavy or destructive steps.
   3. Run it. If it FAILS, the failure is almost always introduced by the
      just-applied change — read the error and FIX it at the source (update
      the missed caller, correct the signature, fix the test) with the
@@ -445,7 +464,7 @@ prompt verify_system:
 
   A deterministic tool node RE-RUNS your script and gates the commit on its
   real exit code, so claiming "it passes" without making it pass is
-  pointless. Output prepared=true once `.whole_improve_loop.verify.sh`
+  pointless. Output prepared=true once `{{vars.scratch_dir}}/verify.sh`
   exists and reflects the repo's real build+test; summary = the command you
   settled on and what you fixed.
 
@@ -453,8 +472,8 @@ prompt verify_user:
   Repository to verify: {{vars.workspace_dir}}
 
   Make it build + test green with its OWN tooling and write
-  `.whole_improve_loop.verify.sh` (see the system prompt + the
-  `verify-build` skill).
+  `{{vars.scratch_dir}}/verify.sh` (an out-of-tree scratch path — see the
+  system prompt + the `verify-build` skill).
 
   Output from the PREVIOUS verify attempt's deterministic gate (empty on
   the first attempt — when present, fix exactly what it shows, it is the
@@ -510,7 +529,7 @@ prompt finalize_mr_user:
 ## next_item's input: the edge-relayed cursor. incoming_cursor is the
 ## `advance` compute's carry_next (cursor+1) on the advancing return paths;
 ## absent on entry / enumerate-return / re-enum-continue, where next_item
-## seeds from .whole_improve_loop.state (the crash-safe disk cursor), else 0.
+## seeds from <scratch_dir>/state (the crash-safe disk cursor), else 0.
 schema next_item_input:
   incoming_cursor: int
 
@@ -608,7 +627,7 @@ schema verify_plan:
   summary: string
 
 ## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
-## the real process exit code of re-running .whole_improve_loop.verify.sh —
+## the real process exit code of re-running <scratch_dir>/verify.sh —
 ## NOT an LLM judgment. `skipped` is true only when no verify script was
 ## produced (treated as pass but surfaced loudly, never a silent façade).
 schema verify_result:
@@ -663,10 +682,10 @@ schema finalize_mr_output:
 ## `python3 -c "..."` stays intact, and NO backticks inside (the E012
 ## raw-string gotcha).
 tool next_item:
-  command: `WS={{vars.workspace_dir}} MAXITEMS={{vars.max_items}} STATE_CURSOR={{input.incoming_cursor}} python3 -c "
+  command: `SCRATCH={{vars.scratch_dir}} MAXITEMS={{vars.max_items}} STATE_CURSOR={{input.incoming_cursor}} python3 -c "
 import os, json
 
-ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
 try:
     max_items = int(os.environ.get('MAXITEMS', '120') or '120')
 except (ValueError, TypeError):
@@ -674,8 +693,16 @@ except (ValueError, TypeError):
 if max_items <= 0:
     max_items = 120
 
-worklist_path = os.path.join(ws, '.whole_improve_loop.worklist.json')
-state_path = os.path.join(ws, '.whole_improve_loop.state')
+# Out-of-tree scratch (engine-resolved ${PROJECT_SCRATCH_DIR}); ensure it
+# exists before writing the crash-safe cursor. Absent worklist -> a fresh
+# (or ephemeral-sandbox re-dispatched) run re-enumerates, which is correct.
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+
+worklist_path = os.path.join(scratch, 'worklist.json')
+state_path = os.path.join(scratch, 'state')
 
 # --- load + validate the work-list (written by enumerate / re_enumerate) ---
 # ADR-057: drop any item without a concrete, nameable target -- a target-less
@@ -776,7 +803,7 @@ print(json.dumps({
 ## enumerate — whole-repo adaptive agent that WRITES the ordered work-list.
 ## claude_code (full native toolset) so it reads the repo by its real
 ## structure like native Claude Code. Writes
-## .whole_improve_loop.worklist.json (next_item reads it) — the same
+## <scratch_dir>/worklist.json (next_item reads it) — the same
 ## "adaptive agent writes a file, deterministic node reads it" pattern as
 ## verify_build/verify_run.
 agent enumerate:
@@ -819,7 +846,7 @@ agent transform:
   interaction: human
 
 ## verify_build — adaptive, stack-agnostic build/test repair (writes
-## .whole_improve_loop.verify.sh). fresh: whole-tree buildability, not an
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not an
 ## item session. high, not max: mechanical build-repair, not deep review.
 agent verify_build:
   backend: "claude_code"
@@ -833,18 +860,23 @@ agent verify_build:
   interaction: human
 
 ## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
-## .whole_improve_loop.verify.sh and reports the REAL exit code. No language
+## <scratch_dir>/verify.sh and reports the REAL exit code. No language
 ## / package manager appears here — it executes whatever verify_build wrote,
 ## so the gate stays universal while the verdict stays deterministic.
 ## python3 for safe JSON + subprocess capture; double-quote-free body, no
 ## backticks (E012).
 tool verify_run:
-  command: `WS={{vars.workspace_dir}} python3 -c "
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
-script = os.path.join(ws, '.whole_improve_loop.verify.sh')
+scratch = os.environ.get('SCRATCH', '.')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
-    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no .whole_improve_loop.verify.sh; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
+    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
     raise SystemExit(0)
 rc = 0
 out = ''
@@ -859,7 +891,7 @@ except Exception as e:
     out = 'verify_run could not execute the script: ' + str(e)
     rc = 1
 try:
-    with open(os.path.join(ws, '.whole_improve_loop.verify.log'), 'w', encoding='utf-8') as lf:
+    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)
 except OSError:
     pass
@@ -931,17 +963,18 @@ compute advance:
     carry_next: "outputs.next_item.cursor + 1"
 
 ## commit_item (ADR-057 incremental commit) — ONE commit per work-item.
-## Reuses the retired commit_unit git logic verbatim: `git add -A` stages
-## UNTRACKED files too (the right-artifact rule: `git diff HEAD` omits
-## untracked, so commits MUST include them or a feature that ADDS files
-## never lands), then unstages the bot's own scratch dotfiles
-## (state/worklist/verify) — `add -A` then `reset` is ignore-agnostic so it
-## works whether or not the target repo gitignores them. Message carries the
-## item's title (LABEL= shell-escapes a space/paren-bearing title as one
-## token; ${LABEL:-workspace} guards an empty one). No-op-safe: `diff
-## --cached --quiet` makes no empty commit when a transform changed nothing.
+## Reuses the retired commit_unit git logic: `git add -A` stages UNTRACKED
+## files too (the right-artifact rule: `git diff HEAD` omits untracked, so
+## commits MUST include them or a feature that ADDS files never lands). The
+## sweep's scratch (work-list / cursor / verify script+log) now lives
+## OUT-OF-TREE under {{vars.scratch_dir}}, so `git add -A` never sees it —
+## the old `reset -- .whole_improve_loop.*` unstage step is gone (nothing to
+## exclude). Message carries the item's title (LABEL= shell-escapes a
+## space/paren-bearing title as one token; ${LABEL:-workspace} guards an
+## empty one). No-op-safe: `diff --cached --quiet` makes no empty commit when
+## a transform changed nothing.
 tool commit_item:
-  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} reset -q -- .whole_improve_loop.state .whole_improve_loop.worklist.json .whole_improve_loop.verify.sh .whole_improve_loop.verify.log >/dev/null 2>&1 || true; git -C {{vars.workspace_dir}} diff --cached --quiet || LABEL={{input.item_title}} git -C {{vars.workspace_dir}} commit -m "refactor(improve): ${LABEL:-workspace}"; }`
+  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} diff --cached --quiet || LABEL={{input.item_title}} git -C {{vars.workspace_dir}} commit -m "refactor(improve): ${LABEL:-workspace}"; }`
   output: commit_result
 
 ## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
