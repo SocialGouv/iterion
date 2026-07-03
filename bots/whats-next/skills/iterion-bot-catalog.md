@@ -799,29 +799,43 @@ claw-code-go's agentic loop against OpenAI.
 
 ### `whole-improve-loop` — Willy
 
-Whole-repository alternating Claude/GPT review-fix loop that is
-UNIT-CONVERGENT + INCREMENTAL-COMMIT (ADR-055). It splits the workspace
-by package into token-budgeted chunks ("units") and processes ONE unit
-at a time: it converges that unit (two consecutive clean cross-family
-reviews, with pushback protection against false positives), gates it on a
-deterministic per-unit build+test verify, and COMMITS it immediately
-(build-green) before moving to the next unit. A run that is
-interrupted or budget-capped keeps every unit it finished — unlike the
-old design, which committed nothing until an unreachable global clean
-sweep. The run ends when the ranked unit backlog has each been processed
-once (a stubborn unit is force-skipped after a bounded number of passes,
-never blocking the rest). Per-unit state is persisted across re-dispatches
-(.whole_improve_loop.state) so a large repo finishes over successive
-runs, banking committed units each time. See
-docs/adr/055-unit-convergent-adaptive-improve-loop.md.
+Axis-driven work-list sweep across a whole codebase (ADR-057).
+`improvement_prompt` is THE AXIS — one determined improvement applied to
+every matching site, verified and committed site by site (e.g. "split
+every file over 600 lines into cohesive units", "converge duplicated X
+onto a shared helper", "make error handling use pattern Y"). It is a
+refactoring-campaign engine, not a scanner. A whole-repo adaptive agent
+reads the codebase by its real structure (grep/glob/read) and writes an
+ordered work-list of concrete sites; the sweep then, one item at a time,
+applies the axis (transform), gates the change on a deterministic
+stack-agnostic build+test verify (red → bounded fix retry → skip
+uncommitted, never landing broken code), has ONE cross-family reviewer
+(mono/dual, ADR-052) confirm the axis is correctly + safely applied at
+that site, and commits it — one incremental commit per item. When the
+work-list is exhausted a re-scan looks for any remaining sites (the
+done-oracle: the axis is fully applied iff a fresh scan finds nothing);
+new sites are appended and the sweep continues, else it converges.
+Bounded by a max_items cap so a pathological axis terminates. An
+interrupted / budget-capped run keeps every item it committed; the
+work-list + cursor are persisted (.whole_improve_loop.worklist.json /
+.state) so a large axis resumes mid-sweep across re-dispatches. Optional
+MR/PR path ships the series of per-item commits. Replaces the ADR-011 /
+ADR-055 chunked review-fix loop. See
+docs/adr/057-axis-driven-work-list-sweep.md.
 
 - **Use when**:
-  Use on EXISTING code when the operator wants a rigorous
-  production-readiness audit across the whole workspace, or to drive
-  iterative improvement on a specific axis (pass improvement_prompt).
-  It commits each converged unit incrementally, so long runs always leave
-  landed, reviewable commits. No new capability — just better/cleaner code.
-- **Vars**: `context_mode` (string), `improvement_prompt` (string), `max_review_chunk_tokens` (int), `max_review_passes` (int), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `reviewer_context_percent` (int), `reviewer_context_tokens` (int), `scope_globs` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
+  Use on EXISTING code to apply one determined, cross-cutting improvement
+  AXIS across the whole codebase, site by site — the campaigns a human runs
+  as a todo-list + frequent incremental commits (split the largest files,
+  converge N call sites onto a shared primitive, make a pattern consistent
+  everywhere). Pass the axis as improvement_prompt (empty = it picks the
+  single highest-value cross-cutting improvement it can name). It commits
+  each site incrementally and converges when a re-scan finds no remaining
+  sites, so long runs always leave landed, reviewable commits. For an
+  open-ended "find whatever is wrong" production-readiness audit (no single
+  axis), point a review-loop bot at the tree instead — this bot needs an
+  axis to sweep.
+- **Vars**: `improvement_prompt` (string), `max_items` (int), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `scope_globs` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,8 +14,8 @@ import (
 
 // wilToInt coerces an edge-relayed numeric (which template substitution may
 // deliver as an int, float64, or stringified number) to an int, defaulting
-// to 0 for absent/unparseable values — matching how the real snapshot_chunk
-// python seeds its state from an empty/literal STATE_IN.
+// to 0 for absent/unparseable values — matching how the real next_item python
+// seeds its cursor from an empty/literal STATE_CURSOR.
 func wilToInt(v interface{}) int {
 	switch x := v.(type) {
 	case int:
@@ -32,582 +33,6 @@ func wilToInt(v interface{}) int {
 	return 0
 }
 
-// stubSnapshotChunk registers a stateful stub for the deterministic
-// snapshot_chunk tool node. The e2e executor cannot run that node's real
-// embedded-python chunker, so this models the one property the loop's
-// convergence math depends on: the cross-pass pass-through of the ADR-055
-// per-unit tuple {cursor, unit_streak, unit_passes, units_done}. It echoes
-// the edge-fed incoming_* values back as the snapshot's persisted_* / cursor
-// outputs — exactly as the real tool seeds them from
-// .whole_improve_loop.state — and reports a SINGLE unit (num_chunks=1) so a
-// unit converges on two consecutive clean reviews and its convergence is also
-// the run's stop (units_done+1 >= 1). Without this stub the snapshot outputs
-// are nil and streak_check's `persisted_unit_streak + 1` / `cursor + 1` exprs
-// fail.
-func stubSnapshotChunk(exec *scenarioExecutor) {
-	exec.on("snapshot_chunk", func(in map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"chunk_content": "// stub chunk source",
-			"files":         "stub.go",
-			"chunk_label":   "stub",
-			"chunk_index":   0,
-			"num_chunks":    1,
-			"loop_max":      3, // small fixed bound for the test; real node emits 2*num_chunks+max_passes
-			"chunked":       false,
-			// ADR-055 2b coherent-unit fields: the stub models a single WHOLE
-			// unit (never partial), so the partial-view guard is inert.
-			"partial":               false,
-			"unit_label":            "stub",
-			"unit_part":             1,
-			"unit_parts":            1,
-			"file_count":            1,
-			"chunk_tokens":          10,
-			"total_files":           1,
-			"total_tokens":          10,
-			"skipped_oversize":      0,
-			"persisted_unit_streak": wilToInt(in["incoming_unit_streak"]),
-			"persisted_unit_passes": wilToInt(in["incoming_unit_passes"]),
-			"persisted_units_done":  wilToInt(in["incoming_units_done"]),
-			"cursor":                wilToInt(in["incoming_cursor"]),
-			"_tokens":               1,
-		}, nil
-	})
-}
-
-// stubVerifyGate registers stubs for BOTH deterministic build/test gates the
-// loop runs:
-//   - the FINALIZATION gate (streak_check -> verify_build -> verify_run ->
-//     commit_changes -> done), reached after `stop`, and
-//   - the PER-UNIT gate (ADR-055 2a: streak_check -> unit_verify_build ->
-//     unit_verify_run -> commit_unit), reached each time a NON-last unit
-//     converges, so every incremental commit is build+test green on its own.
-//
-// The e2e executor cannot run the real verify nodes (they adapt to the repo's
-// tooling and execute .whole_improve_loop.verify.sh), so this models a GREEN
-// gate on both: verify_run / unit_verify_run report passed=true so the run
-// routes ... -> commit_changes / commit_unit when passed. Without the per-unit
-// stub, a converged non-last unit would exhaust unit_verify_loop(3) and skip
-// WITHOUT committing (never reaching commit_unit). Tests that never converge
-// (loop-exhaustion scenarios) reach neither gate and don't need this.
-func stubVerifyGate(exec *scenarioExecutor) {
-	green := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"passed":   true,
-			"log_tail": "",
-			"_tokens":  1,
-		}, nil
-	}
-	exec.on("verify_run", green)
-	exec.on("unit_verify_run", green)
-}
-
-// TestWholeImproveLoop_HappyPath simulates the canonical "two
-// consecutive cross-family approvals" scenario:
-//
-//	iter1: claude approves   → streak_check.stop = false (no previous)
-//	iter2: gpt approves      → streak_check.stop = true  → done
-func TestWholeImproveLoop_HappyPath(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-	stubSnapshotChunk(exec)
-	stubVerifyGate(exec)
-
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved":  true,
-			"family":    "claude",
-			"blockers":  []string{},
-			"fix_plan":  "",
-			"_tokens":   100,
-			"_cost_usd": 0.01,
-		}, nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved":  true,
-			"family":    "gpt",
-			"blockers":  []string{},
-			"fix_plan":  "",
-			"_tokens":   100,
-			"_cost_usd": 0.01,
-		}, nil
-	})
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	// inline context_mode: the stub reviewers can't open real files, so run in
-	// inline mode (ADR-045 v0.5.0) where the explore-engagement guard is bypassed
-	// and the convergence math these scenarios assert on runs as it did
-	// pre-explore-mode. (Explore-mode engagement is exercised by live runs.)
-	if err := eng.Run(context.Background(), "run-vibe-happy", map[string]interface{}{"context_mode": "inline"}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	run, err := s.LoadRun(context.Background(), "run-vibe-happy")
-	if err != nil {
-		t.Fatalf("GetRun: %v", err)
-	}
-	if run.Status != store.RunStatusFinished {
-		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
-	}
-	if exec.callCount("reviewer_claude") != 1 {
-		t.Errorf("expected reviewer_claude once, got %d", exec.callCount("reviewer_claude"))
-	}
-	if exec.callCount("reviewer_gpt") != 1 {
-		t.Errorf("expected reviewer_gpt once, got %d", exec.callCount("reviewer_gpt"))
-	}
-	if exec.wasCalled("fix_claude") {
-		t.Errorf("fix_claude should not have been called on happy path")
-	}
-}
-
-// TestWholeImproveLoop_FixThenApprove simulates a scenario where
-// the first reviewer rejects, fix runs, then two cross-family approvals
-// trigger the stop:
-//
-//	iter1: claude rejects → fix_claude
-//	iter2: gpt approves   → streak_check.stop = false (previous was a fix)
-//	iter3: claude approves → streak_check.stop = true → done
-//
-// Note: iter1 sets loop.previous_output to claude's rejection. After
-// fix_claude runs (no loop edge crossing), iter2 traverses the gpt
-// reviewer→streak_check edge which snapshots gpt's verdict. Then iter3
-// claude→streak_check sees previous=gpt's approval, current=claude's
-// approval, families differ → stop.
-func TestWholeImproveLoop_FixThenApprove(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-	stubSnapshotChunk(exec)
-	stubVerifyGate(exec)
-
-	claudeCalls := 0
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		claudeCalls++
-		approved := claudeCalls > 1 // first call rejects, subsequent approve
-		blockers := []string{"missing test"}
-		if approved {
-			blockers = []string{}
-		}
-		return map[string]interface{}{
-			"approved": approved,
-			"family":   "claude",
-			"blockers": blockers,
-			"fix_plan": "add tests",
-			"_tokens":  100,
-		}, nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved": true,
-			"family":   "gpt",
-			"blockers": []string{},
-			"fix_plan": "",
-			"_tokens":  100,
-		}, nil
-	})
-	exec.on("fix_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"applied": true,
-			"summary": "added tests",
-			// ADR-055 2c: the fixer records its intent, threaded forward to the
-			// next cross-family reviewer of this unit (prior_change_rationale).
-			"change_rationale": "added a missing unit test for the error path; no behaviour change",
-			"_tokens":          200,
-		}, nil
-	})
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vibe-fix", map[string]interface{}{"context_mode": "inline"}); err != nil { // inline: stub reviewers can't open real files (ADR-045)
-		t.Fatalf("Run: %v", err)
-	}
-
-	run, err := s.LoadRun(context.Background(), "run-vibe-fix")
-	if err != nil {
-		t.Fatalf("GetRun: %v", err)
-	}
-	if run.Status != store.RunStatusFinished {
-		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
-	}
-	if exec.callCount("fix_claude") != 1 {
-		t.Errorf("expected fix_claude once, got %d", exec.callCount("fix_claude"))
-	}
-	if exec.callCount("reviewer_claude") < 2 {
-		t.Errorf("expected reviewer_claude at least twice, got %d", exec.callCount("reviewer_claude"))
-	}
-}
-
-// TestWholeImproveLoop_LoopExhausted simulates a run where the families
-// never assemble a clean streak (claude always approves, gpt always
-// rejects with a blocker, so the streak resets every gpt pass). The
-// review_loop bound kicks in and execution falls through to the
-// `reviewer -> fail` terminal: exhausting the loop WITHOUT streak_check
-// ever firing `stop` is a non-convergence, which the bot reports as
-// `failed` (not a silent `finished`) so a dispatcher re-runs rather than
-// marking the ticket clean. See main.bot "Loop exhaustion fallbacks".
-func TestWholeImproveLoop_LoopExhausted(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-	stubSnapshotChunk(exec)
-
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved": true, "family": "claude",
-			"blockers": []string{}, "fix_plan": "", "_tokens": 50,
-		}, nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved": false, "family": "gpt",
-			"blockers": []string{"flaky test"}, "fix_plan": "stabilize", "_tokens": 50,
-		}, nil
-	})
-	exec.on("fix_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"applied": true, "summary": "tried", "_tokens": 100,
-		}, nil
-	})
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	// Reaching the `fail` terminal surfaces as a Run error — that IS the
-	// non-convergence signal, not a test failure.
-	if err := eng.Run(context.Background(), "run-vibe-exhausted", nil); err == nil {
-		t.Fatalf("expected Run to error on review_loop exhaustion (non-convergence), got nil")
-	}
-
-	run, err := s.LoadRun(context.Background(), "run-vibe-exhausted")
-	if err != nil {
-		t.Fatalf("GetRun: %v", err)
-	}
-	if run.Status != store.RunStatusFailed {
-		t.Fatalf("status = %s, want %s (review_loop exhaustion routes to fail — no silent success)",
-			run.Status, store.RunStatusFailed)
-	}
-}
-
-// TestWholeImproveLoop_EventTrace establishes the event-coherence
-// baseline: a happy-path run must persist a complete trace covering
-// node lifecycle, edge selection, and round-robin reviewer dispatch.
-// This is the regression net for any future refactor of the engine's
-// event emission — a missing event type surfaces here first.
-func TestWholeImproveLoop_EventTrace(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-	stubSnapshotChunk(exec)
-	stubVerifyGate(exec)
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved": true, "family": "claude",
-			"blockers": []interface{}{}, "fix_plan": "", "_tokens": 100,
-		}, nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved": true, "family": "gpt",
-			"blockers": []interface{}{}, "fix_plan": "", "_tokens": 100,
-		}, nil
-	})
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vibe-events", map[string]interface{}{"context_mode": "inline"}); err != nil { // inline: stub reviewers can't open real files (ADR-045)
-		t.Fatalf("Run: %v", err)
-	}
-
-	events, err := s.LoadEvents(context.Background(), "run-vibe-events")
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-
-	if !hasEvent(events, store.EventRunStarted) {
-		t.Errorf("missing run_started event")
-	}
-	if !hasEvent(events, store.EventRunFinished) {
-		t.Errorf("missing run_finished event")
-	}
-	if countEventType(events, store.EventNodeStarted) < 3 {
-		t.Errorf("expected ≥3 node_started events (reviewer_claude + reviewer_gpt + streak_check), got %d",
-			countEventType(events, store.EventNodeStarted))
-	}
-	if countEventType(events, store.EventEdgeSelected) < 2 {
-		t.Errorf("expected ≥2 edge_selected events (round-robin dispatch creates one per reviewer), got %d",
-			countEventType(events, store.EventEdgeSelected))
-	}
-	finishedIDs := eventNodeIDs(events, store.EventNodeFinished)
-	finishedSet := make(map[string]bool, len(finishedIDs))
-	for _, id := range finishedIDs {
-		finishedSet[id] = true
-	}
-	for _, want := range []string{"reviewer_claude", "reviewer_gpt"} {
-		if !finishedSet[want] {
-			t.Errorf("expected node_finished event for %q, got %v", want, finishedIDs)
-		}
-	}
-}
-
-// TestWholeImproveLoop_RecoveryLoopExhausted makes both reviewers reject
-// with concrete blockers on every pass, so each iteration routes through a
-// fix_X. The bounded loops terminate the cascade (review_loop(15) binds
-// before recovery_loop(20), since review_loop is incremented every cycle)
-// and execution falls through to a `fail` terminal — a non-convergence,
-// reported as `failed`. Asserts the fixer ran many times before the cap.
-func TestWholeImproveLoop_RecoveryLoopExhausted(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-	stubSnapshotChunk(exec)
-
-	// Both reviewers always reject with concrete blockers so each
-	// streak_check routes through fix_X.
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved": false, "family": "claude",
-			"blockers": []interface{}{"claude found a blocker"},
-			"fix_plan": "fix the claude blocker",
-			"_tokens":  50,
-		}, nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"approved": false, "family": "gpt",
-			"blockers": []interface{}{"gpt found a blocker"},
-			"fix_plan": "fix the gpt blocker",
-			"_tokens":  50,
-		}, nil
-	})
-	exec.on("fix_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"applied": true, "summary": "claude fix", "_tokens": 100}, nil
-	})
-	exec.on("fix_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"applied": true, "summary": "gpt fix", "_tokens": 100}, nil
-	})
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	// Never converges (every pass has a blocker) → loop exhaustion routes
-	// to the `fail` terminal, which surfaces as a Run error.
-	if err := eng.Run(context.Background(), "run-vibe-recovery-exhausted", nil); err == nil {
-		t.Fatalf("expected Run to error on loop exhaustion (non-convergence), got nil")
-	}
-
-	run, err := s.LoadRun(context.Background(), "run-vibe-recovery-exhausted")
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	if run.Status != store.RunStatusFailed {
-		t.Fatalf("status = %s, want %s (loop exhaustion routes to fail — no silent success)",
-			run.Status, store.RunStatusFailed)
-	}
-	// Bounded by review_loop(15) on the reviewer→streak_check edge —
-	// the review cap kicks in before recovery_loop(20) does, since
-	// review_loop is what's incremented every cycle. The exact cap
-	// depends on round-robin starting family; assert "fixes ran each pass"
-	// rather than a specific number. With num_chunks=1 the dynamic bound is
-	// loop_max=3, so ~3 fix cycles run before review_loop exhausts.
-	totalFixes := exec.callCount("fix_claude") + exec.callCount("fix_gpt")
-	if totalFixes < 2 {
-		t.Errorf("expected fixer activity across the bounded loop (≥2), got %d (claude=%d, gpt=%d)",
-			totalFixes, exec.callCount("fix_claude"), exec.callCount("fix_gpt"))
-	}
-}
-
-// TestWholeImproveLoop_SessionInheritStructural is a structural
-// assertion on the bot's IR rather than a runtime trace: it confirms
-// the fix_* agents are declared with `session: inherit` so the
-// runtime can splice them into the same Claude/GPT conversation the
-// reviewer was using. Drift on this property silently breaks
-// prompt-cache hits and reviewer-context continuity — the live runs
-// would still pass but cost more, so we pin it here.
-func TestWholeImproveLoop_SessionInheritStructural(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-
-	for _, id := range []string{"fix_claude", "fix_gpt"} {
-		node, ok := wf.Nodes[id]
-		if !ok {
-			t.Fatalf("workflow missing expected node %q", id)
-		}
-		agent, ok := node.(*ir.AgentNode)
-		if !ok {
-			t.Fatalf("node %q is not an AgentNode (got %T)", id, node)
-		}
-		if agent.Session != ir.SessionInherit {
-			t.Errorf("node %q session = %s, want %s (drift breaks reviewer→fix prompt-cache continuity)",
-				id, agent.Session, ir.SessionInherit)
-		}
-	}
-}
-
-// TestWholeImproveLoop_PerUnitConvergesCommitsAndAdvances pins the ADR-055
-// per-unit convergence + incremental-commit behaviour on a 3-unit backlog with
-// all-clean reviews. The cursor STAYS on a unit until it converges (2
-// consecutive clean reviews), then a commit_unit lands and the cursor advances
-// — so with a clean run each unit takes exactly 2 passes:
-//
-//	pass1 unit0 (claude approve) → unit_streak 1, cursor stays 0
-//	pass2 unit0 (gpt approve)    → unit_streak 2 → CONVERGED → commit_unit, cursor→1
-//	pass3 unit1 (claude approve) → unit_streak 1, cursor stays 1
-//	pass4 unit1 (gpt approve)    → CONVERGED → commit_unit, cursor→2
-//	pass5 unit2 (claude approve) → unit_streak 1, cursor stays 2
-//	pass6 unit2 (gpt approve)    → CONVERGED and units_done+1>=num_chunks → STOP
-//
-// Asserts:
-//   - snapshot_chunk sees cursor 0,0,1,1,2,2 — advancing ONLY on convergence,
-//     NOT one-per-pass. A stuck-at-0 cursor (per-unit loop never advances) or a
-//     0,1,2,… cursor (advancing every pass like the old global sweep) both fail.
-//   - units_done accumulates 0,0,1,1,2,2 across passes (crash-safe carry).
-//   - commit_unit fires exactly twice — for units 0 and 1. Unit 2's convergence
-//     is also the run's stop, so it finalizes via the build/test gate +
-//     commit_changes, not commit_unit (first-match-wins on the stop edge).
-//   - the run finishes.
-func TestWholeImproveLoop_PerUnitConvergesCommitsAndAdvances(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-
-	var gotCursors, gotUnitsDone []int
-	exec.on("snapshot_chunk", func(in map[string]interface{}) (map[string]interface{}, error) {
-		cur := wilToInt(in["incoming_cursor"])
-		streak := wilToInt(in["incoming_unit_streak"])
-		passes := wilToInt(in["incoming_unit_passes"])
-		units := wilToInt(in["incoming_units_done"])
-		gotCursors = append(gotCursors, cur)
-		gotUnitsDone = append(gotUnitsDone, units)
-		return map[string]interface{}{
-			"chunk_content": "// stub", "files": "stub.go", "chunk_label": "stub",
-			"chunk_index": cur % 3, "num_chunks": 3, "loop_max": 8, "chunked": true,
-			"partial": false, "unit_label": "stub", "unit_part": 1, "unit_parts": 1,
-			"file_count": 1, "chunk_tokens": 10, "total_files": 3, "total_tokens": 30,
-			"skipped_oversize": 0, "persisted_unit_streak": streak,
-			"persisted_unit_passes": passes, "persisted_units_done": units,
-			"cursor": cur, "_tokens": 1,
-		}, nil
-	})
-	approve := func(fam string) func(map[string]interface{}) (map[string]interface{}, error) {
-		return func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{
-				"approved": true, "family": fam,
-				"blockers": []string{}, "fix_plan": "", "_tokens": 10,
-			}, nil
-		}
-	}
-	exec.on("reviewer_claude", approve("claude"))
-	exec.on("reviewer_gpt", approve("gpt"))
-	stubVerifyGate(exec)
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vibe-perunit", map[string]interface{}{"context_mode": "inline"}); err != nil { // inline: stub reviewers can't open real files (ADR-045)
-		t.Fatalf("Run: %v", err)
-	}
-	run, err := s.LoadRun(context.Background(), "run-vibe-perunit")
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	if run.Status != store.RunStatusFinished {
-		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
-	}
-	wantCursors := []int{0, 0, 1, 1, 2, 2} // advances ONLY on convergence (every 2 clean passes)
-	if !wilEqualInts(gotCursors, wantCursors) {
-		t.Errorf("snapshot incoming_cursor sequence = %v, want %v (cursor must advance only on per-unit convergence, not every pass and not never)",
-			gotCursors, wantCursors)
-	}
-	wantUnits := []int{0, 0, 1, 1, 2, 2}
-	if !wilEqualInts(gotUnitsDone, wantUnits) {
-		t.Errorf("snapshot incoming_units_done sequence = %v, want %v (units_done must accumulate as units converge)",
-			gotUnitsDone, wantUnits)
-	}
-	if got := exec.callCount("commit_unit"); got != 2 {
-		t.Errorf("commit_unit called %d times, want 2 (per-unit incremental commit for units 0 and 1; unit 2 finalizes via stop)", got)
-	}
-}
-
-// TestWholeImproveLoop_PerUnitVerifyGatesCommit pins the ADR-055 2a property:
-// a converged unit is NOT committed until a deterministic per-unit build/test
-// verify passes. On a 2-unit all-clean backlog, unit 0 converges FIRST (not the
-// last unit) so it routes streak_check -> unit_verify_build -> unit_verify_run
-// -> commit_unit. We make unit_verify_run RED on its first invocation and GREEN
-// after (modelling unit_verify_build repairing the breakage), and assert:
-//   - commit_unit NEVER fires while the per-unit verify is red (a broken
-//     intermediate commit is exactly what 2a forbids);
-//   - the gate retried (unit_verify_run called >= 2 — fail then pass) via the
-//     bounded unit_verify_loop(3);
-//   - commit_unit landed exactly once (unit 0), after the gate went green;
-//   - the run finishes (unit 1's convergence is the stop → final gate).
-func TestWholeImproveLoop_PerUnitVerifyGatesCommit(t *testing.T) {
-	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
-	exec := newScenarioExecutor()
-
-	exec.on("snapshot_chunk", func(in map[string]interface{}) (map[string]interface{}, error) {
-		cur := wilToInt(in["incoming_cursor"])
-		return map[string]interface{}{
-			"chunk_content": "// stub", "files": "stub.go", "chunk_label": "stub",
-			"chunk_index": cur % 2, "num_chunks": 2, "loop_max": 12, "chunked": true,
-			"partial": false, "unit_label": "stub", "unit_part": 1, "unit_parts": 1,
-			"file_count": 1, "chunk_tokens": 10, "total_files": 2, "total_tokens": 20,
-			"skipped_oversize": 0, "persisted_unit_streak": wilToInt(in["incoming_unit_streak"]),
-			"persisted_unit_passes": wilToInt(in["incoming_unit_passes"]),
-			"persisted_units_done":  wilToInt(in["incoming_units_done"]),
-			"cursor":                cur, "_tokens": 1,
-		}, nil
-	})
-	approve := func(fam string) func(map[string]interface{}) (map[string]interface{}, error) {
-		return func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{
-				"approved": true, "family": fam,
-				"blockers": []string{}, "fix_plan": "", "_tokens": 10,
-			}, nil
-		}
-	}
-	exec.on("reviewer_claude", approve("claude"))
-	exec.on("reviewer_gpt", approve("gpt"))
-
-	// Per-unit gate: RED on the first call, GREEN after. The final gate
-	// (verify_run) is always green.
-	unitVerifyCalls := 0
-	lastPerUnitPassed := false
-	exec.on("unit_verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		unitVerifyCalls++
-		passed := unitVerifyCalls >= 2 // first red, then green (unit_verify_build "fixed" it)
-		lastPerUnitPassed = passed
-		return map[string]interface{}{
-			"passed": passed, "skipped": false, "exit_code": 0,
-			"log_tail": "stub build failure", "_tokens": 1,
-		}, nil
-	})
-	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"passed": true, "log_tail": "", "_tokens": 1}, nil
-	})
-	// commit_unit must only ever fire when the most recent per-unit verify was
-	// GREEN — the core 2a invariant.
-	exec.on("commit_unit", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		if !lastPerUnitPassed {
-			t.Errorf("commit_unit fired while the per-unit build/test verify was RED — 2a must gate every incremental commit on a green build")
-		}
-		return map[string]interface{}{"success": true, "output": "committed", "_tokens": 1}, nil
-	})
-
-	s := tmpStore(t)
-	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vibe-unitverify", map[string]interface{}{"context_mode": "inline"}); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	run, err := s.LoadRun(context.Background(), "run-vibe-unitverify")
-	if err != nil {
-		t.Fatalf("LoadRun: %v", err)
-	}
-	if run.Status != store.RunStatusFinished {
-		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
-	}
-	if unitVerifyCalls < 2 {
-		t.Errorf("unit_verify_run called %d times, want >= 2 (the gate must RETRY via unit_verify_loop after a red build, not commit)", unitVerifyCalls)
-	}
-	if got := exec.callCount("commit_unit"); got != 1 {
-		t.Errorf("commit_unit called %d times, want 1 (unit 0 commits after the gate goes green; unit 1 finalizes via stop)", got)
-	}
-	if got := exec.callCount("unit_verify_build"); got < 2 {
-		t.Errorf("unit_verify_build called %d times, want >= 2 (the agent re-runs to repair the red build before commit)", got)
-	}
-}
-
 func wilEqualInts(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
@@ -618,4 +43,371 @@ func wilEqualInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// sweepState models the ADR-057 work-list + cursor the real bot persists to
+// disk (.whole_improve_loop.worklist.json + .whole_improve_loop.state). The
+// e2e executor cannot run next_item's embedded-python reader or the adaptive
+// enumerate agent, so this in-memory model stands in for them and drives the
+// one property the sweep's control-flow depends on: the deterministic
+// next_item routing (needs_enumerate → capped → exhausted → has_item) keyed on
+// the edge-fed incoming_cursor, exactly as the real tool seeds it from the
+// state file. Tests mutate items/maxItems and override individual node stubs.
+type sweepState struct {
+	items      []string // work-item titles; empty until enumerate "writes" them
+	maxItems   int
+	enumerated bool  // flips true once enumerate runs (the work-list now exists)
+	diskCursor int   // models .whole_improve_loop.state (the crash-safe disk cursor)
+	cursors    []int // the cursor each next_item pass USED (assertions)
+}
+
+// stubSweep registers the baseline stubs for a green sweep: next_item (the
+// deterministic cursor/work-list reader), enumerate (writes the list),
+// re_enumerate (done-oracle: no more sites by default), transform, the
+// verify_build→verify_run gate (green), both reviewers (approve) and
+// commit_item. Individual tests override a node afterward (later .on wins) to
+// exercise a red verify, a review reject, or an appending re_enumerate.
+func stubSweep(exec *scenarioExecutor, st *sweepState) {
+	exec.on("next_item", func(in map[string]interface{}) (map[string]interface{}, error) {
+		// Mirror the real next_item: the edge-fed incoming_cursor (the advance
+		// compute's carry_next) wins when present; otherwise seed from the disk
+		// cursor (enumerate/re-enum returns carry nothing). Then persist it.
+		cur := st.diskCursor
+		if raw, ok := in["incoming_cursor"]; ok {
+			if s := strings.TrimSpace(fmt.Sprint(raw)); s != "" && s != "<nil>" {
+				cur = wilToInt(raw)
+			}
+		}
+		st.diskCursor = cur
+		st.cursors = append(st.cursors, cur)
+		out := map[string]interface{}{
+			"needs_enumerate": false, "capped": false, "exhausted": false, "has_item": false,
+			"item_id": "", "item_title": "", "item_targets": "", "item_change_spec": "",
+			"cursor": cur, "total_items": len(st.items),
+			"max_items": st.maxItems, "sweep_max": 2*st.maxItems + 30, "transform_max": 2*st.maxItems + 20,
+			"_tokens": 1,
+		}
+		switch {
+		case !st.enumerated:
+			out["needs_enumerate"] = true
+		case cur >= st.maxItems:
+			out["capped"] = true
+		case cur >= len(st.items):
+			out["exhausted"] = true
+		default:
+			out["has_item"] = true
+			out["item_id"] = fmt.Sprintf("item-%d", cur)
+			out["item_title"] = st.items[cur]
+			out["item_targets"] = st.items[cur] + ".src"
+			out["item_change_spec"] = "apply the axis at this site"
+		}
+		return out, nil
+	})
+	exec.on("enumerate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		st.enumerated = true // the work-list now exists on "disk"
+		return map[string]interface{}{"total_items": len(st.items), "summary": "planned", "_tokens": 1}, nil
+	})
+	exec.on("re_enumerate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		// Done-oracle default: a fresh scan finds nothing left → converge.
+		return map[string]interface{}{"found_more": false, "appended_count": 0, "summary": "done", "_tokens": 1}, nil
+	})
+	exec.on("transform", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"applied": true, "summary": "applied", "_tokens": 10}, nil
+	})
+	exec.on("verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
+	})
+	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+	})
+	approve := func(fam string) func(map[string]interface{}) (map[string]interface{}, error) {
+		return func(_ map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{
+				"approved": true, "family": fam, "blockers": []string{}, "fix_plan": "",
+				"confidence": "high", "_tokens": 10,
+			}, nil
+		}
+	}
+	exec.on("reviewer_claude", approve("claude"))
+	exec.on("reviewer_gpt", approve("gpt"))
+	exec.on("commit_item", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"success": true, "output": "committed", "_tokens": 1}, nil
+	})
+}
+
+// TestWholeImproveLoop_SweepHappyPath is the canonical ADR-057 flow: enumerate
+// writes a 3-item work-list, and each item sweeps transform → verify (green) →
+// review (approve) → commit, then re_enumerate finds nothing and the run
+// finishes. Asserts:
+//   - enumerate runs exactly once (fresh run), re_enumerate once (done-oracle);
+//   - each item transforms and commits exactly once (transform == commit == 3);
+//   - the cursor advances 0,1,2 across the has-item passes (one commit per site,
+//     not the old advance-every-review or stuck-at-0 shapes);
+//   - the run finishes.
+func TestWholeImproveLoop_SweepHappyPath(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+	st := &sweepState{items: []string{"split-foo", "extract-helper", "converge-bar"}, maxItems: 50}
+	stubSweep(exec, st)
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-sweep-happy", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-sweep-happy")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if got := exec.callCount("enumerate"); got != 1 {
+		t.Errorf("enumerate called %d times, want 1 (fresh run builds the work-list once)", got)
+	}
+	if got := exec.callCount("re_enumerate"); got != 1 {
+		t.Errorf("re_enumerate called %d times, want 1 (the done-oracle runs once, finds nothing)", got)
+	}
+	if got := exec.callCount("transform"); got != 3 {
+		t.Errorf("transform called %d times, want 3 (one per work-item)", got)
+	}
+	if got := exec.callCount("commit_item"); got != 3 {
+		t.Errorf("commit_item called %d times, want 3 (one incremental commit per item)", got)
+	}
+	// The cursor must advance through 0,1,2 (one commit per site) and reach 3
+	// (exhausted → re_enumerate). Collect the distinct in-order cursors the
+	// next_item passes saw; a stuck-at-0 cursor (never advances) or one that
+	// skips a value both fail this.
+	var distinct []int
+	seen := map[int]bool{}
+	for _, c := range st.cursors {
+		if !seen[c] {
+			seen[c] = true
+			distinct = append(distinct, c)
+		}
+	}
+	if !wilEqualInts(distinct, []int{0, 1, 2, 3}) {
+		t.Errorf("distinct incoming_cursor sequence = %v, want [0 1 2 3] (advance one site per commit, then exhausted)", distinct)
+	}
+}
+
+// TestWholeImproveLoop_RedVerifySkipsWithoutCommit pins the "never land broken
+// code" rule: a single-item sweep whose deterministic build/test gate is ALWAYS
+// red must SKIP the item without committing (after the bounded verify-fix
+// retries), advance the cursor, and still converge + finish. Asserts:
+//   - commit_item NEVER fires (a red verify must not commit);
+//   - verify_run retried (called ≥ 4: initial + verify_loop(3) retries) before
+//     the skip;
+//   - the run finishes (skip → advance → re_enumerate empty → done).
+func TestWholeImproveLoop_RedVerifySkipsWithoutCommit(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+	st := &sweepState{items: []string{"unbuildable-site"}, maxItems: 50}
+	stubSweep(exec, st)
+	// Override the gate: always red. verify_build "tries" but can't fix it.
+	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"passed": false, "skipped": false, "exit_code": 1,
+			"log_tail": "stub build failure", "_tokens": 1,
+		}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-sweep-redverify", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-sweep-redverify")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if exec.wasCalled("commit_item") {
+		t.Errorf("commit_item fired on an always-red verify — a broken change must be skipped uncommitted, never landed")
+	}
+	if got := exec.callCount("verify_run"); got < 4 {
+		t.Errorf("verify_run called %d times, want ≥4 (initial + verify_loop(3) retries before the skip)", got)
+	}
+	// The reviewer must never see an unverified change: alt/review is only
+	// reached `when passed`, which never happens here.
+	if exec.wasCalled("reviewer_claude") || exec.wasCalled("reviewer_gpt") {
+		t.Errorf("a reviewer ran on a never-green verify — review must be gated behind a green build")
+	}
+}
+
+// TestWholeImproveLoop_ReviewRejectRetransforms pins the per-item review→fix
+// loop: on a single item the reviewer rejects once with a concrete blocker,
+// then approves. The transform must re-run to fix exactly that blocker, then
+// the item commits. Asserts transform ran twice, commit_item once, run finishes.
+func TestWholeImproveLoop_ReviewRejectRetransforms(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+	st := &sweepState{items: []string{"site-needs-two-tries"}, maxItems: 50}
+	stubSweep(exec, st)
+	// The claude reviewer (first family in DUAL parity here) rejects once with a
+	// concrete blocker, then approves. The gpt reviewer always approves.
+	reviewCalls := 0
+	reject := func(fam string) func(map[string]interface{}) (map[string]interface{}, error) {
+		return func(_ map[string]interface{}) (map[string]interface{}, error) {
+			reviewCalls++
+			approved := reviewCalls > 1
+			blockers := []string{"axis applied inconsistently at this site"}
+			fixPlan := "use the shared helper like the other sites"
+			if approved {
+				blockers = []string{}
+				fixPlan = ""
+			}
+			return map[string]interface{}{
+				"approved": approved, "family": fam, "blockers": blockers,
+				"fix_plan": fixPlan, "confidence": "high", "_tokens": 10,
+			}, nil
+		}
+	}
+	exec.on("reviewer_claude", reject("claude"))
+	exec.on("reviewer_gpt", reject("gpt"))
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-sweep-reject", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-sweep-reject")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if got := exec.callCount("transform"); got != 2 {
+		t.Errorf("transform called %d times, want 2 (initial + one re-transform after the concrete-blocker reject)", got)
+	}
+	if got := exec.callCount("commit_item"); got != 1 {
+		t.Errorf("commit_item called %d times, want 1 (the item commits once, after it is approved)", got)
+	}
+}
+
+// TestWholeImproveLoop_ReEnumerateAppendsThenConverges pins the done-oracle's
+// continuation: enumerate writes 1 item; after it lands, the first re_enumerate
+// finds a NEW site and appends it (found_more=true), the sweep processes that
+// item too, and only the SECOND re_enumerate reports nothing left → done.
+// Asserts both items commit (commit_item == 2), re_enumerate ran twice, and the
+// run finishes — the axis is not declared done until a fresh scan finds nothing.
+func TestWholeImproveLoop_ReEnumerateAppendsThenConverges(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+	st := &sweepState{items: []string{"first-site"}, maxItems: 50}
+	stubSweep(exec, st)
+	reEnumCalls := 0
+	exec.on("re_enumerate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		reEnumCalls++
+		if reEnumCalls == 1 {
+			// A fresh scan finds one more site → append it to the work-list.
+			st.items = append(st.items, "second-site-found-on-rescan")
+			return map[string]interface{}{"found_more": true, "appended_count": 1, "summary": "found 1 more", "_tokens": 1}, nil
+		}
+		return map[string]interface{}{"found_more": false, "appended_count": 0, "summary": "done", "_tokens": 1}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-sweep-reenum", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-sweep-reenum")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if got := exec.callCount("commit_item"); got != 2 {
+		t.Errorf("commit_item called %d times, want 2 (the appended site is swept + committed too)", got)
+	}
+	if reEnumCalls != 2 {
+		t.Errorf("re_enumerate called %d times, want 2 (append round + the converge round that finds nothing)", reEnumCalls)
+	}
+}
+
+// TestWholeImproveLoop_EventTrace establishes the event-coherence baseline for
+// the sweep: a happy-path run persists node lifecycle + edge-selection events
+// covering the core sweep nodes. This is the regression net for engine event
+// emission — a missing event type surfaces here first.
+func TestWholeImproveLoop_EventTrace(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+	st := &sweepState{items: []string{"only-site"}, maxItems: 50}
+	stubSweep(exec, st)
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-sweep-events", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	events, err := s.LoadEvents(context.Background(), "run-sweep-events")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	if !hasEvent(events, store.EventRunStarted) {
+		t.Errorf("missing run_started event")
+	}
+	if !hasEvent(events, store.EventRunFinished) {
+		t.Errorf("missing run_finished event")
+	}
+	if countEventType(events, store.EventNodeStarted) < 4 {
+		t.Errorf("expected ≥4 node_started events (enumerate + next_item + transform + a reviewer), got %d",
+			countEventType(events, store.EventNodeStarted))
+	}
+	finishedIDs := eventNodeIDs(events, store.EventNodeFinished)
+	finishedSet := make(map[string]bool, len(finishedIDs))
+	for _, id := range finishedIDs {
+		finishedSet[id] = true
+	}
+	for _, want := range []string{"enumerate", "next_item", "transform", "commit_item"} {
+		if !finishedSet[want] {
+			t.Errorf("expected node_finished event for %q, got %v", want, finishedIDs)
+		}
+	}
+}
+
+// TestWholeImproveLoop_SweepStructural is a structural assertion on the bot's
+// IR: it confirms the ADR-057 sweep spine exists with the expected node kinds —
+// the deterministic next_item entry, the adaptive enumerate/transform agents,
+// the deterministic verify/commit tool nodes, and the enum-constrained review
+// verdict. Drift here (e.g. reverting a deterministic gate to an LLM) breaks the
+// mechanism silently, so we pin it.
+func TestWholeImproveLoop_SweepStructural(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
+
+	if wf.Entry != "next_item" {
+		t.Errorf("workflow entry = %q, want %q (the deterministic work-list/cursor reader)", wf.Entry, "next_item")
+	}
+	// Deterministic (no-LLM) nodes: next_item, verify_run, commit_item are tool
+	// nodes; review_gate/mr_gate are compute nodes.
+	for _, id := range []string{"next_item", "verify_run", "commit_item"} {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			t.Fatalf("workflow missing expected tool node %q", id)
+		}
+		if _, ok := node.(*ir.ToolNode); !ok {
+			t.Errorf("node %q is %T, want *ir.ToolNode (deterministic, no LLM)", id, node)
+		}
+	}
+	// Adaptive agents: enumerate/re_enumerate/transform must be agent nodes.
+	for _, id := range []string{"enumerate", "re_enumerate", "transform"} {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			t.Fatalf("workflow missing expected agent node %q", id)
+		}
+		if _, ok := node.(*ir.AgentNode); !ok {
+			t.Errorf("node %q is %T, want *ir.AgentNode (adaptive)", id, node)
+		}
+	}
+	// The chunked-review machinery must be gone.
+	for _, id := range []string{"snapshot_chunk", "streak_check", "fix_claude", "fix_gpt", "commit_unit"} {
+		if _, ok := wf.Nodes[id]; ok {
+			t.Errorf("retired chunked-review node %q is still present — ADR-057 replaces the chunker with the axis sweep", id)
+		}
+	}
 }

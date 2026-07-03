@@ -1,300 +1,169 @@
-# whole_improve_loop — companion notes
+# whole_improve_loop (Willy) — companion notes
 
-Companion to the `whole_improve_loop` workflow ([`main.bot`](main.bot),
-previously known as `vibe_review_alternating`). This document
-is a **design journal**: what works in practice, what is still an open
-problem, and what should be improved.
+Companion to the `whole_improve_loop` workflow ([`main.bot`](main.bot)).
+This is a **design journal**: what the mechanism is, why it is shaped this
+way, and what is still open.
 
-## Workflow intent
+## What it does (ADR-057)
 
-Alternate two reviewers from distinct model families (Claude Opus via
-`claude_code`, GPT-5.5 via `claw`) over the **entire codebase** to reach a
-production-ready state — **unit-convergent and incremental-commit**
-(ADR-055):
+`whole_improve_loop` runs an **axis-driven work-list sweep**:
+`improvement_prompt` is **THE AXIS** — one determined improvement applied
+across the whole codebase, **site by site, verified and committed**. It is
+the operator's own proven manual Claude Code loop (write a todo work-list,
+then apply + commit each item incrementally), amplified with a deterministic
+per-item build/test gate and cross-family review of every change.
 
-- The workspace is split by **directory** into **coherent-unit** chunks
-  ("units", ADR-055 2b): a chunk is a package/directory subtree, and only
-  **cohesive siblings under a shared parent dir** are combined (and only
-  while they fit the budget) — never an arbitrary byte slice of unrelated
-  code. An oversize package is split into `partial` sub-chunks that still
-  carry the **full package file index**, and the reviewer/fixer are guarded
-  not to judge whole-package completeness (dead/unused) from a partial view.
-  The loop processes **one unit at a time**.
-- A fixer per family that inherits the corresponding reviewer's session
-  (cache savings + context continuity)
-- **Per-unit convergence**: a unit loops review → fix → re-review until IT
-  is clean and stable (two consecutive clean reviews — cross-family in DUAL,
-  same-family twice in MONO), with pushback protection against false
-  positives, then it is **committed** and the cursor advances. A stubborn
-  unit is force-skipped after a bounded number of passes so it can never
-  block the rest of the backlog.
-- **Incremental commit, gated per unit**: each converged unit lands its OWN
-  commit on the run's worktree branch, immediately, so an interrupted /
-  budget-capped run keeps every unit it finished. (The old design committed
-  nothing until an unreachable global clean sweep — see ADR-055 context.)
-- **Per-unit build/test verify** (ADR-055 2a): before an incremental commit
-  lands, the SAME deterministic, stack-agnostic build+test gate the
-  finalization uses runs on the converged unit (`unit_verify_build` writes
-  `.whole_improve_loop.verify.sh` from the repo's own tooling;
-  `unit_verify_run` re-runs it and gates on the REAL exit code) — so **every**
-  incremental commit is build+test green on its own, and an interrupted run
-  leaves a chain of individually-green commits, not a possibly-broken
-  intermediate one. A red per-unit verify does **not** commit: it loops back
-  to `unit_verify_build` (bounded `unit_verify_loop(3)`) to make the unit
-  green; if it still can't build, the unit is **skipped without committing**
-  (force-skip semantics — its changes stay uncommitted for the next pass, the
-  final whole-tree gate, or the operator), so broken code never lands and one
-  un-buildable unit can't block the backlog.
-- **Shared reviewer↔fixer context** (ADR-055 2c): the fixer records a concise
-  `change_rationale` (what it changed + why, per unit) that is threaded
-  forward to the next cross-family reviewer of the same unit
-  (`prior_change_rationale`), so that reviewer verifies the fix with the
-  fixer's intent visible instead of re-deriving it — killing re-litigation at
-  the source. It **augments** `prior_pushback` / `previous_scanned_areas`; the
-  reverse direction (reviewer verdict → fixer) is already wired via
-  `blockers` + `fix_plan` + `session: inherit`.
-- The **run terminates** when the ranked unit backlog has each been
-  processed once (`units_done >= num_chunks`), not when a global streak
-  saturates. A per-run pass budget (`max_review_passes`, default 15) bounds
-  each run; per-unit state (cursor / unit_streak / unit_passes / units_done)
-  is persisted (`.whole_improve_loop.state`) so a large repo finishes over
-  successive re-dispatches, banking committed units each time.
-- **Context-budget chunking** so the loop survives ~150k+ LoC workspaces
-  without exhausting the reviewer's context window (issue #12, below)
+Examples of an axis:
 
-## Context-budget chunking (issue #12)
+- `split every source file over 600 lines into cohesive smaller files`
+- `converge every hand-rolled retry onto a shared backoff helper`
+- `make every public function validate its inputs the same way`
+- `extract a store-agnostic streaming package`
 
-Pointed at a large workspace (iterion itself is ~195k LoC of Go; the
-chunker measures ~2.2M estimated tokens of source across ~1,200 files),
-a reviewer told to "review ALL the code" simply reads files until it
-hits `context_length_exceeded` — on the **first** iteration. To stay
-usable at that scale the loop no longer hands the reviewer the whole
-tree. Instead:
+Each is **one axis applied to every matching site**, committed site-by-site —
+not "review each chunk for whatever is wrong". That open-ended review is what
+the **retired** chunked loop (ADR-011 + ADR-055) did; on a whole repo it
+never converged (there is always another local issue in the next chunk) and
+structurally could not produce a **global, cross-cutting** change, because no
+reviewer handed a slice ever held the whole system. See
+[docs/adr/057-axis-driven-work-list-sweep.md](../../docs/adr/057-axis-driven-work-list-sweep.md)
+for the full rationale.
 
-- A deterministic `snapshot_chunk` **tool** node (Python, no LLM) is the
-  workflow entry and runs once per pass. It groups source files by
-  **directory** (never by language) into **coherent units** (ADR-055 2b):
-  a chunk is a package/directory subtree, and only **cohesive siblings
-  under the same immediate parent dir** are combined, and only while
-  together they fit **`max_review_chunk_tokens` (default 16000)** estimated
-  tokens (~4 bytes/token) — unrelated top-level packages are never bundled.
-  It emits **one chunk** per pass.
-- **Overflow-fallback (issue #12), fragmentation-safe:** a *single* package
-  that genuinely exceeds the budget is still split into sub-chunks, BUT each
-  sub-chunk is marked **`partial`** and carries the **FULL package file
-  index** (every file of the package, not just the slice) plus
-  `unit_label` / `unit_part` / `unit_parts`. The reviewer and fixer prompts
-  add an explicit guard: with `partial` true you are seeing ONE part of the
-  package, you MUST NOT flag any symbol dead/unused/unreferenced or make any
-  whole-package completeness call — read the other files in the provided
-  index first (the remaining parts + the deterministic build/test gate cover
-  the rest). This directly prevents the false positive where a reviewer
-  handed a byte-slice sees a symbol's definition but not its unseen-slice
-  caller and correctly-but-wrongly rejects it as dead code, looping forever.
-  A package that *fits* the budget is a whole unit (`partial=false`) → full
-  completeness judgements apply.
-- The reviewer audits **that one chunk**, so a single review can never
-  exceed the chunk budget.
-- The cursor points at the **current unit** and advances only when that
-  unit converges (or is force-skipped); the per-unit tuple (unit_streak /
-  unit_passes / units_done) is persisted alongside it in a single JSON
-  state file (`.whole_improve_loop.state` at the workspace root — **add it
-  to your `.gitignore`**; delete it to restart the backlog from unit 0),
-  so a re-dispatched run resumes ON the current unit and keeps banking
-  converged units instead of re-scanning the first chunks.
-- `streak_check` scopes the asymptote to the **unit** (ADR-055): a unit
-  converges after **2 consecutive clean reviews of THAT unit**
-  (`unit_streak + 1 >= 2`). The count is family-agnostic — in DUAL the two
-  passes are cross-family (the condition router flips family each pass); in
-  MONO they are the single family twice (the same accepted trade-off the
-  old count-based stop made, so ADR-052 mono/dual is unchanged here). A
-  converged unit is committed and removed from the working set. The **run**
-  stops when every unit has been processed once (`units_done >= num_chunks`)
-  — a finite, monotone process — rather than when a global clean sweep
-  saturates, which a real repo can never satisfy (the ADR-055 failure this
-  replaces). A single clean review cannot converge a unit (needs 2), and a
-  unit the loop cannot satisfy is force-skipped after a bounded number of
-  passes so it cannot block the backlog.
+## The graph
 
-Tune with `--var max_review_chunk_tokens=N`: raise it to review more per
-pass (fewer chunks, faster convergence, larger prompt); lower it for a
-smaller-context model.
-
-The reviewer + fixer **share** this snapshot: the fixer inherits the
-same-family reviewer's session, which already holds the chunk it must
-fix. Design rationale and the rejected alternatives (per-pass fan-out +
-merge; `__scan-shards` child runs; loop-counter rotation) are in
-[ADR-011](../../docs/adr/011-whole-improve-loop-context-chunking.md).
-
-### Focused runs: `scope_globs` (the WHERE)
-
-`improvement_prompt` / `scope_notes` are the **WHAT** (the review axis);
-they do **not** restrict which files are chunked. So a focused
-`improvement_prompt` ("just pkg/runtime") still chunks the *whole*
-workspace and the reviewers no-op every irrelevant chunk at full
-per-chunk review cost — ~$30 to crawl to the one chunk you care about on
-an iterion-sized repo (the 2026-06-14 finding in
-[docs/bot-runs/whole-improve-loop.md](../../docs/bot-runs/whole-improve-loop.md)).
-
-`scope_globs` is the **WHERE**: a comma/space-separated list of fnmatch
-globs matched against workspace-relative paths, applied by
-`snapshot_chunk` at the `os.walk` source **before** chunking. Empty
-(default) = the whole workspace (unchanged behaviour). A bare directory,
-or a `dir/**` / `dir/*` form, matches the whole subtree.
-
-```sh
-iterion run bots/whole-improve-loop/main.bot --var scope_globs=pkg/runtime
-iterion run bots/whole-improve-loop/main.bot --var scope_globs="pkg/runtime,pkg/store"
+```
+next_item ─(needs_enumerate)─▶ enumerate ─┐   (writes the ordered work-list)
+    ▲                                       │
+    │  (has an item)                        ▼
+    ├───────────────────────────────▶ transform  (apply the axis at THIS site)
+    │                                       │
+    │                                       ▼
+    │                                verify_build ⇄ verify_run   (deterministic
+    │                                       │        build/test gate; red →
+    │                                       │        bounded fix retry → skip)
+    │                              (green)  ▼
+    │                                     alt ─▶ reviewer_claude / reviewer_gpt
+    │                                       │     (ONE cross-family reviewer,
+    │                                       ▼      ADR-052 mono/dual)
+    │                                  review_gate
+    │                        (approve)  │      │  (reject w/ blocker → transform)
+    │                                   ▼      ▼
+    │                             commit_item  transform (bounded re-try)
+    │                                   │
+    │  (advance +1)              advance│  (cursor+1 for the next item)
+    └───────────────────────────────────┘
+    │
+    └─(exhausted)─▶ re_enumerate ─(found more → append)─▶ next_item
+                          │
+                          └─(nothing left)─▶ mr_gate ─▶ (finalize_mr) ─▶ done
 ```
 
-Because the prune happens at the source, `total_files` / `num_chunks` /
-`loop_max` all scale to the focused set — a focused run converges
-**in-bound like a small repo**
-instead of inheriting the whole-repo pass budget. It does **not** loosen
-review rigor (the reviewer still audits its chunk against the full
-production-ready grid); it only restricts which files are chunked. A glob
-that matches nothing yields the empty-workspace sentinel (`num_chunks=1`,
-`chunk_label=empty`) rather than silently reviewing everything, so a typo
-fails loud. Pair it with `improvement_prompt` to focus both axis and
-files (e.g. `--var scope_globs=pkg/server --var improvement_prompt="auth
-and input validation only"`).
+- **`enumerate`** (adaptive, claude_code, whole-repo, full tools) reads the
+  codebase *by its real structure* — grep/glob/read, never chunks — and
+  **writes** `.whole_improve_loop.worklist.json`: an ordered list of
+  `{id, title, targets, change_spec}`. An item with no concrete, nameable
+  target is **dropped, not guessed** (belt-and-suspenders: `next_item`
+  deterministically drops target-less items too).
+- **`next_item`** (deterministic tool, the sweep's **entry**) reads the
+  work-list + the cursor and emits THIS item + the routing flags
+  (`needs_enumerate` / `capped` / `exhausted` / `has_item`).
+- **`transform`** (adaptive fixer, whole-repo context) applies the axis to
+  the current item's targets, and only those.
+- **`verify_build` → `verify_run`** is the **deterministic, stack-agnostic**
+  build/test gate (unchanged from the retired design): an adaptive agent
+  reads the `verify-build` skill and writes `.whole_improve_loop.verify.sh`
+  from the repo's own tooling; a tool node re-runs it and gates on the REAL
+  exit code. Red → bounded `verify_loop(3)` fix retry; still red → **skip the
+  item uncommitted** (never land broken code) and advance.
+- **`review`** is **ONE cross-family reviewer** (the ADR-052 mono/dual
+  `condition` router + `review_mode`/`mono_family`) confirming the transform
+  **correctly + safely applies the axis at this site** (correctness /
+  consistency / no regression) — *not* an open-ended re-audit. Approve →
+  commit; reject with a **concrete blocker** → back to `transform` (bounded).
+- **`commit_item`** lands **one incremental commit per item** (`git add -A`
+  incl. untracked, minus the bot's scratch files, empty-guarded); message
+  `refactor(improve): <item title>`.
+- **`re_enumerate`** is the **done-oracle**: when the work-list is exhausted
+  it re-scans for remaining sites, appends any it finds, and the sweep
+  continues; when a fresh scan finds nothing the axis is fully applied → done.
 
-### Large workspaces: the backlog spans passes (and sometimes runs)
+## Convergence & bounding
 
-Reviewing ~2.2M tokens of source with premium models needs ~2·`num_chunks`
-clean reviews (each unit confirmed twice) plus fix passes — more than the
-`loop_max = 2·num_chunks + max_review_passes` a single run affords on an
-iterion-sized repo, and a meaningful fraction of the `max_cost_usd: 60` /
-`max_duration: 2h` budget. So on such a repo a single run makes **bounded,
-context-safe progress** (it will not crash on context), **commits the units
-it converges**, and exits via `fail` ("backlog not finished yet") rather
-than processing every unit in one shot.
+- **Done-oracle:** the axis is fully applied **iff** `re_enumerate` finds no
+  remaining sites — a finite, monotone condition (as opposed to an
+  unreachable clean-sweep streak over a whole repo).
+- **`max_items` cap:** `next_item` stops the run and ships when the cursor
+  reaches `max_items` (default 120), so a pathological / unbounded axis can't
+  run forever.
+- Every loop is **declared and bounded** (`sweep_loop`, `transform_loop`,
+  `verify_loop(3)`) — `iterion validate` reports **no undeclared cycle**.
 
-Crucially, unlike the old design a `fail` here still **leaves committed
-work** — every unit that converged this run is already a commit on the
-worktree branch, GC-safe. Nothing is stranded.
+## Crash-safe / resumable
 
-This is genuinely multi-run, and it finishes: the per-unit tuple (cursor /
-unit_streak / unit_passes / units_done) is persisted in
-`.whole_improve_loop.state`, so each re-dispatch (or manual re-run of the
-acceptance command) resumes mid-backlog and keeps banking converged units
-until `units_done >= num_chunks`. A run that finishes the backlog exits via
-`stop -> done`.
+- The **work-list** is persisted to `.whole_improve_loop.worklist.json` (the
+  enumerate/re_enumerate agents own it) and the **cursor** to
+  `.whole_improve_loop.state` (`next_item` owns it — **add both to your
+  `.gitignore`**; `commit_item` never commits them).
+- `next_item` persists the cursor it is **USING** (not an eager +1); the
+  advance rides the `advance` compute (`cursor+1`) on the commit/skip return
+  paths. So a run that dies mid-item leaves the cursor **at** that item and a
+  re-dispatch **re-processes** it — a half-applied item is never credited.
+- `next_item` is the entry, so a re-dispatch **resumes mid-sweep**: it finds
+  the persisted work-list + cursor and routes straight to `transform`; only a
+  fresh run (no work-list) routes to `enumerate`.
 
-This is **crash-safe**. The cursor and `units_done` advance only once a
-verdict exists (a unit converged or was force-skipped), so the on-disk
-state is always consistent: `cursor` points at the unit currently under
-review, and everything before it is either committed or skipped. If a run
-dies on a non-clean pass before the fixer finishes (a `fix_*` failure
-routes to `fail` + re-dispatch — the normal large-repo path), the
-re-dispatch resumes **on** that unit and re-reviews it rather than skipping
-past it. So a blocker can never be "credited" by a crash.
+(Implementation note: the advance goes through the `advance` compute rather
+than reading `outputs.next_item.next_cursor` on the loop-back edge — reading a
+loop-head node's own output on its back-edge returns a loop-entry-frozen
+value, so the return edge reads `outputs.advance.carry_next` instead, the same
+discipline the old bot used with `streak_check.carry_*`.)
 
-To finish a **mid-size** repo in a single run, raise `max_review_passes`
-(and the budget) so one run can process every unit, and/or raise
-`max_review_chunk_tokens` (fewer, larger units). On a repo as large as
-iterion the multi-run path is the intended one — an inherent cost ceiling,
-not a defect. See ADR-055.
+## Right artifact (anti-Goodhart)
 
-## Convergence pattern observed in practice
+`transform`'s work lives in the **uncommitted working tree**; the commit
+happens only *after* review passes. So the reviewers `git add -N .`
+(intent-to-add) then diff `git diff HEAD` — **never** `git diff HEAD^..HEAD`
+(the base commit, which would make them conclude "nothing was done" and loop
+forever), and `commit_item` stages untracked files. See
+[docs/workflow_authoring_pitfalls.md](../../docs/workflow_authoring_pitfalls.md).
 
-Method applied manually with Claude Code on projects of comparable
-complexity (engine + vendored SDK + DSL): **5 to 40+ iterations** before
-convergence depending on code maturity and threshold strictness. The
-typical profile:
+## Stack- & repo-agnostic
 
-- **Early iterations**: high density of real blockers (concrete bugs,
-  races, leaks, vulnerabilities). The fixer applies, the code progresses.
-- **Middle iterations**: density falls. Reviewers begin proposing more
-  subtle improvements. The "blocker = breaks production" discipline
-  becomes critical to avoid sliding into perfectionism.
-- **Late iterations**: redundancy with earlier passes, false positives
-  caught via `previous_scanned_areas`, stylistic or hypothetical
-  blockers. **This is the asymptotic-convergence signal.**
-- **Alarm signal**: a sudden burst of critical blockers late in the run.
-  Hypotheses: hallucinating reviewer, fixer not actually applying changes,
-  or re-flagging of items already pushed back.
+The **axis + the repo** define the sites. No language / package-manager
+literal and no iterion-specific target path appears in any var default,
+command body, or schema — `enumerate` / `transform` / `verify_build` are
+adaptive agents that read whatever repo they are pointed at (CLAUDE.md
+"Catalog bots are repo-agnostic" + "Universal code bots"). The
+`verify_build`/`verify_run` gate stays deterministic while remaining
+universal: the agent writes the repo's own build/test into
+`.whole_improve_loop.verify.sh`, the tool node runs it and gates on the exit
+code.
 
-The goal is for a reviewer to **detect this pattern themselves** and
-eventually approve — not to be told "from iteration 5 onward, be more
-lenient." Such an instruction would bias the verdict (the reviewer might
-over-approve to satisfy the instruction, regardless of actual code
-quality). The aim is self-regulation by observation, not prescription.
+## Vars
 
-## The threshold
-
-The fundamental trade-off:
-
-- **Too lenient** → false-positive approval, broken code shipped to prod.
-- **Too strict** → infinite loops, the workflow never terminates and
-  burns the budget.
-
-No single prompt resolves the trade-off. Current levers:
-
-| Lever | Effect |
+| Var | Meaning |
 |---|---|
-| `confidence: low` treated as soft-approval for fix routing (not for unit convergence) | Prevents a doubt from looping the fixer |
-| Per-unit convergence: 2 consecutive clean reviews of the SAME unit before it commits | Prevents a single lucky pass from landing an unimproved unit; scopes the asymptote where it is reachable (ADR-055) |
-| Force-skip after a bounded number of per-unit passes | A stubborn unit cannot block the backlog; the run still terminates |
-| Fixer `pushback` + `prior_pushback` to the next reviewer | Stops a persistent false positive from blocking convergence |
-| `previous_scanned_areas` | Encourages broadening coverage iter after iter, instead of revisiting the same files |
-| `max_review_passes` (ADR-055) | Per-run pass bound that guarantees termination (wires `review_loop` = 2·num_chunks + max_review_passes). Raise it (with budget) to finish a mid-size repo in one run; on large repos the persisted per-unit state carries the backlog across re-dispatches, banking committed units each run |
-| `max_review_chunk_tokens` (issue #12) | Per-pass context budget. Smaller → more chunks, safer context, more passes to converge; larger → fewer chunks, faster convergence, bigger per-pass prompt |
-| `scope_globs` | Path-scope filter (the WHERE). Prunes the chunk plan to matching subtrees before chunking, so a focused run converges in-bound like a small repo instead of paying the whole-repo sweep cost. Empty = whole workspace |
+| `improvement_prompt` | **THE AXIS**. Empty = enumerate picks the single highest-value cross-cutting improvement it can name for the repo. |
+| `scope_globs` | Path scope (the WHERE): comma/space-separated fnmatch globs; empty = whole workspace. |
+| `scope_notes` | Free-form extra context for the enumerate/transform agents. |
+| `max_items` | Hard cap on items processed per run (default 120) — the convergence backstop; also sizes the declared loop caps. |
+| `review_mode` / `mono_family` | ADR-052 mono/dual topology, resolved at launch by `pkg/reviewtopology`. |
+| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | Opt-in MR/PR path shipping the series of per-item commits. |
+| `workspace_dir` | Target repo (defaults to `${PROJECT_DIR}` → the run's worktree). |
 
-## Open prompt-engineering directions
+## Presets
 
-1. **Auto-calibration by trend**: the idea is that a reviewer compares
-   its own blocker density against earlier iterations (via the relayed
-   verdict). If its blockers strongly resemble already-handled ones, it
-   should lower its bar. Worth testing by passing
-   `loop.review_loop.previous_output.history` concisely — without an
-   explicit "approve at iter N+" instruction, which biases.
-2. **Cumulative scanned_areas**: today only the last iteration is passed
-   via `loop.previous_output.scanned_areas`. True accumulation (union of
-   `scanned_areas` across all iterations) would require either a union
-   operator in iterion's expression engine, or a compute+history
-   pattern. To explore.
-3. **Blocker quality scoring**: add a `blocker_severity_count` field
-   (count of blockers by severity: critical / important / info) instead
-   of a flat blocker list. The streak check could then trigger on "0
-   critical for 2 iters" rather than pure `approved=true`.
-4. **Anti-perfectionism on the fixer side**: the fixer could push back
-   more aggressively when a blocker looks like polish. Today, pushback
-   is under-used.
-5. **Comparison to a manual reviewer**: observe whether the
-   Claude→GPT→Claude→GPT sequence introduces a bias (Claude more
-   rigorous, GPT more pragmatic). Also worth testing GPT-only and
-   Claude-only alternation with varied prompts.
+The `presets/` frame the axis: `code-quality`, `improve-quality` (SRE),
+`production-ready`, `rgaa` (accessibility), `rgpd` (GDPR). Each sets
+`improvement_prompt` (and skills) so the sweep enumerates + transforms the
+sites that preset targets. They compose with the sweep unchanged — a preset
+is just a pre-filled axis.
 
-## Empirical observations from this session
+## Large axes span passes (and sometimes runs)
 
-During the first real validation (hardened workflow, April 30, 2026):
-
-- **Run 1**: 3 iterations of `review_loop`. Real bugs found (claw
-  `recovery.go` WorkDir guard, iterion `resume.go` vars re-seed). Early
-  exit caused by a GPT hallucination (`family: "missing-patch"` →
-  fallback `done`). Fix: enum on `family` + fallback
-  `streak_check -> alt`.
-- **Run 2**: 1 iteration of `review_loop`, cross-family convergence in
-  ~5 min. Reviewers focused on the recent commits (via `git log` /
-  `git show`), not the global codebase. **Not a "natural" convergence —
-  a convergence on a sub-perimeter.** Fix: extended `review_system`
-  prompts to require a global production-ready audit and to record
-  `scanned_areas`.
-- **Run 3** (upcoming with this commit): the goal is to check whether
-  the broadened scope produces more iterations with decreasing blocker
-  density, or whether more levers are still needed.
-
-## Companion plan-file path
-
-For multi-day refinement sessions, keep here:
-
-- Design decisions and the rationale for each choice (session modes,
-  loop bounds)
-- Empirical data per run (duration, # iterations, cost, longest stretch
-  without human intervention)
-- Adaptation guide when reusing the pattern for another project
-
-See [SKILL-run-and-refine.md](../../SKILL-run-and-refine.md) for the
-general run/refine practice on any `.bot`.
+A big axis on a large repo may exceed one run's `max_items` / budget. Such a
+run makes **bounded progress**, **commits every item it lands**, and either
+hits the `max_items` cap (ships what is banked) or exhausts a declared loop.
+Because the work-list + cursor are persisted, a re-dispatch **resumes
+mid-sweep** and keeps banking committed items. Raise `max_items` (with the
+budget) to finish a larger axis in one run.

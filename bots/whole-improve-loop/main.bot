@@ -1,218 +1,143 @@
 ## ─────────────────────────────────────────────────────────────────
 ## whole_improve_loop
 ##
-## Whole-codebase improvement loop, UNIT-CONVERGENT + INCREMENTAL-COMMIT
-## (ADR-055). The workspace is split by DIRECTORY into COHERENT-UNIT chunks
-## ("units", ADR-055 2b): a chunk is a package / directory subtree, and only
-## cohesive siblings under a shared parent dir are combined (and only while
-## they fit the budget) — never an arbitrary byte slice of unrelated code.
-## When a single package genuinely exceeds the budget it is split into
-## `partial` sub-chunks that STILL carry the full package file index, and the
-## reviewer/fixer are guarded to NOT judge whole-package completeness (dead/
-## unused) from a partial view — the anti-fragmentation guard that keeps a
-## byte-slice reviewer from false-flagging an unseen-part symbol as dead and
-## looping forever. The loop processes ONE unit at a time — alternating
-## Claude / GPT review with a deterministic per-unit "two consecutive
-## clean reviews" stability gate — and COMMITS each unit as soon as IT
-## converges, BEFORE moving the cursor to the next unit. When a verdict
-## is negative, apply fix-all in a fresh same-family session and
-## RE-REVIEW the SAME unit (the cursor does not advance until the unit is
-## clean+stable or a per-unit pass bound is hit).
+## AXIS-DRIVEN WORK-LIST SWEEP (ADR-057). `improvement_prompt` is THE
+## AXIS — one determined improvement applied across the whole codebase,
+## site by site, verified and committed (e.g. "split every file > 600
+## lines into cohesive units", "converge duplicated X onto a shared
+## helper", "make error handling use pattern Y"). This is a campaign
+## engine, not a scanner.
 ##
-## This replaces the old "0 commits until a GLOBAL streak of num_chunks+1
-## clean sweeps converges" design (ADR-055 context): on a large repo that
-## global streak was unreachable, so a long run banked ZERO of its work in
-## a gitignored worktree. Now every converged unit lands its own commit on
-## the run's worktree branch, so an interrupted / budget-capped run has
-## already banked every unit it finished. The asymptote / streak guarantee
-## (ADR-052, docs/workflow_authoring_pitfalls.md) is PRESERVED but
-## re-scoped from the whole repo to the unit, where "converge and stop" is
-## actually reachable.
+## The mechanism is the operator's own proven manual Claude Code loop —
+## write a todo work-list, then apply + commit each item incrementally —
+## amplified with what a human can't cheaply do: a deterministic per-item
+## build/test gate and a cross-family review of every transform. It
+## REPLACES the ADR-011/ADR-055 chunked-review mechanism, which could
+## neither converge on a whole repo (there is always another local issue
+## in the next byte/package chunk) nor produce a GLOBAL, cross-cutting
+## change (no reviewer handed a slice ever holds the whole system).
 ##
-## Improvement axis: defaults to the full production-ready grid
-## (security, robustness, data, concurrency, observability,
-## performance, boundaries). Pass --var improvement_prompt="..."
-## to override and focus the review/fix loop on a single axis
-## (e.g. observability, security, perf).
+## GRAPH (see the workflow block for the wiring):
+##   enumerate       — whole-repo adaptive agent reads the codebase BY ITS
+##                     REAL STRUCTURE (grep/glob/read — never chunks) and
+##                     writes an ORDERED work-list of concrete sites for
+##                     THE AXIS: [{id, title, targets, change_spec}]. An
+##                     item with no nameable target is dropped, not guessed.
+##   next_item       — deterministic cursor/work-list reader (the sweep's
+##                     entry + per-item state node, mirroring the retired
+##                     snapshot_chunk). Emits THIS item + advances the
+##                     cursor CRASH-SAFELY (persists the cursor it is USING,
+##                     not an eager +1; the advance rides the `advance` compute
+##                     on the commit/skip paths, so a crash re-processes the
+##                     in-flight item). Resumes mid-sweep on re-dispatch.
+##   transform       — adaptive fixer (whole-repo context, full tools)
+##                     applies the axis change for THIS item's targets.
+##   verify_build    — adaptive, stack-agnostic build/test repair; writes
+##     + verify_run    .whole_improve_loop.verify.sh, a DETERMINISTIC tool
+##                     node re-runs it and gates on the REAL exit code. Red
+##                     → bounded verify-fix retry; still red → SKIP the item
+##                     UNCOMMITTED (never land broken code) and advance.
+##   review          — ONE cross-family reviewer (ADR-052 mono/dual condition
+##                     router) confirms the transform CORRECTLY + SAFELY
+##                     applies the axis at THIS site (consistency + no
+##                     regression) — NOT an open-ended re-audit. Approve →
+##                     commit; reject with a concrete blocker → transform
+##                     (bounded).
+##   commit_item     — ONE incremental commit per item (git add -A incl.
+##                     untracked, minus scratch, empty-guarded); message =
+##                     `refactor(improve): <item title>`.
+##   re_enumerate    — when the work-list is exhausted, re-scan for any
+##                     remaining sites matching the axis (the DONE-ORACLE:
+##                     the axis is fully applied iff a fresh scan finds
+##                     nothing). New sites → appended to the work-list,
+##                     sweep continues; none → done.
 ##
-##   Loop 1: claude_code + opus 4.7
-##   Loop 2: claw + gpt-5.5
-##   Loop 3: like loop 1, alternating
+## CONVERGES BY CONSTRUCTION. Done = "re_enumerate finds no remaining
+## sites" — a finite, monotone condition — bounded by a `max_items` cap
+## (next_item stops the run at the cap) and a declared sweep loop, so a
+## pathological axis can't run forever (validate reports NO undeclared
+## cycle). LANDS CONTINUOUSLY: one verified commit per item, so an
+## interrupted / budget-capped run has banked every completed item.
 ##
-## Per-unit convergence (the asymptote, scoped to the unit):
-##   - A unit is CLEAN when the current reviewer approves it with zero
-##     blockers (and, in explore mode, actually opened its files).
-##   - A unit CONVERGES after 2 CONSECUTIVE clean reviews of THAT unit —
-##     count-based, so it is family-agnostic (in DUAL the two passes are
-##     cross-family because the family flips each pass; in MONO they are the
-##     single family twice — the same accepted trade-off the old count-based
-##     stop made, unchanged by ADR-052 mono/dual).
-##   - A converged unit is then GATED BY A PER-UNIT BUILD/TEST VERIFY
-##     (ADR-055 2a): unit_verify_build + unit_verify_run run the SAME
-##     deterministic, stack-agnostic build+test gate the finalization uses
-##     (mirror of verify_build/verify_run) BEFORE commit_unit lands it, so
-##     EVERY incremental commit is build+test green on its own — an
-##     interrupted run leaves a chain of individually-green commits. A red
-##     per-unit verify does NOT commit: it loops back to unit_verify_build
-##     (bounded unit_verify_loop(3)) to make the unit green first; if it still
-##     can't build, the unit is SKIPPED without committing (force_skip
-##     semantics — its changes stay uncommitted for the next pass / the final
-##     whole-tree gate / the operator), never landing broken code.
-##   - A unit that will not converge is force-skipped after a bounded
-##     number of passes (unit_passes) so one stubborn unit can never block
-##     the whole backlog — "bounded per-unit iterations" (ADR-055).
+## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): verify + review
+## judge the UNCOMMITTED working tree the transform just produced; the
+## reviewers `git add -N .` so a feature that ADDS files is visible in
+## `git diff HEAD`, and commit_item stages untracked files.
 ##
-## Shared reviewer↔fixer context (ADR-055 2c): the fixer records a concise
-## `change_rationale` (what it changed + WHY, per unit); it is threaded
-## FORWARD to the next (cross-family) reviewer of the SAME unit
-## (prior_change_rationale) so that reviewer verifies the fix with the fixer's
-## intent visible instead of re-deriving it — killing re-litigation at the
-## source. It AUGMENTS prior_pushback / previous_scanned_areas, does not
-## replace them. The reverse direction (reviewer verdict → fixer) is already
-## wired via blockers + fix_plan + `session: inherit`.
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## "Universal code bots"): the AXIS + the repo define the sites. No
+## language / package-manager literal, and no iterion-specific target
+## path, appears in any var default, command body, or schema — enumerate,
+## transform and verify_build are adaptive agents that read whatever repo
+## they are pointed at.
 ##
-## The RUN terminates when the ranked unit backlog has each been processed
-## once (units_done >= num_chunks → stop → build/test gate → finalize),
-## OR max review_loop iterations are reached (per-run bound; the persisted
-## cursor / streak / units_done let a re-dispatch resume mid-backlog).
-##
-## False-positive resistance:
-##   1. Reviewers self-rate their `confidence` (low/medium/high) and
-##      are explicitly told to drop stylistic preferences.
-##   2. The fixer can `pushback` on items it judges non-bloquant,
-##      with a justification.
-##   3. The next reviewer receives the prior pushback list and is
-##      instructed to NOT re-flag those items unless evidence has
-##      changed — this prevents a single false positive from
-##      blocking the loop forever.
-##   4. `streak_check` treats a low-confidence rejection as a
-##      soft-approval (alternation continues, no fix is triggered).
-##      Only medium/high-confidence rejections route to the fixer.
-##
-## Demonstrates four DSL features delivered together:
-##   1. `round_robin` router for backend alternation
-##   2. `compute` node for deterministic AND of current + previous
-##      verdict (no LLM call, no shell-out)
-##   3. `loop.<name>.previous_output` namespace eliminating manual
-##      `previous_verdict` relay through every loop-bearing edge
-##   4. Boolean expressions in `when` clauses (quoted form)
+## RETIRED (git history / ADR-011 + ADR-055 have the design): the
+## snapshot_chunk byte/package chunker, the per-chunk streak, the
+## partial-view anti-fragmentation guard (2b), the coherent-unit packing,
+## num_chunks. The chunked-review "find-unknown-issues" mode is NOT kept
+## as a fallback — the two mechanisms share almost no graph, so carrying
+## both would double the node/edge count and the cycle surface for a mode
+## the operator wants demoted. Point a review-loop bot (branch-improve-loop
+## / a review pass) at the tree if you want the old find-the-unknown audit.
 ## ─────────────────────────────────────────────────────────────────
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 
-  ## ─── Review topology (mono/dual) — see branch-improve-loop ─────
-  ## dual = alternate claude ↔ gpt (robust, two families); mono = one
-  ## family (mono_family), ~half the LLM calls; auto = resolved at
-  ## LAUNCH (dual if two provider families detected, else mono).
-  ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
-  ## dispatcher) when left "auto"; without that resolution "auto"
-  ## behaves as dual (a pure non-regression). NB: this bot's per-unit
-  ## convergence gate is COUNT-based (2 consecutive clean reviews of the
-  ## SAME unit), already family-agnostic, so no mono OR-in is needed —
-  ## mono just reviews each unit with the single family and converges on
-  ## two consecutive same-family clean passes. mono_family is filled by
-  ## the resolver. (ADR-052 topology preserved; ADR-055 re-scopes the
-  ## count from the whole repo to the unit.)
+  ## ─── Review topology (mono/dual) — ADR-052, see branch-improve-loop ─
+  ## dual = alternate claude ↔ gpt per item (robust, two families); mono =
+  ## one family (mono_family), ~half the LLM calls; auto = resolved at
+  ## LAUNCH by pkg/reviewtopology (dual if two provider families detected,
+  ## else mono) and injected via CLI --review-mode / studio / dispatcher.
+  ## Left "auto" without that resolution behaves as dual (a pure
+  ## non-regression). The per-item review is a SINGLE gate (approve →
+  ## commit), not a streak, so MONO needs no stop OR-in here — it just
+  ## reviews each transform with the single family. mono_family is filled
+  ## by the resolver.
   review_mode: string = "auto"
   mono_family: string = ""
 
-  scope_notes: string = ""
-  ## Optional override of the improvement axis. Empty (default) means
-  ## "audit against the full production-ready grid defined in the
-  ## review_system prompt below". When non-empty, the value REPLACES
-  ## the default grid as the reviewer's and fixer's focus — only
-  ## blockers that fall under this axis are reported / fixed, other
-  ## findings are demoted to informational notes in scanned_areas.
-  ## Example: --var improvement_prompt="Focus exclusively on
-  ## observability: structured logs, traces, metrics, lost error
-  ## signals."
+  ## THE AXIS (ADR-057). The determined improvement to apply across the
+  ## whole codebase, site by site — passed as improvement_prompt. Examples:
+  ## "split every source file over 600 lines into cohesive smaller files",
+  ## "converge every hand-rolled retry onto a shared backoff helper", "make
+  ## every public function validate its inputs the same way". Empty
+  ## (default) = enumerate identifies and sweeps the single highest-value
+  ## cross-cutting improvement it can name for THIS repo. scope_notes adds
+  ## free-form context; scope_globs restricts WHERE (below).
   improvement_prompt: string = ""
-  ## Optional path-scope filter (focused runs). A comma- or space-
-  ## separated list of fnmatch globs matched against workspace-relative
-  ## paths; empty (default) = the WHOLE workspace. A bare directory, or a
-  ## `dir/**` / `dir/*` form, also matches everything under that directory.
-  ## This PRUNES the chunk plan in snapshot_chunk BEFORE chunking, so a
-  ## focused run (e.g. --var scope_globs=pkg/runtime) reviews only that
-  ## subtree instead of paying the whole-repo sweep cost — num_chunks and
-  ## the streak threshold scale to the focused set, so a focused run
-  ## converges in-bound like a small repo. improvement_prompt/scope_notes
-  ## are the WHAT (the axis); scope_globs is the WHERE (the files). It does
-  ## NOT loosen review rigor — it only restricts which files are chunked.
-  ## See the focused-run finding in docs/bot-runs/whole-improve-loop.md
-  ## (2026-06-14). Example: --var scope_globs="pkg/runtime,pkg/store"
+  scope_notes: string = ""
+  ## Optional path-scope filter (focused runs). A comma/space-separated
+  ## list of fnmatch globs matched against workspace-relative paths; empty
+  ## (default) = the WHOLE workspace. A bare directory, or a `dir/**` /
+  ## `dir/*` form, also matches everything under that directory. It narrows
+  ## WHERE enumerate/re_enumerate look for sites (the WHAT is the axis);
+  ## kept as guidance passed to those agents. Example:
+  ## --var scope_globs="pkg/runtime,pkg/store".
   scope_globs: string = ""
-  ## Context-budget chunking (issue #12). The reviewer never sees the
-  ## whole workspace at once: the deterministic `snapshot_chunk` tool
-  ## groups source files by package/folder into chunks of at most this
-  ## many estimated tokens (~4 bytes/token), and each review pass audits
-  ## ONE chunk. This keeps a ~150k+ LoC workspace from exhausting the
-  ## reviewer's context window on the first iteration. This is the HARD
-  ## CEILING on chunk size; the adaptive sizing below may lower the
-  ## effective budget further but never raise it above this. Default
-  ## 16000 (was 30000) fits the SMALLEST default reviewer — openai/gpt-5.5
-  ## over the ChatGPT forfait, whose effective window is well below the
-  ## API's — with head-room for the system prompt + the cross-pass
-  ## scanned_areas/pushback feedback + the model's reasoning (a 30000
-  ## chunk overflowed gpt-5.5 forfait at review_loop 11, run 019ef550).
-  ## Raise it for a claude-only run (huge window → fewer chunks, faster
-  ## convergence); lower it on a tiny-context model.
-  ## See docs/adr/011-whole-improve-loop-context-chunking.md.
-  max_review_chunk_tokens: int = 16000
-  ## Model-adaptive chunk sizing (B). When > 0, snapshot_chunk caps the
-  ## chunk budget at reviewer_context_percent% of this value (and never
-  ## above max_review_chunk_tokens), so the chunk scales to the SMALLEST
-  ## reviewer's REAL context window instead of a fixed guess. Set it to
-  ## that model's usable input window in tokens — e.g.
-  ## --var reviewer_context_tokens=32000 for a constrained forfait model.
-  ## 0 (default) = disabled: max_review_chunk_tokens is used as-is. Kept a
-  ## var (not auto-detected) so the bot stays a pure DSL+tool workflow and
-  ## the operator can pin the window for whatever reviewer they configure.
-  reviewer_context_tokens: int = 0
-  ## Percent of reviewer_context_tokens a chunk may occupy when adaptive
-  ## sizing is on; the rest is reserved for the system prompt, the
-  ## accumulated scanned_areas/pushback fed back each pass, and the
-  ## model's reasoning/output. 45 leaves > half the window for those.
-  reviewer_context_percent: int = 45
-  ## Reviewer context delivery (ADR-045). "explore" (default): snapshot_chunk
-  ## writes a chunk INDEX markdown and the reviewer reads the listed files on
-  ## demand via its read tools — removes the context-window ceiling on chunk
-  ## size and lets the agent process a chunk larger than any single prompt,
-  ## guarded by the deterministic engagement check in streak_check. "inline":
-  ## the chunk source is rendered into the prompt (the pre-0.4.0 / A+B path),
-  ## bounded by max_review_chunk_tokens — the conservative fallback for small
-  ## repos. See docs/adr/045-whole-improve-loop-progressive-context-disclosure.md.
-  context_mode: string = "explore"
-  ## Per-run FIX HEADROOM beyond processing every unit (ADR-055). The
-  ## review_loop cap is NOT this value directly — snapshot_chunk emits a
-  ## dynamic loop_max = 2*num_chunks + max_review_passes: 2 clean reviews
-  ## per unit to converge it (2*num_chunks) PLUS this many extra passes to
-  ## find+fix blockers before a unit converges. So a fix-free repo always
-  ## gets enough passes to confirm every unit twice and land each commit in
-  ## one run, and a repo needing ≤ max_review_passes fix passes converges
-  ## in one run too. Repos whose unit count exceeds this bound still make
-  ## bounded progress and amortize across re-dispatches via the persisted
-  ## cursor / unit_streak / units_done (.whole_improve_loop.state). The
-  ## default 15 keeps a single run well inside max_cost_usd / max_duration
-  ## with the premium default models; raise it for more in-run fix
-  ## headroom. Wired as the review_loop cap via the runtime's
-  ## templated-loop-bound support (resolves to an int).
-  max_review_passes: int = 15
+
+  ## Hard cap on the number of work-items the sweep processes in a run —
+  ## the convergence backstop for a pathological axis (next_item stops the
+  ## run and ships when the cursor reaches it, before re_enumerate can grow
+  ## the list without bound). Also sizes the declared sweep/transform loop
+  ## caps. Persisted state (cursor + work-list) lets a large axis finish
+  ## over successive re-dispatches, banking committed items each run. Raise
+  ## it (with the budget) for a big axis on a large repo.
+  max_items: int = 120
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────
-  ## When open_mr=true, after the run converges, verifies and commits, the
-  ## finalize_mr node pushes the run's HEAD to the forge and opens a
-  ## merge/pull request. Off by default so a plain local run just leaves
-  ## the commit on the operator's branch. The comment→MR trigger sets this
-  ## true. This bot runs in a per-run git worktree — no `worktree:` field is
-  ## declared and the engine default resolves that to "auto" — so
-  ## commit_changes advances the worktree HEAD and finalize_mr pushes that
-  ## branch; in cloud the worktree is carved from a fresh clone. Requires a
-  ## forge_token secret (or host-authenticated gh/glab) and a push remote.
+  ## When open_mr=true, after the sweep converges the finalize_mr node
+  ## pushes the run's HEAD (the SERIES of per-item commits) to the forge and
+  ## opens a merge/pull request. Off by default so a plain local run just
+  ## leaves the commits on the operator's branch. The comment→MR trigger
+  ## sets this true. This bot runs in a per-run git worktree (engine default
+  ## `worktree: auto`), so the per-item commits advance the worktree HEAD
+  ## and finalize_mr pushes that branch; in cloud the worktree is carved
+  ## from a fresh clone. Requires a forge_token secret (or host-authenticated
+  ## gh/glab) and a push remote.
   open_mr: bool = false
   ## Branch name to push + open the MR from. Empty = derive a stable
-  ## name from the run (iterion/improve/<run-id>). A --var override lets
-  ## the caller pin a predictable branch.
+  ## name from the run (iterion/improve/<run-id>).
   mr_branch: string = ""
   ## Integration base the MR targets. Empty = the repo's default branch.
   mr_base: string = ""
@@ -225,1589 +150,304 @@ secrets:
   ## Forge access for push + MR creation + the issue back-link. Mounted
   ## as a read-only file the gh/glab CLI authenticates from; never read
   ## into a prompt. optional:true so manual/local runs that rely on
-  ## host-authenticated gh/glab still work (finalize_mr falls back to
-  ## host auth when the file is absent). See skills/forge-mr-create.md.
+  ## host-authenticated gh/glab still work. See skills/forge-mr-create.md.
   forge_token:
     as: file
     optional: true
 
-prompt review_system:
-  You are an EXTREMELY demanding, methodical code reviewer in
-  charge of a GLOBAL PRODUCTION-READY review — NOT a diff
-  review, NOT a "what changed recently" review, but a
-  complete review of the code as it runs in production.
+## ─── Prompts ────────────────────────────────────────────────────
 
-  REVIEW SCOPE (CRUCIAL):
-  1. The workspace is reviewed like an SRE taking over the
-     service: the git HEAD hash has NO privilege — a bug
-     introduced six months ago counts as much as one in the
-     latest commit. You MUST NOT limit yourself to recent
-     commits or the diff; `git log` MAY orient you but NEVER
-     scopes you.
-  2. CONTEXT-BUDGET CHUNKING (issue #12): a workspace this
-     size does NOT fit in one context window, so the
-     deterministic `snapshot_chunk` tool has already split it
-     by package/folder into bounded chunks and handed you
-     EXACTLY ONE chunk for THIS pass (see "THIS PASS'S CHUNK"
-     in the user message). Review that chunk thoroughly.
-     - The chunk's full source is provided INLINE in the user
-       message (`chunk_content`). That inline content is your
-       primary artifact — you do NOT need to read it from disk.
-     - NEVER emit a provisional "review is still in progress"
-       verdict: you have the full chunk inline, so judge it now
-       and fill `approved`/`blockers`/`confidence` from it. A
-       placeholder is INVALID and breaks the convergence loop.
-     - You MAY use your read tools to follow a SPECIFIC
-       cross-reference into another file, but you MUST NEVER
-       bulk-read, `glob **/*`, `find` without a tight path, or
-       enumerate the tree: that is exactly what exhausts the
-       context window and is the bug this design fixes.
-     - Coverage of the WHOLE workspace is cumulative across
-       passes: the chunk rotates every pass and the streak
-       gate (see below) refuses to terminate until every chunk
-       has been reviewed clean. So judge ONLY the chunk in
-       front of you; do not speculate about unseen chunks.
+prompt enumerate_system:
+  You are a staff engineer planning ONE determined improvement axis across
+  a whole codebase — the "write the to-do list" step of a disciplined
+  refactoring campaign. You do NOT change any code; you produce an ORDERED
+  work-list of concrete SITES where the axis applies.
 
-  IMPROVEMENT AXIS (optional override):
-  The operator can pass a targeted improvement axis in the
-  user prompt (`improvement_prompt`).
-  - If that axis is EMPTY: apply the full production-ready
-    grid below by default (historical behaviour).
-  - If that axis is NON-EMPTY: focus EXCLUSIVELY on it. The
-    grid below becomes secondary — you MUST only flag as
-    `blockers` issues that fall under the requested axis.
-    You MAY still mention other observed issues in
-    `scanned_areas` as informational notes, but you MUST
-    NOT count them as blockers unless the axis explicitly
-    covers them.
-    CRUCIAL — a non-empty axis REDEFINES what "blocking" means
-    for this run. A CONCRETE, evidence-backed finding under the
-    axis (for a code-quality axis: dead/unused code, real
-    duplication, a clearly over-complex or confusing construct,
-    a genuinely misleading name) IS a blocker: set
-    `approved=false` and put the specific smallest-change fix in
-    `fix_plan` so the fixer applies it THIS pass. Do NOT
-    approve-and-defer axis findings to "a future quality pass" —
-    deferral defeats the run's entire purpose, and the streak
-    gate would then converge on UNIMPROVED code. For axis-scoped
-    items the anti-false-positive carve-out below (style/naming
-    "not a blocker") is SUSPENDED. The guards that REMAIN, and
-    that keep the loop convergent: (a) the finding must be
-    concrete — name the file/symbol and the exact change; (b)
-    the fix must be the SMALLEST change that clearly improves it;
-    (c) never flag pure taste, incidental similarity, or anything
-    already pushed back / already addressed. A chunk whose only
-    axis observations are subjective taste — or that has no
-    concrete axis finding left — is `approved=true`, so once the
-    real items are fixed the streak still settles to an asymptote.
+  READ THE REPO BY ITS REAL STRUCTURE — like a human taking over the
+  codebase. Use your read / glob / grep / list tools to search for the
+  sites the axis names. NEVER partition the repo into arbitrary byte or
+  size chunks; follow the code's own structure (files, packages, symbols,
+  call sites) to find every place the axis applies.
 
-  3. Cover the production-ready axes (default grid):
-       - Security: auth, input validation, secret leaks,
-         injection (shell/SQL/template), path traversal,
-         unsafe deserialization.
-       - Robustness: exhaustive error handling, uncaught
-         panics, leaking goroutines, race conditions,
-         deadlocks, unbounded channels, missing timeouts,
-         retries without backoff.
-       - Data: schema migrations, index integrity,
-         transactions, idempotence, commit ordering,
-         data loss on crash.
-       - Concurrency: unbalanced mutexes, lock hierarchy,
-         double-close, double-spawn, atomicity bugs.
-       - Observability: structured logs, metrics, traces,
-         lost error signals.
-       - Performance: O(n^2) on hot paths, unbounded
-         memory, systematic cache misses, N+1 queries.
-       - Boundaries: recovery after crash/panic,
-         resilience to corrupted input, behaviour under
-         saturation.
-  4. WITHIN THIS CHUNK — be exhaustive:
-     - Apply every relevant axis above to the files in the
-       chunk. The chunk is small enough that you can and
-       must read it in full — no spot-checking.
-     - `previous_scanned_areas` (from input) lists surfaces
-       already audited in prior passes; use it to avoid
-       re-litigating settled findings, NOT to skip the
-       current chunk.
-     - Fill `scanned_areas` with the packages/files you
-       actually audited THIS pass (e.g. the chunk label and
-       the specific files). Be precise and concise.
-  5. APPROVAL SEMANTICS UNDER CHUNKING (read carefully):
-     - Set `approved=true` when THIS chunk has no
-       production-blocking issue, even though you have only
-       seen one slice of the workspace. Withholding approval
-       of a clean chunk on the grounds that "I haven't seen
-       the rest of the repo" is WRONG and would stall the
-       loop forever — full-workspace coverage is guaranteed
-       NOT by you, but by the deterministic streak gate,
-       which refuses to terminate until EVERY chunk has been
-       reviewed clean across a full sweep, with the reviewing
-       family alternating across chunks (both families take
-       part in the sweep).
-     - Set `approved=false` only when THIS chunk contains a
-       genuine production blocker (per the anti-false-positive
-       rules below). Apply the BROADENING PRINCIPLE inside the
-       chunk: if the obvious surfaces are clean, probe the
-       subtle ones (concurrency, recovery, corrupted input)
-       before approving — but probe within the chunk, do not
-       fan out across the repo.
+  THE AXIS is in your user prompt (`improvement_prompt`). If it is EMPTY,
+  identify the single HIGHEST-VALUE cross-cutting improvement you can
+  concretely name for THIS repo (a real, repeated, mechanical-enough
+  pattern — not a vague "make it better") and treat THAT as the axis; state
+  it in `summary`.
 
-  ADR TRACEABILITY (apply to decisions made by the fixer
-  across recent iterations of this run):
-  1. Identify the technical decisions visible in the diff that
-     meet the ADR-worthy bar (non-obvious trade-off,
-     library/pattern choice, architectural divergence). Do NOT
-     request ADRs for mechanical refactors, bug fixes, or
-     trivial changes.
-  2. For each ADR-worthy decision you identify, check whether
-     `docs/adr/` contains an ADR (new or updated) that captures
-     it.
-  3. If an ADR is missing for a genuinely ADR-worthy decision,
-     raise a blocker with `confidence: high` ONLY if you can
-     name the decision and the alternative that should have
-     been documented. If you can't, lower confidence or treat
-     it as a non-blocking note instead.
-  4. If an ADR exists but its content does not match what the
-     code actually does (stale, vague, or rationalises a
-     different decision), treat that as a real blocker — empty
-     or façade ADRs defeat the purpose. Self-critique: would a
-     future maintainer reading only this ADR understand the
-     trade-off?
-  5. Add ADR coverage to `scanned_areas` when you audited it
-     (e.g. `docs/adr/003-foo.md vs pkg/foo accuracy`).
+  EMIT the work-list by WRITING a JSON file at exactly
+  `{{vars.workspace_dir}}/.whole_improve_loop.worklist.json`. It MUST be a
+  JSON array; each element is an object:
+    {
+      "id":          "short-stable-slug",
+      "title":       "one concise line naming the site + the change",
+      "targets":     "the CONCRETE, nameable target(s): file path(s),
+                      symbol(s), or call site(s) — never a vague area.
+                      REQUIRED and non-empty.",
+      "change_spec": "what to change at this site and the done-state, in a
+                      sentence or two — enough for a fixer to apply it and a
+                      reviewer to check it."
+    }
 
-  ANTI-FALSE-POSITIVE RULES:
-  1. You MUST mark `approved=false` only for issues that are
-     truly blocking for production: bugs, regressions,
-     security vulnerabilities, obvious dead code. Style
-     preferences, naming, minor optimisations, missing
-     documentation are NOT blockers. (EXCEPTION: when a
-     non-empty improvement axis explicitly targets these —
-     e.g. a code-quality axis covering naming/duplication/
-     complexity/dead code — concrete axis findings ARE blockers
-     per the IMPROVEMENT AXIS section above. This rule governs
-     the default/no-axis grid and any OFF-axis observation.)
-  2. Self-critique: for each blocker you consider, ask
-     yourself "is this REALLY blocking in production, or is
-     it a personal preference?" If you hesitate, it is NOT
-     a blocker — at best a non-blocking watchpoint.
-  3. Confidence: evaluate your own certainty.
-       - "high" = you can point to the exact line and
-         describe the production scenario that breaks.
-       - "medium" = you see a probable issue but are not
-         100% sure of the context.
-       - "low" = doubt, intuition, no concrete evidence.
-  4. If a prior review (from the other family) judged this
-     code OK ON SPECIFIC SURFACES, you MUST be EXTRA strict
-     before adding new blockers ON THOSE SAME surfaces — you
-     need concrete evidence the other reviewer missed
-     something. On surfaces NOT covered previously, restart
-     from scratch.
-  5. Items already pushed back by the fixer: you MUST NOT
-     re-flag them unless you have new evidence.
+  RULES that keep the sweep honest (Goodhart/façade resistance):
+  1. ORDER the list so dependencies/foundations come first (e.g. introduce
+     a shared helper before converging call sites onto it).
+  2. Each item is ONE cohesive, independently-committable change at a
+     NAMED site. Split a large site into several items rather than one
+     mega-item.
+  3. DROP any candidate you cannot point to a concrete target for — an
+     item whose `targets` would be empty or hand-wavy is guessed, not
+     found, and is left out. Better a short honest list than a padded one.
+  4. Do NOT include sites that already satisfy the axis. The work-list is
+     the REMAINING work.
+  5. If the axis genuinely does not apply anywhere in scope, write `[]`
+     (an empty array) and say so in `summary` — never invent work.
 
-  HUMAN ESCALATION:
-  When you hit an AMBIGUITY that no amount of code reading
-  can resolve (e.g. "is this behaviour intentional?", "does
-  the spec say X or Y?", "must I preserve backward
-  compatibility?"), call the `ask_user` tool with your
-  precise question. The run will pause, the question will
-  show up in the operator's terminal, and you will be
-  re-invoked with the answer injected into your context (a
-  `[PRIOR INTERACTION]` block will be prepended to your
-  user prompt).
+  When `scope_globs` is set (see the user prompt), only look for sites
+  under those paths. Set `total_items` to the number of items you wrote.
+  A deterministic reader validates and drops any target-less item, so be
+  concrete.
 
-  Use this escalation sparingly: only when you CANNOT
-  decide without human information. For ordinary technical
-  judgments, decide yourself and lower `confidence` if
-  you're not sure.
+prompt enumerate_user:
+  Repository to plan: {{vars.workspace_dir}}
 
-prompt review_user_claude:
-  Review ONE chunk of the workspace at {{vars.workspace_dir}}.
-
-  Targeted improvement axis (empty = full production-ready
-  grid by default):
+  THE IMPROVEMENT AXIS (empty = pick the single highest-value cross-cutting
+  improvement you can concretely name for this repo, and state it in
+  summary):
   {{vars.improvement_prompt}}
 
-  Scope notes:
+  Extra context / notes:
   {{vars.scope_notes}}
 
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  Path scope (empty = the whole workspace; otherwise only look for sites
+  under these globs):
+  {{vars.scope_globs}}
 
-  ## THIS PASS'S CHUNK (context-budget chunking)
-  Chunk {{input.chunk_index}} of {{input.num_chunks}}  ·  label: {{input.chunk_label}}
-  Chunked this run: {{input.chunked}}  ·  context delivery mode: {{input.context_mode}}
+  Search the codebase by its real structure and WRITE the ordered work-list
+  to `.whole_improve_loop.worklist.json` (see the system prompt for the
+  exact format). Return total_items (how many you wrote) and a short
+  summary (the axis you settled on + how you found the sites).
 
-  ## PARTIAL-VIEW GUARD (ADR-055 2b) — ANTI-FRAGMENTATION
-  partial: {{input.partial}}  ·  unit: {{input.unit_label}}  ·  part {{input.unit_part}}/{{input.unit_parts}}
-  When `partial` is true you are seeing ONE PART of package
-  {{input.unit_label}}; you MUST NOT flag any symbol as dead/unused/
-  unreferenced or make ANY whole-package completeness judgement — the
-  other parts (ALL files of the package are in the index / chunk_file_list
-  below, read them on demand) and the deterministic build/test gate cover
-  the rest. Read the other files in the provided index before making ANY
-  cross-file claim. When `partial` is false this chunk is a WHOLE coherent
-  unit and normal completeness judgements apply.
+prompt re_enumerate_system:
+  You are the same staff engineer, now doing a CONVERGENCE pass. The sweep
+  has processed every item currently on the work-list. Your single job: do
+  a FRESH scan of the codebase (by its real structure — read/glob/grep) for
+  any REMAINING sites where the axis still applies but that are NOT yet on
+  the work-list, and APPEND them.
 
-  Files in this chunk:
-  {{input.chunk_files}}
+  This is the done-oracle: the axis is fully applied iff a fresh scan finds
+  nothing left. Be rigorous — a missed site means the campaign stops
+  early; a hallucinated site means it never stops.
 
-  CONTEXT DELIVERY (ADR-045) — follow the mode above:
-  - "explore" (default): the chunk source is NOT inlined. READ each file listed
-    above (they are also tabulated in the index at {{input.chunk_index_path}})
-    with your read tool, then judge. Read incrementally; you may skip a file
-    only if it is clearly irrelevant to the axis. Do NOT bulk-read, glob, or
-    enumerate the tree beyond these listed files. You MUST record in
-    `files_reviewed` the EXACT paths you opened (verbatim from the list above) —
-    a verdict whose files_reviewed is empty or contains a path not in the list
-    is rejected by the deterministic engagement gate.
-  - "inline": the full chunk source is between the markers below; review it in
-    full (use read tools only to follow a specific cross-reference) and you may
-    leave files_reviewed empty.
-  ----- BEGIN CHUNK SOURCE (populated in inline mode only) -----
-  {{input.chunk_content}}
-  ----- END CHUNK SOURCE -----
+  PROCEDURE:
+  1. Read the existing work-list at
+     `{{vars.workspace_dir}}/.whole_improve_loop.worklist.json` (a JSON
+     array) so you don't re-add sites already listed.
+  2. Scan for sites matching the axis that are (a) NOT already in the list
+     and (b) do NOT already satisfy the axis (many earlier items have been
+     applied — those sites are DONE, don't re-add them).
+  3. If you find genuinely new, concrete, nameable sites: APPEND them to
+     the SAME JSON array (same object shape: id/title/targets/change_spec —
+     targets REQUIRED and concrete) and write the file back. Set
+     found_more=true and appended_count to how many you added.
+  4. If a fresh scan finds NOTHING left (the axis is fully applied): leave
+     the file unchanged, set found_more=false, appended_count=0, and say so
+     in summary. Do NOT invent work to keep the loop alive — reporting
+     "done" IS the success signal.
 
-  Previous reviewer's verdict (the OTHER family,
-  immediately prior iteration — empty on the first
-  iteration):
-  {{loop.review_loop.previous_output}}
+  Same honesty rules as enumeration: drop any candidate without a concrete
+  target; never re-add a site that already satisfies the axis. Honour
+  `scope_globs` when set.
 
-  Surfaces already audited in prior passes (all families
-  combined — use this to avoid re-litigating settled
-  findings, NOT to skip the current chunk):
-  {{input.previous_scanned_areas}}
+prompt re_enumerate_user:
+  Repository: {{vars.workspace_dir}}
+  Axis: {{vars.improvement_prompt}}
+  Notes: {{vars.scope_notes}}
+  Path scope (empty = whole workspace): {{vars.scope_globs}}
 
-  Items already pushed back by the fixer (you MUST NOT
-  re-flag them without new evidence):
-  {{input.prior_pushback}}
+  Read the existing `.whole_improve_loop.worklist.json`, re-scan for any
+  REMAINING sites matching the axis (not already listed, not already
+  applied), APPEND the new ones and write the file back — or, if the axis
+  is fully applied, change nothing and report found_more=false. Return
+  found_more, appended_count and a short summary.
 
-  Justification for the prior pushback:
-  {{input.prior_pushback_justification}}
+prompt transform_system:
+  You are an expert developer applying ONE determined improvement to ONE
+  site in a codebase. You hold whole-repo context, but you change ONLY
+  what this item names.
 
-  Rationale the OTHER family's fixer recorded for the change
-  it just applied to THIS unit (empty when no fix preceded
-  this review — when present, VERIFY that fix and judge
-  whether a REAL issue remains; do NOT re-derive the change
-  from scratch or re-litigate what it already resolved):
-  {{input.prior_change_rationale}}
+  You are given: the AXIS, and the current work-item (its title, concrete
+  targets, and change_spec). Apply the axis change to those targets and
+  bring them to the item's done-state. Read the targets and anything they
+  interact with; make the SMALLEST change that correctly and completely
+  applies the axis at THIS site. If applying it changes a signature or
+  contract, update ALL callers — a missed caller breaks the build, which
+  the deterministic verify gate will catch and bounce back to you.
 
-  Produce a structured verdict for THIS CHUNK:
-    - approved: true when THIS chunk has no production
-      blocker. Do NOT withhold approval merely because you
-      only saw one chunk — the streak gate guarantees full
-      coverage before the loop stops (see system prompt rule
-      5). false only when this chunk has a real blocker.
-    - family: "claude" for this reviewer
-    - blockers: genuinely blocking issues IN THIS CHUNK
-      (after self-critique — exclude preferences)
-    - fix_plan: concrete action plan to fix the blockers
-    - confidence: "low" / "medium" / "high"
-    - files_reviewed: in EXPLORE mode, the exact paths from the file list
-      above that you actually opened (verbatim, no hallucinated paths). Required
-      and non-empty, or the deterministic engagement gate rejects the pass.
-      Leave empty in inline mode.
-    - scanned_areas: packages / files you actually audited
-      THIS pass (concise — e.g. the chunk label plus the
-      specific files, "pkg/runtime/engine.go (recovery
-      dispatch)"). Relayed to the next reviewer.
+  STAY ON THIS ITEM. Do NOT opportunistically refactor other sites the axis
+  also touches — they are their own work-items and will get their own
+  reviewed, committed pass. Widening scope here defeats the one-commit-per-
+  site discipline and makes the review unable to judge the change.
 
-prompt review_user_gpt:
-  Review ONE chunk of the workspace at {{vars.workspace_dir}}.
+  If a reviewer previously REJECTED your change for this item, its concrete
+  blockers + fix_plan are in your user prompt — fix exactly those, do not
+  re-litigate resolved points.
 
-  Targeted improvement axis (empty = full production-ready
-  grid by default):
+  FINALIZE — no work-in-progress placeholder. Your structured output is the
+  FINAL result of this turn. Finish the edits (do not stop halfway), then
+  set applied=true and make `summary` state the concrete files/symbols you
+  changed and why the change correctly applies the axis at this site. Do
+  NOT run the full build here — a deterministic gate does that next; just
+  make the change correct and complete.
+
+prompt transform_user:
+  Repository: {{vars.workspace_dir}}
+
+  THE AXIS:
   {{vars.improvement_prompt}}
 
-  Scope notes:
-  {{vars.scope_notes}}
+  THIS WORK-ITEM:
+    id:          {{input.item_id}}
+    title:       {{input.item_title}}
+    targets:     {{input.item_targets}}
+    change_spec: {{input.item_change_spec}}
 
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  Apply the axis to THIS item's targets and bring them to the item's
+  done-state. Change only this site.
 
-  ## THIS PASS'S CHUNK (context-budget chunking)
-  Chunk {{input.chunk_index}} of {{input.num_chunks}}  ·  label: {{input.chunk_label}}
-  Chunked this run: {{input.chunked}}  ·  context delivery mode: {{input.context_mode}}
-
-  ## PARTIAL-VIEW GUARD (ADR-055 2b) — ANTI-FRAGMENTATION
-  partial: {{input.partial}}  ·  unit: {{input.unit_label}}  ·  part {{input.unit_part}}/{{input.unit_parts}}
-  When `partial` is true you are seeing ONE PART of package
-  {{input.unit_label}}; you MUST NOT flag any symbol as dead/unused/
-  unreferenced or make ANY whole-package completeness judgement — the
-  other parts (ALL files of the package are in the index / chunk_file_list
-  below, read them on demand) and the deterministic build/test gate cover
-  the rest. Read the other files in the provided index before making ANY
-  cross-file claim. When `partial` is false this chunk is a WHOLE coherent
-  unit and normal completeness judgements apply.
-
-  Files in this chunk:
-  {{input.chunk_files}}
-
-  CONTEXT DELIVERY (ADR-045) — follow the mode above:
-  - "explore" (default): the chunk source is NOT inlined. READ each file listed
-    above (they are also tabulated in the index at {{input.chunk_index_path}})
-    with your read tool, then judge. Read incrementally; you may skip a file
-    only if it is clearly irrelevant to the axis. Do NOT bulk-read, glob, or
-    enumerate the tree beyond these listed files. You MUST record in
-    `files_reviewed` the EXACT paths you opened (verbatim from the list above) —
-    a verdict whose files_reviewed is empty or contains a path not in the list
-    is rejected by the deterministic engagement gate.
-  - "inline": the full chunk source is between the markers below; review it in
-    full (use read tools only to follow a specific cross-reference) and you may
-    leave files_reviewed empty.
-  ----- BEGIN CHUNK SOURCE (populated in inline mode only) -----
-  {{input.chunk_content}}
-  ----- END CHUNK SOURCE -----
-
-  Previous reviewer's verdict (the OTHER family,
-  immediately prior iteration — empty on the first
-  iteration):
-  {{loop.review_loop.previous_output}}
-
-  Surfaces already audited in prior passes (all families
-  combined — use this to avoid re-litigating settled
-  findings, NOT to skip the current chunk):
-  {{input.previous_scanned_areas}}
-
-  Items already pushed back by the fixer (you MUST NOT
-  re-flag them without new evidence):
-  {{input.prior_pushback}}
-
-  Justification for the prior pushback:
-  {{input.prior_pushback_justification}}
-
-  Rationale the OTHER family's fixer recorded for the change
-  it just applied to THIS unit (empty when no fix preceded
-  this review — when present, VERIFY that fix and judge
-  whether a REAL issue remains; do NOT re-derive the change
-  from scratch or re-litigate what it already resolved):
-  {{input.prior_change_rationale}}
-
-  Produce a structured verdict for THIS CHUNK:
-    - approved: true when THIS chunk has no production
-      blocker. Do NOT withhold approval merely because you
-      only saw one chunk — the streak gate guarantees full
-      coverage before the loop stops (see system prompt rule
-      5). false only when this chunk has a real blocker.
-    - family: "gpt" for this reviewer
-    - blockers: genuinely blocking issues IN THIS CHUNK
-      (after self-critique — exclude preferences)
-    - fix_plan: concrete action plan to fix the blockers
-    - confidence: "low" / "medium" / "high"
-    - files_reviewed: in EXPLORE mode, the exact paths from the file list
-      above that you actually opened (verbatim, no hallucinated paths). Required
-      and non-empty, or the deterministic engagement gate rejects the pass.
-      Leave empty in inline mode.
-    - scanned_areas: packages / files you actually audited
-      THIS pass (concise text). Relayed to the next reviewer.
-
-prompt fix_system:
-  You are an expert developer. You fix the blocking issues
-  flagged by a reviewer by applying concrete changes to the
-  code.
-
-  CONTEXT (ADR-045): you inherit the same-family reviewer's session, so the
-  files it opened this pass are already in your context. If the reviewer ran in
-  explore mode and a file a blocker names is not in your context (e.g. after
-  compaction), just read it again by path with your read tool before editing.
-
-  IMPROVEMENT AXIS: if the operator set a custom
-  improvement axis in their user prompt, you MUST apply
-  fixes ONLY for issues that fall under that axis. You
-  MUST NOT refactor along other dimensions (e.g. do NOT
-  touch concurrency when the axis is "observability"),
-  even if you notice issues — they will be handled by
-  another run targeted on that other axis.
-
-  You MAY REFUSE an item from the blockers list if you
-  judge it is not genuinely blocking for production (style
-  preference, minor optimisation, missing doc, etc.). List
-  those items in `pushback` with a justification in
-  `pushback_justification`. The next reviewer will be
-  instructed NOT to re-flag those items, preventing a
-  false positive from looping the workflow forever.
-
-  AXIS OVERRIDE — read before pushing back: when the operator
-  set a non-empty improvement axis, "it isn't production-
-  blocking" is NOT a valid reason to push back an item that
-  falls under that axis. The axis IS the definition of blocking
-  for this run, so an on-axis item (e.g. dead code, duplication,
-  over-complexity, a misleading name under a code-quality axis)
-  must be FIXED, not refused. Reserve `pushback` for items that
-  are genuinely OFF the axis, factually wrong, pure taste, or
-  already addressed — and apply the SMALLEST change that
-  resolves each on-axis item.
-
-  Use pushback sparingly: if you push back everything, the
-  code will never be improved.
-
-  FINALIZE — DO NOT EMIT A WORK-IN-PROGRESS PLACEHOLDER:
-  Your structured output is the FINAL result of this fix turn, not
-  a status update. NEVER return a provisional "work in progress",
-  "validating and fixing", or "will continue" summary while you have
-  actually edited files — that misreports your work to the loop (the
-  verdict reads as "nothing applied" even though the tree changed)
-  and ships unverified edits. Before you return:
-    1. Finish the edits for every blocker you intend to fix (do not
-       stop halfway), or push it back with a justification.
-    2. VERIFY with the project's OWN build/test tooling — the same
-       commands the repo already uses (its build, its test target,
-       its type-check), scoped to what you touched. If a function
-       signature or contract changed, find and update ALL callers,
-       not only those in this chunk: a missed caller breaks the build
-       in a file the chunk reviewer never sees, and the loop cannot
-       catch it. Attempt verification ONCE. If the build/test cannot
-       run in this environment (e.g. a pinned toolchain is missing from
-       the sandbox), do NOT keep retrying it — retrying burns your step
-       budget and can cut you off mid-task, which produces exactly the
-       useless placeholder this section forbids. Note the limitation and
-       FINALIZE NOW; a deterministic gate re-runs the build afterwards.
-    3. Set applied=true only when at least one fix is actually in the
-       tree, and make `summary` state the concrete changes AND the
-       verification you ran — or say plainly you could not verify and
-       why. A truthful "applied, build green" or "applied but tests
-       not run" always beats a placeholder.
-
-  SHARED-CONTEXT HANDOFF (ADR-055): fill `change_rationale` with a CONCISE
-  what+why for the changes you applied to THIS unit — which files/symbols you
-  touched and why each change is correct/sufficient. It is threaded FORWARD to
-  the next (cross-family) reviewer of the same unit, which uses it to verify
-  your fix with your intent visible instead of re-deriving it from scratch.
-  Keep it a rationale (a few sentences), never a transcript or a full diff, so
-  the reviewer's context stays lean. (The reverse direction — the reviewer's
-  verdict to you — is already wired: you receive its `blockers` + `fix_plan`
-  and, via `session: inherit`, its full reasoning chain.)
-
-  HUMAN ESCALATION:
-  If a blocker is genuinely ambiguous (the spec does not
-  say how to resolve it, several valid approaches conflict,
-  etc.), call the `ask_user` tool with your precise
-  question. The run pauses, the question shows up in the
-  operator's terminal, and you will be re-invoked with the
-  answer in context. Do NOT use this channel for technical
-  choices you can decide yourself.
-
-  ADR DOCUMENTATION:
-  1. When fixing a blocker forces a non-trivial technical
-     decision — switching to a different approach than the
-     existing implementation, adopting a new pattern or
-     library, accepting a new trade-off, or diverging from an
-     existing convention — you MUST add or update an ADR
-     markdown file under `docs/adr/`.
-  2. Decisions that DO warrant an ADR:
-       - Replacing one library/SDK/pattern with another.
-       - Restructuring an architectural boundary the existing
-         code crossed.
-       - Choosing one of several reasonable fix strategies when
-         the trade-off is non-obvious.
-  3. Decisions that DO NOT warrant an ADR:
-       - Bug fixes whose rationale is obvious from the bug.
-       - Naming, style, or test-coverage tweaks.
-       - Reverting to behaviour the existing spec already
-         described.
-  4. Follow the format of existing files in `docs/adr/` (Status,
-     Context, Decision, Consequences). Number the new ADR
-     sequentially (highest existing number + 1, zero-padded to
-     three digits).
-  5. The ADR MUST capture the trade-off that motivated the fix
-     — not just describe what changed. If you cannot articulate
-     the alternative you rejected, the fix was probably not
-     ADR-worthy.
-  6. If you UPDATE an existing ADR (status flip, supersede), add
-     a dated entry rather than rewriting history.
-
-prompt fix_user:
-  For the code in {{vars.workspace_dir}}, examine this
-  list of blockers and apply concrete fixes.
-
-  Targeted improvement axis (empty = full production-ready
-  grid by default, fix everything that is blocking):
-  {{vars.improvement_prompt}}
-
-  CHUNK SCOPE (issue #12): these blockers were raised against
-  ONE chunk of the workspace, which you (the same-family
-  reviewer) just inspected in this very session — its source
-  is already in your context. Apply fixes to the files the
-  blockers name (a bounded set within that chunk). Do NOT
-  bulk-read or sweep the rest of the repo: other chunks are
-  reviewed and fixed on their own passes.
-
-  PARTIAL-VIEW GUARD (ADR-055 2b) — partial:
-  {{outputs.snapshot_chunk.partial}} · unit:
-  {{outputs.snapshot_chunk.unit_label}} · part
-  {{outputs.snapshot_chunk.unit_part}}/{{outputs.snapshot_chunk.unit_parts}}.
-  When partial is true these blockers were raised against ONE PART of
-  package {{outputs.snapshot_chunk.unit_label}}. You MUST NOT delete or
-  narrow a symbol as "dead/unused/unreferenced" on the strength of a
-  partial-view finding, and you MUST NOT make any whole-package
-  completeness change — an unseen part of this package may define or call
-  it. Read the other files of the package (they are all in the chunk index)
-  before applying any cross-file change; when unsure, `pushback` the item
-  with that reason. When partial is false the unit is whole and normal
-  fixes apply.
-
-  Reported blockers:
+  Reviewer blockers from a PRIOR attempt on this same item (empty on the
+  first attempt — when present, fix exactly these):
   {{input.blockers}}
 
-  Proposed fix plan:
+  Prior fix plan (empty on the first attempt):
   {{input.fix_plan}}
 
-  For EACH blocker:
-    - If it is a real blocker — a production issue, OR (when an
-      axis is set) a concrete item that falls under that axis:
-      read the relevant file, apply the smallest correction,
-      verify the tests pass.
-    - If you judge it is NOT actionable — off-axis, factually
-      wrong, pure taste, or already addressed: add the exact
-      item to `pushback` with a clear justification in
-      `pushback_justification`. Under a set axis, "not
-      production-blocking" alone is NOT a valid pushback reason
-      for an on-axis item.
+  Output applied=true once the edits are in the tree, and a concise summary
+  of what you changed and why it applies the axis correctly.
 
-  Output:
-    - applied: true if at least one fix was applied
-    - summary: summary of applied fixes
-    - change_rationale: a CONCISE what+why for the changes you made to THIS
-      unit — which files/symbols you touched and why each change is
-      correct/sufficient (your INTENT, not a diff). The next reviewer of this
-      same unit reads it to verify your fix instead of re-deriving it from
-      scratch, so be specific but brief (a few sentences). Empty only if you
-      applied nothing.
-    - pushback: refused items (empty if all fixed)
-    - pushback_justification: rationale for the pushback
+prompt review_system:
+  You are a demanding reviewer with a TIGHTLY SCOPED job: confirm that the
+  change just applied CORRECTLY and SAFELY applies the improvement AXIS at
+  THIS ONE SITE. You are NOT doing an open-ended production-readiness audit
+  of the repo — only judging this item's transform.
 
-## ─── Schemas ────────────────────────────────────────────────────
+  You are given the AXIS and the work-item (title, concrete targets,
+  change_spec). Judge ONLY:
+  1. CORRECTNESS — does the change actually apply the axis to the named
+     targets, and reach the item's done-state? (Not a different change, not
+     a partial one.)
+  2. CONSISTENCY — is it applied the same way the axis is applied elsewhere
+     in the codebase (naming, shape, the shared helper it should use)?
+  3. NO REGRESSION — does it preserve behaviour / not break callers? (The
+     deterministic build/test gate already ran green before you; you are
+     the semantic check on top of it.)
 
-schema review_input:
-  prior_pushback: string[]
-  prior_pushback_justification: string
-  ## prior_change_rationale (ADR-055 2c — SHARED REVIEWER↔FIXER CONTEXT): the
-  ## CONCISE what+why the OTHER family's fixer recorded for the change it just
-  ## applied to THIS unit (fix_output.change_rationale, relayed on the
-  ## alt -> reviewer_* edge). Read it to VERIFY the fix and judge whether a
-  ## REAL issue remains, rather than re-deriving the change from scratch — the
-  ## shared context that kills re-litigation at the source. Empty when no fix
-  ## preceded this review (first pass on a unit). AUGMENTS prior_pushback /
-  ## previous_scanned_areas; it is intent, not a diff.
-  prior_change_rationale: string
-  ## previous_scanned_areas accumulates the audit surfaces from
-  ## ALL prior reviewer iterations (both families). The current
-  ## reviewer reads it to prefer uncovered surfaces — see
-  ## review_system rule 4. Empty on the first iteration.
-  previous_scanned_areas: string[]
-  ## Chunk fields (issue #12) — populated by the snapshot_chunk tool
-  ## and carried on the alt -> reviewer edge. chunk_content is the
-  ## bounded, pre-fetched source of THIS pass's chunk (≤
-  ## max_review_chunk_tokens); chunk_files is the newline-separated
-  ## path list; chunk_index/num_chunks/chunked describe where this
-  ## chunk sits in the rotation so the reviewer knows it is seeing a
-  ## slice, not the whole repo.
-  chunk_content: string
-  chunk_files: string
-  ## ADR-045 explore mode: chunk_file_list is the array form of chunk_files
-  ## (exact paths to read + cite in files_reviewed); chunk_index_path points
-  ## at the index markdown; context_mode is "explore" | "inline".
-  chunk_file_list: string[]
-  chunk_index_path: string
-  context_mode: string
-  chunk_label: string
-  chunk_index: int
-  num_chunks: int
-  chunked: bool
-  ## ADR-055 2b partial-view fields (from snapshot_chunk, relayed on the
-  ## alt -> reviewer edge). partial: this chunk is ONE part of an oversize
-  ## package -> the reviewer MUST NOT flag any symbol dead/unused or make ANY
-  ## whole-package completeness call (the other parts + the deterministic gate
-  ## cover the rest); chunk_file_list here is the FULL package index, read the
-  ## rest on demand. False = a whole coherent unit, normal judgements apply.
-  ## unit_label names the package; unit_part/unit_parts locate this slice.
-  partial: bool
-  unit_label: string
-  unit_part: int
-  unit_parts: int
+  RIGHT ARTIFACT — you MUST review the UNCOMMITTED working tree, which is
+  where the transform's work lives (the commit happens only AFTER you
+  approve). Before diffing, run `git add -N .` (intent-to-add) so files the
+  transform ADDED are visible, then read `git diff HEAD` (working tree vs
+  HEAD) — NEVER `git diff HEAD^..HEAD` (that is the previous commit, not
+  this change, and would make you conclude "nothing was done" and reject
+  forever). Read the changed files in full where the diff is not enough.
 
-## snapshot_output is the deterministic workspace-snapshot tool's
-## contract. It is the shared chunking surface for the reviewer (reads
-## chunk_content) and, transitively, the fixer (inherits the reviewer's
-## session, which already holds the chunk). The per-unit tuple (cursor +
-## unit_streak + unit_passes + units_done) is persisted in a JSON state
-## file (.whole_improve_loop.state at the workspace root) so re-dispatched
-## runs resume mid-backlog and keep banking converged units instead of
-## re-scanning the first chunks. num_chunks drives run termination
-## (units_done >= num_chunks); persisted_unit_streak / persisted_unit_passes
-## / persisted_units_done are the on-disk bases streak_check increments this
-## pass; total_* are telemetry surfaced in the reviewer prompt.
-schema snapshot_output:
-  chunk_content: string
-  files: string
-  ## chunk_file_list (ADR-045): the chunk's files as an ARRAY of
-  ## workspace-relative paths. Drives the explore-mode engagement guard in
-  ## streak_check (files_reviewed must be a non-empty subset of this) and is
-  ## handed to the reviewer alongside the index path.
-  chunk_file_list: string[]
-  ## Absolute path to the per-pass chunk INDEX markdown the reviewer reads
-  ## in explore mode (empty when no files / inline mode still writes it).
-  chunk_index_path: string
-  chunk_label: string
-  chunk_index: int
-  num_chunks: int
-  chunked: bool
-  ## ADR-055 2b coherent-unit chunking. partial: this chunk is ONE part of a
-  ## package that genuinely exceeded the budget (the overflow-fallback, issue
-  ## #12) -- its chunk_file_list carries the FULL package index so the reviewer
-  ## can read the rest on demand and MUST NOT judge whole-package completeness.
-  ## False for a whole coherent unit (one package, or cohesive same-parent
-  ## siblings combined under budget). unit_label names the package; unit_part /
-  ## unit_parts locate this slice (e.g. 2 of 3).
-  partial: bool
-  unit_label: string
-  unit_part: int
-  unit_parts: int
-  file_count: int
-  chunk_tokens: int
-  total_files: int
-  total_tokens: int
-  skipped_oversize: int
-  loop_max: int
-  ## ADR-055 per-unit convergence base, read from .whole_improve_loop.state
-  ## (seeded from the prior pass's verdict via the loop-return edge, or from
-  ## disk on the first pass of a re-dispatched run). streak_check increments
-  ## / resets each this pass.
-  ## - persisted_unit_streak: consecutive clean reviews of the CURRENT unit.
-  ## - persisted_unit_passes: passes spent on the current unit (skip bound).
-  ## - persisted_units_done: units processed (converged or force-skipped);
-  ##   drives run termination (units_done >= num_chunks -> stop).
-  persisted_unit_streak: int
-  persisted_unit_passes: int
-  persisted_units_done: int
-  ## Rotation cursor this pass USED (chunk_index == cursor % num_chunks).
-  ## Carried to streak_check, which echoes it back as carry_cursor —
-  ## advancing ONLY when the current unit converges or is force-skipped —
-  ## so the rotation advance is COUPLED to the verdict and persisted
-  ## atomically with the per-unit counters (crash-safe; ADR-011/ADR-055).
-  cursor: int
+  APPROVE (approved=true) when the change correctly + safely applies the
+  axis at this site — even if you can imagine OTHER improvements: those are
+  out of scope for this item. REJECT (approved=false) ONLY with a CONCRETE
+  blocker: the axis is misapplied, incomplete, inconsistent with the rest
+  of the codebase, or it breaks something. Put the specific, smallest-change
+  fix in `fix_plan` so the transform can fix exactly that. Do NOT reject for
+  style/taste, for work that belongs to a DIFFERENT site, or to demand a
+  broader refactor.
 
-schema verdict_output:
-  approved: bool
-  ## family is enum-constrained: a model that hallucinates a third
-  ## value (we observed gpt-5.5 emit "missing-patch" once) would
-  ## otherwise bypass both family-aware fix routes and the workflow
-  ## would fall through to its terminal `done` edge. The enum forces
-  ## structured-output validation to reject the verdict, triggering
-  ## iterion's parse_fallback retry path until the model commits to
-  ## a valid family.
-  family: string [enum: "claude", "gpt"]
-  blockers: string[]
-  fix_plan: string
-  confidence: string [enum: "low", "medium", "high"]
-  ## files_reviewed (ADR-045): in explore mode, the exact index paths the
-  ## reviewer actually opened this pass. The deterministic engagement guard
-  ## in streak_check requires this to be a non-empty SUBSET of the chunk's
-  ## file list before a pass can count toward convergence — a reviewer may
-  ## not approve a chunk it read nothing from, nor cite hallucinated paths.
-  ## Empty/ignored in inline mode (the source is in chunk_content).
-  files_reviewed: string[]
-  ## scanned_areas captures the surfaces this reviewer actually
-  ## audited this iteration (e.g. "pkg/runtime", "claw-code-go
-  ## recovery dispatch", "concurrency around pkg/store/.lock").
-  ## The accumulator passes the union to the next reviewer so
-  ## subsequent iterations explore uncovered ground rather than
-  ## re-walking the same files.
-  scanned_areas: string[]
+  Set `confidence` honestly (high = you can point to the exact problem;
+  low = a hunch with no concrete evidence). A low-confidence rejection with
+  no concrete blocker is treated as approval downstream — so only spend a
+  rejection when you have a real, named blocker.
 
-## streak_check relays approved/blockers/fix_plan/family from its
-## input (the current reviewer's verdict) and computes a
-## deterministic stop signal based on the previous reviewer's
-## verdict. The `family` passthrough lets the fix routing pick the
-## same-family fixer so the fix session can inherit the reviewer's
-## context (and benefit from prompt-cache hits).
-##
-## Soft-approval: a low-confidence rejection (`approved=false` AND
-## `confidence=="low"`) is treated as approved for streak/fix
-## routing purposes. The reviewer's own uncertainty isn't a strong
-## enough signal to trigger a fix cycle and risk a false-positive
-## loop.
-##
-## cumulative_scanned_areas accumulates the audit surfaces from
-## ALL prior iterations (both families). The accumulator pattern
-## relies on `outputs.streak_check` resolving to the PREVIOUS
-## iteration's output during the current expression evaluation
-## (rs.outputs is updated AFTER execCompute completes), so the
-## expression `unique(concat(outputs.streak_check.cumulative_scanned_areas,
-## input.scanned_areas))` produces a union, tail-capped (last 40) so a reviewer's input stays bounded (avoids context_length_exceeded on long runs).
-## On the first iteration `outputs.streak_check` is nil → concat
-## treats it as empty → result == unique(input.scanned_areas).
-schema streak_state:
-  ## stop: the RUN is done — the last unit just converged (or was
-  ## force-skipped) AND the whole ranked backlog has now been processed
-  ## once (units_done + 1 >= num_chunks). Routes to the build/test gate +
-  ## finalize (ADR-055).
-  stop: bool
-  ## engaged (ADR-045): did the reviewer actually open files from the chunk
-  ## index this pass (explore mode)? Always true in inline mode. Surfaced for
-  ## observability; the same predicate is inlined into the clean/converge
-  ## predicates below (expr keys cannot reference sibling keys this pass).
-  engaged: bool
-  ## unit_clean: THIS pass reviewed the current unit clean (approved, zero
-  ## blockers, and — in explore mode — actually opened its files).
-  unit_clean: bool
-  ## unit_converged: the current unit reached 2 consecutive clean reviews
-  ## (unit_streak+1 >= 2) — count-based, family-agnostic (see the head
-  ## comment). Routes to commit_unit, advances the cursor, and increments
-  ## units_done. The per-unit analogue of the old "two consecutive
-  ## cross-family approvals" (ADR-055 re-scopes it from the whole repo).
-  unit_converged: bool
-  ## force_skip: the current unit has churned unit_passes+1 >= the per-unit
-  ## bound without converging, so we give up on it and advance the cursor
-  ## anyway — "bounded per-unit iterations" (ADR-055). Guarantees one
-  ## stubborn unit can never block the whole backlog. Its uncommitted
-  ## partial fixes ride into the next unit's commit / the final commit.
-  force_skip: bool
-  approved: bool
-  family: string
-  blockers: string[]
-  fix_plan: string
-  cumulative_scanned_areas: string[]
-  ## unit_streak (observability): consecutive clean reviews of the current
-  ## unit THIS pass (persisted_unit_streak + 1 on a clean pass, else 0).
-  unit_streak: int
-  ## num_chunks is echoed from the snapshot so the stop expression can test
-  ## backlog exhaustion (units_done + 1 >= num_chunks).
-  num_chunks: int
-  ## carry_* are the values handed BACK to snapshot_chunk on EVERY
-  ## loop-return edge, persisted together as the {cursor, unit_streak,
-  ## unit_passes, units_done} tuple so it is always self-consistent and
-  ## crash-safe. All advance/reset iff the unit converged OR was
-  ## force-skipped (ADVANCE); otherwise the loop stays on the same unit.
-  ##   carry_cursor      = ADVANCE ? cursor+1        : cursor
-  ##   carry_unit_streak = ADVANCE ? 0 : (clean ? persisted_unit_streak+1 : 0)
-  ##   carry_unit_passes = ADVANCE ? 0               : persisted_unit_passes+1
-  ##   carry_units_done  = persisted_units_done + (ADVANCE ? 1 : 0)
-  carry_cursor: int
-  carry_unit_streak: int
-  carry_unit_passes: int
-  carry_units_done: int
+  Set `family` to your own family ("claude" or "gpt" — see your user
+  prompt).
 
-schema fix_input:
-  blockers: string[]
-  fix_plan: string
+prompt review_user_claude:
+  Confirm the change for THIS work-item correctly + safely applies the axis
+  at its site. Workspace: {{vars.workspace_dir}}
 
-schema fix_output:
-  applied: bool
-  summary: string
-  ## change_rationale (ADR-055 2c — SHARED REVIEWER↔FIXER CONTEXT): a CONCISE
-  ## what+why for the fixes applied to THIS unit — the files/symbols touched
-  ## and why each change is correct/sufficient. It is threaded FORWARD to the
-  ## next (cross-family) reviewer of the SAME unit (alt -> reviewer_* edges,
-  ## `prior_change_rationale`) so that reviewer verifies "is this fix good + is
-  ## a real issue left?" with the fixer's intent visible, instead of
-  ## re-deriving the change from scratch — killing re-litigation at the source.
-  ## AUGMENTS prior_pushback / previous_scanned_areas, does not replace them.
-  ## Keep it a rationale (a few sentences), never a transcript / full diff, so
-  ## the reviewer's context does not bloat.
-  change_rationale: string
-  pushback: string[]
-  pushback_justification: string
+  THE AXIS:
+  {{vars.improvement_prompt}}
 
-## ─── Nodes ──────────────────────────────────────────────────────
+  THIS WORK-ITEM:
+    title:       {{input.item_title}}
+    targets:     {{input.item_targets}}
+    change_spec: {{input.item_change_spec}}
 
-## snapshot_chunk (issue #12) — the deterministic workspace-snapshot /
-## chunking node, shared by the reviewer (which reads the emitted
-## chunk_content) and, via session inheritance, the fixer. It groups
-## source files by DIRECTORY (never by language — SOURCE_EXTS spans many;
-## a package boundary == a directory) into COHERENT-UNIT chunks
-## (ADR-055 2b): a chunk is a package / directory subtree, and only
-## COHESIVE SIBLINGS (packages under the SAME immediate parent dir) are
-## combined, and only while together they fit {{vars.max_review_chunk_tokens}}
-## estimated tokens — unrelated top-level packages are NEVER bundled. It
-## emits EXACTLY ONE chunk for this pass. A SINGLE package that GENUINELY
-## exceeds the budget (the overflow-fallback, issue #12) is still split by
-## file-size, BUT each sub-chunk is flagged `partial` and carries the FULL
-## package file index (all files, not just the slice) + unit_label /
-## unit_part / unit_parts, so a reviewer of one part still SEES the rest and
-## can never mistake an unseen-part definition/caller for dead code (the
-## false positive that broke convergence). A package that fits is a WHOLE
-## unit (partial=false) -> full completeness judgements allowed. The unit
-## (chunk) the cursor points
-## at is selected via a persisted JSON state file (.whole_improve_loop.state
-## at the workspace root, add it to .gitignore) which ALSO carries the
-## per-unit tuple (unit_streak + unit_passes + units_done), so a
-## re-dispatched run resumes ON the current unit and keeps banking
-## converged units rather than re-scanning the first chunks; deleting that
-## file restarts the backlog from unit 0. No LLM — pure enumeration, so the
-## reviewer never burns context discovering files (the docs-refresh
-## deterministic-prepass lesson, applied to source instead of docs).
-## sh -c is dash on some hosts / bash in devbox — the body is plain
-## POSIX + python3 (the same toolchain sec-audit-source's tool nodes
-## rely on); keep it double-quote-free so `python3 -c "..."` stays intact.
-tool snapshot_chunk:
-  command: `WS={{vars.workspace_dir}} BUDGET={{vars.max_review_chunk_tokens}} RCT={{vars.reviewer_context_tokens}} RCP={{vars.reviewer_context_percent}} MODE={{vars.context_mode}} MAXPASSES={{vars.max_review_passes}} SCOPE_GLOBS={{vars.scope_globs}} STATE_IN={{input.incoming_unit_streak}} STATE_CURSOR={{input.incoming_cursor}} STATE_PASSES={{input.incoming_unit_passes}} STATE_UNITS={{input.incoming_units_done}} python3 -c "
-import os, sys, json, fnmatch
+  Review the UNCOMMITTED change: `git add -N .` then `git diff HEAD` (never
+  `HEAD^..HEAD`), reading the changed/added files as needed. Judge only
+  correctness / consistency / no-regression FOR THIS ITEM. Output:
+    - approved:   true when the axis is correctly + safely applied here
+    - family:     "claude" for this reviewer
+    - blockers:   concrete blockers IN THIS CHANGE (empty when approved)
+    - fix_plan:   the smallest-change fix for the blockers (empty when approved)
+    - confidence: "low" / "medium" / "high"
 
-ws = os.environ.get('WS', '.')
-# context_mode (ADR-045): 'explore' (default) emits a chunk INDEX the reviewer
-# reads on demand; 'inline' renders the chunk source into chunk_content (the
-# pre-0.4.0 / A+B path). Anything but 'inline' is treated as explore.
-mode = (os.environ.get('MODE') or 'explore').strip().lower()
-budget = int(os.environ.get('BUDGET', '16000') or '16000')
-if budget <= 0:
-    budget = 16000
-# Model-adaptive chunk sizing (B): when reviewer_context_tokens (RCT) > 0,
-# cap the chunk budget at RCP percent of the SMALLEST reviewer's real context
-# window, so the inline chunk + system prompt + accumulated feedback + the
-# model's reasoning never overflow that window (a 30000 chunk overflowed
-# gpt-5.5 forfait at run 019ef550). Never raises the budget above the
-# max_review_chunk_tokens ceiling, only lowers it.
-rct = int(os.environ.get('RCT', '0') or '0')
-rcp = int(os.environ.get('RCP', '45') or '45')
-if rct > 0 and rcp > 0:
-    adaptive = (rct * rcp) // 100
-    if adaptive > 0 and adaptive < budget:
-        budget = adaptive
-# Hard upper bound on the per-chunk budget after A (lowered default) + B
-# (adaptive). The MAX_CHUNKS rebudget below must NOT exceed this, or a large
-# repo would re-inflate the chunk past the reviewer's window.
-chunk_ceiling = budget
+prompt review_user_gpt:
+  Confirm the change for THIS work-item correctly + safely applies the axis
+  at its site. Workspace: {{vars.workspace_dir}}
 
-# Per-run FIX HEADROOM beyond processing every unit (ADR-055). The
-# review_loop bound is emitted below as loop_max = 2*num_chunks + max_passes:
-# 2 clean reviews per unit to converge it (2*num_chunks) PLUS max_passes
-# extra passes to find+fix blockers before a unit converges. So a fix-free
-# repo always has room to confirm every unit twice and land each commit in
-# one run, and a repo needing up to max_passes fix passes converges in one
-# run too; the persisted per-unit state (cursor/unit_streak/unit_passes/
-# units_done) still amortizes larger backlogs across re-dispatches, each of
-# which banks the units it finished.
-max_passes = int(os.environ.get('MAXPASSES', '15') or '15')
-if max_passes < 2:
-    max_passes = 2
+  THE AXIS:
+  {{vars.improvement_prompt}}
 
-# Optional path-scope filter (focused runs). SCOPE_GLOBS is a comma/space-
-# separated list of fnmatch patterns matched against workspace-relative
-# paths; empty (default) = the whole workspace. A bare directory, or a
-# 'dir/**' / 'dir/*' form, also matches everything under that directory, so
-# --var scope_globs=pkg/runtime PRUNES the chunk plan to that package
-# instead of paying the whole-repo sweep cost (the focused-run finding in
-# docs/bot-runs/whole-improve-loop.md, 2026-06-14). resolveCommandTemplate
-# shell-escapes the value as a single token (so '*' and spaces survive the
-# shell without globbing/word-splitting); split it back here. Pruning at the
-# os.walk source keeps total_files / total_tokens / num_chunks / the streak
-# threshold all scaled to the focused set, so a focused run converges
-# in-bound like a small repo.
-scope_raw = os.environ.get('SCOPE_GLOBS', '') or ''
-scope_globs = [g.strip() for g in scope_raw.replace(',', ' ').split() if g.strip()]
+  THIS WORK-ITEM:
+    title:       {{input.item_title}}
+    targets:     {{input.item_targets}}
+    change_spec: {{input.item_change_spec}}
 
+  Review the UNCOMMITTED change: `git add -N .` then `git diff HEAD` (never
+  `HEAD^..HEAD`), reading the changed/added files as needed. Judge only
+  correctness / consistency / no-regression FOR THIS ITEM. Output:
+    - approved:   true when the axis is correctly + safely applied here
+    - family:     "gpt" for this reviewer
+    - blockers:   concrete blockers IN THIS CHANGE (empty when approved)
+    - fix_plan:   the smallest-change fix for the blockers (empty when approved)
+    - confidence: "low" / "medium" / "high"
 
-def in_scope(rel):
-    if not scope_globs:
-        return True
-    for g in scope_globs:
-        if fnmatch.fnmatch(rel, g):
-            return True
-        pref = g
-        for suf in ('/**', '/*', '/'):
-            if pref.endswith(suf):
-                pref = pref[:-len(suf)]
-                break
-        if pref and (rel == pref or rel.startswith(pref + '/')):
-            return True
-    return False
-
-# Persistent state (ADR-055): ONE json dotfile at the workspace root holds
-# the per-unit tuple {cursor, unit_streak, unit_passes, units_done}. Why
-# persisted: the review_loop counter and streak_check's output are run-local
-# and reset on every (re-)dispatch, so without on-disk state a backlog whose
-# num_chunks exceeds one run's loop_max could never be finished across ANY
-# number of runs. The tuple accumulates across runs here, so each re-dispatch
-# resumes mid-backlog and banks the units it converges (units_done advances
-# toward num_chunks) — what makes 'the run terminates when the backlog is
-# processed once' reachable on a large repo. Neutral, gitignore-able.
-# Best-effort: a read-only FS degrades to cursor 0 / streak 0 (still bounded,
-# just non-advancing). See docs/adr/055-unit-convergent-adaptive-improve-loop.md.
-state_path = os.path.join(ws, '.whole_improve_loop.state')
-cursor = 0
-disk_streak = 0
-disk_passes = 0
-disk_units = 0
-try:
-    with open(state_path, 'r', encoding='utf-8') as sf:
-        st = json.load(sf)
-    # Valid JSON that is not an object (a bare list/scalar/null, e.g. a
-    # hand-edit or a foreign writer of this gitignore-able dotfile) has no
-    # .get and would raise AttributeError -- which the except tuple below
-    # does NOT catch, crashing snapshot_chunk (the workflow entry + every
-    # loop-return target) and bricking the whole loop. Coerce to {} so the
-    # per-unit state falls through to its 0 defaults: the same best-effort
-    # degrade this block already gives a missing/garbage/non-int state file.
-    if not isinstance(st, dict):
-        st = {}
-    cursor = int(st.get('cursor', 0) or 0)
-    # ADR-055 per-unit state. unit_streak = consecutive clean reviews of
-    # the CURRENT unit; unit_passes = passes spent on the current unit
-    # (force-skip bound); units_done = units processed (converged OR
-    # force-skipped) so far -- drives run termination (units_done >=
-    # num_chunks). 'clean_streak' fallback reads a pre-ADR-055 state file.
-    disk_streak = int(st.get('unit_streak', st.get('clean_streak', 0)) or 0)
-    disk_passes = int(st.get('unit_passes', 0) or 0)
-    disk_units = int(st.get('units_done', 0) or 0)
-except (OSError, IOError, ValueError, TypeError):
-    cursor = 0
-    disk_streak = 0
-    disk_passes = 0
-    disk_units = 0
-if cursor < 0:
-    cursor = 0
-if disk_streak < 0:
-    disk_streak = 0
-if disk_passes < 0:
-    disk_passes = 0
-if disk_units < 0:
-    disk_units = 0
-
-# State threading for THIS pass (issue #12, crash-safe). snapshot_chunk
-# is the ONLY filesystem writer in the loop and it runs BEFORE the
-# reviewer, so it can only ever persist verdicts up to the PREVIOUS pass.
-# The cursor AND the clean_streak are therefore both fed back from
-# streak_check on the loop-return edge (STATE_CURSOR / STATE_IN) and
-# persisted together (see the persist below), so the on-disk pair
-# {cursor, clean_streak} is always self-consistent: clean_streak counts
-# the consecutive clean passes for the chunks STRICTLY BEFORE cursor, and
-# 'cursor' names the chunk this pass is about to (re-)review.
-#
-# Crash-safety (the bug this replaces): the cursor is NOT advanced
-# eagerly here. It advances only via streak_check's next_cursor, AFTER a
-# verdict exists. So if the run dies on a non-clean pass before the next
-# snapshot persists streak_check's reset (the common case: the fix_* node
-# failing on budget/rate-limit/cancel, which routes to 'fail' + a
-# re-dispatch), disk still points cursor AT the un-verdicted chunk, and
-# the re-dispatch RE-REVIEWS it instead of skipping past it. The previous
-# design advanced cursor+1 eagerly while the streak lagged one pass, so a
-# crash could leave cursor PAST a blocker chunk with a stale-high streak,
-# and the shortened terminating window converged ('stop' -> done) without
-# the blocker chunk ever being re-reviewed -- a silent false convergence.
-# See docs/adr/011-whole-improve-loop-context-chunking.md -> Corrections
-# (2026-06-02c).
-#
-# On the FIRST pass of a (re-)dispatched run there is no inbound edge:
-# STATE_IN / STATE_CURSOR render as an empty/literal placeholder, the
-# float() parse fails, and we seed BOTH from disk instead. float() (not
-# int()) tolerates a value the expr engine stringifies as e.g. '6' or
-# '6.0'.
-clean_streak = disk_streak
-try:
-    incoming = int(float((os.environ.get('STATE_IN', '') or '').strip()))
-    if incoming >= 0:
-        clean_streak = incoming
-except (ValueError, TypeError):
-    pass
-# Cursor base for THIS pass: the edge-fed carry_cursor (authoritative,
-# verdict-coupled) when present, else the disk cursor on a fresh dispatch.
-try:
-    incoming_cursor = int(float((os.environ.get('STATE_CURSOR', '') or '').strip()))
-    if incoming_cursor >= 0:
-        cursor = incoming_cursor
-except (ValueError, TypeError):
-    pass
-# Per-unit pass counter + units-done counter, threaded the same way
-# (edge-fed carry value wins, else disk on a fresh dispatch).
-unit_passes = disk_passes
-try:
-    incoming_passes = int(float((os.environ.get('STATE_PASSES', '') or '').strip()))
-    if incoming_passes >= 0:
-        unit_passes = incoming_passes
-except (ValueError, TypeError):
-    pass
-units_done = disk_units
-try:
-    incoming_units = int(float((os.environ.get('STATE_UNITS', '') or '').strip()))
-    if incoming_units >= 0:
-        units_done = incoming_units
-except (ValueError, TypeError):
-    pass
-
-EXCLUDED_DIRS = {
-    'vendor', 'node_modules', 'env', 'dist', 'build', 'out', 'target',
-    '__pycache__', 'testdata', 'coverage',
-}
-SOURCE_EXTS = {
-    '.go', '.py', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.java',
-    '.rb', '.rs', '.c', '.h', '.cc', '.cpp', '.hpp', '.cxx', '.hxx',
-    '.cs', '.php', '.swift', '.kt', '.kts', '.scala', '.sh', '.bash',
-    '.zsh', '.sql', '.proto', '.tf', '.gradle', '.groovy', '.lua', '.ex',
-    '.exs', '.erl', '.clj', '.dart', '.vue', '.svelte', '.ml', '.mli',
-    '.hs', '.jl', '.r', '.pl', '.pm',
-}
-SKIP_SUFFIXES = ('.min.js', '.min.css', '.pb.go', '_pb2.py', '.gen.go',
-                 '.generated.go', '.g.dart')
-MAX_FILES = 20000
-MAX_FILE_TOKENS = budget
-
-
-def est_tokens(nbytes):
-    return (nbytes + 3) // 4
-
-
-pkgs = {}
-total_files = 0
-total_tokens = 0
-truncated_scan = False
-for root, dirs, names in os.walk(ws):
-    # Prune dependency/build dirs AND every hidden dir (.git, .devbox,
-    # .iterion, .works, .github, .archive, .claude, .venv, ...).
-    dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_DIRS and not d.startswith('.'))
-    for n in sorted(names):
-        ext = os.path.splitext(n)[1].lower()
-        if ext not in SOURCE_EXTS:
-            continue
-        if any(n.endswith(s) for s in SKIP_SUFFIXES):
-            continue
-        full = os.path.join(root, n)
-        try:
-            if os.path.islink(full):
-                continue
-            sz = os.path.getsize(full)
-        except OSError:
-            continue
-        rel = os.path.relpath(full, ws)
-        if not in_scope(rel):
-            continue
-        tok = est_tokens(sz)
-        pkgs.setdefault(os.path.dirname(rel) or '.', []).append((rel, tok))
-        total_files += 1
-        total_tokens += tok
-        if total_files >= MAX_FILES:
-            truncated_scan = True
-            break
-    if truncated_scan:
-        break
-
-
-def pack(pkgs, budget):
-    # ADR-055 2b -- COHERENT-UNIT chunking. A chunk is a coherent UNIT (a
-    # package / directory subtree the reviewer can hold whole), NEVER an
-    # arbitrary byte slice of unrelated code. Two behaviours:
-    #   (1) COMBINE only COHESIVE SIBLINGS -- packages sharing the SAME
-    #       immediate parent dir -- and only while together they fit budget.
-    #       This keeps many tiny leaf packages from exploding num_chunks WITHOUT
-    #       ever bundling unrelated top-level packages together (the old
-    #       byte-packer combined ANY adjacent dirs up to budget, so a reviewer
-    #       got a grab-bag of cmd/ + docs/ + e2e/ and lost coherence). The unit
-    #       is the atom; combining is a bounded COUNT-control measure for
-    #       cohesive neighbours only.
-    #   (2) A SINGLE package that GENUINELY exceeds budget (the real
-    #       overflow-fallback, issue #12) is still emitted as sub-chunks, BUT
-    #       each sub-chunk is marked partial and carries the FULL package file
-    #       index (index_files = EVERY file of the package, not just the slice),
-    #       plus unit_label / unit_part / unit_parts. So a reviewer handed one
-    #       part still SEES the rest of the package and can read it on demand --
-    #       it can never mistake an unseen-part definition or caller for dead
-    #       code (the exact false positive that broke convergence). A package
-    #       that FITS the budget is a WHOLE unit (partial False) -> full
-    #       completeness judgements allowed.
-    chunks = []
-    cur = None  # cohesive-sibling combine buffer (None = empty)
-
-    def flush():
-        nonlocal cur
-        if cur and cur['files']:
-            chunks.append(cur)
-        cur = None
-
-    for d in sorted(pkgs.keys()):
-        files = pkgs[d]
-        pkg_tokens = sum(t for _, t in files)
-        parent = os.path.dirname(d)  # immediate parent dir ('' for top-level)
-        if pkg_tokens <= budget:
-            # Whole coherent unit. Fold into the current buffer ONLY when it is
-            # a cohesive sibling (identical immediate parent) AND the two still
-            # fit the budget together; otherwise start a fresh chunk. index_files
-            # == files for a whole unit (nothing hidden).
-            if (cur is not None and cur['parent'] == parent
-                    and not cur['partial']
-                    and cur['tokens'] + pkg_tokens <= budget):
-                cur['files'].extend(files)
-                cur['index_files'].extend(files)
-                cur['tokens'] += pkg_tokens
-                cur['dirs'].append(d)
-            else:
-                flush()
-                cur = {'files': list(files), 'index_files': list(files),
-                       'tokens': pkg_tokens, 'dirs': [d], 'parent': parent,
-                       'partial': False, 'unit_label': d,
-                       'unit_part': 1, 'unit_parts': 1}
-        else:
-            # Genuine overflow: ONE package bigger than the budget. Split by
-            # file-size budget into parts, but every part carries the WHOLE
-            # package index (list(files)) and is flagged partial so no reviewer
-            # ever judges completeness from a truncated view.
-            flush()
-            parts = []
-            sub = []
-            sub_tok = 0
-            for rel, tok in files:
-                if sub and sub_tok + tok > budget:
-                    parts.append(sub)
-                    sub = []
-                    sub_tok = 0
-                sub.append((rel, tok))
-                sub_tok += tok
-            if sub:
-                parts.append(sub)
-            nparts = len(parts)
-            for i, part in enumerate(parts):
-                chunks.append({
-                    'files': part,                # this part's focus (inline src)
-                    'index_files': list(files),   # FULL package index (all files)
-                    'tokens': sum(t for _, t in part),
-                    'dirs': [d], 'parent': parent, 'partial': True,
-                    'unit_label': d, 'unit_part': i + 1, 'unit_parts': nparts,
-                })
-    flush()
-    return chunks
-
-
-chunks = pack(pkgs, budget)
-num_chunks = len(chunks)
-
-# ADR-055: each unit needs 2 clean reviews to converge, so the loop bound is
-# loop_max = 2*num_chunks + max_passes (emitted below). Cap the unit COUNT on
-# huge repos by re-packing with a larger budget, so that bound stays within a
-# sane pass count instead of 200+ passes / fragile multi-run amortization.
-MAX_CHUNKS = 24
-if num_chunks > MAX_CHUNKS and total_tokens > 0:
-    # Respect the adaptive/ceiling budget: never raise the chunk size above
-    # chunk_ceiling just to cap the chunk COUNT, or a large repo on a small
-    # reviewer window would overflow again. If the ceiling forces > MAX_CHUNKS
-    # chunks, accept the higher pass count (loop_max scales with num_chunks).
-    budget = min(chunk_ceiling, (total_tokens // MAX_CHUNKS) + 1)
-    chunks = pack(pkgs, budget)
-    num_chunks = len(chunks)
-
-if num_chunks == 0:
-    try:
-        with open(state_path, 'w', encoding='utf-8') as sf:
-            json.dump({'cursor': 0, 'unit_streak': int(clean_streak),
-                       'unit_passes': int(unit_passes),
-                       'units_done': int(units_done), 'num_chunks': 1}, sf)
-    except (OSError, IOError):
-        pass
-    print(json.dumps({
-        'chunk_content': '(no source files found in workspace)',
-        'files': '', 'chunk_file_list': [], 'chunk_index_path': '',
-        'chunk_label': 'empty', 'chunk_index': 0,
-        # ADR-055 2b: the empty workspace is a whole (empty) unit, never partial.
-        'partial': False, 'unit_label': 'empty', 'unit_part': 1, 'unit_parts': 1,
-        'num_chunks': 1, 'loop_max': 2 + max_passes, 'chunked': False, 'file_count': 0,
-        'chunk_tokens': 0, 'total_files': 0, 'total_tokens': 0,
-        'skipped_oversize': 0, 'persisted_unit_streak': int(clean_streak),
-        'persisted_unit_passes': int(unit_passes),
-        'persisted_units_done': int(units_done),
-        'cursor': int(cursor),
-    }))
-    sys.exit(0)
-
-idx = cursor % num_chunks
-chunk = chunks[idx]
-# Persist the (cursor, clean_streak) pair this pass is USING -- NOT an
-# eager cursor+1. The advance to the next chunk rides streak_check's
-# next_cursor on the loop-return edge, so the cursor only moves once a
-# verdict has been folded in. This keeps disk crash-safe: a run that dies
-# mid-pass leaves cursor pointing at the chunk under review, so a
-# re-dispatch re-reviews it rather than skipping past it (issue #12,
-# ADR-011 -> Corrections 2026-06-02c).
-try:
-    with open(state_path, 'w', encoding='utf-8') as sf:
-        json.dump({'cursor': cursor, 'unit_streak': int(clean_streak),
-                   'unit_passes': int(unit_passes),
-                   'units_done': int(units_done),
-                   'num_chunks': num_chunks}, sf)
-except (OSError, IOError):
-    pass
-
-# ADR-055 2b unit metadata for this chunk. index_files is the FULL visibility
-# set (== the chunk's files for a whole unit; the WHOLE package for a partial
-# sub-chunk) -- it drives chunk_file_list, the explore-mode index and the
-# streak_check engagement guard, so a reviewer of a partial chunk can read (and
-# cite) any package file without tripping the subset guard. chunk['files'] is
-# this pass's FOCUS slice (== index_files for a whole unit) and is what inline
-# mode renders + what chunk_tokens measures, keeping per-pass work bounded.
-partial = bool(chunk.get('partial', False))
-unit_label = chunk.get('unit_label') or (chunk['dirs'][0] if chunk['dirs'] else '.')
-unit_part = int(chunk.get('unit_part', 1))
-unit_parts = int(chunk.get('unit_parts', 1))
-index_arr = [rel for rel, _ in chunk['index_files']]
-focus_set = set(rel for rel, _ in chunk['files'])
-file_list_arr = index_arr  # full-visibility set (reviewer file list + guard)
-file_list = '\n'.join(file_list_arr)
-dirs = chunk['dirs']
-if partial:
-    label = '%s [part %d/%d]' % (unit_label, unit_part, unit_parts)
-elif len(dirs) == 1:
-    label = dirs[0]
-else:
-    label = '%s (+%d more dirs)' % (dirs[0], len(dirs) - 1)
-
-# ADR-045: always write a per-pass chunk INDEX markdown (label + the file
-# table the reviewer reads from in explore mode). Single file overwritten each
-# pass, excluded from commit_changes. Best-effort: a write failure is non-fatal
-# (the reviewer still has chunk_file_list / files).
-index_path = os.path.join(ws, '.whole_improve_loop.chunk.md')
-try:
-    ilines = ['# Review chunk index', '',
-              'Chunk %d of %d  -  %s' % (idx, num_chunks, label),
-              'Read each file below with your read tool, then judge. List the',
-              'paths you read VERBATIM in files_reviewed.']
-    if partial:
-        # ADR-055 2b anti-fragmentation guard: this is ONE part of a package too
-        # big for one pass. The WHOLE package is listed below (focus rows marked)
-        # so a cross-file claim is always checkable -- never call a symbol dead
-        # from a partial view.
-        ilines += ['',
-                   'PARTIAL VIEW -- part %d/%d of package %s. You are seeing '
-                   'ONE part of a larger package; the ENTIRE package is listed '
-                   'below (rows marked FOCUS are this part). Do NOT flag any '
-                   'symbol dead/unused/unreferenced or make ANY whole-package '
-                   'completeness call -- read the other files first; the '
-                   'remaining parts and the deterministic build/test gate cover '
-                   'the rest.' % (unit_part, unit_parts, unit_label)]
-    ilines += ['', '| file | ~tokens | |', '| --- | --- | --- |']
-    for rel, tok in chunk['index_files']:
-        mark = 'FOCUS' if (partial and rel in focus_set) else ''
-        ilines.append('| %s | %d | %s |' % (rel, tok, mark))
-    ilines.append('')
-    with open(index_path, 'w', encoding='utf-8') as xf:
-        xf.write('\n'.join(ilines))
-except (OSError, IOError):
-    pass
-
-skipped_oversize = 0
-if mode == 'inline':
-    hard_cap = budget * 4 + 4096
-    parts = []
-    used = 0
-    for rel, tok in chunk['files']:
-        abs_path = os.path.join(ws, rel)
-        try:
-            with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
-                body = f.read()
-        except (OSError, IOError):
-            continue
-        if est_tokens(len(body)) > MAX_FILE_TOKENS:
-            body = body[:MAX_FILE_TOKENS * 4] + '\n... [truncated: file exceeds one chunk budget] ...\n'
-            skipped_oversize += 1
-        header = '===== FILE: %s (~%d tokens) =====\n' % (rel, tok)
-        block = header + body + '\n'
-        if used + len(block) > hard_cap:
-            parts.append('... [chunk content truncated at the char cap] ...\n')
-            break
-        parts.append(block)
-        used += len(block)
-    content = ''.join(parts)
-else:
-    content = ('(explore mode: chunk source is NOT inlined. Read the files in '
-               'the index at %s -- also in chunk_file_list -- with your read '
-               'tool, then judge.)' % index_path)
-
-print(json.dumps({
-    'chunk_content': content,
-    'files': file_list,
-    'chunk_file_list': file_list_arr,
-    'chunk_index_path': index_path,
-    'chunk_label': label,
-    'chunk_index': idx,
-    'num_chunks': num_chunks,
-    'chunked': num_chunks > 1,
-    # ADR-055 2b coherent-unit fields. partial=True when this chunk is ONE part
-    # of a package too big for the budget (the reviewer/fixer MUST NOT judge
-    # whole-package completeness); False when the chunk is a whole coherent unit
-    # (one package, or cohesive same-parent siblings). unit_label names the
-    # package; unit_part/unit_parts locate this slice (e.g. 2/3).
-    'partial': partial,
-    'unit_label': unit_label,
-    'unit_part': unit_part,
-    'unit_parts': unit_parts,
-    'file_count': len(file_list_arr),
-    'chunk_tokens': chunk['tokens'],
-    'total_files': total_files,
-    'total_tokens': total_tokens,
-    'skipped_oversize': skipped_oversize,
-    # ADR-055 per-unit state, carried to streak_check which increments /
-    # resets each and echoes the carry_* values back on the loop-return
-    # edge so the persisted {cursor, unit_streak, unit_passes, units_done}
-    # tuple stays verdict-coupled and crash-safe.
-    'persisted_unit_streak': int(clean_streak),
-    'persisted_unit_passes': int(unit_passes),
-    'persisted_units_done': int(units_done),
-    # Rotation cursor this pass USED (idx == cursor % num_chunks). Unlike
-    # the pre-ADR-055 design it advances ONLY when the current unit
-    # converges or is force-skipped (streak_check's carry_cursor), so the
-    # loop stays on a unit until it is clean+stable -- the per-unit
-    # convergence scoping.
-    'cursor': int(cursor),
-    # 2 clean reviews per unit to converge (2*num_chunks) + fix headroom.
-    'loop_max': 2 * num_chunks + max_passes,
-}))
-"`
-  output: snapshot_output
-
-## Family selector (see branch-improve-loop for the full rationale):
-## round_robin → condition so a MONO run routes to a single family
-## (round_robin ignores `when` guards). The GPT edge is guarded; the
-## CLAUDE edge is the unconditional default (C012). Parity rides
-## loop.review_loop.iteration (this router is not a review_loop entry,
-## so loop-backs never reset it — lockstep with the old counter).
-router alt:
-  mode: condition
-
-judge reviewer_claude:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: review_input
-  output: verdict_output
-  ## Persist the verdict as a versioned artifact so each iteration's
-  ## approval / blockers / fix_plan is inspectable in the studio's
-  ## Artifact tab (the VerdictCard renders it) and diffable across the
-  ## review loop. Without publish:, the verdict lives only in
-  ## events.jsonl / run.log and never reaches the Artifact tab.
-  publish: verdict_claude
-  system: review_system
-  user: review_user_claude
-  session: fresh
-  ## When the LLM hits genuine uncertainty (ambiguous spec, missing
-  ## context, impossible-to-decide trade-off), it can escalate to
-  ## the human running the CLI by emitting `_needs_interaction:
-  ## true` + `_interaction_questions: {...}` in its JSON output.
-  ## The runtime catches this, pauses, prompts the dev in their
-  ## terminal, and re-invokes the reviewer with the answer mapped
-  ## into its input — preserving session continuity.
-  interaction: human
-
-judge reviewer_gpt:
-  ## Explicit backend pin: model "openai/gpt-5.5" only works via the
-  ## claw backend. Without this, the auto-resolver falls back to
-  ## ITERION_BACKEND_PREFERENCE (default "claude_code,claw") and
-  ## routes the node through claude_code, which doesn't recognise
-  ## openai/* models — the agent returns a meta-error string instead
-  ## of the structured verdict and the schema validator fails the run.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: review_input
-  output: verdict_output
-  ## Persist the verdict (see reviewer_claude's publish: note).
-  publish: verdict_gpt
-  system: review_system
-  user: review_user_gpt
-  session: fresh
-  ## claw backend uses snake_case tool names. Without these the
-  ## reviewer can't read the workspace and produces a
-  ## "no filesystem access" verdict — the claw runtime exposes
-  ## these via tool.RegisterClawBuiltins.
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
-  interaction: human
-
-## Deterministic PER-UNIT convergence detector (ADR-055; supersedes the
-## coverage-aware global streak of ADR-011 / issue #12).
-##
-## The loop works ONE unit (chunk) at a time. Each pass reviews the unit
-## the cursor currently points at. streak_check turns the reviewer's
-## verdict into per-unit control state (all predicates fully inlined
-## because a compute node's keys cannot reference each other this pass):
-##
-##   unit_clean     — this pass approved the unit with zero blockers (and,
-##                    in explore mode, actually opened its files: the
-##                    ADR-045 engagement guard, so a "read nothing then
-##                    approve" pass cannot count).
-##   unit_streak    — CONSECUTIVE clean reviews of THIS unit; +1 on a clean
-##                    pass, reset to 0 on any non-clean pass. Base read from
-##                    input.persisted_unit_streak (snapshot_chunk's on-disk
-##                    value), not a self-reference — the same nil-safe,
-##                    crash-safe pattern ADR-011 established.
-##   unit_converged — unit_clean AND unit_streak+1 >= 2. Two consecutive
-##                    clean reviews of the SAME unit. COUNT-based, so it is
-##                    family-agnostic: in DUAL the two passes are
-##                    cross-family (the condition router flips family each
-##                    pass); in MONO they are the single family twice — the
-##                    same accepted trade-off the old count-based stop made,
-##                    so ADR-052 mono/dual needs NO change here. A converged
-##                    unit is COMMITTED (commit_unit) and the cursor advances.
-##   force_skip     — NOT converged AND unit_passes+1 >= 8. A unit the loop
-##                    cannot satisfy within a bounded number of passes is
-##                    skipped so it can never block the whole backlog
-##                    ("bounded per-unit iterations", ADR-055). The cursor
-##                    advances without a commit; partial fixes ride into a
-##                    later commit.
-##   stop           — (unit_converged OR force_skip) AND units_done+1 >=
-##                    num_chunks. The RUN ends when the whole ranked backlog
-##                    has been processed once — a finite, monotone process,
-##                    NOT a global clean sweep that a real repo can never
-##                    satisfy (the ADR-055 failure this replaces).
-##
-## CRASH-SAFE, CROSS-RUN. carry_cursor / carry_unit_streak /
-## carry_unit_passes / carry_units_done are the {cursor, unit_streak,
-## unit_passes, units_done} tuple every loop-return edge hands back to
-## snapshot_chunk, which persists it to .whole_improve_loop.state. All four
-## are verdict-coupled: the cursor (and units_done) advance ONLY once a
-## verdict exists (converged or skipped), so a run that dies mid-unit leaves
-## the cursor AT the un-finished unit and a re-dispatch RE-REVIEWS it. Every
-## unit that DID converge is already committed, so a crash/cap strands
-## nothing. A large repo whose backlog exceeds one run's loop_max makes
-## bounded progress and finishes over successive re-dispatches.
-##
-## The `approved` passthrough field stays soft — it includes low-confidence
-## rejections — so the downstream `when approved` edge keeps re-reviewing
-## the same unit (family flipping) without invoking the fixer when a
-## reviewer is merely uncertain. Real, blocker-free approvals are what build
-## the per-unit streak toward convergence.
-compute streak_check:
-  output: streak_state
-  expr:
-    ## ADR-045 engagement guard (inlined everywhere below because expr keys
-    ## cannot reference sibling keys this pass). In explore mode the chunk
-    ## source is NOT in the prompt, so a pass only counts as clean if the
-    ## reviewer actually opened files from the index: files_reviewed must be
-    ## non-empty AND a subset of chunk_file_list (the identity |A∪B| == |A|
-    ## ⟺ B ⊆ A, using only concat/unique/length). In inline mode the source
-    ## IS in the prompt, so the guard short-circuits true. This blocks the
-    ## Goodhart failure of approving a chunk having read nothing / citing
-    ## hallucinated paths.
-    ##
-    ## ADR-055 per-unit convergence. The predicates below (fully inlined):
-    ##   CLEAN     = approved AND zero blockers AND engaged (this pass)
-    ##   CONVERGED = CLEAN AND persisted_unit_streak+1 >= 2  (2 consecutive
-    ##               clean reviews of THIS unit — count-based, family-agnostic)
-    ##   FORCE-SKIP= NOT CONVERGED AND persisted_unit_passes+1 >= 8  (give up
-    ##               on a stubborn unit so it can't block the backlog)
-    ##   ADVANCE   = CONVERGED OR FORCE-SKIP  (move the cursor to the next unit)
-    ## carry_* echo the {cursor, unit_streak, unit_passes, units_done} tuple
-    ## back to snapshot_chunk on every loop-return edge, verdict-coupled and
-    ## crash-safe (the unit only advances once a verdict exists). stop fires
-    ## when the last unit advances AND the whole backlog is processed
-    ## (units_done+1 >= num_chunks).
-    engaged: "(input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))"
-    unit_clean: "(input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list)))))"
-    unit_converged: "((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2)"
-    force_skip: "(!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)"
-    stop: "(((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)) && input.persisted_units_done + 1 >= input.num_chunks"
-    approved: "input.approved || input.confidence == 'low'"
-    family: "input.family"
-    blockers: "input.blockers"
-    fix_plan: "input.fix_plan"
-    num_chunks: "input.num_chunks"
-    unit_streak: "if((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))), input.persisted_unit_streak + 1, 0)"
-    carry_cursor: "if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), input.cursor + 1, input.cursor)"
-    carry_unit_streak: "if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), 0, if((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))), input.persisted_unit_streak + 1, 0))"
-    carry_unit_passes: "if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), 0, input.persisted_unit_passes + 1)"
-    carry_units_done: "input.persisted_units_done + if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), 1, 0)"
-    cumulative_scanned_areas: "tail(unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas)), 40)"
-
-## Per-family fixers. Each one inherits the SAME-family reviewer's
-## session via `session: inherit` + `_session_id` mapping on the
-## edge — so the fixer reuses the prompt cache, the workspace files
-## already loaded, and the reviewer's reasoning chain. The result
-## is one session per loop iteration per family (not two), which
-## both shortens latency and dramatically reduces token cost:
-## without inheritance every fixer would re-scan the workspace.
-agent fix_claude:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  ## Same escalation contract as the reviewers — the fixer can ask
-  ## the dev a question (e.g. clarify the intent of an ambiguous
-  ## blocker) instead of guessing.
-  interaction: human
-
-agent fix_gpt:
-  ## See reviewer_gpt comment — same backend pin rationale.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  ## claw needs the same read/write toolset the reviewer used so
-  ## the fixer can actually apply edits.
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  ## 45 (was 30): a multi-file fix (read several files + edit + verify) can
-  ## legitimately need more than 30 tool steps; getting cut off mid-edit at the
-  ## cap leaves a partial edit + an empty final turn that the formatting pass
-  ## renders as a useless "work in progress" placeholder (run 019ec9d5). The
-  ## FINALIZE "verify once, don't loop" guard is the primary mitigation; this is
-  ## the backstop headroom.
-  tool_max_steps: 45
-  interaction: human
-
-## ─── Commit (close the no-commit gap) ──────────────────────────
-## whole_improve_loop historically converged (streak `stop`) straight to
-## `done` with NO commit step, so its validated work stayed uncommitted in
-## the worktree — HEAD never advanced past base, finalizeWorktree recorded
-## nothing (final_commit=None), and the diff was stranded. Commit ALL
-## changes on convergence so the engine records a final_commit + GC-guard
-## branch like feature_dev / docs-refresh. `git add -A` because the loop
-## touches the whole workspace, not a known file list; no-op-safe — a clean
-## tree skips the commit via `diff --cached --quiet`.
-## ─── Build/test gate (deterministic, before commit) ───────────────
-## A whole_improve_loop reviewer reads only its CHUNK'S SOURCE, so a fix
-## that breaks compilation in a file OUTSIDE the current chunk (e.g. a
-## renamed/retyped symbol with a caller the chunk reviewer never saw) — or
-## a bug only a test catches — is invisible to the review loop. The loop
-## could then rebuild a clean streak and converge on a BROKEN tree (observed
-## 2026-06-14, run 019ec7ed: a fixer left a write-only ReadAt + a missed
-## out-of-scope caller; both passed source review and the loop kept going).
-##
-## So before committing, an ADAPTIVE agent (skill-guided, stack-agnostic)
-## builds + tests the repo with its OWN tooling and writes a re-runnable
-## script; a DETERMINISTIC tool node re-runs that script and gates the commit
-## on the REAL exit code (no LLM judgment). Red build/tests => the run does
-## NOT commit: it loops back to the agent to fix the breakage (bounded), and
-## fails loudly if it cannot. This is the CLAUDE.md "skill-guided + determin-
-## istic gate" doctrine (cf. sec-audit-source's scan_health). UNIVERSAL: no
-## language or package manager is named in this DSL — the agent reads
-## skills/verify-build.md and dispatches to whatever THIS repo uses.
+## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
+## Reused verbatim from the ADR-055 design: an ADAPTIVE agent (verify_build)
+## reads the verify-build skill, builds+tests the repo with its OWN tooling,
+## and writes a re-runnable .whole_improve_loop.verify.sh; a DETERMINISTIC
+## tool node (verify_run) re-runs that script and gates on the REAL exit
+## code (no LLM judgment). No language / package manager is named here — the
+## gate stays universal while the verdict stays deterministic. It runs
+## PER ITEM, so every incremental commit is build+test green on its own.
 
 prompt verify_system:
-  You are a release engineer. The review loop just converged on a set
-  of changes its reviewers approved by reading SOURCE — but each
-  reviewer sees only ONE chunk at a time, so a change that breaks
-  compilation in another file (a renamed/retyped symbol with a caller
-  the chunk reviewer never saw) or a bug only a test catches can slip
-  through. Your single job: make this repository actually BUILD and its
+  You are a release engineer. A change was just applied to ONE site of this
+  repository. Your single job: make the repository actually BUILD and its
   tests PASS using the repo's OWN tooling, and leave a script the
   deterministic gate can re-run.
 
   STEPS:
-  1. Detect how THIS repo builds and tests itself — read the
-     `verify-build` skill. Use the repo's own toolchain: a task runner /
-     Makefile target, a package-manager test script, or a language
-     build+test command, HONOURING any pinned toolchain (version
-     managers, lockfiles, devbox, GOTOOLCHAIN). Do NOT assume a language.
+  1. Detect how THIS repo builds and tests itself — read the `verify-build`
+     skill. Use the repo's own toolchain (a task runner / Makefile target, a
+     package-manager test script, or a language build+test command),
+     HONOURING any pinned toolchain (version managers, lockfiles, devbox,
+     GOTOOLCHAIN). Do NOT assume a language.
   2. Write an executable POSIX-sh script to
      `{{vars.workspace_dir}}/.whole_improve_loop.verify.sh` that runs the
-     repo's build AND its tests (or the closest fast equivalent) and
-     exits non-zero on any failure. Keep it to the commands a developer
-     of THIS repo would run; no network-heavy or destructive steps.
+     repo's build AND its tests (or the closest fast equivalent) and exits
+     non-zero on any failure. Keep it to the commands a developer of THIS
+     repo would run; no network-heavy or destructive steps.
   3. Run it. If it FAILS, the failure is almost always introduced by the
-     just-applied review fixes — read the error and FIX it at the source
-     (update the missed caller, correct the signature, fix the test) with
-     the SMALLEST change that restores build+tests. Do NOT refactor or
-     change behaviour beyond what is needed to compile and pass. Re-run
-     until green.
+     just-applied change — read the error and FIX it at the source (update
+     the missed caller, correct the signature, fix the test) with the
+     SMALLEST change that restores build+tests. Do NOT refactor or change
+     behaviour beyond what is needed to compile and pass. Re-run until green.
   4. If the repo genuinely has no build/test system (pure docs/config),
      write a script that echoes that and exits 0, and say so.
 
-  A deterministic tool node will RE-RUN your script and gate the commit on
-  its real exit code, so claiming "it passes" without making it pass is
-  pointless. Output prepared=true once
-  `.whole_improve_loop.verify.sh` exists and reflects the repo's real
-  build+test; summary = the command you settled on and what you fixed.
+  A deterministic tool node RE-RUNS your script and gates the commit on its
+  real exit code, so claiming "it passes" without making it pass is
+  pointless. Output prepared=true once `.whole_improve_loop.verify.sh`
+  exists and reflects the repo's real build+test; summary = the command you
+  settled on and what you fixed.
 
 prompt verify_user:
   Repository to verify: {{vars.workspace_dir}}
@@ -1820,6 +460,145 @@ prompt verify_user:
   the first attempt — when present, fix exactly what it shows, it is the
   real build/test failure):
   {{input.fail_log}}
+
+## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
+
+prompt finalize_mr_system:
+  You finalize a converged improvement run by opening ONE merge/pull
+  request for the SERIES of per-item commits this run produced, then
+  (optionally) posting the MR link back to the source issue. You make NO
+  further code changes.
+
+  Read the `forge-mr-create` skill FIRST — it tells you how to detect the
+  forge, authenticate from the mounted forge_token, push the branch, and
+  open the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+
+  Procedure:
+    1. Confirm there are commits to ship: the run's HEAD must be ahead of
+       the base (`git rev-list --count <base>..HEAD` > 0). If not, set
+       opened=false with skipped_reason "no commits ahead of base" — do NOT
+       open an empty MR.
+    2. Determine the branch name (mr_branch if set, else a stable
+       iterion/improve/<run-id> name) and the base (mr_base if set, else the
+       repo's default branch — see the skill).
+    3. Authenticate the matching forge CLI from the mounted forge_token file
+       when present; otherwise assume host auth. If neither is available,
+       set opened=false with a precise skipped_reason — never pretend.
+    4. Push HEAD to the branch on the origin remote, then open the MR/PR
+       from that branch into the base, with a clear title + body
+       summarising the improvement axis and the items landed (use
+       scope_notes for context).
+    5. If source_issue_ref is set, post the opened MR URL back to it: a
+       forge issue URL → comment via the same forge CLI; a "native:<id>"
+       ref → use the board comment tool. Set back_linked accordingly.
+
+  Return opened, url, branch, back_linked, skipped_reason and a short
+  summary. Be honest: report exactly what happened.
+
+prompt finalize_mr_user:
+  Workspace: {{input.workspace_dir}}
+  Desired branch (may be empty → derive): {{input.mr_branch}}
+  Base (may be empty → repo default branch): {{input.mr_base}}
+  Source issue to back-link (may be empty): {{input.source_issue_ref}}
+  Context / scope: {{input.scope_notes}}
+
+  Push the branch, open the MR/PR, post the back-link when a source issue
+  is given, and return the structured result.
+
+## ─── Schemas ────────────────────────────────────────────────────
+
+## next_item's input: the edge-relayed cursor. incoming_cursor is the
+## `advance` compute's carry_next (cursor+1) on the advancing return paths;
+## absent on entry / enumerate-return / re-enum-continue, where next_item
+## seeds from .whole_improve_loop.state (the crash-safe disk cursor), else 0.
+schema next_item_input:
+  incoming_cursor: int
+
+## next_item's output: THIS item + deterministic routing flags + the cursor
+## the `advance` compute reads to emit cursor+1.
+schema next_item_output:
+  ## Routing flags (mutually exclusive by construction — see the node):
+  needs_enumerate: bool      ## no work-list on disk yet → run enumerate
+  capped: bool               ## cursor >= max_items → stop + ship (hard cap)
+  exhausted: bool            ## work-list processed → run re_enumerate
+  has_item: bool             ## an item is ready to transform (the fallthrough)
+  ## The current item (empty when has_item is false):
+  item_id: string
+  item_title: string
+  item_targets: string
+  item_change_spec: string
+  ## The index this pass is USING (persisted crash-safe to disk). `advance`
+  ## reads it (in the loop body, fresh) to emit cursor+1 for the next item.
+  cursor: int
+  total_items: int
+  max_items: int
+  ## Declared-loop caps, scaled to max_items so a pathological axis can't
+  ## grind past the bound (the cycle-declaration satisfiers + backstops).
+  sweep_max: int
+  transform_max: int
+
+schema enumerate_output:
+  total_items: int
+  summary: string
+
+schema enumerate_input:
+  workspace_dir: string
+
+schema re_enumerate_output:
+  found_more: bool
+  appended_count: int
+  summary: string
+
+schema transform_input:
+  item_id: string
+  item_title: string
+  item_targets: string
+  item_change_spec: string
+  ## Filled only on a review-reject re-transform of the SAME item.
+  blockers: string[]
+  fix_plan: string
+
+schema transform_output:
+  applied: bool
+  summary: string
+
+schema review_input:
+  item_title: string
+  item_targets: string
+  item_change_spec: string
+
+schema verdict_output:
+  approved: bool
+  ## family is enum-constrained so a hallucinated third value can't bypass
+  ## the family-aware routing and fall through the graph — the validator
+  ## rejects it and the parse_fallback retry forces a valid family.
+  family: string [enum: "claude", "gpt"]
+  blockers: string[]
+  fix_plan: string
+  confidence: string [enum: "low", "medium", "high"]
+
+## review_gate normalises the reviewer verdict into the commit/re-transform
+## decision. `approved` is SOFT — a rejection with NO concrete blocker, or a
+## low-confidence rejection, is treated as approval (nothing concrete to
+## fix, so commit rather than spin the transform). Only a
+## medium/high-confidence rejection WITH a concrete blocker routes back to
+## transform.
+schema review_state:
+  approved: bool
+  family: string
+  blockers: string[]
+  fix_plan: string
+
+## advance computes the NEXT cursor (cursor+1) for the sweep's advancing
+## return paths (commit / verify-skip / review-skip). It exists to keep the
+## advance value OFF the loop-back edge's own head node: reading
+## outputs.next_item on a next_item→…→next_item back-edge returns a stale
+## (loop-entry-frozen) value, so the return edge reads outputs.advance.carry
+## instead — the same discipline the old bot used with streak_check.carry_*.
+## next_item's disk cursor is the crash-safe source of truth; this only
+## supplies the +1 the advancing paths hand back.
+schema advance_state:
+  carry_next: int
 
 schema verify_input:
   fail_log: string
@@ -1838,27 +617,227 @@ schema verify_result:
   exit_code: int
   log_tail: string
 
+schema commit_result:
+  success: bool
+  output: string
+
+schema mr_gate_output:
+  open_mr: bool
+
+schema finalize_mr_input:
+  workspace_dir: string
+  mr_branch: string
+  mr_base: string
+  source_issue_ref: string
+  scope_notes: string
+
+schema finalize_mr_output:
+  opened: bool
+  url: string
+  branch: string
+  back_linked: bool
+  skipped_reason: string
+  summary: string
+
+## ─── Nodes ──────────────────────────────────────────────────────
+
+## next_item (ADR-057) — the deterministic work-list + cursor reader and
+## the sweep's ENTRY. It mirrors the retired snapshot_chunk's role: it is
+## the ONLY filesystem writer of the cursor, it runs at the START of every
+## item, and it persists the cursor it is USING (NOT an eager +1) so a crash
+## re-processes the in-flight item. The advance rides the `advance` compute
+## (cursor+1) on the commit/skip return paths; a re-transform stays on the
+## same item, and an enumerate/re-enum return re-seeds from the persisted disk
+## cursor. It reads the work-list written by enumerate/re_enumerate and
+## DETERMINISTICALLY drops any item without a concrete target (ADR-057: an
+## item with no nameable target is dropped, not guessed), so a fuzzy
+## enumeration can't inject work.
+##
+## Resumability: on a re-dispatch the work-list file and the cursor are on
+## disk, so next_item (the entry) resumes mid-sweep — has_item routes
+## straight to transform without re-enumerating; a fresh run finds no
+## work-list → needs_enumerate → enumerate.
+##
+## sh -c is dash on some hosts / bash in devbox — the body is plain POSIX +
+## python3 (the verify-build toolchain). Keep it double-quote-free so
+## `python3 -c "..."` stays intact, and NO backticks inside (the E012
+## raw-string gotcha).
+tool next_item:
+  command: `WS={{vars.workspace_dir}} MAXITEMS={{vars.max_items}} STATE_CURSOR={{input.incoming_cursor}} python3 -c "
+import os, json
+
+ws = os.environ.get('WS', '.')
+try:
+    max_items = int(os.environ.get('MAXITEMS', '120') or '120')
+except (ValueError, TypeError):
+    max_items = 120
+if max_items <= 0:
+    max_items = 120
+
+worklist_path = os.path.join(ws, '.whole_improve_loop.worklist.json')
+state_path = os.path.join(ws, '.whole_improve_loop.state')
+
+# --- load + validate the work-list (written by enumerate / re_enumerate) ---
+# ADR-057: drop any item without a concrete, nameable target -- a target-less
+# item is guessed, not found. A missing / unreadable / non-array file means no
+# work-list yet -> needs_enumerate.
+items = []
+have_worklist = os.path.exists(worklist_path)
+if have_worklist:
+    try:
+        with open(worklist_path, 'r', encoding='utf-8') as wf:
+            raw = json.load(wf)
+        if not isinstance(raw, list):
+            raise ValueError('worklist is not a JSON array')
+        for it in raw:
+            if not isinstance(it, dict):
+                continue
+            targets = str(it.get('targets', '') or '').strip()
+            if not targets:
+                continue
+            title = str(it.get('title', '') or '').strip()
+            items.append({
+                'id': str(it.get('id', '') or ('item-' + str(len(items) + 1))),
+                'title': title or targets[:60],
+                'targets': targets,
+                'change_spec': str(it.get('change_spec', '') or '').strip(),
+            })
+    except (OSError, IOError, ValueError, TypeError):
+        items = []
+        have_worklist = False
+
+total_items = len(items)
+
+# --- cursor (crash-safe, non-eager; the snapshot_chunk discipline) ---
+cursor = 0
+try:
+    with open(state_path, 'r', encoding='utf-8') as sf:
+        st = json.load(sf)
+    if isinstance(st, dict):
+        cursor = int(st.get('cursor', 0) or 0)
+except (OSError, IOError, ValueError, TypeError):
+    cursor = 0
+if cursor < 0:
+    cursor = 0
+# The edge-fed carry wins (verdict-coupled advance), else disk on a fresh
+# dispatch. float() tolerates a value the expr engine stringifies as '6'/'6.0';
+# an empty/literal placeholder (entry, no inbound edge) parse-fails -> disk.
+try:
+    incoming = int(float((os.environ.get('STATE_CURSOR', '') or '').strip()))
+    if incoming >= 0:
+        cursor = incoming
+except (ValueError, TypeError):
+    pass
+
+# Persist the cursor this pass is USING -- NOT cursor+1. The advance rides the
+# commit/skip loop-return edge as the advance compute carry_next, so a run
+# that dies mid-item leaves the cursor AT that item and a re-dispatch
+# re-processes it. enumerate/re-enum returns carry NO cursor and re-seed from
+# this persisted value (the crash-safe disk cursor).
+try:
+    with open(state_path, 'w', encoding='utf-8') as sf:
+        json.dump({'cursor': int(cursor)}, sf)
+except (OSError, IOError):
+    pass
+
+needs_enumerate = (not have_worklist)
+capped = (have_worklist and cursor >= max_items)
+exhausted = (have_worklist and not capped and cursor >= total_items)
+has_item = (have_worklist and not capped and cursor < total_items)
+
+item = items[cursor] if has_item else {'id': '', 'title': '', 'targets': '', 'change_spec': ''}
+
+# Loop caps scaled to max_items. Worst-case sweep advances ~= commits/skips
+# (<= max_items) + re-enum rounds (<= max_items, >=1 item each) + enumerate(1);
+# transform re-loops are review-reject retries across the run. Generous
+# headroom -- next_item's capped -> stop is the primary cap; these are the
+# cycle-declaration satisfiers + backstops.
+sweep_max = 2 * max_items + 30
+transform_max = 2 * max_items + 20
+
+print(json.dumps({
+    'needs_enumerate': needs_enumerate,
+    'capped': capped,
+    'exhausted': exhausted,
+    'has_item': has_item,
+    'item_id': item['id'],
+    'item_title': item['title'],
+    'item_targets': item['targets'],
+    'item_change_spec': item['change_spec'],
+    'cursor': int(cursor),
+    'total_items': int(total_items),
+    'max_items': int(max_items),
+    'sweep_max': int(sweep_max),
+    'transform_max': int(transform_max),
+}))
+"`
+  output: next_item_output
+
+## enumerate — whole-repo adaptive agent that WRITES the ordered work-list.
+## claude_code (full native toolset) so it reads the repo by its real
+## structure like native Claude Code. Writes
+## .whole_improve_loop.worklist.json (next_item reads it) — the same
+## "adaptive agent writes a file, deterministic node reads it" pattern as
+## verify_build/verify_run.
+agent enumerate:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
+  input: enumerate_input
+  output: enumerate_output
+  system: enumerate_system
+  user: enumerate_user
+  session: fresh
+  interaction: human
+
+## re_enumerate — the convergence pass. Same agent shape as enumerate; it
+## re-scans for remaining sites and APPENDS them to the work-list, or
+## reports found_more=false (the done-oracle).
+agent re_enumerate:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
+  input: enumerate_input
+  output: re_enumerate_output
+  system: re_enumerate_system
+  user: re_enumerate_user
+  session: fresh
+  interaction: human
+
+## transform — the adaptive fixer. claude_code (full tools, whole-repo
+## context) applies the axis for THIS item's targets. session: fresh — each
+## item is an independent change.
+agent transform:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
+  input: transform_input
+  output: transform_output
+  system: transform_system
+  user: transform_user
+  session: fresh
+  interaction: human
+
+## verify_build — adaptive, stack-agnostic build/test repair (writes
+## .whole_improve_loop.verify.sh). fresh: whole-tree buildability, not an
+## item session. high, not max: mechanical build-repair, not deep review.
 agent verify_build:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  ## high, not max: this is mechanical build-repair work, not deep review.
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
   input: verify_input
   output: verify_plan
   system: verify_system
   user: verify_user
-  ## fresh: a distinct task from the chunk reviewers/fixers; it inspects the
-  ## whole tree's buildability, not a single inherited chunk session.
   session: fresh
   interaction: human
 
-## verify_run is the DETERMINISTIC half: it re-runs the agent-prepared
+## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
 ## .whole_improve_loop.verify.sh and reports the REAL exit code. No language
-## or package manager appears here — it just executes whatever the adaptive
-## verify_build agent wrote, so the gate stays universal while the verdict
-## stays deterministic. Runs in the same sandbox the agent used, so the
-## toolchain it found is present. python3 (the snapshot_chunk toolchain) is
-## used for safe JSON + subprocess capture; keep the body double-quote-free.
+## / package manager appears here — it executes whatever verify_build wrote,
+## so the gate stays universal while the verdict stays deterministic.
+## python3 for safe JSON + subprocess capture; double-quote-free body, no
+## backticks (E012).
 tool verify_run:
   command: `WS={{vars.workspace_dir}} python3 -c "
 import os, subprocess, json
@@ -1888,192 +867,93 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 "`
   output: verify_result
 
-## ─── PER-UNIT build/test gate (ADR-055 2a) ─────────────────────────
-## Every incremental commit_unit must be BUILD+TEST GREEN ON ITS OWN, so an
-## interrupted run leaves a chain of individually-green commits (not just the
-## final commit gated by verify_build/verify_run). Historically commit_unit
-## landed a converged unit with NO build/test gate, so an intermediate commit
-## could compile-break the tree (a chunk reviewer approves from chunk SOURCE
-## and never sees a cross-file caller / a test-only bug).
-##
-## unit_verify_build + unit_verify_run MIRROR the finalization gate
-## verify_build/verify_run EXACTLY — same prompts (verify_system/verify_user),
-## same schemas (verify_input/verify_plan/verify_result), same deterministic
-## re-run of .whole_improve_loop.verify.sh gated on the REAL exit code. They
-## are separate NODES only so the routing differs (commit_unit + loop back to
-## the backlog, vs commit_changes + finalize). STACK-AGNOSTIC by construction:
-## no language / package manager is named here — the adaptive agent reads
-## skills/verify-build.md and dispatches to whatever THIS repo uses, identical
-## to verify_build. The per-unit verify→fix sub-loop is bounded by
-## unit_verify_loop(3), exactly like the final verify_loop(3).
-agent unit_verify_build:
+## Family selector (ADR-052, see branch-improve-loop): condition (NEVER
+## round_robin — it ignores `when` guards) so a MONO run routes to a single
+## family. The GPT edge is topology-guarded; the CLAUDE edge is the
+## unconditional default (C012). DUAL alternation rides
+## loop.sweep_loop.iteration parity (per item).
+router alt:
+  mode: condition
+
+judge reviewer_claude:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  ## high, not max: mechanical build-repair work, not deep review (see verify_build).
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  input: verify_input
-  output: verify_plan
-  system: verify_system
-  user: verify_user
-  ## fresh: whole-tree buildability, not a single inherited chunk session
-  ## (same rationale as verify_build).
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
+  input: review_input
+  output: verdict_output
+  ## Persist the verdict as a versioned artifact so each item's approval /
+  ## blockers is inspectable in the studio's Artifact tab.
+  publish: verdict_claude
+  system: review_system
+  user: review_user_claude
   session: fresh
   interaction: human
 
-## Deterministic half of the per-unit gate — re-runs the agent-prepared
-## .whole_improve_loop.verify.sh and reports the REAL exit code. Byte-identical
-## to verify_run's body (no language/package manager named); a distinct node so
-## its `when passed` edge routes to commit_unit instead of commit_changes.
-tool unit_verify_run:
-  command: `WS={{vars.workspace_dir}} python3 -c "
-import os, subprocess, json
-ws = os.environ.get('WS', '.')
-script = os.path.join(ws, '.whole_improve_loop.verify.sh')
-if not os.path.exists(script):
-    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'unit_verify_build produced no .whole_improve_loop.verify.sh; per-unit build/test gate SKIPPED (counted as pass, but surfaced) -- unit_verify_build should write the script'}))
-    raise SystemExit(0)
-rc = 0
-out = ''
-try:
-    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
-    out = p.stdout or ''
-    rc = p.returncode
-except subprocess.TimeoutExpired as e:
-    out = (e.output or '') + chr(10) + '[unit verify timed out after 1500s]'
-    rc = 124
-except Exception as e:
-    out = 'unit_verify_run could not execute the script: ' + str(e)
-    rc = 1
-try:
-    with open(os.path.join(ws, '.whole_improve_loop.verify.log'), 'w', encoding='utf-8') as lf:
-        lf.write(out)
-except OSError:
-    pass
-print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
-"`
-  output: verify_result
+judge reviewer_gpt:
+  ## Explicit backend pin: "openai/gpt-5.5" only works via claw; without it
+  ## the auto-resolver would route the node through claude_code, which
+  ## doesn't recognise openai/* models.
+  backend: "claw"
+  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
+  input: review_input
+  output: verdict_output
+  publish: verdict_gpt
+  system: review_system
+  user: review_user_gpt
+  session: fresh
+  ## claw needs snake_case tool names to read the workspace + run git.
+  tools: [bash, read_file, glob, grep]
+  tool_max_steps: 30
+  interaction: human
 
-schema commit_result:
-  success: bool
-  output: string
+## review_gate — deterministic commit/re-transform decision. No LLM, no
+## shell. Soft-approve: a rejection with no concrete blocker (or a
+## low-confidence one) commits rather than spinning the transform.
+compute review_gate:
+  output: review_state
+  expr:
+    approved: "input.approved || length(input.blockers) == 0 || input.confidence == 'low'"
+    family: "input.family"
+    blockers: "input.blockers"
+    fix_plan: "input.fix_plan"
 
-schema mr_gate_output:
-  open_mr: bool
+## advance — the cursor-advance compute. Reads the current cursor from
+## next_item's output (fresh, read in the loop BODY — not on the loop-back
+## edge) and emits cursor+1. The advancing return paths (commit_item,
+## verify-skip, review-skip) route THROUGH it, and the advance→next_item
+## loop-back edge reads outputs.advance.carry_next — never next_item's own
+## output on its back-edge (that reads a loop-entry-frozen value). No LLM,
+## no shell.
+compute advance:
+  output: advance_state
+  expr:
+    carry_next: "outputs.next_item.cursor + 1"
 
-schema finalize_mr_input:
-  workspace_dir: string
-  mr_branch: string
-  mr_base: string
-  source_issue_ref: string
-  scope_notes: string
-
-schema finalize_mr_output:
-  ## opened: true when a merge/pull request was created (or already
-  ## existed for the branch). url: the MR/PR URL. branch: the pushed
-  ## branch. back_linked: true when the URL was posted to source_issue_ref.
-  ## skipped_reason: precise reason when opened=false (no forge auth, no
-  ## remote, nothing to push) — never a silent no-op.
-  opened: bool
-  url: string
-  branch: string
-  back_linked: bool
-  skipped_reason: string
-  summary: string
-
-## commit_unit — ADR-055 INCREMENTAL COMMIT. Fires the moment a UNIT (chunk)
-## converges (streak_check.unit_converged), BEFORE the cursor advances to the
-## next unit, so every completed unit is banked on the run's worktree branch
-## and an interrupted / budget-capped run keeps all the units it finished
-## (the old design committed nothing until an unreachable global streak).
-## Includes UNTRACKED files the fixer created — `git add -A` stages new files
-## too (the right-artifact rule: `git diff HEAD` the reviewers use omits
-## untracked, so commits MUST include them, or a feature that ADDS files never
-## lands). EXCLUDES the bot's own scratch dotfiles (state/verify/chunk) exactly
-## like commit_changes — `add -A` then `reset` is ignore-agnostic (see the
-## commit_changes note). Message carries the unit's chunk label. The env-prefix
-## `LABEL=…` on the git commit shell-escapes the (possibly space/paren-bearing)
-## label as one token; ${LABEL:-workspace} guards an empty label. No-op-safe:
-## `diff --cached --quiet` makes no empty commit when a unit converged with no
-## code change (a re-review that only confirmed cleanliness).
-tool commit_unit:
-  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} reset -q -- .whole_improve_loop.state .whole_improve_loop.verify.sh .whole_improve_loop.verify.log .whole_improve_loop.chunk.md >/dev/null 2>&1 || true; git -C {{vars.workspace_dir}} diff --cached --quiet || LABEL={{input.label}} git -C {{vars.workspace_dir}} commit -m "chore(improve): ${LABEL:-workspace} production-readiness pass"; }`
+## commit_item (ADR-057 incremental commit) — ONE commit per work-item.
+## Reuses the retired commit_unit git logic verbatim: `git add -A` stages
+## UNTRACKED files too (the right-artifact rule: `git diff HEAD` omits
+## untracked, so commits MUST include them or a feature that ADDS files
+## never lands), then unstages the bot's own scratch dotfiles
+## (state/worklist/verify) — `add -A` then `reset` is ignore-agnostic so it
+## works whether or not the target repo gitignores them. Message carries the
+## item's title (LABEL= shell-escapes a space/paren-bearing title as one
+## token; ${LABEL:-workspace} guards an empty one). No-op-safe: `diff
+## --cached --quiet` makes no empty commit when a transform changed nothing.
+tool commit_item:
+  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} reset -q -- .whole_improve_loop.state .whole_improve_loop.worklist.json .whole_improve_loop.verify.sh .whole_improve_loop.verify.log >/dev/null 2>&1 || true; git -C {{vars.workspace_dir}} diff --cached --quiet || LABEL={{input.item_title}} git -C {{vars.workspace_dir}} commit -m "refactor(improve): ${LABEL:-workspace}"; }`
   output: commit_result
 
-## commit_changes is the FINALIZATION commit on `stop` (backlog processed):
-## the per-unit commit_unit already landed each converged unit, so this catches
-## the LAST unit (whose stop pass routes straight to the build/test gate, not
-## through commit_unit) plus any fix the verify_build gate had to apply to make
-## the whole tree build+test green. EXCLUDES the bot's own
-## .whole_improve_loop.state rotation/streak scratch file (committing it would
-## pollute the target repo's history). We stage everything then unstage the
-## state file — NOT an `:!.whole_improve_loop.state` exclude-pathspec: when the
-## target already gitignores the state file (iterion does, see this repo's
-## .gitignore), git treats the excluded-but-ignored path as explicitly named
-## and aborts `add` with "paths are ignored by .gitignore, use -f" (exit 1
-## under the sandbox git), failing the whole convergence at the finish line.
-## `add -A` + `reset` is ignore-agnostic: add -A naturally skips the file when
-## it's ignored, reset unstages it when it's not. Bonus: when the finalization
-## has nothing left to commit (all units already landed, verify made no fix),
-## nothing stays staged and the `diff --cached --quiet` guard makes NO empty
-## commit.
-tool commit_changes:
-  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} reset -q -- .whole_improve_loop.state .whole_improve_loop.verify.sh .whole_improve_loop.verify.log .whole_improve_loop.chunk.md >/dev/null 2>&1 || true; git -C {{vars.workspace_dir}} diff --cached --quiet || git -C {{vars.workspace_dir}} commit -m "chore(improve): production-readiness pass (whole_improve_loop)"; }`
-  output: commit_result
-
-## ─── Nodes : MR/PR finalization (opt-in) ────────────────────────
-
-## mr_gate lifts vars.open_mr into a bool output field so the two
-## outgoing edges use the C012-exhaustive simple form (when open_mr /
-## when not open_mr). No LLM, no shell.
+## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
+## edges use the C012-exhaustive simple form. No LLM, no shell.
 compute mr_gate:
   output: mr_gate_output
   expr:
     open_mr: "vars.open_mr"
 
-prompt finalize_mr_system:
-  You finalize a converged improvement run by opening ONE merge/pull
-  request for the commit this run produced, then (optionally) posting
-  the MR link back to the source issue. You make NO further code changes.
-
-  Read the `forge-mr-create` skill FIRST — it tells you how to detect the
-  forge, authenticate from the mounted forge_token, push the branch, and
-  open the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
-
-  Procedure:
-    1. Confirm there are commits to ship: the run's HEAD must be ahead of
-       the base (`git rev-list --count <base>..HEAD` > 0). If not, set
-       opened=false with skipped_reason "no commits ahead of base" — do
-       NOT open an empty MR.
-    2. Determine the branch name (mr_branch if set, else a stable
-       iterion/improve/<run-id> name) and the base (mr_base if set, else
-       the repo's default branch — see the skill).
-    3. Authenticate the matching forge CLI from the mounted forge_token
-       file when present; otherwise assume host auth. If neither is
-       available, set opened=false with a precise skipped_reason — never
-       pretend.
-    4. Push HEAD to the branch on the origin remote, then open the MR/PR
-       from that branch into the base, with a clear title + body
-       summarising the improvements (use scope_notes for context).
-    5. If source_issue_ref is set, post the opened MR URL back to it: a
-       forge issue URL → comment via the same forge CLI; a "native:<id>"
-       ref → use the board comment tool. Set back_linked accordingly.
-
-  Return opened, url, branch, back_linked, skipped_reason and a short
-  summary. Be honest: report exactly what happened.
-
-prompt finalize_mr_user:
-  Workspace: {{input.workspace_dir}}
-  Desired branch (may be empty → derive): {{input.mr_branch}}
-  Base (may be empty → repo default branch): {{input.mr_base}}
-  Source issue to back-link (may be empty): {{input.source_issue_ref}}
-  Context / scope: {{input.scope_notes}}
-
-  Push the branch, open the MR/PR, post the back-link when a source issue
-  is given, and return the structured result.
-
-## finalize_mr — opt-in MR/PR creation. claude_code so the bundled
-## forge-mr-create skill is mirrored and the board comment tool (for a
-## native back-link) is available. Gated by mr_gate (open_mr).
+## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-item
+## commits. claude_code so the bundled forge-mr-create skill is mirrored and
+## the board comment tool (native back-link) is available.
 agent finalize_mr:
   backend: "claude_code"
   model: "${ITERION_WHOLE_IMPROVE_MR_MODEL:-claude-opus-4-8}"
@@ -2089,18 +969,16 @@ agent finalize_mr:
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow whole_improve_loop:
-  ## Entry is the deterministic chunker, not the round-robin router:
-  ## every pass re-snapshots the workspace (picking up the fixer's
-  ## edits) and selects this pass's chunk BEFORE the reviewer runs.
-  entry: snapshot_chunk
+  ## Entry is the deterministic work-list/cursor reader. On a fresh run it
+  ## finds no work-list → routes to enumerate; on a re-dispatch it finds the
+  ## persisted work-list + cursor and resumes mid-sweep.
+  entry: next_item
 
-  ## Container isolation. Reviewers run `git diff`, the project's
-  ## tests, linters, smoke-runs, etc. — all of which we'd rather not expose
-  ## to the host. Inline mode (vs `mode: auto`) chosen so the
-  ## post_create script that installs claude inside the container is
-  ## honoured — see feature_dev/main.bot for the full rationale.
+  ## Container isolation. transform/verify run the repo's build, tests,
+  ## linters; reviewers run git. Inline sandbox config (vs `mode: auto`) so
+  ## the post_create that installs claude inside the container is honoured —
+  ## see feature_dev/main.bot for the full rationale.
   sandbox:
-    ## See feature_dev/main.bot for the rationale on full vs slim.
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "1000:1000"
     mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
@@ -2117,125 +995,119 @@ workflow whole_improve_loop:
     threshold: 0.9
     preserve_recent: 8
 
-  ## snapshot_chunk (the chunker) runs first each pass, then hands off
-  ## to the round-robin router. Its output (this pass's chunk) is read
-  ## by both reviewer edges below.
-  snapshot_chunk -> alt
+  ## ── next_item routing (first-match-wins; the fallthrough = has an item)
+  ## No work-list on disk → build it. (Fresh run only; a re-dispatch finds
+  ## the persisted work-list and skips this.)
+  next_item -> enumerate when needs_enumerate
+  ## Hard cap reached → stop and ship what is banked (the convergence
+  ## backstop for a pathological / unbounded axis).
+  next_item -> mr_gate when capped
+  ## Work-list processed → convergence pass (the done-oracle).
+  next_item -> re_enumerate when exhausted
+  ## Otherwise an item is ready → apply the axis to its targets.
+  next_item -> transform
 
-  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
-  ## Each reviewer receives THIS pass's chunk (from snapshot_chunk) plus
-  ## the OTHER family's most recent fixer pushback so it knows which
-  ## items to skip — the alternation guarantees the cross-family
-  ## pushback comes from the previous iteration's fixer of the opposing
-  ## family. On the first iteration both `outputs.fix_*` are empty →
-  ## fields render as empty strings and the prompt's "do not re-flag
-  ## these items" section is harmless.
+  ## enumerate wrote the work-list → start the sweep. No incoming_cursor: on a
+  ## fresh run next_item's disk cursor is 0 (persisted by the needs_enumerate
+  ## pass), so the sweep starts at item 0. This closes the
+  ## next_item→enumerate→next_item cycle → declared sweep_loop; on loop-cap
+  ## exhaustion it falls through to `fail`.
+  enumerate -> next_item as sweep_loop("{{outputs.next_item.sweep_max}}")
+  enumerate -> fail
+
+  ## transform applied the axis → deterministic build/test gate. verify_build
+  ## adapts to the repo's own tooling + writes the verify script; verify_run
+  ## re-runs it and gates on the REAL exit code.
+  transform -> verify_build with { fail_log: "" }
+  verify_build -> verify_run
+  ## Green → review the change (route into the family selector).
+  verify_run -> alt when passed
+  ## Red → loop back to verify_build to fix the breakage, bounded (mirror of
+  ## the ADR-055 verify_loop(3)). The gate's log_tail is the failure to fix.
+  verify_run -> verify_build as verify_loop(3) with {
+    fail_log: "{{outputs.verify_run.log_tail}}"
+  }
+  ## Still red after the bounded retries → SKIP the item WITHOUT committing
+  ## broken code (never land a red build) and ADVANCE the cursor (via the
+  ## `advance` compute). Its uncommitted changes stay in the tree for the
+  ## operator; the sweep moves on. Unconditional fallthrough after the
+  ## verify_loop(3) retries are spent.
+  verify_run -> advance
+
+  ## Family selector: DUAL alternates claude ↔ gpt by sweep-iteration parity;
+  ## MONO routes to mono_family. The GPT edge is topology-guarded (ADR-052 —
+  ## round_robin would ignore this `when`); the CLAUDE edge is the
+  ## unconditional default. (transform/verify/review all read
+  ## {{outputs.next_item.*}} for the current item, so a re-transform loop
+  ## keeps the same item without threading its fields on every edge.)
+  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.sweep_loop.iteration % 2 == 1)" with {
+    item_title: "{{outputs.next_item.item_title}}",
+    item_targets: "{{outputs.next_item.item_targets}}",
+    item_change_spec: "{{outputs.next_item.item_change_spec}}"
+  }
   alt -> reviewer_claude with {
-    prior_pushback: "{{outputs.fix_gpt.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
-    prior_change_rationale: "{{outputs.fix_gpt.change_rationale}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
-    chunk_content: "{{outputs.snapshot_chunk.chunk_content}}",
-    chunk_files: "{{outputs.snapshot_chunk.files}}",
-    chunk_file_list: "{{outputs.snapshot_chunk.chunk_file_list}}",
-    chunk_index_path: "{{outputs.snapshot_chunk.chunk_index_path}}",
-    context_mode: "{{vars.context_mode}}",
-    chunk_label: "{{outputs.snapshot_chunk.chunk_label}}",
-    chunk_index: "{{outputs.snapshot_chunk.chunk_index}}",
-    num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    chunked: "{{outputs.snapshot_chunk.chunked}}",
-    partial: "{{outputs.snapshot_chunk.partial}}",
-    unit_label: "{{outputs.snapshot_chunk.unit_label}}",
-    unit_part: "{{outputs.snapshot_chunk.unit_part}}",
-    unit_parts: "{{outputs.snapshot_chunk.unit_parts}}"
-  }
-  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
-    prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
-    prior_change_rationale: "{{outputs.fix_claude.change_rationale}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
-    chunk_content: "{{outputs.snapshot_chunk.chunk_content}}",
-    chunk_files: "{{outputs.snapshot_chunk.files}}",
-    chunk_file_list: "{{outputs.snapshot_chunk.chunk_file_list}}",
-    chunk_index_path: "{{outputs.snapshot_chunk.chunk_index_path}}",
-    context_mode: "{{vars.context_mode}}",
-    chunk_label: "{{outputs.snapshot_chunk.chunk_label}}",
-    chunk_index: "{{outputs.snapshot_chunk.chunk_index}}",
-    num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    chunked: "{{outputs.snapshot_chunk.chunked}}",
-    partial: "{{outputs.snapshot_chunk.partial}}",
-    unit_label: "{{outputs.snapshot_chunk.unit_label}}",
-    unit_part: "{{outputs.snapshot_chunk.unit_part}}",
-    unit_parts: "{{outputs.snapshot_chunk.unit_parts}}"
+    item_title: "{{outputs.next_item.item_title}}",
+    item_targets: "{{outputs.next_item.item_targets}}",
+    item_change_spec: "{{outputs.next_item.item_change_spec}}"
   }
 
-  ## Both reviewers feed into streak_check. The loop is attached
-  ## here so the runtime snapshots the reviewer's verdict as
-  ## `loop.review_loop.previous_output` for the NEXT iteration to
-  ## inspect — eliminating the manual `previous_verdict` relay.
-  reviewer_claude -> streak_check as review_loop("{{outputs.snapshot_chunk.loop_max}}") with {
+  ## Both reviewers feed the deterministic gate.
+  reviewer_claude -> review_gate with {
     approved: "{{outputs.reviewer_claude.approved}}",
     family: "{{outputs.reviewer_claude.family}}",
     blockers: "{{outputs.reviewer_claude.blockers}}",
     fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}",
-    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}",
-    files_reviewed: "{{outputs.reviewer_claude.files_reviewed}}",
-    chunk_file_list: "{{outputs.snapshot_chunk.chunk_file_list}}",
-    context_mode: "{{vars.context_mode}}",
-    num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    persisted_unit_streak: "{{outputs.snapshot_chunk.persisted_unit_streak}}",
-    persisted_unit_passes: "{{outputs.snapshot_chunk.persisted_unit_passes}}",
-    persisted_units_done: "{{outputs.snapshot_chunk.persisted_units_done}}",
-    cursor: "{{outputs.snapshot_chunk.cursor}}"
+    confidence: "{{outputs.reviewer_claude.confidence}}"
   }
-  reviewer_gpt -> streak_check as review_loop("{{outputs.snapshot_chunk.loop_max}}") with {
+  reviewer_gpt -> review_gate with {
     approved: "{{outputs.reviewer_gpt.approved}}",
     family: "{{outputs.reviewer_gpt.family}}",
     blockers: "{{outputs.reviewer_gpt.blockers}}",
     fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}",
-    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}",
-    files_reviewed: "{{outputs.reviewer_gpt.files_reviewed}}",
-    chunk_file_list: "{{outputs.snapshot_chunk.chunk_file_list}}",
-    context_mode: "{{vars.context_mode}}",
-    num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    persisted_unit_streak: "{{outputs.snapshot_chunk.persisted_unit_streak}}",
-    persisted_unit_passes: "{{outputs.snapshot_chunk.persisted_unit_passes}}",
-    persisted_units_done: "{{outputs.snapshot_chunk.persisted_units_done}}",
-    cursor: "{{outputs.snapshot_chunk.cursor}}"
+    confidence: "{{outputs.reviewer_gpt.confidence}}"
   }
 
-  ## RUN termination (ADR-055): the last unit just advanced AND the whole
-  ## backlog is processed (units_done+1 >= num_chunks) → run the deterministic
-  ## build/test gate BEFORE the finalization commit. Per-unit commits already
-  ## landed each earlier unit; this gate catches a cross-file build break or a
-  ## test-only bug the chunk reviewers could not see (they approve from chunk
-  ## source only — see the verify_build/verify_run section). verify_build
-  ## adapts to the repo's own tooling and fixes any breakage; verify_run
-  ## re-runs it and gates on the REAL exit code. This is checked FIRST among
-  ## streak_check's edges, so a converged last unit finalizes here rather than
-  ## routing to commit_unit.
-  streak_check -> verify_build when stop with { fail_log: "" }
-  verify_build -> verify_run
-  ## Green build+tests → finalization commit (last unit + any verify fix), THEN
-  ## finish.
-  verify_run -> commit_changes when passed
-  ## Red → loop back to verify_build to fix the breakage, bounded. The gate's
-  ## log_tail is handed back as the failure to fix.
-  verify_run -> verify_build as verify_loop(3) with {
-    fail_log: "{{outputs.verify_run.log_tail}}"
+  ## Approved → commit this item incrementally.
+  review_gate -> commit_item when approved with {
+    item_title: "{{outputs.next_item.item_title}}"
   }
-  ## Still red after the bounded retries → FAIL (never commit a broken tree;
-  ## the converge-on-broken backstop). The operator inspects the worktree +
-  ## the .whole_improve_loop.verify.log.
-  verify_run -> fail
+  ## Rejected with a concrete blocker → back to transform to fix exactly
+  ## that, bounded (transform_max, run-wide). This closes the
+  ## transform→verify→alt→reviewer→review_gate→transform cycle → declared
+  ## transform_loop. transform re-reads {{outputs.next_item.*}} for the item.
+  review_gate -> transform as transform_loop("{{outputs.next_item.transform_max}}") with {
+    blockers: "{{outputs.review_gate.blockers}}",
+    fix_plan: "{{outputs.review_gate.fix_plan}}"
+  }
+  ## transform_loop exhausted (a stubborn item the reviewer never approves) →
+  ## SKIP it (advance the cursor, leave it uncommitted) so one item can never
+  ## block the sweep. Unconditional fallthrough after the transform_loop
+  ## retries are spent.
+  review_gate -> advance
 
-  ## After committing, route through mr_gate: open an MR when open_mr,
-  ## else finish. finalize_mr pushes the run's HEAD + opens the MR/PR
-  ## and (when source_issue_ref is set) posts the URL back to the issue.
-  commit_changes -> mr_gate
+  ## Item committed → advance the cursor (via `advance`) and take the next item.
+  commit_item -> advance
 
+  ## advance emitted carry_next = cursor+1 → hand it back to next_item and take
+  ## the next item. Read from outputs.advance (NOT next_item's own output on its
+  ## back-edge, which reads a loop-entry-frozen value). Declared sweep_loop; on
+  ## exhaustion → fail.
+  advance -> next_item as sweep_loop("{{outputs.next_item.sweep_max}}") with {
+    incoming_cursor: "{{outputs.advance.carry_next}}"
+  }
+  advance -> fail
+
+  ## Convergence pass: re_enumerate re-scanned. Found more sites (appended to
+  ## the work-list) → continue the sweep WITHOUT advancing (next_item's disk
+  ## cursor still points at the first new item = the old total, so no
+  ## incoming_cursor is passed). Declared sweep_loop; on exhaustion → fail.
+  re_enumerate -> mr_gate when not found_more
+  re_enumerate -> next_item as sweep_loop("{{outputs.next_item.sweep_max}}")
+  re_enumerate -> fail
+
+  ## Converged (or capped) → optional MR path, else finish. finalize_mr
+  ## pushes the run's HEAD (the series of per-item commits) + opens the
+  ## MR/PR and (when source_issue_ref is set) posts the URL back.
   mr_gate -> finalize_mr when open_mr with {
     workspace_dir:    "{{vars.workspace_dir}}",
     mr_branch:        "{{vars.mr_branch}}",
@@ -2244,198 +1116,4 @@ workflow whole_improve_loop:
     scope_notes:      "{{vars.scope_notes}}"
   }
   mr_gate -> done when not open_mr
-
   finalize_mr -> done
-
-  ## ADR-055 INCREMENTAL COMMIT + PER-UNIT BUILD/TEST GATE (2a). A UNIT
-  ## converged (2 consecutive clean reviews) and it is NOT the last unit (else
-  ## `stop` above caught it). Before banking it, run the SAME deterministic
-  ## build/test gate the finalization uses — unit_verify_build (adaptive,
-  ## stack-agnostic, writes .whole_improve_loop.verify.sh) + unit_verify_run
-  ## (re-runs it, gates on the REAL exit code) — so every incremental commit is
-  ## individually green. A chunk reviewer approves from chunk SOURCE only and
-  ## can't see a cross-file compile break or a test-only bug; this gate can.
-  ## Listed AFTER the stop edge so a converged LAST unit finalizes via stop,
-  ## not here (first-match-wins).
-  streak_check -> unit_verify_build when unit_converged with { fail_log: "" }
-  unit_verify_build -> unit_verify_run
-  ## GREEN per-unit build+tests → commit the unit NOW (before the cursor
-  ## advances) so it is banked even if the run is later interrupted. commit_unit
-  ## carries the unit's chunk label for the message. snapshot_chunk's output is
-  ## still available this pass, so the label resolves here.
-  unit_verify_run -> commit_unit when passed with {
-    label: "{{outputs.snapshot_chunk.chunk_label}}"
-  }
-  ## RED → loop back to unit_verify_build to fix the breakage, bounded by
-  ## unit_verify_loop(3) (mirrors the final verify_loop(3)). The gate's log_tail
-  ## is handed back as the exact failure to fix, so the unit is made green
-  ## BEFORE it commits.
-  unit_verify_run -> unit_verify_build as unit_verify_loop(3) with {
-    fail_log: "{{outputs.unit_verify_run.log_tail}}"
-  }
-  ## Still RED after the bounded retries → SKIP the unit WITHOUT committing
-  ## broken code (force_skip semantics, ADR-055 "bounded per-unit iterations"):
-  ## advance the cursor via the ADVANCE carry tuple streak_check already
-  ## computed for this converged unit (carry_cursor = cursor+1,
-  ## carry_units_done = units_done+1), leaving the unit's changes UNCOMMITTED in
-  ## the working tree for the next pass / the final whole-tree verify_build gate
-  ## (which will try to fix them, then `fail` loudly if it can't) / the
-  ## operator. Consistent with force_skip (advance, count the unit done, leave
-  ## partial fixes uncommitted) — one un-buildable unit can never block the
-  ## backlog, and NO broken commit is ever landed. Listed last (unconditional
-  ## fallthrough), taken only once unit_verify_loop(3) is exhausted.
-  unit_verify_run -> snapshot_chunk with {
-    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
-    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
-    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
-    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
-  }
-  ## After committing the unit, loop back to snapshot_chunk with the ADVANCED
-  ## carry tuple (carry_cursor = cursor+1, carry_unit_streak = 0,
-  ## carry_unit_passes = 0, carry_units_done = units_done+1) so the next pass
-  ## reviews the NEXT unit. Not loop-bearing (the review_loop counter advances
-  ## on the reviewer→streak_check edge); still bounded by that counter.
-  commit_unit -> snapshot_chunk with {
-    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
-    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
-    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
-    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
-  }
-
-  ## FORCE-SKIP (ADR-055 "bounded per-unit iterations"): the current unit has
-  ## churned unit_passes+1 >= the per-unit bound without converging (and it is
-  ## not the last-unit stop case). Advance the cursor anyway (carry_cursor =
-  ## cursor+1, carry_units_done = units_done+1) so one stubborn unit can never
-  ## block the whole backlog. Its uncommitted partial fixes stay in the tree
-  ## and ride into the next unit's commit / the final finalization commit —
-  ## nothing is lost. Listed before the soft-approve edge so a clean-but-capped
-  ## pass still advances.
-  streak_check -> snapshot_chunk when force_skip with {
-    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
-    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
-    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
-    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
-  }
-
-  ## Otherwise approved (unit clean but not yet stable — needs a second
-  ## consecutive clean review, OR low-confidence rejection treated as
-  ## soft-approved, OR rejection without concrete blockers): keep reviewing
-  ## the SAME unit without fixing. Routes back to snapshot_chunk (not alt);
-  ## because carry_cursor DID NOT advance (unit not converged/skipped this
-  ## pass) the next pass re-reviews the same chunk, and snapshot_chunk -> alt
-  ## flips the family — building the per-unit streak toward convergence.
-  ## Expression form is kept so future authors can tighten the soft-approval
-  ## predicate.
-  ##
-  ## NOTE: this edge does NOT carry `review_loop` so the loop
-  ## counter (and the previous_output snapshot) is incremented
-  ## ONCE per cycle on the reviewer→streak_check edge above. The
-  ## cycle is still bounded because that edge IS loop-bearing.
-  ## It hands the carry tuple back to snapshot_chunk so the next snapshot
-  ## re-persists {cursor, unit_streak, unit_passes, units_done} to
-  ## .whole_improve_loop.state (crash-safe cross-run resume — ADR-055).
-  streak_check -> snapshot_chunk when "approved" with {
-    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
-    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
-    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
-    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
-  }
-
-  ## Medium/high-confidence rejection WITH concrete blockers: route
-  ## to the SAME-family fixer so it can inherit the reviewer's
-  ## session (one session per iteration per family — see
-  ## fix_claude / fix_gpt comments). `_session_id` reads directly
-  ## from the most recent reviewer output rather than going through
-  ## streak_check, because compute passthrough strips the
-  ## underscore-prefixed metadata fields.
-  ##
-  ## The `length(blockers) > 0` guard avoids invoking the fixer
-  ## when the reviewer rejected on coverage grounds alone (e.g.
-  ## "cumulative coverage is partial at iteration 0/15") with no
-  ## production-blocking issue identified. In that case the fixer
-  ## has nothing to fix — burning a session round-trip and tokens
-  ## (~$0.15/$0.43 observed in vibe_review run_1777560043656) only
-  ## to push back. The unconditional alt fallthrough below picks
-  ## those up so alternation continues without a wasted fix call.
-  ##
-  ## Edge order matters: iterion evaluates conditional edges top-
-  ## down, first match wins. We list both family-specific fixers
-  ## before the unconditional `done` fallthrough so loop-exhaustion
-  ## still terminates cleanly.
-  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_claude._session_id}}"
-  }
-  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_gpt._session_id}}"
-  }
-
-  ## Recovery cycle uses a separate loop name so its counter doesn't
-  ## interfere with the review_loop snapshot semantics. Sized large
-  ## enough to allow review_loop to be the binding constraint. Both
-  ## fixers share the loop counter — total fix attempts across both
-  ## families are capped at 20. Routes back to snapshot_chunk. ADR-055:
-  ## because this pass had blockers the unit did NOT converge, so
-  ## carry_cursor does NOT advance — the next pass RE-REVIEWS the SAME
-  ## (just-fixed) unit rather than moving on, which is the per-unit
-  ## review→fix→re-review loop. carry_unit_streak is 0 (a blocker resets it)
-  ## and carry_unit_passes increments toward the force-skip bound, so a unit
-  ## the fixer can never satisfy is eventually skipped instead of grinding
-  ## forever. The carry tuple is persisted to disk crash-safely.
-  fix_claude -> snapshot_chunk as recovery_loop(20) with {
-    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
-    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
-    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
-    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
-  }
-  fix_gpt -> snapshot_chunk as recovery_loop(20) with {
-    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
-    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
-    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
-    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
-  }
-
-  ## Loop exhaustion fallbacks: when a bounded loop hits its limit
-  ## the loop-bearing edges above are skipped and execution falls
-  ## through to these terminal edges. Route to `fail`, NOT `done`:
-  ## exhausting the review/recovery loop WITHOUT streak_check ever
-  ## firing `stop` means this run did not reach convergence — reporting
-  ## `finished` there is a silent empty success, and the dispatcher would
-  ## mark the ticket done/review as if the whole workspace were clean.
-  ## Legit success runs through streak_check's `stop` edge → done.
-  ##
-  ## ON LARGE REPOS THIS IS EXPECTED, NOT A DEAD END (ADR-055): when the
-  ## unit backlog exceeds what max_review_passes allows in one run (loop_max =
-  ## 2*num_chunks + max_review_passes), a single run cannot process every unit,
-  ## so it exhausts review_loop and lands here — but the per-unit tuple
-  ## {cursor, unit_streak, unit_passes, units_done} is PERSISTED to
-  ## .whole_improve_loop.state, so a re-dispatch (or a manual re-run of the
-  ## acceptance command) resumes mid-backlog and keeps banking converged units
-  ## (each already committed) until units_done reaches num_chunks. `fail` is
-  ## the per-run signal "backlog not finished yet"; the operator/dispatcher
-  ## re-runs until a run exits via `stop`. Crucially, unlike the old design a
-  ## `fail` here still LEFT COMMITTED WORK behind (every unit that converged
-  ## this run), so nothing is stranded. Tune max_review_passes up (with the
-  ## budget) to finish in fewer runs. See README "Large workspaces".
-  reviewer_claude -> fail
-  reviewer_gpt    -> fail
-  fix_claude      -> fail
-  fix_gpt         -> fail
-  ## streak_check's catch-all routes back to snapshot_chunk (not a
-  ## terminal) so an unmatched conditional state (e.g. a hallucinated
-  ## family that escapes the enum, or any future expression edge case)
-  ## keeps the loop cycling rather than silently terminating. The
-  ## bounded review_loop counter on the reviewer→streak_check edges
-  ## still guarantees the workflow eventually exits — exhaustion routes
-  ## via the reviewer→fail fallthrough above. Carries the per-unit tuple
-  ## back like the other loop-return edges so the persisted state stays
-  ## coherent even on this rare path (ADR-055).
-  streak_check    -> snapshot_chunk with {
-    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
-    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
-    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
-    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
-  }

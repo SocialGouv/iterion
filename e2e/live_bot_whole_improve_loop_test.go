@@ -86,17 +86,22 @@ func Multiply(a, b int) int {
 	}
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
+	// ADR-057: improvement_prompt is THE AXIS. Point the sweep at the planted
+	// logic bug so enumerate produces a concrete, targetable work-item.
+	axis := "Fix logic/correctness bugs in the Go source at the repository root (e.g. off-by-one loop bounds). One work-item per buggy function."
 	executor.SetVars(map[string]interface{}{
-		"workspace_dir": workspaceDir,
-		"scope_notes":   "Review every .go file at the repository root for correctness, focus on logic bugs.",
+		"workspace_dir":      workspaceDir,
+		"improvement_prompt": axis,
+		"scope_notes":        "Two files at the repo root; one has an off-by-one in a loop bound.",
 	})
 
 	eng := runtime.New(wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	inputs := map[string]interface{}{
-		"workspace_dir": workspaceDir,
-		"scope_notes":   "Review every .go file at the repository root for correctness, focus on logic bugs.",
+		"workspace_dir":      workspaceDir,
+		"improvement_prompt": axis,
+		"scope_notes":        "Two files at the repo root; one has an off-by-one in a loop bound.",
 	}
 
 	t.Log("Starting whole_improve_loop live run…")
@@ -116,27 +121,35 @@ func Multiply(a, b int) int {
 		t.Fatalf("LoadEvents: %v", err)
 	}
 
+	// ADR-057 axis sweep: count the sweep drivers (transform + a reviewer)
+	// rather than the retired streak_check. A small axis may only alternate one
+	// family, so assert the sweep ran (a transform + a review + a next_item),
+	// not that both families fired.
 	finished := eventNodeIDs(events, store.EventNodeFinished)
 	claudeReviewed, gptReviewed := 0, 0
-	streakChecks := 0
+	transforms, sweeps := 0, 0
 	for _, id := range finished {
 		switch id {
 		case "reviewer_claude":
 			claudeReviewed++
 		case "reviewer_gpt":
 			gptReviewed++
-		case "streak_check":
-			streakChecks++
+		case "transform":
+			transforms++
+		case "next_item":
+			sweeps++
 		}
 	}
-	t.Logf("Counts: reviewer_claude=%d reviewer_gpt=%d streak_check=%d",
-		claudeReviewed, gptReviewed, streakChecks)
-	if claudeReviewed == 0 || gptReviewed == 0 {
-		t.Errorf("expected both reviewers to fire at least once (claude=%d gpt=%d)",
-			claudeReviewed, gptReviewed)
+	t.Logf("Counts: reviewer_claude=%d reviewer_gpt=%d transform=%d next_item=%d",
+		claudeReviewed, gptReviewed, transforms, sweeps)
+	if claudeReviewed+gptReviewed == 0 {
+		t.Errorf("expected at least one reviewer to fire (claude=%d gpt=%d)", claudeReviewed, gptReviewed)
 	}
-	if streakChecks < 2 {
-		t.Errorf("expected ≥2 streak_check invocations (loop ran), got %d", streakChecks)
+	if transforms == 0 {
+		t.Errorf("expected the sweep to transform at least one work-item, got 0")
+	}
+	if sweeps < 2 {
+		t.Errorf("expected ≥2 next_item passes (the sweep advanced), got %d", sweeps)
 	}
 
 	writeLiveTestReport(t, runID, workspaceDir, storeDir, s, events)
@@ -180,16 +193,21 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	// Don't override workspace_dir — same rationale as
 	// TestLive_FeatureDev_Real. Let ${PROJECT_DIR} resolve to
 	// /workspace inside the sandbox.
-	scopeNotes := "Review every Go file across queue/, worker/, auth/, storage/, config/, and main.go. Focus on production-blocking correctness, concurrency, and security issues. Skip stylistic nits."
+	// ADR-057: the sweep needs an AXIS. Point it at the fixture's planted
+	// production-blocking defects so enumerate produces concrete work-items.
+	axis := "Fix production-blocking correctness, concurrency, and security defects across queue/, worker/, auth/, storage/, config/, and main.go (race on a shared map, goroutine leak, timing-attack auth compare, path traversal, unbounded dequeue on close). One work-item per defect site. Skip stylistic nits."
+	scopeNotes := "A curated Go fixture with a mix of clean modules and ones carrying the defects named in the axis."
 	executor.SetVars(map[string]interface{}{
-		"scope_notes": scopeNotes,
+		"improvement_prompt": axis,
+		"scope_notes":        scopeNotes,
 	})
 
 	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir), runtime.WithLogger(teeLogger))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	inputs := map[string]interface{}{
-		"scope_notes": scopeNotes,
+		"improvement_prompt": axis,
+		"scope_notes":        scopeNotes,
 	}
 
 	commitsBefore := workspaceCommitCount(t, workspaceDir)
