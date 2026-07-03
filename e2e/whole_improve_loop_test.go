@@ -35,32 +35,35 @@ func wilToInt(v interface{}) int {
 // stubSnapshotChunk registers a stateful stub for the deterministic
 // snapshot_chunk tool node. The e2e executor cannot run that node's real
 // embedded-python chunker, so this models the one property the loop's
-// convergence math depends on: the cross-pass pass-through of the rotation
-// cursor and clean_streak. It echoes the edge-fed incoming_* values back as
-// the snapshot's persisted_clean_streak / cursor outputs — exactly as the
-// real tool seeds them from .whole_improve_loop.state — and reports a SINGLE
-// chunk (num_chunks=1) so the streak threshold collapses to the original
-// "two consecutive cross-family approvals" (the pre-chunking semantics these
-// scenarios assert on). Without this stub the snapshot outputs are nil and
-// streak_check's `persisted_clean_streak + 1` / `cursor + 1` exprs fail.
+// convergence math depends on: the cross-pass pass-through of the ADR-055
+// per-unit tuple {cursor, unit_streak, unit_passes, units_done}. It echoes
+// the edge-fed incoming_* values back as the snapshot's persisted_* / cursor
+// outputs — exactly as the real tool seeds them from
+// .whole_improve_loop.state — and reports a SINGLE unit (num_chunks=1) so a
+// unit converges on two consecutive clean reviews and its convergence is also
+// the run's stop (units_done+1 >= 1). Without this stub the snapshot outputs
+// are nil and streak_check's `persisted_unit_streak + 1` / `cursor + 1` exprs
+// fail.
 func stubSnapshotChunk(exec *scenarioExecutor) {
 	exec.on("snapshot_chunk", func(in map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{
-			"chunk_content":          "// stub chunk source",
-			"files":                  "stub.go",
-			"chunk_label":            "stub",
-			"chunk_index":            0,
-			"num_chunks":             1,
-			"loop_max":               3, // small fixed bound for the test; real node emits num_chunks+max_passes
-			"chunked":                false,
-			"file_count":             1,
-			"chunk_tokens":           10,
-			"total_files":            1,
-			"total_tokens":           10,
-			"skipped_oversize":       0,
-			"persisted_clean_streak": wilToInt(in["incoming_clean_streak"]),
-			"cursor":                 wilToInt(in["incoming_cursor"]),
-			"_tokens":                1,
+			"chunk_content":         "// stub chunk source",
+			"files":                 "stub.go",
+			"chunk_label":           "stub",
+			"chunk_index":           0,
+			"num_chunks":            1,
+			"loop_max":              3, // small fixed bound for the test; real node emits 2*num_chunks+max_passes
+			"chunked":               false,
+			"file_count":            1,
+			"chunk_tokens":          10,
+			"total_files":           1,
+			"total_tokens":          10,
+			"skipped_oversize":      0,
+			"persisted_unit_streak": wilToInt(in["incoming_unit_streak"]),
+			"persisted_unit_passes": wilToInt(in["incoming_unit_passes"]),
+			"persisted_units_done":  wilToInt(in["incoming_units_done"]),
+			"cursor":                wilToInt(in["incoming_cursor"]),
+			"_tokens":               1,
 		}, nil
 	})
 }
@@ -419,37 +422,47 @@ func TestWholeImproveLoop_SessionInheritStructural(t *testing.T) {
 	}
 }
 
-// TestWholeImproveLoop_CursorThreadsAndStreakAccumulates pins the
-// crash-safety fix (issue #12, ADR-011 → Corrections 2026-06-02c): the
-// rotation cursor is advanced by streak_check (`next_cursor = cursor + 1`)
-// and threaded back to snapshot_chunk on the loop-return edge TOGETHER with
-// the clean_streak, so the two move as one verdict-coupled pair (the
-// property that makes the persisted state crash-safe). It drives a 3-chunk
-// snapshot stub (threshold = num_chunks + 1 = 4) with all-clean reviews and
-// asserts:
+// TestWholeImproveLoop_PerUnitConvergesCommitsAndAdvances pins the ADR-055
+// per-unit convergence + incremental-commit behaviour on a 3-unit backlog with
+// all-clean reviews. The cursor STAYS on a unit until it converges (2
+// consecutive clean reviews), then a commit_unit lands and the cursor advances
+// — so with a clean run each unit takes exactly 2 passes:
 //
-//   - snapshot_chunk receives a cursor that advances 0,1,2,3 — one per pass,
-//     NOT stuck at 0. If the next_cursor expr or any incoming_cursor edge
-//     mapping is dropped, the cursor freezes at 0 and this fails — catching
-//     the regression that would silently re-open the false-convergence hole.
-//   - the clean_streak accumulates 0,1,2,3 across passes (cross-run base
-//     pass-through), and convergence needs a FULL sweep + 1 (4 passes), so a
-//     single clean chunk cannot terminate the loop.
-func TestWholeImproveLoop_CursorThreadsAndStreakAccumulates(t *testing.T) {
+//	pass1 unit0 (claude approve) → unit_streak 1, cursor stays 0
+//	pass2 unit0 (gpt approve)    → unit_streak 2 → CONVERGED → commit_unit, cursor→1
+//	pass3 unit1 (claude approve) → unit_streak 1, cursor stays 1
+//	pass4 unit1 (gpt approve)    → CONVERGED → commit_unit, cursor→2
+//	pass5 unit2 (claude approve) → unit_streak 1, cursor stays 2
+//	pass6 unit2 (gpt approve)    → CONVERGED and units_done+1>=num_chunks → STOP
+//
+// Asserts:
+//   - snapshot_chunk sees cursor 0,0,1,1,2,2 — advancing ONLY on convergence,
+//     NOT one-per-pass. A stuck-at-0 cursor (per-unit loop never advances) or a
+//     0,1,2,… cursor (advancing every pass like the old global sweep) both fail.
+//   - units_done accumulates 0,0,1,1,2,2 across passes (crash-safe carry).
+//   - commit_unit fires exactly twice — for units 0 and 1. Unit 2's convergence
+//     is also the run's stop, so it finalizes via the build/test gate +
+//     commit_changes, not commit_unit (first-match-wins on the stop edge).
+//   - the run finishes.
+func TestWholeImproveLoop_PerUnitConvergesCommitsAndAdvances(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
 	exec := newScenarioExecutor()
 
-	var gotCursors, gotStreaks []int
+	var gotCursors, gotUnitsDone []int
 	exec.on("snapshot_chunk", func(in map[string]interface{}) (map[string]interface{}, error) {
 		cur := wilToInt(in["incoming_cursor"])
-		streak := wilToInt(in["incoming_clean_streak"])
+		streak := wilToInt(in["incoming_unit_streak"])
+		passes := wilToInt(in["incoming_unit_passes"])
+		units := wilToInt(in["incoming_units_done"])
 		gotCursors = append(gotCursors, cur)
-		gotStreaks = append(gotStreaks, streak)
+		gotUnitsDone = append(gotUnitsDone, units)
 		return map[string]interface{}{
 			"chunk_content": "// stub", "files": "stub.go", "chunk_label": "stub",
-			"chunk_index": cur % 3, "num_chunks": 3, "loop_max": 5, "chunked": true,
+			"chunk_index": cur % 3, "num_chunks": 3, "loop_max": 8, "chunked": true,
 			"file_count": 1, "chunk_tokens": 10, "total_files": 3, "total_tokens": 30,
-			"skipped_oversize": 0, "persisted_clean_streak": streak, "cursor": cur, "_tokens": 1,
+			"skipped_oversize": 0, "persisted_unit_streak": streak,
+			"persisted_unit_passes": passes, "persisted_units_done": units,
+			"cursor": cur, "_tokens": 1,
 		}, nil
 	})
 	approve := func(fam string) func(map[string]interface{}) (map[string]interface{}, error) {
@@ -466,24 +479,28 @@ func TestWholeImproveLoop_CursorThreadsAndStreakAccumulates(t *testing.T) {
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vibe-cursor", map[string]interface{}{"context_mode": "inline"}); err != nil { // inline: stub reviewers can't open real files (ADR-045)
+	if err := eng.Run(context.Background(), "run-vibe-perunit", map[string]interface{}{"context_mode": "inline"}); err != nil { // inline: stub reviewers can't open real files (ADR-045)
 		t.Fatalf("Run: %v", err)
 	}
-	run, err := s.LoadRun(context.Background(), "run-vibe-cursor")
+	run, err := s.LoadRun(context.Background(), "run-vibe-perunit")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
 	if run.Status != store.RunStatusFinished {
 		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
 	}
-	want := []int{0, 1, 2, 3} // 3 chunks → 4 clean passes to converge; snapshot runs once per pass
-	if !wilEqualInts(gotCursors, want) {
-		t.Errorf("snapshot incoming_cursor sequence = %v, want %v (cursor must advance one per pass; stuck-at-0 means the next_cursor/incoming_cursor wiring regressed → false-convergence risk)",
-			gotCursors, want)
+	wantCursors := []int{0, 0, 1, 1, 2, 2} // advances ONLY on convergence (every 2 clean passes)
+	if !wilEqualInts(gotCursors, wantCursors) {
+		t.Errorf("snapshot incoming_cursor sequence = %v, want %v (cursor must advance only on per-unit convergence, not every pass and not never)",
+			gotCursors, wantCursors)
 	}
-	if !wilEqualInts(gotStreaks, want) {
-		t.Errorf("snapshot incoming_clean_streak sequence = %v, want %v (streak must accumulate across passes)",
-			gotStreaks, want)
+	wantUnits := []int{0, 0, 1, 1, 2, 2}
+	if !wilEqualInts(gotUnitsDone, wantUnits) {
+		t.Errorf("snapshot incoming_units_done sequence = %v, want %v (units_done must accumulate as units converge)",
+			gotUnitsDone, wantUnits)
+	}
+	if got := exec.callCount("commit_unit"); got != 2 {
+		t.Errorf("commit_unit called %d times, want 2 (per-unit incremental commit for units 0 and 1; unit 2 finalizes via stop)", got)
 	}
 }
 

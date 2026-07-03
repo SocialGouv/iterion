@@ -1,22 +1,27 @@
 name: whole-improve-loop
 display_name: Willy
-version: 0.5.0
+version: 0.6.0
 description: |
-  Whole-repository alternating Claude/GPT review-fix loop. Iterates
-  until two consecutive cross-family approvals, with pushback
-  protection against false positives. Fragments large workspaces by
-  package into per-pass token-budgeted chunks (max_review_chunk_tokens,
-  default 30000) so ~150k+ LoC repos review without context exhaustion;
-  the coverage-gated streak terminates on a full cross-family clean
-  sweep — and the streak is persisted across re-dispatches
-  (.whole_improve_loop.state), so repos whose chunk count exceeds one
-  run's max_review_passes converge over successive runs instead of
-  failing forever. See docs/adr/011-whole-improve-loop-context-chunking.md.
+  Whole-repository alternating Claude/GPT review-fix loop that is
+  UNIT-CONVERGENT + INCREMENTAL-COMMIT (ADR-055). It splits the workspace
+  by package into token-budgeted chunks ("units") and processes ONE unit
+  at a time: it converges that unit (two consecutive clean cross-family
+  reviews, with pushback protection against false positives) and COMMITS
+  it immediately, before moving to the next unit. A run that is
+  interrupted or budget-capped keeps every unit it finished — unlike the
+  old design, which committed nothing until an unreachable global clean
+  sweep. The run ends when the ranked unit backlog has each been processed
+  once (a stubborn unit is force-skipped after a bounded number of passes,
+  never blocking the rest). Per-unit state is persisted across re-dispatches
+  (.whole_improve_loop.state) so a large repo finishes over successive
+  runs, banking committed units each time. See
+  docs/adr/055-unit-convergent-adaptive-improve-loop.md.
 when_to_use: |
   Use on EXISTING code when the operator wants a rigorous
   production-readiness audit across the whole workspace, or to drive
   iterative improvement on a specific axis (pass improvement_prompt).
-  No new capability — just better/cleaner code.
+  It commits each converged unit incrementally, so long runs always leave
+  landed, reviewable commits. No new capability — just better/cleaner code.
 author: SocialGouv (devthejo) — whole-improve-loop/main.bot
 schema_version: 1
 

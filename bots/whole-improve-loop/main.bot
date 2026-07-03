@@ -1,12 +1,25 @@
 ## ─────────────────────────────────────────────────────────────────
 ## whole_improve_loop
 ##
-## Whole-codebase improvement loop. Alternating Claude / GPT code
-## review with deterministic "two consecutive positive verdicts"
-## stop condition. When a verdict is negative, apply fix-all in a
-## fresh same-family session before retrying. Edits are left in the
-## working tree — no auto-commit (use branch_improve_loop.bot for
-## the branch-scoped, commit-on-convergence variant).
+## Whole-codebase improvement loop, UNIT-CONVERGENT + INCREMENTAL-COMMIT
+## (ADR-055). The workspace is split by package/folder into chunks
+## ("units"); the loop processes ONE unit at a time — alternating
+## Claude / GPT review with a deterministic per-unit "two consecutive
+## clean reviews" stability gate — and COMMITS each unit as soon as IT
+## converges, BEFORE moving the cursor to the next unit. When a verdict
+## is negative, apply fix-all in a fresh same-family session and
+## RE-REVIEW the SAME unit (the cursor does not advance until the unit is
+## clean+stable or a per-unit pass bound is hit).
+##
+## This replaces the old "0 commits until a GLOBAL streak of num_chunks+1
+## clean sweeps converges" design (ADR-055 context): on a large repo that
+## global streak was unreachable, so a long run banked ZERO of its work in
+## a gitignored worktree. Now every converged unit lands its own commit on
+## the run's worktree branch, so an interrupted / budget-capped run has
+## already banked every unit it finished. The asymptote / streak guarantee
+## (ADR-052, docs/workflow_authoring_pitfalls.md) is PRESERVED but
+## re-scoped from the whole repo to the unit, where "converge and stop" is
+## actually reachable.
 ##
 ## Improvement axis: defaults to the full production-ready grid
 ## (security, robustness, data, concurrency, observability,
@@ -18,10 +31,22 @@
 ##   Loop 2: claw + gpt-5.5
 ##   Loop 3: like loop 1, alternating
 ##
-## Stops when:
-##   - 2 consecutive positive verdicts (Claude AND GPT both validate
-##     in successive iterations of opposite families), OR
-##   - max review_loop iterations reached
+## Per-unit convergence (the asymptote, scoped to the unit):
+##   - A unit is CLEAN when the current reviewer approves it with zero
+##     blockers (and, in explore mode, actually opened its files).
+##   - A unit CONVERGES (→ commit) after 2 CONSECUTIVE clean reviews of
+##     THAT unit — count-based, so it is family-agnostic (in DUAL the two
+##     passes are cross-family because the family flips each pass; in MONO
+##     they are the single family twice — the same accepted trade-off the
+##     old count-based stop made, unchanged by ADR-052 mono/dual).
+##   - A unit that will not converge is force-skipped after a bounded
+##     number of passes (unit_passes) so one stubborn unit can never block
+##     the whole backlog — "bounded per-unit iterations" (ADR-055).
+##
+## The RUN terminates when the ranked unit backlog has each been processed
+## once (units_done >= num_chunks → stop → build/test gate → finalize),
+## OR max review_loop iterations are reached (per-run bound; the persisted
+## cursor / streak / units_done let a re-dispatch resume mid-backlog).
 ##
 ## False-positive resistance:
 ##   1. Reviewers self-rate their `confidence` (low/medium/high) and
@@ -54,10 +79,13 @@ vars:
   ## LAUNCH (dual if two provider families detected, else mono).
   ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
   ## dispatcher) when left "auto"; without that resolution "auto"
-  ## behaves as dual (a pure non-regression). NB: this bot's streak_check
-  ## is COUNT-based (clean_streak >= num_chunks+1), already family-
-  ## agnostic, so `stop` is unchanged — mono just reviews every chunk
-  ## with the single family. mono_family is filled by the resolver.
+  ## behaves as dual (a pure non-regression). NB: this bot's per-unit
+  ## convergence gate is COUNT-based (2 consecutive clean reviews of the
+  ## SAME unit), already family-agnostic, so no mono OR-in is needed —
+  ## mono just reviews each unit with the single family and converges on
+  ## two consecutive same-family clean passes. mono_family is filled by
+  ## the resolver. (ADR-052 topology preserved; ADR-055 re-scopes the
+  ## count from the whole repo to the unit.)
   review_mode: string = "auto"
   mono_family: string = ""
 
@@ -127,20 +155,20 @@ vars:
   ## bounded by max_review_chunk_tokens — the conservative fallback for small
   ## repos. See docs/adr/045-whole-improve-loop-progressive-context-disclosure.md.
   context_mode: string = "explore"
-  ## Per-run FIX HEADROOM beyond one full clean sweep (issue #12). The
+  ## Per-run FIX HEADROOM beyond processing every unit (ADR-055). The
   ## review_loop cap is NOT this value directly — snapshot_chunk emits a
-  ## dynamic loop_max = num_chunks + max_review_passes: num_chunks passes
-  ## for ONE full clean sweep (reaching the num_chunks+1 convergence
-  ## threshold) PLUS this many extra passes to find+fix blockers and
-  ## re-sweep. So a single run ALWAYS gets at least one full sweep — the
-  ## old fixed-15 bound could not even sweep a >14-chunk repo once, which
-  ## is exactly why #12 never converged — and converges in one run for any
-  ## repo needing ≤ max_review_passes fix passes. Pathological repos still
-  ## amortize across re-dispatches via the persisted clean_streak
-  ## (.whole_improve_loop.state). The default 15 keeps a single run well
-  ## inside max_cost_usd / max_duration with the premium default models;
-  ## raise it for more in-run fix headroom. Wired as the review_loop cap
-  ## via the runtime's templated-loop-bound support (resolves to an int).
+  ## dynamic loop_max = 2*num_chunks + max_review_passes: 2 clean reviews
+  ## per unit to converge it (2*num_chunks) PLUS this many extra passes to
+  ## find+fix blockers before a unit converges. So a fix-free repo always
+  ## gets enough passes to confirm every unit twice and land each commit in
+  ## one run, and a repo needing ≤ max_review_passes fix passes converges
+  ## in one run too. Repos whose unit count exceeds this bound still make
+  ## bounded progress and amortize across re-dispatches via the persisted
+  ## cursor / unit_streak / units_done (.whole_improve_loop.state). The
+  ## default 15 keeps a single run well inside max_cost_usd / max_duration
+  ## with the premium default models; raise it for more in-run fix
+  ## headroom. Wired as the review_loop cap via the runtime's
+  ## templated-loop-bound support (resolves to an int).
   max_review_passes: int = 15
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────
@@ -686,15 +714,14 @@ schema review_input:
 ## snapshot_output is the deterministic workspace-snapshot tool's
 ## contract. It is the shared chunking surface for the reviewer (reads
 ## chunk_content) and, transitively, the fixer (inherits the reviewer's
-## session, which already holds the chunk). chunk_index AND the
-## cross-run clean_streak both rotate/accumulate via a persisted JSON
-## state file (.whole_improve_loop.state at the workspace root) so
-## re-dispatched runs advance through the repo AND keep building toward
-## the convergence threshold instead of re-scanning the first chunks and
-## resetting the streak. num_chunks drives the streak gate's coverage
-## requirement; persisted_clean_streak is the on-disk streak BASE the
-## gate increments this pass; total_* are telemetry surfaced in the
-## reviewer prompt.
+## session, which already holds the chunk). The per-unit tuple (cursor +
+## unit_streak + unit_passes + units_done) is persisted in a JSON state
+## file (.whole_improve_loop.state at the workspace root) so re-dispatched
+## runs resume mid-backlog and keep banking converged units instead of
+## re-scanning the first chunks. num_chunks drives run termination
+## (units_done >= num_chunks); persisted_unit_streak / persisted_unit_passes
+## / persisted_units_done are the on-disk bases streak_check increments this
+## pass; total_* are telemetry surfaced in the reviewer prompt.
 schema snapshot_output:
   chunk_content: string
   files: string
@@ -716,16 +743,22 @@ schema snapshot_output:
   total_tokens: int
   skipped_oversize: int
   loop_max: int
-  ## Cross-run convergence base (issue #12): the clean_streak value the
-  ## snapshot read from .whole_improve_loop.state (seeded from the prior
-  ## pass's verdict via the loop-return edge, or from disk on the first
-  ## pass of a re-dispatched run). streak_check increments it this pass.
-  persisted_clean_streak: int
-  ## Raw monotonic rotation cursor this pass USED (chunk_index ==
-  ## cursor % num_chunks). Carried to streak_check, which echoes it back
-  ## as next_cursor = cursor + 1 so the rotation advance is COUPLED to the
-  ## verdict and persisted atomically with clean_streak — the crash-safety
-  ## fix for issue #12 (ADR-011 -> Corrections 2026-06-02c).
+  ## ADR-055 per-unit convergence base, read from .whole_improve_loop.state
+  ## (seeded from the prior pass's verdict via the loop-return edge, or from
+  ## disk on the first pass of a re-dispatched run). streak_check increments
+  ## / resets each this pass.
+  ## - persisted_unit_streak: consecutive clean reviews of the CURRENT unit.
+  ## - persisted_unit_passes: passes spent on the current unit (skip bound).
+  ## - persisted_units_done: units processed (converged or force-skipped);
+  ##   drives run termination (units_done >= num_chunks -> stop).
+  persisted_unit_streak: int
+  persisted_unit_passes: int
+  persisted_units_done: int
+  ## Rotation cursor this pass USED (chunk_index == cursor % num_chunks).
+  ## Carried to streak_check, which echoes it back as carry_cursor —
+  ## advancing ONLY when the current unit converges or is force-skipped —
+  ## so the rotation advance is COUPLED to the verdict and persisted
+  ## atomically with the per-unit counters (crash-safe; ADR-011/ADR-055).
   cursor: int
 
 schema verdict_output:
@@ -779,39 +812,55 @@ schema verdict_output:
 ## On the first iteration `outputs.streak_check` is nil → concat
 ## treats it as empty → result == unique(input.scanned_areas).
 schema streak_state:
+  ## stop: the RUN is done — the last unit just converged (or was
+  ## force-skipped) AND the whole ranked backlog has now been processed
+  ## once (units_done + 1 >= num_chunks). Routes to the build/test gate +
+  ## finalize (ADR-055).
   stop: bool
   ## engaged (ADR-045): did the reviewer actually open files from the chunk
   ## index this pass (explore mode)? Always true in inline mode. Surfaced for
-  ## observability; the same predicate is inlined into clean_streak/stop.
+  ## observability; the same predicate is inlined into the clean/converge
+  ## predicates below (expr keys cannot reference sibling keys this pass).
   engaged: bool
+  ## unit_clean: THIS pass reviewed the current unit clean (approved, zero
+  ## blockers, and — in explore mode — actually opened its files).
+  unit_clean: bool
+  ## unit_converged: the current unit reached 2 consecutive clean reviews
+  ## (unit_streak+1 >= 2) — count-based, family-agnostic (see the head
+  ## comment). Routes to commit_unit, advances the cursor, and increments
+  ## units_done. The per-unit analogue of the old "two consecutive
+  ## cross-family approvals" (ADR-055 re-scopes it from the whole repo).
+  unit_converged: bool
+  ## force_skip: the current unit has churned unit_passes+1 >= the per-unit
+  ## bound without converging, so we give up on it and advance the cursor
+  ## anyway — "bounded per-unit iterations" (ADR-055). Guarantees one
+  ## stubborn unit can never block the whole backlog. Its uncommitted
+  ## partial fixes ride into the next unit's commit / the final commit.
+  force_skip: bool
   approved: bool
   family: string
   blockers: string[]
   fix_plan: string
   cumulative_scanned_areas: string[]
-  ## clean_streak counts CONSECUTIVE fully-clean passes (approved AND
-  ## zero blockers). It resets to 0 on any non-clean pass. With one
-  ## chunk reviewed per pass and the family alternating every pass, a
-  ## streak of num_chunks+1 means the entire workspace was reviewed
-  ## clean end-to-end with both families contributing — the chunked
-  ## analogue of the original "two consecutive cross-family approvals".
-  ## (Both-families-contributing is AGGREGATE over the sweep, not
-  ## per-chunk: within one sweep each chunk is seen by exactly one
-  ## family. See ADR-011 -> Corrections.)
-  ## This is what makes a single clean chunk UNABLE to terminate the
-  ## loop (the premature-exit failure mode chunking must avoid).
-  clean_streak: int
-  ## num_chunks is echoed from the snapshot so the stop expression can
-  ## scale the required streak length to the workspace size.
+  ## unit_streak (observability): consecutive clean reviews of the current
+  ## unit THIS pass (persisted_unit_streak + 1 on a clean pass, else 0).
+  unit_streak: int
+  ## num_chunks is echoed from the snapshot so the stop expression can test
+  ## backlog exhaustion (units_done + 1 >= num_chunks).
   num_chunks: int
-  ## next_cursor = input.cursor + 1 — the rotation cursor for the NEXT
-  ## pass, advanced exactly once per pass (verdict-independent: a blocker
-  ## resets clean_streak but still advances coverage). It is handed back
-  ## to snapshot_chunk on EVERY loop-return edge so the cursor advance and
-  ## the clean_streak update land in the SAME on-disk write, keeping the
-  ## persisted {cursor, clean_streak} pair consistent and crash-safe
-  ## (issue #12, ADR-011 -> Corrections 2026-06-02c).
-  next_cursor: int
+  ## carry_* are the values handed BACK to snapshot_chunk on EVERY
+  ## loop-return edge, persisted together as the {cursor, unit_streak,
+  ## unit_passes, units_done} tuple so it is always self-consistent and
+  ## crash-safe. All advance/reset iff the unit converged OR was
+  ## force-skipped (ADVANCE); otherwise the loop stays on the same unit.
+  ##   carry_cursor      = ADVANCE ? cursor+1        : cursor
+  ##   carry_unit_streak = ADVANCE ? 0 : (clean ? persisted_unit_streak+1 : 0)
+  ##   carry_unit_passes = ADVANCE ? 0               : persisted_unit_passes+1
+  ##   carry_units_done  = persisted_units_done + (ADVANCE ? 1 : 0)
+  carry_cursor: int
+  carry_unit_streak: int
+  carry_unit_passes: int
+  carry_units_done: int
 
 schema fix_input:
   blockers: string[]
@@ -832,20 +881,20 @@ schema fix_output:
 ## into chunks of at most {{vars.max_review_chunk_tokens}} estimated
 ## tokens, then emits EXACTLY ONE chunk for this pass. A package larger
 ## than the budget is split by file-size budget (the "package boundary
-## first, then file-size" heuristic). The selected chunk rotates via a
-## persisted JSON state file (.whole_improve_loop.state at the workspace
-## root, add it to .gitignore) which ALSO carries the cross-run
-## clean_streak, so a re-dispatched run advances through the repo AND
-## keeps accumulating toward convergence rather than re-scanning the
-## first chunks and resetting the streak; deleting that file restarts
-## coverage and the streak from 0. No LLM — pure enumeration, so the
+## first, then file-size" heuristic). The unit (chunk) the cursor points
+## at is selected via a persisted JSON state file (.whole_improve_loop.state
+## at the workspace root, add it to .gitignore) which ALSO carries the
+## per-unit tuple (unit_streak + unit_passes + units_done), so a
+## re-dispatched run resumes ON the current unit and keeps banking
+## converged units rather than re-scanning the first chunks; deleting that
+## file restarts the backlog from unit 0. No LLM — pure enumeration, so the
 ## reviewer never burns context discovering files (the docs-refresh
 ## deterministic-prepass lesson, applied to source instead of docs).
 ## sh -c is dash on some hosts / bash in devbox — the body is plain
 ## POSIX + python3 (the same toolchain sec-audit-source's tool nodes
 ## rely on); keep it double-quote-free so `python3 -c "..."` stays intact.
 tool snapshot_chunk:
-  command: `WS={{vars.workspace_dir}} BUDGET={{vars.max_review_chunk_tokens}} RCT={{vars.reviewer_context_tokens}} RCP={{vars.reviewer_context_percent}} MODE={{vars.context_mode}} MAXPASSES={{vars.max_review_passes}} SCOPE_GLOBS={{vars.scope_globs}} STATE_IN={{input.incoming_clean_streak}} STATE_CURSOR={{input.incoming_cursor}} python3 -c "
+  command: `WS={{vars.workspace_dir}} BUDGET={{vars.max_review_chunk_tokens}} RCT={{vars.reviewer_context_tokens}} RCP={{vars.reviewer_context_percent}} MODE={{vars.context_mode}} MAXPASSES={{vars.max_review_passes}} SCOPE_GLOBS={{vars.scope_globs}} STATE_IN={{input.incoming_unit_streak}} STATE_CURSOR={{input.incoming_cursor}} STATE_PASSES={{input.incoming_unit_passes}} STATE_UNITS={{input.incoming_units_done}} python3 -c "
 import os, sys, json, fnmatch
 
 ws = os.environ.get('WS', '.')
@@ -873,15 +922,15 @@ if rct > 0 and rcp > 0:
 # repo would re-inflate the chunk past the reviewer's window.
 chunk_ceiling = budget
 
-# Per-run FIX HEADROOM beyond one full clean sweep (issue #12). The
-# review_loop bound is emitted below as loop_max = num_chunks + max_passes:
-# num_chunks passes for ONE full clean sweep (reaching the num_chunks+1
-# convergence threshold) PLUS max_passes extra passes to find+fix blockers
-# and re-sweep. A bare num_chunks+2 band would give a single fix no room --
-# one blocker resets clean_streak and the sweep cannot restart in-bound --
-# so max_passes is what makes single-run convergence reachable for a repo
-# needing up to that many fix passes; the persisted clean_streak still
-# amortizes pathological repos across re-dispatches.
+# Per-run FIX HEADROOM beyond processing every unit (ADR-055). The
+# review_loop bound is emitted below as loop_max = 2*num_chunks + max_passes:
+# 2 clean reviews per unit to converge it (2*num_chunks) PLUS max_passes
+# extra passes to find+fix blockers before a unit converges. So a fix-free
+# repo always has room to confirm every unit twice and land each commit in
+# one run, and a repo needing up to max_passes fix passes converges in one
+# run too; the persisted per-unit state (cursor/unit_streak/unit_passes/
+# units_done) still amortizes larger backlogs across re-dispatches, each of
+# which banks the units it finished.
 max_passes = int(os.environ.get('MAXPASSES', '15') or '15')
 if max_passes < 2:
     max_passes = 2
@@ -917,22 +966,22 @@ def in_scope(rel):
             return True
     return False
 
-# Persistent state (issue #12): ONE json dotfile at the workspace root
-# holds BOTH the package-chunk rotation cursor AND the cross-run
-# clean_streak. Why both, why persisted: the review_loop counter and
-# streak_check's output are run-local and reset on every (re-)dispatch,
-# so without an on-disk streak a workspace whose num_chunks exceeds the
-# per-run review_loop bound could NEVER reach the convergence threshold
-# (num_chunks+1 consecutive clean passes) across ANY number of runs —
-# the cursor advancing coverage was necessary but not sufficient. The
-# streak now accumulates across runs here, which is what actually makes
-# 'cross-family approval terminates the loop' reachable on an iterion-
-# sized repo. Neutral, gitignore-able. Best-effort: a read-only FS
-# degrades to chunk 0 / streak 0 (still bounded, just non-advancing).
-# See docs/adr/011-whole-improve-loop-context-chunking.md -> Corrections.
+# Persistent state (ADR-055): ONE json dotfile at the workspace root holds
+# the per-unit tuple {cursor, unit_streak, unit_passes, units_done}. Why
+# persisted: the review_loop counter and streak_check's output are run-local
+# and reset on every (re-)dispatch, so without on-disk state a backlog whose
+# num_chunks exceeds one run's loop_max could never be finished across ANY
+# number of runs. The tuple accumulates across runs here, so each re-dispatch
+# resumes mid-backlog and banks the units it converges (units_done advances
+# toward num_chunks) — what makes 'the run terminates when the backlog is
+# processed once' reachable on a large repo. Neutral, gitignore-able.
+# Best-effort: a read-only FS degrades to cursor 0 / streak 0 (still bounded,
+# just non-advancing). See docs/adr/055-unit-convergent-adaptive-improve-loop.md.
 state_path = os.path.join(ws, '.whole_improve_loop.state')
 cursor = 0
 disk_streak = 0
+disk_passes = 0
+disk_units = 0
 try:
     with open(state_path, 'r', encoding='utf-8') as sf:
         st = json.load(sf)
@@ -941,19 +990,32 @@ try:
     # .get and would raise AttributeError -- which the except tuple below
     # does NOT catch, crashing snapshot_chunk (the workflow entry + every
     # loop-return target) and bricking the whole loop. Coerce to {} so the
-    # cursor/streak fall through to their 0 defaults: the same best-effort
+    # per-unit state falls through to its 0 defaults: the same best-effort
     # degrade this block already gives a missing/garbage/non-int state file.
     if not isinstance(st, dict):
         st = {}
     cursor = int(st.get('cursor', 0) or 0)
-    disk_streak = int(st.get('clean_streak', 0) or 0)
+    # ADR-055 per-unit state. unit_streak = consecutive clean reviews of
+    # the CURRENT unit; unit_passes = passes spent on the current unit
+    # (force-skip bound); units_done = units processed (converged OR
+    # force-skipped) so far -- drives run termination (units_done >=
+    # num_chunks). 'clean_streak' fallback reads a pre-ADR-055 state file.
+    disk_streak = int(st.get('unit_streak', st.get('clean_streak', 0)) or 0)
+    disk_passes = int(st.get('unit_passes', 0) or 0)
+    disk_units = int(st.get('units_done', 0) or 0)
 except (OSError, IOError, ValueError, TypeError):
     cursor = 0
     disk_streak = 0
+    disk_passes = 0
+    disk_units = 0
 if cursor < 0:
     cursor = 0
 if disk_streak < 0:
     disk_streak = 0
+if disk_passes < 0:
+    disk_passes = 0
+if disk_units < 0:
+    disk_units = 0
 
 # State threading for THIS pass (issue #12, crash-safe). snapshot_chunk
 # is the ONLY filesystem writer in the loop and it runs BEFORE the
@@ -991,12 +1053,28 @@ try:
         clean_streak = incoming
 except (ValueError, TypeError):
     pass
-# Cursor base for THIS pass: the edge-fed next_cursor (authoritative,
+# Cursor base for THIS pass: the edge-fed carry_cursor (authoritative,
 # verdict-coupled) when present, else the disk cursor on a fresh dispatch.
 try:
     incoming_cursor = int(float((os.environ.get('STATE_CURSOR', '') or '').strip()))
     if incoming_cursor >= 0:
         cursor = incoming_cursor
+except (ValueError, TypeError):
+    pass
+# Per-unit pass counter + units-done counter, threaded the same way
+# (edge-fed carry value wins, else disk on a fresh dispatch).
+unit_passes = disk_passes
+try:
+    incoming_passes = int(float((os.environ.get('STATE_PASSES', '') or '').strip()))
+    if incoming_passes >= 0:
+        unit_passes = incoming_passes
+except (ValueError, TypeError):
+    pass
+units_done = disk_units
+try:
+    incoming_units = int(float((os.environ.get('STATE_UNITS', '') or '').strip()))
+    if incoming_units >= 0:
+        units_done = incoming_units
 except (ValueError, TypeError):
     pass
 
@@ -1094,12 +1172,10 @@ def pack(pkgs, budget):
 chunks = pack(pkgs, budget)
 num_chunks = len(chunks)
 
-# Issue #12 convergence fix: convergence needs num_chunks+1 clean passes,
-# and the loop bound is now derived from num_chunks (loop_max = num_chunks +
-# max_passes, emitted below) so a single run converges within one full sweep
-# plus max_passes fix passes. Cap the chunk COUNT on huge repos by re-packing
-# with a larger budget, so that bound stays within a sane pass count instead
-# of 100+ passes / fragile multi-run amortization.
+# ADR-055: each unit needs 2 clean reviews to converge, so the loop bound is
+# loop_max = 2*num_chunks + max_passes (emitted below). Cap the unit COUNT on
+# huge repos by re-packing with a larger budget, so that bound stays within a
+# sane pass count instead of 200+ passes / fragile multi-run amortization.
 MAX_CHUNKS = 24
 if num_chunks > MAX_CHUNKS and total_tokens > 0:
     # Respect the adaptive/ceiling budget: never raise the chunk size above
@@ -1113,17 +1189,20 @@ if num_chunks > MAX_CHUNKS and total_tokens > 0:
 if num_chunks == 0:
     try:
         with open(state_path, 'w', encoding='utf-8') as sf:
-            json.dump({'cursor': 0, 'clean_streak': int(clean_streak),
-                       'num_chunks': 1}, sf)
+            json.dump({'cursor': 0, 'unit_streak': int(clean_streak),
+                       'unit_passes': int(unit_passes),
+                       'units_done': int(units_done), 'num_chunks': 1}, sf)
     except (OSError, IOError):
         pass
     print(json.dumps({
         'chunk_content': '(no source files found in workspace)',
         'files': '', 'chunk_file_list': [], 'chunk_index_path': '',
         'chunk_label': 'empty', 'chunk_index': 0,
-        'num_chunks': 1, 'loop_max': 1 + max_passes, 'chunked': False, 'file_count': 0,
+        'num_chunks': 1, 'loop_max': 2 + max_passes, 'chunked': False, 'file_count': 0,
         'chunk_tokens': 0, 'total_files': 0, 'total_tokens': 0,
-        'skipped_oversize': 0, 'persisted_clean_streak': int(clean_streak),
+        'skipped_oversize': 0, 'persisted_unit_streak': int(clean_streak),
+        'persisted_unit_passes': int(unit_passes),
+        'persisted_units_done': int(units_done),
         'cursor': int(cursor),
     }))
     sys.exit(0)
@@ -1139,7 +1218,9 @@ chunk = chunks[idx]
 # ADR-011 -> Corrections 2026-06-02c).
 try:
     with open(state_path, 'w', encoding='utf-8') as sf:
-        json.dump({'cursor': cursor, 'clean_streak': int(clean_streak),
+        json.dump({'cursor': cursor, 'unit_streak': int(clean_streak),
+                   'unit_passes': int(unit_passes),
+                   'units_done': int(units_done),
                    'num_chunks': num_chunks}, sf)
 except (OSError, IOError):
     pass
@@ -1213,12 +1294,21 @@ print(json.dumps({
     'total_files': total_files,
     'total_tokens': total_tokens,
     'skipped_oversize': skipped_oversize,
-    'persisted_clean_streak': int(clean_streak),
-    # Raw monotonic rotation cursor this pass USED (idx == cursor %
-    # num_chunks). streak_check echoes it back as next_cursor = cursor + 1
-    # on the loop-return edge so the advance is coupled to the verdict.
+    # ADR-055 per-unit state, carried to streak_check which increments /
+    # resets each and echoes the carry_* values back on the loop-return
+    # edge so the persisted {cursor, unit_streak, unit_passes, units_done}
+    # tuple stays verdict-coupled and crash-safe.
+    'persisted_unit_streak': int(clean_streak),
+    'persisted_unit_passes': int(unit_passes),
+    'persisted_units_done': int(units_done),
+    # Rotation cursor this pass USED (idx == cursor % num_chunks). Unlike
+    # the pre-ADR-055 design it advances ONLY when the current unit
+    # converges or is force-skipped (streak_check's carry_cursor), so the
+    # loop stays on a unit until it is clean+stable -- the per-unit
+    # convergence scoping.
     'cursor': int(cursor),
-    'loop_max': num_chunks + max_passes,
+    # 2 clean reviews per unit to converge (2*num_chunks) + fix headroom.
+    'loop_max': 2 * num_chunks + max_passes,
 }))
 "`
   output: snapshot_output
@@ -1281,105 +1371,99 @@ judge reviewer_gpt:
   tool_max_steps: 30
   interaction: human
 
-## Deterministic streak detector (coverage-aware under chunking,
-## issue #12).
+## Deterministic PER-UNIT convergence detector (ADR-055; supersedes the
+## coverage-aware global streak of ADR-011 / issue #12).
 ##
-## clean_streak counts CONSECUTIVE fully-clean passes (approved AND
-## zero blockers), resetting to 0 on any non-clean pass. Because each
-## pass reviews exactly ONE chunk and (in DUAL) the family alternates
-## every pass (the condition router's parity), a clean_streak of
-## `num_chunks + 1` means the entire workspace was just reviewed clean
-## end-to-end with both families contributing — the chunked analogue of
-## the original "two consecutive cross-family approvals". In MONO the
-## single family reviews every chunk; the same count still guarantees a
-## full clean end-to-end sweep (by one family) — the accepted mono
-## trade-off. The stop is COUNT-based, so it needs no topology change.
-## NB (precise guarantee): the cursor advances one chunk and the family
-## flips one step per pass, so within a SINGLE terminating sweep each
-## chunk is seen by exactly ONE family (only the wrap chunk repeats).
-## "Both families contributing" is therefore an AGGREGATE property of
-## the sweep, NOT a per-chunk one; per-chunk dual-family coverage
-## accrues across SUCCESSIVE sweeps. Gating on per-chunk cross-family
-## would need ~2*num_chunks clean passes — infeasible at iterion scale
-## under review_loop/$budget. See ADR-011 → Corrections (2026-06-02).
-## stop fires only when THIS pass
-## is clean AND that running streak reaches the threshold:
-##   threshold = num_chunks + 1   (chunked: a full sweep + 1)
-##             = 2                 (num_chunks <= 1: original semantics)
-## Crucially this makes a single clean chunk UNABLE to terminate the
-## loop — the premature-exit failure mode chunking must avoid.
+## The loop works ONE unit (chunk) at a time. Each pass reviews the unit
+## the cursor currently points at. streak_check turns the reviewer's
+## verdict into per-unit control state (all predicates fully inlined
+## because a compute node's keys cannot reference each other this pass):
 ##
-## CROSS-RUN PERSISTENCE (issue #12 fix). The streak BASE is NOT read
-## from `outputs.streak_check` (run-local, reset every dispatch) but
-## from `input.persisted_clean_streak` — the value snapshot_chunk read
-## from `.whole_improve_loop.state` this pass. snapshot_chunk re-persists
-## the post-review streak each pass (fed back on the loop-return edge),
-## so a streak that needs `num_chunks + 1` clean passes can now ACCUMULATE
-## across re-dispatches instead of capping at the per-run review_loop
-## bound. This is what makes `stop` reachable on a workspace whose
-## num_chunks exceeds the per-run pass budget (e.g. iterion ≈ 101 chunks);
-## previously clean_streak could never exceed review_loop(15) < 102, so
-## the loop could never converge on its own named target. Using the
-## snapshot-supplied base (not a self-reference) also sidesteps the
-## nil-vs-0 ambiguity of `if(prev, prev+1, …)`: a mid-run reset (streak
-## 0) and a first pass (no prior output) are both handled by snapshot_chunk
-## deterministically. See ADR-011 → Corrections (2026-06-02b).
+##   unit_clean     — this pass approved the unit with zero blockers (and,
+##                    in explore mode, actually opened its files: the
+##                    ADR-045 engagement guard, so a "read nothing then
+##                    approve" pass cannot count).
+##   unit_streak    — CONSECUTIVE clean reviews of THIS unit; +1 on a clean
+##                    pass, reset to 0 on any non-clean pass. Base read from
+##                    input.persisted_unit_streak (snapshot_chunk's on-disk
+##                    value), not a self-reference — the same nil-safe,
+##                    crash-safe pattern ADR-011 established.
+##   unit_converged — unit_clean AND unit_streak+1 >= 2. Two consecutive
+##                    clean reviews of the SAME unit. COUNT-based, so it is
+##                    family-agnostic: in DUAL the two passes are
+##                    cross-family (the condition router flips family each
+##                    pass); in MONO they are the single family twice — the
+##                    same accepted trade-off the old count-based stop made,
+##                    so ADR-052 mono/dual needs NO change here. A converged
+##                    unit is COMMITTED (commit_unit) and the cursor advances.
+##   force_skip     — NOT converged AND unit_passes+1 >= 8. A unit the loop
+##                    cannot satisfy within a bounded number of passes is
+##                    skipped so it can never block the whole backlog
+##                    ("bounded per-unit iterations", ADR-055). The cursor
+##                    advances without a commit; partial fixes ride into a
+##                    later commit.
+##   stop           — (unit_converged OR force_skip) AND units_done+1 >=
+##                    num_chunks. The RUN ends when the whole ranked backlog
+##                    has been processed once — a finite, monotone process,
+##                    NOT a global clean sweep that a real repo can never
+##                    satisfy (the ADR-055 failure this replaces).
 ##
-## CRASH-SAFE ROTATION (issue #12 fix, 2026-06-02c). The rotation cursor
-## and the clean_streak are now persisted TOGETHER, both verdict-coupled.
-## streak_check emits `next_cursor = input.cursor + 1` and EVERY
-## loop-return edge hands BOTH `incoming_clean_streak` AND `incoming_cursor`
-## back to snapshot_chunk, which persists the pair it is USING (no eager
-## cursor+1). The on-disk {cursor, clean_streak} is therefore always
-## consistent — clean_streak counts the clean passes for chunks strictly
-## BEFORE cursor. So if a run dies on a non-clean pass before the reset is
-## persisted (the common case: a fix_* failure → `fail` → re-dispatch),
-## disk still points cursor AT the un-verdicted chunk and the re-dispatch
-## RE-REVIEWS it. The earlier design advanced cursor eagerly while the
-## streak lagged, which could strand the cursor PAST a blocker chunk with a
-## stale-high streak and let the shortened window converge without ever
-## re-reviewing the blocker — a silent false convergence. See ADR-011 →
-## Corrections (2026-06-02c).
+## CRASH-SAFE, CROSS-RUN. carry_cursor / carry_unit_streak /
+## carry_unit_passes / carry_units_done are the {cursor, unit_streak,
+## unit_passes, units_done} tuple every loop-return edge hands back to
+## snapshot_chunk, which persists it to .whole_improve_loop.state. All four
+## are verdict-coupled: the cursor (and units_done) advance ONLY once a
+## verdict exists (converged or skipped), so a run that dies mid-unit leaves
+## the cursor AT the un-finished unit and a re-dispatch RE-REVIEWS it. Every
+## unit that DID converge is already committed, so a crash/cap strands
+## nothing. A large repo whose backlog exceeds one run's loop_max makes
+## bounded progress and finishes over successive re-dispatches.
 ##
-## A single run still makes only bounded progress when num_chunks exceeds
-## the per-run pass budget (max_review_passes), but the persisted streak
-## means successive re-dispatches CONVERGE rather than merely re-cover.
-## Raise `max_review_passes` (and the budget) to converge a mid-size repo
-## in one run. See the README "Large workspaces" note and ADR-011.
-##
-## The `approved` passthrough field stays soft — it includes
-## low-confidence rejections — so the downstream `when approved` edge
-## keeps alternating without invoking the fixer when a reviewer is
-## merely uncertain. This separation means the workflow keeps cycling
-## without forced fix attempts on flaky-low-confidence rejections, but
-## requires real, blocker-free approvals to build the clean streak.
+## The `approved` passthrough field stays soft — it includes low-confidence
+## rejections — so the downstream `when approved` edge keeps re-reviewing
+## the same unit (family flipping) without invoking the fixer when a
+## reviewer is merely uncertain. Real, blocker-free approvals are what build
+## the per-unit streak toward convergence.
 compute streak_check:
   output: streak_state
   expr:
-    ## ADR-045 engagement guard. In explore mode the chunk source is NOT in
-    ## the prompt, so a pass only counts toward convergence if the reviewer
-    ## actually opened files from the index: files_reviewed must be non-empty
-    ## AND a subset of chunk_file_list (the identity |A∪B| == |A| ⟺ B ⊆ A,
-    ## using only concat/unique/length). In inline mode the source IS in the
-    ## prompt, so the guard short-circuits true. This blocks the Goodhart
-    ## failure of approving a chunk having read nothing / citing hallucinated
-    ## paths; a non-engaged pass cannot increment clean_streak or stop, so the
-    ## loop re-reviews (loop_max backstops). Inlined in clean_streak + stop
-    ## because expr keys cannot reference sibling keys this pass.
-    engaged: "input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list)))"
-    clean_streak: "if(input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list)))), input.persisted_clean_streak + 1, 0)"
-    stop: "(input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && (input.persisted_clean_streak + 1 >= if(input.num_chunks > 1, input.num_chunks + 1, 2))"
+    ## ADR-045 engagement guard (inlined everywhere below because expr keys
+    ## cannot reference sibling keys this pass). In explore mode the chunk
+    ## source is NOT in the prompt, so a pass only counts as clean if the
+    ## reviewer actually opened files from the index: files_reviewed must be
+    ## non-empty AND a subset of chunk_file_list (the identity |A∪B| == |A|
+    ## ⟺ B ⊆ A, using only concat/unique/length). In inline mode the source
+    ## IS in the prompt, so the guard short-circuits true. This blocks the
+    ## Goodhart failure of approving a chunk having read nothing / citing
+    ## hallucinated paths.
+    ##
+    ## ADR-055 per-unit convergence. The predicates below (fully inlined):
+    ##   CLEAN     = approved AND zero blockers AND engaged (this pass)
+    ##   CONVERGED = CLEAN AND persisted_unit_streak+1 >= 2  (2 consecutive
+    ##               clean reviews of THIS unit — count-based, family-agnostic)
+    ##   FORCE-SKIP= NOT CONVERGED AND persisted_unit_passes+1 >= 8  (give up
+    ##               on a stubborn unit so it can't block the backlog)
+    ##   ADVANCE   = CONVERGED OR FORCE-SKIP  (move the cursor to the next unit)
+    ## carry_* echo the {cursor, unit_streak, unit_passes, units_done} tuple
+    ## back to snapshot_chunk on every loop-return edge, verdict-coupled and
+    ## crash-safe (the unit only advances once a verdict exists). stop fires
+    ## when the last unit advances AND the whole backlog is processed
+    ## (units_done+1 >= num_chunks).
+    engaged: "(input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))"
+    unit_clean: "(input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list)))))"
+    unit_converged: "((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2)"
+    force_skip: "(!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)"
+    stop: "(((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)) && input.persisted_units_done + 1 >= input.num_chunks"
     approved: "input.approved || input.confidence == 'low'"
     family: "input.family"
     blockers: "input.blockers"
     fix_plan: "input.fix_plan"
     num_chunks: "input.num_chunks"
-    ## Advance the rotation cursor exactly once per pass, regardless of the
-    ## verdict (a blocker resets clean_streak above but coverage still
-    ## moves on). Handed back to snapshot_chunk on every loop-return edge
-    ## so the advance is persisted ATOMICALLY with clean_streak — the
-    ## crash-safety fix for issue #12 (see schema next_cursor / ADR-011).
-    next_cursor: "input.cursor + 1"
+    unit_streak: "if((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))), input.persisted_unit_streak + 1, 0)"
+    carry_cursor: "if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), input.cursor + 1, input.cursor)"
+    carry_unit_streak: "if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), 0, if((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))), input.persisted_unit_streak + 1, 0))"
+    carry_unit_passes: "if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), 0, input.persisted_unit_passes + 1)"
+    carry_units_done: "input.persisted_units_done + if((((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) || (!((input.approved && length(input.blockers) == 0 && (input.context_mode != 'explore' || (length(input.files_reviewed) > 0 && length(unique(concat(input.chunk_file_list, input.files_reviewed))) == length(unique(input.chunk_file_list))))) && input.persisted_unit_streak + 1 >= 2) && input.persisted_unit_passes + 1 >= 8)), 1, 0)"
     cumulative_scanned_areas: "tail(unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas)), 40)"
 
 ## Per-family fixers. Each one inherits the SAME-family reviewer's
@@ -1595,19 +1679,42 @@ schema finalize_mr_output:
   skipped_reason: string
   summary: string
 
-## commit_changes lands the production-readiness fixes on convergence,
-## EXCLUDING the bot's own .whole_improve_loop.state rotation/streak scratch
-## file (committing it would pollute the target repo's history). We stage
-## everything then unstage the state file — NOT an `:!.whole_improve_loop.state`
-## exclude-pathspec: when the target already gitignores the state file
-## (iterion does, see this repo's .gitignore), git treats the
-## excluded-but-ignored path as explicitly named and aborts `add` with
-## "paths are ignored by .gitignore, use -f" (exit 1 under the sandbox git),
-## failing the whole convergence at the finish line. `add -A` + `reset` is
-## ignore-agnostic: add -A naturally skips the file when it's ignored, reset
-## unstages it when it's not. Bonus: when reviewers converge with no code
-## fixes, nothing stays staged and the `diff --cached --quiet` guard makes
-## NO empty commit.
+## commit_unit — ADR-055 INCREMENTAL COMMIT. Fires the moment a UNIT (chunk)
+## converges (streak_check.unit_converged), BEFORE the cursor advances to the
+## next unit, so every completed unit is banked on the run's worktree branch
+## and an interrupted / budget-capped run keeps all the units it finished
+## (the old design committed nothing until an unreachable global streak).
+## Includes UNTRACKED files the fixer created — `git add -A` stages new files
+## too (the right-artifact rule: `git diff HEAD` the reviewers use omits
+## untracked, so commits MUST include them, or a feature that ADDS files never
+## lands). EXCLUDES the bot's own scratch dotfiles (state/verify/chunk) exactly
+## like commit_changes — `add -A` then `reset` is ignore-agnostic (see the
+## commit_changes note). Message carries the unit's chunk label. The env-prefix
+## `LABEL=…` on the git commit shell-escapes the (possibly space/paren-bearing)
+## label as one token; ${LABEL:-workspace} guards an empty label. No-op-safe:
+## `diff --cached --quiet` makes no empty commit when a unit converged with no
+## code change (a re-review that only confirmed cleanliness).
+tool commit_unit:
+  command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} reset -q -- .whole_improve_loop.state .whole_improve_loop.verify.sh .whole_improve_loop.verify.log .whole_improve_loop.chunk.md >/dev/null 2>&1 || true; git -C {{vars.workspace_dir}} diff --cached --quiet || LABEL={{input.label}} git -C {{vars.workspace_dir}} commit -m "chore(improve): ${LABEL:-workspace} production-readiness pass"; }`
+  output: commit_result
+
+## commit_changes is the FINALIZATION commit on `stop` (backlog processed):
+## the per-unit commit_unit already landed each converged unit, so this catches
+## the LAST unit (whose stop pass routes straight to the build/test gate, not
+## through commit_unit) plus any fix the verify_build gate had to apply to make
+## the whole tree build+test green. EXCLUDES the bot's own
+## .whole_improve_loop.state rotation/streak scratch file (committing it would
+## pollute the target repo's history). We stage everything then unstage the
+## state file — NOT an `:!.whole_improve_loop.state` exclude-pathspec: when the
+## target already gitignores the state file (iterion does, see this repo's
+## .gitignore), git treats the excluded-but-ignored path as explicitly named
+## and aborts `add` with "paths are ignored by .gitignore, use -f" (exit 1
+## under the sandbox git), failing the whole convergence at the finish line.
+## `add -A` + `reset` is ignore-agnostic: add -A naturally skips the file when
+## it's ignored, reset unstages it when it's not. Bonus: when the finalization
+## has nothing left to commit (all units already landed, verify made no fix),
+## nothing stays staged and the `diff --cached --quiet` guard makes NO empty
+## commit.
 tool commit_changes:
   command: `git -C {{vars.workspace_dir}} add -A && { git -C {{vars.workspace_dir}} reset -q -- .whole_improve_loop.state .whole_improve_loop.verify.sh .whole_improve_loop.verify.log .whole_improve_loop.chunk.md >/dev/null 2>&1 || true; git -C {{vars.workspace_dir}} diff --cached --quiet || git -C {{vars.workspace_dir}} commit -m "chore(improve): production-readiness pass (whole_improve_loop)"; }`
   output: commit_result
@@ -1766,7 +1873,9 @@ workflow whole_improve_loop:
     chunk_file_list: "{{outputs.snapshot_chunk.chunk_file_list}}",
     context_mode: "{{vars.context_mode}}",
     num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    persisted_clean_streak: "{{outputs.snapshot_chunk.persisted_clean_streak}}",
+    persisted_unit_streak: "{{outputs.snapshot_chunk.persisted_unit_streak}}",
+    persisted_unit_passes: "{{outputs.snapshot_chunk.persisted_unit_passes}}",
+    persisted_units_done: "{{outputs.snapshot_chunk.persisted_units_done}}",
     cursor: "{{outputs.snapshot_chunk.cursor}}"
   }
   reviewer_gpt -> streak_check as review_loop("{{outputs.snapshot_chunk.loop_max}}") with {
@@ -1780,19 +1889,26 @@ workflow whole_improve_loop:
     chunk_file_list: "{{outputs.snapshot_chunk.chunk_file_list}}",
     context_mode: "{{vars.context_mode}}",
     num_chunks: "{{outputs.snapshot_chunk.num_chunks}}",
-    persisted_clean_streak: "{{outputs.snapshot_chunk.persisted_clean_streak}}",
+    persisted_unit_streak: "{{outputs.snapshot_chunk.persisted_unit_streak}}",
+    persisted_unit_passes: "{{outputs.snapshot_chunk.persisted_unit_passes}}",
+    persisted_units_done: "{{outputs.snapshot_chunk.persisted_units_done}}",
     cursor: "{{outputs.snapshot_chunk.cursor}}"
   }
 
-  ## Stop when streak detected (cross-family double approval) → run the
-  ## deterministic build/test gate BEFORE committing (reviewers approve from
-  ## chunk source and cannot see a cross-file build break or a test-only bug
-  ## — see the verify_build/verify_run section). verify_build adapts to the
-  ## repo's own tooling and fixes any breakage; verify_run re-runs it and
-  ## gates on the REAL exit code.
+  ## RUN termination (ADR-055): the last unit just advanced AND the whole
+  ## backlog is processed (units_done+1 >= num_chunks) → run the deterministic
+  ## build/test gate BEFORE the finalization commit. Per-unit commits already
+  ## landed each earlier unit; this gate catches a cross-file build break or a
+  ## test-only bug the chunk reviewers could not see (they approve from chunk
+  ## source only — see the verify_build/verify_run section). verify_build
+  ## adapts to the repo's own tooling and fixes any breakage; verify_run
+  ## re-runs it and gates on the REAL exit code. This is checked FIRST among
+  ## streak_check's edges, so a converged last unit finalizes here rather than
+  ## routing to commit_unit.
   streak_check -> verify_build when stop with { fail_log: "" }
   verify_build -> verify_run
-  ## Green build+tests → commit the converged work, THEN finish.
+  ## Green build+tests → finalization commit (last unit + any verify fix), THEN
+  ## finish.
   verify_run -> commit_changes when passed
   ## Red → loop back to verify_build to fix the breakage, bounded. The gate's
   ## log_tail is handed back as the failure to fix.
@@ -1820,24 +1936,64 @@ workflow whole_improve_loop:
 
   finalize_mr -> done
 
-  ## Otherwise approved (no streak yet, OR low-confidence rejection
-  ## treated as soft-approved, OR rejection without concrete blockers
-  ## — see below): keep alternating without fixing. Routes back to
-  ## snapshot_chunk (not alt) so the cursor advances and the NEXT pass
-  ## reviews the NEXT chunk; snapshot_chunk -> alt then alternates the
-  ## family. Expression form is kept so future authors can tighten the
-  ## soft-approval predicate.
+  ## ADR-055 INCREMENTAL COMMIT. A UNIT converged (2 consecutive clean
+  ## reviews) and it is NOT the last unit (else `stop` above caught it):
+  ## commit that unit NOW, before the cursor advances, so it is banked even
+  ## if the run is later interrupted. commit_unit carries the unit's chunk
+  ## label for the message. This edge is listed AFTER the stop edge so a
+  ## converged LAST unit finalizes via stop, not here (first-match-wins).
+  streak_check -> commit_unit when unit_converged with {
+    label: "{{outputs.snapshot_chunk.chunk_label}}"
+  }
+  ## After committing the unit, loop back to snapshot_chunk with the ADVANCED
+  ## carry tuple (carry_cursor = cursor+1, carry_unit_streak = 0,
+  ## carry_unit_passes = 0, carry_units_done = units_done+1) so the next pass
+  ## reviews the NEXT unit. Not loop-bearing (the review_loop counter advances
+  ## on the reviewer→streak_check edge); still bounded by that counter.
+  commit_unit -> snapshot_chunk with {
+    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
+    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
+    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
+    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
+  }
+
+  ## FORCE-SKIP (ADR-055 "bounded per-unit iterations"): the current unit has
+  ## churned unit_passes+1 >= the per-unit bound without converging (and it is
+  ## not the last-unit stop case). Advance the cursor anyway (carry_cursor =
+  ## cursor+1, carry_units_done = units_done+1) so one stubborn unit can never
+  ## block the whole backlog. Its uncommitted partial fixes stay in the tree
+  ## and ride into the next unit's commit / the final finalization commit —
+  ## nothing is lost. Listed before the soft-approve edge so a clean-but-capped
+  ## pass still advances.
+  streak_check -> snapshot_chunk when force_skip with {
+    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
+    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
+    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
+    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
+  }
+
+  ## Otherwise approved (unit clean but not yet stable — needs a second
+  ## consecutive clean review, OR low-confidence rejection treated as
+  ## soft-approved, OR rejection without concrete blockers): keep reviewing
+  ## the SAME unit without fixing. Routes back to snapshot_chunk (not alt);
+  ## because carry_cursor DID NOT advance (unit not converged/skipped this
+  ## pass) the next pass re-reviews the same chunk, and snapshot_chunk -> alt
+  ## flips the family — building the per-unit streak toward convergence.
+  ## Expression form is kept so future authors can tighten the soft-approval
+  ## predicate.
   ##
   ## NOTE: this edge does NOT carry `review_loop` so the loop
   ## counter (and the previous_output snapshot) is incremented
   ## ONCE per cycle on the reviewer→streak_check edge above. The
   ## cycle is still bounded because that edge IS loop-bearing.
-  ## It DOES hand this pass's clean_streak back to snapshot_chunk so the
-  ## next snapshot re-persists it to .whole_improve_loop.state (cross-run
-  ## convergence — issue #12).
+  ## It hands the carry tuple back to snapshot_chunk so the next snapshot
+  ## re-persists {cursor, unit_streak, unit_passes, units_done} to
+  ## .whole_improve_loop.state (crash-safe cross-run resume — ADR-055).
   streak_check -> snapshot_chunk when "approved" with {
-    incoming_clean_streak: "{{outputs.streak_check.clean_streak}}",
-    incoming_cursor: "{{outputs.streak_check.next_cursor}}"
+    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
+    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
+    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
+    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
   }
 
   ## Medium/high-confidence rejection WITH concrete blockers: route
@@ -1876,19 +2032,25 @@ workflow whole_improve_loop:
   ## interfere with the review_loop snapshot semantics. Sized large
   ## enough to allow review_loop to be the binding constraint. Both
   ## fixers share the loop counter — total fix attempts across both
-  ## families are capped at 20. Routes back to snapshot_chunk so the
-  ## cursor advances after a fix and the next pass reviews the next
-  ## chunk (the fixed chunk is re-reviewed when the rotation wraps).
-  ## Hands the (now-reset, since this pass had blockers) clean_streak
-  ## back so snapshot_chunk persists the reset to disk — a fix must NOT
-  ## leave a stale non-zero streak on disk (issue #12).
+  ## families are capped at 20. Routes back to snapshot_chunk. ADR-055:
+  ## because this pass had blockers the unit did NOT converge, so
+  ## carry_cursor does NOT advance — the next pass RE-REVIEWS the SAME
+  ## (just-fixed) unit rather than moving on, which is the per-unit
+  ## review→fix→re-review loop. carry_unit_streak is 0 (a blocker resets it)
+  ## and carry_unit_passes increments toward the force-skip bound, so a unit
+  ## the fixer can never satisfy is eventually skipped instead of grinding
+  ## forever. The carry tuple is persisted to disk crash-safely.
   fix_claude -> snapshot_chunk as recovery_loop(20) with {
-    incoming_clean_streak: "{{outputs.streak_check.clean_streak}}",
-    incoming_cursor: "{{outputs.streak_check.next_cursor}}"
+    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
+    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
+    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
+    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
   }
   fix_gpt -> snapshot_chunk as recovery_loop(20) with {
-    incoming_clean_streak: "{{outputs.streak_check.clean_streak}}",
-    incoming_cursor: "{{outputs.streak_check.next_cursor}}"
+    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
+    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
+    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
+    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
   }
 
   ## Loop exhaustion fallbacks: when a bounded loop hits its limit
@@ -1900,16 +2062,19 @@ workflow whole_improve_loop:
   ## mark the ticket done/review as if the whole workspace were clean.
   ## Legit success runs through streak_check's `stop` edge → done.
   ##
-  ## ON LARGE REPOS THIS IS EXPECTED, NOT A DEAD END (issue #12): when
-  ## num_chunks exceeds max_review_passes a single run cannot complete a
-  ## full clean sweep, so it exhausts review_loop and lands here — but the
-  ## clean_streak and rotation cursor are PERSISTED to
-  ## .whole_improve_loop.state, so a re-dispatch (or a manual re-run of
-  ## the acceptance command) resumes mid-sweep and accumulates toward the
-  ## num_chunks+1 threshold. `fail` is the per-run signal "not converged
-  ## yet"; the operator/dispatcher re-runs until a run exits via `stop`.
-  ## Tune max_review_passes up (with the budget) to converge in fewer
-  ## runs. See README "Large workspaces" and ADR-011 → Corrections.
+  ## ON LARGE REPOS THIS IS EXPECTED, NOT A DEAD END (ADR-055): when the
+  ## unit backlog exceeds what max_review_passes allows in one run (loop_max =
+  ## 2*num_chunks + max_review_passes), a single run cannot process every unit,
+  ## so it exhausts review_loop and lands here — but the per-unit tuple
+  ## {cursor, unit_streak, unit_passes, units_done} is PERSISTED to
+  ## .whole_improve_loop.state, so a re-dispatch (or a manual re-run of the
+  ## acceptance command) resumes mid-backlog and keeps banking converged units
+  ## (each already committed) until units_done reaches num_chunks. `fail` is
+  ## the per-run signal "backlog not finished yet"; the operator/dispatcher
+  ## re-runs until a run exits via `stop`. Crucially, unlike the old design a
+  ## `fail` here still LEFT COMMITTED WORK behind (every unit that converged
+  ## this run), so nothing is stranded. Tune max_review_passes up (with the
+  ## budget) to finish in fewer runs. See README "Large workspaces".
   reviewer_claude -> fail
   reviewer_gpt    -> fail
   fix_claude      -> fail
@@ -1920,10 +2085,12 @@ workflow whole_improve_loop:
   ## keeps the loop cycling rather than silently terminating. The
   ## bounded review_loop counter on the reviewer→streak_check edges
   ## still guarantees the workflow eventually exits — exhaustion routes
-  ## via the reviewer→fail fallthrough above. Carries the streak back
-  ## like the other loop-return edges so the persisted state stays
-  ## coherent even on this rare path (issue #12).
+  ## via the reviewer→fail fallthrough above. Carries the per-unit tuple
+  ## back like the other loop-return edges so the persisted state stays
+  ## coherent even on this rare path (ADR-055).
   streak_check    -> snapshot_chunk with {
-    incoming_clean_streak: "{{outputs.streak_check.clean_streak}}",
-    incoming_cursor: "{{outputs.streak_check.next_cursor}}"
+    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
+    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
+    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
+    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
   }
