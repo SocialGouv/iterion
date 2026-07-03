@@ -10,6 +10,58 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-03 — whole-repo production-readiness, mono sonnet-5: real hardening but did NOT converge → harvested + triggered ADR-055 redesign (run 019f2247)
+
+- Status: **partial** — produced genuinely good hardening, but the bot
+  **committed none of it** and **did not converge**; harvested by hand.
+- Versions: bot whole-improve-loop v0.5.0 · iterion `8bedc7353` (start) →
+  `85ea12d7f` (counting-truth fix landed mid-analysis)
+- Method: `iterion run` then 11× manual `iterion resume`, mono claude
+  (sonnet-5 fixer + sonnet-5 reviewer), whole repo (no scope), sandbox,
+  `--merge-into none`, forfait (claude_code OAuth). Budget raised across
+  resumes to `--max-duration 24h`.
+- Result: **~9h real active time** (displayed as ~15h before the counting
+  fix — an overnight OS-suspend was counted as active), **48 loop
+  iterations**, **2.46M tokens**, **0 self-commits** (commit fires only on
+  global streak convergence, never reached). Verdict trend oscillated (28
+  reject / 23 approve; still a fresh high-confidence blocker at iteration
+  50) → the whole-repo streak gate `clean_streak >= num_chunks+1` is
+  **unreachable** (a real repo always has another real issue). Stopped with
+  SIGINT (clean `failed_resumable` checkpoint) and **harvested build-green**
+  to branch `iterion/willy-harvest-20260703` (`52b602886`).
+- Value: real, but 0 landed by the bot. New `pkg/backend/secretguard`
+  (layered secret-leak defence engine, multi-encoding deterministic match +
+  heuristic detector), a `generation.go` OOM guard on streamed
+  text/thinking accumulation, ~55% net-new test coverage. Cherry-pick
+  per-file after review (harvest commit notes an ADR-053 numbering
+  collision the run introduced).
+- Findings / misses: reviewer findings were genuine (e.g. `NewSubagentRunner`
+  never invoked in prod = dead code) but the blind-chunk design means a
+  reviewer can flag a symbol as dead that is live in an unseen chunk — a
+  fragmentation false-positive risk.
+- Engine hardening surfaced by this run:
+  1. **Counting skew (FIXED, `85ea12d7f`)** — active-duration re-derived
+     from wall-clock event timestamps counted a 5h46m OS suspend; now uses
+     the engine's `SharedBudget` CLOCK_MONOTONIC elapsed (suspend-excluded,
+     thinking-counted), stamped per-event as `Event.ActiveMs`. Also the
+     48-vs-49 iteration off-by-one (UI showed physical exec index; now shows
+     semantic `loop_iteration`) + a run-level `⟳ loop current/max` chip.
+  2. **Structural (ADR-055, redesign in progress)** — whole-repo-sweep +
+     terminal-commit + blind-chunk-review makes the bot **worse than a
+     manual Claude Code loop**: it never converges and lands nothing.
+     ADR-055 (`docs/adr/055-unit-convergent-adaptive-improve-loop.md`)
+     inverts this: per-unit convergence + **incremental commit** + per-unit
+     multi-model verify + bounded completion. Pilot increment 1 (incremental
+     commit + per-unit convergence) in progress.
+  3. **11 manual resumes** on transient backend errors → Chantier B
+     (in-executor retry + bounded, forfait-cap-aware run-level auto-resume)
+     in progress.
+- Lessons for next run: on a whole repo, **harvest — don't chase**
+  convergence (it won't come); the value is real long before the streak
+  saturates. The redesign (ADR-055) is the real fix — until it lands, scope
+  Willy to a bounded subset (`scope_globs`) so per-chunk convergence is
+  actually reachable, or expect to harvest by hand.
+
 ## 2026-07-02 — validated the launch-time per-node model/backend override (mono fable/sonnet) (run 019f2236)
 
 - Status: **validated** (feature end-to-end); review loop **converged** (2 clean
