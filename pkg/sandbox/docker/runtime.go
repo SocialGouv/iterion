@@ -140,14 +140,3 @@ func pullImage(ctx context.Context, rt Runtime, ref string) error {
 	}
 	return fmt.Errorf("docker: pull %s: %w\noutput:\n%s", ref, err, stderr.String())
 }
-
-// runtimeVersion returns the runtime's reported version string for
-// `iterion sandbox doctor`. Returns empty + error on detection failure
-// rather than swallowing — callers decide how to render.
-func runtimeVersion(rt Runtime) (string, error) {
-	out, err := runtimeCmd(rt, "version", "--format", "{{.Client.Version}}").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}

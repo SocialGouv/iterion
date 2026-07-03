@@ -150,16 +150,3 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 	}
 	return nil
 }
-
-// runtimeVersion returns kubectl's reported client version. Used by
-// `iterion sandbox doctor` so operators see the kubectl binary
-// they're shipping with the runner image.
-func runtimeVersion() (string, error) {
-	out, err := kubectlCmd("version", "--client", "--output=json").Output()
-	if err != nil {
-		return "", err
-	}
-	// Don't bother decoding the JSON — keep this dependency-free.
-	// The doctor caller renders the raw string anyway.
-	return strings.TrimSpace(string(out)), nil
-}
