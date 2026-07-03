@@ -318,15 +318,32 @@ multi-select, numeric, approve/reject).
 
 ### `branch-improve-loop` — Billy
 
-Branch-scoped variant of whole-improve-loop. Runs review-fix iterations
-on the changes between a feature branch and its base, auto-commits each
-fix, and stops on cross-family double-approval.
+Branch-scoped REVIEW-AND-IMPROVE campaign — one capable agent, its natural
+flow, minimal framing. Reviews and improves the changes THIS branch
+introduces over base_ref (default "main"): reads the diff
+`git diff $(git merge-base base_ref HEAD)` (merge-base vs WORKING TREE, so a
+prior pass's uncommitted fixes stay visible), finds the REAL issues the
+change introduces or leaves (bugs, regressions, missing/weak tests, unhandled
+errors, quality problems IN THE DIFF), and improves them — committing each
+fix in stride with a semantic message. It does NOT re-litigate code the
+branch didn't touch. A deterministic, stack-agnostic build/test gate
+re-checks the tree after each pass (the anti-Goodhart truth oracle: the agent
+can't self-certify); RED routes back with the failure log, green + branch
+clean converges. git IS the durable state — an interrupted / budget-capped
+run keeps every committed fix, and a re-dispatch re-runs the campaign. Bounded
+by a max_passes cap. Optional MR/PR path ships the series of per-pass commits.
+Sibling of whole-improve-loop v2 (ADR-058). See
+docs/references/productive-session-patterns.md.
 
 - **Use when**:
-  Use when an existing branch/PR needs a rigorous review + fix +
-  commit before merge. Scopes to git diff base_ref...HEAD and commits
-  a semantic message; pass base_ref for a non-main integration base.
-- **Vars**: `base_ref` (string), `chunk_dir` (string), `chunk_max_loc` (int), `chunk_threshold_loc` (int), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `scope_notes` (string), `source_issue_ref` (string), `workspace_dir` (string)
+  Use when an existing branch/PR needs a rigorous review + fix + commit before
+  merge. Scopes to the diff base_ref...HEAD (measured against the working tree)
+  and commits each fix as a semantic commit in stride; pass base_ref for a
+  non-main integration base. One capable agent reviews the branch diff and
+  improves what it finds, converging when a fresh re-review is clean and a
+  deterministic build/test gate is green. For a whole-codebase (not
+  branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
+- **Vars**: `base_ref` (string), `baseline` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `dep-update-guard` — Vetty

@@ -1,57 +1,164 @@
-# branch_improve_loop
+# branch_improve_loop (Billy) — companion notes
 
-Branch-scoped variant of `whole_improve_loop`. Runs the alternating
-Claude/GPT review-fix loop against the diff between the current branch and
-its base, auto-commits on convergence, and stops on cross-family
-double-approval.
+Companion to the `branch_improve_loop` workflow ([`main.bot`](main.bot)).
+This is a **design journal**: what the mechanism is, why it is shaped this
+way, and what is still open.
 
-On large PRs the reviewer used to ingest the whole diff in one context,
-overflow the window, and never converge. A deterministic `plan_chunks`
-step now measures the diff and, above a threshold, splits it into small
-diff chunks the reviewer reads one at a time before merging them into a
-single whole-diff verdict (see [Large PRs](#large-prs) below).
+## What it does — one agent reviews+improves the branch diff, minimal framing
 
-## Inputs
+`branch_improve_loop` runs a **REVIEW-AND-IMPROVE campaign scoped to a branch's
+diff**. The scope is **the changes THIS branch introduces over `base_ref`**
+(default `main`) — the diff `git diff $(git merge-base base_ref HEAD)` measured
+against the **WORKING TREE** (so a prior pass's uncommitted fixes stay visible;
+the commit-only `base_ref...HEAD` form would hide them and the loop could never
+converge). One capable agent reads that diff, finds the **real issues the
+change introduces or leaves** — bugs, regressions, missing/weak tests,
+unhandled errors, quality problems **in the diff** — and improves them,
+**committing each fix in stride** with a semantic message. It does **not**
+re-litigate code the branch didn't touch.
 
-All inputs are workflow `vars` (override with `--var name=value`):
+The mechanism is deliberately **minimal**: give ONE capable agent a mission +
+standing autonomy and let it work in its natural flow — the way a productive
+human-driven Claude Code session actually looks
+([docs/references/productive-session-patterns.md](../../docs/references/productive-session-patterns.md)):
+a **living todo list** born from reading the diff (never frozen upfront
+phases), and for each issue the repeated unit **locate → smallest fix → build →
+test → COMMIT**, a few edits per commit, validation *before* the commit,
+committing each fix **as it finishes** (never batch).
+
+### Sibling of whole_improve_loop v2
+
+Same v2 shape as [`whole_improve_loop`](../whole-improve-loop/main.bot)
+(ADR-058): one adaptive `campaign` agent + a deterministic build/test gate + a
+bounded continuation loop + git-as-state + an opt-in MR path. The **only**
+difference is scope — `whole_improve_loop` applies ONE determined **axis**
+across the whole codebase; `branch_improve_loop` reviews+improves the **diff of
+one branch**. `whole_improve_loop`'s AXIS is replaced here by the branch diff
+itself: `base_ref` + the diff define the work.
+
+### Why v2 replaced the v1 chunked review loop
+
+v1 was a chunked cross-family review loop: ~11 nodes (`plan_chunks → alt →
+reviewer_claude/reviewer_gpt → streak_check → fix_claude/fix_gpt →
+prepare_commit → commit_changes`) plus the chunking dials and the mono/dual
+topology vars. It **over-framed the work** — the same lesson
+`whole_improve_loop` learned (ADR-058): *"the deficit is framing, not
+capability"*, *"once framed, a campaign runs itself"*. A capable agent reviews
+a branch diff and fixes what it finds better as **one flow** — a living todo
+list, one verified commit per fix — than as an assembly line of
+chunk/review/fix/commit nodes. v2 keeps what the data says matters — the
+verified per-fix commit cadence, the deterministic build/test gate, the
+baseline, the termination contract — and drops the graph machinery around it.
+
+## The graph
+
+```
+campaign ──▶ verify_build ──▶ verify_run ──▶ gate
+   ▲   (one adaptive agent:   (writes         (deterministic
+   │    reviews+improves       <scratch>/      build/test gate)
+   │    the branch diff,        verify.sh)          │
+   │    commits each fix                            │
+   │    in stride)                                  │
+   │                                                │
+   │  (not converged: RED → fix / green but more    │
+   └────────────── issues → next pass) ◀────────────┤
+                                                     │  (converged:
+                                                     ▼   green ∧ branch_clean)
+                                              mr_gate ──▶ (finalize_mr) ──▶ done
+```
+
+- **`campaign`** (adaptive, claude_code, full tools) is the whole engine: it
+  runs `git add -N .` then reads the branch diff, builds a living todo list of
+  the real issues in the diff, and fixes them one at a time — locate → smallest
+  fix → build → test → **commit** (`git add -A` incl. untracked, semantic
+  message) — until a fresh re-review finds no real issue left. It emits a
+  **termination contract** (`branch_clean`, `commits_this_pass`,
+  `issues_remaining`, …). It may pause for the operator on a genuine mid-flight
+  decision (kept rare).
+- **`verify_build` → `verify_run`** is the **deterministic, stack-agnostic**
+  build/test gate: an adaptive agent reads the `verify-build` skill and writes
+  the repo's real build+test into `<scratch_dir>/verify.sh`; a tool node
+  re-runs it and gates on the **real exit code** (no LLM judgment). This is
+  both the tight real-feedback loop AND the anti-Goodhart truth oracle — the
+  agent can't self-certify. `verify_build` does **not** fix code.
+- **`gate`** (deterministic compute) decides continuation: `converged =` the
+  gate is **green** AND the campaign reported **`branch_clean`**. Not converged
+  → back to `campaign`; a RED gate carries the failure log so the agent fixes
+  what it broke, a green-but-more-work pass carries an empty log so the agent
+  simply keeps reviewing.
+- **`mr_gate` → `finalize_mr`** is the opt-in MR/PR path shipping the series of
+  per-pass commits (`open_mr`).
+
+## Convergence & bounding
+
+- **Done-oracle:** the run converges when the campaign reports `branch_clean`
+  (a fresh re-review of the branch diff finds no remaining real issue) **and**
+  the deterministic gate is green.
+- **`max_passes` cap:** the single declared continuation loop
+  (`campaign → verify_build → verify_run → gate → campaign`) is capped by
+  `max_passes` (default 8); on exhaustion it ships what is banked.
+- `iterion validate` reports **no undeclared cycle** (one declared loop).
+
+## git is the state (crash-safe / resumable)
+
+There is **no chunk/worklist scratch file** any more — **git is the durable
+state**. The campaign commits each fix in stride, so an interrupted /
+budget-capped run keeps every committed fix, and a re-dispatch simply re-runs
+`campaign`, which reads `git log`, re-diffs the branch, and continues from those
+commits. The only out-of-tree scratch is the deterministic gate's
+`<scratch_dir>/verify.sh` + `verify.log` (default
+`${PROJECT_SCRATCH_DIR}/branch-improve-loop`, engine-resolved off the repo —
+never inside the target worktree).
+
+## Right artifact (anti-Goodhart)
+
+`git diff` omits **untracked** files, so a branch that ADDS files would be
+reviewed incomplete. The campaign runs `git add -N .` (intent-to-add) BEFORE
+diffing so new files show in the branch diff, and commits the uncommitted
+working tree after its own build+test passes, staging untracked files
+(`git add -A`) so a fix that adds a test/helper actually lands. The
+deterministic `verify_build`/`verify_run` gate then re-checks the committed
+tree. See
+[docs/workflow_authoring_pitfalls.md](../../docs/workflow_authoring_pitfalls.md).
+
+## Base-ref diff semantics (preserved from v1)
+
+The scope is the **merge-base-vs-working-tree** diff, not the commit-only
+range: `git diff $(git merge-base base_ref HEAD)`. This captures the branch's
+committed changes AND any uncommitted fixes a prior pass of this loop applied
+(fixes are committed in stride, but the re-review still measures the working
+tree). Reviewing the commit-only `base_ref...HEAD` would hide prior fixes and
+the loop could never converge. Default `base_ref` is `main`; pass
+`--var base_ref=develop` (or any local ref) for a different integration base.
+
+## Stack- & repo-agnostic
+
+The **base_ref + the diff** define the work. No language / package-manager
+literal and no iterion-specific target path appears in any var default, command
+body, or schema — `campaign` and `verify_build` are adaptive agents that read
+whatever repo they are pointed at (CLAUDE.md "Catalog bots are repo-agnostic" +
+"Universal code bots"). The `verify_build`/`verify_run` gate stays deterministic
+while remaining universal: the agent writes the repo's own build/test into
+`<scratch_dir>/verify.sh`, the tool node runs it and gates on the exit code.
+
+## Vars
 
 | Var | Default | Description |
 |---|---|---|
-| `workspace_dir` | `${PROJECT_DIR}` | Repo to review (the run's workspace). |
-| `base_ref` | `main` | Branch/ref to diff against; scope is `git diff {{base_ref}}...HEAD`. |
-| `scope_notes` | `""` | Free-text guidance passed to the reviewers. |
-| `chunk_threshold_loc` | `300` | Activate chunked review above this many changed LoC. |
-| `chunk_max_loc` | `200` | Maximum changed LoC per chunk. |
-| `chunk_dir` | `.branch-improve-chunks` | Gitignorable scratch dir for chunk diffs + manifest. |
+| `workspace_dir` | `${PROJECT_DIR}` | Repo to review (the run's worktree). |
+| `base_ref` | `main` | Branch/ref to diff against; scope is `git diff $(git merge-base base_ref HEAD)` (merge-base vs working tree). |
+| `scope_notes` | `""` | Free-form extra context for the campaign agent. |
+| `baseline` | `""` | **G5** — known pre-existing failures / flaky tests the campaign must SKIP (empty = it establishes the baseline once cheaply against `base_ref`). |
+| `max_passes` | `8` | Hard cap on continuation passes — the convergence backstop; sizes the declared loop. |
+| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | off | Opt-in MR/PR path shipping the series of per-pass commits (`mr_base` empty = `base_ref`). |
+| `scratch_dir` | `${PROJECT_SCRATCH_DIR}/branch-improve-loop` | Out-of-tree working files (the gate's `verify.sh` / `verify.log` only — git is the state). |
 
 ## Run
 
 ```bash
-iterion run bots/branch_improve_loop/main.bot \
+iterion run bots/branch-improve-loop/main.bot \
   --var workspace_dir=/path/to/repo \
   --var base_ref=main
 ```
-
-## Large PRs
-
-When `git diff {{base_ref}}...HEAD` exceeds `chunk_threshold_loc` changed
-lines, the `plan_chunks` tool splits the diff into `≤ chunk_max_loc` LoC
-unified-diff files under `chunk_dir` (a single file larger than the cap is
-hunk-split), plus a `manifest.json` mapping each chunk to its files. Then:
-
-- **Review** — the reviewer reads the chunks one at a time, records one
-  finding per chunk (`chunk_notes`), and **merges** them into a single
-  whole-diff verdict.
-- **Converge** — cross-family double-approval (`streak_check`) is computed
-  on that merged WHOLE-diff verdict, never chunk-by-chunk, so the loop's
-  stop condition is unchanged.
-- **Fix** — the same-family fixer streams the per-chunk notes and opens
-  only the relevant chunk diff files, never reloading the whole diff.
-
-At or below the threshold the bot keeps its original single-pass
-whole-diff behaviour. `chunk_dir` is scratch — gitignore it; the commit
-step excludes it. Design rationale and the rejected alternatives parallel the
-whole-repository chunking case in
-[ADR-011](../../docs/adr/011-whole-improve-loop-context-chunking.md).
 
 See [main.bot](main.bot) for the full DSL.

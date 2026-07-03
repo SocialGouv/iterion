@@ -1,830 +1,423 @@
 ## ─────────────────────────────────────────────────────────────────
-## branch_improve_loop
+## branch_improve_loop  (v2 — one agent reviews+improves the branch
+##                       diff in its natural flow, minimal framing)
 ##
-## Branch-scoped improvement loop. Alternating Claude / GPT code
-## review of the diff between `base_ref` (default: main) and HEAD,
-## with deterministic "two consecutive positive verdicts" stop
-## condition. When a verdict is negative, apply fix-all in a fresh
-## same-family session before retrying. On convergence, a structured
-## `prepare_commit` agent picks the exact file set and writes a
-## semantic commit via the `commit_changes` tool.
+## THE MISSION is a REVIEW campaign scoped to the BRANCH DIFF: review and
+## improve the changes THIS branch introduces over `base_ref` (default
+## "main") — the diff `git diff $(git merge-base <base_ref> HEAD)` measured
+## against the WORKING TREE (so a prior pass's uncommitted fixes stay
+## visible; the commit-only `base_ref...HEAD` form would hide them and the
+## loop could never converge). It finds the REAL issues the change introduces
+## or leaves — bugs, regressions, missing/weak tests, unhandled errors,
+## quality problems IN THE DIFF — and improves them, committing each fix in
+## stride. It does NOT re-litigate code the branch didn't touch.
 ##
-## Sibling bot for whole-codebase scope (no commit, axis overridable):
-## see `whole_improve_loop.bot`.
+## Sibling of `whole_improve_loop` v2: SAME shape (one adaptive `campaign`
+## agent + a deterministic build/test gate + a bounded continuation loop +
+## git-as-state + the opt-in MR path), DIFFERENT scope — whole_improve_loop
+## applies ONE determined axis across the whole codebase; branch_improve_loop
+## reviews+improves the diff of ONE branch. `whole_improve_loop`'s AXIS is
+## replaced here by the branch diff itself: `base_ref` + the diff define the
+## work.
 ##
-## Improvement axis: locked to the full production-ready grid
-## (security, robustness, data, concurrency, observability,
-## performance, boundaries). The branch scope already constrains
-## the surface, so no per-run axis override is exposed — operators
-## who want a single-axis pass on a branch can edit the prompts
-## directly in a fork.
+## WHY THIS SHAPE. The v1 branch loop (ADR-011 chunking → ADR-052 mono/dual)
+## was ~11 nodes of chunked cross-family review machinery
+## (plan_chunks → alt → reviewer_claude/reviewer_gpt → streak_check →
+## fix_claude/fix_gpt → prepare_commit → commit_changes). It OVER-FRAMED the
+## work — the same lesson whole_improve_loop learned (ADR-058,
+## docs/references/productive-session-patterns.md): "the deficit is framing,
+## not capability"; "once framed, a campaign runs itself". A capable agent
+## reviews a branch diff and fixes what it finds better as ONE flow — a living
+## todo list, one verified commit per fix, in stride — than as an assembly
+## line of chunk/review/fix/commit nodes.
 ##
-##   Loop 1: claude_code + opus 4.7
-##   Loop 2: claw + gpt-5.5
-##   Loop 3: like loop 1, alternating
+## GRAPH (see the workflow block):
+##   campaign     — ONE adaptive agent (claude_code, full tools). Mission =
+##                  review + improve the branch diff, with a standing-autonomy
+##                  contract that reproduces the productive-session shape
+##                  AGENT-SIDE: read the branch diff, build a LIVING todo of
+##                  the concrete real issues the change introduces or leaves,
+##                  then the repeated unit locate → smallest fix → build →
+##                  test → semantic COMMIT, one issue at a time, committing
+##                  each fix AS it finishes. git IS the durable state — a
+##                  re-dispatch re-runs `campaign`, which reads `git log` +
+##                  re-diffs the branch and continues. No worklist/cursor
+##                  scratch file. Termination output: {branch_clean,
+##                  commits_this_pass, issues_remaining, needs_human, …}.
+##   verify_build — adaptive, stack-agnostic: reads the `verify-build` skill
+##     + verify_run  and writes the repo's real build+test into an OUT-OF-TREE
+##                  <scratch_dir>/verify.sh; a DETERMINISTIC tool node
+##                  re-runs it and gates on the REAL exit code (no LLM
+##                  judgment). The tight real-feedback loop AND the
+##                  anti-Goodhart truth oracle: the agent can't self-certify.
+##   gate         — deterministic compute: green AND branch_clean → converged
+##                  → ship; else loop back to `campaign` (RED → with the
+##                  failure log so the agent fixes what it broke; green but
+##                  issues remain → another pass). No LLM, no shell.
+##   mr_gate      — deterministic: open the optional MR/PR (the series of
+##     + finalize_mr per-pass commits) when open_mr, else finish.
 ##
-## Stops when:
-##   - 2 consecutive positive verdicts (Claude AND GPT both validate
-##     in successive iterations of opposite families), OR
-##   - max review_loop iterations reached
+## CONTINUATION IS BOUNDED. The single declared loop
+## (campaign→verify_build→verify_run→gate→campaign) is capped by
+## `max_passes`; on exhaustion it ships what is banked. `iterion validate`
+## reports NO undeclared cycle. LANDS CONTINUOUSLY: the agent commits each
+## fix in stride, so an interrupted / budget-capped run has banked every
+## committed fix (git is the state).
 ##
-## False-positive resistance:
-##   1. Reviewers self-rate their `confidence` (low/medium/high) and
-##      are explicitly told to drop stylistic preferences.
-##   2. The fixer can `pushback` on items it judges non-bloquant,
-##      with a justification.
-##   3. The next reviewer receives the prior pushback list and is
-##      instructed to NOT re-flag those items unless evidence has
-##      changed — this prevents a single false positive from
-##      blocking the loop forever.
-##   4. `streak_check` treats a low-confidence rejection as a
-##      soft-approval (alternation continues, no fix is triggered).
-##      Only medium/high-confidence rejections route to the fixer.
+## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign runs
+## `git add -N .` BEFORE diffing so a branch that ADDS files shows those files
+## in `git diff` (untracked files are otherwise invisible to `git diff`), and
+## commits the UNCOMMITTED working tree AFTER its own build+test passes,
+## staging untracked files (`git add -A`) so a fix that adds files actually
+## lands; the deterministic verify gate then re-checks the committed tree.
 ##
-## Demonstrates four DSL features delivered together:
-##   1. `round_robin` router for backend alternation
-##   2. `compute` node for deterministic AND of current + previous
-##      verdict (no LLM call, no shell-out)
-##   3. `loop.<name>.previous_output` namespace eliminating manual
-##      `previous_verdict` relay through every loop-bearing edge
-##   4. Boolean expressions in `when` clauses (quoted form)
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## "Universal code bots"): the base_ref + the diff define the work. No
+## language / package-manager literal, and no iterion-specific target path,
+## appears in any var default, command body, or schema — campaign /
+## verify_build are adaptive agents that read whatever repo they are pointed
+## at.
 ##
-## Large-PR handling (chunked review + streaming fix):
-##   On big branches the reviewer used to ingest the entire branch
-##   diff in one LLM context, overflow the
-##   window, lose early hunks to compaction, and never converge.
-##   A deterministic `plan_chunks` tool now measures the diff — the
-##   merge-base-vs-WORKING-TREE diff, so a prior iteration's
-##   uncommitted fixes are visible (commit-only `base_ref...HEAD`
-##   would hide them and the loop could never converge) — and,
-##   above `chunk_threshold_loc` (default 300 LoC), splits it into
-##   ≤ `chunk_max_loc` (default 200) LoC unified-diff files under the
-##   gitignorable scratch dir `chunk_dir`. The reviewer reads those
-##   chunks one at a time, emits a per-chunk note (`chunk_notes`),
-##   then MERGES them into ONE whole-diff verdict — so cross-family
-##   approval (streak_check) still happens on the WHOLE diff, never
-##   chunk-by-chunk. The fixer streams the per-chunk notes + chunk
-##   diff files incrementally, never reloading the full diff. Below
-##   the threshold the bot behaves exactly as before. Trade-off and
-##   the rejected per-chunk-fan-out alternative are recorded in
-##   docs/adr/011-branch-improve-diff-chunking.md.
+## RETIRED FROM v1 (git history has the design): plan_chunks (+ the chunking
+## dials), the `alt` condition router, reviewer_claude / reviewer_gpt, the
+## streak_check convergence compute, fix_claude / fix_gpt, prepare_commit /
+## commit_changes, and the review_mode / mono_family topology vars. The
+## campaign self-reviews via a fresh re-review of the diff + the deterministic
+## build/test gate + its own judgment (the operator's proven manual pattern),
+## and commits each fix in stride — so the ADR-052 mono/dual review topology no
+## longer applies to this bot (no reviewer nodes); it stays on the other
+## review-loop bots. 11 nodes → 6.
 ## ─────────────────────────────────────────────────────────────────
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-  scope_notes: string = ""
-  ## Branch comparison base. The reviewers and fixers operate on the
-  ## diff `git diff $(git merge-base {{vars.base_ref}} HEAD)` — the
-  ## changes introduced by the current branch on top of `base_ref`,
-  ## measured against the WORKING TREE so a prior iteration's
-  ## uncommitted fixes are included (the commit-only `...HEAD` form
-  ## would hide them and break convergence). Default "main" covers the
-  ## GitHub/GitLab/Forgejo conventions; pass `--var base_ref=develop`
-  ## (or any local ref) when reviewing against a different integration
-  ## branch.
+
+  ## Branch comparison base. The campaign reviews the diff
+  ## `git diff $(git merge-base {{vars.base_ref}} HEAD)` — the changes
+  ## introduced by the current branch on top of `base_ref`, measured against
+  ## the WORKING TREE so a prior pass's uncommitted fixes are included (the
+  ## commit-only `...HEAD` form would hide them and break convergence).
+  ## Default "main" covers the GitHub/GitLab/Forgejo conventions; pass
+  ## `--var base_ref=develop` (or any local ref) when reviewing against a
+  ## different integration branch.
   base_ref: string = "main"
 
-  ## Large-PR chunking dials. When the branch diff
-  ## (merge-base vs working tree — see base_ref) exceeds
-  ## chunk_threshold_loc CHANGED lines, the `plan_chunks` tool splits
-  ## it into ≤ chunk_max_loc LoC diff files so each reviewer bounds
-  ## its context per chunk instead of ingesting the whole diff at
-  ## once. At or below the threshold the bot keeps its original
-  ## single-pass whole-diff behaviour. Both are plain --var overrides;
-  ## defaults are layout-agnostic so the bot stays repo-portable
-  ## (catalog-universality).
-  chunk_threshold_loc: int = 300
-  chunk_max_loc: int = 200
-  ## Scratch dir where plan_chunks writes per-chunk diff files +
-  ## manifest.json. Defaults to an OUT-OF-TREE per-project location
-  ## (${PROJECT_SCRATCH_DIR} → ~/.iterion/projects/<key>/scratch/) so the
-  ## chunks never appear in the worktree, the git diff, or a commit —
-  ## and the same host path is bind-mounted inside the sandbox. Override
-  ## with a repo-relative path only if you deliberately want them in-tree.
-  chunk_dir: string = "${PROJECT_SCRATCH_DIR}/branch-improve-chunks"
+  ## Free-form extra context for the campaign agent (e.g. what the branch is
+  ## supposed to do, known caveats). Empty = the diff speaks for itself.
+  scope_notes: string = ""
+
+  ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
+  ## verify script/log ONLY (no chunk files / worklist any more — git is the
+  ## state). The engine resolves ${PROJECT_SCRATCH_DIR} to
+  ## ~/.iterion/projects/<key>/scratch non-sandboxed and to the
+  ## container-writable /tmp/iterion-scratch under a sandbox (never hardcode
+  ## ~/.iterion here — the -full image's pinned non-host User cannot write a
+  ## host-owned path → EACCES). Keeping it OUT of the target worktree is the
+  ## repo-agnostic rule: never pollute someone else's tree.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/branch-improve-loop"
+
+  ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
+  ## pre-existing test failures / flaky tests the campaign must SKIP rather
+  ## than burn budget proving they aren't the branch's own. Empty (default) =
+  ## the campaign establishes it once cheaply (a `git stash`-based check
+  ## against base_ref) then skips what predates the branch. The
+  ## dispatcher/operator can pre-fill it.
+  baseline: string = ""
+
+  ## Hard cap on continuation PASSES — the convergence backstop. Each pass is
+  ## one campaign→verify cycle; the run stops (shipping what is banked) when
+  ## the branch is reported clean + the tree is green, or when this cap is
+  ## hit. Sizes the declared continuation loop. Raise it (with the budget) for
+  ## a large branch diff; the agent commits in stride, so every pass banks
+  ## real, landed work.
+  max_passes: int = 8
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────
-  ## When open_mr=true, after the run converges and commits, the
-  ## finalize_mr node pushes the run's branch to the forge and opens a
-  ## merge/pull request. Off by default so a plain local run just leaves
-  ## commits on the storage branch (worktree finalization). The
-  ## comment→MR trigger sets this true. Requires a forge_token secret
-  ## (or host-authenticated gh/glab) and a clone with a push remote.
+  ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
+  ## (the SERIES of per-pass commits) to the forge and opens a merge/pull
+  ## request. Off by default so a plain local run just leaves the commits on
+  ## the operator's branch. The comment→MR trigger sets this true. This bot
+  ## runs in a per-run git worktree (worktree: auto), so the commits advance
+  ## the worktree HEAD and finalize_mr pushes that branch. Requires a
+  ## forge_token secret (or host-authenticated gh/glab).
   open_mr: bool = false
-  ## Branch name to push + open the MR from. Empty = derive a stable
-  ## name from the run (iterion/improve/<run-id>). A --var override lets
-  ## the caller pin a predictable branch.
+  ## Branch name to push + open the MR from. Empty = derive a stable name
+  ## from the run (iterion/improve/<run-id>).
   mr_branch: string = ""
   ## Integration base the MR targets. Empty = vars.base_ref.
   mr_base: string = ""
   ## Optional back-link target: the source issue this run answers, as
-  ## "native:<id>" (local board) or a forge issue URL. When set,
-  ## finalize_mr posts the opened MR's URL back as a comment on it.
+  ## "native:<id>" (local board) or a forge issue URL. When set, finalize_mr
+  ## posts the opened MR's URL back as a comment on it.
   source_issue_ref: string = ""
 
-  ## ─── Review topology (mono/dual) ───────────────────────────────
-  ## Selects how the review loop alternates model families:
-  ##   dual → alternate claude ↔ gpt each pass (two families, robust,
-  ##          the historical behaviour); stop needs a cross-family
-  ##          double-approval.
-  ##   mono → one family only (mono_family), ~half the LLM calls; stop
-  ##          converges on two consecutive clean self-approvals.
-  ##   auto → resolved at LAUNCH (a bot can't probe host credentials):
-  ##          dual when two provider families are detected, else mono.
-  ## These vars are INJECTED by pkg/reviewtopology at launch (CLI
-  ## --review-mode flag / studio toggle / dispatcher) when left at
-  ## "auto". Launched WITHOUT that resolution, "auto" behaves as dual
-  ## (parity) — a pure non-regression. mono_family is filled by the
-  ## resolver in mono mode; leave it empty for dual/auto.
-  review_mode: string = "auto"
-  mono_family: string = ""
-
 secrets:
-  ## Forge access for push + MR creation + the issue back-link. Mounted
-  ## as a read-only file the gh/glab CLI authenticates from; never read
-  ## into a prompt. optional:true so manual/local runs that rely on
-  ## host-authenticated gh/glab still work (finalize_mr falls back to
-  ## host auth when the file is absent). See skills/forge-mr-create.md.
+  ## Forge access for push + MR creation + the issue back-link. Mounted as a
+  ## read-only file the gh/glab CLI authenticates from; never read into a
+  ## prompt. optional:true so manual/local runs relying on host-authenticated
+  ## gh/glab still work. See skills/forge-mr-create.md.
   forge_token:
     as: file
     optional: true
 
-prompt review_system:
-  You are an EXTREMELY demanding, methodical code reviewer in
-  charge of a PRODUCTION-READY review of the BRANCH against
-  a base. You review the changes introduced by the current
-  branch on top of the base (`base_ref`), NOT the
-  pre-existing code that the branch did not touch.
+## ─── Prompts ────────────────────────────────────────────────────
 
-  MANDATORY FIRST ACTION — before forming ANY judgment, run the
-  branch diff yourself with the bash tool:
-  `git diff $(git merge-base {{vars.base_ref}} HEAD)` (prepend
-  `-c safe.directory='*'` if git reports "dubious ownership"). You
-  may NOT emit a verdict (`approved`, `blockers`, `confidence`)
-  until you have actually read that diff output in THIS session. A
-  verdict produced without having run the diff — e.g. a "review is
-  still in progress" placeholder — is INVALID and breaks the
-  convergence loop. If you genuinely cannot obtain the diff, say so
-  in `blockers` with `confidence: high`; never emit a provisional
-  verdict.
+prompt campaign_system:
+  You are a senior engineer running a focused REVIEW-AND-IMPROVE campaign on
+  ONE branch's diff — working EXACTLY as you would in a productive,
+  human-driven engineering session. You have the repo in front of you and full
+  tools (read, edit, shell, git). No one micro-manages you; you own this pass
+  end to end.
 
-  REVIEW SCOPE (CRUCIAL):
-  1. Enumerate the branch footprint via
-     `git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`.
-     This diffs the merge-base of the branch and the base
-     against the WORKING TREE, so it captures the changes
-     the branch introduced on top of the base AND any
-     uncommitted fixes a prior iteration of this loop already
-     applied (fixes are committed only AFTER the loop
-     converges). Reviewing the commit-only
-     `{{vars.base_ref}}...HEAD` would hide every prior fix and
-     the loop could never converge. That working-tree diff is
-     your scope.
-  2. You MAY read the surrounding code (host package,
-     callers, conventions) ONLY to judge how the branch
-     changes integrate. You MUST NOT flag blockers on
-     pre-existing code the branch does not touch, even if
-     you see issues there: those observations go into
-     `scanned_areas` as informational notes, NOT into
-     `blockers`. The source of truth for scope is that
-     working-tree diff against the merge-base.
-  3. You MAY consult `git log {{vars.base_ref}}..HEAD` to
-     understand the branch's intent, but that is not a
-     scope constraint — the diff is.
+  THE SCOPE is the BRANCH DIFF, not the whole codebase. You are reviewing and
+  improving the changes THIS branch introduces over `base_ref` (in your user
+  prompt). FIRST read the diff — run `git add -N .` (intent-to-add, so any NEW
+  files the branch adds show up) then
+  `git diff $(git merge-base <base_ref> HEAD)` (merge-base vs WORKING TREE, so
+  your OWN uncommitted fixes stay visible; the commit-only `<base_ref>...HEAD`
+  form would hide them and the loop could never converge). Prepend
+  `-c safe.directory='*'` if git reports "dubious ownership". Enumerate the
+  branch footprint with
+  `git diff $(git merge-base <base_ref> HEAD) --name-only`. THAT diff is your
+  scope — do NOT re-litigate code the branch did not touch (you MAY read the
+  surrounding code, callers, conventions ONLY to judge how the branch changes
+  integrate).
 
-  4. Cover the production-ready axes (full grid):
-       - Security: auth, input validation, secret leaks,
-         injection (shell/SQL/template), path traversal,
-         unsafe deserialization.
-       - Robustness: exhaustive error handling, uncaught
-         panics, leaking goroutines, race conditions,
-         deadlocks, unbounded channels, missing timeouts,
-         retries without backoff.
-       - Data: schema migrations, index integrity,
-         transactions, idempotence, commit ordering,
-         data loss on crash.
-       - Concurrency: unbalanced mutexes, lock hierarchy,
-         double-close, double-spawn, atomicity bugs.
-       - Observability: structured logs, metrics, traces,
-         lost error signals.
-       - Performance: O(n^2) on hot paths, unbounded
-         memory, systematic cache misses, N+1 queries.
-       - Boundaries: recovery after crash/panic,
-         resilience to corrupted input, behaviour under
-         saturation.
-  5. ITERATIONS — concrete use of history:
-     - On the first iteration, audit the full branch
-       footprint along 3-5 axes from the grid above.
-     - On subsequent iterations, pick AXES NOT YET
-       COVERED by prior iterations (use
-       `previous_scanned_areas` from input). Already
-       examined (axis, branch-file) combinations are,
-       by default, considered vetted.
-     - You MAY re-examine an already-covered (axis,
-       file) combination ONLY if you have a new concrete
-       hypothesis to test (specific evidence of a bug
-       that may have been missed, or a recent fix to
-       verify).
-     - Fill `scanned_areas` with the (axis,
-       branch-file) pairs you actually audited this
-       iteration. Be precise and concise.
-  6. EXHAUSTIVENESS PRINCIPLE: `approved=true` requires
-     that every relevant axis of the grid has been
-     verified across the branch footprint. Do NOT return
-     `approved=true` simply because the first iteration
-     found nothing. `approved=true` requires the
-     CUMULATIVE axis coverage across iterations to be
-     sufficient relative to the branch scope.
+  HOW TO WORK — reproduce the shape of a productive session, agent-side:
 
-  LARGE-DIFF CHUNKED REVIEW (context discipline):
-  Your input carries a `large` flag and chunk metadata from the
-  deterministic `plan_chunks` step that runs before you.
-  - When `large` is FALSE: review the whole branch diff exactly as
-    described above, in a single pass. Leave `chunk_notes` empty.
-  - When `large` is TRUE: the diff was too big for one context and
-    was split into `chunk_count` unified-diff files of
-    ≤ `chunk_max_loc` LoC each, listed in `manifest_path` (JSON:
-    `chunks[].diff_path / files / loc`) under `chunk_dir`. You MUST:
-      1. Read `manifest_path` to get the chunk list.
-      2. Review the chunks ONE AT A TIME — read a SINGLE
-         chunk-NNN.diff, judge it, append a concise finding for that
-         chunk to `chunk_notes` (one array entry per chunk, prefixed
-         with its index + files), THEN move to the next chunk. Do
-         NOT cat the whole diff or all chunk files into one read —
-         that re-creates the very context blow-up this split exists
-         to avoid. You MAY read surrounding source for the chunk you
-         are judging.
-      3. MERGE: after all chunks, synthesise your per-chunk findings
-         into ONE coherent WHOLE-DIFF verdict. `approved`,
-         `blockers`, `fix_plan`, `confidence` and `scanned_areas`
-         describe the ENTIRE branch, not a single chunk — a blocker
-         in any chunk fails the whole verdict, and you must weigh
-         cross-chunk interactions. This merge is the single review
-         summary the loop converges on.
-  CRUCIAL: cross-family approval is computed downstream (streak_check)
-  on this MERGED whole-diff verdict, NEVER chunk-by-chunk. Do not
-  approve merely because each chunk looked locally fine; judge the
-  branch as a whole.
+  1. LIVING TODO LIST, not frozen phases. Read the branch diff and build a
+     LIVING todo of the CONCRETE, REAL issues the change introduces or leaves
+     — bugs, regressions, missing or weak tests, unhandled errors, race
+     conditions, security holes, quality problems IN THE DIFF. Keep it DENSE
+     and MOVING — re-prioritize, append, and defer items as you learn. Do NOT
+     write 5–6 coarse upfront phases and tick them: the list is a metronome
+     born from reading the diff, not a plan frozen before it. Cover the
+     production-ready axes AS THEY APPLY TO THE DIFF: security (auth, input
+     validation, injection, path traversal, secret leaks), robustness (error
+     handling, panics, leaked goroutines, missing timeouts, retries without
+     backoff), data (migrations, transactions, idempotence, data loss),
+     concurrency (unbalanced mutexes, double-close, atomicity), observability,
+     performance (O(n^2) on hot paths, N+1), boundaries (recovery, corrupted
+     input). A real blocker is a bug/regression/vulnerability/obvious dead
+     code — NOT a style preference, naming, or a missing doc.
 
-  ADR TRACEABILITY (apply to decisions made by the fixer
-  across recent iterations of this run):
-  1. Identify the technical decisions visible in the diff that
-     meet the ADR-worthy bar (non-obvious trade-off,
-     library/pattern choice, architectural divergence). Do NOT
-     request ADRs for mechanical refactors, bug fixes, or
-     trivial changes.
-  2. For each ADR-worthy decision you identify, check whether
-     `docs/adr/` contains an ADR (new or updated) that captures
-     it.
-  3. If an ADR is missing for a genuinely ADR-worthy decision,
-     raise a blocker with `confidence: high` ONLY if you can
-     name the decision and the alternative that should have
-     been documented. If you can't, lower confidence or treat
-     it as a non-blocking note instead.
-  4. If an ADR exists but its content does not match what the
-     code actually does (stale, vague, or rationalises a
-     different decision), treat that as a real blocker — empty
-     or façade ADRs defeat the purpose. Self-critique: would a
-     future maintainer reading only this ADR understand the
-     trade-off?
-  5. Add ADR coverage to `scanned_areas` when you audited it
-     (e.g. `docs/adr/003-foo.md vs pkg/foo accuracy`).
+  2. THE REPEATED UNIT, one issue at a time: locate the exact site in the diff
+     → make the SMALLEST fix that resolves the issue there → build → run the
+     tests → COMMIT it with a semantic message (`fix(scope): <precise issue>`,
+     or the `type(scope):` that fits — `test(...)` for an added test,
+     `refactor(...)` for a quality fix, etc.). A few edits per commit,
+     validation BEFORE the commit — never commit code you have not built and
+     tested green.
 
-  ANTI-FALSE-POSITIVE RULES:
-  1. You MUST mark `approved=false` only for issues that are
-     truly blocking for production: bugs, regressions,
-     security vulnerabilities, obvious dead code. Style
-     preferences, naming, minor optimisations, missing
-     documentation are NOT blockers.
-  2. Self-critique: for each blocker you consider, ask
-     yourself "is this REALLY blocking in production, or is
-     it a personal preference?" If you hesitate, it is NOT
-     a blocker — at best a non-blocking watchpoint.
-  3. Confidence: evaluate your own certainty.
-       - "high" = you can point to the exact line and
-         describe the production scenario that breaks.
-       - "medium" = you see a probable issue but are not
-         100% sure of the context.
-       - "low" = doubt, intuition, no concrete evidence.
-  4. If a prior review (from the other family) judged this
-     code OK ON SPECIFIC SURFACES, you MUST be EXTRA strict
-     before adding new blockers ON THOSE SAME surfaces — you
-     need concrete evidence the other reviewer missed
-     something. On surfaces NOT covered previously, restart
-     from scratch.
-  5. Items already pushed back by the fixer: you MUST NOT
-     re-flag them unless you have new evidence.
+  3. COMMIT EACH FIX AS YOU FINISH IT — never batch. Stage everything
+     including new files (`git add -A`, so a fix that ADDS a test/helper
+     actually lands) and commit before moving on. git IS your durable state:
+     an interrupted run keeps every fix you committed, and a fresh pass just
+     reads `git log`, re-diffs the branch, and continues where you left off.
+     Do NOT keep a separate worklist / cursor file — the todo list lives in
+     your working memory, the commits are the record.
 
-  HUMAN ESCALATION:
-  When you hit an AMBIGUITY that no amount of code reading
-  can resolve (e.g. "is this behaviour intentional?", "does
-  the spec say X or Y?", "must I preserve backward
-  compatibility?"), call the `ask_user` tool with your
-  precise question. The run will pause, the question will
-  show up in the operator's terminal, and you will be
-  re-invoked with the answer injected into your context (a
-  `[PRIOR INTERACTION]` block will be prepended to your
-  user prompt).
+  4. BASELINE — don't chase failures the branch didn't cause. Pre-existing
+     test failures / known-flaky tests are in your user prompt (`baseline`).
+     Do NOT try to fix or investigate those; if a test was already red on
+     `base_ref` before this branch, SKIP it and note it. If the baseline is
+     empty, do ONE cheap `git stash`-based check (or a run against base_ref)
+     to establish which failures pre-date the branch, then stop investigating
+     them. Don't burn budget proving a failure isn't the branch's.
 
-  Use this escalation sparingly: only when you CANNOT
-  decide without human information. For ordinary technical
-  judgments, decide yourself and lower `confidence` if
-  you're not sure.
+  5. ASK ONLY ON A REAL DECISION. You MAY pause for the operator (the
+     ask-user tool) on a genuine decision you cannot make on your own — is a
+     behaviour intentional, a destructive trade-off, a backward-compat policy
+     call. Keep it RARE: most of the time you decide and keep moving.
 
-prompt review_user_claude:
-  Review the changes of the current branch in
-  {{vars.workspace_dir}}, relative to the base
-  `{{vars.base_ref}}`. Enumerate the footprint via
-  `git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`
-  (merge-base vs WORKING TREE, so a prior iteration's
-  uncommitted fixes are in scope; commit-only `...HEAD`
-  would hide them).
+  KEEP GOING, one issue at a time, until this pass has resolved every real
+  issue you can find in the branch diff within your budget. Then STOP and
+  report.
 
-  Scope notes:
+  TERMINATION CONTRACT (required structured output — this is how the engine
+  detects completion; an under-specified end just gets re-poked):
+    - branch_clean: true ONLY when a fresh RE-REVIEW of the branch diff (re-run
+      `git diff $(git merge-base <base_ref> HEAD)`) finds NO remaining real
+      issue. false if any real issue remains (a later pass continues from your
+      commits).
+    - commits_this_pass: how many commits you landed this pass.
+    - issues_remaining: a concise note of what real issues still need work
+      (empty when branch_clean).
+    - needs_human / human_note: set if you paused or need an operator decision.
+    - summary: what you reviewed and what you improved, and how it relates to
+      the branch's changes.
+
+  Be honest. A DETERMINISTIC build/test gate re-checks the tree after you and
+  the run loops you back for another pass until you report branch_clean AND the
+  tree is green — so under-reporting only costs a pass, and over-reporting
+  lands you right back here.
+
+prompt campaign_user:
+  Repository: {{vars.workspace_dir}}
+
+  BRANCH BASE (review the diff THIS branch introduces on top of it):
+  {{vars.base_ref}}
+
+  Read the diff first: `git add -N .` then
+  `git diff $(git merge-base {{vars.base_ref}} HEAD)` (merge-base vs WORKING
+  TREE — a prior pass's uncommitted fixes stay in scope; commit-only
+  `{{vars.base_ref}}...HEAD` would hide them). Enumerate the footprint with
+  `git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`. That diff
+  is your scope — do NOT flag pre-existing code the branch didn't touch.
+
+  Extra context / notes (empty = the diff speaks for itself):
   {{vars.scope_notes}}
 
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
+  establish it once cheaply against {{vars.base_ref}}, then skip what predates
+  the branch):
+  {{vars.baseline}}
 
-  Previous reviewer's verdict (the OTHER family,
-  immediately prior iteration — empty on the first
-  iteration):
-  {{loop.review_loop.previous_output}}
+  Deterministic gate feedback from the PREVIOUS pass (empty on the first pass;
+  when present, the build/test tree was RED after your last pass — FIX exactly
+  what this shows before continuing to review the diff):
+  {{input.fail_log}}
 
-  Surfaces already audited in prior iterations (all
-  families combined — use this to steer your coverage
-  toward NEW ground, NOT to relax your rigor):
-  {{input.previous_scanned_areas}}
+  Review the branch diff and improve it one issue at a time — locate →
+  smallest fix → build → test → commit — until a fresh re-review finds no real
+  issue remaining. Read `git log` first to see what earlier passes already
+  fixed. Then report the termination contract (branch_clean, commits_this_pass,
+  issues_remaining).
 
-  Items already pushed back by the fixer (you MUST NOT
-  re-flag them without new evidence):
-  {{input.prior_pushback}}
+## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
+## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
+## the repo's real build+test into <scratch_dir>/verify.sh; a DETERMINISTIC
+## tool node (verify_run) re-runs it and gates on the REAL exit code. No
+## language / package manager is named here — the gate stays universal while
+## the verdict stays deterministic. verify_build does NOT fix code: a RED gate
+## routes back to `campaign` (the one capable agent) to fix what it broke.
 
-  Justification for the prior pushback:
-  {{input.prior_pushback_justification}}
+prompt verify_system:
+  You are a release engineer. A campaign pass just improved changes across
+  this repository and committed them. Your single job: capture how THIS repo
+  builds and tests itself into a re-runnable script the deterministic gate
+  will execute. You do NOT change code.
 
-  Diff size mode (from plan_chunks):
-    large: {{input.large}}
-    chunk_count: {{input.chunk_count}}
-    chunk_dir: {{input.chunk_dir}}
-    manifest_path: {{input.manifest_path}}
-    chunk_max_loc: {{input.chunk_max_loc}}
-  If large is true, follow "LARGE-DIFF CHUNKED REVIEW": review each
-  chunk listed in manifest_path one at a time, fill chunk_notes (one
-  entry per chunk), then MERGE into a single whole-diff verdict. If
-  false, review the whole diff and leave chunk_notes empty.
+  STEPS:
+  1. Detect how THIS repo builds and tests itself — read the `verify-build`
+     skill. Use the repo's OWN toolchain (a task runner / Makefile target, a
+     package-manager test script, or a language build+test command),
+     HONOURING any pinned toolchain (version managers, lockfiles, devbox,
+     GOTOOLCHAIN). Do NOT assume a language.
+  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
+     (an OUT-OF-TREE scratch path, NOT inside the repo — create it first with
+     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND its tests
+     (or the closest fast equivalent) and exits non-zero on any failure. Keep
+     it to the commands a developer of THIS repo would run; no network-heavy
+     or destructive steps.
+  3. PRE-EXISTING failures: some repos are already red on the base tree,
+     before this run touched anything. Scope `verify.sh` to the build plus the
+     test targets the campaign's changes actually affect (package/module
+     level), so the gate measures THIS run's work and a red base can't absorb
+     it — and list any excluded pre-existing failures in your summary.
+  4. Run it ONCE to confirm the script itself is valid (the commands resolve).
+     You do NOT fix code here: if the build is RED because the campaign broke
+     something, the deterministic gate reports it and the campaign fixes it on
+     the next pass. Just make `verify.sh` faithfully run the repo's real
+     build+test.
+  5. If the repo genuinely has no build/test system (pure docs/config), write
+     a script that echoes that and exits 0, and say so.
 
-  Produce a structured verdict:
-    - approved: true ONLY if the cumulative axis coverage
-      across the branch footprint is sufficient AND no
-      blocker (within the branch scope) was found — NOT
-      if you only audited part of the axes.
-    - family: "claude" for this reviewer
-    - blockers: list of genuinely blocking issues
-      (after self-critique — exclude preferences)
-    - fix_plan: concrete action plan to fix the blockers
-    - confidence: "low" / "medium" / "high"
-    - scanned_areas: packages / files / surfaces you
-      actually audited THIS iteration (concise text,
-      e.g. "pkg/runtime/engine.go (recovery dispatch)",
-      ".works/claw-code-go/internal/runtime/recovery/",
-      "concurrency review across pkg/store/").
-      Will be relayed to the next reviewer.
-    - chunk_notes: in large-diff mode, ONE concise finding per
-      reviewed chunk (prefix each with its index + files); empty
-      when large is false. The same-family fixer streams these.
+  A deterministic tool node RE-RUNS your script and gates the run on its real
+  exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh` exists
+  and reflects the repo's real build+test; summary = the command you settled
+  on and any pre-existing failures you scoped out.
 
-prompt review_user_gpt:
-  Review the changes of the current branch in
-  {{vars.workspace_dir}}, relative to the base
-  `{{vars.base_ref}}`. Enumerate the footprint via
-  `git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`
-  (merge-base vs WORKING TREE, so a prior iteration's
-  uncommitted fixes are in scope; commit-only `...HEAD`
-  would hide them).
+prompt verify_user:
+  Repository to verify: {{vars.workspace_dir}}
 
-  Scope notes:
-  {{vars.scope_notes}}
+  Capture the repo's real build + test into `{{vars.scratch_dir}}/verify.sh`
+  (an out-of-tree scratch path — see the system prompt + the `verify-build`
+  skill). Do NOT change code; the deterministic gate runs your script and the
+  campaign fixes any red on the next pass.
 
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
 
-  Previous reviewer's verdict (the OTHER family,
-  immediately prior iteration — empty on the first
-  iteration):
-  {{loop.review_loop.previous_output}}
+prompt finalize_mr_system:
+  You finalize a converged branch-improvement run by opening ONE merge/pull
+  request for the SERIES of per-pass commits this run produced, then
+  (optionally) posting the MR link back to the source issue. You make NO
+  further code changes.
 
-  Surfaces already audited in prior iterations (all
-  families combined — use this to steer your coverage
-  toward NEW ground, NOT to relax your rigor):
-  {{input.previous_scanned_areas}}
+  Read the `forge-mr-create` skill FIRST — it tells you how to detect the
+  forge, authenticate from the mounted forge_token, push the branch, and open
+  the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
 
-  Items already pushed back by the fixer (you MUST NOT
-  re-flag them without new evidence):
-  {{input.prior_pushback}}
+  Procedure:
+    1. Confirm there are commits to ship: the run's HEAD must be ahead of the
+       base (`git rev-list --count <base>..HEAD` > 0). If not, set
+       opened=false with skipped_reason "no commits ahead of base" — do NOT
+       open an empty MR.
+    2. Determine the branch name (mr_branch if set, else a stable
+       iterion/improve/<run-id> name) and the base (mr_base if set, else
+       base_ref).
+    3. Authenticate the matching forge CLI from the mounted forge_token file
+       when present; otherwise assume host auth. If neither is available, set
+       opened=false with a precise skipped_reason — never pretend.
+    4. Push HEAD to the branch on the origin remote, then open the MR/PR from
+       that branch into the base, with a clear title + body summarising the
+       branch improvements landed (use scope_notes for context).
+    5. If source_issue_ref is set, post the opened MR URL back to it: a forge
+       issue URL → comment via the same forge CLI; a "native:<id>" ref → use
+       the board comment tool. Set back_linked accordingly.
 
-  Justification for the prior pushback:
-  {{input.prior_pushback_justification}}
+  Return opened, url, branch, back_linked, skipped_reason and a short summary.
+  Be honest: report exactly what happened.
 
-  Diff size mode (from plan_chunks):
-    large: {{input.large}}
-    chunk_count: {{input.chunk_count}}
-    chunk_dir: {{input.chunk_dir}}
-    manifest_path: {{input.manifest_path}}
-    chunk_max_loc: {{input.chunk_max_loc}}
-  If large is true, follow "LARGE-DIFF CHUNKED REVIEW": review each
-  chunk listed in manifest_path one at a time, fill chunk_notes (one
-  entry per chunk), then MERGE into a single whole-diff verdict. If
-  false, review the whole diff and leave chunk_notes empty.
+prompt finalize_mr_user:
+  Workspace: {{input.workspace_dir}}
+  Desired branch (may be empty → derive): {{input.mr_branch}}
+  Base (may be empty → base_ref): {{input.mr_base}}
+  Source issue to back-link (may be empty): {{input.source_issue_ref}}
+  Context / scope: {{input.scope_notes}}
 
-  Produce a structured verdict:
-    - approved: true ONLY if the cumulative axis coverage
-      across the branch footprint is sufficient AND no
-      blocker (within the branch scope) was found — NOT
-      if you only audited part of the axes.
-    - family: "gpt" for this reviewer
-    - blockers: list of genuinely blocking issues
-      (after self-critique — exclude preferences)
-    - fix_plan: concrete action plan to fix the blockers
-    - confidence: "low" / "medium" / "high"
-    - scanned_areas: packages / files / surfaces you
-      actually audited THIS iteration (concise text).
-      Will be relayed to the next reviewer.
-    - chunk_notes: in large-diff mode, ONE concise finding per
-      reviewed chunk (prefix each with its index + files); empty
-      when large is false. The same-family fixer streams these.
-
-prompt fix_system:
-  You are an expert developer. You fix the blocking issues
-  flagged by a reviewer by applying concrete changes to the
-  BRANCH code.
-
-  SCOPE:
-  1. Apply your fixes to files in the branch footprint
-     (`git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`
-     — merge-base vs working tree, which already includes
-     any fixes from earlier iterations). You MAY modify
-     those files freely.
-  2. If a fix requires touching a file OUTSIDE the branch
-     footprint (because the bug overflows), you MAY do
-     so — but document it clearly in your `summary` so
-     that `prepare_commit` can decide whether or not to
-     include the file in the commit.
-  3. You MUST NOT refactor pre-existing code just because
-     you notice issues there: stay within the scope of
-     the reported blockers.
-
-  CHUNKED / STREAMING FIX (large diffs):
-  When `large` is true, the blockers were produced by a chunk-by-
-  chunk review. `chunk_notes` holds one finding per chunk and
-  `manifest_path` (under `chunk_dir`) maps each chunk index to its
-  files and its chunk-NNN.diff. Work the blockers by STREAMING the
-  chunks: read ONE chunk note, open ONLY its specific chunk-NNN.diff
-  (or the few files it names), apply the fix, then move to the next
-  note. Do NOT reload the entire branch diff into context — that is
-  exactly the blow-up the chunking avoids, and it is unnecessary
-  because the chunk notes already localise every blocker. When
-  `large` is false, fix normally against the whole diff.
-
-  BOUNDED PASS (context-overflow guard): some backends have no
-  automatic mid-loop context compaction, so reading many chunks/files
-  in ONE invocation can overflow the model's context window and fail
-  the whole run. So when `large` is true, BOUND this pass: fix the
-  highest-severity blockers spanning at most ~6 chunks, then STOP and
-  return — record the still-unaddressed blockers in `summary` as
-  "deferred to next iteration". This is not giving up: the recovery
-  loop re-invokes you and the next reviewer re-flags whatever is still
-  open, so the remaining blockers get fixed ACROSS iterations instead
-  of overflowing in one. Prefer fixing FEWER blockers completely over
-  attempting ALL of them and dying mid-pass. Never read more chunk
-  diffs "just to understand the whole picture" — the per-chunk notes
-  already localise each blocker.
-
-  You MAY REFUSE an item from the blockers list if you
-  judge it is not genuinely blocking for production (style
-  preference, minor optimisation, missing doc, etc.). List
-  those items in `pushback` with a justification in
-  `pushback_justification`. The next reviewer will be
-  instructed NOT to re-flag those items, preventing a
-  false positive from looping the workflow forever.
-
-  Use pushback sparingly: if you push back everything, the
-  code will never be improved.
-
-  HUMAN ESCALATION:
-  If a blocker is genuinely ambiguous (the spec does not
-  say how to resolve it, several valid approaches conflict,
-  etc.), call the `ask_user` tool with your precise
-  question. The run pauses, the question shows up in the
-  operator's terminal, and you will be re-invoked with the
-  answer in context. Do NOT use this channel for technical
-  choices you can decide yourself.
-
-  ADR DOCUMENTATION:
-  1. When fixing a blocker forces a non-trivial technical
-     decision — switching to a different approach than the
-     existing implementation, adopting a new pattern or
-     library, accepting a new trade-off, or diverging from an
-     existing convention — you MUST add or update an ADR
-     markdown file under `docs/adr/`.
-  2. Decisions that DO warrant an ADR:
-       - Replacing one library/SDK/pattern with another.
-       - Restructuring an architectural boundary the existing
-         code crossed.
-       - Choosing one of several reasonable fix strategies when
-         the trade-off is non-obvious.
-  3. Decisions that DO NOT warrant an ADR:
-       - Bug fixes whose rationale is obvious from the bug.
-       - Naming, style, or test-coverage tweaks.
-       - Reverting to behaviour the existing spec already
-         described.
-  4. Follow the format of existing files in `docs/adr/` (Status,
-     Context, Decision, Consequences). Number the new ADR
-     sequentially (highest existing number + 1, zero-padded to
-     three digits).
-  5. The ADR MUST capture the trade-off that motivated the fix
-     — not just describe what changed. If you cannot articulate
-     the alternative you rejected, the fix was probably not
-     ADR-worthy.
-  6. If you UPDATE an existing ADR (status flip, supersede), add
-     a dated entry rather than rewriting history.
-
-prompt fix_user:
-  For the code in {{vars.workspace_dir}}, examine this
-  list of blockers and apply concrete fixes. Stay
-  primarily within the branch footprint
-  (`git diff $(git merge-base {{vars.base_ref}} HEAD) --name-only`).
-
-  Reported blockers:
-  {{input.blockers}}
-
-  Proposed fix plan:
-  {{input.fix_plan}}
-
-  Diff size mode (from plan_chunks):
-    large: {{input.large}}
-    chunk_dir: {{input.chunk_dir}}
-    manifest_path: {{input.manifest_path}}
-  Per-chunk review notes (large-diff mode only — stream them one at a
-  time with the matching chunk-NNN.diff; do NOT reload the whole diff):
-  {{input.chunk_notes}}
-
-  For EACH blocker:
-    - If it is a real production-blocking issue: read the
-      relevant file, apply the correction, verify the
-      tests pass.
-    - If you judge it is NOT blocking (style preference,
-      minor optimisation, etc.): add the exact item to
-      `pushback` with a clear justification in
-      `pushback_justification`.
-    - A test failure that predates your fixes (it also fails
-      without your changes) is out of scope: attribute it
-      cheaply once (stash + re-run that one test + unstash),
-      note it in your summary, and move on — do not chase it.
-
-  Output:
-    - applied: true if at least one fix was applied
-    - summary: summary of applied fixes
-    - pushback: refused items (empty if all fixed)
-    - pushback_justification: rationale for the pushback
-
-## ─── Prompts : Commit ───────────────────────────────────────────
-
-prompt prepare_commit_system:
-  Your job in this session is to pick the EXACT set of files
-  that should be committed to capture the improvements applied
-  during this run, and produce a semantic commit message for
-  them. You do NOT run `git commit` yourself — a deterministic
-  shell tool downstream stages your file list and applies your
-  message.
-
-  Procedure (follow exactly, in order):
-    1. Run `git status` and `git diff HEAD` (read-only) to
-       enumerate all files in the working tree.
-    2. Cross-reference with the branch footprint
-       `git diff {{vars.base_ref}}...HEAD --name-only`: the
-       core scope is files the branch touched. Files modified
-       by this run that are inside the branch footprint
-       ALWAYS belong in the commit.
-    3. Files modified by this run OUTSIDE the branch
-       footprint (touched only by the fixer to address a
-       blocker that deborded) MAY also be staged when the
-       fix is clearly part of the same logical improvement.
-       Read your conversation history to decide.
-    4. EXCLUDE any file that does NOT belong to the
-       improvements applied, even if it is dirty in the
-       working tree:
-         - pre-existing user WIP unrelated to the fix
-         - build artifacts not produced for the fix
-           (binaries, coverage reports, lockfiles created
-           by an agent's bash but not part of the
-           improvement)
-         - editor / IDE scratch files
-         - LLM scratch files (`notes.md`, `plan.txt`, etc.)
-         - the chunked-review scratch dir ({{vars.chunk_dir}}) written
-           by plan_chunks (its default is now OUT-OF-TREE under
-           ~/.iterion/.../scratch/, so it won't show in git status —
-           this stays a safety net for an in-tree override)
-       When in doubt, EXCLUDE. Under-staging is recoverable
-       (operator commits the missing file in a follow-up);
-       over-staging pollutes the commit and is much harder
-       to undo.
-    5. Build the structured output:
-         - type, scope, subject, full_message: the semantic
-           parts of the commit message (Conventional Commits)
-         - files: the exact list of repo-relative paths to
-           stage
-         - committed: false (you do NOT commit yourself; the
-           downstream tool will set the actual commit result
-           on its own output).
-
-  Subject rules: imperative mood, present tense, ≤ 72 chars,
-  no trailing period, single line. The `scope` is typically
-  the most-touched package or area.
-
-  ─── Findings handoff ─────────────────────────────────────
-
-  After the structured commit output, capture anything you
-  noticed during this branch-improvement run that is OUT OF
-  SCOPE for the improvements you just committed but worth
-  surfacing to the next Nexie session.
-
-  Examples: a pre-existing bug spotted but not fixed; a
-  documentation drift; a refactor opportunity for code outside
-  the diff you reviewed; an infrastructure / sandbox issue; a
-  TODO comment worth tracking.
-
-  Skip: anything you just fixed; speculative work; style nits;
-  duplicates of issues already on the board's `inbox` state.
-
-  How:
-    1. Call `mcp__iterion_board__list_issues` with
-       `{ "state": "inbox" }` to dedupe.
-    2. For each NEW finding, call
-       `mcp__iterion_board__create_issue`:
-
-           {
-             "title": "One-line operator-facing summary",
-             "body":  "Full context (paths + suggested next step). 5-30 lines.",
-             "state": "inbox",
-             "labels": [
-               "findings",
-               "kind:bug",            // or drift | improvement | question
-               "source:branch_improve_loop",
-               "area:<subsystem>",
-               "severity:<low|medium|high>"
-             ]
-           }
-
-       Operators triage on /board: drag `inbox` → `backlog` to
-       promote, delete the card to dismiss.
-
-  Be conservative. Zero findings is fine.
-
-prompt prepare_commit_user:
-  Pick the files and produce the semantic commit name for
-  the improvements applied during this branch_improve_loop
-  run. Do not run `git commit` yourself — only output the
-  structured object.
-
-  Workspace: {{vars.workspace_dir}}
-  Base ref:  {{vars.base_ref}}
+  Push the branch, open the MR/PR, post the back-link when a source issue is
+  given, and return the structured result.
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
-## plan_chunks output — the deterministic diff-size gate + splitter.
-## large=true means total_loc > chunk_threshold_loc and the diff was
-## split into chunk_count unified-diff files of ≤ chunk_max_loc LoC
-## each under chunk_dir (manifest.json maps index→files→diff_path).
-## large=false means the branch is small enough for the original
-## single-pass whole-diff review; the chunk_count / manifest_path
-## fields are then unused.
-schema chunk_plan_output:
-  large: bool
-  total_loc: int
-  chunk_count: int
-  chunk_dir: string
-  manifest_path: string
-  chunk_max_loc: int
-  chunk_threshold_loc: int
+## campaign's input: the deterministic gate's failure log from the PREVIOUS
+## pass (empty on the first pass and on a green-but-more-work continuation).
+schema campaign_input:
+  fail_log: string
 
-schema review_input:
-  prior_pushback: string[]
-  prior_pushback_justification: string
-  ## previous_scanned_areas accumulates the audit surfaces from
-  ## ALL prior reviewer iterations (both families). The current
-  ## reviewer reads it to prefer uncovered surfaces — see
-  ## review_system rule 4. Empty on the first iteration.
-  previous_scanned_areas: string[]
-  ## Chunking handoff from plan_chunks (same values each carry on the
-  ## alt→reviewer edge). When large is true the reviewer MUST review
-  ## the diff chunk-by-chunk from chunk_dir / manifest_path (see
-  ## review_system "LARGE-DIFF CHUNKED REVIEW"); when false it reviews
-  ## the whole diff as before. chunk_count / chunk_max_loc describe
-  ## the split.
-  large: bool
-  chunk_count: int
-  chunk_dir: string
-  manifest_path: string
-  chunk_max_loc: int
-
-schema verdict_output:
-  approved: bool
-  ## family is enum-constrained: a model that hallucinates a third
-  ## value (we observed gpt-5.5 emit "missing-patch" once) would
-  ## otherwise bypass both family-aware fix routes and the workflow
-  ## would fall through to its terminal `done` edge. The enum forces
-  ## structured-output validation to reject the verdict, triggering
-  ## iterion's parse_fallback retry path until the model commits to
-  ## a valid family.
-  family: string [enum: "claude", "gpt"]
-  blockers: string[]
-  fix_plan: string
-  confidence: string [enum: "low", "medium", "high"]
-  ## scanned_areas captures the surfaces this reviewer actually
-  ## audited this iteration (e.g. "pkg/runtime", "claw-code-go
-  ## recovery dispatch", "concurrency around pkg/store/.lock").
-  ## The accumulator passes the union to the next reviewer so
-  ## subsequent iterations explore uncovered ground rather than
-  ## re-walking the same files.
-  scanned_areas: string[]
-  ## chunk_notes holds ONE entry per reviewed chunk (large-diff mode)
-  ## — the per-chunk findings the reviewer produced before merging
-  ## them into the whole-diff verdict above. Empty in whole-diff mode.
-  ## The same-family fixer streams these incrementally (with the
-  ## matching chunk diff file) so it never reloads the full diff.
-  ## NOTE: approved/blockers/fix_plan stay WHOLE-diff verdicts —
-  ## chunk_notes is fixer context, NOT a per-chunk approval signal,
-  ## so cross-family convergence is unaffected.
-  chunk_notes: string[]
-
-## streak_check relays approved/blockers/fix_plan/family from its
-## input (the current reviewer's verdict) and computes a
-## deterministic stop signal based on the previous reviewer's
-## verdict. The `family` passthrough lets the fix routing pick the
-## same-family fixer so the fix session can inherit the reviewer's
-## context (and benefit from prompt-cache hits).
-##
-## Soft-approval: a low-confidence rejection (`approved=false` AND
-## `confidence=="low"`) is treated as approved for streak/fix
-## routing purposes. The reviewer's own uncertainty isn't a strong
-## enough signal to trigger a fix cycle and risk a false-positive
-## loop.
-##
-## cumulative_scanned_areas accumulates the audit surfaces from
-## ALL prior iterations (both families). The accumulator pattern
-## relies on `outputs.streak_check` resolving to the PREVIOUS
-## iteration's output during the current expression evaluation
-## (rs.outputs is updated AFTER execCompute completes), so the
-## expression `unique(concat(outputs.streak_check.cumulative_scanned_areas,
-## input.scanned_areas))` produces a union, tail-capped (last 40) so a reviewer's input stays bounded (avoids context_length_exceeded on long runs).
-## On the first iteration `outputs.streak_check` is nil → concat
-## treats it as empty → result == unique(input.scanned_areas).
-schema streak_state:
-  stop: bool
-  approved: bool
-  family: string
-  blockers: string[]
-  fix_plan: string
-  cumulative_scanned_areas: string[]
-
-schema fix_input:
-  blockers: string[]
-  fix_plan: string
-  ## Chunked-fix streaming handoff (empty / false in whole-diff mode).
-  ## chunk_notes = the same-family reviewer's per-chunk findings; the
-  ## fixer walks them one at a time, opening the matching
-  ## chunk_dir/chunk-NNN.diff (mapped by manifest_path) for detail,
-  ## and NEVER reloads the entire diff.
-  chunk_notes: string[]
-  large: bool
-  chunk_dir: string
-  manifest_path: string
-
-schema fix_output:
-  applied: bool
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
+## keys convergence on. branch_clean is the done-oracle (a fresh re-review of
+## the branch diff finds no remaining real issue); the rest is observability.
+schema campaign_output:
+  branch_clean: bool
+  commits_this_pass: int
+  issues_remaining: string
+  needs_human: bool
+  human_note: string
   summary: string
-  pushback: string[]
-  pushback_justification: string
 
-## Commit-phase schemas. Mirrors feature_dev: prepare_commit
-## emits the structured intent (semantic message + file list),
-## commit_changes deterministically applies it via `git add` +
-## `git commit`.
-schema commit_output:
-  type: string [enum: "feat", "fix", "refactor", "test", "docs", "chore"]
-  scope: string
-  subject: string
-  full_message: string
-  files: string[]
-  committed: bool
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
 
-schema commit_tool_input:
-  full_message: string
-  files: string[]
-  workspace_dir: string
+## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
+## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
+## LLM judgment. `skipped` is true only when no verify script was produced
+## (treated as pass but surfaced loudly, never a silent façade).
+schema verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
 
-schema commit_result:
-  success: bool
-  output: string
+## gate is the deterministic continuation decision. converged = the tree is
+## green AND the campaign reported the branch diff clean. fail_log relays the
+## real build failure to the campaign on a RED pass (empty when green).
+schema gate_state:
+  converged: bool
+  fail_log: string
 
 schema mr_gate_output:
   open_mr: bool
@@ -837,11 +430,6 @@ schema finalize_mr_input:
   scope_notes: string
 
 schema finalize_mr_output:
-  ## opened: true when a merge/pull request was created (or already
-  ## existed for the branch). url: the MR/PR URL. branch: the pushed
-  ## branch. back_linked: true when the URL was posted to source_issue_ref.
-  ## skipped_reason: precise reason when opened=false (no forge auth, no
-  ## remote, nothing to push) — never a silent no-op.
   opened: bool
   url: string
   branch: string
@@ -851,387 +439,101 @@ schema finalize_mr_output:
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
-## plan_chunks — deterministic diff-size gate + LoC chunker (no LLM).
-## Runs once at the head of EVERY review cycle (it is the workflow
-## entry and every loop-back routes through it) so the chunk files
-## always reflect the CURRENT working tree, including the latest
-## fixer edits. It measures the branch diff — the merge-base-vs-
-## working-tree diff (`git diff $(git merge-base base HEAD)`), so the
-## latest UNCOMMITTED fixer edits ARE included; a commit-only
-## base...HEAD would not see them, would regenerate identical chunks
-## every cycle, and would prevent convergence — and, only when it
-## exceeds chunk_threshold_loc, splits it into ≤ chunk_max_loc LoC unified-
-## diff files under chunk_dir (a single file bigger than the cap is
-## hunk-split). Pure git + python3 — the bot pins
-## iterion-sandbox-full, which ships python3 (same dependency as
-## sec-audit-source's plan_shards). CWD is the worktree, so git and
-## the relative chunk_dir resolve there. Stdout is a JSON object
-## matching chunk_plan_output. Rationale + rejected alternatives:
-## docs/adr/011-branch-improve-diff-chunking.md.
-tool plan_chunks:
-  language: python
-  script: `
-import json, os, subprocess, sys
-
-BASE = {{vars.base_ref}}
-THRESHOLD = int({{vars.chunk_threshold_loc}})
-MAX_LOC = int({{vars.chunk_max_loc}})
-CHUNK_DIR = {{vars.chunk_dir}}
-
-def git(args, check=False):
-    # core.quotePath=false: emit non-ASCII paths VERBATIM (UTF-8), not
-    # C-quoted like "caf\303\251.txt". Without it the quoted token is parsed
-    # as the path AND reused below as a pathspec that matches no real file,
-    # so the file's hunks silently vanish from every chunk — a changed file
-    # would escape review while still being counted in total_loc.
-    p = subprocess.run(["git", "-c", "core.quotePath=false"] + args, capture_output=True)
-    if check and p.returncode != 0:
-        # Fail loud. A silent git failure here yields an empty diff ->
-        # large=false -> chunking silently disabled (fail-open), re-opening
-        # the very context blow-up this tool exists to prevent.
-        sys.stderr.write("plan_chunks: git %s failed (exit %d): %s\n" % (
-            " ".join(args), p.returncode, p.stderr.decode("utf-8", "replace").strip()))
-        sys.exit(1)
-    return p.stdout.decode("utf-8", "replace")
-
-# Diff the WORKING TREE against the merge-base of BASE and HEAD, NOT the
-# commit-only BASE...HEAD. The fixers in this loop edit the working tree
-# WITHOUT committing (the only commit is the terminal commit_changes after
-# convergence), so a commit-only range would regenerate byte-identical
-# chunk files every cycle, hide every prior fix from the next reviewer,
-# and the loop could never converge. "git diff <merge_base>" (single
-# endpoint) diffs that commit against the working tree, capturing the
-# branch's committed changes AND the fixer's uncommitted edits, mirroring
-# feature_dev's "git diff HEAD" convention. When the working tree is clean
-# this equals BASE...HEAD. Untracked scratch (chunk_dir, the temp script)
-# is never shown by "git diff <commit>", so it cannot pollute the measure.
-# Fall back to BASE if merge-base fails (e.g. unrelated histories).
-MERGE_BASE = git(["merge-base", BASE, "HEAD"]).strip()
-DIFF_BASE = MERGE_BASE if MERGE_BASE else BASE
-
-# --numstat -z: NUL-terminated records "added<TAB>deleted<TAB>path"
-# (binary files: "-<TAB>-"). The -z form emits the path VERBATIM — git
-# never C-quotes it — so non-ASCII / space / quote / backslash filenames
-# survive intact. (Plain newline numstat quotes unusual paths even with
-# core.quotePath=false, and the quoted token then fails to match as a
-# pathspec below, silently dropping that file from its chunk.) --no-renames
-# keeps paths single (no "old => new"); a rename counts as delete+add, fine
-# for sizing. check=True: a git failure aborts loudly rather than silently
-# measuring an empty diff.
-numstat = git(["diff", "--numstat", "--no-renames", "-z", DIFF_BASE], check=True)
-files = []
-total = 0
-# Records are NUL-separated; split each on TAB with maxsplit=2 so a path
-# containing literal tabs still lands whole in parts[2].
-for rec in numstat.split("\0"):
-    if not rec:
-        continue
-    parts = rec.split("\t", 2)
-    if len(parts) < 3:
-        continue
-    added, deleted, path = parts[0], parts[1], parts[2]
-    loc = 0 if (added == "-" or deleted == "-") else int(added) + int(deleted)
-    files.append({"path": path, "loc": loc})
-    total += loc
-
-result = {
-    "large": total > THRESHOLD,
-    "total_loc": total,
-    "chunk_count": 0,
-    "chunk_dir": CHUNK_DIR,
-    "manifest_path": "",
-    "chunk_max_loc": MAX_LOC,
-    "chunk_threshold_loc": THRESHOLD,
-}
-
-def split_hunks(text):
-    # (header, [hunk_text, ...]) — header is the file preamble before @@.
-    header, hunks, cur = [], [], None
-    for ln in text.splitlines(keepends=True):
-        if ln.startswith("@@"):
-            if cur is not None:
-                hunks.append(cur)
-            cur = [ln]
-        elif cur is None:
-            header.append(ln)
-        else:
-            cur.append(ln)
-    if cur is not None:
-        hunks.append(cur)
-    return "".join(header), ["".join(h) for h in hunks]
-
-def hunk_loc(h):
-    n = 0
-    for ln in h.splitlines():
-        if ln[:1] in ("+", "-") and not ln.startswith("+++") and not ln.startswith("---"):
-            n += 1
-    return n
-
-if not result["large"]:
-    print(json.dumps(result))
-else:
-    os.makedirs(CHUNK_DIR, exist_ok=True)
-    files.sort(key=lambda f: f["path"])
-    # Greedy bin-pack whole files into chunks of <= MAX_LOC. A single
-    # file bigger than MAX_LOC is hunk-split so no chunk exceeds the
-    # cap (unless one indivisible hunk is itself larger than the cap).
-    chunks = []
-    cur_files, cur_diff, cur_loc = [], [], 0
-    for f in files:
-        fdiff = git(["diff", "--no-renames", DIFF_BASE, "--", f["path"]], check=True)
-        if f["loc"] > MAX_LOC:
-            if cur_diff:
-                chunks.append({"diff": "".join(cur_diff), "files": cur_files, "loc": cur_loc})
-                cur_files, cur_diff, cur_loc = [], [], 0
-            header, hunks = split_hunks(fdiff)
-            sub, sub_loc = [], 0
-            for h in hunks:
-                hl = hunk_loc(h)
-                if sub and sub_loc + hl > MAX_LOC:
-                    chunks.append({"diff": header + "".join(sub), "files": [f["path"]], "loc": sub_loc})
-                    sub, sub_loc = [], 0
-                sub.append(h)
-                sub_loc += hl
-            if sub:
-                chunks.append({"diff": header + "".join(sub), "files": [f["path"]], "loc": sub_loc})
-            continue
-        if cur_diff and cur_loc + f["loc"] > MAX_LOC:
-            chunks.append({"diff": "".join(cur_diff), "files": cur_files, "loc": cur_loc})
-            cur_files, cur_diff, cur_loc = [], [], 0
-        cur_files.append(f["path"])
-        cur_diff.append(fdiff)
-        cur_loc += f["loc"]
-    if cur_diff:
-        chunks.append({"diff": "".join(cur_diff), "files": cur_files, "loc": cur_loc})
-
-    manifest = []
-    for i, ch in enumerate(chunks):
-        diff_path = os.path.join(CHUNK_DIR, "chunk-%03d.diff" % i)
-        with open(diff_path, "w", encoding="utf-8") as fh:
-            fh.write(ch["diff"])
-        manifest.append({"index": i, "files": ch["files"], "loc": ch["loc"], "diff_path": diff_path})
-
-    manifest_path = os.path.join(CHUNK_DIR, "manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as fh:
-        json.dump({"base_ref": BASE, "total_loc": total, "chunk_max_loc": MAX_LOC, "chunks": manifest}, fh, indent=2)
-
-    result["chunk_count"] = len(chunks)
-    result["manifest_path"] = manifest_path
-    print(json.dumps(result))
-`
-  output: chunk_plan_output
-  ## Publish the chunk manifest as a versioned artifact so the diff-split
-  ## plan is inspectable in the studio Artifact tab and `iterion report`.
-  ## Zero LLM cost: a tool node only runs python; publish persists its
-  ## already-emitted structured output.
-  publish: chunk_plan_artifact
-
-## Family selector for the review loop. Was `round_robin` (blindly
-## alternating the two reviewers); now `condition` so a MONO run can
-## route to a SINGLE family and never spawn the second model —
-## round_robin ignores `when` guards (pkg/runtime/routing.go), so a
-## conditional router is the only way to gate the second family. The
-## parity that reproduces the old alternation rides
-## `loop.review_loop.iteration` (monotonic, 0-based, +1 per review pass;
-## `alt` is not a review_loop entry so plan_chunks→alt never resets it —
-## exactly in lockstep with the old round_robin counter). See the two
-## guarded `alt -> reviewer_*` edges in the workflow block.
-router alt:
-  mode: condition
-
-judge reviewer_claude:
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset (read/edit/shell/git) so it works exactly like a native Claude
+## Code session: read the branch diff, a living todo list of real issues, one
+## verified commit per fix, in stride. session: fresh — a fresh pass
+## re-derives its todo list from the branch diff + `git log` (git is the
+## durable state). reasoning_effort high, not max: the productive-session data
+## says the working SHAPE, not the model tier, is the lever (framing >
+## capability). interaction: human — the agent may pause for the operator on a
+## genuine mid-flight decision (kept rare by the contract).
+agent campaign:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_claude
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
   session: fresh
-  ## When the LLM hits genuine uncertainty (ambiguous spec, missing
-  ## context, impossible-to-decide trade-off), it can escalate to
-  ## the human running the CLI by emitting `_needs_interaction:
-  ## true` + `_interaction_questions: {...}` in its JSON output.
-  ## The runtime catches this, pauses, prompts the dev in their
-  ## terminal, and re-invokes the reviewer with the answer mapped
-  ## into its input — preserving session continuity.
   interaction: human
 
-judge reviewer_gpt:
-  ## Explicit backend pin: model "openai/gpt-5.5" only works via the
-  ## claw backend. Without this, the auto-resolver falls back to
-  ## ITERION_BACKEND_PREFERENCE (default "claude_code,claw") and
-  ## routes the node through claude_code, which doesn't recognise
-  ## openai/* models — the agent returns a meta-error string instead
-  ## of the structured verdict and the schema validator fails the run.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_gpt
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-fix
+## session. high, not max: mechanical capture of the repo's build/test.
+agent verify_build:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  output: verify_plan
+  system: verify_system
+  user: verify_user
   session: fresh
-  ## claw backend uses snake_case tool names. Without these the
-  ## reviewer can't read the workspace and produces a
-  ## "no filesystem access" verdict — the claw runtime exposes
-  ## these via tool.RegisterClawBuiltins.
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 30
   interaction: human
 
-## Deterministic streak detector.
-##
-## stop=true iff (current AND previous reviewer both ACTUALLY
-## approved) AND — in DUAL — the families differ. The dual success
-## criterion is two consecutive POSITIVE verdicts from OPPOSITE
-## families (both AIs let the code pass on successive iterations).
-## In MONO there is only one family, so the cross-family clause is
-## bypassed (`vars.review_mode == 'mono' || …`) and success is two
-## consecutive clean self-approvals from the single reviewer — the
-## accepted mono trade-off (no cross-model verification, but the
-## engagement + verify gates still hold). Without this OR, mono would
-## never satisfy `family != previous.family` and could never stop —
-## it would loop to review_loop(15) exhaustion → fail. A low-confidence
-## rejection does NOT count as approval for the stop signal: the code
-## only ships when it genuinely convinces the reviewer(s).
-##
-## The `approved` passthrough field stays soft — it includes
-## low-confidence rejections — so the downstream
-## `when approved` edge keeps alternating without invoking the
-## fixer when a reviewer is merely uncertain. This separation
-## means the workflow keeps cycling without forced fix attempts
-## on flaky-low-confidence rejections, but requires real
-## approvals to terminate.
-compute streak_check:
-  output: streak_state
+## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
+## <scratch_dir>/verify.sh and reports the REAL exit code. No language /
+## package manager appears here — it executes whatever verify_build wrote, so
+## the gate stays universal while the verdict stays deterministic. python3 for
+## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
+tool verify_run:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+import os, subprocess, json
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+script = os.path.join(scratch, 'verify.sh')
+if not os.path.exists(script):
+    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
+    raise SystemExit(0)
+rc = 0
+out = ''
+try:
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
+    out = p.stdout or ''
+    rc = p.returncode
+except subprocess.TimeoutExpired as e:
+    out = (e.output or '') + chr(10) + '[verify timed out after 1500s]'
+    rc = 124
+except Exception as e:
+    out = 'verify_run could not execute the script: ' + str(e)
+    rc = 1
+try:
+    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
+        lf.write(out)
+except OSError:
+    pass
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: verify_result
+
+## gate — the deterministic continuation decision. Reads the real gate result
+## (outputs.verify_run.passed) AND the campaign's termination output
+## (outputs.campaign.branch_clean), both fresh in the loop BODY (the same
+## discipline whole_improve_loop's gate uses to read the loop-head safely).
+## converged = green AND the branch diff is clean. On a RED pass fail_log
+## carries the real build failure to the campaign; empty when green. No LLM,
+## no shell.
+compute gate:
+  output: gate_state
   expr:
-    stop: "input.approved && loop.review_loop.previous_output.approved && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family)"
-    approved: "input.approved || input.confidence == 'low'"
-    family: "input.family"
-    blockers: "input.blockers"
-    fix_plan: "input.fix_plan"
-    cumulative_scanned_areas: "tail(unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas)), 40)"
+    converged: "outputs.verify_run.passed && outputs.campaign.branch_clean"
+    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
 
-## Per-family fixers. Each one inherits the SAME-family reviewer's
-## session via `session: inherit` + `_session_id` mapping on the
-## edge — so the fixer reuses the prompt cache, the workspace files
-## already loaded, and the reviewer's reasoning chain. The result
-## is one session per loop iteration per family (not two), which
-## both shortens latency and dramatically reduces token cost:
-## without inheritance every fixer would re-scan the workspace.
-agent fix_claude:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  ## Same escalation contract as the reviewers — the fixer can ask
-  ## the dev a question (e.g. clarify the intent of an ambiguous
-  ## blocker) instead of guessing.
-  interaction: human
-
-agent fix_gpt:
-  ## See reviewer_gpt comment — same backend pin rationale.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  ## claw needs the same read/write toolset the reviewer used so
-  ## the fixer can actually apply edits.
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 30
-  interaction: human
-
-## ─── Nodes : Commit ─────────────────────────────────────────────
-
-## prepare_commit runs in a fresh session — it does NOT inherit
-## from any reviewer/fixer session because no single session has
-## the full multi-iteration context of N fixes across both
-## families. Instead, prepare_commit reads `git status` +
-## `git diff HEAD` + the branch footprint to determine the file
-## set from scratch. readonly: true protects against accidental
-## mutations during the commit-planning phase.
-agent prepare_commit:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-max}"
-  output: commit_output
-  system: prepare_commit_system
-  user: prepare_commit_user
-  session: fresh
-  readonly: true
-  capabilities: [board.read, board.create]
-
-## commit_changes is a deterministic shell tool — no LLM. It
-## stages exactly the file list produced by prepare_commit and
-## commits with the semantic message. The guard
-## `git diff --cached --quiet || git commit` skips the commit
-## if `git add` ended up staging nothing.
-tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -- {{input.files}} && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}})"
-  input: commit_tool_input
-  output: commit_result
-
-## mr_gate lifts vars.open_mr into a bool output field so the two
-## outgoing edges use the C012-exhaustive simple form (when open_mr /
-## when not open_mr). No LLM, no shell.
+## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
+## edges use the C012-exhaustive simple form. No LLM, no shell.
 compute mr_gate:
   output: mr_gate_output
   expr:
     open_mr: "vars.open_mr"
 
-prompt finalize_mr_system:
-  You finalize a converged improvement run by opening ONE merge/pull
-  request for the commits this run produced, then (optionally) posting
-  the MR link back to the source issue. You make NO further code changes.
-
-  Read the `forge-mr-create` skill FIRST — it tells you how to detect the
-  forge, authenticate from the mounted forge_token, push the branch, and
-  open the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
-
-  Procedure:
-    1. Confirm there are commits to ship: the run's HEAD must be ahead of
-       the base (`git rev-list --count <base>..HEAD` > 0). If not, set
-       opened=false with skipped_reason "no commits ahead of base" — do
-       NOT open an empty MR.
-    2. Determine the branch name (mr_branch if set, else a stable
-       iterion/improve/<run-id> name) and the base (mr_base if set, else
-       base_ref).
-    3. Authenticate the matching forge CLI from the mounted forge_token
-       file when present; otherwise assume host auth. If neither is
-       available, set opened=false with a precise skipped_reason — never
-       pretend.
-    4. Push HEAD to the branch on the origin remote, then open the MR/PR
-       from that branch into the base, with a clear title + body
-       summarising the improvements (use scope_notes for context).
-    5. If source_issue_ref is set, post the opened MR URL back to it: a
-       forge issue URL → comment via the same forge CLI; a "native:<id>"
-       ref → use the board comment tool. Set back_linked accordingly.
-
-  Return opened, url, branch, back_linked, skipped_reason and a short
-  summary. Be honest: report exactly what happened.
-
-prompt finalize_mr_user:
-  Workspace: {{input.workspace_dir}}
-  Desired branch (may be empty → derive): {{input.mr_branch}}
-  Base (may be empty → base_ref): {{input.mr_base}}
-  Source issue to back-link (may be empty): {{input.source_issue_ref}}
-  Context / scope: {{input.scope_notes}}
-
-  Push the branch, open the MR/PR, post the back-link when a source issue
-  is given, and return the structured result.
-
-## finalize_mr — opt-in MR/PR creation. claude_code so the bundled
-## forge-mr-create skill is mirrored and the board comment tool (for a
-## native back-link) is available. Gated by mr_gate (open_mr).
+## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-pass commits.
+## claude_code so the bundled forge-mr-create skill is mirrored and the board
+## comment tool (native back-link) is available.
 agent finalize_mr:
   backend: "claude_code"
   model: "${ITERION_BRANCH_IMPROVE_MR_MODEL:-claude-opus-4-8}"
@@ -1247,24 +549,25 @@ agent finalize_mr:
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow branch_improve_loop:
-  entry: plan_chunks
+  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
+  ## (no blocking upfront diff-chunk scan). A fresh dispatch reviews the
+  ## branch diff from a clean tree; a re-dispatch's campaign reads `git log`,
+  ## re-diffs the branch, and continues from the commits earlier passes banked.
+  entry: campaign
 
-  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/.
-  ## The bot mutates code AND commits; the worktree + finalize FF
-  ## guarantees: (a) the operator's main checkout is untouched
-  ## during the run, (b) on convergence the commits land on a
-  ## persistent branch `iterion/run/<friendly-name>` AND
-  ## fast-forward the operator's currently-checked-out branch
-  ## (best-effort, skipped with a warning on conflict).
+  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
+  ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
+  ## operator's main checkout is untouched during the run, (b) on convergence
+  ## the commits land on a persistent branch `iterion/run/<friendly-name>` AND
+  ## fast-forward the operator's currently-checked-out branch (best-effort,
+  ## skipped with a warning on conflict).
   worktree: auto
 
-  ## Container isolation. Reviewers run `git diff`, the project's
-  ## tests, linters, smoke-runs, etc. — all of which we'd rather not expose
-  ## to the host. Inline mode (vs `mode: auto`) chosen so the
-  ## post_create script that installs claude inside the container is
-  ## honoured — see feature_dev/main.bot for the full rationale.
+  ## Container isolation. campaign runs the repo's build, tests, linters and
+  ## git; verify runs the build/test. Inline sandbox config (vs `mode: auto`)
+  ## so the post_create that installs claude inside the container is honoured
+  ## — see feature_dev/main.bot for the full rationale.
   sandbox:
-    ## See feature_dev/main.bot for the rationale on full vs slim.
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "1000:1000"
     mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
@@ -1281,92 +584,32 @@ workflow branch_improve_loop:
     threshold: 0.9
     preserve_recent: 8
 
-  ## plan_chunks is the entry AND the loop-back hub: re-running it
-  ## at the head of every cycle re-measures the working tree so the
-  ## chunk files always reflect the latest fixer edits. It is purely
-  ## deterministic, then hands off to the round-robin selector.
-  plan_chunks -> alt
+  ## Each pass: the campaign reviews+improves the branch diff (committing each
+  ## fix in stride), then the deterministic build/test gate re-checks the tree.
+  campaign -> verify_build
+  verify_build -> verify_run
+  verify_run -> gate
 
-  ## Family routing (replaces round-robin alternation). Binary select:
-  ## the GPT edge is guarded; the CLAUDE edge is the unconditional
-  ## DEFAULT (required by C012 for a condition router, and a safe
-  ## fallback — if the guard ever fails to match, review still happens
-  ## via claude rather than dead-ending on NO_OUTGOING_EDGE).
-  ##  - dual (review_mode != 'mono', incl. the unresolved "auto"
-  ##    default): route by review-pass parity via the GPT guard
-  ##    (`iteration % 2 == 1`) → pass 0 claude, 1 gpt, 2 claude …
-  ##    identical to the old round_robin (both 0-based, +1 per review
-  ##    pass). Each reviewer receives the OTHER family's most recent
-  ##    fixer pushback so it knows which items to skip — the alternation
-  ##    guarantees the cross-family pushback comes from the previous
-  ##    iteration's opposing-family fixer. On the first iteration both
-  ##    `outputs.fix_*` are empty → fields render empty and the prompt's
-  ##    "ne re-flague pas ces items" section is harmless.
-  ##  - mono: the GPT guard is `mono_family == 'gpt'`; when mono_family
-  ##    is 'claude' it's false → always the claude default. Either way a
-  ##    single family runs every pass; the other reviewer (and its fixer,
-  ##    which follows the actual reviewer's `family`) never runs → ~half
-  ##    the LLM calls.
-  ## The chunk_* fields relay plan_chunks's size verdict so the reviewer
-  ## picks whole-diff vs chunked mode.
-  alt -> reviewer_claude with {
-    prior_pushback: "{{outputs.fix_gpt.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
-    large: "{{outputs.plan_chunks.large}}",
-    chunk_count: "{{outputs.plan_chunks.chunk_count}}",
-    chunk_dir: "{{outputs.plan_chunks.chunk_dir}}",
-    manifest_path: "{{outputs.plan_chunks.manifest_path}}",
-    chunk_max_loc: "{{outputs.plan_chunks.chunk_max_loc}}"
+  ## Converged (green AND the campaign reports the branch diff clean) → ship
+  ## what is banked (optional MR, else finish).
+  gate -> mr_gate when converged
+  ## Not converged → another campaign pass. RED carries the failure log so the
+  ## agent fixes what it broke; green-but-more-work carries an empty log so the
+  ## agent simply keeps reviewing the diff. This closes the single declared
+  ## loop (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
+  ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
+  ## output on its back-edge, which would read a loop-entry-frozen value).
+  gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
+    fail_log: "{{outputs.gate.fail_log}}"
   }
-  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
-    prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
-    large: "{{outputs.plan_chunks.large}}",
-    chunk_count: "{{outputs.plan_chunks.chunk_count}}",
-    chunk_dir: "{{outputs.plan_chunks.chunk_dir}}",
-    manifest_path: "{{outputs.plan_chunks.manifest_path}}",
-    chunk_max_loc: "{{outputs.plan_chunks.chunk_max_loc}}"
-  }
+  ## continuation_loop exhausted (max_passes hit while issues still remain) →
+  ## ship what is banked anyway (every committed fix is real, landed work).
+  ## Unconditional fallthrough after the loop-back retries are spent.
+  gate -> mr_gate
 
-  ## Both reviewers feed into streak_check. The loop is attached
-  ## here so the runtime snapshots the reviewer's verdict as
-  ## `loop.review_loop.previous_output` for the NEXT iteration to
-  ## inspect — eliminating the manual `previous_verdict` relay.
-  reviewer_claude -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_claude.approved}}",
-    family: "{{outputs.reviewer_claude.family}}",
-    blockers: "{{outputs.reviewer_claude.blockers}}",
-    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}",
-    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}"
-  }
-  reviewer_gpt -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_gpt.approved}}",
-    family: "{{outputs.reviewer_gpt.family}}",
-    blockers: "{{outputs.reviewer_gpt.blockers}}",
-    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}",
-    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
-  }
-
-  ## Stop when streak detected (cross-family double approval).
-  ## Route to prepare_commit instead of done — the commit phase
-  ## materialises the improvements into a semantic commit.
-  streak_check -> prepare_commit when stop
-
-  prepare_commit -> commit_changes with {
-    full_message: "{{outputs.prepare_commit.full_message}}",
-    files: "{{outputs.prepare_commit.files}}",
-    workspace_dir: "{{vars.workspace_dir}}"
-  }
-
-  ## After committing, route through mr_gate: open an MR when open_mr,
-  ## else finish. finalize_mr pushes the run's branch + opens the MR/PR
-  ## and (when source_issue_ref is set) posts the URL back to the issue.
-  commit_changes -> mr_gate
-
+  ## Converged (or capped) → optional MR path, else finish. finalize_mr pushes
+  ## the run's HEAD (the series of per-pass commits) + opens the MR/PR and
+  ## (when source_issue_ref is set) posts the URL back.
   mr_gate -> finalize_mr when open_mr with {
     workspace_dir:    "{{vars.workspace_dir}}",
     mr_branch:        "{{vars.mr_branch}}",
@@ -1375,95 +618,4 @@ workflow branch_improve_loop:
     scope_notes:      "{{vars.scope_notes}}"
   }
   mr_gate -> done when not open_mr
-
   finalize_mr -> done
-
-  ## Otherwise approved (no streak yet, OR low-confidence rejection
-  ## treated as soft-approved, OR rejection without concrete blockers
-  ## — see below): keep alternating without fixing.
-  ## Expression form is shown here both to demonstrate the new
-  ## syntax and so future authors can extend the predicate (e.g.
-  ## tighten the soft-approval condition) by enriching the
-  ## quoted expression.
-  ##
-  ## NOTE: this edge does NOT carry `review_loop` so the loop
-  ## counter (and the previous_output snapshot) is incremented
-  ## ONCE per cycle on the reviewer→streak_check edge above. The
-  ## cycle is still bounded because that edge IS loop-bearing.
-  streak_check -> plan_chunks when "approved"
-
-  ## Medium/high-confidence rejection WITH concrete blockers: route
-  ## to the SAME-family fixer so it can inherit the reviewer's
-  ## session (one session per iteration per family — see
-  ## fix_claude / fix_gpt comments). `_session_id` reads directly
-  ## from the most recent reviewer output rather than going through
-  ## streak_check, because compute passthrough strips the
-  ## underscore-prefixed metadata fields.
-  ##
-  ## The `length(blockers) > 0` guard avoids invoking the fixer
-  ## when the reviewer rejected on coverage grounds alone (e.g.
-  ## "cumulative coverage is partial at iteration 0/15") with no
-  ## production-blocking issue identified. In that case the fixer
-  ## has nothing to fix — burning a session round-trip and tokens
-  ## (~$0.15/$0.43 observed in whole_improve_loop run_1777560043656) only
-  ## to push back. The unconditional alt fallthrough below picks
-  ## those up so alternation continues without a wasted fix call.
-  ##
-  ## Edge order matters: iterion evaluates conditional edges top-
-  ## down, first match wins. We list both family-specific fixers
-  ## before the unconditional `done` fallthrough so loop-exhaustion
-  ## still terminates cleanly.
-  ## chunk_notes comes from the SAME-family reviewer's output (the
-  ## one that just ran this cycle), not through streak_check — the
-  ## family guard guarantees the right reviewer. large/chunk_dir/
-  ## manifest_path come from plan_chunks so the fixer streams per
-  ## chunk instead of reloading the whole diff.
-  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    chunk_notes: "{{outputs.reviewer_claude.chunk_notes}}",
-    large: "{{outputs.plan_chunks.large}}",
-    chunk_dir: "{{outputs.plan_chunks.chunk_dir}}",
-    manifest_path: "{{outputs.plan_chunks.manifest_path}}",
-    _session_id: "{{outputs.reviewer_claude._session_id}}"
-  }
-  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    chunk_notes: "{{outputs.reviewer_gpt.chunk_notes}}",
-    large: "{{outputs.plan_chunks.large}}",
-    chunk_dir: "{{outputs.plan_chunks.chunk_dir}}",
-    manifest_path: "{{outputs.plan_chunks.manifest_path}}",
-    _session_id: "{{outputs.reviewer_gpt._session_id}}"
-  }
-
-  ## Recovery cycle uses a separate loop name so its counter doesn't
-  ## interfere with the review_loop snapshot semantics. Sized large
-  ## enough to allow review_loop to be the binding constraint. Both
-  ## fixers share the loop counter — total fix attempts across both
-  ## families are capped at 20.
-  fix_claude -> plan_chunks as recovery_loop(20)
-  fix_gpt    -> plan_chunks as recovery_loop(20)
-
-  ## Loop exhaustion fallbacks: when a bounded loop hits its limit
-  ## the loop-bearing edges above are skipped and execution falls
-  ## through to these terminal edges. Route to `fail`, NOT `done`:
-  ## exhausting the review/recovery loop WITHOUT streak_check ever
-  ## firing `stop` means no convergence and no commit — reporting
-  ## `finished` there is a silent empty success, and the dispatcher
-  ## would mark the ticket done/review as if work landed. `fail` is
-  ## non-resumable so a deterministic non-convergence isn't
-  ## re-dispatched in a loop. Legit success is
-  ## streak_check (stop) → prepare_commit → commit_changes → done.
-  reviewer_claude -> fail
-  reviewer_gpt    -> fail
-  fix_claude      -> fail
-  fix_gpt         -> fail
-  ## streak_check's catch-all routes back to `alt` (not a terminal) so
-  ## an unmatched conditional state (e.g. a hallucinated family that
-  ## escapes the enum, or any future expression edge case) keeps
-  ## the loop cycling rather than silently terminating. The bounded
-  ## review_loop counter on the reviewer→streak_check edges still
-  ## guarantees the workflow eventually exits — exhaustion routes
-  ## via the reviewer→fail fallthrough above.
-  streak_check    -> plan_chunks

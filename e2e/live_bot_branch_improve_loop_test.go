@@ -9,13 +9,15 @@ import (
 )
 
 // TestLive_Bot_BranchImproveLoop runs the branch-improve-loop bot (Billy)
-// against a base..branch diff containing a planted logic bug. Billy plans
-// chunks, runs a cross-family review loop, and auto-commits fixes inside a
-// fresh worktree (worktree: auto + sandbox-full).
+// against a base..branch diff containing a planted logic bug. In v2 (ADR-058)
+// Billy is ONE adaptive `campaign` agent: it reads the branch diff, reviews +
+// improves it, and commits each fix in stride inside a fresh worktree
+// (worktree: auto + sandbox-full); a deterministic build/test gate re-checks
+// the tree each pass until the branch is clean and green.
 //
-// Reliability invariants: both reviewers fire and the convergence gate
-// (streak_check) is evaluated (the loop ran); commits are logged. The
-// quality panel grades the fixes + value.
+// Reliability invariants: the campaign fires and the deterministic verify gate
+// (verify_run) is evaluated (the loop ran); commits are logged. The quality
+// panel grades the fixes + value.
 //
 // Requires: claude CLI + OpenAI + docker w/ iterion-sandbox-full:edge.
 // Expected: ~40-70 min.
@@ -72,11 +74,11 @@ func Multiply(a, b int) int {
 		withWorkDir:  true,
 	})
 
-	if countFinished(res.events, "reviewer_claude")+countFinished(res.events, "reviewer_gpt") == 0 {
-		t.Errorf("expected at least one reviewer to fire")
+	if countFinished(res.events, "campaign") == 0 {
+		t.Errorf("expected the campaign agent to fire")
 	}
-	if countFinished(res.events, "streak_check") == 0 {
-		t.Errorf("expected the convergence gate (streak_check) to be evaluated")
+	if countFinished(res.events, "verify_run") == 0 {
+		t.Errorf("expected the deterministic verify gate (verify_run) to be evaluated")
 	}
 	t.Logf("commits after run: %d (seed %d)", workspaceCommitCount(t, workspaceDir), seedCommits)
 
