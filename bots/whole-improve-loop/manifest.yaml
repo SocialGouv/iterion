@@ -1,13 +1,14 @@
 name: whole-improve-loop
 display_name: Willy
-version: 0.6.0
+version: 0.7.0
 description: |
   Whole-repository alternating Claude/GPT review-fix loop that is
   UNIT-CONVERGENT + INCREMENTAL-COMMIT (ADR-055). It splits the workspace
   by package into token-budgeted chunks ("units") and processes ONE unit
   at a time: it converges that unit (two consecutive clean cross-family
-  reviews, with pushback protection against false positives) and COMMITS
-  it immediately, before moving to the next unit. A run that is
+  reviews, with pushback protection against false positives), gates it on a
+  deterministic per-unit build+test verify, and COMMITS it immediately
+  (build-green) before moving to the next unit. A run that is
   interrupted or budget-capped keeps every unit it finished — unlike the
   old design, which committed nothing until an unreachable global clean
   sweep. The run ends when the ranked unit backlog has each been processed

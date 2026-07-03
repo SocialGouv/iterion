@@ -68,25 +68,31 @@ func stubSnapshotChunk(exec *scenarioExecutor) {
 	})
 }
 
-// stubVerifyGate registers stubs for the deterministic build/test gate
-// the loop runs AFTER streak_check fires `stop` and BEFORE committing
-// (streak_check -> verify_build -> verify_run -> commit_changes -> done).
-// The e2e executor cannot run the real verify nodes (verify_build adapts
-// to the repo's tooling; verify_run executes .whole_improve_loop.verify.sh),
-// so this models a GREEN gate: verify_run reports passed=true so the run
-// routes verify_run -> commit_changes when passed -> done. Without it the
-// unstubbed verify_run returns no `passed` field, the `when passed` edge is
-// never taken, verify_loop(3) exhausts and the run routes to `fail`. Tests
-// that never converge (loop-exhaustion scenarios) never reach this gate and
-// don't need it.
+// stubVerifyGate registers stubs for BOTH deterministic build/test gates the
+// loop runs:
+//   - the FINALIZATION gate (streak_check -> verify_build -> verify_run ->
+//     commit_changes -> done), reached after `stop`, and
+//   - the PER-UNIT gate (ADR-055 2a: streak_check -> unit_verify_build ->
+//     unit_verify_run -> commit_unit), reached each time a NON-last unit
+//     converges, so every incremental commit is build+test green on its own.
+//
+// The e2e executor cannot run the real verify nodes (they adapt to the repo's
+// tooling and execute .whole_improve_loop.verify.sh), so this models a GREEN
+// gate on both: verify_run / unit_verify_run report passed=true so the run
+// routes ... -> commit_changes / commit_unit when passed. Without the per-unit
+// stub, a converged non-last unit would exhaust unit_verify_loop(3) and skip
+// WITHOUT committing (never reaching commit_unit). Tests that never converge
+// (loop-exhaustion scenarios) reach neither gate and don't need this.
 func stubVerifyGate(exec *scenarioExecutor) {
-	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	green := func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{
 			"passed":   true,
 			"log_tail": "",
 			"_tokens":  1,
 		}, nil
-	})
+	}
+	exec.on("verify_run", green)
+	exec.on("unit_verify_run", green)
 }
 
 // TestWholeImproveLoop_HappyPath simulates the canonical "two
@@ -197,7 +203,10 @@ func TestWholeImproveLoop_FixThenApprove(t *testing.T) {
 		return map[string]interface{}{
 			"applied": true,
 			"summary": "added tests",
-			"_tokens": 200,
+			// ADR-055 2c: the fixer records its intent, threaded forward to the
+			// next cross-family reviewer of this unit (prior_change_rationale).
+			"change_rationale": "added a missing unit test for the error path; no behaviour change",
+			"_tokens":          200,
 		}, nil
 	})
 
@@ -501,6 +510,93 @@ func TestWholeImproveLoop_PerUnitConvergesCommitsAndAdvances(t *testing.T) {
 	}
 	if got := exec.callCount("commit_unit"); got != 2 {
 		t.Errorf("commit_unit called %d times, want 2 (per-unit incremental commit for units 0 and 1; unit 2 finalizes via stop)", got)
+	}
+}
+
+// TestWholeImproveLoop_PerUnitVerifyGatesCommit pins the ADR-055 2a property:
+// a converged unit is NOT committed until a deterministic per-unit build/test
+// verify passes. On a 2-unit all-clean backlog, unit 0 converges FIRST (not the
+// last unit) so it routes streak_check -> unit_verify_build -> unit_verify_run
+// -> commit_unit. We make unit_verify_run RED on its first invocation and GREEN
+// after (modelling unit_verify_build repairing the breakage), and assert:
+//   - commit_unit NEVER fires while the per-unit verify is red (a broken
+//     intermediate commit is exactly what 2a forbids);
+//   - the gate retried (unit_verify_run called >= 2 — fail then pass) via the
+//     bounded unit_verify_loop(3);
+//   - commit_unit landed exactly once (unit 0), after the gate went green;
+//   - the run finishes (unit 1's convergence is the stop → final gate).
+func TestWholeImproveLoop_PerUnitVerifyGatesCommit(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whole-improve-loop/main.bot")
+	exec := newScenarioExecutor()
+
+	exec.on("snapshot_chunk", func(in map[string]interface{}) (map[string]interface{}, error) {
+		cur := wilToInt(in["incoming_cursor"])
+		return map[string]interface{}{
+			"chunk_content": "// stub", "files": "stub.go", "chunk_label": "stub",
+			"chunk_index": cur % 2, "num_chunks": 2, "loop_max": 12, "chunked": true,
+			"file_count": 1, "chunk_tokens": 10, "total_files": 2, "total_tokens": 20,
+			"skipped_oversize": 0, "persisted_unit_streak": wilToInt(in["incoming_unit_streak"]),
+			"persisted_unit_passes": wilToInt(in["incoming_unit_passes"]),
+			"persisted_units_done":  wilToInt(in["incoming_units_done"]),
+			"cursor":                cur, "_tokens": 1,
+		}, nil
+	})
+	approve := func(fam string) func(map[string]interface{}) (map[string]interface{}, error) {
+		return func(_ map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{
+				"approved": true, "family": fam,
+				"blockers": []string{}, "fix_plan": "", "_tokens": 10,
+			}, nil
+		}
+	}
+	exec.on("reviewer_claude", approve("claude"))
+	exec.on("reviewer_gpt", approve("gpt"))
+
+	// Per-unit gate: RED on the first call, GREEN after. The final gate
+	// (verify_run) is always green.
+	unitVerifyCalls := 0
+	lastPerUnitPassed := false
+	exec.on("unit_verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		unitVerifyCalls++
+		passed := unitVerifyCalls >= 2 // first red, then green (unit_verify_build "fixed" it)
+		lastPerUnitPassed = passed
+		return map[string]interface{}{
+			"passed": passed, "skipped": false, "exit_code": 0,
+			"log_tail": "stub build failure", "_tokens": 1,
+		}, nil
+	})
+	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"passed": true, "log_tail": "", "_tokens": 1}, nil
+	})
+	// commit_unit must only ever fire when the most recent per-unit verify was
+	// GREEN — the core 2a invariant.
+	exec.on("commit_unit", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		if !lastPerUnitPassed {
+			t.Errorf("commit_unit fired while the per-unit build/test verify was RED — 2a must gate every incremental commit on a green build")
+		}
+		return map[string]interface{}{"success": true, "output": "committed", "_tokens": 1}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-vibe-unitverify", map[string]interface{}{"context_mode": "inline"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-vibe-unitverify")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if unitVerifyCalls < 2 {
+		t.Errorf("unit_verify_run called %d times, want >= 2 (the gate must RETRY via unit_verify_loop after a red build, not commit)", unitVerifyCalls)
+	}
+	if got := exec.callCount("commit_unit"); got != 1 {
+		t.Errorf("commit_unit called %d times, want 1 (unit 0 commits after the gate goes green; unit 1 finalizes via stop)", got)
+	}
+	if got := exec.callCount("unit_verify_build"); got < 2 {
+		t.Errorf("unit_verify_build called %d times, want >= 2 (the agent re-runs to repair the red build before commit)", got)
 	}
 }
 

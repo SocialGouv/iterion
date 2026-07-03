@@ -34,14 +34,34 @@
 ## Per-unit convergence (the asymptote, scoped to the unit):
 ##   - A unit is CLEAN when the current reviewer approves it with zero
 ##     blockers (and, in explore mode, actually opened its files).
-##   - A unit CONVERGES (→ commit) after 2 CONSECUTIVE clean reviews of
-##     THAT unit — count-based, so it is family-agnostic (in DUAL the two
-##     passes are cross-family because the family flips each pass; in MONO
-##     they are the single family twice — the same accepted trade-off the
-##     old count-based stop made, unchanged by ADR-052 mono/dual).
+##   - A unit CONVERGES after 2 CONSECUTIVE clean reviews of THAT unit —
+##     count-based, so it is family-agnostic (in DUAL the two passes are
+##     cross-family because the family flips each pass; in MONO they are the
+##     single family twice — the same accepted trade-off the old count-based
+##     stop made, unchanged by ADR-052 mono/dual).
+##   - A converged unit is then GATED BY A PER-UNIT BUILD/TEST VERIFY
+##     (ADR-055 2a): unit_verify_build + unit_verify_run run the SAME
+##     deterministic, stack-agnostic build+test gate the finalization uses
+##     (mirror of verify_build/verify_run) BEFORE commit_unit lands it, so
+##     EVERY incremental commit is build+test green on its own — an
+##     interrupted run leaves a chain of individually-green commits. A red
+##     per-unit verify does NOT commit: it loops back to unit_verify_build
+##     (bounded unit_verify_loop(3)) to make the unit green first; if it still
+##     can't build, the unit is SKIPPED without committing (force_skip
+##     semantics — its changes stay uncommitted for the next pass / the final
+##     whole-tree gate / the operator), never landing broken code.
 ##   - A unit that will not converge is force-skipped after a bounded
 ##     number of passes (unit_passes) so one stubborn unit can never block
 ##     the whole backlog — "bounded per-unit iterations" (ADR-055).
+##
+## Shared reviewer↔fixer context (ADR-055 2c): the fixer records a concise
+## `change_rationale` (what it changed + WHY, per unit); it is threaded
+## FORWARD to the next (cross-family) reviewer of the SAME unit
+## (prior_change_rationale) so that reviewer verifies the fix with the fixer's
+## intent visible instead of re-deriving it — killing re-litigation at the
+## source. It AUGMENTS prior_pushback / previous_scanned_areas, does not
+## replace them. The reverse direction (reviewer verdict → fixer) is already
+## wired via blockers + fix_plan + `session: inherit`.
 ##
 ## The RUN terminates when the ranked unit backlog has each been processed
 ## once (units_done >= num_chunks → stop → build/test gate → finalize),
@@ -446,6 +466,13 @@ prompt review_user_claude:
   Justification for the prior pushback:
   {{input.prior_pushback_justification}}
 
+  Rationale the OTHER family's fixer recorded for the change
+  it just applied to THIS unit (empty when no fix preceded
+  this review — when present, VERIFY that fix and judge
+  whether a REAL issue remains; do NOT re-derive the change
+  from scratch or re-litigate what it already resolved):
+  {{input.prior_change_rationale}}
+
   Produce a structured verdict for THIS CHUNK:
     - approved: true when THIS chunk has no production
       blocker. Do NOT withhold approval merely because you
@@ -517,6 +544,13 @@ prompt review_user_gpt:
 
   Justification for the prior pushback:
   {{input.prior_pushback_justification}}
+
+  Rationale the OTHER family's fixer recorded for the change
+  it just applied to THIS unit (empty when no fix preceded
+  this review — when present, VERIFY that fix and judge
+  whether a REAL issue remains; do NOT re-derive the change
+  from scratch or re-litigate what it already resolved):
+  {{input.prior_change_rationale}}
 
   Produce a structured verdict for THIS CHUNK:
     - approved: true when THIS chunk has no production
@@ -603,6 +637,16 @@ prompt fix_system:
        why. A truthful "applied, build green" or "applied but tests
        not run" always beats a placeholder.
 
+  SHARED-CONTEXT HANDOFF (ADR-055): fill `change_rationale` with a CONCISE
+  what+why for the changes you applied to THIS unit — which files/symbols you
+  touched and why each change is correct/sufficient. It is threaded FORWARD to
+  the next (cross-family) reviewer of the same unit, which uses it to verify
+  your fix with your intent visible instead of re-deriving it from scratch.
+  Keep it a rationale (a few sentences), never a transcript or a full diff, so
+  the reviewer's context stays lean. (The reverse direction — the reviewer's
+  verdict to you — is already wired: you receive its `blockers` + `fix_plan`
+  and, via `session: inherit`, its full reasoning chain.)
+
   HUMAN ESCALATION:
   If a blocker is genuinely ambiguous (the spec does not
   say how to resolve it, several valid approaches conflict,
@@ -678,6 +722,12 @@ prompt fix_user:
   Output:
     - applied: true if at least one fix was applied
     - summary: summary of applied fixes
+    - change_rationale: a CONCISE what+why for the changes you made to THIS
+      unit — which files/symbols you touched and why each change is
+      correct/sufficient (your INTENT, not a diff). The next reviewer of this
+      same unit reads it to verify your fix instead of re-deriving it from
+      scratch, so be specific but brief (a few sentences). Empty only if you
+      applied nothing.
     - pushback: refused items (empty if all fixed)
     - pushback_justification: rationale for the pushback
 
@@ -686,6 +736,15 @@ prompt fix_user:
 schema review_input:
   prior_pushback: string[]
   prior_pushback_justification: string
+  ## prior_change_rationale (ADR-055 2c — SHARED REVIEWER↔FIXER CONTEXT): the
+  ## CONCISE what+why the OTHER family's fixer recorded for the change it just
+  ## applied to THIS unit (fix_output.change_rationale, relayed on the
+  ## alt -> reviewer_* edge). Read it to VERIFY the fix and judge whether a
+  ## REAL issue remains, rather than re-deriving the change from scratch — the
+  ## shared context that kills re-litigation at the source. Empty when no fix
+  ## preceded this review (first pass on a unit). AUGMENTS prior_pushback /
+  ## previous_scanned_areas; it is intent, not a diff.
+  prior_change_rationale: string
   ## previous_scanned_areas accumulates the audit surfaces from
   ## ALL prior reviewer iterations (both families). The current
   ## reviewer reads it to prefer uncovered surfaces — see
@@ -869,6 +928,17 @@ schema fix_input:
 schema fix_output:
   applied: bool
   summary: string
+  ## change_rationale (ADR-055 2c — SHARED REVIEWER↔FIXER CONTEXT): a CONCISE
+  ## what+why for the fixes applied to THIS unit — the files/symbols touched
+  ## and why each change is correct/sufficient. It is threaded FORWARD to the
+  ## next (cross-family) reviewer of the SAME unit (alt -> reviewer_* edges,
+  ## `prior_change_rationale`) so that reviewer verifies "is this fix good + is
+  ## a real issue left?" with the fixer's intent visible, instead of
+  ## re-deriving the change from scratch — killing re-litigation at the source.
+  ## AUGMENTS prior_pushback / previous_scanned_areas, does not replace them.
+  ## Keep it a rationale (a few sentences), never a transcript / full diff, so
+  ## the reviewer's context does not bloat.
+  change_rationale: string
   pushback: string[]
   pushback_justification: string
 
@@ -1652,6 +1722,71 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 "`
   output: verify_result
 
+## ─── PER-UNIT build/test gate (ADR-055 2a) ─────────────────────────
+## Every incremental commit_unit must be BUILD+TEST GREEN ON ITS OWN, so an
+## interrupted run leaves a chain of individually-green commits (not just the
+## final commit gated by verify_build/verify_run). Historically commit_unit
+## landed a converged unit with NO build/test gate, so an intermediate commit
+## could compile-break the tree (a chunk reviewer approves from chunk SOURCE
+## and never sees a cross-file caller / a test-only bug).
+##
+## unit_verify_build + unit_verify_run MIRROR the finalization gate
+## verify_build/verify_run EXACTLY — same prompts (verify_system/verify_user),
+## same schemas (verify_input/verify_plan/verify_result), same deterministic
+## re-run of .whole_improve_loop.verify.sh gated on the REAL exit code. They
+## are separate NODES only so the routing differs (commit_unit + loop back to
+## the backlog, vs commit_changes + finalize). STACK-AGNOSTIC by construction:
+## no language / package manager is named here — the adaptive agent reads
+## skills/verify-build.md and dispatches to whatever THIS repo uses, identical
+## to verify_build. The per-unit verify→fix sub-loop is bounded by
+## unit_verify_loop(3), exactly like the final verify_loop(3).
+agent unit_verify_build:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
+  ## high, not max: mechanical build-repair work, not deep review (see verify_build).
+  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  input: verify_input
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  ## fresh: whole-tree buildability, not a single inherited chunk session
+  ## (same rationale as verify_build).
+  session: fresh
+  interaction: human
+
+## Deterministic half of the per-unit gate — re-runs the agent-prepared
+## .whole_improve_loop.verify.sh and reports the REAL exit code. Byte-identical
+## to verify_run's body (no language/package manager named); a distinct node so
+## its `when passed` edge routes to commit_unit instead of commit_changes.
+tool unit_verify_run:
+  command: `WS={{vars.workspace_dir}} python3 -c "
+import os, subprocess, json
+ws = os.environ.get('WS', '.')
+script = os.path.join(ws, '.whole_improve_loop.verify.sh')
+if not os.path.exists(script):
+    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'unit_verify_build produced no .whole_improve_loop.verify.sh; per-unit build/test gate SKIPPED (counted as pass, but surfaced) -- unit_verify_build should write the script'}))
+    raise SystemExit(0)
+rc = 0
+out = ''
+try:
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
+    out = p.stdout or ''
+    rc = p.returncode
+except subprocess.TimeoutExpired as e:
+    out = (e.output or '') + chr(10) + '[unit verify timed out after 1500s]'
+    rc = 124
+except Exception as e:
+    out = 'unit_verify_run could not execute the script: ' + str(e)
+    rc = 1
+try:
+    with open(os.path.join(ws, '.whole_improve_loop.verify.log'), 'w', encoding='utf-8') as lf:
+        lf.write(out)
+except OSError:
+    pass
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: verify_result
+
 schema commit_result:
   success: bool
   output: string
@@ -1832,6 +1967,7 @@ workflow whole_improve_loop:
   alt -> reviewer_claude with {
     prior_pushback: "{{outputs.fix_gpt.pushback}}",
     prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
+    prior_change_rationale: "{{outputs.fix_gpt.change_rationale}}",
     previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
     chunk_content: "{{outputs.snapshot_chunk.chunk_content}}",
     chunk_files: "{{outputs.snapshot_chunk.files}}",
@@ -1846,6 +1982,7 @@ workflow whole_improve_loop:
   alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     prior_pushback: "{{outputs.fix_claude.pushback}}",
     prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
+    prior_change_rationale: "{{outputs.fix_claude.change_rationale}}",
     previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
     chunk_content: "{{outputs.snapshot_chunk.chunk_content}}",
     chunk_files: "{{outputs.snapshot_chunk.files}}",
@@ -1936,14 +2073,48 @@ workflow whole_improve_loop:
 
   finalize_mr -> done
 
-  ## ADR-055 INCREMENTAL COMMIT. A UNIT converged (2 consecutive clean
-  ## reviews) and it is NOT the last unit (else `stop` above caught it):
-  ## commit that unit NOW, before the cursor advances, so it is banked even
-  ## if the run is later interrupted. commit_unit carries the unit's chunk
-  ## label for the message. This edge is listed AFTER the stop edge so a
-  ## converged LAST unit finalizes via stop, not here (first-match-wins).
-  streak_check -> commit_unit when unit_converged with {
+  ## ADR-055 INCREMENTAL COMMIT + PER-UNIT BUILD/TEST GATE (2a). A UNIT
+  ## converged (2 consecutive clean reviews) and it is NOT the last unit (else
+  ## `stop` above caught it). Before banking it, run the SAME deterministic
+  ## build/test gate the finalization uses — unit_verify_build (adaptive,
+  ## stack-agnostic, writes .whole_improve_loop.verify.sh) + unit_verify_run
+  ## (re-runs it, gates on the REAL exit code) — so every incremental commit is
+  ## individually green. A chunk reviewer approves from chunk SOURCE only and
+  ## can't see a cross-file compile break or a test-only bug; this gate can.
+  ## Listed AFTER the stop edge so a converged LAST unit finalizes via stop,
+  ## not here (first-match-wins).
+  streak_check -> unit_verify_build when unit_converged with { fail_log: "" }
+  unit_verify_build -> unit_verify_run
+  ## GREEN per-unit build+tests → commit the unit NOW (before the cursor
+  ## advances) so it is banked even if the run is later interrupted. commit_unit
+  ## carries the unit's chunk label for the message. snapshot_chunk's output is
+  ## still available this pass, so the label resolves here.
+  unit_verify_run -> commit_unit when passed with {
     label: "{{outputs.snapshot_chunk.chunk_label}}"
+  }
+  ## RED → loop back to unit_verify_build to fix the breakage, bounded by
+  ## unit_verify_loop(3) (mirrors the final verify_loop(3)). The gate's log_tail
+  ## is handed back as the exact failure to fix, so the unit is made green
+  ## BEFORE it commits.
+  unit_verify_run -> unit_verify_build as unit_verify_loop(3) with {
+    fail_log: "{{outputs.unit_verify_run.log_tail}}"
+  }
+  ## Still RED after the bounded retries → SKIP the unit WITHOUT committing
+  ## broken code (force_skip semantics, ADR-055 "bounded per-unit iterations"):
+  ## advance the cursor via the ADVANCE carry tuple streak_check already
+  ## computed for this converged unit (carry_cursor = cursor+1,
+  ## carry_units_done = units_done+1), leaving the unit's changes UNCOMMITTED in
+  ## the working tree for the next pass / the final whole-tree verify_build gate
+  ## (which will try to fix them, then `fail` loudly if it can't) / the
+  ## operator. Consistent with force_skip (advance, count the unit done, leave
+  ## partial fixes uncommitted) — one un-buildable unit can never block the
+  ## backlog, and NO broken commit is ever landed. Listed last (unconditional
+  ## fallthrough), taken only once unit_verify_loop(3) is exhausted.
+  unit_verify_run -> snapshot_chunk with {
+    incoming_unit_streak: "{{outputs.streak_check.carry_unit_streak}}",
+    incoming_cursor: "{{outputs.streak_check.carry_cursor}}",
+    incoming_unit_passes: "{{outputs.streak_check.carry_unit_passes}}",
+    incoming_units_done: "{{outputs.streak_check.carry_units_done}}"
   }
   ## After committing the unit, loop back to snapshot_chunk with the ADVANCED
   ## carry tuple (carry_cursor = cursor+1, carry_unit_streak = 0,

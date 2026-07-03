@@ -22,10 +22,31 @@ production-ready state — **unit-convergent and incremental-commit**
   positives, then it is **committed** and the cursor advances. A stubborn
   unit is force-skipped after a bounded number of passes so it can never
   block the rest of the backlog.
-- **Incremental commit**: each converged unit lands its OWN commit on the
-  run's worktree branch, immediately, so an interrupted / budget-capped run
-  keeps every unit it finished. (The old design committed nothing until an
-  unreachable global clean sweep — see ADR-055 context.)
+- **Incremental commit, gated per unit**: each converged unit lands its OWN
+  commit on the run's worktree branch, immediately, so an interrupted /
+  budget-capped run keeps every unit it finished. (The old design committed
+  nothing until an unreachable global clean sweep — see ADR-055 context.)
+- **Per-unit build/test verify** (ADR-055 2a): before an incremental commit
+  lands, the SAME deterministic, stack-agnostic build+test gate the
+  finalization uses runs on the converged unit (`unit_verify_build` writes
+  `.whole_improve_loop.verify.sh` from the repo's own tooling;
+  `unit_verify_run` re-runs it and gates on the REAL exit code) — so **every**
+  incremental commit is build+test green on its own, and an interrupted run
+  leaves a chain of individually-green commits, not a possibly-broken
+  intermediate one. A red per-unit verify does **not** commit: it loops back
+  to `unit_verify_build` (bounded `unit_verify_loop(3)`) to make the unit
+  green; if it still can't build, the unit is **skipped without committing**
+  (force-skip semantics — its changes stay uncommitted for the next pass, the
+  final whole-tree gate, or the operator), so broken code never lands and one
+  un-buildable unit can't block the backlog.
+- **Shared reviewer↔fixer context** (ADR-055 2c): the fixer records a concise
+  `change_rationale` (what it changed + why, per unit) that is threaded
+  forward to the next cross-family reviewer of the same unit
+  (`prior_change_rationale`), so that reviewer verifies the fix with the
+  fixer's intent visible instead of re-deriving it — killing re-litigation at
+  the source. It **augments** `prior_pushback` / `previous_scanned_areas`; the
+  reverse direction (reviewer verdict → fixer) is already wired via
+  `blockers` + `fix_plan` + `session: inherit`.
 - The **run terminates** when the ranked unit backlog has each been
   processed once (`units_done >= num_chunks`), not when a global streak
   saturates. A per-run pass budget (`max_review_passes`, default 15) bounds
