@@ -60,15 +60,15 @@ func (rs *runState) scope() resolveScope {
 func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]interface{} {
 	result := make(map[string]interface{})
 
-	// Merge with-mappings from ALL edges targeting this node whose source
-	// has already produced output.
-	for _, edge := range e.workflow.Edges {
+	// applyEdge merges one edge's with-mappings into result. Only edges whose
+	// source has already produced output contribute (so a not-yet-run source
+	// leaves the mapping to a later-firing edge / the entry fallback).
+	applyEdge := func(edge *ir.Edge) {
 		if edge.To != nodeID || len(edge.With) == 0 {
-			continue
+			return
 		}
-		// Only use mappings from an edge whose source has already produced output.
 		if _, ok := sc.outputs[edge.From]; !ok && edge.From != "" {
-			continue
+			return
 		}
 
 		// Build effective input context: {{input.X}} in with-mappings should
@@ -103,6 +103,38 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]int
 			// downstream prompts, surfacing template syntax to the
 			// LLM instead of an empty string.
 			result[dm.Key] = val
+		}
+	}
+
+	// Merge with-mappings from ALL edges targeting this node whose source has
+	// produced output, in TWO precedence passes:
+	//
+	//  1. Non-iteration (forward / entry) edges first.
+	//  2. Bounded-iteration back-edges (loop / foreach) last, so they WIN on a
+	//     shared key.
+	//
+	// The head of a bounded loop is targeted by both its entry edge(s) AND its
+	// back-edge(s). On re-entry, both an entry edge's source and the back-edge's
+	// source have produced output, so a naive single-pass merge in slice order
+	// lets whichever edge is later in e.workflow.Edges clobber the other for a
+	// shared key. When the entry edge lands last it re-applies the loop-ENTRY
+	// value every iteration, freezing a fed-back cursor/counter at its initial
+	// value — the loop then spins to its bound instead of converging (observed
+	// authoring bots/whole-improve-loop, worked around there via an `advance`
+	// compute). The back-edge represents "the value carried into the NEXT
+	// iteration" and is the authoritative source of a re-entering head's input,
+	// so it must take precedence. On FIRST entry the back-edge's source hasn't
+	// run yet, so it contributes nothing and the entry edge supplies the value —
+	// correct in both phases. Different-key convergence merges are unaffected
+	// (each edge only overwrites the keys it sets).
+	for _, edge := range e.workflow.Edges {
+		if !edge.IsBoundedIteration() {
+			applyEdge(edge)
+		}
+	}
+	for _, edge := range e.workflow.Edges {
+		if edge.IsBoundedIteration() {
+			applyEdge(edge)
 		}
 	}
 
