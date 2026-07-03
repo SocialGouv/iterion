@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 )
 
@@ -16,6 +18,32 @@ import (
 // we'd rather a forge that mis-bundles fixtures see a 400 than have us
 // OOM on a malformed gigabyte of JSON.
 const maxWebhookBodyBytes = 5 << 20
+
+// verifyWebhookHMACBody reads and size-limits the request body, then
+// verifies its HMAC signature against cfg's sealed secret. providerLabel is
+// used only in the bad-signature warn log ("webhooks: <label> bad HMAC …").
+// Shared by every provider that authenticates deliveries with a body HMAC
+// (GitHub, Forgejo/Gitea) — signature is the raw header value the caller
+// extracted (providers vary in header name / fallback aliases).
+//
+// On failure it has already written the HTTP response (400 on a body read
+// error, 401 on a bad signature); ok is false and the caller must return
+// immediately without any further side effect (no delivery row, no launch).
+func (s *Server) verifyWebhookHMACBody(w http.ResponseWriter, r *http.Request, cfg webhooks.Config, providerLabel, signature string) (body []byte, payloadHash, srcIP string, ok bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodyBytes))
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "read body: %v", err)
+		return nil, "", "", false
+	}
+	if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, signature) {
+		if s.logger != nil {
+			s.logger.Warn("webhooks: %s bad HMAC for %s from %s", providerLabel, cfg.ID, s.clientIP(r))
+		}
+		httpError(w, http.StatusUnauthorized, "invalid signature")
+		return nil, "", "", false
+	}
+	return body, knowledge.ChecksumHex(body), s.clientIP(r), true
+}
 
 // forgeProjectionSem bounds concurrent best-effort forge→board projection
 // goroutines. A burst of webhooks would otherwise spawn one 30s goroutine

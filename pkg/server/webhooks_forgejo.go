@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -51,22 +50,10 @@ func (s *Server) handleForgejoWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "webhook context missing")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodyBytes))
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "read body: %v", err)
+	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "forgejo", forgejoSignatureHeader(r))
+	if !ok {
 		return
 	}
-
-	if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, forgejoSignatureHeader(r)) {
-		if s.logger != nil {
-			s.logger.Warn("webhooks: forgejo bad HMAC for %s from %s", cfg.ID, s.clientIP(r))
-		}
-		httpError(w, http.StatusUnauthorized, "invalid signature")
-		return
-	}
-
-	payloadHash := knowledge.ChecksumHex(body)
-	srcIP := s.clientIP(r)
 
 	event := forgejoEventHeader(r)
 	switch event {
