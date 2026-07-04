@@ -20,10 +20,24 @@ export interface AppInfo {
 export interface Project {
   id: string;
   name: string;
+  // kind discriminates the connection: "local" (a directory served by the
+  // embedded server / per-project daemon) or "cloud" (a remote iterion
+  // instance reached over the authenticating loopback proxy). Empty/absent
+  // is treated as "local" for backwards compatibility with v1 configs.
+  kind?: "local" | "cloud";
   dir: string;
   store_dir?: string;
   last_opened: string; // ISO timestamp
   color?: string;
+  // Cloud-connection fields (kind === "cloud" only).
+  cloud_url?: string;
+  cloud_email?: string;
+}
+
+// isCloudConnection reports whether a Project entry is a remote cloud
+// connection (mirrors Go's Project.IsCloud).
+export function isCloudConnection(p: Project): boolean {
+  return p.kind === "cloud";
 }
 
 export interface SecretStatus {
@@ -50,6 +64,28 @@ export interface Release {
   released_at: string;
 }
 
+// CloudUserSummary is the identity the desktop returns after a cloud login —
+// enough to name the connection; the full org tree comes from /api/auth/me
+// through the proxy.
+export interface CloudUserSummary {
+  id: string;
+  email: string;
+  name?: string;
+  is_super_admin: boolean;
+  active_org_id?: string;
+  active_team_id?: string;
+}
+
+export interface CloudProvider {
+  name: string;
+  display: string;
+}
+
+export interface CloudProviders {
+  signup_mode: string;
+  providers: CloudProvider[];
+}
+
 // Internal: shape of the window.go object Wails injects.
 interface WailsBindings {
   GetServerURL: () => Promise<string>;
@@ -63,13 +99,20 @@ interface WailsBindings {
   OpenExternal: (url: string) => Promise<void>;
   RevealInFinder: (path: string) => Promise<void>;
   ListProjects: () => Promise<Project[]>;
+  ListConnections: () => Promise<Project[]>;
   GetCurrentProject: () => Promise<Project | null>;
   AddProject: (dir: string) => Promise<Project>;
   AddProjectSilently: (dir: string) => Promise<Project>;
   RemoveProject: (id: string) => Promise<void>;
+  RemoveConnection: (id: string) => Promise<void>;
   SwitchProject: (id: string) => Promise<void>;
   PickProjectDirectory: () => Promise<string>;
   ScaffoldProject: (dir: string) => Promise<void>;
+  // Cloud connections (password auth; SSO lands in Phase 2 via LoginSSO).
+  ConnectCloud: (cloudURL: string, email: string, password: string) => Promise<Project>;
+  LoginCloud: (connID: string, email: string, password: string) => Promise<CloudUserSummary>;
+  LogoutCloud: (connID: string) => Promise<void>;
+  ListCloudProviders: (cloudURL: string, email: string) => Promise<CloudProviders>;
   GetKnownSecretKeys: () => Promise<string[]>;
   GetSecretStatuses: () => Promise<SecretStatus[]>;
   SetSecret: (key: string, value: string) => Promise<void>;
@@ -162,15 +205,27 @@ export const desktop = {
   openExternal: (url: string) => call("OpenExternal", url),
   revealInFinder: (path: string) => call("RevealInFinder", path),
 
-  // Projects
+  // Projects / connections (the unified MRU list holds both local projects
+  // and remote cloud connections; listConnections is the semantic alias).
   listProjects: () => call("ListProjects"),
+  listConnections: () => call("ListConnections"),
   getCurrentProject: () => call("GetCurrentProject"),
   addProject: (dir: string) => call("AddProject", dir),
   addProjectSilently: (dir: string) => call("AddProjectSilently", dir),
   removeProject: (id: string) => call("RemoveProject", id),
+  removeConnection: (id: string) => call("RemoveConnection", id),
   switchProject: (id: string) => call("SwitchProject", id),
   pickProjectDirectory: () => call("PickProjectDirectory"),
   scaffoldProject: (dir: string) => call("ScaffoldProject", dir),
+
+  // Cloud connections
+  connectCloud: (cloudURL: string, email: string, password: string) =>
+    call("ConnectCloud", cloudURL, email, password),
+  loginCloud: (connID: string, email: string, password: string) =>
+    call("LoginCloud", connID, email, password),
+  logoutCloud: (connID: string) => call("LogoutCloud", connID),
+  listCloudProviders: (cloudURL: string, email: string) =>
+    call("ListCloudProviders", cloudURL, email),
 
   // Secrets
   getKnownSecretKeys: () => call("GetKnownSecretKeys"),

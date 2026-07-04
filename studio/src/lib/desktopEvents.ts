@@ -26,6 +26,11 @@ export const DesktopEvent = {
   // embedded server's alert Manager. The SPA surfaces it as a native OS
   // notification; the in-page toast + dot ride the run WS separately.
   RunAlert: "run:alert",
+
+  // The active cloud connection's refresh token was rejected (silent
+  // refresh failed / server revoked). Payload: the connection id. The
+  // shell prompts the operator to log back in.
+  CloudAuthExpired: "cloud:auth-expired",
 } as const;
 
 export type DesktopEventName = (typeof DesktopEvent)[keyof typeof DesktopEvent];

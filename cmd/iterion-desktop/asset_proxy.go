@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -47,7 +49,53 @@ type assetProxyHandler struct {
 
 type cachedProxy struct {
 	target *url.URL
+	jar    *cloudTokenJar // nil for a local connection; set for cloud
 	proxy  *httputil.ReverseProxy
+}
+
+// cloudRoundTripper wraps the base transport for a CLOUD connection with a
+// single refresh-and-retry on 401. The background refresh loop is the
+// primary defense (it refreshes before expiry); this is the safety net for
+// the race where a token lapses between refreshes. On a second failure it
+// emits cloud:auth-expired and passes the 401 through so the SPA re-logs in.
+type cloudRoundTripper struct {
+	base http.RoundTripper
+	app  *App
+	jar  *cloudTokenJar
+}
+
+func (t *cloudRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Buffer the body so the request can be replayed after a refresh.
+	var body []byte
+	if req.Body != nil {
+		b, err := io.ReadAll(req.Body)
+		req.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		body = b
+		req.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	// 401 → refresh once, then replay the request with the new token.
+	if rerr := t.jar.refreshNow(req.Context()); rerr != nil {
+		if ae := asCloudAuthError(rerr); ae != nil && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden) {
+			t.app.emitCloudAuthExpired(t.jar.connID)
+		}
+		return resp, nil // pass the original 401 through
+	}
+	resp.Body.Close()
+	req2 := req.Clone(req.Context())
+	if body != nil {
+		req2.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	if tok := t.jar.AccessToken(); tok != "" {
+		req2.Header.Set("Authorization", "Bearer "+tok)
+	}
+	return t.base.RoundTrip(req2)
 }
 
 func newAssetProxyHandler(app *App) *assetProxyHandler {
@@ -63,11 +111,15 @@ func newAssetProxyHandler(app *App) *assetProxyHandler {
 }
 
 // proxyFor returns a *httputil.ReverseProxy targeting serverURL, reusing the
-// cached proxy when the URL hasn't changed.
-func (h *assetProxyHandler) proxyFor(serverURL string) (*httputil.ReverseProxy, error) {
+// cached proxy when neither the URL nor the active cloud jar has changed. A
+// non-nil jar means the target is a REMOTE cloud instance: the proxy becomes
+// an authenticating tunnel — it injects the Bearer, strips the wails-origin
+// cookies, harvests rotated auth cookies, and retries once on 401. A nil jar
+// is the historical local behaviour (loopback, DisableAuth, no token).
+func (h *assetProxyHandler) proxyFor(serverURL string, jar *cloudTokenJar) (*httputil.ReverseProxy, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cached != nil && h.cached.target.String() == serverURL {
+	if h.cached != nil && h.cached.target.String() == serverURL && h.cached.jar == jar {
 		return h.cached.proxy, nil
 	}
 	target, err := url.Parse(serverURL)
@@ -80,24 +132,61 @@ func (h *assetProxyHandler) proxyFor(serverURL string) (*httputil.ReverseProxy, 
 	// stitching; the extra Out.Host + Origin tweaks are the same as
 	// the old Director path.
 	targetHost := target.Host
+	targetScheme := target.Scheme
+	if targetScheme == "" {
+		targetScheme = "http"
+	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
 			// Force the Host so the inner server logs and Origin allowlist see
-			// its own loopback host, not the AssetServer's "wails.localhost".
+			// its own host, not the AssetServer's "wails.localhost".
 			r.Out.Host = targetHost
 			// Rewrite the Origin header to match the proxy target. Without this,
 			// pkg/server/server.go requireSafeOrigin (and CORS reflection) would
 			// reject every state-changing API call because the SPA's true Origin
 			// is the AssetServer's wails:// origin, which is not in the
-			// loopback allowlist. Origin rewriting is the same trick the
+			// target's allowlist. Origin rewriting is the same trick the
 			// studio's vite dev proxy uses (studio/vite.config.ts).
 			if r.In.Header.Get("Origin") != "" {
-				r.Out.Header.Set("Origin", "http://"+targetHost)
+				r.Out.Header.Set("Origin", targetScheme+"://"+targetHost)
+			}
+			if jar != nil {
+				// Cloud: authenticating tunnel. Strip the wails-origin cookies
+				// (junk to the cloud) and inject the current access token. The
+				// cloudRoundTripper re-injects a refreshed token on a 401 retry.
+				r.Out.Header.Del("Cookie")
+				if tok := jar.AccessToken(); tok != "" {
+					r.Out.Header.Set("Authorization", "Bearer "+tok)
+				}
 			}
 		},
 	}
-	h.cached = &cachedProxy{target: target, proxy: proxy}
+	if jar != nil {
+		proxy.Transport = &cloudRoundTripper{base: http.DefaultTransport, app: h.app, jar: jar}
+		proxy.ModifyResponse = func(resp *http.Response) error {
+			// Harvest tokens rotated by SPA-driven auth mutations (e.g. an
+			// org/team switch) from the Set-Cookie header, then strip those
+			// cookies so they never reach the webview.
+			var access, refresh string
+			for _, c := range resp.Cookies() {
+				switch c.Name {
+				case cloudAuthCookieName:
+					access = c.Value
+				case cloudRefreshCookieName:
+					refresh = c.Value
+				}
+			}
+			if access != "" || refresh != "" {
+				if err := jar.applyRotation(access, refresh); err != nil {
+					log.Printf("desktop: cloud token rotation persist failed: %v", err)
+				}
+				stripSetCookies(resp, cloudAuthCookieName, cloudRefreshCookieName)
+			}
+			return nil
+		}
+	}
+	h.cached = &cachedProxy{target: target, jar: jar, proxy: proxy}
 	return proxy, nil
 }
 
@@ -120,7 +209,11 @@ func (h *assetProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxy, err := h.proxyFor(serverURL)
+	// For a cloud connection the proxy becomes an authenticating tunnel keyed
+	// on the active token jar; for local it stays nil (loopback, DisableAuth).
+	jar := h.app.activeCloudJar()
+
+	proxy, err := h.proxyFor(serverURL, jar)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

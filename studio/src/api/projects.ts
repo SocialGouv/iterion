@@ -10,10 +10,17 @@ import { request } from "./client";
 export interface Project {
   id: string;
   name: string;
+  // kind discriminates a local project ("local"/absent) from a remote cloud
+  // connection ("cloud"). Only the desktop bridge populates cloud entries;
+  // the server projects endpoint always returns local ones.
+  kind?: "local" | "cloud";
   dir: string;
   store_dir?: string;
   last_opened: string; // ISO 8601 UTC
   color?: string;
+  // Cloud-connection fields (kind === "cloud" only).
+  cloud_url?: string;
+  cloud_email?: string;
 }
 
 export function listProjects(): Promise<Project[]> {

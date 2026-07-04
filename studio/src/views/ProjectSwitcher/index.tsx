@@ -4,9 +4,10 @@ import { TrashIcon } from "@radix-ui/react-icons";
 import { Button, Dialog, IconButton, Input } from "@/components/ui";
 import { useProjects } from "@/hooks/useProjects";
 import { useDesktop } from "@/hooks/useDesktop";
-import { isDesktop } from "@/lib/desktopBridge";
+import { desktop as desktopBridge, isCloudConnection, isDesktop } from "@/lib/desktopBridge";
 
 import AddProjectDialog from "./AddProjectDialog";
+import CloudConnectModal from "./CloudConnectModal";
 
 interface Props {
   open: boolean;
@@ -35,6 +36,7 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
   const [pendingRemovalId, setPendingRemovalId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -48,14 +50,24 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
     const q = query.toLowerCase();
     return projects.filter(
       (p) =>
-        p.name.toLowerCase().includes(q) || p.dir.toLowerCase().includes(q),
+        p.name.toLowerCase().includes(q) ||
+        (p.dir ?? "").toLowerCase().includes(q) ||
+        (p.cloud_url ?? "").toLowerCase().includes(q) ||
+        (p.cloud_email ?? "").toLowerCase().includes(q),
     );
   }, [projects, query]);
 
   const onConfirmRemove = async (id: string) => {
     setBusyId(id);
     try {
-      await removeProject(id);
+      const target = projects.find((p) => p.id === id);
+      // Cloud connections clear their keychain refresh token via
+      // removeConnection; local projects use the shared removeProject.
+      if (target && isCloudConnection(target) && isDesktop()) {
+        await desktopBridge.removeConnection(id);
+      } else {
+        await removeProject(id);
+      }
     } finally {
       setBusyId(null);
       setPendingRemovalId(null);
@@ -125,6 +137,11 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                   >
                     <div className="font-semibold flex items-center gap-2 truncate">
                       <span className="truncate">{p.name}</span>
+                      {isCloudConnection(p) && (
+                        <span className="text-caption uppercase tracking-wider text-fg-subtle border border-border-default rounded px-1 shrink-0">
+                          cloud
+                        </span>
+                      )}
                       {isCurrent && (
                         <span className="text-caption uppercase tracking-wider text-accent-text shrink-0">
                           current
@@ -132,7 +149,9 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
                       )}
                     </div>
                     <div className="text-xs text-fg-subtle truncate">
-                      {p.dir}
+                      {isCloudConnection(p)
+                        ? p.cloud_email || p.cloud_url
+                        : p.dir}
                     </div>
                   </button>
                   {isPending ? (
@@ -171,10 +190,19 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
               );
             })}
           </ul>
-          <div className="pt-2 border-t border-border-default">
+          <div className="pt-2 border-t border-border-default flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => void onAddClicked()}>
               + Add project…
             </Button>
+            {isDesktop() && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setCloudOpen(true)}
+              >
+                Connect to Cloud…
+              </Button>
+            )}
           </div>
         </div>
       </Dialog>
@@ -183,6 +211,14 @@ export default function ProjectSwitcher({ open, onClose }: Props) {
         onClose={() => setAddOpen(false)}
         onAdd={async (dir) => {
           await addProject(dir);
+          onClose();
+        }}
+      />
+      <CloudConnectModal
+        open={cloudOpen}
+        onClose={() => setCloudOpen(false)}
+        onConnected={() => {
+          setCloudOpen(false);
           onClose();
         }}
       />

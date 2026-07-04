@@ -40,6 +40,14 @@ type App struct {
 	updater  *Updater
 	instLock *SingleInstance
 
+	// cloudJar holds the live tokens for the current CLOUD connection, or
+	// nil when the current connection is local. The asset proxy reads it to
+	// inject the Bearer header + harvest rotated cookies; GetSessionToken
+	// reads it for the WS `?t=` channel. cloudCancel stops the background
+	// refresh loop when switching away / logging out. Both guarded by mu.
+	cloudJar    *cloudTokenJar
+	cloudCancel context.CancelFunc
+
 	// shellEnvKeys records API-key env vars that existed before Iterion
 	// injected keychain values. Only these keys shadow Settings/keychain
 	// edits; values inserted by Iterion remain mutable for this session.
@@ -109,27 +117,47 @@ func (a *App) onStartup(ctx context.Context) {
 	// like the pre-daemon era, mainly useful for daemon-development
 	// loops where the operator wants to be sure the GUI isn't talking
 	// to a stale daemon binary.
-	a.mu.Lock()
-	dir, _ := a.currentProjectServerDirsLocked()
-	a.mu.Unlock()
-	if attachDaemonEnabled() && dir != "" {
-		if err := a.attachOrSpawnDaemonForProject(ctx, dir); err != nil {
-			log.Printf("desktop: daemon attach for %s failed: %v — falling back to embedded server", dir, err)
-		}
+	// If the current connection is a remote cloud connection, activate it
+	// (rehydrate the refresh token from the keychain, mint an access token,
+	// point the AssetServer proxy + WS dialer at the remote) instead of
+	// bringing up any local server. A failed rehydrate leaves the connection
+	// unauthenticated and the SPA shell prompts for login.
+	a.mu.RLock()
+	cur := a.config.CurrentProject()
+	var curCloud *Project
+	if cur != nil && cur.IsCloud() {
+		cp := *cur
+		curCloud = &cp
 	}
+	a.mu.RUnlock()
 
-	if !a.usingDaemon {
-		// No daemon (opted out, or attach/spawn failed) — bring up the
-		// embedded server for the current project (or no project on
-		// first run — the studio SPA's useDesktop hook routes to /welcome
-		// based on IsFirstRunPending).
-		a.server = NewServerHost(a.desktopAlertSink())
-		if err := a.startServerForCurrentProject(ctx); err != nil {
-			log.Printf("desktop: server failed to start: %v", err)
-			// Surface the error: GetServerURL stays "" and the AssetServer
-			// reverse-proxy returns 503 to the WebView until the next
-			// successful start (e.g. after a project switch).
-			return
+	if curCloud != nil {
+		if err := a.activateCloudConnection(ctx, curCloud); err != nil {
+			log.Printf("desktop: cloud activation for %s failed: %v", curCloud.ID, err)
+		}
+	} else {
+		a.mu.Lock()
+		dir, _ := a.currentProjectServerDirsLocked()
+		a.mu.Unlock()
+		if attachDaemonEnabled() && dir != "" {
+			if err := a.attachOrSpawnDaemonForProject(ctx, dir); err != nil {
+				log.Printf("desktop: daemon attach for %s failed: %v — falling back to embedded server", dir, err)
+			}
+		}
+
+		if !a.usingDaemon {
+			// No daemon (opted out, or attach/spawn failed) — bring up the
+			// embedded server for the current project (or no project on
+			// first run — the studio SPA's useDesktop hook routes to /welcome
+			// based on IsFirstRunPending).
+			a.server = NewServerHost(a.desktopAlertSink())
+			if err := a.startServerForCurrentProject(ctx); err != nil {
+				log.Printf("desktop: server failed to start: %v", err)
+				// Surface the error: GetServerURL stays "" and the AssetServer
+				// reverse-proxy returns 503 to the WebView until the next
+				// successful start (e.g. after a project switch).
+				return
+			}
 		}
 	}
 
@@ -361,6 +389,20 @@ func (a *App) restartServerForCurrentProject(ctx context.Context) (*Project, err
 	dir, storeDir := a.currentProjectServerDirsLocked()
 	wasUsingDaemon := a.usingDaemon
 	a.mu.Unlock()
+
+	// Cloud connection: there is no local server to spawn/stop. Point the
+	// AssetServer proxy + WS dialer at the remote and (re)hydrate the token
+	// jar; the proxy injects the Bearer on every forward (cloud.go).
+	if current != nil && current.IsCloud() {
+		if err := a.activateCloudConnection(ctx, current); err != nil {
+			return nil, err
+		}
+		a.reloadWindowApp(ctx)
+		return current, nil
+	}
+	// Switching to a LOCAL connection: tear down any active cloud session
+	// (stops the refresh loop, drops the jar) before restarting the server.
+	a.deactivateCloud()
 
 	// Daemon-attached mode (Phase 2): each project has its own daemon.
 	// On SwitchProject we just attach to (or spawn) the daemon for the

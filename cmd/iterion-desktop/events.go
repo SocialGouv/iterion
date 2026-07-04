@@ -31,4 +31,9 @@ const (
 	// driven separately off the run WS `alert` event; this channel adds
 	// the out-of-window native notification desktop sessions expect.
 	eventRunAlert = "run:alert"
+
+	// eventCloudAuthExpired fires when the active cloud connection's refresh
+	// token is rejected (silent refresh failed / server revoked it). The SPA
+	// shell surfaces a re-login prompt. Payload: the connection id (string).
+	eventCloudAuthExpired = "cloud:auth-expired"
 )

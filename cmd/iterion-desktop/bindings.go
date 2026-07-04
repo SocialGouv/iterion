@@ -94,9 +94,15 @@ func (a *App) GetDaemonURLForStore(storePath string) (string, error) {
 // `if (token) u.searchParams.set("t", token)` check skips the param
 // for empty strings, so no spurious query is appended either.
 //
-// When auth is wired in for hosted desktop builds, this should return
-// the actual session JWT minted at login.
+// For a CLOUD connection it returns the live access JWT held by the token
+// jar, so the SPA's WS dialer can authenticate `wss://<cloud>/api/ws?t=<jwt>`
+// (the cross-origin channel — HttpOnly cookies don't attach from the wails
+// origin). For a LOCAL connection the embedded server runs DisableAuth=true
+// so no token is needed and this stays "".
 func (a *App) GetSessionToken() string {
+	if jar := a.activeCloudJar(); jar != nil {
+		return jar.AccessToken()
+	}
 	return ""
 }
 
@@ -298,6 +304,14 @@ func (a *App) ListProjects() []Project {
 	out := make([]Project, len(a.config.RecentProjects))
 	copy(out, a.config.RecentProjects)
 	return out
+}
+
+// ListConnections is the semantic name for the unified MRU list — it holds
+// both local projects (Kind "local") and remote cloud connections (Kind
+// "cloud"). It is an alias of ListProjects: the switcher reads this so the
+// intent is explicit, while ListProjects stays for backwards compatibility.
+func (a *App) ListConnections() []Project {
+	return a.ListProjects()
 }
 
 // GetCurrentProject returns the active project, or nil.
