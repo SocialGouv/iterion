@@ -474,10 +474,3 @@ type Token struct {
 	Line   int    // 1-based
 	Column int    // 1-based
 }
-
-func (t Token) String() string {
-	if t.Value != "" {
-		return fmt.Sprintf("%s(%q)@%d:%d", t.Type, t.Value, t.Line, t.Column)
-	}
-	return fmt.Sprintf("%s@%d:%d", t.Type, t.Line, t.Column)
-}
