@@ -935,7 +935,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
 			return
 		}
-		ticket, mintErr := s.desktopTickets.mint(res)
+		ticket, mintErr := s.desktopTickets.Mint(r.Context(), res)
 		if mintErr != nil {
 			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
 			return

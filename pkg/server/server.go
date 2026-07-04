@@ -13,6 +13,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -67,7 +68,7 @@ type Server struct {
 	signer         *auth.JWTSigner
 	oidcRegistry   *oidc.Registry
 	oidcStates     oidc.StateStore
-	desktopTickets *desktopTicketStore
+	desktopTickets desktopsso.Store
 	apiKeys        secrets.ApiKeyStore
 	genericSecrets secrets.GenericSecretStore
 	// localSecrets is the concrete layered file store when running in local
@@ -237,6 +238,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if cfg.OIDCStates == nil {
 		cfg.OIDCStates = oidc.NewMemoryStateStore(10 * time.Minute)
 	}
+	if cfg.DesktopTickets == nil {
+		cfg.DesktopTickets = desktopsso.NewMemoryStore(desktopTicketTTL)
+	}
 	s := &Server{
 		cfg:               cfg,
 		logger:            logger,
@@ -247,7 +251,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		signer:            cfg.AuthSigner,
 		oidcRegistry:      cfg.OIDCRegistry,
 		oidcStates:        cfg.OIDCStates,
-		desktopTickets:    newDesktopTicketStore(desktopTicketTTL),
+		desktopTickets:    cfg.DesktopTickets,
 		apiKeys:           cfg.ApiKeys,
 		genericSecrets:    cfg.GenericSecrets,
 		runSecrets:        cfg.RunSecrets,

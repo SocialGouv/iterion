@@ -1,16 +1,14 @@
 package server
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
 )
 
 // desktop_sso.go implements the DESKTOP SSO exchange: the server side of the
@@ -29,75 +27,15 @@ import (
 //     POST /api/auth/desktop/exchange over its native client, receiving the
 //     same response shape as a password login (access token in body, refresh
 //     in the Set-Cookie the native client harvests).
+//
+// The ticket store (pkg/auth/desktopsso) is in-memory by default and
+// Mongo-backed in the cloud control plane, so the mint (callback) and redeem
+// (exchange) can land on different replicas.
 
 // desktopTicketTTL bounds how long a minted exchange ticket is redeemable.
 // The desktop redeems within a second of the browser redirect; a short TTL
 // caps the window a leaked loopback URL could be replayed.
 const desktopTicketTTL = 2 * time.Minute
-
-// desktopTicket is a minted, not-yet-redeemed SSO result.
-type desktopTicket struct {
-	result auth.LoginResult
-	expiry time.Time
-}
-
-// desktopTicketStore is a single-use, TTL-bounded in-memory map from an
-// opaque ticket to the LoginResult the OIDC callback produced.
-//
-// Caveat (cloud multi-replica): this is in-memory, so a mint on replica A and
-// a redeem routed to replica B would miss. It is correct for the single-binary
-// / single-replica case (desktop + one cloud instance). Sharing it across
-// replicas — like the OIDC StateStore's Mongo backend — is the same follow-on
-// as the WS single-use ticket (Phase 3).
-type desktopTicketStore struct {
-	mu  sync.Mutex
-	m   map[string]desktopTicket
-	ttl time.Duration
-}
-
-func newDesktopTicketStore(ttl time.Duration) *desktopTicketStore {
-	return &desktopTicketStore{m: make(map[string]desktopTicket), ttl: ttl}
-}
-
-// mint stores res under a fresh random ticket and returns it. Expired entries
-// are swept opportunistically.
-func (s *desktopTicketStore) mint(res auth.LoginResult) (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	ticket := base64.RawURLEncoding.EncodeToString(buf)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sweepLocked()
-	s.m[ticket] = desktopTicket{result: res, expiry: time.Now().Add(s.ttl)}
-	return ticket, nil
-}
-
-// redeem returns the LoginResult for ticket and deletes it (single-use).
-// Returns false when the ticket is unknown or expired.
-func (s *desktopTicketStore) redeem(ticket string) (auth.LoginResult, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.m[ticket]
-	if !ok {
-		return auth.LoginResult{}, false
-	}
-	delete(s.m, ticket)
-	if time.Now().After(t.expiry) {
-		return auth.LoginResult{}, false
-	}
-	return t.result, true
-}
-
-func (s *desktopTicketStore) sweepLocked() {
-	now := time.Now()
-	for k, v := range s.m {
-		if now.After(v.expiry) {
-			delete(s.m, k)
-		}
-	}
-}
 
 // handleDesktopExchange redeems a single-use SSO ticket for tokens. Public
 // (no session yet) and used ONLY by the desktop native client. The response
@@ -116,8 +54,11 @@ func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "missing ticket")
 		return
 	}
-	res, ok := s.desktopTickets.redeem(req.Ticket)
-	if !ok {
+	res, err := s.desktopTickets.Redeem(r.Context(), req.Ticket)
+	if err != nil {
+		if !errors.Is(err, desktopsso.ErrTicketNotFound) && s.logger != nil {
+			s.logger.Warn("desktop exchange redeem error: %v", err)
+		}
 		httpError(w, http.StatusUnauthorized, "invalid or expired ticket")
 		return
 	}

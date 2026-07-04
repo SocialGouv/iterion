@@ -7,6 +7,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
@@ -74,6 +75,12 @@ type Config struct {
 	// OIDCStates persists per-flow PendingAuth records between
 	// /start and /callback. Defaults to an in-memory store when nil.
 	OIDCStates oidc.StateStore
+
+	// DesktopTickets persists single-use desktop SSO exchange tickets between
+	// the OIDC callback (mint) and /api/auth/desktop/exchange (redeem), which
+	// can hit different replicas. Defaults to an in-memory store when nil;
+	// the cloud control plane wires a Mongo-backed store.
+	DesktopTickets desktopsso.Store
 
 	// CookieDomain narrows the auth cookies' Domain attribute. Empty
 	// means host-only cookie (recommended).
