@@ -90,6 +90,7 @@ export interface CloudProviders {
 interface WailsBindings {
   GetServerURL: () => Promise<string>;
   GetSessionToken: () => Promise<string>;
+  GetWsTicket: () => Promise<string>;
   GetDaemonURLForStore: (storePath: string) => Promise<string>;
   SaveTextFile: (suggestedFilename: string, content: string) => Promise<string>;
   SaveBinaryFile: (suggestedFilename: string, base64Data: string) => Promise<string>;
@@ -189,6 +190,7 @@ export const desktop = {
 
   getServerURL: () => call("GetServerURL"),
   getSessionToken: () => call("GetSessionToken"),
+  getWsTicket: () => call("GetWsTicket"),
   // getDaemonURLForStore resolves the daemon URL serving the given iterion
   // store path. Used by RunsPanel's "in other locations" section to deep-link
   // cross-daemon runs without 404ing. Returns "" when no live daemon is found
@@ -257,12 +259,14 @@ export const desktop = {
  * WebSocket upgrades with 501, so the studio's WS clients must dial the
  * embedded HTTP server DIRECTLY at http://127.0.0.1:<port>/api/ws...
  *
- * This helper resolves to that absolute ws:// URL with the session token
- * on the query string (the only auth channel available across this origin
- * boundary — HttpOnly cookies set on the loopback domain are not sent
- * cross-origin from wails://). In browser/CLI mode the SPA shares an origin
- * with the API so we hand back a relative URL that the caller's
- * `${proto}//${host}` derivation already handles.
+ * This helper resolves to that absolute ws:// URL with an auth credential on
+ * the query string (the only channel available across this origin boundary —
+ * HttpOnly cookies set on the loopback/cloud domain are not sent cross-origin
+ * from wails://). For a CLOUD connection it mints a fresh single-use WS ticket
+ * per dial (?ticket=), so a long-lived JWT never lands in the URL; it falls
+ * back to ?t=<token> when no ticket is available (local mode returns neither).
+ * In browser/CLI mode the SPA shares an origin with the API so we hand back a
+ * relative URL that the caller's `${proto}//${host}` derivation already handles.
  *
  * The resolved URL is cached per server URL so a project switch
  * (which rebinds the server on a new ephemeral port and triggers
@@ -301,7 +305,21 @@ export async function getDesktopWsBase(path: string): Promise<string | null> {
   }
   const base = cachedDesktopWsBase.wsBase;
   const u = new URL(base + path);
-  if (token) u.searchParams.set("t", token);
+  // Prefer a single-use WS ticket (cloud) so the access JWT never enters the
+  // URL; fall back to ?t=<token> when no ticket is available. Tickets are
+  // single-use, so this mints a fresh one per dial. A mint failure degrades to
+  // the token rather than breaking the connection.
+  let ticket = "";
+  try {
+    ticket = await desktop.getWsTicket();
+  } catch {
+    ticket = "";
+  }
+  if (ticket) {
+    u.searchParams.set("ticket", ticket);
+  } else if (token) {
+    u.searchParams.set("t", token);
+  }
   return u.toString();
 }
 

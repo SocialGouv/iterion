@@ -135,6 +135,10 @@ func (s *Server) registerAuthRoutes() {
 	// a desktop flow) for tokens. Public + login-rate-limited — it is pre-auth
 	// and the ticket is the sole credential.
 	s.mux.HandleFunc("POST /api/auth/desktop/exchange", loginLimit(s.handleDesktopExchange))
+	// WS ticket: authenticated caller mints a single-use ticket to open a WS
+	// with ?ticket= instead of a JWT-in-URL. NOT public — it runs behind
+	// requireAuth so the identity is already resolved.
+	s.mux.HandleFunc("POST /api/ws/ticket", s.handleWSTicket)
 	s.mux.HandleFunc("GET /api/auth/invitations/lookup", s.handleInvitationLookup)
 	s.mux.HandleFunc("POST /api/auth/invitations/accept", s.handleInvitationAcceptForLoggedIn)
 

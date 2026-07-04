@@ -244,6 +244,40 @@ func cloudDesktopExchange(ctx context.Context, hc *http.Client, baseURL, ticket 
 	return cloudAuthCall(ctx, hc, http.MethodPost, baseURL, "/api/auth/desktop/exchange", map[string]string{"ticket": ticket}, nil)
 }
 
+// cloudMintWSTicket mints a single-use WS ticket so the SPA can open a cloud
+// WebSocket with ?ticket=<t> instead of the access JWT in the URL. Authenticated
+// with the current access token via the native client (Bearer header).
+func cloudMintWSTicket(ctx context.Context, hc *http.Client, baseURL, accessToken string) (string, error) {
+	if accessToken == "" {
+		return "", errors.New("cloudMintWSTicket: no access token")
+	}
+	endpoint, err := cloudEndpoint(baseURL, "/api/ws/ticket")
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("mint ws ticket: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ws ticket endpoint returned %d: %s", resp.StatusCode, parseCloudErrorBody(raw))
+	}
+	var body struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.Ticket == "" {
+		return "", errors.New("ws ticket response missing ticket")
+	}
+	return body.Ticket, nil
+}
+
 // cloudLogin performs a native password login against a cloud instance.
 func cloudLogin(ctx context.Context, hc *http.Client, baseURL, email, password string) (cloudAuthResult, error) {
 	body := map[string]string{"email": email, "password": password}

@@ -393,6 +393,23 @@ func (a *App) RemoveConnection(id string) error {
 	return a.RemoveProject(id)
 }
 
+// GetWsTicket mints a single-use WS ticket for the CURRENT cloud connection so
+// the SPA can authenticate a cloud WebSocket with ?ticket= instead of the
+// access JWT in the URL. Returns "" for a local connection (the embedded server
+// runs DisableAuth) or when there is no live token — the SPA then falls back to
+// the ?t=<token> path. Called per WS dial (tickets are single-use).
+func (a *App) GetWsTicket() (string, error) {
+	jar := a.activeCloudJar()
+	if jar == nil {
+		return "", nil
+	}
+	tok := jar.AccessToken()
+	if tok == "" {
+		return "", nil
+	}
+	return cloudMintWSTicket(a.ctx, newCloudHTTPClient(), jar.baseURL, tok)
+}
+
 // ListCloudProviders returns the SSO providers a cloud instance offers, for
 // the login modal's SSO buttons (Phase 2 activates LoginSSO). The email is
 // optional and enables per-org (tenant Keycloak) discovery.

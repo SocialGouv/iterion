@@ -57,9 +57,9 @@ func mkJWT(exp int64) string {
 // /api/server/info. It rotates the refresh cookie on each call so tests can
 // assert rotation capture.
 type fakeCloud struct {
-	mu        sync.Mutex
-	rev       int
-	badLogin  bool
+	mu             sync.Mutex
+	rev            int
+	badLogin       bool
 	badExpAt       bool // send empty expires_at (force JWT fallback)
 	lastRefIn      string
 	lastStartQuery string
@@ -95,6 +95,13 @@ func (f *fakeCloud) handler() http.Handler {
 		json.NewEncoder(w).Encode(map[string]string{
 			"authorize_url": "https://idp.example.com/authorize?client_id=x&provider=" + r.PathValue("provider"),
 		})
+	})
+	mux.HandleFunc("POST /api/ws/ticket", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer good-access" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ticket": "ws-tok-1", "expires_in": 60})
 	})
 	mux.HandleFunc("POST /api/auth/desktop/exchange", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -437,6 +444,28 @@ func TestCloudDesktopExchange(t *testing.T) {
 	// Empty ticket is rejected client-side.
 	if _, err := cloudDesktopExchange(context.Background(), newCloudHTTPClient(), srv.URL, ""); err == nil {
 		t.Error("empty ticket should error")
+	}
+}
+
+func TestCloudMintWSTicket(t *testing.T) {
+	f := &fakeCloud{}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	ticket, err := cloudMintWSTicket(context.Background(), newCloudHTTPClient(), srv.URL, "good-access")
+	if err != nil {
+		t.Fatalf("mint ws ticket: %v", err)
+	}
+	if ticket != "ws-tok-1" {
+		t.Errorf("ticket = %q, want ws-tok-1", ticket)
+	}
+	// Wrong bearer → error.
+	if _, err := cloudMintWSTicket(context.Background(), newCloudHTTPClient(), srv.URL, "bad"); err == nil {
+		t.Error("expected error for bad access token")
+	}
+	// Empty token is rejected client-side.
+	if _, err := cloudMintWSTicket(context.Background(), newCloudHTTPClient(), srv.URL, ""); err == nil {
+		t.Error("empty access token should error")
 	}
 }
 
