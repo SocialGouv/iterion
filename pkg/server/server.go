@@ -36,7 +36,8 @@ import (
 // Server is the studio HTTP server.
 type Server struct {
 	// stateMu guards the hot-swappable fields used by ProjectSwitcher
-	// (cfg.WorkDir, cfg.StoreDir, runs, watcher). Acquired write-side
+	// (cfg.WorkDir, cfg.StoreDir, runs, watcher, localSecrets, statsCache).
+	// Acquired write-side
 	// only during a project switch — handlers that read these fields
 	// during a swap may briefly see one half of the swap, which is
 	// acceptable: the SPA reset on `project_switched` invalidates any

@@ -125,13 +125,17 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 		SessionBoardEnabled:      sessionboard.Enabled(),
 		PluginsEnabled:           true,
-		SecretsEnabled:           s.cfg.Mode != "cloud" && s.localSecretStore() != nil && s.sealer != nil,
 	}
-	// Surface whether the daily spend cap is active so the SPA knows to
-	// poll for live status. DailyCap() is nil when disabled.
+	// Snapshot the hot-swap fields under a single RLock (both read here are
+	// swapped on a project switch): the run-console service for the daily-cap
+	// probe, and the local secret store for the Secrets-view gate.
 	s.stateMu.RLock()
 	runsSvc := s.runs
+	localSecrets := s.localSecrets
 	s.stateMu.RUnlock()
+	resp.SecretsEnabled = s.cfg.Mode != "cloud" && localSecrets != nil && s.sealer != nil
+	// Surface whether the daily spend cap is active so the SPA knows to
+	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {
 		resp.CostCapEnabled = true
 	}

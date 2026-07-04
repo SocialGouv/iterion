@@ -365,6 +365,15 @@ func NewLocalLayeredStore(globalDir, projectStoreDir string) (*LayeredGenericSec
 	return NewLayeredGenericSecretStore(global, project), nil
 }
 
+// LocalStoreForProject builds the layered local store for a project store dir,
+// sourcing the machine-global dir from GlobalIterionDataDir(). It is the single
+// place that couples "the global layer lives under GlobalIterionDataDir" so the
+// CLI, the studio wiring, the project-switch rebuild, and the dispatcher all
+// agree without repeating it.
+func LocalStoreForProject(projectStoreDir string) (*LayeredGenericSecretStore, error) {
+	return NewLocalLayeredStore(store.GlobalIterionDataDir(), projectStoreDir)
+}
+
 // absDir returns the absolute form of p, or p unchanged when it can't be
 // resolved (sufficient for the same-directory comparison above).
 func absDir(p string) string {

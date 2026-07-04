@@ -36,6 +36,11 @@ type EngineRunner struct {
 	closeOnce    sync.Once      // guards bundleClean against concurrent/repeat Close
 	closeErr     error          // result of the single bundleClean run
 	logger       *iterlog.Logger
+	// sealer is the local secret store's master-key sealer, built once (lazy —
+	// resolves the key on first use) and reused across dispatches so a
+	// secret-declaring bot doesn't pay a keychain round-trip per run. The
+	// per-run store is rebuilt in Dispatch to pick up secret edits.
+	sealer secrets.Sealer
 }
 
 // NewEngineRunner pre-compiles the workflow at workflowPath. The
@@ -45,10 +50,17 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger) (*EngineRunner
 	if workflowPath == "" {
 		return nil, fmt.Errorf("engine runner: workflow path required")
 	}
+	var warn func(string, ...any)
+	if logger != nil {
+		warn = logger.Warn
+	}
 	r := &EngineRunner{
 		workflowPath: workflowPath,
 		logger:       logger,
 		bundleClean:  func() error { return nil },
+		// Lazy: no keychain/keyfile access until the first Seal/Open during a
+		// run that actually materialises a secret.
+		sealer: secrets.NewLazyLocalSealer(store.GlobalIterionDataDir(), warn),
 	}
 
 	kind, err := bundle.Detect(workflowPath)
@@ -199,18 +211,16 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// workflow's declared secrets from the local sealed store — the same wiring
 	// the CLI/studio launch paths use — so a dispatched bot that declares
 	// `secrets:` gets them injected instead of running with them unset. Gated on
-	// declared secrets so a secretless catalog bot never touches the keychain.
+	// declared secrets so a secretless catalog bot never touches the store. The
+	// sealer is the cached lazy one (r.sealer); the store is rebuilt per run to
+	// pick up secret edits between dispatches.
 	if len(r.workflow.Secrets) > 0 {
-		sealer, serr := secrets.NewLocalSealer(store.GlobalIterionDataDir(), r.logger.Warn)
-		if serr != nil {
-			return fmt.Errorf("engine runner: local secrets sealer: %w", serr)
-		}
-		lstore, lerr := secrets.NewLocalLayeredStore(store.GlobalIterionDataDir(), spec.StoreDir)
+		lstore, lerr := secrets.LocalStoreForProject(spec.StoreDir)
 		if lerr != nil {
 			return fmt.Errorf("engine runner: local secrets store: %w", lerr)
 		}
 		execSpec.LocalSecrets = lstore
-		execSpec.LocalSealer = sealer
+		execSpec.LocalSealer = r.sealer
 	}
 	exec, err := runview.BuildExecutor(execSpec)
 	if err != nil {

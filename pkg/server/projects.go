@@ -309,8 +309,9 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 	// key are unchanged. Best-effort: on failure keep the previous store (warn),
 	// don't abort the switch. nil when local secrets aren't enabled.
 	newLocalSecrets := s.localSecretStore()
-	if s.cfg.Mode != "cloud" && s.sealer != nil && newLocalSecrets != nil {
-		if ls, err := secrets.NewLocalLayeredStore(store.GlobalIterionDataDir(), storeDir); err != nil {
+	localSecretsEnabled := s.cfg.Mode != "cloud" && s.sealer != nil && newLocalSecrets != nil
+	if localSecretsEnabled {
+		if ls, err := secrets.LocalStoreForProject(storeDir); err != nil {
 			s.logger.Warn("projects: rebuild local secret store for %q: %v — keeping previous", abs, err)
 		} else {
 			newLocalSecrets = ls
@@ -326,7 +327,7 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 		if opt, ok := s.boardMCPServiceOption(s.logger); ok {
 			svcOpts = append(svcOpts, opt)
 		}
-		if s.cfg.Mode != "cloud" && newLocalSecrets != nil && s.sealer != nil {
+		if localSecretsEnabled {
 			svcOpts = append(svcOpts, runview.WithLocalSecrets(newLocalSecrets, s.sealer))
 		}
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)

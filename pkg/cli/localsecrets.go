@@ -15,7 +15,7 @@ import (
 // projectStoreDir is the run's resolved store dir (the `.iterion` the studio /
 // `--store-dir` points at). Pass "" to build a global-only store.
 func LocalSecretStores(projectStoreDir string) (*secrets.LayeredGenericSecretStore, error) {
-	return secrets.NewLocalLayeredStore(store.GlobalIterionDataDir(), projectStoreDir)
+	return secrets.LocalStoreForProject(projectStoreDir)
 }
 
 // localSecretsForRun builds the layered store + sealer for a CLI run. Returns
