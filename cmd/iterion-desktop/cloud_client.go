@@ -198,6 +198,52 @@ func cloudListProviders(ctx context.Context, hc *http.Client, baseURL, email str
 	return out, nil
 }
 
+// cloudOIDCAuthorizeURL kicks off a DESKTOP SSO flow: it asks the cloud for the
+// IdP authorize URL (format=json) bound to a desktop flow whose callback will
+// 302 a single-use ticket to loopbackRedirect. The desktop opens the returned
+// URL in the system browser.
+func cloudOIDCAuthorizeURL(ctx context.Context, hc *http.Client, baseURL, provider, loopbackRedirect string) (string, error) {
+	endpoint, err := cloudEndpoint(baseURL, "/api/auth/oidc/"+url.PathEscape(provider)+"/start")
+	if err != nil {
+		return "", err
+	}
+	q := url.Values{
+		"format":  {"json"},
+		"desktop": {"1"},
+		"next":    {loopbackRedirect},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+q.Encode(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("oidc start: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("oidc start returned %d: %s", resp.StatusCode, parseCloudErrorBody(raw))
+	}
+	var body struct {
+		AuthorizeURL string `json:"authorize_url"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.AuthorizeURL == "" {
+		return "", fmt.Errorf("oidc start: no authorize_url in response")
+	}
+	return body.AuthorizeURL, nil
+}
+
+// cloudDesktopExchange redeems a single-use SSO ticket for tokens. The response
+// is shaped like a login (access token in body, refresh in Set-Cookie), so it
+// reuses cloudAuthCall's parsing.
+func cloudDesktopExchange(ctx context.Context, hc *http.Client, baseURL, ticket string) (cloudAuthResult, error) {
+	if ticket == "" {
+		return cloudAuthResult{}, errors.New("cloudDesktopExchange: empty ticket")
+	}
+	return cloudAuthCall(ctx, hc, http.MethodPost, baseURL, "/api/auth/desktop/exchange", map[string]string{"ticket": ticket}, nil)
+}
+
 // cloudLogin performs a native password login against a cloud instance.
 func cloudLogin(ctx context.Context, hc *http.Client, baseURL, email, password string) (cloudAuthResult, error) {
 	body := map[string]string{"email": email, "password": password}

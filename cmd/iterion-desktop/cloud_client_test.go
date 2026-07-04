@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -59,8 +60,9 @@ type fakeCloud struct {
 	mu        sync.Mutex
 	rev       int
 	badLogin  bool
-	badExpAt  bool // send empty expires_at (force JWT fallback)
-	lastRefIn string
+	badExpAt       bool // send empty expires_at (force JWT fallback)
+	lastRefIn      string
+	lastStartQuery string
 }
 
 func (f *fakeCloud) handler() http.Handler {
@@ -81,6 +83,25 @@ func (f *fakeCloud) handler() http.Handler {
 		f.lastRefIn = r.Header.Get("X-Iterion-Refresh")
 		f.mu.Unlock()
 		if r.Header.Get("X-Iterion-Refresh") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		f.writeAuth(w)
+	})
+	mux.HandleFunc("GET /api/auth/oidc/{provider}/start", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.lastStartQuery = r.URL.RawQuery
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{
+			"authorize_url": "https://idp.example.com/authorize?client_id=x&provider=" + r.PathValue("provider"),
+		})
+	})
+	mux.HandleFunc("POST /api/auth/desktop/exchange", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Ticket string `json:"ticket"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Ticket != "good-ticket" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -370,6 +391,52 @@ func TestJar_ApplyRotation(t *testing.T) {
 	}
 	if jar.AccessToken() != access2 {
 		t.Error("empty rotation must not change state")
+	}
+}
+
+func TestCloudOIDCAuthorizeURL(t *testing.T) {
+	f := &fakeCloud{}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	loopback := "http://127.0.0.1:50000/cb"
+	got, err := cloudOIDCAuthorizeURL(context.Background(), newCloudHTTPClient(), srv.URL, "keycloak", loopback)
+	if err != nil {
+		t.Fatalf("authorize url: %v", err)
+	}
+	if got == "" || got[:5] != "https" {
+		t.Errorf("authorize_url = %q, want an https IdP URL", got)
+	}
+	// The desktop flow markers must be forwarded to /start (the loopback URL
+	// rides in a URL-encoded next= param).
+	for _, want := range []string{"desktop=1", "format=json", "next="} {
+		if !strings.Contains(f.lastStartQuery, want) {
+			t.Errorf("start query %q missing %q", f.lastStartQuery, want)
+		}
+	}
+}
+
+func TestCloudDesktopExchange(t *testing.T) {
+	f := &fakeCloud{}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	res, err := cloudDesktopExchange(context.Background(), newCloudHTTPClient(), srv.URL, "good-ticket")
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if res.AccessToken == "" || res.RefreshToken != "refresh-tok-1" {
+		t.Errorf("exchange result missing tokens: %+v", res)
+	}
+
+	// A bad ticket surfaces as an auth error.
+	_, err = cloudDesktopExchange(context.Background(), newCloudHTTPClient(), srv.URL, "wrong")
+	if ae := asCloudAuthError(err); ae == nil || ae.Status != http.StatusUnauthorized {
+		t.Errorf("bad ticket error = %v, want 401 cloudAuthError", err)
+	}
+	// Empty ticket is rejected client-side.
+	if _, err := cloudDesktopExchange(context.Background(), newCloudHTTPClient(), srv.URL, ""); err == nil {
+		t.Error("empty ticket should error")
 	}
 }
 

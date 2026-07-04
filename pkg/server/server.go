@@ -67,6 +67,7 @@ type Server struct {
 	signer         *auth.JWTSigner
 	oidcRegistry   *oidc.Registry
 	oidcStates     oidc.StateStore
+	desktopTickets *desktopTicketStore
 	apiKeys        secrets.ApiKeyStore
 	genericSecrets secrets.GenericSecretStore
 	// localSecrets is the concrete layered file store when running in local
@@ -246,6 +247,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		signer:            cfg.AuthSigner,
 		oidcRegistry:      cfg.OIDCRegistry,
 		oidcStates:        cfg.OIDCStates,
+		desktopTickets:    newDesktopTicketStore(desktopTicketTTL),
 		apiKeys:           cfg.ApiKeys,
 		genericSecrets:    cfg.GenericSecrets,
 		runSecrets:        cfg.RunSecrets,

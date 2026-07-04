@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { Button, Dialog, Input } from "@/components/ui";
-import { desktop } from "@/lib/desktopBridge";
+import { desktop, type CloudProvider } from "@/lib/desktopBridge";
 
 interface Props {
   open: boolean;
@@ -21,6 +21,7 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [providers, setProviders] = useState<CloudProvider[] | null>(null);
 
   const reset = () => {
     setUrl("");
@@ -28,6 +29,40 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
     setPassword("");
     setError(null);
     setBusy(false);
+    setProviders(null);
+  };
+
+  const onLoadProviders = async () => {
+    if (url.trim() === "") {
+      setError("Enter the cloud URL first.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await desktop.listCloudProviders(url.trim(), email.trim());
+      setProviders(res.providers ?? []);
+      if ((res.providers ?? []).length === 0) {
+        setError("This cloud has no SSO providers configured.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSSO = async (provider: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await desktop.connectCloudSSO(url.trim(), provider);
+      reset();
+      onConnected();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
   };
 
   const canSubmit = url.trim() !== "" && email.trim() !== "" && password !== "" && !busy;
@@ -127,6 +162,39 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
             {busy ? "Connecting…" : "Connect"}
           </Button>
         </div>
+
+        <div className="flex items-center gap-2 pt-1">
+          <div className="h-px flex-1 bg-border-default" />
+          <span className="text-caption uppercase tracking-wider text-fg-subtle">or</span>
+          <div className="h-px flex-1 bg-border-default" />
+        </div>
+
+        {providers === null ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => void onLoadProviders()}
+            disabled={busy || url.trim() === ""}
+          >
+            Sign in with SSO
+          </Button>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {providers.map((p) => (
+              <Button
+                key={p.name}
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => void onSSO(p.name)}
+                disabled={busy}
+              >
+                {busy ? "Opening browser…" : `Continue with ${p.display || p.name}`}
+              </Button>
+            ))}
+          </div>
+        )}
       </form>
     </Dialog>
   );

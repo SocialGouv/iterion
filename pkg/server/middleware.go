@@ -152,6 +152,7 @@ func isPublicPath(path string) bool {
 		"/api/auth/refresh",
 		"/api/auth/logout",
 		"/api/auth/providers",
+		"/api/auth/desktop/exchange",
 		"/api/auth/invitations/lookup",
 		"/api/auth/invitations/accept",
 		// /api/server/info carries the AuthRequired flag the SPA

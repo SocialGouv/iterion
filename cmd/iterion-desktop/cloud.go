@@ -5,7 +5,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -166,8 +169,14 @@ func (a *App) ConnectCloud(cloudURL, email, password string) (*Project, error) {
 	if err != nil {
 		return nil, mapCloudLoginError(err)
 	}
+	return a.finishCloudConnect(cloudURL, res)
+}
 
-	// Register/refresh the connection now that we have the user identity.
+// finishCloudConnect registers/refreshes a cloud connection from an auth
+// result, persists it, seeds + activates its token jar, and reloads the SPA
+// against it. Shared by the password (ConnectCloud) and SSO (ConnectCloudSSO)
+// entry points.
+func (a *App) finishCloudConnect(cloudURL string, res cloudAuthResult) (*Project, error) {
 	a.mu.Lock()
 	p := a.config.AddCloudConnection(cloudURL, res.User.ID, res.User.Email, "")
 	if res.User.ActiveOrgID != "" || res.User.ActiveTeamID != "" {
@@ -183,7 +192,6 @@ func (a *App) ConnectCloud(cloudURL, email, password string) (*Project, error) {
 		return nil, saveErr
 	}
 
-	// Seed a jar keyed on the freshly-created connection id and make active.
 	jar := newCloudTokenJar(p.ID, cloudURL, a.keychain)
 	if err := jar.seed(res); err != nil {
 		return nil, err
@@ -196,6 +204,99 @@ func (a *App) ConnectCloud(cloudURL, email, password string) (*Project, error) {
 	wruntime.EventsEmit(a.ctx, eventProjectsChanged)
 	a.reloadWindowApp(a.ctx)
 	return &p, nil
+}
+
+// ConnectCloudSSO connects to a remote cloud via SSO: it starts a transient
+// loopback listener, asks the cloud for the IdP authorize URL bound to a
+// desktop flow, opens it in the SYSTEM browser, waits for the cloud to 302 a
+// single-use ticket back to the loopback, redeems it for tokens, and finishes
+// the connection exactly like the password path. No refresh token ever passes
+// through a URL — the loopback only carries the one-time ticket.
+func (a *App) ConnectCloudSSO(cloudURL, provider string) (*Project, error) {
+	cloudURL = strings.TrimSpace(cloudURL)
+	if cloudURL == "" || provider == "" {
+		return nil, fmt.Errorf("cloud URL and provider are required")
+	}
+	hc := newCloudHTTPClient()
+
+	info, err := cloudFetchServerInfo(a.ctx, hc, cloudURL)
+	if err != nil {
+		return nil, err
+	}
+	if !info.AuthRequired {
+		return nil, fmt.Errorf("%s is not an authenticated cloud instance", cloudURL)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("start loopback listener: %w", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	redirect := fmt.Sprintf("http://127.0.0.1:%d/desktop-callback", port)
+
+	ticketCh := make(chan string, 1)
+	srv := &http.Server{
+		ReadHeaderTimeout: 10 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/desktop-callback" {
+				http.NotFound(w, r)
+				return
+			}
+			ticket := r.URL.Query().Get("ticket")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if ticket == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, ssoClosePage("Sign-in failed — no ticket returned. You can close this window."))
+			} else {
+				_, _ = io.WriteString(w, ssoClosePage("Signed in. You can close this window and return to Iterion."))
+			}
+			select {
+			case ticketCh <- ticket:
+			default:
+			}
+		}),
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+
+	authURL, err := cloudOIDCAuthorizeURL(a.ctx, hc, cloudURL, provider, redirect)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.OpenExternal(authURL); err != nil {
+		return nil, fmt.Errorf("open system browser: %w", err)
+	}
+
+	var ticket string
+	select {
+	case ticket = <-ticketCh:
+	case <-time.After(5 * time.Minute):
+		return nil, fmt.Errorf("timed out waiting for SSO sign-in")
+	case <-a.ctx.Done():
+		return nil, a.ctx.Err()
+	}
+	if ticket == "" {
+		return nil, fmt.Errorf("SSO sign-in did not complete")
+	}
+
+	res, err := cloudDesktopExchange(a.ctx, hc, cloudURL, ticket)
+	if err != nil {
+		return nil, mapCloudLoginError(err)
+	}
+	return a.finishCloudConnect(cloudURL, res)
+}
+
+// ssoClosePage renders the minimal HTML the system browser shows after the SSO
+// round-trip completes on the loopback listener.
+func ssoClosePage(msg string) string {
+	return "<!doctype html><html><head><meta charset=\"utf-8\"><title>Iterion</title></head>" +
+		"<body style=\"font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">" +
+		"<p style=\"font-size:1rem;color:#333\">" + msg + "</p></body></html>"
 }
 
 // LoginCloud re-authenticates an EXISTING cloud connection (e.g. after

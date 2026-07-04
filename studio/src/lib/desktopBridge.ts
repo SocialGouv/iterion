@@ -108,8 +108,9 @@ interface WailsBindings {
   SwitchProject: (id: string) => Promise<void>;
   PickProjectDirectory: () => Promise<string>;
   ScaffoldProject: (dir: string) => Promise<void>;
-  // Cloud connections (password auth; SSO lands in Phase 2 via LoginSSO).
+  // Cloud connections (password + SSO auth).
   ConnectCloud: (cloudURL: string, email: string, password: string) => Promise<Project>;
+  ConnectCloudSSO: (cloudURL: string, provider: string) => Promise<Project>;
   LoginCloud: (connID: string, email: string, password: string) => Promise<CloudUserSummary>;
   LogoutCloud: (connID: string) => Promise<void>;
   ListCloudProviders: (cloudURL: string, email: string) => Promise<CloudProviders>;
@@ -221,6 +222,8 @@ export const desktop = {
   // Cloud connections
   connectCloud: (cloudURL: string, email: string, password: string) =>
     call("ConnectCloud", cloudURL, email, password),
+  connectCloudSSO: (cloudURL: string, provider: string) =>
+    call("ConnectCloudSSO", cloudURL, provider),
   loginCloud: (connID: string, email: string, password: string) =>
     call("LoginCloud", connID, email, password),
   logoutCloud: (connID: string) => call("LogoutCloud", connID),
