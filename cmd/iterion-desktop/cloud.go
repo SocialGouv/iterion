@@ -319,11 +319,21 @@ func (a *App) LoginCloud(connID, email, password string) (*cloudUserSummary, err
 	}
 	a.mu.Lock()
 	// Only replace the active jar if this connection is the current one.
+	isCurrent := false
 	if cur := a.config.CurrentProject(); cur != nil && cur.ID == connID {
 		a.setActiveCloudLocked(jar, p.CloudURL)
 		a.startCloudRefreshLoopLocked(jar)
+		isCurrent = true
 	}
 	a.mu.Unlock()
+	// Re-authenticating the CURRENT connection (the cloud:auth-expired recovery
+	// path) reloads the SPA so any views stuck on 401s during the lapse
+	// re-bootstrap cleanly against the freshly-armed proxy. A JS
+	// window.location.reload is a no-op in this Wails setup (the page origin
+	// doesn't change), so the reload must be driven from here.
+	if isCurrent {
+		a.reloadWindowApp(a.ctx)
+	}
 	summary := res.User
 	return &summary, nil
 }

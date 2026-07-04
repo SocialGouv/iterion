@@ -28,6 +28,7 @@ const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const Settings = lazy(() => import("@/views/Settings"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
+const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginModal"));
 const SettingsPage = lazy(() => import("@/views/settings/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
@@ -178,6 +179,9 @@ function AuthedApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<string>("api-keys");
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  // Set to a cloud connection id when its session expires (cloud:auth-expired);
+  // opens the re-login modal.
+  const [cloudReloginConnId, setCloudReloginConnId] = useState<string | null>(null);
 
   useDocumentTitle();
   // Reset SPA state on a server-side project hot-swap so the new
@@ -216,6 +220,11 @@ function AuthedApp() {
       // mode (onDesktopEvent returns a noop unsubscribe there).
       onDesktopEvent<RunAlertPayload>(DesktopEvent.RunAlert, (payload) =>
         showRunAlertNotification(payload),
+      ),
+      // A cloud connection's session expired (silent refresh rejected) —
+      // prompt re-login for that connection. Payload is the connection id.
+      onDesktopEvent<string>(DesktopEvent.CloudAuthExpired, (connId) =>
+        setCloudReloginConnId(connId),
       ),
     ];
     // Listen for the SPA-emitted open-switcher event from ProjectLabel
@@ -401,6 +410,10 @@ function AuthedApp() {
         {serverInfo?.mode !== "cloud" && (
           <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
         )}
+        <CloudReloginModal
+          connId={cloudReloginConnId}
+          onClose={() => setCloudReloginConnId(null)}
+        />
       </Suspense>
     </>
   );
