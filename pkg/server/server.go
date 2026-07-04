@@ -61,13 +61,19 @@ type Server struct {
 	// Cleared on project switch. Non-nil after New.
 	statsCache *runStatsCache
 
-	authSvc           *auth.Service
-	authLimiter       authRateLimiterBackend
-	signer            *auth.JWTSigner
-	oidcRegistry      *oidc.Registry
-	oidcStates        oidc.StateStore
-	apiKeys           secrets.ApiKeyStore
-	genericSecrets    secrets.GenericSecretStore
+	authSvc        *auth.Service
+	authLimiter    authRateLimiterBackend
+	signer         *auth.JWTSigner
+	oidcRegistry   *oidc.Registry
+	oidcStates     oidc.StateStore
+	apiKeys        secrets.ApiKeyStore
+	genericSecrets secrets.GenericSecretStore
+	// localSecrets is the concrete layered file store when running in local
+	// mode (set only when genericSecrets is a *LayeredGenericSecretStore). The
+	// /api/local/secrets handlers need its scope-aware ops (ForScope, Project,
+	// Global, ListScoped), so keeping the concrete type here avoids a
+	// type-assertion in every handler. Nil in cloud mode.
+	localSecrets      *secrets.LayeredGenericSecretStore
 	runSecrets        secrets.RunSecretsStore
 	sealer            secrets.Sealer
 	oauthStore        secrets.OAuthStore
@@ -268,6 +274,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		marketplace:       cfg.Marketplace,
 		redis:             cfg.Redis,
 	}
+	// Local mode wires a *LayeredGenericSecretStore; keep the concrete type so
+	// the /api/local/secrets handlers use its scope-aware ops directly. Cloud
+	// mode's Mongo store leaves this nil.
+	if ls, ok := cfg.GenericSecrets.(*secrets.LayeredGenericSecretStore); ok {
+		s.localSecrets = ls
+	}
 	if cfg.NativeTrackerStore != nil {
 		// Valkey-backed token registry when a distributed backend is wired,
 		// else the in-memory one (replaced transparently — same interface).
@@ -368,6 +380,9 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		}
 		if opt, ok := s.boardMCPServiceOption(logger); ok {
 			svcOpts = append(svcOpts, opt)
+		}
+		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
+			svcOpts = append(svcOpts, runview.WithLocalSecrets(s.localSecrets, s.sealer))
 		}
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {

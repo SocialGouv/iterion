@@ -240,6 +240,64 @@ Remaining follow-ups:
   the runner's RBAC must allow `secrets` create/delete in the sandbox
   namespace.
 
+## Where the value comes from — the local secret store (desktop / non-cloud)
+
+Layers 0–2 above protect a value *once iterion has it*. That value is
+resolved into `Credentials.Generic[name]` at run start. Two sources feed it:
+
+- **Cloud mode** — the auth-gated team/personal store (Mongo, `GenericSecretStore`)
+  resolved by the publisher and shipped to the runner as a sealed per-run bundle.
+- **Local mode (desktop / `iterion studio` / CLI)** — a **file-backed sealed
+  store**, the desktop equivalent of the cloud store, reusing the same
+  `GenericSecretStore` interface, `ResolveGeneric` resolution, and the whole
+  Layer 0–2 pipeline. This is what replaces "put it in a `.env` and tell the
+  agent to use it".
+
+A declared secret with **no inline `value:`** resolves *by name* from this
+store — so a bot declares what it needs, and the operator supplies it out of
+band:
+
+```iter
+secrets:
+  GITHUB_TOKEN:            # no value: → resolved by name from the local store
+    hosts: [github.com]    # egress lock still applies (Layer 2)
+```
+
+### Storage, master key, scope
+
+- **Files** — machine-global `~/.iterion/secrets.json` plus an optional
+  per-project `<store-dir>/.iterion/secrets.json`. Both are AES-256-GCM sealed
+  (the value is never on disk in clear) and written `0600`. The **project layer
+  overrides the global by name** (precedence: project > global).
+- **Master key** — 32 bytes held in the **OS keychain** (macOS Keychain /
+  libsecret / Windows Credential Manager) when available; otherwise a
+  **keyfile** `~/.iterion/secrets.key` (`0600`), created on first use with an
+  explicit warning (no silent fallback). `ITERION_SECRETS_KEY` (base64)
+  overrides both — parity with cloud, useful for CI. An existing keyfile is
+  always preferred so a store sealed headlessly stays openable.
+
+### Managing local secrets
+
+CLI (values are read from a masked prompt, a stdin pipe, or `--from-env` —
+never from `argv`, and never printed back):
+
+```sh
+iterion secret set GITHUB_TOKEN                 # masked prompt
+iterion secret set STRIPE_KEY --from-env SK     # import from an env var
+iterion secret set DB_URL --project --hosts db.internal
+iterion secret list                             # names + last4 + scope only
+iterion secret rm GITHUB_TOKEN
+```
+
+Studio: the **Secrets** view (gated on `server_info.secrets_enabled`) offers
+the same CRUD over `/api/local/secrets` (unauthenticated single-operator
+routes — the local studio is trusted to its loopback TTY user). Neither the
+CLI nor the REST responses ever return a stored value.
+
+The desktop app's provider-API-key keychain (`ANTHROPIC_API_KEY`, … under
+`io.iterion.desktop`) is a **separate** concern — those are how iterion talks
+to the LLMs, not what a bot uses inside a run.
+
 ## Environment kill-switches
 
 | Var | Default | Effect |

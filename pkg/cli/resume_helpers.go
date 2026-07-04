@@ -113,6 +113,10 @@ func buildResumeExecutor(
 	if err != nil {
 		return nil, err
 	}
+	localStore, localSealer, err := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger)
+	if err != nil {
+		return nil, err
+	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Workflow:        wf,
 		Vars:            nil,
@@ -125,6 +129,8 @@ func buildResumeExecutor(
 		PermissionAsk:   opts.PermissionAsk,
 		PermissionDeny:  opts.PermissionDeny,
 		ModelOverrides:  modelOverrides,
+		LocalSecrets:    localStore,
+		LocalSealer:     localSealer,
 	})
 	if err != nil {
 		return nil, err

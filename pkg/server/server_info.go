@@ -76,6 +76,11 @@ type serverInfoResponse struct {
 	// ~/.iterion/plugins) is available in every mode, so the SPA can surface a
 	// Plugins management view unconditionally.
 	PluginsEnabled bool `json:"plugins_enabled"`
+	// SecretsEnabled is true in local (non-cloud) mode when a sealed secret
+	// store + sealer are wired, so the SPA can surface the local Secrets
+	// management view. Cloud mode uses the auth-gated team/personal secrets
+	// UI instead (never this flag).
+	SecretsEnabled bool `json:"secrets_enabled"`
 }
 
 type serverLimitsBlock struct {
@@ -120,6 +125,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 		SessionBoardEnabled:      sessionboard.Enabled(),
 		PluginsEnabled:           true,
+		SecretsEnabled:           s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil,
 	}
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.

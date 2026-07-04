@@ -102,6 +102,69 @@ export async function deleteMySecret(secretID: string): Promise<void> {
   );
 }
 
+// --- Local (non-cloud) secrets: /api/local/secrets ------------------------
+// Mirrors pkg/server/local_secrets_routes.go. Single-operator, unauthenticated,
+// available only in local mode (server_info.secrets_enabled). Values are never
+// returned by any response.
+
+export interface LocalSecretView {
+  id: string;
+  name: string;
+  scope: "global" | "project";
+  last4?: string;
+  fingerprint?: string;
+  allowed_hosts?: string[];
+  created_at: string;
+  last_used_at?: string;
+}
+
+export interface CreateLocalSecretInput {
+  name: string;
+  secret: string;
+  scope?: "global" | "project";
+  allowed_hosts?: string[];
+}
+
+export interface UpdateLocalSecretInput {
+  name?: string;
+  secret?: string;
+  allowed_hosts?: string[] | null;
+}
+
+export async function listLocalSecrets(): Promise<LocalSecretView[]> {
+  return guard404("secrets", async () => {
+    const r = await request<{ secrets: LocalSecretView[] }>(`/local/secrets`);
+    return r.secrets ?? [];
+  });
+}
+
+export function createLocalSecret(input: CreateLocalSecretInput): Promise<LocalSecretView> {
+  return guard404("secrets", () =>
+    request<LocalSecretView>(`/local/secrets`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export function updateLocalSecret(
+  secretID: string,
+  input: UpdateLocalSecretInput,
+): Promise<LocalSecretView> {
+  return guard404("secrets", () =>
+    request<LocalSecretView>(`/local/secrets/${encodeURIComponent(secretID)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function deleteLocalSecret(secretID: string): Promise<void> {
+  await guard404("secrets", () =>
+    request<void>(`/local/secrets/${encodeURIComponent(secretID)}`, { method: "DELETE" }),
+  );
+}
+
 // ---- pure helpers (covered by vitest) ----
 
 /**

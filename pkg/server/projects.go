@@ -311,6 +311,9 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 		if opt, ok := s.boardMCPServiceOption(s.logger); ok {
 			svcOpts = append(svcOpts, opt)
 		}
+		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
+			svcOpts = append(svcOpts, runview.WithLocalSecrets(s.localSecrets, s.sealer))
+		}
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {
 			return fmt.Errorf("runview service: %w", svcErr)

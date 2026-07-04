@@ -130,6 +130,11 @@ func (s *Server) routes() {
 	if s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerGenericSecretRoutes()
 	}
+	// Local (non-cloud) single-operator secret store: unauthenticated
+	// /api/local/secrets, gated on local mode + a wired store + sealer.
+	if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
+		s.registerLocalSecretRoutes()
+	}
 
 	// Inbound webhook spine: per-org webhook token CRUD. The inbound
 	// /api/webhooks/{provider}/{id} delivery routes are registered by

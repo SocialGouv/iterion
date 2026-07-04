@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
@@ -350,6 +351,15 @@ type Service struct {
 	// WithLaunchPublisher.
 	publisher LaunchPublisher
 
+	// localSecrets + localSealer are the local (non-cloud) sealed secret
+	// store and its AES-GCM sealer. When set (local studio / desktop),
+	// in-process launches resolve the workflow's declared secrets from the
+	// store into ctx via BuildExecutor. Nil in cloud mode (credentials are
+	// injected by the runner from a sealed per-run bundle). Set via
+	// WithLocalSecrets.
+	localSecrets secrets.GenericSecretStore
+	localSealer  secrets.Sealer
+
 	// completionNotifier POSTs a run-completion webhook when an
 	// in-process run carrying a callback URL reaches a terminal state.
 	// Default-constructed in NewService; never nil for in-process runs.
@@ -500,6 +510,17 @@ func WithExtraEventObservers(observers ...func(store.Event)) ServiceOption {
 // service stays in local-mode (in-process engine).
 func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
 	return func(s *Service) { s.publisher = p }
+}
+
+// WithLocalSecrets wires the local (non-cloud) sealed secret store + its
+// AES-GCM sealer so in-process launches resolve the workflow's declared
+// secrets into ctx (BuildExecutor). No-op in cloud mode. Set by the local
+// studio/desktop server wiring from server.Config.GenericSecrets + Sealer.
+func WithLocalSecrets(store secrets.GenericSecretStore, sealer secrets.Sealer) ServiceOption {
+	return func(svc *Service) {
+		svc.localSecrets = store
+		svc.localSealer = sealer
+	}
 }
 
 // WithStore replaces the default filesystem store with a caller-

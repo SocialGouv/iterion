@@ -459,6 +459,12 @@ func buildRunExecutor(
 		// so supervisor steering silently never reached the agent.
 		Inbox: &model.StoreInboxBinder{Store: s},
 	}
+	localStore, localSealer, err := localSecretsForRun(len(wf.Secrets) > 0, storeDir, logger)
+	if err != nil {
+		return nil, err
+	}
+	execSpec.LocalSecrets = localStore
+	execSpec.LocalSealer = localSealer
 	if exporter != nil {
 		execSpec.ExtraHooks = append(execSpec.ExtraHooks, exporter.EventHooks())
 	}

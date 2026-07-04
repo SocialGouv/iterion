@@ -156,6 +156,22 @@ func buildGenericResolution(s GenericSecret, sealer Sealer, currentUserID string
 	return r, true
 }
 
+// SealInto seals value for rec.ID and stamps the three derived fields
+// (SealedSecret + Last4 + Fingerprint) onto rec. rec.ID must already be set
+// (the AAD binds the ciphertext to it). This owns the seal-and-stamp triple so
+// the CLI and every REST surface share one definition instead of hand-copying
+// it (a missed field would silently ship a stale last4/fingerprint).
+func SealInto(sealer Sealer, rec *GenericSecret, value string) error {
+	sealed, err := SealGenericSecret(sealer, rec.ID, []byte(value))
+	if err != nil {
+		return err
+	}
+	rec.SealedSecret = sealed
+	rec.Last4 = Last4(value)
+	rec.Fingerprint = FingerprintSHA256(value)
+	return nil
+}
+
 func SealGenericSecret(sealer Sealer, secretID string, plaintext []byte) ([]byte, error) {
 	if sealer == nil {
 		return nil, errors.New("secrets: nil sealer")

@@ -128,6 +128,8 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		BoardRegister:  s.boardRegister,
 		Compress:       spec.Compress,
 		Permission:     spec.Permission,
+		LocalSecrets:   s.localSecrets,
+		LocalSealer:    s.localSealer,
 	})
 	if err != nil {
 		s.dropRunLog(runID)
@@ -277,6 +279,8 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		StoreDir:      s.storeDir,
 		Inbox:         s.inboxBinder(),
 		BoardRegister: s.boardRegister,
+		LocalSecrets:  s.localSecrets,
+		LocalSealer:   s.localSealer,
 	})
 	if err != nil {
 		s.dropRunLog(spec.RunID)

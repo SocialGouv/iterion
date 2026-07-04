@@ -16,6 +16,7 @@ import {
   Link2Icon,
   GearIcon,
   Component1Icon,
+  LockClosedIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
@@ -40,6 +41,7 @@ export type Section =
   | "triggers"
   | "marketplace"
   | "plugins"
+  | "secrets"
   | "org"
   | "team"
   | "integrations"
@@ -138,6 +140,9 @@ export default function NavLinks({ collapsed }: Props) {
   // Integrations stays — the valued "connect a repo / enable a bot" shortcut.
   // Both are cloud-only (the forge stores are wired only in cloud mode).
   const manage: LinkDef[] = [];
+  if (info?.secrets_enabled) {
+    manage.push({ section: "secrets", href: "/secrets", label: "Secrets", icon: LockClosedIcon });
+  }
   if (activeTeam && info?.mode === "cloud") {
     manage.push({ section: "integrations", href: "/integrations", label: "Integrations", icon: Link2Icon });
   }

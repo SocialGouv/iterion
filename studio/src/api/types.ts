@@ -148,6 +148,11 @@ export interface ServerInfo {
   // plugins_enabled is always true: the plugin registry is available in every
   // mode, so the SPA can surface the Plugins management view + nav entry.
   plugins_enabled?: boolean;
+  // secrets_enabled is true in local (non-cloud) mode when a sealed secret
+  // store + sealer are wired. The SPA exposes the local Secrets view + nav
+  // entry conditionally. Cloud mode uses the auth-gated team/personal secrets
+  // UI instead (this flag stays false there).
+  secrets_enabled?: boolean;
   // forge_github_app_configured is true when the server has a GitHub App
   // configured (ITERION_FORGE_GITHUB_APP_*). The forge ConnectForm only offers
   // the "Install GitHub App" mode when true — otherwise it dead-ends on a 400.

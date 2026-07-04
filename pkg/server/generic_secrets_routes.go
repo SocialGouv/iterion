@@ -233,18 +233,5 @@ func (s *Server) canMutateGenericSecret(ctx context.Context, id auth.Identity, r
 }
 
 func validGenericSecretName(name string) bool {
-	if name == "" || len(name) > 128 || strings.ContainsAny(name, "\n\r\x00") {
-		return false
-	}
-	for i, r := range name {
-		switch {
-		case r == '_':
-		case r >= 'A' && r <= 'Z':
-		case r >= 'a' && r <= 'z':
-		case i > 0 && r >= '0' && r <= '9':
-		default:
-			return false
-		}
-	}
-	return true
+	return secrets.ValidGenericSecretName(name)
 }

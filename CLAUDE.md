@@ -126,7 +126,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/runner/` — Cloud runner pod logic: claim a queued run, execute, report status back
 - `pkg/runview/` — Read-only run console API (REST + WS) consumed by the studio SPA
 - `pkg/sandbox/` — Sandbox engine: Docker/Kubernetes drivers, devcontainer parsing, CONNECT proxy
-- `pkg/secrets/` — Secret resolution (env / file / KMS) shared across backends and sandbox
+- `pkg/secrets/` — Secret storage + resolution + AES-256-GCM sealing (`Sealer`) shared across backends and sandbox. Domains: BYOK API keys, generic named secrets (`GenericSecretStore` — Mongo in cloud, file-backed `FileGenericSecretStore`/`LayeredGenericSecretStore` for the local **desktop/CLI** store), bot-secret bindings, per-run sealed bundle, OAuth-forfait. The **local** store (`~/.iterion/secrets.json` global + `<store-dir>/.iterion/secrets.json` project override) is sealed with a master key from the OS keychain (go-keyring) or a `secrets.key` keyfile fallback (`LoadOrCreateMasterKey`), resolved into runs by `ResolveLocalCredentials` → `WithCredentials` in `runview.BuildExecutor` (the in-process equivalent of the cloud runner's `injectCredentials`); managed via `iterion secret set|list|rm`, the studio Secrets view (`server_info.secrets_enabled`), and `/api/local/secrets`. There is no KMS backend yet — the `Sealer` interface is the seam for one. See [docs/secrets.md](docs/secrets.md)
 - `pkg/internal/` — Internal utilities (not importable outside `pkg/`)
   - `appinfo/` — Build-time version/commit injection (LDFLAGS targets)
   - `mongoutil/` — MongoDB helpers used by `pkg/cloud/` for the cloud-mode Mongo store

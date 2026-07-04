@@ -21,6 +21,7 @@ const DispatcherView = lazy(() => import("@/views/Dispatcher"));
 const TriggersView = lazy(() => import("@/views/Triggers"));
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
 const PluginsView = lazy(() => import("@/views/Plugins"));
+const SecretsView = lazy(() => import("@/views/Secrets"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
@@ -321,6 +322,13 @@ function AuthedApp() {
             <Route path="/plugins">
               <ErrorBoundary area="Plugins view">
                 <PluginsView />
+              </ErrorBoundary>
+            </Route>
+          )}
+          {serverInfo?.secrets_enabled && (
+            <Route path="/secrets">
+              <ErrorBoundary area="Secrets view">
+                <SecretsView />
               </ErrorBoundary>
             </Route>
           )}

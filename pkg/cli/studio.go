@@ -20,6 +20,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -245,6 +246,23 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	// with the default board on first use.
 	logger := iterlog.New(iterlog.LevelInfo, os.Stderr)
 	resolvedStoreDir := store.ResolveStoreDir(dir, opts.StoreDir)
+
+	// Local (non-cloud) secret store: a machine-global sealed file
+	// (~/.iterion/secrets.json) plus an optional per-project override
+	// (<store-dir>/secrets.json), sealed with a keychain/keyfile master key.
+	// Wiring both the store and its sealer enables the studio Secrets view +
+	// /api/local/secrets and lets in-process runs resolve declared secrets.
+	if opts.Mode != "cloud" {
+		if lstore, lerr := LocalSecretStores(resolvedStoreDir); lerr != nil {
+			logger.Warn("studio: local secrets disabled (%v)", lerr)
+		} else {
+			// Lazy sealer: the master key (keychain entry / keyfile) is minted
+			// only on the first secret Seal/Open, so merely launching studio
+			// never creates key material for an operator who doesn't use secrets.
+			cfg.GenericSecrets = lstore
+			cfg.Sealer = secrets.NewLazyLocalSealer(store.GlobalIterionDataDir(), logger.Warn)
+		}
+	}
 	ns, nsErr := native.NewStore(filepath.Join(resolvedStoreDir, "dispatcher"))
 	if nsErr == nil {
 		cfg.NativeTrackerStore = ns

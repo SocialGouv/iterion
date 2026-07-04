@@ -25,6 +25,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
 // rewriteChainFromPlugins loads the plugin registry and builds the command-
@@ -107,6 +108,16 @@ type ExecutorSpec struct {
 	PermissionAllow []string
 	PermissionAsk   []string
 	PermissionDeny  []string
+
+	// LocalSecrets + LocalSealer are the local (desktop / CLI / non-cloud
+	// studio) secret store and its AES-GCM sealer. When both are set and the
+	// ctx does not already carry resolved Credentials (the cloud runner path),
+	// BuildExecutor resolves the workflow's declared `secrets:` names from the
+	// store and stamps them into ctx via secrets.WithCredentials — the
+	// in-process equivalent of the cloud runner's injectCredentials. Nil on
+	// the cloud path (credentials arrive pre-resolved in ctx).
+	LocalSecrets secrets.GenericSecretStore
+	LocalSealer  secrets.Sealer
 }
 
 // BuildExecutor wires up the default ClawExecutor: registry, default
@@ -116,6 +127,20 @@ type ExecutorSpec struct {
 // state directory. Used by both the CLI and the HTTP service so the
 // two transports stay aligned on tool policies, MCP auth, and
 // executor lifecycle.
+// declaredSecretNames returns the names of the workflow's declared
+// `secrets:` block — the only names a `{{secrets.X}}` reference can legally
+// use (compile-checked). Nil-safe.
+func declaredSecretNames(wf *ir.Workflow) []string {
+	if wf == nil || len(wf.Secrets) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(wf.Secrets))
+	for name := range wf.Secrets {
+		names = append(names, name)
+	}
+	return names
+}
+
 func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.Workflow == nil {
 		return nil, fmt.Errorf("runview: workflow is required")
@@ -136,6 +161,21 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	ctx := spec.Ctx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Local (desktop / CLI / non-cloud studio) secret injection: resolve the
+	// workflow's declared `secrets:` names from the local sealed store and
+	// stamp them into ctx — the in-process equivalent of the cloud runner's
+	// injectCredentials. Skipped when the cloud path already put Credentials
+	// in ctx (never overwrite pre-resolved cloud credentials).
+	if spec.LocalSecrets != nil && spec.LocalSealer != nil {
+		if _, already := secrets.CredentialsFromContext(ctx); !already {
+			names := declaredSecretNames(spec.Workflow)
+			creds, err := secrets.ResolveLocalCredentials(ctx, spec.LocalSecrets, spec.LocalSealer, names)
+			if err != nil {
+				return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
+			}
+			ctx = secrets.WithCredentials(ctx, creds)
+		}
 	}
 	// Build the per-run secret guard (Layer 0/1/2) from the resolved
 	// credentials in ctx + sensitive host env + declared workflow
