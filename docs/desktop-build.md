@@ -52,10 +52,16 @@ Debian trixie / Ubuntu 24.04 no longer ship.
 
 ## System dependencies
 
-Wails build = native compile = system dev headers. Devbox/Nix is **not** the
-right place for them: nixpkgs ships webkitgtk and gtk3 with split outputs, but
-devbox only pulls the runtime output, leaving headers and `.pc` files behind.
-We use the host package manager instead.
+Wails build = native compile = system dev headers. The **default** path uses
+the host package manager (apt) — that's what the devcontainer and CI runners
+use. `devbox install` links only the **runtime** output of gtk3/webkitgtk, so
+their headers and `.pc` files (the `-dev` outputs) are absent and a plain
+`devbox run -- go build -tags desktop,webkit2_41` fails at pkg-config.
+
+If you **can't** use apt/sudo (a restricted shell, a bare Nix box), you don't
+have to — nix *can* provide the headers; see
+[Alternative: nix-provided headers](#alternative-nix-provided-headers-no-apt--no-sudo)
+below.
 
 ### Debian / Ubuntu (devcontainer + GitHub Actions runners)
 
@@ -83,6 +89,36 @@ The CI runs on `windows-latest`. Wails uses WebView2 which is bundled with
 modern Windows; the build needs `nsis` only for the installer step (`-nsis`
 flag in the Taskfile target). On the runner this is auto-installed via the
 [`Wails CLI`] download.
+
+### Alternative: nix-provided headers (no apt / no sudo)
+
+nixpkgs **does** ship the gtk3/webkitgtk headers — devbox just doesn't realise
+the `-dev` outputs. You can realise them yourself from the *same* nixpkgs the
+devbox flake pins (fetched from `cache.nixos.org`, not compiled) and point
+pkg-config at them, with no apt and no sudo. The wrapper does it for you:
+
+```sh
+# builds gtk3.dev + webkitgtk_4_1.dev, assembles PKG_CONFIG_PATH, runs the cmd
+scripts/desktop/nix-pkgconfig-env.sh go build -tags desktop,webkit2_41 ./cmd/iterion-desktop/
+scripts/desktop/nix-pkgconfig-env.sh go test  -tags desktop,webkit2_41 ./cmd/iterion-desktop/
+scripts/desktop/nix-pkgconfig-env.sh task desktop:build
+```
+
+Two non-obvious things the script handles (and that trip up a hand-rolled
+attempt):
+
+- The nix **pkg-config wrapper ignores a bare `PKG_CONFIG_PATH`** — it reads a
+  target-specific `PKG_CONFIG_PATH_<arch>_unknown_linux_gnu` and overwrites the
+  plain one. The script exports the target variable.
+- gtk/webkit resolve a large tree of transitive `Requires:`, so the path must
+  include **every** `-dev` output's `pkgconfig` dir in the closure, not just
+  gtk's and webkit's. The script derives that from `nix-store -qR`.
+
+This is enough to **compile, vet, and run the Go tests** for the desktop
+package (including the cloud-connection code and its integration tests).
+Producing an installable bundle (`.deb`/AppImage) still wants the apt tooling
+(`dpkg-dev`, `patchelf`, `linuxdeploy`, …); the nix path covers the Go build,
+not the packaging.
 
 ## Building locally (Linux)
 

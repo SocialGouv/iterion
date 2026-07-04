@@ -579,10 +579,17 @@ default mental model won't surface:
   root); the Taskfile's `desktop:*` targets set `dir: cmd/iterion-desktop`
   accordingly. `cmd/iterion-desktop/build/` is a symlink to `../../build/`
   so packaging configs stay in one place.
-- Linux builds need apt headers (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
-  `libsoup-3.0-dev`, plus `dpkg-dev`/`patchelf`/`libfuse2t64`/`fuse` for
-  AppImage). Devbox/Nix doesn't expose `.pc` files — use the host
-  package manager. Devcontainers wire this into `postCreateCommand`.
+- Linux builds need the gtk3/webkitgtk dev headers. The default path is
+  apt (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, plus
+  `dpkg-dev`/`patchelf`/`libfuse2t64`/`fuse` for AppImage); devcontainers
+  wire this into `postCreateCommand`. `devbox install` only links the
+  *runtime* outputs, so `.pc` files are missing by default — **but nix can
+  still provide them without apt/sudo**: `scripts/desktop/nix-pkgconfig-env.sh
+  <cmd>` realises gtk3/webkitgtk `-dev` from the pinned nixpkgs and sets the
+  target-specific `PKG_CONFIG_PATH_<arch>_unknown_linux_gnu` (the nix
+  pkg-config wrapper ignores a bare `PKG_CONFIG_PATH`). That's enough to
+  `go build`/`vet`/`test -tags desktop,webkit2_41`; `.deb`/AppImage packaging
+  still wants the apt tooling. See [docs/desktop-build.md](docs/desktop-build.md#alternative-nix-provided-headers-no-apt--no-sudo).
 - The Linux build tag is `desktop,webkit2_41` (already wired in the
   Taskfile) so Wails uses the modern WebKit ABI shipped by current distros.
 - `-skipbindings -s` flags are intentional: the SPA reads runtime-injected
