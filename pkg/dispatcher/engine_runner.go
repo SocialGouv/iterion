@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runtime/recovery"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -184,7 +185,7 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	// PostToolUse hook on the delegate). Without this the operator's
 	// message stays `queued` for the entire run because nothing binds a
 	// hook to the per-run queue.
-	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
+	execSpec := runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: r.workflow,
 		Store:    s,
@@ -192,7 +193,26 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		RunID:    spec.RunID,
 		Logger:   runLogger,
 		StoreDir: spec.StoreDir,
-	})
+	}
+	// Local (self-hosted) secret injection: the dispatcher's in-process runner
+	// is only ever the local path (never a cloud runner pod), so resolve the
+	// workflow's declared secrets from the local sealed store — the same wiring
+	// the CLI/studio launch paths use — so a dispatched bot that declares
+	// `secrets:` gets them injected instead of running with them unset. Gated on
+	// declared secrets so a secretless catalog bot never touches the keychain.
+	if len(r.workflow.Secrets) > 0 {
+		sealer, serr := secrets.NewLocalSealer(store.GlobalIterionDataDir(), r.logger.Warn)
+		if serr != nil {
+			return fmt.Errorf("engine runner: local secrets sealer: %w", serr)
+		}
+		lstore, lerr := secrets.NewLocalLayeredStore(store.GlobalIterionDataDir(), spec.StoreDir)
+		if lerr != nil {
+			return fmt.Errorf("engine runner: local secrets store: %w", lerr)
+		}
+		execSpec.LocalSecrets = lstore
+		execSpec.LocalSealer = sealer
+	}
+	exec, err := runview.BuildExecutor(execSpec)
 	if err != nil {
 		return fmt.Errorf("engine runner: build executor: %w", err)
 	}

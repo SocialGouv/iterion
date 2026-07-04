@@ -125,7 +125,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 		SessionBoardEnabled:      sessionboard.Enabled(),
 		PluginsEnabled:           true,
-		SecretsEnabled:           s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil,
+		SecretsEnabled:           s.cfg.Mode != "cloud" && s.localSecretStore() != nil && s.sealer != nil,
 	}
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.

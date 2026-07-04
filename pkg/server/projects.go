@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server/projects"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -302,6 +303,20 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 	// Build the new run-console service first; if construction fails
 	// we abort before touching any live state.
 	storeDir := store.ResolveStoreDir(abs, "")
+
+	// Rebuild the local secret store for the NEW project so its project layer
+	// (<store-dir>/secrets.json) follows the switch; the global layer + master
+	// key are unchanged. Best-effort: on failure keep the previous store (warn),
+	// don't abort the switch. nil when local secrets aren't enabled.
+	newLocalSecrets := s.localSecretStore()
+	if s.cfg.Mode != "cloud" && s.sealer != nil && newLocalSecrets != nil {
+		if ls, err := secrets.NewLocalLayeredStore(store.GlobalIterionDataDir(), storeDir); err != nil {
+			s.logger.Warn("projects: rebuild local secret store for %q: %v — keeping previous", abs, err)
+		} else {
+			newLocalSecrets = ls
+		}
+	}
+
 	var newRuns *runview.Service
 	if storeDir != "" {
 		svcOpts := []runview.ServiceOption{
@@ -311,8 +326,8 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 		if opt, ok := s.boardMCPServiceOption(s.logger); ok {
 			svcOpts = append(svcOpts, opt)
 		}
-		if s.cfg.Mode != "cloud" && s.localSecrets != nil && s.sealer != nil {
-			svcOpts = append(svcOpts, runview.WithLocalSecrets(s.localSecrets, s.sealer))
+		if s.cfg.Mode != "cloud" && newLocalSecrets != nil && s.sealer != nil {
+			svcOpts = append(svcOpts, runview.WithLocalSecrets(newLocalSecrets, s.sealer))
 		}
 		svc, svcErr := runview.NewService(storeDir, svcOpts...)
 		if svcErr != nil {
@@ -344,6 +359,7 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 	s.cfg.StoreDir = storeDir
 	s.runs = newRuns
 	s.watcher = newWatcher
+	s.localSecrets = newLocalSecrets
 	// The run set changes wholesale on a project switch — drop the
 	// runs-stats memo so per-run cost from the previous project can't
 	// linger (and the cache can't grow unbounded across switches).

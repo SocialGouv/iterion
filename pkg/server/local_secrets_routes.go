@@ -62,8 +62,16 @@ func toLocalSecretView(rec secrets.GenericSecret, scope string) localSecretView 
 	}
 }
 
+// localSecretStore returns the current local layered store under stateMu, so a
+// concurrent project switch (which rebuilds it) can't be observed torn.
+func (s *Server) localSecretStore() *secrets.LayeredGenericSecretStore {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.localSecrets
+}
+
 func (s *Server) handleListLocalSecrets(w http.ResponseWriter, r *http.Request) {
-	scoped, err := s.localSecrets.ListScoped(r.Context(), secrets.LocalScopeTeam, "")
+	scoped, err := s.localSecretStore().ListScoped(r.Context(), secrets.LocalScopeTeam, "")
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -91,13 +99,14 @@ func (s *Server) handleCreateLocalSecret(w http.ResponseWriter, r *http.Request)
 	// project layer is active, so the stored record and the response label
 	// match where the secret actually lands (never claim "project" for a
 	// value written to the global file).
+	ls := s.localSecretStore()
 	scope := normalizeLocalScope(req.Scope)
 	if scope == "project" {
-		if _, active := s.localSecrets.Project(); !active {
+		if _, active := ls.Project(); !active {
 			scope = "global"
 		}
 	}
-	target := s.localSecrets.ForScope(scope)
+	target := ls.ForScope(scope)
 
 	// Atomic upsert-by-name (create or rotate) under the store's cross-process
 	// lock. On rotate, the egress host lock is overwritten only when the request
@@ -183,13 +192,14 @@ func normalizeLocalScope(scope string) string {
 // localFindByID locates a secret by ID across layers, returning the concrete
 // owning file store and its scope so update/delete target the right layer.
 func (s *Server) localFindByID(r *http.Request, id string) (secrets.GenericSecret, *secrets.FileGenericSecretStore, string, error) {
-	if proj, active := s.localSecrets.Project(); active {
+	ls := s.localSecretStore()
+	if proj, active := ls.Project(); active {
 		if rec, err := proj.Get(r.Context(), id); err == nil {
 			return rec, proj, "project", nil
 		}
 	}
-	rec, err := s.localSecrets.Global().Get(r.Context(), id)
-	return rec, s.localSecrets.Global(), "global", err
+	rec, err := ls.Global().Get(r.Context(), id)
+	return rec, ls.Global(), "global", err
 }
 
 func (s *Server) writeLocalSecretLookupError(w http.ResponseWriter, err error) {
