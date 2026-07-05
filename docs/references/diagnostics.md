@@ -111,6 +111,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C170** | error | Invalid memory visibility | `memory: visibility:` has an unknown value | Use a known visibility (`bot`/`project`/`cross_project`/`user`/`org`/`global`) |
 | **C171** | error | Memory visibility conflict | `memory: visibility:` is combined with the legacy `project_root:` | Use `visibility:` alone — drop the legacy `project_root:` |
 | **C172** | warning | Malformed provider step | A `provider:` chain element of the `provider:model` form has an empty provider or model part | Provide both parts, e.g. `anthropic:claude-sonnet-4-6` |
+| **C173** | warning | Endpoint override ignored | `base_url`/`api_key_env` is set on a backend other than `claw` (only claw builds its client in-process and honours a per-node endpoint) | Drop the fields, or set `backend: claw` on the node |
 | **C190** | warning | Supervisor watches non-agent | A `supervisor` `watches:` a node id that isn't an agent node | Watch an agent node, or fix the node id |
 | **C191** | warning | Malformed supervisor | A `supervisor` declaration is malformed (e.g. a bad cooldown duration) | Use a valid Go duration for cooldown |
 | **C192** | error | Duplicate supervisor | The same `supervisor <name>:` is declared twice | Rename or merge |

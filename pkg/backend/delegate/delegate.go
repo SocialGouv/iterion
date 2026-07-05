@@ -512,6 +512,23 @@ type Task struct {
 	// backend itself stays chain-unaware.
 	ProviderHint string
 
+	// BaseURL is the resolved per-node claw endpoint override from the DSL
+	// `base_url:` field (post env-expansion). When non-empty, the claw
+	// backend builds this node's API client against this endpoint instead
+	// of the process-env default (OPENAI_BASE_URL / ANTHROPIC_BASE_URL),
+	// so a single run can mix a real Opus node and a third-party
+	// OpenAI-compatible node (e.g. Kimi/Moonshot) without a global env var.
+	// Honoured ONLY by the claw backend; CLI backends ignore it (compile
+	// time C173 warns). Empty means "use the process-env default".
+	BaseURL string
+
+	// APIKeyEnv is the NAME of the env var carrying the API key for BaseURL
+	// (DSL `api_key_env:`, post env-expansion). The claw backend reads
+	// os.Getenv(APIKeyEnv) at client construction; the key VALUE is never
+	// stored on the Task, serialized onto the wire, or logged. Empty means
+	// the endpoint needs no key (or reuses the provider's env default).
+	APIKeyEnv string
+
 	// Hooks lets the backend surface mid-execution events back to the
 	// engine without returning. Currently used by the claude_code
 	// delegate to emit `tool_started` and `tool_called` events as the

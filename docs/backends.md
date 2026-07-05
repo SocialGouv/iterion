@@ -229,6 +229,58 @@ field first, so the `:-` in `${VAR:-x}` is never mistaken for a
 Like the hint chain itself, per-element models only take effect on
 `claude_code` (the only backend that walks the chain today).
 
+## Per-node endpoint override (`base_url` / `api_key_env`)
+
+`provider:` routes among the credentials the **process env** already
+carries. It cannot, by itself, point two nodes of the same run at two
+different endpoints: the `claw` backend reads `OPENAI_BASE_URL` /
+`ANTHROPIC_BASE_URL` from the process env, so setting one globally would
+redirect **every** claw node. The per-node **`base_url`** + **`api_key_env`**
+fields close that gap — they let a single run mix a real Opus node and a
+third-party OpenAI-compatible node (e.g. Kimi/Moonshot) without any global
+env var:
+
+```yaml
+agent opus_writer:
+  backend: "claw"
+  model: "anthropic/claude-opus-4-8"   # real Anthropic, from ANTHROPIC_API_KEY
+
+agent kimi_reviewer:
+  backend: "claw"
+  model: "openai/kimi-k2"              # OpenAI-compatible wire
+  base_url: "https://api.moonshot.ai/v1"
+  api_key_env: "MOONSHOT_API_KEY"      # key read from $MOONSHOT_API_KEY
+```
+
+Semantics:
+
+- **`base_url`** — when non-empty, the claw backend builds *this node's*
+  API client against this endpoint instead of the process-env default. The
+  `model:` prefix still selects the provider factory (`openai/…` →
+  OpenAI-compatible client, `anthropic/…` → Anthropic-compatible client), so
+  any OpenAI- or Anthropic-shaped facade works.
+- **`api_key_env`** — the **name** of the env var holding the API key for
+  that endpoint. The key is read via `os.Getenv` **at client construction**;
+  its value never rides the node/task, the sandbox IPC wire form, or any log
+  line — only the env-var name does. Empty means the endpoint needs no key
+  (or reuses the provider's own env default).
+- Both fields support `${VAR}` / `${VAR:-default}` expansion.
+- The override client is **never cached** (endpoint + key are node-scoped),
+  and an explicit `base_url` on an `openai/…` node deliberately bypasses the
+  ChatGPT-OAuth path so no Codex headers ever masquerade to a third party.
+
+Only **`claw`** honours these fields — it is the sole backend that builds its
+API client in-process. Setting them on `claude_code`/`codex` (which resolve
+credentials from the process env / their own auth files) warns **C173** at
+compile time and the fields are ignored. Supported providers for the override
+are `openai` and `anthropic`; any other `model:` prefix errors at run time.
+
+> **Sandbox note.** For a sandboxed claw node (`sandbox:`), the in-container
+> runner reads `os.Getenv(api_key_env)` too, but the sandbox only forwards a
+> fixed allow-list of provider env vars — a custom `api_key_env` name is not
+> yet forwarded into the container, so the override currently applies to the
+> in-process (unsandboxed) path.
+
 ## Transient-error & network resilience
 
 A brief internet/API outage should not abort a whole run. Every backend

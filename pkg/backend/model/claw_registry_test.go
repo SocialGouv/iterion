@@ -282,6 +282,76 @@ func TestClawRegistry_ResolveAfterUnknownProviderRegister(t *testing.T) {
 	}
 }
 
+// TestClawRegistry_ResolveWithEndpoint verifies the per-node endpoint
+// override path: ResolveWithEndpoint routes to the provider's endpoint
+// factory with the explicit base URL + key, never touches the shared cache
+// (each call rebuilds), and errors for a provider with no endpoint factory.
+func TestClawRegistry_ResolveWithEndpoint(t *testing.T) {
+	r := NewRegistry()
+	mock := &execMockClient{streams: []<-chan api.StreamEvent{mockStreamEvents("hi", "end_turn")}}
+
+	var calls int32
+	var gotModel, gotBaseURL, gotKey string
+	// Endpoint factories are keyed in providersWithEndpoint; the test lives
+	// in package model so it can inject a capturing one directly.
+	r.providersWithEndpoint["custom"] = func(modelID, baseURL, apiKey string) (api.APIClient, error) {
+		atomic.AddInt32(&calls, 1)
+		gotModel, gotBaseURL, gotKey = modelID, baseURL, apiKey
+		return mock, nil
+	}
+
+	c, err := r.ResolveWithEndpoint("custom/my-model", "https://facade.example/v1", "sk-secret")
+	if err != nil {
+		t.Fatalf("ResolveWithEndpoint: unexpected error: %v", err)
+	}
+	if c != mock {
+		t.Errorf("returned client = %v, want the endpoint factory's mock", c)
+	}
+	if gotModel != "my-model" {
+		t.Errorf("modelID = %q, want %q (provider prefix must be stripped)", gotModel, "my-model")
+	}
+	if gotBaseURL != "https://facade.example/v1" {
+		t.Errorf("baseURL = %q, want %q", gotBaseURL, "https://facade.example/v1")
+	}
+	if gotKey != "sk-secret" {
+		t.Errorf("apiKey = %q, want %q", gotKey, "sk-secret")
+	}
+
+	// Not cached: a second resolve must invoke the factory again (the
+	// endpoint + key are node-scoped, never shared across nodes).
+	if _, err := r.ResolveWithEndpoint("custom/my-model", "https://facade.example/v1", "sk-secret"); err != nil {
+		t.Fatalf("second ResolveWithEndpoint: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("endpoint factory called %d times, want 2 (uncached)", got)
+	}
+
+	// A provider with no endpoint factory is a loud error, not a silent
+	// fall-through to the env-based resolver.
+	if _, err := r.ResolveWithEndpoint("bedrock/some-model", "https://x/v1", "k"); err == nil {
+		t.Error("expected error for provider without an endpoint factory")
+	}
+}
+
+// TestClawRegistry_ResolveWithEndpoint_BuiltinProviders verifies the two
+// built-in endpoint factories (openai, anthropic) are wired and build a
+// client without error, and that an invalid spec is rejected.
+func TestClawRegistry_ResolveWithEndpoint_BuiltinProviders(t *testing.T) {
+	r := NewRegistry()
+	for _, spec := range []string{"openai/kimi-k2", "anthropic/claude-opus-4-8"} {
+		c, err := r.ResolveWithEndpoint(spec, "https://facade.example/v1", "sk-test")
+		if err != nil {
+			t.Errorf("ResolveWithEndpoint(%q): unexpected error: %v", spec, err)
+		}
+		if c == nil {
+			t.Errorf("ResolveWithEndpoint(%q): nil client", spec)
+		}
+	}
+	if _, err := r.ResolveWithEndpoint("no-slash", "https://x/v1", "k"); err == nil {
+		t.Error("expected error for malformed spec")
+	}
+}
+
 // providerNameForIdx returns a deterministic provider name for the given
 // index. Used by TestClawRegistry_ResolveConcurrentDifferentKeys.
 func providerNameForIdx(i int) string {

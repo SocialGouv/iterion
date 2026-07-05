@@ -102,6 +102,12 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenProvider:
 		p.expect(TokenColon)
 		d.Provider = p.expectString()
+	case TokenBaseURL:
+		p.expect(TokenColon)
+		d.BaseURL = p.expectString()
+	case TokenAPIKeyEnv:
+		p.expect(TokenColon)
+		d.APIKeyEnv = p.expectString()
 	case TokenInteraction:
 		p.expect(TokenColon)
 		d.Interaction = p.parseInteractionMode()

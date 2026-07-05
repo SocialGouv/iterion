@@ -121,6 +121,56 @@ func TestClawBackend_TextGeneration(t *testing.T) {
 	}
 }
 
+// TestClawBackend_PerNodeEndpointOverride verifies that a Task carrying a
+// per-node endpoint override (BaseURL + APIKeyEnv) is resolved through the
+// registry's endpoint factory — NOT the shared env-based resolver — and that
+// the API key is read from os.Getenv(APIKeyEnv) at construction time (so it
+// never has to ride the Task). This is the mix-Opus-and-Kimi path.
+func TestClawBackend_PerNodeEndpointOverride(t *testing.T) {
+	reg := NewRegistry()
+	endpointMock := &execMockClient{
+		streams: []<-chan api.StreamEvent{mockStreamEvents("kimi says hi", "end_turn")},
+	}
+
+	// The plain (env-based) factory must NOT be consulted when the node
+	// pins its own endpoint — fail loudly if it is.
+	reg.Register("test", func(modelID string) (api.APIClient, error) {
+		t.Errorf("plain provider factory was called; expected the endpoint factory to be used for a node with BaseURL set")
+		return endpointMock, nil
+	})
+
+	var gotBaseURL, gotKey string
+	reg.providersWithEndpoint["test"] = func(modelID, baseURL, apiKey string) (api.APIClient, error) {
+		gotBaseURL, gotKey = baseURL, apiKey
+		return endpointMock, nil
+	}
+
+	t.Setenv("MY_KIMI_KEY", "sk-kimi-secret")
+
+	backend := NewClawBackend(reg, EventHooks{}, RetryPolicy{})
+
+	result, err := backend.Execute(context.Background(), delegate.Task{
+		NodeID:     "kimi_node",
+		Model:      "test/kimi-k2",
+		UserPrompt: "Say hi",
+		BaseURL:    "https://api.moonshot.ai/v1",
+		APIKeyEnv:  "MY_KIMI_KEY",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotBaseURL != "https://api.moonshot.ai/v1" {
+		t.Errorf("endpoint factory baseURL = %q, want %q", gotBaseURL, "https://api.moonshot.ai/v1")
+	}
+	if gotKey != "sk-kimi-secret" {
+		t.Errorf("endpoint factory apiKey = %q, want the value of $MY_KIMI_KEY", gotKey)
+	}
+	if result.Output["text"] != "kimi says hi" {
+		t.Errorf("text = %q, want %q", result.Output["text"], "kimi says hi")
+	}
+}
+
 // TestClawBackend_TextWithToolsAndSchema verifies the text+tools+schema strategy.
 func TestClawBackend_TextWithToolsAndSchema(t *testing.T) {
 	reg := NewRegistry()

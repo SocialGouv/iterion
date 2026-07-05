@@ -775,6 +775,8 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 			Model:           model,
 			Backend:         d.Backend,
 			Provider:        d.Provider,
+			BaseURL:         d.BaseURL,
+			APIKeyEnv:       d.APIKeyEnv,
 			SystemPrompt:    d.System,
 			UserPrompt:      d.User,
 			MaxTokens:       d.MaxTokens,

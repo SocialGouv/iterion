@@ -21,6 +21,8 @@ type backendFields struct {
 	model            string
 	backend          string
 	provider         string
+	baseURL          string // per-node claw endpoint override (base_url:); "" = default
+	apiKeyEnv        string // env-var name holding the key for baseURL (api_key_env:); "" = unset
 	systemPrompt     string
 	userPrompt       string
 	reasoningEffort  string
@@ -50,6 +52,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	case *ir.AgentNode:
 		return backendFields{
 			id: n.ID, model: n.Model, backend: n.Backend, provider: n.Provider,
+			baseURL: n.BaseURL, apiKeyEnv: n.APIKeyEnv,
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
@@ -67,6 +70,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	case *ir.JudgeNode:
 		return backendFields{
 			id: n.ID, model: n.Model, backend: n.Backend, provider: n.Provider,
+			baseURL: n.BaseURL, apiKeyEnv: n.APIKeyEnv,
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
@@ -449,6 +453,16 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Sandbox:               e.sandbox,
 		// ProviderHint is set per-attempt by dispatchWithProviderFallback
 		// as it walks the node's provider chain.
+		//
+		// Per-node claw endpoint override (base_url:/api_key_env:). Env-expanded
+		// here so a recipe can defer the endpoint + key-var name to the process
+		// env (`base_url: "${KIMI_BASE_URL}"`). The key VALUE itself is never
+		// carried on the Task — only the env-var name is; the claw backend reads
+		// os.Getenv(APIKeyEnv) at client construction so the secret never enters
+		// the Task, the wire form, or any log line. Honoured only by backend=claw
+		// (compile-time C173 warns when set on another backend).
+		BaseURL:    ir.ExpandEnvWithDefault(f.baseURL),
+		APIKeyEnv:  ir.ExpandEnvWithDefault(f.apiKeyEnv),
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}

@@ -211,11 +211,32 @@ func (b *ClawBackend) Execute(ctx context.Context, task delegate.Task) (delegate
 		}
 	}
 
-	// Resolve API client. Phase C: in cloud mode the runner stamps
-	// per-tenant BYOK credentials into ctx, ResolveWithContext then
-	// builds a fresh APIClient with the override key (no cache hit
-	// across tenants). Local mode keeps the env-fallback path.
-	client, err := b.registry.ResolveWithContext(ctx, task.Model)
+	// Resolve API client.
+	//
+	// Per-node endpoint override (DSL base_url/api_key_env) takes
+	// precedence: when the node pins its own endpoint, build a fresh
+	// client against it with the key read from os.Getenv(APIKeyEnv) HERE,
+	// at construction time — the key value never rides the Task, the wire
+	// form, or a log line. This is what lets one run mix a real Opus node
+	// and a third-party OpenAI-compatible node (Kimi/Moonshot) without a
+	// global OPENAI_BASE_URL/ANTHROPIC_BASE_URL. Otherwise fall back to the
+	// standard resolver: Phase C, in cloud mode the runner stamps
+	// per-tenant BYOK credentials into ctx and ResolveWithContext builds a
+	// fresh APIClient with the override key (no cache hit across tenants);
+	// local mode keeps the env-fallback + per-process cache path.
+	var (
+		client api.APIClient
+		err    error
+	)
+	if task.BaseURL != "" || task.APIKeyEnv != "" {
+		apiKey := ""
+		if task.APIKeyEnv != "" {
+			apiKey = os.Getenv(task.APIKeyEnv)
+		}
+		client, err = b.registry.ResolveWithEndpoint(task.Model, task.BaseURL, apiKey)
+	} else {
+		client, err = b.registry.ResolveWithContext(ctx, task.Model)
+	}
 	if err != nil {
 		return delegate.Result{}, fmt.Errorf("claw backend: %w", err)
 	}

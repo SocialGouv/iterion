@@ -74,6 +74,8 @@ type IOTask struct {
 	ForkSession            bool                  `json:"fork_session,omitempty"`
 	SessionFingerprint     string                `json:"session_fingerprint,omitempty"`
 	ProviderHint           string                `json:"provider_hint,omitempty"`
+	BaseURL                string                `json:"base_url,omitempty"`
+	APIKeyEnv              string                `json:"api_key_env,omitempty"`
 	InteractionEnabled     bool                  `json:"interaction_enabled,omitempty"`
 	ResumeConversation     json.RawMessage       `json:"resume_conversation,omitempty"`
 	ResumePendingToolUseID string                `json:"resume_pending_tool_use_id,omitempty"`
@@ -163,6 +165,8 @@ func ToIOTask(t Task) IOTask {
 		ForkSession:            t.ForkSession,
 		SessionFingerprint:     t.SessionFingerprint,
 		ProviderHint:           t.ProviderHint,
+		BaseURL:                t.BaseURL,
+		APIKeyEnv:              t.APIKeyEnv,
 		InteractionEnabled:     t.InteractionEnabled,
 		ResumeConversation:     t.ResumeConversation,
 		ResumePendingToolUseID: t.ResumePendingToolUseID,
@@ -211,6 +215,8 @@ func FromIOTask(t IOTask) Task {
 		ForkSession:            t.ForkSession,
 		SessionFingerprint:     t.SessionFingerprint,
 		ProviderHint:           t.ProviderHint,
+		BaseURL:                t.BaseURL,
+		APIKeyEnv:              t.APIKeyEnv,
 		InteractionEnabled:     t.InteractionEnabled,
 		ResumeConversation:     t.ResumeConversation,
 		ResumePendingToolUseID: t.ResumePendingToolUseID,

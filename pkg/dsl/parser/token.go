@@ -91,6 +91,8 @@ const (
 	TokenNeeds
 	TokenDefaultBackend
 	TokenProvider
+	TokenBaseURL
+	TokenAPIKeyEnv
 	TokenInteraction
 	TokenInteractionPrompt
 	TokenInteractionModel
@@ -262,6 +264,8 @@ var tokenNames = map[TokenType]string{
 	TokenNeeds:              "needs",
 	TokenDefaultBackend:     "default_backend",
 	TokenProvider:           "provider",
+	TokenBaseURL:            "base_url",
+	TokenAPIKeyEnv:          "api_key_env",
 	TokenInteraction:        "interaction",
 	TokenInteractionPrompt:  "interaction_prompt",
 	TokenInteractionModel:   "interaction_model",
@@ -399,6 +403,8 @@ var keywords = map[string]TokenType{
 	"needs":                 TokenNeeds,
 	"default_backend":       TokenDefaultBackend,
 	"provider":              TokenProvider,
+	"base_url":              TokenBaseURL,
+	"api_key_env":           TokenAPIKeyEnv,
 	"interaction":           TokenInteraction,
 	"interaction_prompt":    TokenInteractionPrompt,
 	"interaction_model":     TokenInteractionModel,

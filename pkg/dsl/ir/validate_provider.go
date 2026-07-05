@@ -4,10 +4,23 @@ import "strings"
 
 // Provider-routing diagnostics.
 const (
-	DiagUnknownProvider       DiagCode = "C087" // provider chain token outside the known set (warning)
-	DiagProviderChainIgnored  DiagCode = "C088" // multi-provider chain on a backend that ignores the hint (warning)
-	DiagMalformedProviderStep DiagCode = "C172" // provider chain element of the `provider:model` form with an empty provider or model part (warning)
+	DiagUnknownProvider         DiagCode = "C087" // provider chain token outside the known set (warning)
+	DiagProviderChainIgnored    DiagCode = "C088" // multi-provider chain on a backend that ignores the hint (warning)
+	DiagMalformedProviderStep   DiagCode = "C172" // provider chain element of the `provider:model` form with an empty provider or model part (warning)
+	DiagEndpointOverrideIgnored DiagCode = "C173" // base_url/api_key_env on a backend other than claw, which ignores them (warning)
 )
+
+// endpointHonoringBackends is the set of backends that consume the per-node
+// endpoint override (base_url/api_key_env). Only claw builds its API client
+// in-process, so only claw can honour a node-scoped endpoint + key; the
+// CLI-based backends (claude_code/codex) resolve their credentials from the
+// process env / their own auth files and ignore these fields. An unset
+// backend defaults to claw at runtime, so it is treated as honoring too.
+var endpointHonoringBackends = map[string]bool{
+	"":     true, // unset → defaults to claw
+	"claw": true,
+	"auto": true, // resolves to a detected backend; claw when claw creds present
+}
 
 // KnownProviders is the set of credential-routing hints the runtime
 // understands for the per-node `provider:` field (and its comma-separated
@@ -95,6 +108,42 @@ func (c *compiler) validateProviders(w *Workflow) {
 		case *RouterNode:
 			if nn.RouterMode == RouterLLM {
 				check("router", nn.ID, nn.Backend, nn.Provider)
+			}
+		}
+	}
+}
+
+// validateEndpointOverride walks every LLM-capable node and warns (C173)
+// when a per-node endpoint override (base_url / api_key_env) is set on a
+// backend that does not build its own API client in-process. Only claw
+// consumes these fields; claude_code/codex resolve credentials from the
+// process env / their own auth files and silently ignore them. Emitting a
+// warning (never an error) keeps the run going — the fields are simply
+// inert on those backends. A backend carrying a ${VAR} env ref is skipped:
+// its resolved value isn't known at compile time.
+func (c *compiler) validateEndpointOverride(w *Workflow) {
+	check := func(kind, id, backend, baseURL, apiKeyEnv string) {
+		if baseURL == "" && apiKeyEnv == "" {
+			return
+		}
+		if strings.Contains(backend, "${") {
+			return // resolves at run time; can't judge the literal
+		}
+		if endpointHonoringBackends[strings.TrimSpace(backend)] {
+			return
+		}
+		c.warnfAt(DiagEndpointOverrideIgnored, id, "",
+			"%s %q: base_url/api_key_env have no effect on backend=%q (only claw builds its API client in-process and honours a per-node endpoint); the fields are ignored",
+			kind, id, backend)
+	}
+	for _, n := range w.Nodes {
+		switch nn := n.(type) {
+		case LLMNode:
+			f := nn.GetLLMFields()
+			check(nn.NodeKind().String(), nn.NodeID(), f.Backend, f.BaseURL, f.APIKeyEnv)
+		case *RouterNode:
+			if nn.RouterMode == RouterLLM {
+				check("router", nn.ID, nn.Backend, nn.BaseURL, nn.APIKeyEnv)
 			}
 		}
 	}

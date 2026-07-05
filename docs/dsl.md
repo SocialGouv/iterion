@@ -77,6 +77,8 @@ agent reviewer:
 |----------|-------------|
 | `model` | LLM model identifier (supports `${ENV_VAR}`) |
 | `backend` | Execution backend: `claw` (default, in-process LLM), `claude_code` (recommended for tool use), `codex` (discouraged, see [Delegation](delegation.md)) |
+| `base_url` | Per-node endpoint override for `backend: claw` — point this node at an OpenAI/Anthropic-compatible facade (e.g. Kimi/Moonshot) without a global `OPENAI_BASE_URL`. Supports `${ENV_VAR}`. Ignored (with warning **C173**) on non-`claw` backends. See [Backends](backends.md#per-node-endpoint-override-base_url--api_key_env). |
+| `api_key_env` | Name of the env var holding the API key for `base_url`; the value is read at client construction and never inlined or logged. Supports `${ENV_VAR}`. |
 | `input` / `output` | Schema references for structured I/O |
 | `publish` | Persist output as a named artifact |
 | `system` / `user` | Prompt references |

@@ -203,6 +203,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 		}
 		writeAgentFields(&w.b, llmFields{
 			Model: a.Model, Backend: a.Backend, Provider: a.Provider,
+			BaseURL: a.BaseURL, APIKeyEnv: a.APIKeyEnv,
 			Input: a.Input, Output: a.Output, Publish: a.Publish,
 			System: a.System, User: a.User, Session: a.Session,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities,
@@ -233,6 +234,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 		}
 		writeAgentFields(&w.b, llmFields{
 			Model: j.Model, Backend: j.Backend, Provider: j.Provider,
+			BaseURL: j.BaseURL, APIKeyEnv: j.APIKeyEnv,
 			Input: j.Input, Output: j.Output, Publish: j.Publish,
 			System: j.System, User: j.User, Session: j.Session,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities,
@@ -826,6 +828,7 @@ func quoteList(vals []string) string {
 // / ast.JudgeDecl so the call-site literals read as a direct projection.
 type llmFields struct {
 	Model, Backend, Provider            string
+	BaseURL, APIKeyEnv                  string
 	Input, Output, Publish              string
 	System, User                        string
 	Session                             ast.SessionMode
@@ -851,6 +854,12 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if f.Provider != "" {
 		writeQuotedProp(b, "provider", f.Provider)
+	}
+	if f.BaseURL != "" {
+		writeQuotedProp(b, "base_url", f.BaseURL)
+	}
+	if f.APIKeyEnv != "" {
+		writeQuotedProp(b, "api_key_env", f.APIKeyEnv)
 	}
 	if f.Input != "" {
 		writeIdentProp(b, "input", f.Input)

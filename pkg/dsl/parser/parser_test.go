@@ -523,6 +523,24 @@ func TestRouterDeclLLMWithBackend(t *testing.T) {
 	assertEq(t, "System", r.System, "my_prompt")
 }
 
+func TestAgentEndpointOverride(t *testing.T) {
+	src := `agent kimi:
+  model: "openai/kimi-k2"
+  backend: "claw"
+  base_url: "https://api.moonshot.ai/v1"
+  api_key_env: "MOONSHOT_API_KEY"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	if len(res.File.Agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(res.File.Agents))
+	}
+	a := res.File.Agents[0]
+	assertEq(t, "BaseURL", a.BaseURL, "https://api.moonshot.ai/v1")
+	assertEq(t, "APIKeyEnv", a.APIKeyEnv, "MOONSHOT_API_KEY")
+}
+
 func TestHumanDecl(t *testing.T) {
 	src := `human review:
   input: review_in

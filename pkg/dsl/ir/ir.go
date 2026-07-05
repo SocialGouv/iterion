@@ -157,6 +157,8 @@ type LLMFields struct {
 	Model           string // model identifier (env refs already noted)
 	Backend         string // execution backend name (empty = direct LLM call); may contain ${VAR} env refs
 	Provider        string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${VAR} env refs
+	BaseURL         string // per-node claw endpoint override (OpenAI/Anthropic-compatible facade); honoured only by backend=claw; may contain ${VAR} env refs
+	APIKeyEnv       string // name of the env var holding the API key for BaseURL; the value is read at claw client construction, never inlined/logged; may contain ${VAR} env refs
 	SystemPrompt    string // prompt reference name
 	UserPrompt      string // prompt reference name
 	MaxTokens       int    // per-node cap on output tokens (0 = backend default)

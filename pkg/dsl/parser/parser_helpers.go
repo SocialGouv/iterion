@@ -233,7 +233,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenAuth, TokenReadonly,
 		TokenDefaultBackend,
 		TokenInteraction, TokenInteractionPrompt, TokenInteractionModel,
-		TokenBackend, TokenProvider, TokenAwait, TokenWhen, TokenNot, TokenAs,
+		TokenBackend, TokenProvider, TokenBaseURL, TokenAPIKeyEnv, TokenAwait, TokenWhen, TokenNot, TokenAs,
 		TokenWith, TokenEnum, TokenFresh, TokenInherit, TokenArtifactsOnly,
 		TokenFork,
 		TokenFanOutAll, TokenCondition, TokenRoundRobin, TokenLLM, TokenMulti,

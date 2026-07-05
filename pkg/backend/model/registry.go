@@ -30,6 +30,18 @@ type ProviderFactory func(modelID string) (api.APIClient, error)
 // available — the result is NOT cached (multi-tenant safety).
 type KeyedProviderFactory func(modelID, apiKey string) (api.APIClient, error)
 
+// EndpointProviderFactory builds an APIClient given BOTH an explicit base
+// URL and an explicit API key. Used by ResolveWithEndpoint for per-node
+// endpoint overrides (DSL base_url/api_key_env): unlike KeyedProviderFactory
+// (which honours only a key but still reads the base URL from the process
+// env), here the endpoint AND the key both come from the node, so one run
+// can pin a claw node at a third-party OpenAI-compatible facade (Kimi /
+// Moonshot) while another node hits the real Anthropic API — no global
+// OPENAI_BASE_URL/ANTHROPIC_BASE_URL needed. The result is NOT cached (the
+// key + endpoint are node-scoped). baseURL "" falls back to the provider's
+// default endpoint; apiKey "" is passed through (keyless / env-default).
+type EndpointProviderFactory func(modelID, baseURL, apiKey string) (api.APIClient, error)
+
 // cacheEntry holds a per-key sync.Once so concurrent resolves for the same
 // spec only invoke the factory once, without holding the registry lock for
 // the duration of slow factory I/O (e.g. AWS IMDS, Google ADC).
@@ -47,18 +59,20 @@ type cacheEntry struct {
 var claudeForfaitWarnOnce sync.Once
 
 type Registry struct {
-	mu               sync.Mutex
-	providers        map[string]ProviderFactory
-	providersWithKey map[string]KeyedProviderFactory
-	cache            map[string]*cacheEntry
+	mu                    sync.Mutex
+	providers             map[string]ProviderFactory
+	providersWithKey      map[string]KeyedProviderFactory
+	providersWithEndpoint map[string]EndpointProviderFactory
+	cache                 map[string]*cacheEntry
 }
 
 // NewRegistry creates a model registry pre-loaded with built-in providers.
 func NewRegistry() *Registry {
 	r := &Registry{
-		providers:        make(map[string]ProviderFactory),
-		providersWithKey: make(map[string]KeyedProviderFactory),
-		cache:            make(map[string]*cacheEntry),
+		providers:             make(map[string]ProviderFactory),
+		providersWithKey:      make(map[string]KeyedProviderFactory),
+		providersWithEndpoint: make(map[string]EndpointProviderFactory),
+		cache:                 make(map[string]*cacheEntry),
 	}
 	r.registerDefaults()
 	return r
@@ -199,6 +213,28 @@ func (r *Registry) registerDefaults() {
 			APIKey:  apiKey,
 			Model:   modelID,
 			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+		}))
+	}
+	// Per-node endpoint override (DSL base_url/api_key_env). Both the base
+	// URL and the key come from the node, so this is the path that mixes a
+	// third-party OpenAI-compatible facade (Kimi/Moonshot) with a real
+	// Anthropic node in one run. An explicit base URL deliberately bypasses
+	// the ChatGPT-OAuth path (same as an explicit OPENAI_BASE_URL) so no
+	// codex_cli headers ever masquerade to a third party.
+	r.providersWithEndpoint["openai"] = func(modelID, baseURL, apiKey string) (api.APIClient, error) {
+		p := openaiprovider.New()
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: baseURL,
+		}))
+	}
+	r.providersWithEndpoint["anthropic"] = func(modelID, baseURL, apiKey string) (api.APIClient, error) {
+		p := anthropicprovider.New()
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: baseURL,
 		}))
 	}
 	// AWS Bedrock — auth via aws-sdk-go-v2 standard credential chain
@@ -408,6 +444,37 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 		return r.Resolve(spec)
 	}
 	return factory(modelID, overrideKey)
+}
+
+// ResolveWithEndpoint builds a fresh (never cached) APIClient for spec
+// using an explicit base URL and API key, bypassing the process-env
+// endpoint resolution. It backs the per-node claw endpoint override (DSL
+// base_url/api_key_env), letting one run mix a real Opus node with a
+// third-party OpenAI-compatible node (Kimi/Moonshot) without a global
+// OPENAI_BASE_URL/ANTHROPIC_BASE_URL.
+//
+// The result is intentionally NOT cached: the endpoint + key are
+// node-scoped, and caching them against a bare modelID would leak one
+// node's facade onto another node that shares the model id. Only providers
+// that expose an EndpointProviderFactory (openai, anthropic) are
+// supported; any other provider returns an error so a misconfigured node
+// fails loudly instead of silently ignoring the override.
+func (r *Registry) ResolveWithEndpoint(spec, baseURL, apiKey string) (api.APIClient, error) {
+	providerName, modelID, err := ParseModelSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	factory, ok := r.providersWithEndpoint[providerName]
+	r.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("model: provider %q does not support a per-node endpoint override (base_url/api_key_env); supported: anthropic, openai", providerName)
+	}
+	client, err := factory(modelID, baseURL, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("model: provider %q failed to create model %q with endpoint override: %w", providerName, modelID, err)
+	}
+	return client, nil
 }
 
 // credentialsLookup returns a closure that maps a provider name to
