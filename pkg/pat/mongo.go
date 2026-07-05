@@ -2,7 +2,6 @@ package pat
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -42,27 +41,11 @@ func (s *MongoStore) Create(ctx context.Context, t Token) error {
 }
 
 func (s *MongoStore) GetByTokenHash(ctx context.Context, hash string) (Token, error) {
-	var t Token
-	err := s.col.FindOne(ctx, bson.M{"token_hash": hash}).Decode(&t)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Token{}, ErrNotFound
-	}
-	if err != nil {
-		return Token{}, fmt.Errorf("pat: get by hash: %w", err)
-	}
-	return t, nil
+	return mongoutil.FindOne[Token](ctx, s.col, bson.M{"token_hash": hash}, ErrNotFound, "pat: get by hash")
 }
 
 func (s *MongoStore) Get(ctx context.Context, id string) (Token, error) {
-	var t Token
-	err := s.col.FindOne(ctx, bson.M{"_id": id}).Decode(&t)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Token{}, ErrNotFound
-	}
-	if err != nil {
-		return Token{}, fmt.Errorf("pat: get: %w", err)
-	}
-	return t, nil
+	return mongoutil.FindOne[Token](ctx, s.col, bson.M{"_id": id}, ErrNotFound, "pat: get")
 }
 
 func (s *MongoStore) ListByUser(ctx context.Context, userID string) ([]Token, error) {

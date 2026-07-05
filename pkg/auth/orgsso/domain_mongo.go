@@ -2,7 +2,6 @@ package orgsso
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -55,38 +54,16 @@ func (s *MongoDomainStore) Create(ctx context.Context, d VerifiedDomain) error {
 }
 
 func (s *MongoDomainStore) Get(ctx context.Context, id string) (VerifiedDomain, error) {
-	var d VerifiedDomain
-	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&d)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return VerifiedDomain{}, ErrDomainNotFound
-	}
-	if err != nil {
-		return VerifiedDomain{}, fmt.Errorf("orgsso: get domain: %w", err)
-	}
-	return d, nil
+	return mongoutil.FindOne[VerifiedDomain](ctx, s.coll, bson.M{"_id": id}, ErrDomainNotFound, "orgsso: get domain")
 }
 
 func (s *MongoDomainStore) Update(ctx context.Context, d VerifiedDomain) error {
 	d.Domain = NormalizeDomain(d.Domain)
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": d.ID}, d)
-	if err != nil {
-		return fmt.Errorf("orgsso: update domain: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrDomainNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": d.ID}, d, nil, ErrDomainNotFound, "orgsso: update domain")
 }
 
 func (s *MongoDomainStore) Delete(ctx context.Context, id string) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("orgsso: delete domain: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrDomainNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrDomainNotFound, "orgsso: delete domain")
 }
 
 func (s *MongoDomainStore) ListByTenant(ctx context.Context, tenantID string) ([]VerifiedDomain, error) {
