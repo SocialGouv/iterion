@@ -77,15 +77,7 @@ func (s *MongoPasswordResetStore) Create(ctx context.Context, p PasswordReset) e
 }
 
 func (s *MongoPasswordResetStore) GetByTokenHash(ctx context.Context, hash string) (PasswordReset, error) {
-	var p PasswordReset
-	err := s.coll.FindOne(ctx, bson.M{"token_hash": hash}).Decode(&p)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return PasswordReset{}, ErrResetNotFound
-	}
-	if err != nil {
-		return PasswordReset{}, fmt.Errorf("auth: get reset: %w", err)
-	}
-	return p, nil
+	return mongoutil.FindOne[PasswordReset](ctx, s.coll, bson.M{"token_hash": hash}, ErrResetNotFound, "auth: get reset")
 }
 
 func (s *MongoPasswordResetStore) Consume(ctx context.Context, id string, at time.Time) (bool, error) {
