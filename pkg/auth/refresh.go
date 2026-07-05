@@ -136,8 +136,7 @@ func (m *MemorySessionStore) RevokeSession(_ context.Context, id string, at time
 	if !ok {
 		return ErrSessionNotFound
 	}
-	t := at
-	s.RevokedAt = &t
+	s.RevokedAt = &at
 	m.byID[id] = s
 	return nil
 }
@@ -152,8 +151,7 @@ func (m *MemorySessionStore) RevokeSessionIfNotRevoked(_ context.Context, id str
 	if s.RevokedAt != nil {
 		return false, nil
 	}
-	t := at
-	s.RevokedAt = &t
+	s.RevokedAt = &at
 	m.byID[id] = s
 	return true, nil
 }
@@ -164,8 +162,7 @@ func (m *MemorySessionStore) RevokeUserSessions(_ context.Context, userID string
 	for id := range m.byUserID[userID] {
 		s := m.byID[id]
 		if s.RevokedAt == nil {
-			t := at
-			s.RevokedAt = &t
+			s.RevokedAt = &at
 			m.byID[id] = s
 		}
 	}
