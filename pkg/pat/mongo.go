@@ -62,14 +62,7 @@ func (s *MongoStore) ListByUser(ctx context.Context, userID string) ([]Token, er
 }
 
 func (s *MongoStore) Revoke(ctx context.Context, id string, at time.Time) error {
-	res, err := s.col.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"revoked_at": at}})
-	if err != nil {
-		return fmt.Errorf("pat: revoke: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.UpdateOneChecked(ctx, s.col, bson.M{"_id": id}, bson.M{"$set": bson.M{"revoked_at": at}}, ErrNotFound, "pat: revoke")
 }
 
 func (s *MongoStore) MarkUsed(ctx context.Context, id string, at time.Time) error {

@@ -110,6 +110,22 @@ func ReplaceOneChecked(ctx context.Context, coll *mongo.Collection, filter bson.
 	return nil
 }
 
+// UpdateOneChecked applies update (a partial $set/$inc/... document) to
+// the document matching filter, mapping a zero-match result to
+// notFoundErr. It is the shared shape behind the many "update field(s)
+// of X" methods that reject an update to a missing document, as
+// opposed to ReplaceOneChecked's whole-document replace.
+func UpdateOneChecked(ctx context.Context, coll *mongo.Collection, filter, update bson.M, notFoundErr error, errMsg string) error {
+	res, err := coll.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return fmt.Errorf("%s: %w", errMsg, err)
+	}
+	if res.MatchedCount == 0 {
+		return notFoundErr
+	}
+	return nil
+}
+
 // DeleteOneChecked deletes the document matching filter, mapping a
 // zero-match result to notFoundErr. It is the shared shape behind the
 // many "delete X" methods that treat deleting a missing document as an
