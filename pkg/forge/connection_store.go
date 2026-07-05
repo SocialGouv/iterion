@@ -2,7 +2,6 @@ package forge
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -140,37 +139,15 @@ func (s *MongoConnectionStore) Create(ctx context.Context, c Connection) error {
 }
 
 func (s *MongoConnectionStore) Get(ctx context.Context, id string) (Connection, error) {
-	var c Connection
-	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&c)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Connection{}, ErrConnectionNotFound
-	}
-	if err != nil {
-		return Connection{}, fmt.Errorf("forge: get connection: %w", err)
-	}
-	return c, nil
+	return mongoutil.FindOne[Connection](ctx, s.coll, bson.M{"_id": id}, ErrConnectionNotFound, "forge: get connection")
 }
 
 func (s *MongoConnectionStore) Update(ctx context.Context, c Connection) error {
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": c.ID}, c)
-	if err != nil {
-		return fmt.Errorf("forge: update connection: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrConnectionNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": c.ID}, c, nil, ErrConnectionNotFound, "forge: update connection")
 }
 
 func (s *MongoConnectionStore) Delete(ctx context.Context, id string) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("forge: delete connection: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrConnectionNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrConnectionNotFound, "forge: delete connection")
 }
 
 func (s *MongoConnectionStore) ListByTenant(ctx context.Context, tenantID string) ([]Connection, error) {
