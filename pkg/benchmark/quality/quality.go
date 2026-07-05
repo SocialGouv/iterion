@@ -198,12 +198,6 @@ func ClawInvoker(reg *model.Registry) JudgeInvoker {
 	}
 }
 
-// RunPanel runs the judge panel through claw (the default invoker). See
-// RunPanelWith to inject a backend-routing invoker.
-func RunPanel(ctx context.Context, reg *model.Registry, models []string, ev Evidence, prev *Snapshot) (Aggregate, error) {
-	return RunPanelWith(ctx, models, ClawInvoker(reg), ev, prev)
-}
-
 // RunPanelWith runs every judge model over the evidence via invoke and
 // aggregates their verdicts. A judge that errors is skipped with a note
 // rather than failing the panel, so a single available family still yields
