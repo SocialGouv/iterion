@@ -46,6 +46,18 @@ func TestWSTicket_MintRedeemCycle(t *testing.T) {
 	if !ok2 || got2.UserID != "" {
 		t.Errorf("second redeem = %+v ok=%v; want ok=true empty identity", got2, ok2)
 	}
+
+	// The Browser-Live CDP path also accepts ?ticket= (workspace pane dials it
+	// cross-origin without a JWT in the URL).
+	ticket2, err := s.wsTickets.Mint(r.Context(), id)
+	if err != nil {
+		t.Fatalf("mint 2: %v", err)
+	}
+	cdpReq := httptest.NewRequest(http.MethodGet, "/api/runs/abc/browser/cdp?session=s1&ticket="+ticket2, nil)
+	got3, ok3 := s.wsTicketIdentity(cdpReq)
+	if !ok3 || got3.UserID != "u1" {
+		t.Fatalf("CDP ticket auth = %+v ok=%v; want u1", got3, ok3)
+	}
 }
 
 func TestWSTicketIdentity_NonTicketFallsThrough(t *testing.T) {

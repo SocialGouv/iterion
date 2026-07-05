@@ -43,6 +43,19 @@ func (s *Server) handleWSTicket(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// isWSTicketPath reports whether a path is a WebSocket-upgrade endpoint that
+// accepts single-use ?ticket= auth: the run-console / event WS under /api/ws,
+// and the per-run Browser-Live CDP bridge. Ticket auth is safe to extend here
+// (single-use, TTL-bounded, bound to the minter's identity) and is what lets a
+// desktop workspace pane authenticate a cross-origin WS without a JWT in the URL.
+func isWSTicketPath(path string) bool {
+	if path == "/api/ws" || strings.HasPrefix(path, "/api/ws/") {
+		return true
+	}
+	// /api/runs/{id}/browser/cdp — the CDP bridge dialed by the Browser-Live pane.
+	return strings.HasPrefix(path, "/api/runs/") && strings.HasSuffix(path, "/browser/cdp")
+}
+
 // wsTicketIdentity redeems a ?ticket= on a WS path, returning the bound
 // identity. It is consulted by requireAuth BEFORE the JWT/PAT path so a ticket
 // resolves directly to an identity (there is no token to verify). Returns
@@ -52,7 +65,7 @@ func (s *Server) wsTicketIdentity(r *http.Request) (auth.Identity, bool) {
 	if s.wsTickets == nil {
 		return auth.Identity{}, false
 	}
-	if r.URL.Path != "/api/ws" && !strings.HasPrefix(r.URL.Path, "/api/ws/") {
+	if !isWSTicketPath(r.URL.Path) {
 		return auth.Identity{}, false
 	}
 	ticket := r.URL.Query().Get("ticket")
