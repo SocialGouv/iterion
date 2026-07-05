@@ -86,18 +86,11 @@ func Detect() (kubectl string, namespace string, err error) {
 	return binPath, ns, nil
 }
 
-// kubectlCmd wraps exec.Command(kubectl, args...) with LC_ALL=C so
-// callers can branch on stderr substrings ("NotFound", "AlreadyExists")
-// stably across user locales. Mirrors the gitCmd / runtimeCmd helpers.
-func kubectlCmd(args ...string) *exec.Cmd {
-	cmd := exec.Command(kubeBinaryName, args...)
-	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
-	proc.DetachProcessGroup(cmd)
-	return cmd
-}
-
-// kubectlCmdContext is the ctx-aware sibling for long-running ops
-// (apply, delete, exec) that should respect run cancellation.
+// kubectlCmdContext wraps exec.CommandContext(kubectl, args...) with
+// LC_ALL=C so callers can branch on stderr substrings ("NotFound",
+// "AlreadyExists") stably across user locales. Mirrors the gitCmd /
+// runtimeCmdContext helpers. Used for long-running ops (apply, delete,
+// exec) that should respect run cancellation.
 func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, kubeBinaryName, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")

@@ -53,24 +53,14 @@ func Detect() (Runtime, error) {
 	return "", fmt.Errorf("docker: neither 'docker' nor 'podman' found on PATH")
 }
 
-// runtimeCmd wraps exec.Command(<runtime>, args...) with the env
-// scrubbing iterion uses on git invocations: LC_ALL=C / LANG=C so
-// stderr substrings ("No such image", "container not found") are
+// runtimeCmdContext wraps exec.CommandContext(<runtime>, args...) with
+// the env scrubbing iterion uses on git invocations: LC_ALL=C / LANG=C
+// so stderr substrings ("No such image", "container not found") are
 // stable across user locales.
 //
 // Detached process group on Unix so a SIGTERM to the iterion studio
 // PGID (e.g. watchexec rebuild) doesn't propagate and kill the
 // container management commands mid-flight.
-func runtimeCmd(rt Runtime, args ...string) *exec.Cmd {
-	cmd := exec.Command(string(rt), args...)
-	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
-	proc.DetachProcessGroup(cmd)
-	return cmd
-}
-
-// runtimeCmdContext is the ctx-aware sibling of [runtimeCmd] — used
-// for long-running operations (pull, run -d) that should respect run
-// cancellation.
 func runtimeCmdContext(ctx context.Context, rt Runtime, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, string(rt), args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
