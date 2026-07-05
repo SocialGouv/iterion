@@ -276,16 +276,8 @@ func (s *MongoStore) ListTeams(ctx context.Context, page Page) ([]Team, error) {
 }
 
 func (s *MongoStore) ListTeamsByOrg(ctx context.Context, orgID string) ([]Team, error) {
-	cur, err := s.teams.Find(ctx, bson.M{"org_id": orgID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list teams by org: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Team
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode teams: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Team](ctx, s.teams, bson.M{"org_id": orgID}, "created_at",
+		"identity: list teams by org", "identity: decode teams")
 }
 
 // ----- Orgs -----
@@ -425,29 +417,13 @@ func (s *MongoStore) DeleteOrgMembership(ctx context.Context, userID, orgID stri
 }
 
 func (s *MongoStore) ListOrgMembershipsByUser(ctx context.Context, userID string) ([]OrgMembership, error) {
-	cur, err := s.orgMemberships.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list org memberships by user: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OrgMembership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode org memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OrgMembership](ctx, s.orgMemberships, bson.M{"user_id": userID}, "joined_at",
+		"identity: list org memberships by user", "identity: decode org memberships")
 }
 
 func (s *MongoStore) ListOrgMembershipsByOrg(ctx context.Context, orgID string) ([]OrgMembership, error) {
-	cur, err := s.orgMemberships.Find(ctx, bson.M{"org_id": orgID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list org memberships by org: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OrgMembership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode org memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OrgMembership](ctx, s.orgMemberships, bson.M{"org_id": orgID}, "joined_at",
+		"identity: list org memberships by org", "identity: decode org memberships")
 }
 
 // ----- Memberships -----
@@ -486,29 +462,13 @@ func (s *MongoStore) DeleteMembership(ctx context.Context, userID, teamID string
 }
 
 func (s *MongoStore) ListMembershipsByUser(ctx context.Context, userID string) ([]Membership, error) {
-	cur, err := s.memberships.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list memberships by user: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Membership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Membership](ctx, s.memberships, bson.M{"user_id": userID}, "joined_at",
+		"identity: list memberships by user", "identity: decode memberships")
 }
 
 func (s *MongoStore) ListMembershipsByTeam(ctx context.Context, teamID string) ([]Membership, error) {
-	cur, err := s.memberships.Find(ctx, bson.M{"team_id": teamID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list memberships by team: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Membership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Membership](ctx, s.memberships, bson.M{"team_id": teamID}, "joined_at",
+		"identity: list memberships by team", "identity: decode memberships")
 }
 
 // ----- Invitations -----
@@ -568,16 +528,8 @@ func (s *MongoStore) DeleteInvitation(ctx context.Context, id string) error {
 }
 
 func (s *MongoStore) ListInvitationsByTeam(ctx context.Context, teamID string) ([]Invitation, error) {
-	cur, err := s.invitations.Find(ctx, bson.M{"team_id": teamID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list invitations: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Invitation
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode invitations: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Invitation](ctx, s.invitations, bson.M{"team_id": teamID}, "created_at",
+		"identity: list invitations", "identity: decode invitations")
 }
 
 // ----- OIDC links -----
@@ -608,16 +560,8 @@ func (s *MongoStore) GetOIDCLink(ctx context.Context, provider, providerUserID s
 }
 
 func (s *MongoStore) ListOIDCLinksByUser(ctx context.Context, userID string) ([]OIDCLink, error) {
-	cur, err := s.oidcLinks.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"provider": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list oidc links: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OIDCLink
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode oidc links: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OIDCLink](ctx, s.oidcLinks, bson.M{"user_id": userID}, "provider",
+		"identity: list oidc links", "identity: decode oidc links")
 }
 
 func (s *MongoStore) DeleteOIDCLink(ctx context.Context, provider, providerUserID string) error {

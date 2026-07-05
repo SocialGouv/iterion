@@ -272,14 +272,6 @@ func (s *MongoRepoIntegrationStore) ListSyncEnabledForRepo(ctx context.Context, 
 }
 
 func (s *MongoRepoIntegrationStore) find(ctx context.Context, filter bson.M) ([]RepoIntegration, error) {
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("forge: list repo integrations: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []RepoIntegration
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("forge: decode repo integrations: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[RepoIntegration](ctx, s.coll, filter, "created_at",
+		"forge: list repo integrations", "forge: decode repo integrations")
 }

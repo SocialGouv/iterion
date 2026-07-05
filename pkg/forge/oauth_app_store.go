@@ -234,16 +234,8 @@ func (s *MongoOAuthAppStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *MongoOAuthAppStore) ListByTenant(ctx context.Context, tenantID string) ([]ForgeOAuthApp, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("forge: list oauth apps: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []ForgeOAuthApp
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("forge: decode oauth apps: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[ForgeOAuthApp](ctx, s.coll, bson.M{"tenant_id": tenantID}, "created_at",
+		"forge: list oauth apps", "forge: decode oauth apps")
 }
 
 func (s *MongoOAuthAppStore) GetByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) (ForgeOAuthApp, error) {

@@ -140,14 +140,6 @@ func (s *MongoStore) FindGitHubGrantingOrgs(ctx context.Context, keys []string) 
 }
 
 func (s *MongoStore) find(ctx context.Context, filter bson.M) ([]OrgSSOProvider, error) {
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("orgsso: find providers: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OrgSSOProvider
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("orgsso: decode providers: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OrgSSOProvider](ctx, s.coll, filter, "created_at",
+		"orgsso: find providers", "orgsso: decode providers")
 }

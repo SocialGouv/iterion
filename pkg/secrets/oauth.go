@@ -342,16 +342,8 @@ func (s *MongoOAuthStore) Get(ctx context.Context, userID string, kind OAuthKind
 }
 
 func (s *MongoOAuthStore) ListByUser(ctx context.Context, userID string) ([]OAuthRecord, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"kind": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("secrets: list oauth: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OAuthRecord
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("secrets: decode oauth: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID}, "kind",
+		"secrets: list oauth", "secrets: decode oauth")
 }
 
 func (s *MongoOAuthStore) Delete(ctx context.Context, userID string, kind OAuthKind) error {

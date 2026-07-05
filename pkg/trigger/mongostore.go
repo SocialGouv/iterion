@@ -105,14 +105,6 @@ func (s *MongoSubscriptionStore) ListCandidates(ctx context.Context, ev Event) (
 }
 
 func (s *MongoSubscriptionStore) find(ctx context.Context, filter bson.M) ([]Subscription, error) {
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("trigger: list subscriptions: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Subscription
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("trigger: decode subscriptions: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Subscription](ctx, s.coll, filter, "created_at",
+		"trigger: list subscriptions", "trigger: decode subscriptions")
 }

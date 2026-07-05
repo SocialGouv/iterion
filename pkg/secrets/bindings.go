@@ -432,14 +432,6 @@ func (s *MongoBotSecretBindingStore) ListByTenant(ctx context.Context, tenantID 
 }
 
 func (s *MongoBotSecretBindingStore) list(ctx context.Context, filter bson.M) ([]BotSecretBinding, error) {
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("secrets: list bot bindings: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []BotSecretBinding
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("secrets: decode bot bindings: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[BotSecretBinding](ctx, s.coll, filter, "created_at",
+		"secrets: list bot bindings", "secrets: decode bot bindings")
 }

@@ -113,16 +113,8 @@ func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *MongoConfigStore) ListByTenant(ctx context.Context, tenantID string) ([]Config, error) {
-	cur, err := s.col.Find(ctx, bson.M{"tenant_id": tenantID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("webhooks: list configs: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Config
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("webhooks: decode configs: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Config](ctx, s.col, bson.M{"tenant_id": tenantID}, "created_at",
+		"webhooks: list configs", "webhooks: decode configs")
 }
 
 func (s *MongoConfigStore) MarkUsed(ctx context.Context, id string, t time.Time) error {

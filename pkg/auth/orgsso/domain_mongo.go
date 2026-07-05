@@ -90,16 +90,8 @@ func (s *MongoDomainStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *MongoDomainStore) ListByTenant(ctx context.Context, tenantID string) ([]VerifiedDomain, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("orgsso: list domains: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []VerifiedDomain
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("orgsso: decode domains: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[VerifiedDomain](ctx, s.coll, bson.M{"tenant_id": tenantID}, "created_at",
+		"orgsso: list domains", "orgsso: decode domains")
 }
 
 func (s *MongoDomainStore) TenantsForDomain(ctx context.Context, domain string) ([]string, error) {

@@ -174,16 +174,8 @@ func (s *MongoConnectionStore) Delete(ctx context.Context, id string) error {
 }
 
 func (s *MongoConnectionStore) ListByTenant(ctx context.Context, tenantID string) ([]Connection, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("forge: list connections: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Connection
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("forge: decode connections: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Connection](ctx, s.coll, bson.M{"tenant_id": tenantID}, "created_at",
+		"forge: list connections", "forge: decode connections")
 }
 
 func (s *MongoConnectionStore) ExpiringBefore(ctx context.Context, t time.Time) ([]Connection, error) {
@@ -191,14 +183,6 @@ func (s *MongoConnectionStore) ExpiringBefore(ctx context.Context, t time.Time) 
 		"kind":                    bson.M{"$ne": string(KindPAT)},
 		"access_token_expires_at": bson.M{"$lte": t},
 	}
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"access_token_expires_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("forge: list expiring connections: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Connection
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("forge: decode expiring connections: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Connection](ctx, s.coll, filter, "access_token_expires_at",
+		"forge: list expiring connections", "forge: decode expiring connections")
 }
