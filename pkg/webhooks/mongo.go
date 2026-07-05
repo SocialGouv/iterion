@@ -76,40 +76,15 @@ func (s *MongoConfigStore) Create(ctx context.Context, c Config) error {
 }
 
 func (s *MongoConfigStore) Get(ctx context.Context, id string) (Config, error) {
-	var c Config
-	err := s.col.FindOne(ctx, bson.M{"_id": id}).Decode(&c)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Config{}, ErrNotFound
-	}
-	if err != nil {
-		return Config{}, fmt.Errorf("webhooks: get config: %w", err)
-	}
-	return c, nil
+	return mongoutil.FindOne[Config](ctx, s.col, bson.M{"_id": id}, ErrNotFound, "webhooks: get config")
 }
 
 func (s *MongoConfigStore) Update(ctx context.Context, c Config) error {
-	res, err := s.col.ReplaceOne(ctx, bson.M{"_id": c.ID}, c)
-	if err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return ErrDuplicate
-		}
-		return fmt.Errorf("webhooks: update config: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.col, bson.M{"_id": c.ID}, c, ErrDuplicate, ErrNotFound, "webhooks: update config")
 }
 
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {
-	res, err := s.col.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("webhooks: delete config: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.col, bson.M{"_id": id}, ErrNotFound, "webhooks: delete config")
 }
 
 func (s *MongoConfigStore) ListByTenant(ctx context.Context, tenantID string) ([]Config, error) {
@@ -140,26 +115,11 @@ func (s *MongoDeliveryStore) Insert(ctx context.Context, d Delivery) error {
 }
 
 func (s *MongoDeliveryStore) GetByIdempotencyKey(ctx context.Context, key string) (Delivery, error) {
-	var d Delivery
-	err := s.col.FindOne(ctx, bson.M{"idempotency_key": key}).Decode(&d)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Delivery{}, ErrNotFound
-	}
-	if err != nil {
-		return Delivery{}, fmt.Errorf("webhooks: get delivery: %w", err)
-	}
-	return d, nil
+	return mongoutil.FindOne[Delivery](ctx, s.col, bson.M{"idempotency_key": key}, ErrNotFound, "webhooks: get delivery")
 }
 
 func (s *MongoDeliveryStore) Update(ctx context.Context, d Delivery) error {
-	res, err := s.col.ReplaceOne(ctx, bson.M{"_id": d.ID}, d)
-	if err != nil {
-		return fmt.Errorf("webhooks: update delivery: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.col, bson.M{"_id": d.ID}, d, nil, ErrNotFound, "webhooks: update delivery")
 }
 
 func (s *MongoDeliveryStore) ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
