@@ -330,15 +330,7 @@ func (s *MongoOAuthStore) Upsert(ctx context.Context, rec OAuthRecord) error {
 }
 
 func (s *MongoOAuthStore) Get(ctx context.Context, userID string, kind OAuthKind) (OAuthRecord, error) {
-	var r OAuthRecord
-	err := s.coll.FindOne(ctx, bson.M{"user_id": userID, "kind": kind}).Decode(&r)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return OAuthRecord{}, ErrOAuthNotFound
-	}
-	if err != nil {
-		return OAuthRecord{}, fmt.Errorf("secrets: get oauth: %w", err)
-	}
-	return r, nil
+	return mongoutil.FindOne[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID, "kind": kind}, ErrOAuthNotFound, "secrets: get oauth")
 }
 
 func (s *MongoOAuthStore) ListByUser(ctx context.Context, userID string) ([]OAuthRecord, error) {
@@ -347,14 +339,7 @@ func (s *MongoOAuthStore) ListByUser(ctx context.Context, userID string) ([]OAut
 }
 
 func (s *MongoOAuthStore) Delete(ctx context.Context, userID string, kind OAuthKind) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"user_id": userID, "kind": kind})
-	if err != nil {
-		return fmt.Errorf("secrets: delete oauth: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrOAuthNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"user_id": userID, "kind": kind}, ErrOAuthNotFound, "secrets: delete oauth")
 }
 
 func (s *MongoOAuthStore) ExpiringBefore(ctx context.Context, t time.Time) ([]OAuthRecord, error) {

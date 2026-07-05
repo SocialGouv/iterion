@@ -241,15 +241,7 @@ func (s *MongoGenericSecretStore) Get(ctx context.Context, id string) (GenericSe
 	if err != nil {
 		return GenericSecret{}, err
 	}
-	var rec GenericSecret
-	err = s.coll.FindOne(ctx, filter).Decode(&rec)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return GenericSecret{}, ErrGenericSecretNotFound
-	}
-	if err != nil {
-		return GenericSecret{}, fmt.Errorf("secrets: get generic secret: %w", err)
-	}
-	return rec, nil
+	return mongoutil.FindOne[GenericSecret](ctx, s.coll, filter, ErrGenericSecretNotFound, "secrets: get generic secret")
 }
 
 func (s *MongoGenericSecretStore) Update(ctx context.Context, rec GenericSecret) error {
@@ -258,14 +250,7 @@ func (s *MongoGenericSecretStore) Update(ctx context.Context, rec GenericSecret)
 		return ErrGenericSecretTenantMissing
 	}
 	rec.TenantID = tenantID
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": rec.ID, "tenant_id": tenantID}, rec)
-	if err != nil {
-		return fmt.Errorf("secrets: update generic secret: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrGenericSecretNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": rec.ID, "tenant_id": tenantID}, rec, nil, ErrGenericSecretNotFound, "secrets: update generic secret")
 }
 
 func (s *MongoGenericSecretStore) Delete(ctx context.Context, id string) error {
@@ -273,14 +258,7 @@ func (s *MongoGenericSecretStore) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.coll.DeleteOne(ctx, filter)
-	if err != nil {
-		return fmt.Errorf("secrets: delete generic secret: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrGenericSecretNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, filter, ErrGenericSecretNotFound, "secrets: delete generic secret")
 }
 
 func (s *MongoGenericSecretStore) ListByTeam(ctx context.Context, teamID, userID string) ([]GenericSecret, error) {
