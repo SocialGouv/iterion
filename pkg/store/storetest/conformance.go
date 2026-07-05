@@ -44,17 +44,6 @@ type Opts struct {
 	InitialStatus store.RunStatus
 }
 
-// Default returns a sensible baseline matching the filesystem
-// backend. New backends override per-field as needed.
-func Default() Opts {
-	return Opts{InitialStatus: store.RunStatusRunning}
-}
-
-// Run executes the full conformance suite against factory.
-func Run(t *testing.T, factory Factory) {
-	RunWithOpts(t, factory, Default())
-}
-
 // RunWithOpts executes the full conformance suite with backend-
 // specific overrides.
 func RunWithOpts(t *testing.T, factory Factory, opts Opts) {

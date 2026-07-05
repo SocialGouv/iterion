@@ -40,12 +40,6 @@ type Scheduler struct {
 // SchedulerOption configures a Scheduler.
 type SchedulerOption func(*Scheduler)
 
-// WithSchedulerInterval sets the tick cadence (default 1 minute — cron's
-// finest granularity).
-func WithSchedulerInterval(d time.Duration) SchedulerOption {
-	return func(s *Scheduler) { s.interval = d }
-}
-
 // WithSchedulerLogger sets the leveled logger (nil-safe).
 func WithSchedulerLogger(l *iterlog.Logger) SchedulerOption {
 	return func(s *Scheduler) { s.logger = l }

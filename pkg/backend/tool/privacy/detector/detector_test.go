@@ -9,14 +9,6 @@ import (
 	"time"
 )
 
-// scanCategories returns a fresh detector and the spans for text
-// limited to the given categories at the lowest score floor.
-func scanAll(t *testing.T, text string) []Span {
-	t.Helper()
-	d := New()
-	return d.Scan(text, Options{MinScore: 0})
-}
-
 func scanCat(t *testing.T, text string, categories ...string) []Span {
 	t.Helper()
 	d := New()
