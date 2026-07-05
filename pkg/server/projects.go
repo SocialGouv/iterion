@@ -147,9 +147,7 @@ func (s *Server) handleSwitchProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req switchProjectRequest
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10) // 64 KB cap; payload is a single id
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+	if !decodeJSONCapped(s, w, r, &req, 64<<10) { // 64 KB cap; payload is a single id
 		return
 	}
 	if req.ID == "" {
@@ -198,9 +196,7 @@ func (s *Server) handleAddProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req addProjectRequest
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10) // 64 KB cap; payload is a single directory path
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+	if !decodeJSONCapped(s, w, r, &req, 64<<10) { // 64 KB cap; payload is a single directory path
 		return
 	}
 	if req.Dir == "" {
