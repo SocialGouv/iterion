@@ -95,9 +95,14 @@ first paint) to render the [WorkspaceShell](../studio/src/workspace/WorkspaceShe
 in the main frame vs. the normal `App` (under a `wouter` base of the
 scope) in a pane.
 
-Known limitation: the Browser-Live (CDP) pane's WS still derives from
-`window.location.origin` and is not yet scope-aware, so it does not
-connect inside a pane (degrades to disconnected, no crash) — a follow-up.
+Auth in a cloud pane is desktop-owned: the demux strips the request Cookie
+and injects a Bearer refreshed off the OS-held jar, so a pane never runs its
+own `/auth/refresh` (it can't — no cookie); a 401 that reaches the pane means
+the desktop's refresh already failed, and recovery is driven from the shell
+(`cloud:auth-expired` → re-login → reload). The Browser-Live (CDP) pane
+resolves its WS through the same `_ws/*` path as every other pane, so it
+works for a local pane; a cloud CDP pane additionally needs the CDP endpoint
+to accept the `?ticket=` WS credential (follow-up).
 
 ## Key decisions
 
