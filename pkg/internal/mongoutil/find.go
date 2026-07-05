@@ -75,6 +75,23 @@ func FindOne[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, 
 	return out, nil
 }
 
+// FindOneAndDeleteChecked runs coll.FindOneAndDelete(filter) and decodes
+// the removed document into a T, mapping mongo.ErrNoDocuments to the
+// caller's notFoundErr sentinel and wrapping any other failure with
+// errMsg. It is the shared shape behind the single-use "take X" methods
+// (get-and-delete) across iterion's Mongo-backed stores.
+func FindOneAndDeleteChecked[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, notFoundErr error, errMsg string) (T, error) {
+	var out T
+	err := coll.FindOneAndDelete(ctx, filter).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return out, notFoundErr
+	}
+	if err != nil {
+		return out, fmt.Errorf("%s: %w", errMsg, err)
+	}
+	return out, nil
+}
+
 // ReplaceOneChecked replaces the document matching filter with doc,
 // mapping a duplicate-key conflict to dupErr (pass nil to skip that
 // check) and a zero-match result to notFoundErr. It is the shared shape
