@@ -613,8 +613,11 @@ func (s *Server) cardFromPath(w http.ResponseWriter, r *http.Request, board nati
 	return card, true
 }
 
-// issueClientForConn resolves a team connection to a forge.IssueClient.
-func (s *Server) issueClientForConn(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.IssueClient, forge.Connection, bool) {
+// connAdminFor resolves a team connection and its forge.Admin client,
+// writing the appropriate HTTP error and returning ok=false on any
+// failure. Shared by issueClientForConn/pullClientForConn, which each
+// perform their own type assertion on the returned admin client.
+func (s *Server) connAdminFor(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.Admin, forge.Connection, bool) {
 	conn, err := s.forgeConnections.Get(ctx, connID)
 	if err != nil || conn.TenantID != teamID {
 		httpError(w, http.StatusNotFound, "connection not found")
@@ -623,6 +626,15 @@ func (s *Server) issueClientForConn(w http.ResponseWriter, ctx context.Context, 
 	admin, err := s.forgeAdminFor(ctx, conn)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "admin client: %v", err)
+		return nil, forge.Connection{}, false
+	}
+	return admin, conn, true
+}
+
+// issueClientForConn resolves a team connection to a forge.IssueClient.
+func (s *Server) issueClientForConn(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.IssueClient, forge.Connection, bool) {
+	admin, conn, ok := s.connAdminFor(w, ctx, teamID, connID)
+	if !ok {
 		return nil, forge.Connection{}, false
 	}
 	ic, ok := admin.(forge.IssueClient)
@@ -634,14 +646,8 @@ func (s *Server) issueClientForConn(w http.ResponseWriter, ctx context.Context, 
 }
 
 func (s *Server) pullClientForConn(w http.ResponseWriter, ctx context.Context, teamID, connID string) (forge.PullClient, forge.Connection, bool) {
-	conn, err := s.forgeConnections.Get(ctx, connID)
-	if err != nil || conn.TenantID != teamID {
-		httpError(w, http.StatusNotFound, "connection not found")
-		return nil, forge.Connection{}, false
-	}
-	admin, err := s.forgeAdminFor(ctx, conn)
-	if err != nil {
-		httpError(w, http.StatusBadGateway, "admin client: %v", err)
+	admin, conn, ok := s.connAdminFor(w, ctx, teamID, connID)
+	if !ok {
 		return nil, forge.Connection{}, false
 	}
 	pc, ok := admin.(forge.PullClient)
