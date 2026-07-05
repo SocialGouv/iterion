@@ -106,21 +106,6 @@ func NewFactory(opts FactoryOptions) *Factory {
 // Host returns the resolved host kind.
 func (f *Factory) Host() HostKind { return f.host }
 
-// Register adds (or replaces) a driver constructor. Driver sub-packages
-// register themselves via init() side-effects in package main / cmd
-// init code. Registration is expected to happen during process
-// bootstrap; the mutex is here to prevent a torn read against the
-// concurrent [Factory.Driver] callers that show up during integration
-// tests rather than to support hot registration.
-func (f *Factory) Register(name string, ctor DriverConstructor) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.registry[name] = ctor
-	f.cacheValid = false
-	f.cached = nil
-	f.cachedErr = nil
-}
-
 // Available returns the names of registered drivers in stable order.
 // Useful for `iterion sandbox doctor` output.
 func (f *Factory) Available() []string {

@@ -91,9 +91,6 @@ func Compile(mode Mode, rules []string) (*Policy, error) {
 	return p, nil
 }
 
-// Mode returns the policy's fallback mode.
-func (p *Policy) Mode() Mode { return p.mode }
-
 // Allow reports whether the host is permitted by the policy.
 //
 // host is the raw value from a CONNECT line ("api.anthropic.com:443")
