@@ -169,6 +169,22 @@ func (s *Server) authStoreOrFail(w http.ResponseWriter) (identity.Store, bool) {
 	return st, true
 }
 
+// orgStoreAndOrgFromPath resolves the identity store and loads the org
+// named by the request's "id" path value, writing the appropriate error
+// response and returning ok=false on either failure.
+func (s *Server) orgStoreAndOrgFromPath(w http.ResponseWriter, r *http.Request) (identity.Store, identity.Org, bool) {
+	store, ok := s.authStoreOrFail(w)
+	if !ok {
+		return nil, identity.Org{}, false
+	}
+	o, err := store.GetOrg(r.Context(), r.PathValue("id"))
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return nil, identity.Org{}, false
+	}
+	return store, o, true
+}
+
 // applyNonNegative copies *p into *dst when p is non-nil, rejecting
 // negative values with a 400. Returns true on success (including the
 // p==nil no-op), false if it already wrote an error response.
@@ -286,26 +302,16 @@ func (s *Server) handleAdminRestoreOrg(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminGetOrg(w http.ResponseWriter, r *http.Request) {
-	store, ok := s.authStoreOrFail(w)
+	_, o, ok := s.orgStoreAndOrgFromPath(w, r)
 	if !ok {
-		return
-	}
-	o, err := store.GetOrg(r.Context(), r.PathValue("id"))
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
 	writeJSON(w, toOrgView(o))
 }
 
 func (s *Server) handleAdminUpdateOrg(w http.ResponseWriter, r *http.Request) {
-	store, ok := s.authStoreOrFail(w)
+	store, o, ok := s.orgStoreAndOrgFromPath(w, r)
 	if !ok {
-		return
-	}
-	o, err := store.GetOrg(r.Context(), r.PathValue("id"))
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
 	var req updateOrgReq
@@ -361,16 +367,11 @@ type tenantMemoryQuotaSetter interface {
 }
 
 func (s *Server) handleAdminSetOrgStatus(w http.ResponseWriter, r *http.Request) {
-	store, ok := s.authStoreOrFail(w)
+	store, o, ok := s.orgStoreAndOrgFromPath(w, r)
 	if !ok {
 		return
 	}
 	id, _ := auth.FromContext(r.Context())
-	o, err := store.GetOrg(r.Context(), r.PathValue("id"))
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
-		return
-	}
 	var req setOrgStatusReq
 	if !decodeJSON(w, r, &req) {
 		return
@@ -404,13 +405,8 @@ func (s *Server) handleAdminSetOrgStatus(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleAdminOrgUsage(w http.ResponseWriter, r *http.Request) {
-	store, ok := s.authStoreOrFail(w)
+	store, o, ok := s.orgStoreAndOrgFromPath(w, r)
 	if !ok {
-		return
-	}
-	o, err := store.GetOrg(r.Context(), r.PathValue("id"))
-	if err != nil {
-		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
 		return
 	}
 	writeJSON(w, s.buildOrgUsageView(r.Context(), store, o))
