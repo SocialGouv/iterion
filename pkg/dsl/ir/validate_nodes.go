@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // validateEvents cross-checks emit/wait event names (ADR-051): a wait on an
@@ -621,6 +622,38 @@ func (c *compiler) validateReasoningEffort(w *Workflow) {
 			c.warnf(DiagUltracodeModelGate,
 				"node %q uses reasoning_effort: ultracode but model %q is not claude-opus-4-8; ultracode's workflow-orchestration prerogative is reliable only on Opus 4.8 and will degrade to plain xhigh elsewhere",
 				node.NodeID(), shown)
+		}
+	}
+}
+
+// validateNodeTimeout checks the per-node `timeout:` on LLM nodes (agent/judge)
+// is a well-formed, positive Go duration. Env-substituted forms
+// ("${VAR:-20m}") are expanded first so the default value is validated; a bare
+// unset ${VAR} expands to "" and is deferred to the runtime resolver rather
+// than flagged as a false positive.
+func (c *compiler) validateNodeTimeout(w *Workflow) {
+	for _, node := range w.Nodes {
+		n, ok := node.(LLMNode)
+		if !ok {
+			continue
+		}
+		raw := n.GetLLMFields().Timeout
+		if raw == "" {
+			continue
+		}
+		expanded := ExpandEnvWithDefault(raw)
+		if expanded == "" {
+			continue
+		}
+		d, err := time.ParseDuration(expanded)
+		if err != nil {
+			c.errorf(DiagInvalidNodeTimeout,
+				"node %q has an invalid timeout %q: %v", node.NodeID(), raw, err)
+			continue
+		}
+		if d <= 0 {
+			c.errorf(DiagInvalidNodeTimeout,
+				"node %q timeout must be positive, got %q", node.NodeID(), raw)
 		}
 	}
 }

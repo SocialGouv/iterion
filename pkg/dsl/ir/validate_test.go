@@ -1153,6 +1153,78 @@ workflow test:
 	expectNoDiag(t, r, DiagInvalidReasoningEffort)
 }
 
+// ---------------------------------------------------------------------------
+// C199 — invalid per-node timeout
+// ---------------------------------------------------------------------------
+
+func TestValidateNodeTimeout_Invalid(t *testing.T) {
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  system: sys
+  user: usr
+  timeout: "banana"
+
+workflow test:
+  entry: a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	expectDiag(t, r, DiagInvalidNodeTimeout)
+}
+
+func TestValidateNodeTimeout_Valid(t *testing.T) {
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  system: sys
+  user: usr
+  timeout: "20m"
+
+workflow test:
+  entry: a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInvalidNodeTimeout)
+}
+
+// An unset bare env ref expands to "" and is deferred to the runtime
+// resolver rather than flagged at compile time.
+func TestValidateNodeTimeout_EnvSubstDeferred(t *testing.T) {
+	src := `
+prompt sys:
+  System.
+
+prompt usr:
+  User.
+
+agent a1:
+  model: "m"
+  system: sys
+  user: usr
+  timeout: "${NODE_TIMEOUT}"
+
+workflow test:
+  entry: a1
+  a1 -> done
+`
+	r := compileFile(t, src)
+	expectNoDiag(t, r, DiagInvalidNodeTimeout)
+}
+
 func TestResolveEffortLiteral(t *testing.T) {
 	tests := []struct {
 		name     string

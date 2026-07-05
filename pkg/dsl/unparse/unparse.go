@@ -207,6 +207,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			System: a.System, User: a.User, Session: a.Session,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
+			Timeout:  a.Timeout,
 			Readonly: a.Readonly, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
 			Compress: a.Compress, Permission: a.Permission, Needs: a.Needs,
@@ -237,6 +238,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			System: j.System, User: j.User, Session: j.Session,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
+			Timeout:  j.Timeout,
 			Readonly: j.Readonly, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
 			Compress: j.Compress, Permission: j.Permission, Needs: j.Needs,
@@ -833,6 +835,7 @@ type llmFields struct {
 	Capabilities                        []string
 	ToolMaxSteps, MaxTokens             int
 	ReasoningEffort                     string
+	Timeout                             string
 	Readonly                            bool
 	Interaction                         ast.InteractionMode
 	InteractionPrompt, InteractionModel string
@@ -892,6 +895,9 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if f.ReasoningEffort != "" {
 		writeReasoningEffortProp(b, f.ReasoningEffort)
+	}
+	if f.Timeout != "" {
+		writeQuotedProp(b, "timeout", f.Timeout)
 	}
 	if f.Readonly {
 		writeProp(b, "readonly", "true")

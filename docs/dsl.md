@@ -84,6 +84,7 @@ agent reviewer:
 | `tools` | List of allowed tool names |
 | `tool_max_steps` | Max tool-use iterations (0 = unlimited) |
 | `reasoning_effort` | Extended thinking: `low`, `medium`, `high`, `xhigh`, `max` |
+| `timeout` | Per-node wall-clock bound as a Go duration string, e.g. `"20m"`, `"1200s"` (supports `${ENV_VAR:-default}`). The node fails once this or the workflow budget deadline — whichever is tighter — expires. |
 | `readonly` | If `true`, prevents tool side effects (workspace safety) |
 
 ### Judge

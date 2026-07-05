@@ -120,6 +120,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C196** | error | Event node without name | An `emit`/`wait` node has no `event:` name (ADR-051) | Add `event: "<name>"` |
 | **C197** | error | Wait without timeout | A `wait` node has no (or an invalid/non-positive) `timeout:` — the mandatory bound, the "no silent infinity" invariant for events | Add `timeout: "30s"` (a positive Go duration) |
 | **C198** | warning | Dangling event | A `wait` awaits an event no `emit` produces (it can only ever time out), or an `emit` produces an event no `wait` consumes (dead event) | Pair each `wait` with an `emit` of the same event name (a `wait` on an externally-sourced event is expected to warn until external-event support lands) |
+| **C199** | error | Invalid node timeout | An agent/judge `timeout:` is not a positive Go duration (after `${VAR:-default}` expansion) | Use a positive Go duration string, e.g. `timeout: "20m"` or `"1200s"` |
 
 > **Note on `C103`–`C106` (Verified Actions, ADR-044):** these four codes are
 > the adaptive-recovery firewall on deterministic ACTION tool nodes. The
