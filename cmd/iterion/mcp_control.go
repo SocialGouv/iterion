@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -202,14 +201,7 @@ func dispatchMCPControl(req mcpRequest, client *controlClient) mcpResponse {
 
 	switch req.Method {
 	case "initialize":
-		resp.Result = map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo": map[string]any{
-				"name":    "iterion-control",
-				"version": cli.Version(),
-			},
-		}
+		resp.Result = mcpInitializeResult("iterion-control")
 	case "tools/list":
 		resp.Result = map[string]any{
 			"tools": []map[string]any{
@@ -225,7 +217,7 @@ func dispatchMCPControl(req mcpRequest, client *controlClient) mcpResponse {
 	case "tools/call":
 		resp = handleControlToolCall(req, client)
 	default:
-		resp.Error = &mcpError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
+		resp.Error = mcpMethodNotFoundError(req.Method)
 	}
 	return resp
 }
@@ -238,7 +230,7 @@ func handleControlToolCall(req mcpRequest, client *controlClient) mcpResponse {
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		resp.Error = &mcpError{Code: -32602, Message: fmt.Sprintf("invalid params: %s", err)}
+		resp.Error = mcpInvalidParamsError(err)
 		return resp
 	}
 

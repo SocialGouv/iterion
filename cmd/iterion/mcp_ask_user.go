@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -60,16 +59,7 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 
 	switch req.Method {
 	case "initialize":
-		resp.Result = map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-			},
-			"serverInfo": map[string]any{
-				"name":    "iterion-ask-user",
-				"version": cli.Version(),
-			},
-		}
+		resp.Result = mcpInitializeResult("iterion-ask-user")
 	case "tools/list":
 		resp.Result = map[string]any{
 			"tools": []map[string]any{
@@ -86,7 +76,7 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			resp.Error = &mcpError{Code: -32602, Message: fmt.Sprintf("invalid params: %s", err)}
+			resp.Error = mcpInvalidParamsError(err)
 			return resp
 		}
 		// Defensive fallback: this handler should not be reached in practice because
@@ -104,7 +94,7 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 			"isError": true,
 		}
 	default:
-		resp.Error = &mcpError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
+		resp.Error = mcpMethodNotFoundError(req.Method)
 	}
 	return resp
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/SocialGouv/iterion/pkg/cli"
 )
 
 // Shared JSON-RPC 2.0 message types for the internal MCP stdio servers
@@ -28,6 +30,29 @@ type mcpResponse struct {
 type mcpError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+// mcpInitializeResult builds the "initialize" response result shared by
+// every internal MCP stdio server; only the advertised server name varies.
+func mcpInitializeResult(serverName string) any {
+	return map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{"tools": map[string]any{}},
+		"serverInfo": map[string]any{
+			"name":    serverName,
+			"version": cli.Version(),
+		},
+	}
+}
+
+// mcpMethodNotFoundError builds the -32601 error for an unhandled method.
+func mcpMethodNotFoundError(method string) *mcpError {
+	return &mcpError{Code: -32601, Message: fmt.Sprintf("method not found: %s", method)}
+}
+
+// mcpInvalidParamsError builds the -32602 error for a params-unmarshal failure.
+func mcpInvalidParamsError(err error) *mcpError {
+	return &mcpError{Code: -32602, Message: fmt.Sprintf("invalid params: %s", err)}
 }
 
 // runMCPLoop drives a line-delimited JSON-RPC server over the given streams.

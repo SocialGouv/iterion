@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 	"github.com/spf13/cobra"
@@ -70,14 +69,7 @@ func dispatchMCPBoard(req mcpRequest, store *native.Store, caps boardops.Capabil
 
 	switch req.Method {
 	case "initialize":
-		resp.Result = map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo": map[string]any{
-				"name":    "iterion-board",
-				"version": cli.Version(),
-			},
-		}
+		resp.Result = mcpInitializeResult("iterion-board")
 	case "tools/list":
 		tools := boardops.ToolsFor(caps)
 		entries := make([]map[string]any, 0, len(tools))
@@ -95,7 +87,7 @@ func dispatchMCPBoard(req mcpRequest, store *native.Store, caps boardops.Capabil
 			Arguments json.RawMessage `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			resp.Error = &mcpError{Code: -32602, Message: fmt.Sprintf("invalid params: %s", err)}
+			resp.Error = mcpInvalidParamsError(err)
 			return resp
 		}
 		raw, err := boardops.Call(store, caps, params.Name, params.Arguments)
@@ -117,7 +109,7 @@ func dispatchMCPBoard(req mcpRequest, store *native.Store, caps boardops.Capabil
 			"isError": false,
 		}
 	default:
-		resp.Error = &mcpError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
+		resp.Error = mcpMethodNotFoundError(req.Method)
 	}
 	return resp
 }
