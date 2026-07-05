@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -49,13 +50,11 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 // not-found, never a leak. Refuses documents written by a future
 // schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
-	var r store.Run
-	err := s.runs.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": id})).Decode(&r)
+	r, err := mongoutil.FindOne[store.Run](ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}),
+		fmt.Errorf("store/mongo: run %s not found", id),
+		fmt.Sprintf("store/mongo: load run %s", id))
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("store/mongo: run %s not found", id)
-		}
-		return nil, fmt.Errorf("store/mongo: load run %s: %w", id, err)
+		return nil, err
 	}
 	if r.SchemaVersion > SchemaVersion {
 		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
