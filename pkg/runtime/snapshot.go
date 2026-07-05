@@ -125,11 +125,8 @@ func runGit(wtPath string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// Ref builders live in pkg/store so the Fork API can share them
-// without importing pkg/runtime. Aliased here so the engine's call
-// sites read naturally.
-var (
-	nodeSnapshotRef = store.NodeSnapshotRef
-	turnSnapshotRef = store.TurnSnapshotRef
-)
+// nodeSnapshotRef builds ref names in pkg/store so the Fork API can
+// share them without importing pkg/runtime. Aliased here so the
+// engine's call sites read naturally.
+var nodeSnapshotRef = store.NodeSnapshotRef
 

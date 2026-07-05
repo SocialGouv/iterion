@@ -62,8 +62,7 @@ type rule struct {
 	literal string     // empty when ipNet != nil
 	cidr    *net.IPNet // nil when literal != ""
 	// glob fields (compiled from literal):
-	prefix string // labels before the wildcard (e.g. "*.example.com" → "")
-	suffix string // labels after  the wildcard (e.g. "example.com")
+	suffix string // labels after the wildcard (e.g. "example.com")
 	star   string // "*" (single label) or "**" (multi-label) or ""
 }
 
