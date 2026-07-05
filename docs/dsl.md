@@ -36,6 +36,26 @@ prompt review_user:
   Previous feedback: {{outputs.prior_review.summary}}
 ```
 
+### Including an external file
+
+Use `{{include "relative/path.md"}}` inside a prompt body to inline the
+contents of an external file (e.g. a shared rules file) at **compile
+time** — the marker is replaced once with the file's text before the
+workflow is validated or run, so the injected content is auditable in
+the compiled workflow and there is no runtime file access:
+
+```iter
+prompt review_system:
+  You are a code reviewer.
+  {{include "rules/review-guidelines.md"}}
+```
+
+The path is resolved **relative to the directory of the `.bot` file**.
+Absolute paths, paths that escape the `.bot` directory (via `..`), and
+files larger than 256 KiB are rejected with diagnostic `C055`, as is a
+missing file. Included text may itself contain `{{...}}` template
+references, which resolve normally after inclusion.
+
 ## Schemas
 
 Typed data contracts for structured agent I/O:

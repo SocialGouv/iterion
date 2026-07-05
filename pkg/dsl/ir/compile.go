@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -717,13 +718,23 @@ func (c *compiler) compilePrompts() {
 			continue
 		}
 		seen[p.Name] = true
-		refs, err := ParseRefs(p.Body)
+		// Expand {{include "..."}} markers once, at compile time, before
+		// ParseRefs sees the body — the injected file content becomes part
+		// of the resolved prompt (auditable, no runtime file reads).
+		// Resolve relative to the .bot source directory, carried on the
+		// declaration's span (like MergeBundlePrompts reads bundle files
+		// relative to the bundle dir).
+		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
+		for _, e := range incErrs {
+			c.errorf(DiagBadPromptInclude, "prompt %q: %v", p.Name, e)
+		}
+		refs, err := ParseRefs(body)
 		if err != nil {
 			c.errorf(DiagBadTemplateRef, "prompt %q: %v", p.Name, err)
 		}
 		c.prompts[p.Name] = &Prompt{
 			Name:         p.Name,
-			Body:         p.Body,
+			Body:         body,
 			TemplateRefs: refs,
 		}
 	}
