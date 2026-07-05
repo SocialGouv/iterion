@@ -34,6 +34,11 @@ export default function WorkspaceShell() {
   // firstRunPending: null = not yet probed, true = show onboarding, false = go.
   const [firstRunPending, setFirstRunPending] = useState<boolean | null>(null);
   const bootstrapped = useRef(false);
+  // Live refs read by the native-event handlers (which subscribe once) so a
+  // menu forward / focus always targets the CURRENT active pane iframe.
+  const iframeRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeId;
 
   const loadConnections = useCallback(async () => {
     try {
@@ -109,17 +114,41 @@ export default function WorkspaceShell() {
   useEffect(() => onDesktopEvent(DesktopEvent.ProjectsChanged, () => void loadConnections()), [loadConnections]);
 
   // Main-frame native wiring the shell owns (the panes can't — no window.go):
-  // cloud re-login prompt on session expiry, native run-health notifications,
-  // and the File ▸ New Project menu item.
+  // cloud re-login prompt, native run-health notifications, and the native
+  // menu bar. Connection-scoped menu items (Settings / About / Undo / Redo)
+  // are FORWARDED to the active pane's iframe via postMessage (its own SPA
+  // handles them); shell-scoped items (New / Switch Project) act here.
   useEffect(() => {
+    const forwardMenu = (menu: string, tab?: string) => {
+      const id = activeIdRef.current;
+      const el = id ? iframeRefs.current[id] : null;
+      el?.contentWindow?.postMessage({ source: "iterion-shell", type: "menu", menu, tab }, "*");
+    };
     const offs = [
       onDesktopEvent<string>(DesktopEvent.CloudAuthExpired, (connId) => setReloginConnId(connId)),
       onDesktopEvent<RunAlertPayload>(DesktopEvent.RunAlert, (payload) => showRunAlertNotification(payload)),
       onDesktopEvent(DesktopEvent.MenuNewProject, () => void onAddLocal()),
+      onDesktopEvent(DesktopEvent.MenuSwitchProject, () => setMenuOpen(true)),
+      onDesktopEvent(DesktopEvent.MenuSettings, () => forwardMenu("settings", "api-keys")),
+      onDesktopEvent(DesktopEvent.MenuAbout, () => forwardMenu("settings", "about")),
+      onDesktopEvent(DesktopEvent.MenuUndo, () => forwardMenu("undo")),
+      onDesktopEvent(DesktopEvent.MenuRedo, () => forwardMenu("redo")),
     ];
-    return () => offs.forEach((off) => off());
-    // onAddLocal is stable enough (its deps are stable callbacks); re-subscribing
-    // on every render would churn the native listeners.
+    // A pane whose cloud session expired asks the shell (its parent) to prompt
+    // re-login — the pane can't (no window.go), so it postMessages up here.
+    const onPaneMessage = (e: MessageEvent) => {
+      const d = e.data as { source?: string; type?: string; connId?: string } | null;
+      if (d?.source === "iterion-pane" && d.type === "auth-expired" && d.connId) {
+        setReloginConnId(d.connId);
+      }
+    };
+    window.addEventListener("message", onPaneMessage);
+    return () => {
+      offs.forEach((off) => off());
+      window.removeEventListener("message", onPaneMessage);
+    };
+    // onAddLocal is stable (deps are stable callbacks); the handlers read live
+    // refs, so subscribing once avoids churning the native listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -292,6 +321,9 @@ export default function WorkspaceShell() {
           return (
             <iframe
               key={id}
+              ref={(el) => {
+                iframeRefs.current[id] = el;
+              }}
               src={`/x/${id}/`}
               title={projectById(id)?.name ?? id}
               className="h-full w-full border-0 min-w-0"

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button, Dialog, Input } from "@/components/ui";
 import { desktop, type CloudProvider } from "@/lib/desktopBridge";
@@ -10,11 +10,14 @@ interface Props {
   onConnected: () => void;
 }
 
-// CloudConnectModal is the desktop shell's "Connect to Cloud…" flow. It
-// registers a remote iterion instance and logs in with a password; the Go
-// side (ConnectCloud) validates the URL via /api/server/info, performs a
-// native login, stores the refresh token in the OS keychain, and points the
-// authenticating proxy at the remote. SSO buttons arrive in Phase 2.
+// CloudConnectModal is the desktop shell's "Connect to Cloud…" flow. Enter a
+// cloud URL and its OAuth providers are auto-discovered: "Continue with
+// <provider>" opens the cloud's authorize page in the system browser and
+// completes over a single-use loopback ticket (ConnectCloudSSO) — the primary,
+// password-less path. Email + password (ConnectCloud) is the fallback, or the
+// only option for a cloud with no SSO. Either way the Go side validates the URL
+// via /api/server/info, stores the refresh token in the OS keychain, and points
+// the authenticating proxy at the remote.
 export default function CloudConnectModal({ open, onClose, onConnected }: Props) {
   const [url, setUrl] = useState("");
   const [email, setEmail] = useState("");
@@ -22,6 +25,7 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [providers, setProviders] = useState<CloudProvider[] | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const reset = () => {
     setUrl("");
@@ -30,27 +34,37 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
     setError(null);
     setBusy(false);
     setProviders(null);
+    setShowPassword(false);
   };
 
-  const onLoadProviders = async () => {
-    if (url.trim() === "") {
-      setError("Enter the cloud URL first.");
+  // Auto-discover the cloud's OAuth providers once a plausible URL is typed, so
+  // the "Continue with <provider>" (browser OAuth) buttons appear without an
+  // extra click — OAuth is the primary, lowest-friction connect path. Debounced
+  // and best-effort: a failed probe just leaves the SSO buttons hidden and the
+  // email/password fallback available. `email` is passed so a cloud with
+  // per-org (tenant) IdPs can resolve the right one.
+  useEffect(() => {
+    const u = url.trim();
+    if (!open || !/^https?:\/\/.+/.test(u)) {
+      setProviders(null);
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await desktop.listCloudProviders(url.trim(), email.trim());
-      setProviders(res.providers ?? []);
-      if ((res.providers ?? []).length === 0) {
-        setError("This cloud has no SSO providers configured.");
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+    let cancelled = false;
+    const t = setTimeout(() => {
+      desktop
+        .listCloudProviders(u, email.trim())
+        .then((res) => {
+          if (!cancelled) setProviders(res.providers ?? []);
+        })
+        .catch(() => {
+          if (!cancelled) setProviders(null);
+        });
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [url, email, open]);
 
   const onSSO = async (provider: string) => {
     setBusy(true);
@@ -65,6 +79,10 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
     }
   };
 
+  const hasProviders = (providers?.length ?? 0) > 0;
+  // Password fallback is shown when the user asks for it, or when the cloud has
+  // no OAuth providers to offer (then it's the only way in).
+  const showPasswordForm = showPassword || !hasProviders;
   const canSubmit = url.trim() !== "" && email.trim() !== "" && password !== "" && !busy;
 
   const onSubmit = async () => {
@@ -115,28 +133,7 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
             disabled={busy}
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs font-medium">
-          Email
-          <Input
-            type="email"
-            placeholder="you@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            size="md"
-            disabled={busy}
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium">
-          Password
-          <Input
-            type="password"
-            placeholder="••••••••"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            size="md"
-            disabled={busy}
-          />
-        </label>
+
         {error && (
           <div
             className="text-xs text-danger-fg bg-danger-soft border border-danger/40 rounded px-2 py-1.5"
@@ -145,54 +142,102 @@ export default function CloudConnectModal({ open, onClose, onConnected }: Props)
             {error}
           </div>
         )}
-        <div className="flex justify-end gap-2 pt-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              reset();
-              onClose();
-            }}
-            disabled={busy}
-          >
-            Cancel
-          </Button>
-          <Button type="submit" variant="primary" size="sm" disabled={!canSubmit}>
-            {busy ? "Connecting…" : "Connect"}
-          </Button>
-        </div>
 
-        <div className="flex items-center gap-2 pt-1">
-          <div className="h-px flex-1 bg-border-default" />
-          <span className="text-caption uppercase tracking-wider text-fg-subtle">or</span>
-          <div className="h-px flex-1 bg-border-default" />
-        </div>
-
-        {providers === null ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => void onLoadProviders()}
-            disabled={busy || url.trim() === ""}
-          >
-            Sign in with SSO
-          </Button>
-        ) : (
+        {/* OAuth is the primary path: discovered from the URL, it opens the
+            cloud's authorize page in your browser and completes over a loopback
+            ticket — no password typed into the desktop. */}
+        {hasProviders && (
           <div className="flex flex-col gap-1.5">
-            {providers.map((p) => (
+            {providers!.map((p) => (
               <Button
                 key={p.name}
                 type="button"
-                variant="secondary"
-                size="sm"
+                variant="primary"
+                size="md"
                 onClick={() => void onSSO(p.name)}
                 disabled={busy}
               >
                 {busy ? "Opening browser…" : `Continue with ${p.display || p.name}`}
               </Button>
             ))}
+          </div>
+        )}
+
+        {/* Email + password: the fallback (or the only option when a cloud has
+            no SSO). Shown by default when no providers were discovered. */}
+        {showPasswordForm ? (
+          <>
+            {hasProviders && (
+              <div className="flex items-center gap-2">
+                <div className="h-px flex-1 bg-border-default" />
+                <span className="text-caption uppercase tracking-wider text-fg-subtle">
+                  or with email
+                </span>
+                <div className="h-px flex-1 bg-border-default" />
+              </div>
+            )}
+            <label className="flex flex-col gap-1 text-xs font-medium">
+              Email
+              <Input
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                size="md"
+                disabled={busy}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-medium">
+              Password
+              <Input
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                size="md"
+                disabled={busy}
+              />
+            </label>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  reset();
+                  onClose();
+                }}
+                disabled={busy}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" size="sm" disabled={!canSubmit}>
+                {busy ? "Connecting…" : "Connect"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center justify-between pt-1">
+            <button
+              type="button"
+              className="text-xs text-fg-subtle hover:text-fg-default underline underline-offset-2"
+              onClick={() => setShowPassword(true)}
+              disabled={busy}
+            >
+              Sign in with email &amp; password instead
+            </button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                reset();
+                onClose();
+              }}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
           </div>
         )}
       </form>
