@@ -129,4 +129,3 @@ func runGit(wtPath string, args ...string) (string, error) {
 // share them without importing pkg/runtime. Aliased here so the
 // engine's call sites read naturally.
 var nodeSnapshotRef = store.NodeSnapshotRef
-
