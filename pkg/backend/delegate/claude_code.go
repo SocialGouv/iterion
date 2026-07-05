@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -660,6 +661,22 @@ func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task T
 	}
 }
 
+// hostSpawnEnv returns the process environment with the per-task env entries
+// appended (last-wins), matching the SDK's default host spawn
+// (claudesdk/process.go: cmd.Env = os.Environ() then append) and Pass 1. The
+// host-side CommandBuilder installed by formatOutput to capture the spawned
+// cmd would otherwise set cmd.Env to ONLY the per-task entries, stripping
+// PATH/HOME and any ambient credential env from the structured-output format
+// pass. Appending the per-task entries last preserves their precedence over
+// inherited values (os/exec keeps the last occurrence of a duplicate key).
+func hostSpawnEnv(extra map[string]string) []string {
+	base := os.Environ()
+	for k, v := range extra {
+		base = append(base, k+"="+v)
+	}
+	return base
+}
+
 // formatOutput performs the second pass of two-pass execution: resumes the
 // Pass 1 session with WithOutputFormat (no tools) to guarantee structured JSON
 // output conforming to the schema. The model already has full context from the
@@ -758,12 +775,14 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			cmd := exec.CommandContext(ctx, path, args...)
 			cmd.Dir = cwd
-			if len(env) > 0 {
-				cmd.Env = make([]string, 0, len(env))
-				for k, v := range env {
-					cmd.Env = append(cmd.Env, k+"="+v)
-				}
-			}
+			// Seed os.Environ() before the per-task entries — matching the
+			// SDK's default host spawn (claudesdk/process.go) and Pass 1 — so
+			// the format pass inherits PATH/HOME and any ambient credential
+			// env instead of running with a stripped environment. The prior
+			// code set cmd.Env to ONLY the per-task entries, dropping the
+			// inherited env (CLAUDE_CODE_EFFORT_LEVEL is always present, so the
+			// strip always fired). Per-task entries stay last so they still win.
+			cmd.Env = hostSpawnEnv(env)
 			captureCmd(cmd)
 			return cmd
 		}))
