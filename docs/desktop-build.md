@@ -126,6 +126,32 @@ Producing an installable bundle (`.deb`/AppImage) still wants the apt tooling
 (`dpkg-dev`, `patchelf`, `linuxdeploy`, …); the nix path covers the Go build,
 not the packaging.
 
+> **⚠ The nix path is for COMPILING/TESTING, not for a binary you RUN on a
+> non-NixOS host.** A binary linked against nix gtk/webkit also pulls nix's
+> Mesa/`libEGL`/`libGL` (via the baked `RUNPATH`), and nix's `libEGL` cannot
+> find a non-NixOS system's GPU drivers (it looks under the nix store, not
+> `/usr/lib/.../dri`). At runtime it aborts with
+> `Could not create default EGL display: EGL_BAD_PARAMETER` and the window is
+> **black** (only the native GTK menu bar paints). A **runnable / distributable**
+> Linux GUI must link the SYSTEM webkit + libEGL so it can reach the host's GPU
+> drivers. On a host that already has the apt `-dev` packages + a Go 1.26
+> toolchain, build OUTSIDE devbox so no `NIX_LDFLAGS` `-rpath` is baked:
+>
+> ```sh
+> env -i HOME="$HOME" PATH=/usr/local/go/bin:/usr/bin:/bin \
+>   CGO_ENABLED=1 CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+>   PKG_CONFIG=/usr/bin/pkg-config \
+>   PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+>   go build -tags desktop,webkit2_41,production \
+>     -o build/bin/iterion-desktop-linux-amd64 ./cmd/iterion-desktop/
+> ```
+>
+> Verify it is clean with `ldd build/bin/iterion-desktop-linux-amd64` in a
+> plain shell: **no `/nix/store` paths**, `libEGL`/`libwebkit2gtk-4.1` resolving
+> under `/lib/x86_64-linux-gnu`. (The canonical Taskfile target
+> `desktop:build:linux:amd64` does the equivalent via the system pkg-config;
+> `env -i` outside devbox is the fallback when you can't easily get a clean PATH.)
+
 ## Building locally (Linux)
 
 The codebase is wired for both `devbox run --` workflows and host-native
