@@ -98,10 +98,16 @@ devbox flake pins (fetched from `cache.nixos.org`, not compiled) and point
 pkg-config at them, with no apt and no sudo. The wrapper does it for you:
 
 ```sh
-# builds gtk3.dev + webkitgtk_4_1.dev, assembles PKG_CONFIG_PATH, runs the cmd
-scripts/desktop/nix-pkgconfig-env.sh go build -tags desktop,webkit2_41 ./cmd/iterion-desktop/
-scripts/desktop/nix-pkgconfig-env.sh go test  -tags desktop,webkit2_41 ./cmd/iterion-desktop/
-scripts/desktop/nix-pkgconfig-env.sh task desktop:build
+# compile / vet / test the desktop package (no GUI needed):
+scripts/desktop/nix-pkgconfig-env.sh go test -tags desktop,webkit2_41 ./cmd/iterion-desktop/
+
+# a RUNNABLE GUI binary additionally needs the `production` tag — Wails' Linux
+# app impl is gated behind `production` (or `dev`); without it the binary starts
+# and prints "Wails applications will not build without the correct build tags"
+# (it fell back to app_default_unix.go). `wails build` injects this tag for you;
+# a plain `go build` must pass it:
+scripts/desktop/nix-pkgconfig-env.sh \
+  go build -tags desktop,webkit2_41,production -o ./iterion-desktop ./cmd/iterion-desktop/
 ```
 
 Two non-obvious things the script handles (and that trip up a hand-rolled

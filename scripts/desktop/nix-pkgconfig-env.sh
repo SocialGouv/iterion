@@ -51,10 +51,11 @@ fi
 
 nixflags=(--extra-experimental-features nix-command --extra-experimental-features flakes)
 
-echo "desktop deps: realising gtk3.dev + webkitgtk_4_1.dev from nixpkgs/$rev (cache.nixos.org)…" >&2
+echo "desktop deps: realising gtk3.dev + webkitgtk_4_1.dev + zlib from nixpkgs/$rev (cache.nixos.org)…" >&2
 mapfile -t devpaths < <(nix build "${nixflags[@]}" \
   "github:NixOS/nixpkgs/${rev}#gtk3.dev" \
   "github:NixOS/nixpkgs/${rev}#webkitgtk_4_1.dev" \
+  "github:NixOS/nixpkgs/${rev}#zlib" \
   --no-link --print-out-paths)
 
 if [ "${#devpaths[@]}" -eq 0 ]; then
@@ -62,14 +63,21 @@ if [ "${#devpaths[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# Collect every pkgconfig dir in the closure of those dev outputs — this is the
-# consistent, version-matched set gtk/webkit's transitive Requires resolve to.
-pcp=$(nix-store -qR "${devpaths[@]}" | while read -r p; do
+# Walk the closure of those dev outputs ONCE and split it into:
+#  - pkgconfig dirs (PKG_CONFIG_PATH) — the consistent, version-matched set
+#    gtk/webkit's transitive Requires resolve to;
+#  - lib dirs (LIBRARY_PATH) — so the gcc/ld link finds `-l` libs that aren't
+#    pulled through a `.pc` (notably `-lz` on the Wails `production` build).
+# `if/fi`, not `[ -d ] && …`: a trailing failed test would make the loop exit
+# non-zero and, under `set -o pipefail`, kill the whole assignment.
+closure=$(nix-store -qR "${devpaths[@]}")
+pcp=$(printf '%s\n' "$closure" | while read -r p; do
   for d in "$p/lib/pkgconfig" "$p/share/pkgconfig"; do
-    # `if/fi`, not `[ -d ] && …`: a trailing failed test would make the loop
-    # exit non-zero and, under `set -o pipefail`, kill the whole assignment.
     if [ -d "$d" ]; then printf '%s\n' "$d"; fi
   done
+done | sort -u | paste -sd:)
+libpath=$(printf '%s\n' "$closure" | while read -r p; do
+  if [ -d "$p/lib" ]; then printf '%s\n' "$p/lib"; fi
 done | sort -u | paste -sd:)
 
 # The nix pkg-config wrapper reads a TARGET-SPECIFIC variable and overwrites a
@@ -78,10 +86,12 @@ done | sort -u | paste -sd:)
 arch=$(uname -m)
 target_var="PKG_CONFIG_PATH_${arch}_unknown_linux_gnu"
 
-# Run the command INSIDE devbox (Go/Task live there) with the pkg-config
-# variables injected via `env` — devbox run starts a clean environment, so
-# exporting them in this outer shell would not survive the boundary.
+# Run the command INSIDE devbox (Go/Task live there) with the pkg-config +
+# library-search variables injected via `env` — devbox run starts a clean
+# environment, so exporting them in this outer shell would not survive the
+# boundary. LIBRARY_PATH is what lets the Wails `production` build link `-lz`.
 exec devbox run -- env \
   "${target_var}=${pcp}" \
   "PKG_CONFIG_PATH=${pcp}" \
+  "LIBRARY_PATH=${libpath}" \
   "$@"
