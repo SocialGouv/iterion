@@ -2,6 +2,7 @@ package mongoutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -56,4 +57,53 @@ func FindPageSorted[T any](ctx context.Context, coll *mongo.Collection, filter b
 		return nil, fmt.Errorf("%s: %w", decodeErrMsg, err)
 	}
 	return out, nil
+}
+
+// FindOne runs coll.FindOne(filter) and decodes the match into a T,
+// mapping mongo.ErrNoDocuments to the caller's notFoundErr sentinel and
+// wrapping any other failure with errMsg. It is the shared shape behind
+// the many "get X [by Y]" methods across iterion's Mongo-backed stores.
+func FindOne[T any](ctx context.Context, coll *mongo.Collection, filter bson.M, notFoundErr error, errMsg string) (T, error) {
+	var out T
+	err := coll.FindOne(ctx, filter).Decode(&out)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return out, notFoundErr
+	}
+	if err != nil {
+		return out, fmt.Errorf("%s: %w", errMsg, err)
+	}
+	return out, nil
+}
+
+// ReplaceOneChecked replaces the document matching filter with doc,
+// mapping a duplicate-key conflict to dupErr (pass nil to skip that
+// check) and a zero-match result to notFoundErr. It is the shared shape
+// behind the many "update X" methods that replace a whole document.
+func ReplaceOneChecked(ctx context.Context, coll *mongo.Collection, filter bson.M, doc any, dupErr, notFoundErr error, errMsg string) error {
+	res, err := coll.ReplaceOne(ctx, filter, doc)
+	if err != nil {
+		if dupErr != nil && IsDuplicateKey(err) {
+			return dupErr
+		}
+		return fmt.Errorf("%s: %w", errMsg, err)
+	}
+	if res.MatchedCount == 0 {
+		return notFoundErr
+	}
+	return nil
+}
+
+// DeleteOneChecked deletes the document matching filter, mapping a
+// zero-match result to notFoundErr. It is the shared shape behind the
+// many "delete X" methods that treat deleting a missing document as an
+// error (as opposed to a silent no-op).
+func DeleteOneChecked(ctx context.Context, coll *mongo.Collection, filter bson.M, notFoundErr error, errMsg string) error {
+	res, err := coll.DeleteOne(ctx, filter)
+	if err != nil {
+		return fmt.Errorf("%s: %w", errMsg, err)
+	}
+	if res.DeletedCount == 0 {
+		return notFoundErr
+	}
+	return nil
 }
