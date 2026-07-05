@@ -112,6 +112,12 @@ func (p *parser) parseWorkflowDecl() *ast.WorkflowDecl {
 			wd.Capabilities = p.parseToolList()
 			p.skipNewlines()
 
+		case TokenSkills:
+			p.next() // consume "skills"
+			p.expect(TokenColon)
+			wd.Skills = p.parseSkillList()
+			p.skipNewlines()
+
 		case TokenInteraction:
 			p.next() // consume "interaction"
 			p.expect(TokenColon)

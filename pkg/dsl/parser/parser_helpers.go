@@ -123,6 +123,35 @@ func (p *parser) parseToolList() []string {
 	return names
 }
 
+// parseSkillList parses a `skills: [...]` list. Each element is either a
+// quoted string (required for kebab-case names like "changelog-writer", since
+// the lexer does not treat '-' as an identifier part) or a bare dotted ident
+// (e.g. house_style). Empty list [] is allowed.
+func (p *parser) parseSkillList() []string {
+	p.expect(TokenLBrack)
+	var names []string
+	if p.peek().Type == TokenRBrack {
+		p.next()
+		return names
+	}
+	appendRef := func() {
+		if p.peek().Type == TokenString {
+			names = append(names, p.next().Value)
+			return
+		}
+		if name := p.parseToolRef(); name != "" {
+			names = append(names, name)
+		}
+	}
+	appendRef()
+	for p.peek().Type == TokenComma {
+		p.next() // consume ,
+		appendRef()
+	}
+	p.expect(TokenRBrack)
+	return names
+}
+
 // parseToolRef parses a single tool reference: IDENT { "." IDENT } or
 // IDENT { "." IDENT } "." "*" for MCP server wildcards (e.g. mcp.claude_code.*).
 func (p *parser) parseToolRef() string {
@@ -228,7 +257,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenEntry, TokenMCP, TokenBudget, TokenTransport, TokenServers,
 		TokenDisable, TokenAutoloadProject, TokenModel, TokenInput, TokenOutput,
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools, TokenToolPolicy,
-		TokenCapabilities, TokenArtifactLabels, TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
+		TokenCapabilities, TokenSkills, TokenArtifactLabels, TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
 		TokenInstructions, TokenCommand, TokenScript, TokenLanguage, TokenArgs, TokenURL,
 		TokenAuth, TokenReadonly,
 		TokenDefaultBackend,

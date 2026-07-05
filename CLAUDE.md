@@ -118,6 +118,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/pat/` — Personal access tokens (`iap_` bearers for programmatic API access)
 - `pkg/mail/` — Stdlib SMTP mailer (invitations + password reset) with a log fallback when unconfigured
 - `pkg/bundle/` — `.botz` bundle loader (workflow + skills + recipes packaged together)
+- `pkg/skilllib/` — **skill library** (ADR-059): a standalone, operator-curated store of `SKILL.md` skills, global `~/.iterion/skills/` + per-project override, referenced from workflows by the DSL `skills:` field. Distinct from bundle/plugin skills (both artifact-coupled); the three share the run-time `.claude/skills/` mirror (bundle > plugin > library precedence). Ships the shared frontmatter parser reused by `runview`. See [docs/skills-library.md](docs/skills-library.md)
 - `pkg/cloud/` — Cloud-mode runtime wiring (queue dispatch, runner orchestration, multitenancy)
 - `pkg/config/` — Config-file loader (`iterion dispatch` YAML + cloud config)
 - `pkg/git/` — Git helpers (worktree create/finalize, branch detection, fast-forward checks)
@@ -943,6 +944,7 @@ iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → 
 iterion schedule add|list|remove|run|install|uninstall  # Cron recurring bots via the host crontab — no daemon (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board  # Native kanban tracker
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
+iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
 iterion marketplace list|submit|install  # Hosted bot registry CLI (same <store-dir>/marketplace the studio reads)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
 iterion bundle init|pack                # Scaffold or pack a .botz bundle (see docs/bundles.md)

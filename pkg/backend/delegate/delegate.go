@@ -80,6 +80,15 @@ type SecretFileHint struct {
 	Env  string
 }
 
+// SkillHint names one skill-library skill available to a node, rendered in the
+// "## Skills" system-prompt section. Description is the SKILL.md frontmatter
+// summary (may be empty). The skill's full body is NOT inlined — it lives in
+// the workspace's .claude/skills/<Name>/ for the agent to load on demand.
+type SkillHint struct {
+	Name        string
+	Description string
+}
+
 // agenticOperatingPosture is the iterion-authored base prompt prepended to
 // the recipe author's system prompt when SystemPromptMode is
 // SystemPromptAuthoredBase (the claw backend default). It is the parity
@@ -417,6 +426,16 @@ type Task struct {
 	// the calibration section entirely. See docs/cursors.md.
 	CursorFragments []string
 
+	// SkillHints are the skill-library skills this node references (DSL
+	// `skills:`), resolved to name+description, that were mirrored into the
+	// workspace's .claude/skills/ at run start. They render as a "## Skills"
+	// section listing each available skill so the agent knows to load it
+	// on demand (the SKILL.md body lives in .claude/skills/, not the prompt).
+	// Only skills referenced by THIS node (node list ∪ workflow default,
+	// resolved against the library) appear. Empty = skip the section. See
+	// ADR-059 and docs/skills-library.md.
+	SkillHints []SkillHint
+
 	// PresetFragment is the resolved launch-time preset bias appended to the
 	// system prompt under a "## Focus" section. It carries the selected
 	// file-based preset's prompt body (template-expanded) plus an optional
@@ -647,6 +666,22 @@ func (t Task) BuildSystemPrompt() string {
 			b.WriteString(frag)
 		}
 		b.WriteByte('\n')
+	}
+	// Skill-library skills referenced by this node. Emitted after calibration,
+	// before the preset focus. Only names + descriptions — the agent loads a
+	// skill's body on demand from .claude/skills/. Byte-stable (caller sorts).
+	if len(t.SkillHints) > 0 {
+		b.WriteString("\n\n## Skills\n\n")
+		b.WriteString("The following skills are available in this workspace's .claude/skills/. Load one when its description matches the task at hand:\n")
+		for _, h := range t.SkillHints {
+			b.WriteString("- ")
+			b.WriteString(h.Name)
+			if h.Description != "" {
+				b.WriteString(": ")
+				b.WriteString(h.Description)
+			}
+			b.WriteByte('\n')
+		}
 	}
 	// The preset focus is the operator-selected "sous-bot" bias for this run,
 	// emitted last so it frames the task after the author's prompt and any

@@ -136,6 +136,11 @@ When `iterion run my.botz` (or a directory bundle) executes:
    - File exists & content matches neither → SHADOW with a warning
      (genuine user customisation OR a different bundle owns the
      name; "workspace wins" contract preserved).
+
+   Bundle skills mirror **first**, so on a name collision a bundle
+   skill wins over a plugin skill and a
+   [skill-library](skills-library.md) skill (precedence: bundle >
+   plugin > library > hand-authored — ADR-059).
 2. **Prompts** in `prompts/*.md` are merged into the AST `prompts:`
    table **before** static validation runs, so node-level
    `system:`/`user:` references against bundle filenames type-check.

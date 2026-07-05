@@ -17,6 +17,7 @@ import {
   GearIcon,
   Component1Icon,
   LockClosedIcon,
+  MixIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
@@ -42,6 +43,7 @@ export type Section =
   | "marketplace"
   | "plugins"
   | "secrets"
+  | "skills"
   | "org"
   | "team"
   | "integrations"
@@ -133,6 +135,9 @@ export default function NavLinks({ collapsed }: Props) {
   }
   if (info?.plugins_enabled) {
     extend.push({ section: "plugins", href: "/plugins", label: "Plugins", icon: Component1Icon });
+  }
+  if (info?.skills_enabled) {
+    extend.push({ section: "skills", href: "/skills", label: "Skills", icon: MixIcon });
   }
 
   // Neither the org nor the team is a primary nav entry: the org lives in the

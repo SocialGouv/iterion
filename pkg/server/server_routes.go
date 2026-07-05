@@ -136,6 +136,14 @@ func (s *Server) routes() {
 		s.registerLocalSecretRoutes()
 	}
 
+	// Local (non-cloud) single-operator skill library: unauthenticated
+	// /api/local/skills, gated on local mode (no sealing needed — a skill is
+	// public guidance text, not a secret). The store is built on demand from
+	// the current store dir, so no wired backend is required here.
+	if s.cfg.Mode != "cloud" {
+		s.registerLocalSkillRoutes()
+	}
+
 	// Inbound webhook spine: per-org webhook token CRUD. The inbound
 	// /api/webhooks/{provider}/{id} delivery routes are registered by
 	// each provider (see registerGitLabWebhookRoute).

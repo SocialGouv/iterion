@@ -112,4 +112,6 @@ const (
 	DiagEventNoName     DiagCode = "C196" // emit/wait node with no `event:` name (error)
 	DiagWaitNoTimeout   DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)
 	DiagEventNoListener DiagCode = "C198" // wait on an event no emit produces, or emit no wait consumes (warning — dangling event)
+	// Skill library (ADR-059): `skills:` references on nodes / workflow.
+	DiagInvalidSkillRef DiagCode = "C199" // malformed skill-library reference name (warning; existence is resolved at run time)
 )

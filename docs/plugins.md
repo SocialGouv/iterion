@@ -254,6 +254,14 @@ is derived from the repo/dir basename (kebab-cased). The synthesized
 mirror into `<workspace>/.claude/skills/` once enabled — same path as any other
 skill-contributing plugin.
 
+> **Skill pack (this) vs. skill library.** A skills-only plugin is a **shared,
+> versioned, enable/disable-able unit** — install a whole pack from git, toggle
+> it on/off. The complementary [**skill library**](skills-library.md) is your
+> **editable, per-skill** store (`~/.iterion/skills/`, `iterion skill add|rm`)
+> that workflows reference by name via the DSL `skills:` field. `iterion skill
+> import <git-url>` installs a pack through *this* plugin path — the bridge
+> between the two halves of the hybride model (ADR-059).
+
 ## Implementation pointers
 
 - Manifest + registry: [pkg/plugin/manifest.go](../pkg/plugin/manifest.go),

@@ -81,6 +81,10 @@ type serverInfoResponse struct {
 	// management view. Cloud mode uses the auth-gated team/personal secrets
 	// UI instead (never this flag).
 	SecretsEnabled bool `json:"secrets_enabled"`
+	// SkillsEnabled is true in local (non-cloud) mode: the SPA surfaces the
+	// Skills library management view (/api/local/skills). No sealing is
+	// involved, so unlike SecretsEnabled it gates on mode alone.
+	SkillsEnabled bool `json:"skills_enabled"`
 }
 
 type serverLimitsBlock struct {
@@ -134,6 +138,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	localSecrets := s.localSecrets
 	s.stateMu.RUnlock()
 	resp.SecretsEnabled = s.cfg.Mode != "cloud" && localSecrets != nil && s.sealer != nil
+	resp.SkillsEnabled = s.cfg.Mode != "cloud"
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {

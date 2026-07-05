@@ -57,8 +57,14 @@ type ClawExecutor struct {
 	modelOverrides ModelOverrides
 	wfCompaction   *ir.Compaction
 	wfCapabilities []string // workflow-level default host capabilities (nil = none)
-	botID          string   // stable bot/workflow id used for bot-scoped memory
-	storeDir       string   // dispatcher store root (empty = backend default)
+	wfSkills       []string // workflow-level default skill-library references (nil = none)
+	// skillHints maps a skill-library name to its description for every skill
+	// referenced by the workflow that RESOLVED in the library at run start
+	// (set by SetSkillHints from the runtime mirror). Per-node, the executor
+	// renders the "## Skills" section for the subset this node references.
+	skillHints     map[string]string
+	botID          string // stable bot/workflow id used for bot-scoped memory
+	storeDir       string // dispatcher store root (empty = backend default)
 	lifecycleHooks *hooks.Runner
 
 	// Command-output compression (the rewriter plugin chain). wfCompress is
@@ -463,6 +469,7 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 		permEnvDefault:     os.Getenv("ITERION_PERMISSION"),
 		wfCompaction:       wf.Compaction,
 		wfCapabilities:     wf.Capabilities,
+		wfSkills:           wf.Skills,
 		botID:              wf.Name,
 		sessions:           newNodeSessionStore(),
 		vars:               seed,
@@ -520,6 +527,15 @@ func (e *ClawExecutor) SetVars(vars map[string]interface{}) {
 func (e *ClawExecutor) SetPresetFocus(prompt string, skills []string) {
 	e.presetPrompt = prompt
 	e.presetSkills = skills
+}
+
+// SetSkillHints records the name→description map of skill-library skills that
+// resolved in the library at run start (from the runtime mirror). Every LLM
+// node then renders a "## Skills" section for the subset it references
+// (node `skills:` ∪ workflow default). Nil/empty clears the hints. Must be
+// called before Execute; not safe to call concurrently.
+func (e *ClawExecutor) SetSkillHints(hints map[string]string) {
+	e.skillHints = hints
 }
 
 // SetWorkDir updates the working directory for backend subprocesses

@@ -326,8 +326,35 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks: %v", err)
 	}
+	// Skill-library skills referenced by the workflow (DSL `skills:`), mirrored
+	// LAST so a same-named bundle/plugin/workspace file wins on collision
+	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The
+	// returned name→description map feeds every LLM node's "## Skills" hint.
+	e.applyLibrarySkills()
 	e.applyPresetFocus()
 	return nil
+}
+
+// applyLibrarySkills resolves and mirrors the workflow's skill-library
+// references, then pushes the resolved name→description hints into the executor
+// so each LLM node renders its "## Skills" section. Best-effort: a mirror
+// failure is logged but never fails the run (the DSL reference is soft). Only
+// ClawExecutor implements SetSkillHints.
+func (e *Engine) applyLibrarySkills() {
+	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.logger)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: library skills: %v", err)
+		}
+		return
+	}
+	if len(hints) == 0 {
+		return
+	}
+	type skillHintSetter interface{ SetSkillHints(map[string]string) }
+	if s, ok := e.executor.(skillHintSetter); ok {
+		s.SetSkillHints(hints)
+	}
 }
 
 // applyPresetFocus wires the selected preset's launch-time bias into the
