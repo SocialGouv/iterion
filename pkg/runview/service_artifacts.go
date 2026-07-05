@@ -177,6 +177,28 @@ func (s *Service) OpenArtifactFileCtx(ctx context.Context, runID, relPath string
 	return rfs.OpenRunFile(ctx, runID, relPath)
 }
 
+// ListPlanSnapshots returns the chronological plan snapshots captured for
+// a run (agents' TodoWrite/todo_write living TODO lists, persisted to
+// runs/<id>/plans/). Returns nil when the store doesn't satisfy PlanStore
+// (cloud mode) so the HTTP handler surfaces a clean empty list without
+// leaking the backend choice — mirroring ListArtifactFiles. Ascending Seq
+// order (chronological): the sequence shows how the plan evolved.
+func (s *Service) ListPlanSnapshots(runID string) ([]store.PlanSnapshot, error) {
+	return s.ListPlanSnapshotsCtx(context.Background(), runID)
+}
+
+// ListPlanSnapshotsCtx is the tenant-aware variant of ListPlanSnapshots.
+func (s *Service) ListPlanSnapshotsCtx(ctx context.Context, runID string) ([]store.PlanSnapshot, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	ps := store.AsPlanStore(s.store)
+	if ps == nil {
+		return nil, nil
+	}
+	return ps.ListPlanSnapshots(ctx, runID)
+}
+
 // ReadToolBlob streams a slice of a tool's stored I/O body (sidecar
 // blob written by the hooks layer when the call exceeded the inline
 // threshold). offset is the byte offset to start at; limit caps the

@@ -593,6 +593,7 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 					ToolUseID: toolUseID,
 					InputSize: len(input),
 					Input:     input,
+					Iteration: iteration,
 				})
 			}
 		}

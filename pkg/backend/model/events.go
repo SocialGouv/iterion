@@ -105,6 +105,11 @@ type LLMToolStartedInfo struct {
 	// todos, …) for every tool — symmetric with the post-execution
 	// `output` field on LLMToolCallInfo.
 	Input json.RawMessage
+	// Iteration is the 0-based loop iteration of the node firing this
+	// tool call (see LLMRequestInfo.Iteration). Populated so the plan-
+	// capture hook can tag each TodoWrite snapshot with the pass it came
+	// from; 0 for direct tool nodes / paths that don't carry one.
+	Iteration int
 }
 
 // LLMCompactInfo describes a mid-tool-loop compaction round, passed to the
@@ -323,7 +328,9 @@ func applyHooks(nodeID string, iteration int, h EventHooks, opts *GenerationOpti
 	if h.OnToolStarted != nil {
 		fn := h.OnToolStarted
 		opts.OnToolStarted = func(info ToolCallInfo) {
-			fn(nodeID, toLLMToolStartedInfo(info))
+			li := toLLMToolStartedInfo(info)
+			li.Iteration = iteration
+			fn(nodeID, li)
 		}
 	}
 	if h.OnToolCall != nil {

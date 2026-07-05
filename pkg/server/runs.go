@@ -55,6 +55,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}", s.handleListArtifacts)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}/{version}", s.handleGetArtifact)
 	s.mux.HandleFunc("GET /api/runs/{id}/tools/{toolUseID}/{kind}", s.handleGetToolBlob)
+	s.mux.HandleFunc("GET /api/runs/{id}/plans", s.handleListPlans)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files", s.handleListArtifactFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files/{path...}", s.handleGetArtifactFile)
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
@@ -639,6 +640,35 @@ func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	_, _ = w.Write(body)
+}
+
+// handleListPlans returns the chronological plan snapshots captured for a
+// run — the agents' TodoWrite/todo_write living TODO lists, persisted to
+// runs/<id>/plans/. Ascending seq order (chronological). Returns an empty
+// array (not 404) for a valid run that captured no plans — older runs
+// predate the feature, and cloud stores don't back it — so the studio's
+// Plans panel renders a clean empty state. Tenant-scoped like the other
+// run sub-resource handlers (load the run under the caller's context
+// first so the mongo tenant filter rejects cross-tenant requests).
+func (s *Server) handleListPlans(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
+	plans, err := s.runs.ListPlanSnapshotsCtx(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list plans: %v", err)
+		return
+	}
+	if plans == nil {
+		plans = []store.PlanSnapshot{}
+	}
+	s.writeJSONFor(w, r, map[string]interface{}{"plans": plans})
 }
 
 // handleListArtifactFiles returns the manifest of tool-produced files

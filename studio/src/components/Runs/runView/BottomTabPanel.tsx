@@ -2,6 +2,7 @@ import { Tabs } from "@/components/ui";
 import { type RunEvent } from "@/api/runs";
 
 import ArtifactsPanel from "../artifacts/ArtifactsPanel";
+import PlansPanel from "../PlansPanel";
 import BrowserPane, { type BrowserDock } from "../BrowserPane";
 import EventLog from "../EventLog";
 import ReportTab from "../ReportTab";
@@ -102,6 +103,8 @@ export function BottomTabPanel(props: BottomTabPanelProps) {
           />
         ) : bottomTab === "artifacts" ? (
           <ArtifactsPanel runId={runId} />
+        ) : bottomTab === "plans" ? (
+          <PlansPanel runId={runId} />
         ) : (
           <ReportTab onSelectNode={onSelectNode} />
         )}

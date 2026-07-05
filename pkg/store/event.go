@@ -18,21 +18,26 @@ import "time"
 type EventType string
 
 const (
-	EventRunStarted           EventType = "run_started"
-	EventBranchStarted        EventType = "branch_started"
-	EventBranchFinished       EventType = "branch_finished"
-	EventNodeStarted          EventType = "node_started"
-	EventLLMRequest           EventType = "llm_request"
-	EventLLMPrompt            EventType = "llm_prompt"
-	EventLLMRetry             EventType = "llm_retry"
-	EventNodeRecovery         EventType = "node_recovery"
-	EventNodeVerifiedAction   EventType = "node_verified_action" // data: {rung, postcondition_met, policy}
-	EventLLMStepFinished      EventType = "llm_step_finished"
-	EventLLMCompacted         EventType = "llm_compacted"
-	EventToolStarted          EventType = "tool_started"
-	EventToolCalled           EventType = "tool_called"
-	EventToolError            EventType = "tool_error"
-	EventArtifactWritten      EventType = "artifact_written"
+	EventRunStarted         EventType = "run_started"
+	EventBranchStarted      EventType = "branch_started"
+	EventBranchFinished     EventType = "branch_finished"
+	EventNodeStarted        EventType = "node_started"
+	EventLLMRequest         EventType = "llm_request"
+	EventLLMPrompt          EventType = "llm_prompt"
+	EventLLMRetry           EventType = "llm_retry"
+	EventNodeRecovery       EventType = "node_recovery"
+	EventNodeVerifiedAction EventType = "node_verified_action" // data: {rung, postcondition_met, policy}
+	EventLLMStepFinished    EventType = "llm_step_finished"
+	EventLLMCompacted       EventType = "llm_compacted"
+	EventToolStarted        EventType = "tool_started"
+	EventToolCalled         EventType = "tool_called"
+	EventToolError          EventType = "tool_error"
+	EventArtifactWritten    EventType = "artifact_written"
+	// EventPlanWritten marks a new persisted plan snapshot (an agent's
+	// TodoWrite/todo_write living TODO list, captured to runs/<id>/plans/).
+	// Best-effort + additive; the studio Plans panel refreshes on it.
+	// Data: {seq, node_id, iteration, count}
+	EventPlanWritten          EventType = "plan_written"
 	EventHumanInputRequested  EventType = "human_input_requested"
 	EventRunPaused            EventType = "run_paused"
 	EventHumanAnswersRecorded EventType = "human_answers_recorded"

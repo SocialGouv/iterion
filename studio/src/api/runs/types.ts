@@ -397,6 +397,30 @@ export interface ArtifactFile {
   modified_at: string;
 }
 
+// PlanTodo is one entry in a persisted plan snapshot — the normalized
+// TodoWrite/todo_write item shape emitted by the Go store. Status is
+// canonicalised server-side to the claude_code vocabulary
+// (pending | in_progress | completed).
+export interface PlanTodo {
+  content: string;
+  status: string;
+  active_form?: string;
+  priority?: string;
+  id?: string;
+}
+
+// PlanSnapshot is one chronological snapshot of an agent's living TODO
+// plan (captured when a TodoWrite/todo_write tool fired), served by
+// GET /api/runs/:id/plans in ascending seq order.
+export interface PlanSnapshot {
+  seq: number;
+  node_id: string;
+  iteration: number;
+  tool?: string;
+  ts: string;
+  todos: PlanTodo[];
+}
+
 // DownloadOutcome describes what happened on the save side. `cancelled`
 // is desktop-only — it fires when the user dismisses the native save
 // dialog. In browser mode the SPA can't observe the user's choice
