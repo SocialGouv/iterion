@@ -120,8 +120,9 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option 
 	}
 	opts = append(opts, claudesdk.WithModel(model))
 
-	// CLI binary path: the per-node task override (DSL `command:`, e.g.
-	// "kimi") wins over the backend-level default; the shared backend is
+	// CLI binary path: the per-node task override (DSL `command:`, an
+	// alternate claude-code-compatible CLI) wins over the backend-level
+	// default; the shared backend is
 	// left unmutated so it can serve other nodes with their own override.
 	cliPath := b.Command
 	if task.Command != "" {
@@ -709,8 +710,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		model = defaultClaudeCodeModel
 	}
 	opts = append(opts, claudesdk.WithModel(model))
-	// CLI binary path: the per-node task override (DSL `command:`, e.g.
-	// "kimi") wins over the backend-level default; the shared backend is
+	// CLI binary path: the per-node task override (DSL `command:`, an
+	// alternate claude-code-compatible CLI) wins over the backend-level
+	// default; the shared backend is
 	// left unmutated so it can serve other nodes with their own override.
 	cliPath := b.Command
 	if task.Command != "" {

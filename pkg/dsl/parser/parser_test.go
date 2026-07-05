@@ -608,10 +608,10 @@ func TestAgentSessionFork(t *testing.T) {
 }
 
 func TestAgentCommand(t *testing.T) {
-	src := `agent kimi_worker:
-  model: "kimi-k2"
+	src := `agent alt_worker:
+  model: "claude-opus-4-8"
   backend: "claude_code"
-  command: "kimi"
+  command: "claude-canary"
   system: sys
   user: usr
 `
@@ -619,14 +619,14 @@ func TestAgentCommand(t *testing.T) {
 	assertNoDiags(t, res)
 
 	a := res.File.Agents[0]
-	assertEq(t, "Command", a.Command, "kimi")
+	assertEq(t, "Command", a.Command, "claude-canary")
 }
 
 func TestJudgeCommand(t *testing.T) {
-	src := `judge kimi_reviewer:
-  model: "kimi-k2"
+	src := `judge alt_reviewer:
+  model: "claude-opus-4-8"
   backend: "claude_code"
-  command: "kimi"
+  command: "claude-canary"
   system: sys
   user: usr
 `
@@ -634,7 +634,7 @@ func TestJudgeCommand(t *testing.T) {
 	assertNoDiags(t, res)
 
 	j := res.File.Judges[0]
-	assertEq(t, "Command", j.Command, "kimi")
+	assertEq(t, "Command", j.Command, "claude-canary")
 }
 
 func TestAgentReasoningEffort(t *testing.T) {

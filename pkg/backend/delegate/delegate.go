@@ -319,7 +319,7 @@ type Task struct {
 
 	// Command is the per-node CLI binary override (env-expanded). Honored
 	// only by claude_code, where it replaces the default `claude` binary
-	// with another claude-code-compatible CLI (e.g. `kimi`). It takes
+	// with an alternate claude-code-compatible CLI (a pinned build or wrapper). It takes
 	// precedence over the backend-level Command default. Empty means "use
 	// the backend default"; ignored by all other backends.
 	Command string

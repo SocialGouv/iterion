@@ -29,26 +29,26 @@ workflow w:
 
 // claw makes a direct API call (no CLI), so a `command:` there is inert.
 func TestCommand_IgnoredOnClawWarns(t *testing.T) {
-	r := compileFile(t, commandSrc("claw", "kimi"))
+	r := compileFile(t, commandSrc("claw", "claude-canary"))
 	expectDiag(t, r, DiagCommandIgnored)
 }
 
 // codex resolves its own binary, so a `command:` there is inert too.
 func TestCommand_IgnoredOnCodexWarns(t *testing.T) {
-	r := compileFile(t, commandSrc("codex", "kimi"))
+	r := compileFile(t, commandSrc("codex", "claude-canary"))
 	expectDiag(t, r, DiagCommandIgnored)
 }
 
 // claude_code honors the override, so no C174.
 func TestCommand_OnClaudeCodeNoWarning(t *testing.T) {
-	r := compileFile(t, commandSrc("claude_code", "kimi"))
+	r := compileFile(t, commandSrc("claude_code", "claude-canary"))
 	expectNoDiag(t, r, DiagCommandIgnored)
 }
 
 // An env-ref backend resolves only at run time; the literal text isn't the
 // resolved backend, so the validator must defer and not warn.
 func TestCommand_EnvRefBackendSkips(t *testing.T) {
-	r := compileFile(t, commandSrc("${BACKEND:-claw}", "kimi"))
+	r := compileFile(t, commandSrc("${BACKEND:-claw}", "claude-canary"))
 	expectNoDiag(t, r, DiagCommandIgnored)
 }
 
@@ -65,7 +65,7 @@ prompt sys:
 judge reviewer:
   model: "gpt-4"
   backend: "claw"
-  command: "kimi"
+  command: "claude-canary"
   system: sys
   output: empty
 

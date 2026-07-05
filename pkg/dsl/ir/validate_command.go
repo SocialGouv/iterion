@@ -9,8 +9,8 @@ const (
 
 // commandIgnoringBackends are the explicitly-named backends that do NOT
 // honor the per-node `command:` CLI-binary override. Only claude_code
-// swaps its CLI binary (default `claude`) for the given command (e.g.
-// `kimi`); claw makes a direct API call (no CLI) and codex resolves its
+// swaps its CLI binary (default `claude`) for the given command (an
+// alternate claude-code-compatible CLI); claw makes a direct API call (no CLI) and codex resolves its
 // own binary, so a `command:` there is inert.
 var commandIgnoringBackends = map[string]bool{
 	"claw":  true,
