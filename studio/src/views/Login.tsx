@@ -9,8 +9,9 @@ import { ApiError } from "@/api/auth";
 import { consumeQueryParams } from "@/lib/queryFlash";
 import { useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { apiBase } from "@/lib/scope";
 
-const BASE = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
+const BASE = apiBase().replace(/\/$/, "");
 
 // ssoErrorNotice maps a backend SSO callback error code (?sso_error=) to a
 // friendly, actionable banner. `warning` is recoverable-by-the-user;

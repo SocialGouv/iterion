@@ -6,6 +6,8 @@
 //
 // The shape of `window.go.main.App.*` mirrors the Go method names exactly.
 
+import { isScopedPane } from "./scope";
+
 export interface AppInfo {
   version: string;
   commit: string;
@@ -107,6 +109,12 @@ interface WailsBindings {
   RemoveProject: (id: string) => Promise<void>;
   RemoveConnection: (id: string) => Promise<void>;
   SwitchProject: (id: string) => Promise<void>;
+  // Workspace (multi-connection): open/close a connection as a live pane and
+  // list the currently-open ones. OpenConnection activates the backend (spawn
+  // local daemon / hydrate cloud jar) without changing any "current" pointer.
+  OpenConnection: (id: string) => Promise<Project>;
+  CloseConnection: (id: string) => Promise<void>;
+  GetOpenConnections: () => Promise<string[]>;
   PickProjectDirectory: () => Promise<string>;
   ScaffoldProject: (dir: string) => Promise<void>;
   // Cloud connections (password + SSO auth).
@@ -140,6 +148,12 @@ declare global {
 }
 
 export function isDesktop(): boolean {
+  // A workspace pane (iframe at /x/<connID>/) must NOT use the Wails IPC:
+  // Wails evaluates a binding's result callback into the MAIN frame, so a call
+  // from the iframe would hang. Wails may still inject window.go into the
+  // iframe, so gate explicitly on the scope marker — a scoped pane behaves as
+  // browser-mode against its demuxed /x/<id>/api, with WS resolved over HTTP.
+  if (isScopedPane()) return false;
   return (
     typeof window !== "undefined" &&
     !!window.go &&
@@ -218,6 +232,9 @@ export const desktop = {
   removeProject: (id: string) => call("RemoveProject", id),
   removeConnection: (id: string) => call("RemoveConnection", id),
   switchProject: (id: string) => call("SwitchProject", id),
+  openConnection: (id: string) => call("OpenConnection", id),
+  closeConnection: (id: string) => call("CloseConnection", id),
+  getOpenConnections: () => call("GetOpenConnections"),
   pickProjectDirectory: () => call("PickProjectDirectory"),
   scaffoldProject: (dir: string) => call("ScaffoldProject", dir),
 

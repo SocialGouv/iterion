@@ -12,8 +12,9 @@
  */
 
 import { getDesktopWsBase, isDesktop, isWailsHosted } from "./desktopBridge";
+import { apiBase, isScopedPane, resolveScopedWsUrl } from "./scope";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
+const BASE_URL = apiBase();
 
 export interface BuildWsUrlDeps {
   /** API base prefix, e.g. "/api" or "http://localhost:4891/api". */
@@ -56,6 +57,13 @@ export async function buildWsUrlWith(
 
 /** Production wrapper using the module-level defaults. */
 export async function buildWsUrl(suffix: string): Promise<string> {
+  // Workspace pane: dial the pane's backend directly, resolving its ws base +
+  // (cloud) ticket over the demux proxy — never via window.go (IPC callbacks
+  // don't resolve inside an iframe). Must precede the isWailsHosted() branch,
+  // which would otherwise throw "bindings not ready" for a scoped pane.
+  if (isScopedPane()) {
+    return resolveScopedWsUrl(`${BASE_URL}${suffix}`);
+  }
   return buildWsUrlWith(
     {
       baseUrl: BASE_URL,

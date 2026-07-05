@@ -1,6 +1,7 @@
 import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse } from "./types";
+import { apiBase, scopePrefix } from "@/lib/scope";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
+const BASE_URL = apiBase();
 
 // onUnauthorized fires when the studio server returns 401 on any
 // /api/* call AND a token refresh couldn't recover the session. The
@@ -95,6 +96,12 @@ export async function apiRequest<T>(
   init?: RequestInit,
   isRetry = false,
 ): Promise<T> {
+  // Workspace pane: literal /api/... paths (native board, dispatcher, bots, …)
+  // bypass BASE_URL, so scope them here — the single choke point every
+  // apiRequest caller flows through. Paths already carrying the scope (built
+  // from BASE_URL = apiBase(), i.e. "/x/<id>/api/…") don't start with "/api",
+  // so they're never double-prefixed. No-op outside a pane (scopePrefix() "").
+  if (fullPath.startsWith("/api")) fullPath = scopePrefix() + fullPath;
   const res = await fetch(fullPath, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import BootLoading from "@/components/shared/BootLoading";
+import { apiBase } from "@/lib/scope";
 import {
   ApiError,
   getMe,
@@ -72,7 +73,7 @@ const initial: AuthState = {
   activeRole: null,
 };
 
-const BASE_URL = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
+const BASE_URL = apiBase().replace(/\/$/, "");
 
 // probeAuthRequired hits the unauthenticated /api/server/info to
 // learn whether the deployment requires sign-in. Local / desktop

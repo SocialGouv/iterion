@@ -40,6 +40,16 @@ type App struct {
 	updater  *Updater
 	instLock *SingleInstance
 
+	// conns is the registry of connections currently OPEN in the desktop
+	// workspace (multi-backend mode). Each entry is a live backend — a
+	// local per-project daemon/embedded server or an authenticated remote
+	// cloud — that a workspace pane (an iframe at /x/<connID>/) talks to
+	// through the demux asset proxy. Keyed by Project.ID; guarded by a.mu.
+	// The legacy single-connection fields above (serverURL, cloudJar,
+	// usingDaemon) still drive the unscoped /api/* path for browser mode and
+	// the pre-workspace desktop shell; conns drives every /x/<connID>/*.
+	conns map[string]*activeConn
+
 	// cloudJar holds the live tokens for the current CLOUD connection, or
 	// nil when the current connection is local. The asset proxy reads it to
 	// inject the Bearer header + harvest rotated cookies; GetSessionToken
@@ -160,6 +170,22 @@ func (a *App) onStartup(ctx context.Context) {
 			}
 		}
 	}
+
+	// Register the just-activated current connection into the workspace
+	// registry so the workspace shell can show it as a pane immediately. The
+	// entry reuses the legacy jar + refresh loop (cancel nil) — opening OTHER
+	// connections later mints their own. serverURL == "" (activation failed /
+	// no project) leaves the registry empty and the shell prompts to connect.
+	a.mu.Lock()
+	if cur := a.config.CurrentProject(); cur != nil && a.serverURL != "" {
+		a.registerConnLocked(&activeConn{
+			id:        cur.ID,
+			kind:      cur.Kind,
+			serverURL: a.serverURL,
+			jar:       a.cloudJar,
+		})
+	}
+	a.mu.Unlock()
 
 	// Wire the auto-updater. CheckForUpdate is non-blocking; if the user
 	// opted in to auto-check it runs in a goroutine and emits an event
