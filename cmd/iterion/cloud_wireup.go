@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -50,4 +51,12 @@ func newCloudMongoStore(
 		Blob:          bc,
 		LockProvider:  lockProv,
 	})
+}
+
+// closeCloudStoreWithTimeout closes a cloud Mongo store, bounding the
+// close call so a slow/unreachable Mongo can't hang shutdown.
+func closeCloudStoreWithTimeout(ms *mongostore.Store) {
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	_ = ms.Close(closeCtx)
 }

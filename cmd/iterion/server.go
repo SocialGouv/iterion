@@ -221,11 +221,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("server: build mongo store: %w", err)
 	}
-	defer func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer closeCancel()
-		_ = st.Close(closeCtx)
-	}()
+	defer closeCloudStoreWithTimeout(st)
 
 	// Prometheus registry: built early so cloudpublisher + runstream
 	// + the run-console WS handler all share the same registry.

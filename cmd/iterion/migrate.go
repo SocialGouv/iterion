@@ -157,11 +157,7 @@ func runMigrateOrgs(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("migrate orgs: build mongo: %w", err)
 	}
-	defer func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer closeCancel()
-		_ = ms.Close(closeCtx)
-	}()
+	defer closeCloudStoreWithTimeout(ms)
 
 	idStore := identity.NewMongoStore(ms.DB())
 	if err := idStore.EnsureSchema(ctx); err != nil {
@@ -253,11 +249,7 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("migrate: build mongo: %w", err)
 		}
-		defer func() {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer closeCancel()
-			_ = ms.Close(closeCtx)
-		}()
+		defer closeCloudStoreWithTimeout(ms)
 		dst = ms
 	}
 
@@ -466,11 +458,7 @@ func preflightCloudTargets(ctx context.Context, cfg iterconfig.Config, logger *i
 	if err != nil {
 		return fmt.Errorf("mongo connect: %w", err)
 	}
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = probeStore.Close(closeCtx)
-	}()
+	defer closeCloudStoreWithTimeout(probeStore)
 	var status bson.M
 	if err := probeStore.RunsCollection().Database().RunCommand(ctx, bson.D{{Key: "replSetGetStatus", Value: 1}}).Decode(&status); err != nil {
 		return fmt.Errorf("mongo replSetGetStatus failed (the cloud server requires a replica set for change-streams): %w", err)

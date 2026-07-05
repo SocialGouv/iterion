@@ -121,11 +121,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("runner: build mongo store: %w", err)
 	}
-	defer func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer closeCancel()
-		_ = st.Close(closeCtx)
-	}()
+	defer closeCloudStoreWithTimeout(st)
 
 	// 4. Prometheus metrics on a dedicated port. Bound before the
 	//    consumer loop starts so the kubelet readiness probe lands
