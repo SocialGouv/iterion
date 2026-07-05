@@ -159,27 +159,9 @@ func (s *MongoStore) UpdateUser(ctx context.Context, u User) error {
 }
 
 func (s *MongoStore) ListUsers(ctx context.Context, page Page) ([]User, error) {
-	limit := int64(page.Limit)
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := int64(page.Offset)
-	if offset < 0 {
-		offset = 0
-	}
-	cur, err := s.users.Find(ctx, bson.M{}, options.Find().
-		SetSort(bson.M{"created_at": 1}).
-		SetSkip(offset).
-		SetLimit(limit))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list users: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []User
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode users: %w", err)
-	}
-	return out, nil
+	skip, limit := mongoutil.NormalizePage(page.Offset, page.Limit, 50)
+	return mongoutil.FindPageSorted[User](ctx, s.users, bson.M{}, "created_at", skip, limit,
+		"identity: list users", "identity: decode users")
 }
 
 func (s *MongoStore) UserCount(ctx context.Context) (int64, error) {
@@ -252,27 +234,9 @@ func (s *MongoStore) DeleteTeam(ctx context.Context, id string) error {
 }
 
 func (s *MongoStore) ListTeams(ctx context.Context, page Page) ([]Team, error) {
-	limit := int64(page.Limit)
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := int64(page.Offset)
-	if offset < 0 {
-		offset = 0
-	}
-	cur, err := s.teams.Find(ctx, bson.M{}, options.Find().
-		SetSort(bson.M{"created_at": 1}).
-		SetSkip(offset).
-		SetLimit(limit))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list teams: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Team
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode teams: %w", err)
-	}
-	return out, nil
+	skip, limit := mongoutil.NormalizePage(page.Offset, page.Limit, 50)
+	return mongoutil.FindPageSorted[Team](ctx, s.teams, bson.M{}, "created_at", skip, limit,
+		"identity: list teams", "identity: decode teams")
 }
 
 func (s *MongoStore) ListTeamsByOrg(ctx context.Context, orgID string) ([]Team, error) {
@@ -358,27 +322,9 @@ func (s *MongoStore) ListOrgsPendingPurge(ctx context.Context, before time.Time)
 }
 
 func (s *MongoStore) ListOrgs(ctx context.Context, page Page) ([]Org, error) {
-	limit := int64(page.Limit)
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := int64(page.Offset)
-	if offset < 0 {
-		offset = 0
-	}
-	cur, err := s.orgs.Find(ctx, bson.M{}, options.Find().
-		SetSort(bson.M{"created_at": 1}).
-		SetSkip(offset).
-		SetLimit(limit))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list orgs: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Org
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode orgs: %w", err)
-	}
-	return out, nil
+	skip, limit := mongoutil.NormalizePage(page.Offset, page.Limit, 50)
+	return mongoutil.FindPageSorted[Org](ctx, s.orgs, bson.M{}, "created_at", skip, limit,
+		"identity: list orgs", "identity: decode orgs")
 }
 
 // ----- Org memberships -----
