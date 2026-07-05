@@ -77,6 +77,7 @@ agent reviewer:
 |----------|-------------|
 | `model` | LLM model identifier (supports `${ENV_VAR}`) |
 | `backend` | Execution backend: `claw` (default, in-process LLM), `claude_code` (recommended for tool use), `codex` (discouraged, see [Delegation](delegation.md)) |
+| `command` | Per-node CLI binary override, honored by the `claude_code` backend: replaces the default `claude` CLI with another claude-code-compatible binary (e.g. `kimi`) so a single run can mix an Opus node and a Kimi node, both via the CLI. Supports `${ENV_VAR}`. Ignored (with a `C174` warning) on `claw`/`codex`. |
 | `input` / `output` | Schema references for structured I/O |
 | `publish` | Persist output as a named artifact |
 | `system` / `user` | Prompt references |

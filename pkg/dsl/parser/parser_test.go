@@ -607,6 +607,36 @@ func TestAgentSessionFork(t *testing.T) {
 	assertEq(t, "Backend", a.Backend, "claude_code")
 }
 
+func TestAgentCommand(t *testing.T) {
+	src := `agent kimi_worker:
+  model: "kimi-k2"
+  backend: "claude_code"
+  command: "kimi"
+  system: sys
+  user: usr
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "Command", a.Command, "kimi")
+}
+
+func TestJudgeCommand(t *testing.T) {
+	src := `judge kimi_reviewer:
+  model: "kimi-k2"
+  backend: "claude_code"
+  command: "kimi"
+  system: sys
+  user: usr
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	j := res.File.Judges[0]
+	assertEq(t, "Command", j.Command, "kimi")
+}
+
 func TestAgentReasoningEffort(t *testing.T) {
 	src := `agent planner:
   model: "claude-4"

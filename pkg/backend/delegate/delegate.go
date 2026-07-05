@@ -317,6 +317,13 @@ type Task struct {
 	// Required for API-based backends; ignored by CLI-based backends.
 	Model string
 
+	// Command is the per-node CLI binary override (env-expanded). Honored
+	// only by claude_code, where it replaces the default `claude` binary
+	// with another claude-code-compatible CLI (e.g. `kimi`). It takes
+	// precedence over the backend-level Command default. Empty means "use
+	// the backend default"; ignored by all other backends.
+	Command string
+
 	// HasTools indicates whether the node has tools, enabling backends to
 	// choose between structured-output and text-with-tools generation strategies.
 	HasTools bool

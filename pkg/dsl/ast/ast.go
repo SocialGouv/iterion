@@ -442,6 +442,7 @@ type LLMDecl struct {
 	Model             string // string literal, may contain ${...} env refs
 	Backend           string // execution backend name (e.g. "claude_code"); when set, bypasses direct LLM API
 	Provider          string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${...} env refs
+	Command           string // per-node CLI binary override, honored by claude_code (default "claude"); may contain ${...} env refs
 	MCP               *MCPConfigDecl
 	Input             string           // schema reference name
 	Output            string           // schema reference name

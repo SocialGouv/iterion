@@ -157,6 +157,7 @@ type LLMFields struct {
 	Model           string // model identifier (env refs already noted)
 	Backend         string // execution backend name (empty = direct LLM call); may contain ${VAR} env refs
 	Provider        string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${VAR} env refs
+	Command         string // per-node CLI binary override, honored by claude_code; may contain ${VAR}
 	SystemPrompt    string // prompt reference name
 	UserPrompt      string // prompt reference name
 	MaxTokens       int    // per-node cap on output tokens (0 = backend default)

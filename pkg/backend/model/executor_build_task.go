@@ -21,6 +21,7 @@ type backendFields struct {
 	model            string
 	backend          string
 	provider         string
+	command          string // node-level `command:` CLI binary override (honored by claude_code)
 	systemPrompt     string
 	userPrompt       string
 	reasoningEffort  string
@@ -50,6 +51,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	case *ir.AgentNode:
 		return backendFields{
 			id: n.ID, model: n.Model, backend: n.Backend, provider: n.Provider,
+			command:      n.Command,
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
@@ -67,6 +69,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	case *ir.JudgeNode:
 		return backendFields{
 			id: n.ID, model: n.Model, backend: n.Backend, provider: n.Provider,
+			command:      n.Command,
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
@@ -452,6 +455,9 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
+	// Per-node CLI binary override (env-expanded). Only claude_code consumes
+	// it; other backends ignore Task.Command. Empty = backend default.
+	task.Command = ir.ExpandEnvWithDefault(f.command)
 	// Command-output compression mode (precedence: run override > node DSL >
 	// workflow DSL > ITERION_COMPRESS env). Stored as a string so the delegate
 	// layer + IPC wire form stay decoupled from the rewrite enum; "" (off) is
