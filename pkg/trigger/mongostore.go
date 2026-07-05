@@ -2,7 +2,6 @@ package trigger
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -47,37 +46,15 @@ func (s *MongoSubscriptionStore) Create(ctx context.Context, sub Subscription) e
 }
 
 func (s *MongoSubscriptionStore) Get(ctx context.Context, id string) (Subscription, error) {
-	var sub Subscription
-	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&sub)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Subscription{}, ErrSubscriptionNotFound
-	}
-	if err != nil {
-		return Subscription{}, fmt.Errorf("trigger: get subscription: %w", err)
-	}
-	return sub, nil
+	return mongoutil.FindOne[Subscription](ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: get subscription")
 }
 
 func (s *MongoSubscriptionStore) Update(ctx context.Context, sub Subscription) error {
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": sub.ID}, sub)
-	if err != nil {
-		return fmt.Errorf("trigger: update subscription: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrSubscriptionNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": sub.ID}, sub, nil, ErrSubscriptionNotFound, "trigger: update subscription")
 }
 
 func (s *MongoSubscriptionStore) Delete(ctx context.Context, id string) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("trigger: delete subscription: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrSubscriptionNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrSubscriptionNotFound, "trigger: delete subscription")
 }
 
 func (s *MongoSubscriptionStore) ListByTenant(ctx context.Context, tenantID string) ([]Subscription, error) {
