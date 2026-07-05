@@ -188,13 +188,9 @@ func (s *Store) Get(id string) (*native.Issue, error) {
 }
 
 func (s *Store) get(ctx context.Context, id string) (*native.Issue, error) {
-	var doc issueDoc
-	err := s.issues.FindOne(ctx, bson.M{"_id": id, "tenant_id": s.tenant}).Decode(&doc)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, tracker.ErrNotFound
-	}
+	doc, err := mongoutil.FindOne[issueDoc](ctx, s.issues, bson.M{"_id": id, "tenant_id": s.tenant}, tracker.ErrNotFound, "boardmongo: get issue")
 	if err != nil {
-		return nil, fmt.Errorf("boardmongo: get issue: %w", err)
+		return nil, err
 	}
 	iss := doc.Issue
 	return &iss, nil
@@ -303,12 +299,8 @@ func (s *Store) SetState(id, newState string) (*native.Issue, error) {
 func (s *Store) Delete(id string) error {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
-	res, err := s.issues.DeleteOne(ctx, bson.M{"_id": id, "tenant_id": s.tenant})
-	if err != nil {
-		return fmt.Errorf("boardmongo: delete issue: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return tracker.ErrNotFound
+	if err := mongoutil.DeleteOneChecked(ctx, s.issues, bson.M{"_id": id, "tenant_id": s.tenant}, tracker.ErrNotFound, "boardmongo: delete issue"); err != nil {
+		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueDeleted, IssueID: id})
 }
