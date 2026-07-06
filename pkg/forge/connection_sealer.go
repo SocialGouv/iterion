@@ -2,11 +2,16 @@ package forge
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
+
+// errNilSealer is returned by every seal/open helper in this package when
+// called without a configured secrets.Sealer.
+var errNilSealer = errors.New("forge: nil sealer")
 
 // SealPAT seals a personal access token into a connection payload. Used by
 // the server's PAT-connect handler (which holds the sealer but not the
@@ -73,7 +78,7 @@ func forgeConnAAD(connID string) []byte {
 
 func sealConnectionSecret(sealer secrets.Sealer, connID string, sec connectionSecret) ([]byte, error) {
 	if sealer == nil {
-		return nil, fmt.Errorf("forge: nil sealer")
+		return nil, errNilSealer
 	}
 	raw, err := json.Marshal(sec)
 	if err != nil {
@@ -84,7 +89,7 @@ func sealConnectionSecret(sealer secrets.Sealer, connID string, sec connectionSe
 
 func openConnectionSecret(sealer secrets.Sealer, connID string, sealed []byte) (connectionSecret, error) {
 	if sealer == nil {
-		return connectionSecret{}, fmt.Errorf("forge: nil sealer")
+		return connectionSecret{}, errNilSealer
 	}
 	raw, err := sealer.Open(sealed, forgeConnAAD(connID))
 	if err != nil {
