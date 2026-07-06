@@ -211,13 +211,7 @@ workflow w:
 		t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
 	}
 	cr := Compile(pr.File)
-	found := false
-	for _, d := range cr.Diagnostics {
-		if d.Code == DiagUnknownSecret {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(cr.Diagnostics, DiagUnknownSecret) {
 		t.Fatalf("expected DiagUnknownSecret (C093), got %+v", cr.Diagnostics)
 	}
 }
@@ -241,13 +235,7 @@ workflow w:
 `
 	pr := parser.Parse("t.bot", src)
 	cr := Compile(pr.File)
-	found := false
-	for _, d := range cr.Diagnostics {
-		if d.Code == DiagDuplicateSecret {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(cr.Diagnostics, DiagDuplicateSecret) {
 		t.Fatalf("expected DiagDuplicateSecret (C090), got %+v", cr.Diagnostics)
 	}
 }
