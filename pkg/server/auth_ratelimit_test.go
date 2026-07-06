@@ -140,7 +140,7 @@ func TestAuthRateLimiter_LRUEvictionUnderPressure(t *testing.T) {
 	}
 }
 
-// ---- retrySeconds / itoa ----
+// ---- retrySeconds ----
 
 func TestRetrySeconds_RoundsUpToOneOrMore(t *testing.T) {
 	cases := []struct {
@@ -158,27 +158,5 @@ func TestRetrySeconds_RoundsUpToOneOrMore(t *testing.T) {
 				t.Errorf("retrySeconds(%v) = %q, want %q", c.d, got, c.want)
 			}
 		})
-	}
-}
-
-func TestItoa(t *testing.T) {
-	cases := []struct {
-		n    int
-		want string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{9, "9"},
-		{10, "10"},
-		{42, "42"},
-		{100, "100"},
-		{12345, "12345"},
-		{-1, "-1"},
-		{-42, "-42"},
-	}
-	for _, c := range cases {
-		if got := itoa(c.n); got != c.want {
-			t.Errorf("itoa(%d) = %q, want %q", c.n, got, c.want)
-		}
 	}
 }

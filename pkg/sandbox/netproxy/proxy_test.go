@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -371,7 +372,7 @@ func (s *singleHandlerListener) Accept() (net.Conn, error) {
 		buf := make([]byte, 4096)
 		_, _ = conn.Read(buf)
 		body := s.body
-		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + itoa(len(body)) + "\r\nConnection: close\r\n\r\n" + body))
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + strconv.Itoa(len(body)) + "\r\nConnection: close\r\n\r\n" + body))
 	}(c)
 	// Avoid having http.Server serve actual handlers — return a closed
 	// conn-like sentinel so http.Server backs off cleanly.
@@ -391,17 +392,3 @@ func (deadConn) RemoteAddr() net.Addr             { return nil }
 func (deadConn) SetDeadline(time.Time) error      { return nil }
 func (deadConn) SetReadDeadline(time.Time) error  { return nil }
 func (deadConn) SetWriteDeadline(time.Time) error { return nil }
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
-}
