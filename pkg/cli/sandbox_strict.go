@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
 	"github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
+	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 )
 
 // errStrictSandboxChecks is returned by the strict doctor when any check
@@ -97,7 +98,7 @@ func runSandboxDoctorStrict(ctx context.Context, p *Printer, opts SandboxDoctorO
 // checks.
 func buildStrictReport(ctx context.Context, wf *ir.Workflow, opts SandboxDoctorOptions) *SandboxStrictReport {
 	factory := sandbox.NewFactory(sandbox.FactoryOptions{
-		AvailableDrivers: defaultDriverRegistry(),
+		AvailableDrivers: registry.Default(),
 	})
 	report := &SandboxStrictReport{Host: string(factory.Host())}
 

@@ -33,7 +33,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
-	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -987,13 +986,6 @@ func backendIsClaw(name string) bool {
 		return true
 	}
 	return false
-}
-
-// defaultDriverRegistry forwards to [registry.Default] so the engine
-// and the CLI share a single source of truth for which drivers ship
-// with iterion.
-func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
-	return registry.Default()
 }
 
 // isVolatileBuildPath reports whether p looks like a Go-toolchain
