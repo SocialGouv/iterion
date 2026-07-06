@@ -1,6 +1,7 @@
 package runview
 
 import (
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -90,12 +91,8 @@ func (b *EventBroker) Subscribe(runID string) *EventSubscription {
 	cancel := func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		list := b.subscribers[runID]
-		for i, s := range list {
-			if s == sub {
-				b.subscribers[runID] = append(list[:i], list[i+1:]...)
-				break
-			}
+		if i := slices.Index(b.subscribers[runID], sub); i >= 0 {
+			b.subscribers[runID] = slices.Delete(b.subscribers[runID], i, i+1)
 		}
 		if len(b.subscribers[runID]) == 0 {
 			delete(b.subscribers, runID)
