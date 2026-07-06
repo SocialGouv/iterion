@@ -428,7 +428,7 @@ func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "connection_id and repo are required for an unlinked card")
 		return
 	}
-	pc, conn, ok := s.pullClientForConn(w, r.Context(), id.TeamID, connID)
+	pc, _, ok := s.pullClientForConn(w, r.Context(), id.TeamID, connID)
 	if !ok {
 		return
 	}
@@ -447,7 +447,6 @@ func (s *Server) handleCreateIssuePull(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadGateway, "create pull request: %v", err)
 		return
 	}
-	_ = conn
 	writeJSON(w, ref)
 }
 
