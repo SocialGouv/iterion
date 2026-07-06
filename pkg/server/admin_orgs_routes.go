@@ -531,21 +531,3 @@ func (s *Server) buildOrgUsageView(ctx context.Context, st identity.Store, o ide
 	return v
 }
 
-// ---- launch suspend gate ----
-
-// orgCanLaunch is the suspend-only gate decision, isolated for
-// testability. The full launch admission (quotas, concurrency, rate)
-// lives in gateLaunch (launch_gate.go), which folds this check in plus
-// the org-level suspend. Returns true (allow) when there is no identity
-// store (local mode), the caller is a super-admin, has no active team,
-// or the team lookup fails (fail-open).
-func orgCanLaunch(ctx context.Context, st identity.Store, id auth.Identity) bool {
-	if st == nil || id.IsSuperAdmin || id.TeamID == "" {
-		return true
-	}
-	t, err := st.GetTeam(ctx, id.TeamID)
-	if err != nil {
-		return true
-	}
-	return t.CanLaunch()
-}
