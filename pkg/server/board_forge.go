@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -376,7 +377,7 @@ func (s *Server) handleListIssuePulls(w http.ResponseWriter, r *http.Request) {
 	// Keep only PRs that reference this card's forge issue number.
 	out := make([]forge.PullRef, 0, len(all))
 	for _, pr := range all {
-		if number > 0 && containsInt(pr.LinkedIssues, number) {
+		if number > 0 && slices.Contains(pr.LinkedIssues, number) {
 			out = append(out, pr)
 		}
 	}
@@ -665,15 +666,6 @@ func forgeLinkOf(card *native.Issue) (provider forge.Provider, connID, repo stri
 	}
 	e := card.External
 	return forge.Provider(e.Provider), e.ConnectionID, e.Repo, e.Number
-}
-
-func containsInt(xs []int, x int) bool {
-	for _, v := range xs {
-		if v == x {
-			return true
-		}
-	}
-	return false
 }
 
 // decodeJSONOptional decodes an OPTIONAL request body into v, tolerating an
