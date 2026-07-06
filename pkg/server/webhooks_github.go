@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -65,6 +66,16 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// "gh|" prefix keeps the idempotency key space disjoint from any other
+	// provider for the same tenant in case ids get reused.
+	s.handlePRForgeReview(ctx, w, r, cfg, body, payloadHash, srcIP, "gh|")
+}
+
+// handlePRForgeReview handles the shared PR auto-review path for GitHub
+// and Forgejo/Gitea (identical prforge.Parsed wire shape): parse → filter
+// → bot select → idempotent launch. idemPrefix keeps each provider's
+// idempotency-key space disjoint for the same tenant.
+func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, body []byte, payloadHash, srcIP, idemPrefix string) {
 	p, err := prforge.ParsePullRequest(body)
 	if err != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, webhookEventMeta{Kind: "pull_request"}, webhooks.StatusInvalid, payloadHash, srcIP, err.Error())
@@ -88,9 +99,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Idempotency: one launch per (tenant, webhook, repo, PR#, head sha).
-	// "gh|" prefix keeps the key space disjoint from any other provider
-	// for the same tenant in case ids get reused.
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gh|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
 
 	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
 
