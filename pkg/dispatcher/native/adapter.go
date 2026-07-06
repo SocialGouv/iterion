@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 )
@@ -197,21 +198,10 @@ func toTrackerIssue(iss *Issue) tracker.Issue {
 		Labels:        append([]string(nil), iss.Labels...),
 		Assignee:      iss.Assignee,
 		Blockers:      append([]string(nil), iss.Blockers...),
-		Fields:        cloneAnyMap(iss.Fields),
+		Fields:        maps.Clone(iss.Fields),
 		Bot:           iss.Bot,
-		BotArgs:       cloneStringMap(iss.BotArgs),
+		BotArgs:       maps.Clone(iss.BotArgs),
 	}
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
 }
 
 func shortIdentifier(id string) string {
@@ -219,15 +209,4 @@ func shortIdentifier(id string) string {
 		return id
 	}
 	return id[:15]
-}
-
-func cloneAnyMap(in map[string]any) map[string]any {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
 }
