@@ -714,13 +714,7 @@ schema s:
 	if !r.HasErrors() {
 		t.Fatal("expected error for missing workflow")
 	}
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagNoWorkflow {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagNoWorkflow) {
 		t.Error("expected DiagNoWorkflow diagnostic")
 	}
 }
@@ -751,13 +745,7 @@ workflow test:
 	if !r.HasErrors() {
 		t.Fatal("expected error for unknown schema")
 	}
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagUnknownSchema {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagUnknownSchema) {
 		t.Error("expected DiagUnknownSchema diagnostic")
 	}
 }
@@ -788,13 +776,7 @@ workflow test:
 	if !r.HasErrors() {
 		t.Fatal("expected error for unknown edge target")
 	}
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagUnknownNode {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagUnknownNode) {
 		t.Error("expected DiagUnknownNode diagnostic")
 	}
 }
@@ -894,13 +876,7 @@ workflow test:
 	if !r.HasErrors() {
 		t.Fatal("expected duplicate mcp_server error")
 	}
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagDuplicateMCPServer {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagDuplicateMCPServer) {
 		t.Fatal("expected DiagDuplicateMCPServer diagnostic")
 	}
 }
@@ -999,13 +975,7 @@ workflow test:
 			if !r.HasErrors() {
 				t.Fatal("expected invalid mcp_server diagnostic")
 			}
-			found := false
-			for _, d := range r.Diagnostics {
-				if d.Code == DiagInvalidMCPServer {
-					found = true
-				}
-			}
-			if !found {
+			if !hasDiag(r.Diagnostics, DiagInvalidMCPServer) {
 				t.Fatal("expected DiagInvalidMCPServer diagnostic")
 			}
 		})
@@ -1027,13 +997,7 @@ func TestValidateMCPAuth_Unsupported(t *testing.T) {
 	}
 	c := &compiler{}
 	c.validateMCPAuth(w)
-	found := false
-	for _, d := range c.diags {
-		if d.Code == DiagUnsupportedMCPAuth {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(c.diags, DiagUnsupportedMCPAuth) {
 		t.Fatalf("expected DiagUnsupportedMCPAuth, got %+v", c.diags)
 	}
 
@@ -1303,13 +1267,7 @@ workflow test:
   r -> done
 `
 	r := compileFile(t, src)
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagRouterLLMOnlyProperty {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagRouterLLMOnlyProperty) {
 		t.Fatal("expected DiagRouterLLMOnlyProperty for backend on non-LLM router")
 	}
 }
@@ -1707,14 +1665,7 @@ workflow w:
 	if r.Workflow == nil {
 		t.Fatalf("expected workflow, got errors: %v", r.Diagnostics)
 	}
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagNodeMaxTokensVsBudget {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagNodeMaxTokensVsBudget) {
 		t.Errorf("expected DiagNodeMaxTokensVsBudget warning, diagnostics: %v", r.Diagnostics)
 	}
 }

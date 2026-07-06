@@ -107,47 +107,6 @@ func (c *controller) nextRequestID() string {
 	return fmt.Sprintf("req_%d_%s", n, hex.EncodeToString(b))
 }
 
-// sendRequest sends a control request and waits for the response.
-func (c *controller) sendRequest(subtype string, body any) (*controlResponseBody, error) {
-	reqID := c.nextRequestID()
-
-	bodyJSON, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Inject subtype into body.
-	var bodyMap map[string]any
-	if err := json.Unmarshal(bodyJSON, &bodyMap); err != nil {
-		bodyMap = make(map[string]any)
-	}
-	bodyMap["subtype"] = subtype
-	finalBody, err := json.Marshal(bodyMap)
-	if err != nil {
-		return nil, err
-	}
-
-	ch := make(chan controlResponseBody, 1)
-	c.mu.Lock()
-	c.pending[reqID] = ch
-	c.mu.Unlock()
-
-	req := controlRequest{
-		Type:      "control_request",
-		RequestID: reqID,
-		Request:   json.RawMessage(finalBody),
-	}
-	if err := c.writeFn(req); err != nil {
-		c.mu.Lock()
-		delete(c.pending, reqID)
-		c.mu.Unlock()
-		return nil, err
-	}
-
-	resp := <-ch
-	return &resp, nil
-}
-
 // sendRequestNoWait writes a control request without blocking on the
 // response. Use this in setup paths that run BEFORE Stream() begins
 // reading stdout — calling sendRequest there would deadlock because

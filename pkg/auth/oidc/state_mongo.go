@@ -2,7 +2,6 @@ package oidc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -76,13 +75,9 @@ func (s *MongoStateStore) Put(ctx context.Context, p PendingAuth) error {
 // Take atomically fetches and deletes the PendingAuth for state (single-use),
 // re-checking the TTL in case Mongo hasn't reaped the row yet.
 func (s *MongoStateStore) Take(ctx context.Context, state string) (PendingAuth, error) {
-	var doc mongoStateDoc
-	err := s.coll.FindOneAndDelete(ctx, bson.M{"_id": state}).Decode(&doc)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return PendingAuth{}, ErrStateNotFound
-	}
+	doc, err := mongoutil.FindOneAndDeleteChecked[mongoStateDoc](ctx, s.coll, bson.M{"_id": state}, ErrStateNotFound, "oidc: take state")
 	if err != nil {
-		return PendingAuth{}, fmt.Errorf("oidc: take state: %w", err)
+		return PendingAuth{}, err
 	}
 	if time.Since(doc.Pending.IssuedAt) > s.ttl {
 		return PendingAuth{}, ErrStateNotFound

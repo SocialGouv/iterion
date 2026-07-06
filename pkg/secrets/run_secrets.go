@@ -147,15 +147,7 @@ func (s *MongoRunSecretsStore) Put(ctx context.Context, rec RunSecretsRecord) er
 }
 
 func (s *MongoRunSecretsStore) Get(ctx context.Context, id string) (RunSecretsRecord, error) {
-	var rec RunSecretsRecord
-	err := s.coll.FindOne(ctx, withRunSecretsTenantFilter(ctx, bson.M{"_id": id})).Decode(&rec)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return RunSecretsRecord{}, ErrRunSecretsNotFound
-	}
-	if err != nil {
-		return RunSecretsRecord{}, fmt.Errorf("secrets: get run secrets: %w", err)
-	}
-	return rec, nil
+	return mongoutil.FindOne[RunSecretsRecord](ctx, s.coll, withRunSecretsTenantFilter(ctx, bson.M{"_id": id}), ErrRunSecretsNotFound, "secrets: get run secrets")
 }
 
 func (s *MongoRunSecretsStore) Delete(ctx context.Context, id string) error {

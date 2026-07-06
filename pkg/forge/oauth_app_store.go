@@ -2,7 +2,6 @@ package forge
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -199,62 +198,24 @@ func (s *MongoOAuthAppStore) Create(ctx context.Context, a ForgeOAuthApp) error 
 }
 
 func (s *MongoOAuthAppStore) Get(ctx context.Context, id string) (ForgeOAuthApp, error) {
-	var a ForgeOAuthApp
-	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&a)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return ForgeOAuthApp{}, ErrOAuthAppNotFound
-	}
-	if err != nil {
-		return ForgeOAuthApp{}, fmt.Errorf("forge: get oauth app: %w", err)
-	}
-	return a, nil
+	return mongoutil.FindOne[ForgeOAuthApp](ctx, s.coll, bson.M{"_id": id}, ErrOAuthAppNotFound, "forge: get oauth app")
 }
 
 func (s *MongoOAuthAppStore) Update(ctx context.Context, a ForgeOAuthApp) error {
 	a.ForgeBaseURL = CanonicalBaseURL(a.Provider, a.ForgeBaseURL)
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": a.ID}, a)
-	if err != nil {
-		return fmt.Errorf("forge: update oauth app: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrOAuthAppNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": a.ID}, a, nil, ErrOAuthAppNotFound, "forge: update oauth app")
 }
 
 func (s *MongoOAuthAppStore) Delete(ctx context.Context, id string) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("forge: delete oauth app: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrOAuthAppNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrOAuthAppNotFound, "forge: delete oauth app")
 }
 
 func (s *MongoOAuthAppStore) ListByTenant(ctx context.Context, tenantID string) ([]ForgeOAuthApp, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("forge: list oauth apps: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []ForgeOAuthApp
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("forge: decode oauth apps: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[ForgeOAuthApp](ctx, s.coll, bson.M{"tenant_id": tenantID}, "created_at",
+		"forge: list oauth apps", "forge: decode oauth apps")
 }
 
 func (s *MongoOAuthAppStore) GetByInstance(ctx context.Context, tenantID string, provider Provider, baseURL string) (ForgeOAuthApp, error) {
 	base := CanonicalBaseURL(provider, baseURL)
-	var a ForgeOAuthApp
-	err := s.coll.FindOne(ctx, bson.M{"tenant_id": tenantID, "provider": provider, "forge_base_url": base}).Decode(&a)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return ForgeOAuthApp{}, ErrOAuthAppNotFound
-	}
-	if err != nil {
-		return ForgeOAuthApp{}, fmt.Errorf("forge: get oauth app by instance: %w", err)
-	}
-	return a, nil
+	return mongoutil.FindOne[ForgeOAuthApp](ctx, s.coll, bson.M{"tenant_id": tenantID, "provider": provider, "forge_base_url": base}, ErrOAuthAppNotFound, "forge: get oauth app by instance")
 }

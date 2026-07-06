@@ -36,9 +36,8 @@ func writeEventLine(t *testing.T, path string, evt store.Event) {
 // collector accumulates emitted values under a mutex and lets tests
 // wait for a predicate with a deadline.
 type collector[T any] struct {
-	mu   sync.Mutex
-	got  []T
-	cond func([]T) bool
+	mu  sync.Mutex
+	got []T
 }
 
 func (c *collector[T]) add(v T) {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,7 +147,7 @@ func BuildLogSlice(storeDir, runID string, exec *ExecutionState, tail int) *LogS
 
 	notes := []string{}
 	if truncated {
-		notes = append(notes, "truncated to last "+itoa(tail)+" lines")
+		notes = append(notes, "truncated to last "+strconv.Itoa(tail)+" lines")
 	}
 
 	out := &LogSlice{
@@ -216,27 +217,4 @@ func derefTime(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
-}
-
-// itoa avoids strconv import for a single small use.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	negative := n < 0
-	if negative {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

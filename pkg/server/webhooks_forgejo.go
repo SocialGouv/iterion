@@ -1,12 +1,8 @@
 package server
 
 import (
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
 
-	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -51,22 +47,10 @@ func (s *Server) handleForgejoWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "webhook context missing")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodyBytes))
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "read body: %v", err)
+	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "forgejo", forgejoSignatureHeader(r))
+	if !ok {
 		return
 	}
-
-	if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, forgejoSignatureHeader(r)) {
-		if s.logger != nil {
-			s.logger.Warn("webhooks: forgejo bad HMAC for %s from %s", cfg.ID, s.clientIP(r))
-		}
-		httpError(w, http.StatusUnauthorized, "invalid signature")
-		return
-	}
-
-	payloadHash := knowledge.ChecksumHex(body)
-	srcIP := s.clientIP(r)
 
 	event := forgejoEventHeader(r)
 	switch event {
@@ -83,31 +67,7 @@ func (s *Server) handleForgejoWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := prforge.ParsePullRequest(body)
-	if err != nil {
-		s.recordTerminalWebhookDelivery(ctx, cfg, webhookEventMeta{Kind: "pull_request"}, webhooks.StatusInvalid, payloadHash, srcIP, err.Error())
-		httpError(w, http.StatusBadRequest, "invalid pull_request payload")
-		return
-	}
-	meta := prforgePRMeta(p)
-
-	if !p.IsReviewable() ||
-		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
-		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
-		!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderLogin) {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
-		return
-	}
-
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
-	if !ok {
-		return
-	}
-
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("fj|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
-
-	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
-
-	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+	// "fj|" prefix keeps the idempotency key space disjoint from any other
+	// provider for the same tenant in case ids get reused.
+	s.handlePRForgeReview(ctx, w, r, cfg, body, payloadHash, srcIP, "fj|")
 }

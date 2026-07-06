@@ -56,9 +56,8 @@ func TestMemoryStore_OIDC_CRUD(t *testing.T) {
 	ctx := context.Background()
 	st := NewMemoryStore()
 	row := oidcRow("p1", "t1")
-	if err := row.Validate(); err == nil {
-		// Validate runs after Normalize; the store normalizes on Create.
-	}
+	// Validate runs after Normalize; the store normalizes on Create, so
+	// row.Validate() isn't asserted here.
 	if err := st.Create(ctx, row); err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -26,14 +26,6 @@ func TestNew_registersAllMetrics(t *testing.T) {
 	r.RunnerHeartbeatErrors.Inc()
 }
 
-func TestDefault_singleton(t *testing.T) {
-	a := Default()
-	b := Default()
-	if a != b {
-		t.Fatal("Default() must return the same instance across calls")
-	}
-}
-
 func TestHandler_servesPrometheusText(t *testing.T) {
 	r := New()
 	r.RunsCreatedTotal.WithLabelValues("finished").Inc()

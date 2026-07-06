@@ -77,41 +77,6 @@ func seedOrg(t *testing.T, s *Server, id, slug string) {
 	}
 }
 
-func TestOrgCanLaunch(t *testing.T) {
-	st := identity.NewMemoryStore()
-	ctx := context.Background()
-	for id, status := range map[string]identity.TeamStatus{
-		"active": identity.TeamStatusActive,
-		"susp":   identity.TeamStatusSuspended,
-		"ro":     identity.TeamStatusReadOnly,
-	} {
-		if _, err := st.CreateTeam(ctx, identity.Team{ID: id, Name: id, Slug: id, Status: status}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cases := []struct {
-		name string
-		st   identity.Store
-		id   auth.Identity
-		want bool
-	}{
-		{"no store (local mode)", nil, auth.Identity{TeamID: "susp"}, true},
-		{"super-admin bypass", st, auth.Identity{TeamID: "susp", IsSuperAdmin: true}, true},
-		{"no active team", st, auth.Identity{}, true},
-		{"active allows", st, auth.Identity{TeamID: "active"}, true},
-		{"suspended denies", st, auth.Identity{TeamID: "susp"}, false},
-		{"read_only denies", st, auth.Identity{TeamID: "ro"}, false},
-		{"missing team fails open", st, auth.Identity{TeamID: "ghost"}, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := orgCanLaunch(ctx, c.st, c.id); got != c.want {
-				t.Fatalf("orgCanLaunch=%v want %v", got, c.want)
-			}
-		})
-	}
-}
-
 // TestHandleResumeRun_SuspendGate asserts the resume HTTP path enforces
 // the same suspend gate as launch: a member of a suspended/read-only org
 // is denied (403) before any engine re-entry. Regression guard for the

@@ -219,13 +219,21 @@ func (s *Server) handleDeleteGenericSecret(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) canMutateGenericSecret(ctx context.Context, id auth.Identity, rec secrets.GenericSecret) bool {
+	return s.canMutateScopedRecord(ctx, id, rec.ScopeUserID, rec.ScopeTeamID)
+}
+
+// canMutateScopedRecord authorizes a mutation on a user/team-scoped record:
+// super-admins always may; a user-scoped record requires ownership; a
+// team-scoped record requires at least admin role on that team. Shared by
+// canMutateApiKey and canMutateGenericSecret.
+func (s *Server) canMutateScopedRecord(ctx context.Context, id auth.Identity, scopeUserID, scopeTeamID string) bool {
 	if id.IsSuperAdmin {
 		return true
 	}
-	if rec.ScopeUserID != "" {
-		return rec.ScopeUserID == id.UserID
+	if scopeUserID != "" {
+		return scopeUserID == id.UserID
 	}
-	mb, err := s.authStore().GetMembership(ctx, id.UserID, rec.ScopeTeamID)
+	mb, err := s.authStore().GetMembership(ctx, id.UserID, scopeTeamID)
 	if err != nil {
 		return false
 	}

@@ -33,7 +33,6 @@ import (
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/devcontainer"
 	"github.com/SocialGouv/iterion/pkg/sandbox/netproxy"
-	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -941,14 +940,7 @@ func expandSandboxSpec(s *sandbox.Spec, repoRoot string) {
 }
 
 func cloneStringMap(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
+	return cloneMap(m)
 }
 
 // containsClawNode reports whether any agent/judge node in the workflow
@@ -994,13 +986,6 @@ func backendIsClaw(name string) bool {
 		return true
 	}
 	return false
-}
-
-// defaultDriverRegistry forwards to [registry.Default] so the engine
-// and the CLI share a single source of truth for which drivers ship
-// with iterion.
-func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
-	return registry.Default()
 }
 
 // isVolatileBuildPath reports whether p looks like a Go-toolchain

@@ -55,20 +55,7 @@ func MatchProject(allowlist []string, projectPath string) bool {
 // "*" entry matches all (explicit allow-all). An empty login never matches a
 // non-empty allowlist (an author we couldn't identify is not on the list).
 func MatchAuthor(allowlist []string, login string) bool {
-	if len(allowlist) == 0 {
-		return true
-	}
-	login = strings.TrimSpace(login)
-	for _, pat := range allowlist {
-		pat = strings.TrimSpace(pat)
-		if pat == "*" {
-			return true
-		}
-		if login != "" && strings.EqualFold(pat, login) {
-			return true
-		}
-	}
-	return false
+	return matchCaseInsensitiveAllowlist(allowlist, login)
 }
 
 // MatchLabel reports whether a freshly-applied issue label triggers a
@@ -79,16 +66,24 @@ func MatchAuthor(allowlist []string, login string) bool {
 // an explicit allow-all; an empty applied label never matches a non-empty
 // allowlist (an unlabeled/edited event carries no label to match).
 func MatchLabel(allowlist []string, label string) bool {
+	return matchCaseInsensitiveAllowlist(allowlist, label)
+}
+
+// matchCaseInsensitiveAllowlist is the shared body behind MatchAuthor and
+// MatchLabel: empty allowlist matches all; otherwise a trimmed, case-
+// insensitive match against value, with "*" as an explicit allow-all and
+// an empty value never matching a non-empty allowlist.
+func matchCaseInsensitiveAllowlist(allowlist []string, value string) bool {
 	if len(allowlist) == 0 {
 		return true
 	}
-	label = strings.TrimSpace(label)
+	value = strings.TrimSpace(value)
 	for _, pat := range allowlist {
 		pat = strings.TrimSpace(pat)
 		if pat == "*" {
 			return true
 		}
-		if label != "" && strings.EqualFold(pat, label) {
+		if value != "" && strings.EqualFold(pat, value) {
 			return true
 		}
 	}

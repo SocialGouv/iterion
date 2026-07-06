@@ -3,6 +3,7 @@ package tool
 import (
 	"fmt"
 	"math"
+	"slices"
 )
 
 // ---------------------------------------------------------------------------
@@ -59,17 +60,8 @@ func (rp *RulePolicy) CheckContext(ctx PolicyContext) error {
 
 // ruleMatches checks whether all conditions on a rule match the context.
 func ruleMatches(r Rule, ctx PolicyContext) bool {
-	if r.NodeIDs != nil {
-		found := false
-		for _, id := range r.NodeIDs {
-			if id == ctx.NodeID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
+	if r.NodeIDs != nil && !slices.Contains(r.NodeIDs, ctx.NodeID) {
+		return false
 	}
 	if r.NodeKind != "" && r.NodeKind != ctx.NodeKind {
 		return false

@@ -148,16 +148,6 @@ func (r *Registry) register(td *ToolDef) error {
 	return nil
 }
 
-// Unregister removes a tool by its qualified name. No-op if the name
-// isn't currently registered, so callers performing rollback after a
-// partial RegisterMCP loop don't need to track which subset actually
-// landed.
-func (r *Registry) Unregister(qualifiedName string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.tools, qualifiedName)
-}
-
 // UnregisterServer removes every MCP tool registered under the given
 // server name. Used by Manager.EnsureServers to roll back partial
 // discovery — when half the configured servers register cleanly and a

@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -119,67 +118,23 @@ func (s *MongoStore) CreateUser(ctx context.Context, u User) (User, error) {
 }
 
 func (s *MongoStore) GetUser(ctx context.Context, id string) (User, error) {
-	var u User
-	err := s.users.FindOne(ctx, bson.M{"_id": id}).Decode(&u)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return User{}, ErrNotFound
-	}
-	if err != nil {
-		return User{}, fmt.Errorf("identity: get user: %w", err)
-	}
-	return u, nil
+	return mongoutil.FindOne[User](ctx, s.users, bson.M{"_id": id}, ErrNotFound, "identity: get user")
 }
 
 func (s *MongoStore) GetUserByEmail(ctx context.Context, email string) (User, error) {
 	email = NormalizeEmail(email)
-	var u User
-	err := s.users.FindOne(ctx, bson.M{"email": email}).Decode(&u)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return User{}, ErrNotFound
-	}
-	if err != nil {
-		return User{}, fmt.Errorf("identity: get user by email: %w", err)
-	}
-	return u, nil
+	return mongoutil.FindOne[User](ctx, s.users, bson.M{"email": email}, ErrNotFound, "identity: get user by email")
 }
 
 func (s *MongoStore) UpdateUser(ctx context.Context, u User) error {
 	u.Email = NormalizeEmail(u.Email)
-	res, err := s.users.ReplaceOne(ctx, bson.M{"_id": u.ID}, u)
-	if err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return ErrEmailAlreadyTaken
-		}
-		return fmt.Errorf("identity: update user: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.users, bson.M{"_id": u.ID}, u, ErrEmailAlreadyTaken, ErrNotFound, "identity: update user")
 }
 
 func (s *MongoStore) ListUsers(ctx context.Context, page Page) ([]User, error) {
-	limit := int64(page.Limit)
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := int64(page.Offset)
-	if offset < 0 {
-		offset = 0
-	}
-	cur, err := s.users.Find(ctx, bson.M{}, options.Find().
-		SetSort(bson.M{"created_at": 1}).
-		SetSkip(offset).
-		SetLimit(limit))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list users: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []User
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode users: %w", err)
-	}
-	return out, nil
+	skip, limit := mongoutil.NormalizePage(page.Offset, page.Limit, 50)
+	return mongoutil.FindPageSorted[User](ctx, s.users, bson.M{}, "created_at", skip, limit,
+		"identity: list users", "identity: decode users")
 }
 
 func (s *MongoStore) UserCount(ctx context.Context) (int64, error) {
@@ -203,89 +158,30 @@ func (s *MongoStore) CreateTeam(ctx context.Context, t Team) (Team, error) {
 }
 
 func (s *MongoStore) GetTeam(ctx context.Context, id string) (Team, error) {
-	var t Team
-	err := s.teams.FindOne(ctx, bson.M{"_id": id}).Decode(&t)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Team{}, ErrNotFound
-	}
-	if err != nil {
-		return Team{}, fmt.Errorf("identity: get team: %w", err)
-	}
-	return t, nil
+	return mongoutil.FindOne[Team](ctx, s.teams, bson.M{"_id": id}, ErrNotFound, "identity: get team")
 }
 
 func (s *MongoStore) GetTeamBySlug(ctx context.Context, slug string) (Team, error) {
-	var t Team
-	err := s.teams.FindOne(ctx, bson.M{"slug": slug}).Decode(&t)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Team{}, ErrNotFound
-	}
-	if err != nil {
-		return Team{}, fmt.Errorf("identity: get team by slug: %w", err)
-	}
-	return t, nil
+	return mongoutil.FindOne[Team](ctx, s.teams, bson.M{"slug": slug}, ErrNotFound, "identity: get team by slug")
 }
 
 func (s *MongoStore) UpdateTeam(ctx context.Context, t Team) error {
-	res, err := s.teams.ReplaceOne(ctx, bson.M{"_id": t.ID}, t)
-	if err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return ErrSlugAlreadyTaken
-		}
-		return fmt.Errorf("identity: update team: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.teams, bson.M{"_id": t.ID}, t, ErrSlugAlreadyTaken, ErrNotFound, "identity: update team")
 }
 
 func (s *MongoStore) DeleteTeam(ctx context.Context, id string) error {
-	res, err := s.teams.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("identity: delete team: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.teams, bson.M{"_id": id}, ErrNotFound, "identity: delete team")
 }
 
 func (s *MongoStore) ListTeams(ctx context.Context, page Page) ([]Team, error) {
-	limit := int64(page.Limit)
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := int64(page.Offset)
-	if offset < 0 {
-		offset = 0
-	}
-	cur, err := s.teams.Find(ctx, bson.M{}, options.Find().
-		SetSort(bson.M{"created_at": 1}).
-		SetSkip(offset).
-		SetLimit(limit))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list teams: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Team
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode teams: %w", err)
-	}
-	return out, nil
+	skip, limit := mongoutil.NormalizePage(page.Offset, page.Limit, 50)
+	return mongoutil.FindPageSorted[Team](ctx, s.teams, bson.M{}, "created_at", skip, limit,
+		"identity: list teams", "identity: decode teams")
 }
 
 func (s *MongoStore) ListTeamsByOrg(ctx context.Context, orgID string) ([]Team, error) {
-	cur, err := s.teams.Find(ctx, bson.M{"org_id": orgID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list teams by org: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Team
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode teams: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Team](ctx, s.teams, bson.M{"org_id": orgID}, "created_at",
+		"identity: list teams by org", "identity: decode teams")
 }
 
 // ----- Orgs -----
@@ -301,52 +197,19 @@ func (s *MongoStore) CreateOrg(ctx context.Context, o Org) (Org, error) {
 }
 
 func (s *MongoStore) GetOrg(ctx context.Context, id string) (Org, error) {
-	var o Org
-	err := s.orgs.FindOne(ctx, bson.M{"_id": id}).Decode(&o)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Org{}, ErrNotFound
-	}
-	if err != nil {
-		return Org{}, fmt.Errorf("identity: get org: %w", err)
-	}
-	return o, nil
+	return mongoutil.FindOne[Org](ctx, s.orgs, bson.M{"_id": id}, ErrNotFound, "identity: get org")
 }
 
 func (s *MongoStore) GetOrgBySlug(ctx context.Context, slug string) (Org, error) {
-	var o Org
-	err := s.orgs.FindOne(ctx, bson.M{"slug": slug}).Decode(&o)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Org{}, ErrNotFound
-	}
-	if err != nil {
-		return Org{}, fmt.Errorf("identity: get org by slug: %w", err)
-	}
-	return o, nil
+	return mongoutil.FindOne[Org](ctx, s.orgs, bson.M{"slug": slug}, ErrNotFound, "identity: get org by slug")
 }
 
 func (s *MongoStore) UpdateOrg(ctx context.Context, o Org) error {
-	res, err := s.orgs.ReplaceOne(ctx, bson.M{"_id": o.ID}, o)
-	if err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return ErrOrgSlugAlreadyTaken
-		}
-		return fmt.Errorf("identity: update org: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.orgs, bson.M{"_id": o.ID}, o, ErrOrgSlugAlreadyTaken, ErrNotFound, "identity: update org")
 }
 
 func (s *MongoStore) DeleteOrg(ctx context.Context, id string) error {
-	res, err := s.orgs.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("identity: delete org: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.orgs, bson.M{"_id": id}, ErrNotFound, "identity: delete org")
 }
 
 func (s *MongoStore) ListOrgsPendingPurge(ctx context.Context, before time.Time) ([]Org, error) {
@@ -366,27 +229,9 @@ func (s *MongoStore) ListOrgsPendingPurge(ctx context.Context, before time.Time)
 }
 
 func (s *MongoStore) ListOrgs(ctx context.Context, page Page) ([]Org, error) {
-	limit := int64(page.Limit)
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := int64(page.Offset)
-	if offset < 0 {
-		offset = 0
-	}
-	cur, err := s.orgs.Find(ctx, bson.M{}, options.Find().
-		SetSort(bson.M{"created_at": 1}).
-		SetSkip(offset).
-		SetLimit(limit))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list orgs: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Org
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode orgs: %w", err)
-	}
-	return out, nil
+	skip, limit := mongoutil.NormalizePage(page.Offset, page.Limit, 50)
+	return mongoutil.FindPageSorted[Org](ctx, s.orgs, bson.M{}, "created_at", skip, limit,
+		"identity: list orgs", "identity: decode orgs")
 }
 
 // ----- Org memberships -----
@@ -405,15 +250,7 @@ func (s *MongoStore) UpsertOrgMembership(ctx context.Context, m OrgMembership) e
 }
 
 func (s *MongoStore) GetOrgMembership(ctx context.Context, userID, orgID string) (OrgMembership, error) {
-	var m OrgMembership
-	err := s.orgMemberships.FindOne(ctx, bson.M{"user_id": userID, "org_id": orgID}).Decode(&m)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return OrgMembership{}, ErrNotFound
-	}
-	if err != nil {
-		return OrgMembership{}, fmt.Errorf("identity: get org membership: %w", err)
-	}
-	return m, nil
+	return mongoutil.FindOne[OrgMembership](ctx, s.orgMemberships, bson.M{"user_id": userID, "org_id": orgID}, ErrNotFound, "identity: get org membership")
 }
 
 func (s *MongoStore) DeleteOrgMembership(ctx context.Context, userID, orgID string) error {
@@ -425,29 +262,13 @@ func (s *MongoStore) DeleteOrgMembership(ctx context.Context, userID, orgID stri
 }
 
 func (s *MongoStore) ListOrgMembershipsByUser(ctx context.Context, userID string) ([]OrgMembership, error) {
-	cur, err := s.orgMemberships.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list org memberships by user: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OrgMembership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode org memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OrgMembership](ctx, s.orgMemberships, bson.M{"user_id": userID}, "joined_at",
+		"identity: list org memberships by user", "identity: decode org memberships")
 }
 
 func (s *MongoStore) ListOrgMembershipsByOrg(ctx context.Context, orgID string) ([]OrgMembership, error) {
-	cur, err := s.orgMemberships.Find(ctx, bson.M{"org_id": orgID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list org memberships by org: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OrgMembership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode org memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OrgMembership](ctx, s.orgMemberships, bson.M{"org_id": orgID}, "joined_at",
+		"identity: list org memberships by org", "identity: decode org memberships")
 }
 
 // ----- Memberships -----
@@ -466,15 +287,7 @@ func (s *MongoStore) UpsertMembership(ctx context.Context, m Membership) error {
 }
 
 func (s *MongoStore) GetMembership(ctx context.Context, userID, teamID string) (Membership, error) {
-	var m Membership
-	err := s.memberships.FindOne(ctx, bson.M{"user_id": userID, "team_id": teamID}).Decode(&m)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Membership{}, ErrNotFound
-	}
-	if err != nil {
-		return Membership{}, fmt.Errorf("identity: get membership: %w", err)
-	}
-	return m, nil
+	return mongoutil.FindOne[Membership](ctx, s.memberships, bson.M{"user_id": userID, "team_id": teamID}, ErrNotFound, "identity: get membership")
 }
 
 func (s *MongoStore) DeleteMembership(ctx context.Context, userID, teamID string) error {
@@ -486,29 +299,13 @@ func (s *MongoStore) DeleteMembership(ctx context.Context, userID, teamID string
 }
 
 func (s *MongoStore) ListMembershipsByUser(ctx context.Context, userID string) ([]Membership, error) {
-	cur, err := s.memberships.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list memberships by user: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Membership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Membership](ctx, s.memberships, bson.M{"user_id": userID}, "joined_at",
+		"identity: list memberships by user", "identity: decode memberships")
 }
 
 func (s *MongoStore) ListMembershipsByTeam(ctx context.Context, teamID string) ([]Membership, error) {
-	cur, err := s.memberships.Find(ctx, bson.M{"team_id": teamID}, options.Find().SetSort(bson.M{"joined_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list memberships by team: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Membership
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode memberships: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Membership](ctx, s.memberships, bson.M{"team_id": teamID}, "joined_at",
+		"identity: list memberships by team", "identity: decode memberships")
 }
 
 // ----- Invitations -----
@@ -522,62 +319,24 @@ func (s *MongoStore) CreateInvitation(ctx context.Context, inv Invitation) error
 }
 
 func (s *MongoStore) GetInvitation(ctx context.Context, id string) (Invitation, error) {
-	var inv Invitation
-	err := s.invitations.FindOne(ctx, bson.M{"_id": id}).Decode(&inv)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Invitation{}, ErrNotFound
-	}
-	if err != nil {
-		return Invitation{}, fmt.Errorf("identity: get invitation: %w", err)
-	}
-	return inv, nil
+	return mongoutil.FindOne[Invitation](ctx, s.invitations, bson.M{"_id": id}, ErrNotFound, "identity: get invitation")
 }
 
 func (s *MongoStore) GetInvitationByTokenHash(ctx context.Context, tokenHash string) (Invitation, error) {
-	var inv Invitation
-	err := s.invitations.FindOne(ctx, bson.M{"token_hash": tokenHash}).Decode(&inv)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Invitation{}, ErrNotFound
-	}
-	if err != nil {
-		return Invitation{}, fmt.Errorf("identity: get invitation by token: %w", err)
-	}
-	return inv, nil
+	return mongoutil.FindOne[Invitation](ctx, s.invitations, bson.M{"token_hash": tokenHash}, ErrNotFound, "identity: get invitation by token")
 }
 
 func (s *MongoStore) UpdateInvitation(ctx context.Context, inv Invitation) error {
-	res, err := s.invitations.ReplaceOne(ctx, bson.M{"_id": inv.ID}, inv)
-	if err != nil {
-		return fmt.Errorf("identity: update invitation: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.invitations, bson.M{"_id": inv.ID}, inv, nil, ErrNotFound, "identity: update invitation")
 }
 
 func (s *MongoStore) DeleteInvitation(ctx context.Context, id string) error {
-	res, err := s.invitations.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("identity: delete invitation: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.invitations, bson.M{"_id": id}, ErrNotFound, "identity: delete invitation")
 }
 
 func (s *MongoStore) ListInvitationsByTeam(ctx context.Context, teamID string) ([]Invitation, error) {
-	cur, err := s.invitations.Find(ctx, bson.M{"team_id": teamID}, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list invitations: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Invitation
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode invitations: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[Invitation](ctx, s.invitations, bson.M{"team_id": teamID}, "created_at",
+		"identity: list invitations", "identity: decode invitations")
 }
 
 // ----- OIDC links -----
@@ -596,37 +355,14 @@ func (s *MongoStore) UpsertOIDCLink(ctx context.Context, link OIDCLink) error {
 }
 
 func (s *MongoStore) GetOIDCLink(ctx context.Context, provider, providerUserID string) (OIDCLink, error) {
-	var link OIDCLink
-	err := s.oidcLinks.FindOne(ctx, bson.M{"provider": provider, "provider_user_id": providerUserID}).Decode(&link)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return OIDCLink{}, ErrNotFound
-	}
-	if err != nil {
-		return OIDCLink{}, fmt.Errorf("identity: get oidc link: %w", err)
-	}
-	return link, nil
+	return mongoutil.FindOne[OIDCLink](ctx, s.oidcLinks, bson.M{"provider": provider, "provider_user_id": providerUserID}, ErrNotFound, "identity: get oidc link")
 }
 
 func (s *MongoStore) ListOIDCLinksByUser(ctx context.Context, userID string) ([]OIDCLink, error) {
-	cur, err := s.oidcLinks.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"provider": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("identity: list oidc links: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OIDCLink
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("identity: decode oidc links: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OIDCLink](ctx, s.oidcLinks, bson.M{"user_id": userID}, "provider",
+		"identity: list oidc links", "identity: decode oidc links")
 }
 
 func (s *MongoStore) DeleteOIDCLink(ctx context.Context, provider, providerUserID string) error {
-	res, err := s.oidcLinks.DeleteOne(ctx, bson.M{"provider": provider, "provider_user_id": providerUserID})
-	if err != nil {
-		return fmt.Errorf("identity: delete oidc link: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.oidcLinks, bson.M{"provider": provider, "provider_user_id": providerUserID}, ErrNotFound, "identity: delete oidc link")
 }

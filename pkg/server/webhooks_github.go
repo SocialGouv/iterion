@@ -1,8 +1,8 @@
 package server
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -34,25 +34,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "webhook context missing")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodyBytes))
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "read body: %v", err)
-		return
-	}
-
 	// Signature gate FIRST — never write an audit row or call gateLaunch
 	// for an unauthenticated request (would leak quota signal to a
 	// random poker on the open route).
-	if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, r.Header.Get("X-Hub-Signature-256")) {
-		if s.logger != nil {
-			s.logger.Warn("webhooks: github bad HMAC for %s from %s", cfg.ID, s.clientIP(r))
-		}
-		httpError(w, http.StatusUnauthorized, "invalid signature")
+	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "github", r.Header.Get("X-Hub-Signature-256"))
+	if !ok {
 		return
 	}
-
-	payloadHash := knowledge.ChecksumHex(body)
-	srcIP := s.clientIP(r)
 
 	event := r.Header.Get("X-GitHub-Event")
 	switch event {
@@ -78,6 +66,16 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// "gh|" prefix keeps the idempotency key space disjoint from any other
+	// provider for the same tenant in case ids get reused.
+	s.handlePRForgeReview(ctx, w, r, cfg, body, payloadHash, srcIP, "gh|")
+}
+
+// handlePRForgeReview handles the shared PR auto-review path for GitHub
+// and Forgejo/Gitea (identical prforge.Parsed wire shape): parse → filter
+// → bot select → idempotent launch. idemPrefix keeps each provider's
+// idempotency-key space disjoint for the same tenant.
+func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, body []byte, payloadHash, srcIP, idemPrefix string) {
 	p, err := prforge.ParsePullRequest(body)
 	if err != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, webhookEventMeta{Kind: "pull_request"}, webhooks.StatusInvalid, payloadHash, srcIP, err.Error())
@@ -101,9 +99,7 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Idempotency: one launch per (tenant, webhook, repo, PR#, head sha).
-	// "gh|" prefix keeps the key space disjoint from any other provider
-	// for the same tenant in case ids get reused.
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gh|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
 
 	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
 
@@ -173,9 +169,7 @@ func issueLabeledVars(p prforge.ParsedIssue, launchVars map[string]string, argsV
 		"open_mr":          "true",
 		"source_issue_ref": p.IssueURL,
 	}
-	for k, v := range launchVars {
-		vars[k] = v
-	}
+	mergeVarsInto(vars, launchVars)
 	return vars
 }
 

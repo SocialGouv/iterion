@@ -77,13 +77,7 @@ func TestValidateMemory_RequiresScopeWhenEnabled(t *testing.T) {
 	}
 	c := &compiler{}
 	c.validateMemory(w)
-	found := false
-	for _, d := range c.diags {
-		if d.Code == DiagMemoryMissingScope {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(c.diags, DiagMemoryMissingScope) {
 		t.Fatalf("expected DiagMemoryMissingScope, got %+v", c.diags)
 	}
 }

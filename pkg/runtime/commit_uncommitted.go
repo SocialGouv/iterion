@@ -79,21 +79,17 @@ func CommitUncommittedAndFinalize(
 // no output — i.e. no modifications, no staged changes, no untracked
 // files that aren't gitignored.
 func workdirIsClean(workdir string) (bool, error) {
-	cmd := gitCmd("status", "--porcelain")
-	cmd.Dir = workdir
-	out, err := cmd.CombinedOutput()
+	out, err := runGit(workdir, "status", "--porcelain")
 	if err != nil {
-		return false, fmt.Errorf("git status: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("git status: %w (output: %s)", err, strings.TrimSpace(out))
 	}
-	return strings.TrimSpace(string(out)) == "", nil
+	return strings.TrimSpace(out) == "", nil
 }
 
 func runGitInDir(workdir string, args ...string) error {
-	cmd := gitCmd(args...)
-	cmd.Dir = workdir
-	out, err := cmd.CombinedOutput()
+	out, err := runGit(workdir, args...)
 	if err != nil {
-		return fmt.Errorf("%w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w (output: %s)", err, strings.TrimSpace(out))
 	}
 	return nil
 }

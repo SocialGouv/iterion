@@ -329,7 +329,7 @@ func (c *compiler) validateConditionFields(w *Workflow) {
 			continue
 		}
 		outSchema := NodeOutputSchema(src)
-		schema, _ := w.Schemas[outSchema]
+		schema := w.Schemas[outSchema]
 
 		switch {
 		case e.Condition != "":

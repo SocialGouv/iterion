@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -177,7 +176,3 @@ func lookChromiumBinary() (string, error) {
 		chromiumCandidates,
 	)
 }
-
-// ErrChromiumNotInstalled is the typed error returned by lookChromiumBinary
-// so callers can branch on "Chromium absent" vs "Chromium failed to start".
-var ErrChromiumNotInstalled = errors.New("browser: chromium not installed on PATH")

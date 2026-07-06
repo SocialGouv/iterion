@@ -2,7 +2,6 @@ package forge
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -206,49 +205,19 @@ func (s *MongoRepoIntegrationStore) Create(ctx context.Context, ri RepoIntegrati
 }
 
 func (s *MongoRepoIntegrationStore) Get(ctx context.Context, id string) (RepoIntegration, error) {
-	var ri RepoIntegration
-	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&ri)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return RepoIntegration{}, ErrIntegrationNotFound
-	}
-	if err != nil {
-		return RepoIntegration{}, fmt.Errorf("forge: get repo integration: %w", err)
-	}
-	return ri, nil
+	return mongoutil.FindOne[RepoIntegration](ctx, s.coll, bson.M{"_id": id}, ErrIntegrationNotFound, "forge: get repo integration")
 }
 
 func (s *MongoRepoIntegrationStore) Update(ctx context.Context, ri RepoIntegration) error {
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": ri.ID}, ri)
-	if err != nil {
-		return fmt.Errorf("forge: update repo integration: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrIntegrationNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": ri.ID}, ri, nil, ErrIntegrationNotFound, "forge: update repo integration")
 }
 
 func (s *MongoRepoIntegrationStore) Delete(ctx context.Context, id string) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("forge: delete repo integration: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrIntegrationNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrIntegrationNotFound, "forge: delete repo integration")
 }
 
 func (s *MongoRepoIntegrationStore) GetByConnRepo(ctx context.Context, tenantID, connID, repo string) (RepoIntegration, error) {
-	var ri RepoIntegration
-	err := s.coll.FindOne(ctx, bson.M{"tenant_id": tenantID, "connection_id": connID, "repo_full_name": repo}).Decode(&ri)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return RepoIntegration{}, ErrIntegrationNotFound
-	}
-	if err != nil {
-		return RepoIntegration{}, fmt.Errorf("forge: get repo integration by conn/repo: %w", err)
-	}
-	return ri, nil
+	return mongoutil.FindOne[RepoIntegration](ctx, s.coll, bson.M{"tenant_id": tenantID, "connection_id": connID, "repo_full_name": repo}, ErrIntegrationNotFound, "forge: get repo integration by conn/repo")
 }
 
 func (s *MongoRepoIntegrationStore) ListByTenant(ctx context.Context, tenantID string) ([]RepoIntegration, error) {
@@ -272,14 +241,6 @@ func (s *MongoRepoIntegrationStore) ListSyncEnabledForRepo(ctx context.Context, 
 }
 
 func (s *MongoRepoIntegrationStore) find(ctx context.Context, filter bson.M) ([]RepoIntegration, error) {
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("forge: list repo integrations: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []RepoIntegration
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("forge: decode repo integrations: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[RepoIntegration](ctx, s.coll, filter, "created_at",
+		"forge: list repo integrations", "forge: decode repo integrations")
 }

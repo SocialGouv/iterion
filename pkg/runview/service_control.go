@@ -542,14 +542,12 @@ func (s *Service) GetMergeConflicts(ctx context.Context, runID string) (*MergeCo
 	if err != nil {
 		return nil, fmt.Errorf("parse conflicts: %w", err)
 	}
-	// When the persisted status disagrees with the live worktree
-	// (e.g. the operator resolved manually via the CLI), refresh
-	// run.json so the UI sees the right state on the next refresh.
-	if r.MergeStatus == store.MergeStatusConflicted && len(det.Files) == 0 {
-		// All conflicts resolved out-of-band. Don't auto-finalize:
-		// the operator may not have run `git commit` yet. Surface
-		// the empty list and let the UI drive the finalize.
-	}
+	// When the persisted status disagrees with the live worktree — e.g.
+	// r.MergeStatus == store.MergeStatusConflicted but det.Files is now
+	// empty because the operator resolved manually via the CLI — we
+	// deliberately don't auto-finalize run.json: the operator may not
+	// have run `git commit` yet. Surface the empty list below and let
+	// the UI drive the finalize.
 	return &MergeConflictsResponse{
 		Files:            det.Files,
 		PendingMessage:   r.PendingMergeMessage,

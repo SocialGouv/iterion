@@ -136,8 +136,7 @@ func (m *MemorySessionStore) RevokeSession(_ context.Context, id string, at time
 	if !ok {
 		return ErrSessionNotFound
 	}
-	t := at
-	s.RevokedAt = &t
+	s.RevokedAt = &at
 	m.byID[id] = s
 	return nil
 }
@@ -152,8 +151,7 @@ func (m *MemorySessionStore) RevokeSessionIfNotRevoked(_ context.Context, id str
 	if s.RevokedAt != nil {
 		return false, nil
 	}
-	t := at
-	s.RevokedAt = &t
+	s.RevokedAt = &at
 	m.byID[id] = s
 	return true, nil
 }
@@ -164,8 +162,7 @@ func (m *MemorySessionStore) RevokeUserSessions(_ context.Context, userID string
 	for id := range m.byUserID[userID] {
 		s := m.byID[id]
 		if s.RevokedAt == nil {
-			t := at
-			s.RevokedAt = &t
+			s.RevokedAt = &at
 			m.byID[id] = s
 		}
 	}
@@ -227,15 +224,7 @@ func (s *MongoSessionStore) CreateSession(ctx context.Context, sess Session) err
 }
 
 func (s *MongoSessionStore) GetSessionByTokenHash(ctx context.Context, tokenHash string) (Session, error) {
-	var sess Session
-	err := s.coll.FindOne(ctx, bson.M{"token_hash": tokenHash}).Decode(&sess)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return Session{}, ErrSessionNotFound
-	}
-	if err != nil {
-		return Session{}, fmt.Errorf("auth: get session: %w", err)
-	}
-	return sess, nil
+	return mongoutil.FindOne[Session](ctx, s.coll, bson.M{"token_hash": tokenHash}, ErrSessionNotFound, "auth: get session")
 }
 
 func (s *MongoSessionStore) RevokeSession(ctx context.Context, id string, at time.Time) error {

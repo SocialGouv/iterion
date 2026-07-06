@@ -1,6 +1,8 @@
 package trigger
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -60,12 +62,7 @@ func (m Matcher) Match(ev Event) bool {
 }
 
 func containsExact(set []Source, v Source) bool {
-	for _, s := range set {
-		if s == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(set, v)
 }
 
 // containsStr reports whether v is in set. When fold is true the comparison is
@@ -202,9 +199,5 @@ func copyStrMap(m map[string]string) map[string]string {
 	if len(m) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(m)
 }

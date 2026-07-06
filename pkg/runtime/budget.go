@@ -230,24 +230,24 @@ func (b *SharedBudget) checkLocked() []budgetCheckResult {
 	return results
 }
 
-// findExceeded returns the first exceeded result, or nil.
-func findExceeded(results []budgetCheckResult) *budgetCheckResult {
+// findBudgetCheck returns the first result matching pick, or nil.
+func findBudgetCheck(results []budgetCheckResult, pick func(*budgetCheckResult) bool) *budgetCheckResult {
 	for i := range results {
-		if results[i].exceeded {
+		if pick(&results[i]) {
 			return &results[i]
 		}
 	}
 	return nil
 }
 
+// findExceeded returns the first exceeded result, or nil.
+func findExceeded(results []budgetCheckResult) *budgetCheckResult {
+	return findBudgetCheck(results, func(r *budgetCheckResult) bool { return r.exceeded })
+}
+
 // findHardLimited returns the first hard-limited result, or nil.
 func findHardLimited(results []budgetCheckResult) *budgetCheckResult {
-	for i := range results {
-		if results[i].hardLimited {
-			return &results[i]
-		}
-	}
-	return nil
+	return findBudgetCheck(results, func(r *budgetCheckResult) bool { return r.hardLimited })
 }
 
 // findWarnings returns all warning results.

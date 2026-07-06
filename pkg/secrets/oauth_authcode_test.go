@@ -138,10 +138,9 @@ type capturingTransport struct {
 func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body != nil && t.capture != nil {
 		if b, err := req.GetBody(); err == nil {
-			vals := url.Values{}
 			buf := make([]byte, 4096)
 			n, _ := b.Read(buf)
-			vals, _ = url.ParseQuery(string(buf[:n]))
+			vals, _ := url.ParseQuery(string(buf[:n]))
 			m := map[string]string{}
 			for k := range vals {
 				m[k] = vals.Get(k)

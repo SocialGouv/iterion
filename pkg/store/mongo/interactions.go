@@ -2,13 +2,12 @@ package mongo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -49,13 +48,12 @@ func (s *Store) WriteInteraction(ctx context.Context, i *store.Interaction) erro
 
 // LoadInteraction looks up the composite key directly.
 func (s *Store) LoadInteraction(ctx context.Context, runID, interactionID2 string) (*store.Interaction, error) {
-	var doc interactionDoc
-	err := s.interactions.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": interactionID{RunID: runID, InteractionID: interactionID2}})).Decode(&doc)
+	doc, err := mongoutil.FindOne[interactionDoc](ctx, s.interactions,
+		withTenantFilter(ctx, bson.M{"_id": interactionID{RunID: runID, InteractionID: interactionID2}}),
+		fmt.Errorf("store/mongo: interaction %s/%s not found", runID, interactionID2),
+		fmt.Sprintf("store/mongo: load interaction %s/%s", runID, interactionID2))
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("store/mongo: interaction %s/%s not found", runID, interactionID2)
-		}
-		return nil, fmt.Errorf("store/mongo: load interaction %s/%s: %w", runID, interactionID2, err)
+		return nil, err
 	}
 	out := doc.Interaction
 	out.RunID = runID

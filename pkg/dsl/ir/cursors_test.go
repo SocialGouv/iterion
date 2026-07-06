@@ -121,14 +121,7 @@ workflow w:
 	if !cr.HasErrors() {
 		t.Fatal("expected C085 for cursor with both values and bands")
 	}
-	found := false
-	for _, d := range cr.Diagnostics {
-		if d.Code == DiagMalformedCursor {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasDiag(cr.Diagnostics, DiagMalformedCursor) {
 		t.Fatalf("expected DiagMalformedCursor (C085), got %+v", cr.Diagnostics)
 	}
 }
@@ -157,13 +150,7 @@ workflow w:
 		t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
 	}
 	cr := Compile(pr.File)
-	foundUnknown := false
-	for _, d := range cr.Diagnostics {
-		if d.Code == DiagUnknownCursor {
-			foundUnknown = true
-		}
-	}
-	if !foundUnknown {
+	if !hasDiag(cr.Diagnostics, DiagUnknownCursor) {
 		t.Fatalf("expected DiagUnknownCursor (C083), got %+v", cr.Diagnostics)
 	}
 }
@@ -193,13 +180,7 @@ workflow w:
 		t.Fatalf("parser diagnostics: %+v", pr.Diagnostics)
 	}
 	cr := Compile(pr.File)
-	found := false
-	for _, d := range cr.Diagnostics {
-		if d.Code == DiagInvalidCursorVal {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(cr.Diagnostics, DiagInvalidCursorVal) {
 		t.Fatalf("expected DiagInvalidCursorVal (C084), got %+v", cr.Diagnostics)
 	}
 }

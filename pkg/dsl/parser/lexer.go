@@ -125,15 +125,6 @@ func (l *Lexer) Peek() Token {
 	return l.tokens[l.ti]
 }
 
-// PeekAt returns the token at offset positions ahead without consuming.
-func (l *Lexer) PeekAt(offset int) Token {
-	idx := l.ti + offset
-	if idx < 0 || idx >= len(l.tokens) {
-		return Token{Type: TokenEOF}
-	}
-	return l.tokens[idx]
-}
-
 // Backup unreads the last consumed token.
 func (l *Lexer) Backup() {
 	if l.ti > 0 {

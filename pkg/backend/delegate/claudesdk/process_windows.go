@@ -4,6 +4,7 @@ package claudesdk
 
 import (
 	"os/exec"
+	"strconv"
 	"syscall"
 )
 
@@ -23,22 +24,7 @@ func killProcessGroup(pid int, _ syscall.Signal) error {
 	p, err := exec.LookPath("taskkill")
 	if err == nil {
 		// /T = tree, /F = force.
-		_ = exec.Command(p, "/F", "/T", "/PID", itoa(pid)).Run()
+		_ = exec.Command(p, "/F", "/T", "/PID", strconv.Itoa(pid)).Run()
 	}
 	return nil
-}
-
-func itoa(n int) string {
-	// Avoid pulling strconv just for this; n is always positive here.
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }

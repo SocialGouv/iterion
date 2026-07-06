@@ -10,12 +10,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// openNoFollow opens a file refusing to traverse a symlink at the
-// final path component.
-func openNoFollow(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-}
-
 // openRunFileAt opens components beneath root using openat-style descriptor
 // traversal. Every intermediate component must be a real directory (not a
 // symlink), and the final component must be a real file (not a symlink).

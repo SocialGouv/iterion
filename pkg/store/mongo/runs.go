@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -49,13 +50,11 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 // not-found, never a leak. Refuses documents written by a future
 // schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
-	var r store.Run
-	err := s.runs.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": id})).Decode(&r)
+	r, err := mongoutil.FindOne[store.Run](ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}),
+		fmt.Errorf("store/mongo: run %s not found", id),
+		fmt.Sprintf("store/mongo: load run %s", id))
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, fmt.Errorf("store/mongo: run %s not found", id)
-		}
-		return nil, fmt.Errorf("store/mongo: load run %s: %w", id, err)
+		return nil, err
 	}
 	if r.SchemaVersion > SchemaVersion {
 		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
@@ -303,14 +302,8 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), update)
-	if err != nil {
-		return fmt.Errorf("store/mongo: update status %s: %w", id, err)
-	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("store/mongo: run %s not found", id)
-	}
-	return nil
+	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: update status %s", id))
 }
 
 // UpdateRunStatusIf is a compare-and-set on the status field
@@ -355,31 +348,22 @@ func (s *Store) UpdateRunStatusIf(ctx context.Context, id string, status store.R
 // §F T-33 layers an explicit version-conditional update on top; this
 // method is the simple "no contention" form used by the engine itself.
 func (s *Store) SaveCheckpoint(ctx context.Context, id string, cp *store.Checkpoint) error {
-	res, err := s.runs.UpdateOne(
-		ctx,
-		withTenantFilter(ctx, bson.M{"_id": id}),
-		bson.M{
-			"$set": bson.M{
-				"checkpoint": cp,
-				"updated_at": time.Now().UTC(),
-			},
-			"$inc": bson.M{"version": 1},
+	update := bson.M{
+		"$set": bson.M{
+			"checkpoint": cp,
+			"updated_at": time.Now().UTC(),
 		},
-	)
-	if err != nil {
-		return fmt.Errorf("store/mongo: save checkpoint %s: %w", id, err)
+		"$inc": bson.M{"version": 1},
 	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("store/mongo: run %s not found", id)
-	}
-	return nil
+	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: save checkpoint %s", id))
 }
 
 // PauseRun atomically writes the checkpoint, flips status to paused,
 // and stamps updated_at. Single-document update is naturally atomic.
 func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) error {
 	now := time.Now().UTC()
-	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), bson.M{
+	update := bson.M{
 		"$set": bson.M{
 			"status":     store.RunStatusPausedWaitingHuman,
 			"checkpoint": cp,
@@ -387,14 +371,9 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 		},
 		"$inc":   bson.M{"version": 1},
 		"$unset": bson.M{"finished_at": ""},
-	})
-	if err != nil {
-		return fmt.Errorf("store/mongo: pause %s: %w", id, err)
 	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("store/mongo: run %s not found", id)
-	}
-	return nil
+	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: pause %s", id))
 }
 
 // FailRunResumable writes the checkpoint, flips status to
@@ -402,7 +381,7 @@ func (s *Store) PauseRun(ctx context.Context, id string, cp *store.Checkpoint) e
 // re-pick up at NodeID without replaying upstream work.
 func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Checkpoint, runErr string) error {
 	now := time.Now().UTC()
-	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), bson.M{
+	update := bson.M{
 		"$set": bson.M{
 			"status":      store.RunStatusFailedResumable,
 			"checkpoint":  cp,
@@ -411,12 +390,7 @@ func (s *Store) FailRunResumable(ctx context.Context, id string, cp *store.Check
 			"finished_at": now,
 		},
 		"$inc": bson.M{"version": 1},
-	})
-	if err != nil {
-		return fmt.Errorf("store/mongo: fail resumable %s: %w", id, err)
 	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("store/mongo: run %s not found", id)
-	}
-	return nil
+	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: fail resumable %s", id))
 }

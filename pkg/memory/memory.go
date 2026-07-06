@@ -16,18 +16,7 @@ import (
 // as the run store so the memory tree sits next to the run state.
 // Returns "" when workDir is empty.
 func WorkspaceMemoryDir(workDir string) string {
-	if workDir == "" {
-		return ""
-	}
-	abs := workDir
-	if !filepath.IsAbs(abs) {
-		resolved, err := filepath.Abs(workDir)
-		if err != nil {
-			return ""
-		}
-		abs = resolved
-	}
-	return filepath.Join(store.GlobalIterionDataDir(), "projects", store.EncodeWorkDirKey(abs), "memory")
+	return workspaceSubdir(workDir, "memory")
 }
 
 // WorkspaceScratchDir returns the per-workspace scratch root, a sibling
@@ -38,6 +27,14 @@ func WorkspaceMemoryDir(workDir string) string {
 // bind-mounted inside the sandbox (~/.iterion auto-mount), so it resolves
 // in both modes without remapping. Returns "" when workDir is empty.
 func WorkspaceScratchDir(workDir string) string {
+	return workspaceSubdir(workDir, "scratch")
+}
+
+// workspaceSubdir resolves the per-workspace root for the given
+// subdirectory name (e.g. "memory" or "scratch"), following the same
+// abs-path + encode-key convention as the run store. Returns "" when
+// workDir is empty or can't be made absolute.
+func workspaceSubdir(workDir, subdir string) string {
 	if workDir == "" {
 		return ""
 	}
@@ -49,7 +46,7 @@ func WorkspaceScratchDir(workDir string) string {
 		}
 		abs = resolved
 	}
-	return filepath.Join(store.GlobalIterionDataDir(), "projects", store.EncodeWorkDirKey(abs), "scratch")
+	return filepath.Join(store.GlobalIterionDataDir(), "projects", store.EncodeWorkDirKey(abs), subdir)
 }
 
 // Scope is a sandboxed view of a single feature subfolder. All

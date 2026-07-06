@@ -1115,13 +1115,7 @@ workflow test:
 	// Re-run validation.
 	c := &compiler{}
 	c.validateReasoningEffort(r.Workflow)
-	found := false
-	for _, d := range c.diags {
-		if d.Code == DiagInvalidReasoningEffort {
-			found = true
-		}
-	}
-	if !found {
+	if !hasDiag(c.diags, DiagInvalidReasoningEffort) {
 		t.Error("expected diagnostic C024 for invalid reasoning_effort")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	"github.com/SocialGouv/iterion/pkg/sandbox/registry"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -24,7 +25,7 @@ import (
 // to debug from logs alone.
 func selectSandboxDriver(spec *sandbox.Spec, logger *iterlog.Logger) (sandbox.Driver, error) {
 	factory := sandbox.NewFactory(sandbox.FactoryOptions{
-		AvailableDrivers: defaultDriverRegistry(),
+		AvailableDrivers: registry.Default(),
 	})
 	driver, err := factory.DriverForSpec(spec)
 	if err != nil {

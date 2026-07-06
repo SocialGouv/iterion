@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -39,25 +38,6 @@ type githubPull struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
-// issueRefRe matches "#123" style references (incl. "fixes #123", "closes #7")
-// in a PR title/body, for best-effort LinkedIssues extraction.
-var issueRefRe = regexp.MustCompile(`#(\d+)`)
-
-// linkedIssues parses "#<n>" references out of a PR's title+body, deduped.
-func linkedIssues(title, body string) []int {
-	seen := map[int]bool{}
-	var out []int
-	for _, m := range issueRefRe.FindAllStringSubmatch(title+"\n"+body, -1) {
-		n, err := strconv.Atoi(m[1])
-		if err != nil || seen[n] {
-			continue
-		}
-		seen[n] = true
-		out = append(out, n)
-	}
-	return out
-}
-
 func (gp githubPull) toRef() forge.PullRef {
 	state := gp.State
 	if gp.MergedAt != nil {
@@ -75,7 +55,7 @@ func (gp githubPull) toRef() forge.PullRef {
 		Draft:        gp.Draft,
 		CreatedAt:    gp.CreatedAt,
 		UpdatedAt:    gp.UpdatedAt,
-		LinkedIssues: linkedIssues(gp.Title, gp.Body),
+		LinkedIssues: forge.ParseIssueRefs(false, gp.Title, gp.Body),
 	}
 }
 

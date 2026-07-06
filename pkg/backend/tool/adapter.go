@@ -40,35 +40,3 @@ func (td *ToolDef) ToDelegateDef() delegate.ToolDef {
 		Execute:     td.Execute,
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Batch helpers
-// ---------------------------------------------------------------------------
-
-// ResolveAll resolves a list of tool references and returns the corresponding
-// llmtypes.LLMTool slice. It stops at the first resolution error.
-func (r *Registry) ResolveAll(refs []string) ([]llmtypes.LLMTool, error) {
-	tools := make([]llmtypes.LLMTool, 0, len(refs))
-	for _, ref := range refs {
-		td, err := r.Resolve(ref)
-		if err != nil {
-			return nil, err
-		}
-		tools = append(tools, td.ToLLMTool())
-	}
-	return tools, nil
-}
-
-// ResolveMap resolves a list of tool references and returns a map keyed
-// by qualified name. Useful for the executor's tool lookup table.
-func (r *Registry) ResolveMap(refs []string) (map[string]llmtypes.LLMTool, error) {
-	result := make(map[string]llmtypes.LLMTool, len(refs))
-	for _, ref := range refs {
-		td, err := r.Resolve(ref)
-		if err != nil {
-			return nil, err
-		}
-		result[td.QualifiedName] = td.ToLLMTool()
-	}
-	return result, nil
-}

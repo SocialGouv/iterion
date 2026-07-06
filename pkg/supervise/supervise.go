@@ -18,6 +18,7 @@ package supervise
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -77,12 +78,7 @@ func (s Spec) watchesNode(nodeID string) bool {
 	if len(s.Watches) == 0 {
 		return true
 	}
-	for _, n := range s.Watches {
-		if n == nodeID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.Watches, nodeID)
 }
 
 // Monitor is an event pattern the supervisor registers interest in.

@@ -61,7 +61,8 @@ func (c *compiler) validateArtifactLabels(w *Workflow) {
 // whitespace-trimmed.
 //
 // Kept inline (no import of pkg/backend/rewrite) so the dsl layer stays
-// dependency-free; keep in sync with rewrite.IsValidValue.
+// dependency-free; keep in sync with the accepted values in
+// rewrite.ParseMode.
 func (c *compiler) validateCompress(w *Workflow) {
 	valid := func(v string) bool {
 		switch strings.ToLower(strings.TrimSpace(v)) {
@@ -75,22 +76,34 @@ func (c *compiler) validateCompress(w *Workflow) {
 			"workflow %q has invalid compress %q; valid values are on, off, ultra",
 			w.Name, w.Compress)
 	}
+	forEachAgentJudgeToolValue(w,
+		LLMNode.GetCompress,
+		func(nn *ToolNode) string { return nn.Compress },
+		func(n Node, kind, compress string) {
+			if !valid(compress) {
+				c.errorf(DiagInvalidCompress,
+					"%s %q has invalid compress %q; valid values are on, off, ultra",
+					kind, n.NodeID(), compress)
+			}
+		})
+}
+
+// forEachAgentJudgeToolValue visits every agent/judge/tool node in the
+// workflow, extracting a per-node string field (compress, permission, ...)
+// via the supplied getters — the two DSL-level node kinds that carry such
+// overrides. Other node kinds are skipped.
+func forEachAgentJudgeToolValue(w *Workflow, llmGet func(LLMNode) string, toolGet func(*ToolNode) string, fn func(n Node, kind, value string)) {
 	for _, n := range w.Nodes {
-		var compress string
-		var kind string
+		var value, kind string
 		switch nn := n.(type) {
 		case LLMNode:
-			compress, kind = nn.GetCompress(), nn.NodeKind().String()
+			value, kind = llmGet(nn), nn.NodeKind().String()
 		case *ToolNode:
-			compress, kind = nn.Compress, "tool"
+			value, kind = toolGet(nn), "tool"
 		default:
 			continue
 		}
-		if !valid(compress) {
-			c.errorf(DiagInvalidCompress,
-				"%s %q has invalid compress %q; valid values are on, off, ultra",
-				kind, n.NodeID(), compress)
-		}
+		fn(n, kind, value)
 	}
 }
 
@@ -115,35 +128,28 @@ func (c *compiler) validatePermission(w *Workflow) {
 			"workflow %q has invalid permission %q; valid values are off, ask, deny",
 			w.Name, w.Permission)
 	}
-	for _, n := range w.Nodes {
-		var perm string
-		var kind string
-		switch nn := n.(type) {
-		case LLMNode:
-			perm, kind = nn.GetPermission(), nn.NodeKind().String()
-		case *ToolNode:
-			perm, kind = nn.Permission, "tool"
-		default:
-			continue
-		}
-		if !valid(perm) {
-			c.errorf(DiagInvalidPermission,
-				"%s %q has invalid permission %q; valid values are off, ask, deny",
-				kind, n.NodeID(), perm)
-			continue
-		}
-		// C112: the gate evaluates LLM-issued tool calls; a tool node is a
-		// direct, deterministic shell action (governed by the Verified
-		// Action quad), so its permission: is parsed but never enforced.
-		// Warn so an operator doesn't ship an inert security control.
-		if kind == "tool" {
-			if m := strings.ToLower(strings.TrimSpace(perm)); m == "ask" || m == "deny" {
-				c.warnf(DiagToolNodePermissionInert,
-					"tool node %q sets permission: %s, but the gate only governs agent/judge LLM tool calls; a tool node's permission is not enforced (use goal/postcondition/policy/recovery to gate the action)",
-					n.NodeID(), m)
+	forEachAgentJudgeToolValue(w,
+		LLMNode.GetPermission,
+		func(nn *ToolNode) string { return nn.Permission },
+		func(n Node, kind, perm string) {
+			if !valid(perm) {
+				c.errorf(DiagInvalidPermission,
+					"%s %q has invalid permission %q; valid values are off, ask, deny",
+					kind, n.NodeID(), perm)
+				return
 			}
-		}
-	}
+			// C112: the gate evaluates LLM-issued tool calls; a tool node is a
+			// direct, deterministic shell action (governed by the Verified
+			// Action quad), so its permission: is parsed but never enforced.
+			// Warn so an operator doesn't ship an inert security control.
+			if kind == "tool" {
+				if m := strings.ToLower(strings.TrimSpace(perm)); m == "ask" || m == "deny" {
+					c.warnf(DiagToolNodePermissionInert,
+						"tool node %q sets permission: %s, but the gate only governs agent/judge LLM tool calls; a tool node's permission is not enforced (use goal/postcondition/policy/recovery to gate the action)",
+						n.NodeID(), m)
+				}
+			}
+		})
 
 	// C111: rules declared but the gate is disabled. The resolved workflow
 	// mode is "" or "off" → the allow/ask/deny lists never take effect.

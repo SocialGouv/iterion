@@ -1,8 +1,6 @@
 package delegate
 
 import (
-	"strings"
-
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 )
 
@@ -30,12 +28,7 @@ func boardToolFQN(tool string) string {
 // `board.*` entry — used to decide whether to register the board MCP server
 // at all.
 func HasBoardCapability(caps []string) bool {
-	for _, c := range caps {
-		if strings.HasPrefix(c, boardCapabilityPrefix) {
-			return true
-		}
-	}
-	return false
+	return hasCapabilityPrefix(caps, boardCapabilityPrefix)
 }
 
 // BoardToolsFor returns the MCP FQN list the granted capabilities unlock,

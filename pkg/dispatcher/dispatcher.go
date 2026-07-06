@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -543,11 +544,7 @@ func copyIntMap(in map[string]int) map[string]int {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]int, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(in)
 }
 
 // ---------------------------------------------------------------------------

@@ -86,18 +86,11 @@ func Detect() (kubectl string, namespace string, err error) {
 	return binPath, ns, nil
 }
 
-// kubectlCmd wraps exec.Command(kubectl, args...) with LC_ALL=C so
-// callers can branch on stderr substrings ("NotFound", "AlreadyExists")
-// stably across user locales. Mirrors the gitCmd / runtimeCmd helpers.
-func kubectlCmd(args ...string) *exec.Cmd {
-	cmd := exec.Command(kubeBinaryName, args...)
-	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
-	proc.DetachProcessGroup(cmd)
-	return cmd
-}
-
-// kubectlCmdContext is the ctx-aware sibling for long-running ops
-// (apply, delete, exec) that should respect run cancellation.
+// kubectlCmdContext wraps exec.CommandContext(kubectl, args...) with
+// LC_ALL=C so callers can branch on stderr substrings ("NotFound",
+// "AlreadyExists") stably across user locales. Mirrors the gitCmd /
+// runtimeCmdContext helpers. Used for long-running ops (apply, delete,
+// exec) that should respect run cancellation.
 func kubectlCmdContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, kubeBinaryName, args...)
 	cmd.Env = append(cmd.Environ(), "LC_ALL=C", "LANG=C")
@@ -149,17 +142,4 @@ func waitForPodRunning(ctx context.Context, namespace, podName string, timeoutSe
 		return fmt.Errorf("kubectl wait pod/%s: %w\noutput: %s", podName, err, string(out))
 	}
 	return nil
-}
-
-// runtimeVersion returns kubectl's reported client version. Used by
-// `iterion sandbox doctor` so operators see the kubectl binary
-// they're shipping with the runner image.
-func runtimeVersion() (string, error) {
-	out, err := kubectlCmd("version", "--client", "--output=json").Output()
-	if err != nil {
-		return "", err
-	}
-	// Don't bother decoding the JSON — keep this dependency-free.
-	// The doctor caller renders the raw string anyway.
-	return strings.TrimSpace(string(out)), nil
 }

@@ -192,14 +192,8 @@ func (s *MongoStore) Upsert(ctx context.Context, e Entry) error {
 // unknown; the install endpoint validates the entry exists before
 // calling.
 func (s *MongoStore) IncrementInstalls(ctx context.Context, slug string) error {
-	res, err := s.col.UpdateOne(ctx, bson.M{"_id": slug}, bson.M{"$inc": bson.M{"installs": 1}})
-	if err != nil {
-		return fmt.Errorf("marketplace: increment installs: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return fmt.Errorf("marketplace: entry %q not found", slug)
-	}
-	return nil
+	return mongoutil.UpdateOneChecked(ctx, s.col, bson.M{"_id": slug}, bson.M{"$inc": bson.M{"installs": 1}},
+		fmt.Errorf("marketplace: entry %q not found", slug), "marketplace: increment installs")
 }
 
 // SetStatus transitions slug's moderation status. expect, when set, is a

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -44,15 +43,12 @@ func (k OAuthKind) Valid() bool {
 // ExpiringBefore) without a schema change. The cloud publisher uses
 // these as a FALLBACK when the run's owner has no personal record,
 // covering automated runs (webhook/dispatcher/cron) whose owner is a
-// synthetic identity. See OrgOwnerKey / IsOrgOwner.
+// synthetic identity. See OrgOwnerKey.
 const OrgOwnerPrefix = "org:"
 
 // OrgOwnerKey returns the synthetic owner key under which a team/org's
 // shared forfait credential is stored.
 func OrgOwnerKey(tenantID string) string { return OrgOwnerPrefix + tenantID }
-
-// IsOrgOwner reports whether an owner key denotes a team/org record.
-func IsOrgOwner(ownerID string) bool { return strings.HasPrefix(ownerID, OrgOwnerPrefix) }
 
 // OAuthRecord is the per-(user, kind) sealed credential bundle.
 //
@@ -334,39 +330,16 @@ func (s *MongoOAuthStore) Upsert(ctx context.Context, rec OAuthRecord) error {
 }
 
 func (s *MongoOAuthStore) Get(ctx context.Context, userID string, kind OAuthKind) (OAuthRecord, error) {
-	var r OAuthRecord
-	err := s.coll.FindOne(ctx, bson.M{"user_id": userID, "kind": kind}).Decode(&r)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return OAuthRecord{}, ErrOAuthNotFound
-	}
-	if err != nil {
-		return OAuthRecord{}, fmt.Errorf("secrets: get oauth: %w", err)
-	}
-	return r, nil
+	return mongoutil.FindOne[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID, "kind": kind}, ErrOAuthNotFound, "secrets: get oauth")
 }
 
 func (s *MongoOAuthStore) ListByUser(ctx context.Context, userID string) ([]OAuthRecord, error) {
-	cur, err := s.coll.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"kind": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("secrets: list oauth: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OAuthRecord
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("secrets: decode oauth: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OAuthRecord](ctx, s.coll, bson.M{"user_id": userID}, "kind",
+		"secrets: list oauth", "secrets: decode oauth")
 }
 
 func (s *MongoOAuthStore) Delete(ctx context.Context, userID string, kind OAuthKind) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"user_id": userID, "kind": kind})
-	if err != nil {
-		return fmt.Errorf("secrets: delete oauth: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrOAuthNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"user_id": userID, "kind": kind}, ErrOAuthNotFound, "secrets: delete oauth")
 }
 
 func (s *MongoOAuthStore) ExpiringBefore(ctx context.Context, t time.Time) ([]OAuthRecord, error) {

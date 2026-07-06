@@ -381,10 +381,6 @@ func (b *SnapshotBuilder) buildLoopProgress() map[string]RunLoopProgress {
 	return out
 }
 
-// LastSeq exposes the highest seq applied so far so live subscribers
-// can resume cleanly via WS subscribe{from_seq}.
-func (b *SnapshotBuilder) LastSeq() int64 { return b.lastSeq }
-
 // ---------------------------------------------------------------------------
 // Per-event handlers
 // ---------------------------------------------------------------------------
