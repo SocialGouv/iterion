@@ -89,13 +89,7 @@ func TestNodeDeadlineFromDurationBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
-	found := false
-	for _, evt := range events {
-		if evt.Type == store.EventBudgetExceeded {
-			found = true
-		}
-	}
-	if !found {
+	if !hasEventType(events, store.EventBudgetExceeded) {
 		t.Error("expected a budget_exceeded event for the duration deadline")
 	}
 }
