@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/SocialGouv/iterion/pkg/backend/llmtypes"
 )
 
 // noop is a no-op execute function for testing.
@@ -455,72 +457,6 @@ func TestToLLMTool(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ResolveAll / ResolveMap
-// ---------------------------------------------------------------------------
-
-func TestResolveAll(t *testing.T) {
-	r := NewRegistry()
-	_ = r.RegisterBuiltin("git_diff", "diff", nil, noop)
-	_ = r.RegisterMCP("github", "create_issue", "issue", nil, noop)
-
-	tools, err := r.ResolveAll([]string{"git_diff", "mcp.github.create_issue"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
-	}
-}
-
-func TestResolveAllError(t *testing.T) {
-	r := NewRegistry()
-	_, err := r.ResolveAll([]string{"nonexistent"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestResolveMap(t *testing.T) {
-	r := NewRegistry()
-	_ = r.RegisterBuiltin("git_diff", "diff", nil, noop)
-	_ = r.RegisterMCP("github", "create_issue", "issue", nil, noop)
-
-	m, err := r.ResolveMap([]string{"git_diff", "mcp.github.create_issue"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(m) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(m))
-	}
-	if _, ok := m["git_diff"]; !ok {
-		t.Error("missing git_diff in map")
-	}
-	if _, ok := m["mcp.github.create_issue"]; !ok {
-		t.Error("missing mcp.github.create_issue in map")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ResolveAll with shorthand
-// ---------------------------------------------------------------------------
-
-func TestResolveAllShorthand(t *testing.T) {
-	r := NewRegistry()
-	_ = r.RegisterMCP("github", "create_issue", "issue", nil, noop)
-
-	tools, err := r.ResolveAll([]string{"create_issue"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(tools) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(tools))
-	}
-	if tools[0].Name != "mcp_github_create_issue" {
-		t.Errorf("expected sanitized name, got %q", tools[0].Name)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Origin string
 // ---------------------------------------------------------------------------
 
@@ -627,9 +563,13 @@ func TestWorkflowToolResolution(t *testing.T) {
 		"send_message",            // MCP shorthand (only one server has it)
 	}
 
-	tools, err := r.ResolveAll(refs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	tools := make([]llmtypes.LLMTool, 0, len(refs))
+	for _, ref := range refs {
+		td, err := r.Resolve(ref)
+		if err != nil {
+			t.Fatalf("unexpected error resolving %q: %v", ref, err)
+		}
+		tools = append(tools, td.ToLLMTool())
 	}
 	if len(tools) != 5 {
 		t.Fatalf("expected 5 tools, got %d", len(tools))
