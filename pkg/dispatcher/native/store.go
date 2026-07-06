@@ -257,6 +257,18 @@ func (s *Store) setBoardLocked(next *Board) error {
 	return nil
 }
 
+// commitBoardLocked persists next and, on success, emits the
+// board-updated event carrying payload. The caller must already hold
+// s.mu. Used by the mutators (Add/Update State/Field, ...) whose
+// commit isn't interleaved with a cascade across issues — those call
+// setBoardLocked and emitPostCommitEvent separately instead.
+func (s *Store) commitBoardLocked(next *Board, payload map[string]any) error {
+	if err := s.setBoardLocked(next); err != nil {
+		return err
+	}
+	return s.emitPostCommitEvent(Event{Type: EvtBoardUpdated, Payload: payload})
+}
+
 // migrateStateLocked rewrites every indexed issue in state `from` to
 // state `to`, emitting one EvtIssueState per touched issue with the
 // given reason. The caller already holds s.mu and has validated both
@@ -308,13 +320,7 @@ func (s *Store) AddState(st State) (err error) {
 	}
 	next := cloneBoard(s.board)
 	next.States = append(next.States, st)
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "state_add", "state": st.Name},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "state_add", "state": st.Name})
 }
 
 // RenameState renames a column and cascades the change to every issue in
@@ -438,13 +444,7 @@ func (s *Store) UpdateState(name string, p StatePatch) (err error) {
 	if p.Terminal != nil {
 		st.Terminal = *p.Terminal
 	}
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "state_update", "state": name},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "state_update", "state": name})
 }
 
 // ---------------------------------------------------------------------------
@@ -505,13 +505,7 @@ func (s *Store) AddField(f Field) (err error) {
 	}
 	next := cloneBoard(s.board)
 	next.Fields = append(next.Fields, f)
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "field_add", "field": f.Name},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "field_add", "field": f.Name})
 }
 
 // FieldPatch carries the editable definition fields for UpdateField. A
@@ -548,13 +542,7 @@ func (s *Store) UpdateField(name string, p FieldPatch) (err error) {
 	if p.EnumValues != nil {
 		f.EnumValues = *p.EnumValues
 	}
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "field_update", "field": name},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "field_update", "field": name})
 }
 
 // RenameField renames a field definition and cascades the key across
@@ -681,13 +669,7 @@ func (s *Store) ReorderFields(order []string) (err error) {
 	}
 	next := cloneBoard(s.board)
 	next.Fields = reordered
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "field_reorder"},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "field_reorder"})
 }
 
 // ---------------------------------------------------------------------------
@@ -716,13 +698,7 @@ func (s *Store) SaveView(v View) (err error) {
 	if !replaced {
 		next.Views = append(next.Views, v)
 	}
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "view_save", "view": v.Name},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "view_save", "view": v.Name})
 }
 
 // DeleteView removes a named view. Unknown names error.
@@ -742,13 +718,7 @@ func (s *Store) DeleteView(name string) (err error) {
 	}
 	next := cloneBoard(s.board)
 	next.Views = append(next.Views[:idx], next.Views[idx+1:]...)
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "view_delete", "view": name},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "view_delete", "view": name})
 }
 
 // ReorderStates rewrites the column order. `order` must be a permutation
@@ -764,13 +734,7 @@ func (s *Store) ReorderStates(order []string) (err error) {
 	}
 	next := cloneBoard(s.board)
 	next.States = reordered
-	if err := s.setBoardLocked(next); err != nil {
-		return err
-	}
-	return s.emitPostCommitEvent(Event{
-		Type:    EvtBoardUpdated,
-		Payload: map[string]any{"op": "state_reorder"},
-	})
+	return s.commitBoardLocked(next, map[string]any{"op": "state_reorder"})
 }
 
 // Create persists a new issue. The State must be one of the configured
