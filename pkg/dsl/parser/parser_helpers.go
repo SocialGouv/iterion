@@ -59,68 +59,50 @@ func (p *parser) parseNeedsList() []string {
 	return []string{id}
 }
 
-func (p *parser) parseIdentList() []string {
+// parseBracketList parses a comma-separated `[elem, elem, ...]` list,
+// calling parseElem for each element. parseElem reports ok=false to skip
+// appending (used by parsers that only accept well-formed elements).
+func (p *parser) parseBracketList(parseElem func() (value string, ok bool)) []string {
 	p.expect(TokenLBrack)
-	var names []string
-	if p.peek().Type == TokenRBrack { // empty list: [] (matches parseStringList)
-		p.next()
-		return names
-	}
-	t := p.next()
-	id := tokenAsIdent(t)
-	if id != "" {
-		names = append(names, id)
-	}
-	for p.peek().Type == TokenComma {
-		p.next() // consume ,
-		t = p.next()
-		id = tokenAsIdent(t)
-		if id != "" {
-			names = append(names, id)
+	var out []string
+	appendElem := func() {
+		if v, ok := parseElem(); ok {
+			out = append(out, v)
 		}
 	}
+	if p.peek().Type == TokenRBrack {
+		p.next()
+		return out
+	}
+	appendElem()
+	for p.peek().Type == TokenComma {
+		p.next() // consume ,
+		appendElem()
+	}
 	p.expect(TokenRBrack)
-	return names
+	return out
+}
+
+func (p *parser) parseIdentList() []string {
+	return p.parseBracketList(func() (string, bool) {
+		id := tokenAsIdent(p.next())
+		return id, id != ""
+	})
 }
 
 func (p *parser) parseStringList() []string {
-	p.expect(TokenLBrack)
-	var vals []string
-	if p.peek().Type == TokenRBrack {
-		p.next()
-		return vals
-	}
-	vals = append(vals, p.expectString())
-	for p.peek().Type == TokenComma {
-		p.next()
-		vals = append(vals, p.expectString())
-	}
-	p.expect(TokenRBrack)
-	return vals
+	return p.parseBracketList(func() (string, bool) {
+		return p.expectString(), true
+	})
 }
 
 // parseToolList parses a bracketed list of tool references that may contain
 // dotted qualified names (e.g. [git_diff, mcp.claude_code.delegate]).
 func (p *parser) parseToolList() []string {
-	p.expect(TokenLBrack)
-	var names []string
-	if p.peek().Type == TokenRBrack { // empty list: [] (matches parseStringList)
-		p.next()
-		return names
-	}
-	name := p.parseToolRef()
-	if name != "" {
-		names = append(names, name)
-	}
-	for p.peek().Type == TokenComma {
-		p.next() // consume ,
-		name = p.parseToolRef()
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	p.expect(TokenRBrack)
-	return names
+	return p.parseBracketList(func() (string, bool) {
+		name := p.parseToolRef()
+		return name, name != ""
+	})
 }
 
 // parseToolRef parses a single tool reference: IDENT { "." IDENT } or
