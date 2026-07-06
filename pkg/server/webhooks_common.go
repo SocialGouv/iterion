@@ -84,6 +84,18 @@ type webhookEventMeta struct {
 	SenderHandle string // username for audit (logged only, never in delivery audit row v1)
 }
 
+// mergeVarsInto copies every key from src into dst (overwriting on
+// collision) and returns dst. A nil src is a no-op. Used by the
+// webhook launch-vars builders to layer overlays (context vars,
+// operator launch vars) onto a handler-specific base map, each later
+// layer winning on key collision.
+func mergeVarsInto(dst, src map[string]string) map[string]string {
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 // reviewPRVars composes the launch-vars map every forge-specific
 // review-PR path produces: the canonical {pr_url, base_ref, scope_notes,
 // post_to_board:"false", pr_review_mode:"summary"} base, an optional
@@ -98,12 +110,8 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 		"post_to_board":  "false",
 		"pr_review_mode": "summary",
 	}
-	for k, v := range extra {
-		vars[k] = v
-	}
-	for k, v := range launchVars {
-		vars[k] = v
-	}
+	mergeVarsInto(vars, extra)
+	mergeVarsInto(vars, launchVars)
 	return vars
 }
 

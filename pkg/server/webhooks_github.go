@@ -169,9 +169,7 @@ func issueLabeledVars(p prforge.ParsedIssue, launchVars map[string]string, argsV
 		"open_mr":          "true",
 		"source_issue_ref": p.IssueURL,
 	}
-	for k, v := range launchVars {
-		vars[k] = v
-	}
+	mergeVarsInto(vars, launchVars)
 	return vars
 }
 
