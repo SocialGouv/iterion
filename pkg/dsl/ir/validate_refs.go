@@ -28,7 +28,7 @@ func collectAllRefs(w *Workflow) []refContext {
 	// Build reverse map: prompt name → list of consuming node IDs.
 	promptUsers := make(map[string][]string)
 	for _, n := range w.Nodes {
-		for _, pname := range nodePromptRefs(n) {
+		for _, pname := range NodePromptRefs(n) {
 			promptUsers[pname] = append(promptUsers[pname], n.NodeID())
 		}
 	}
@@ -154,10 +154,6 @@ func refFromExpr(r expr.Ref) *Ref {
 		Raw:  "{{" + raw + "}}",
 	}
 }
-
-// nodePromptRefs delegates to the exported NodePromptRefs in ir.go.
-// Kept as a local alias for readability in this file.
-var nodePromptRefs = NodePromptRefs
 
 // buildPredecessors computes, for each node, the set of all nodes that
 // can execute before it (i.e. whose outputs are available). This follows
