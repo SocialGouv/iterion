@@ -530,4 +530,3 @@ func (s *Server) buildOrgUsageView(ctx context.Context, st identity.Store, o ide
 	}
 	return v
 }
-
