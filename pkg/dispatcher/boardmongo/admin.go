@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -556,12 +557,7 @@ func (s *Store) RenameLabel(from, to string) (int, error) {
 	return s.applyLabelRewrite(ctx, func(labels []string) ([]string, bool) {
 		out := make([]string, 0, len(labels))
 		changed := false
-		seenTo := false
-		for _, l := range labels {
-			if l == to {
-				seenTo = true
-			}
-		}
+		seenTo := slices.Contains(labels, to)
 		for _, l := range labels {
 			if l == from {
 				if seenTo {
@@ -594,12 +590,7 @@ func (s *Store) MergeLabels(from, to string) (int, error) {
 	return s.applyLabelRewrite(ctx, func(labels []string) ([]string, bool) {
 		out := make([]string, 0, len(labels))
 		changed := false
-		seenTo := false
-		for _, l := range labels {
-			if l == to {
-				seenTo = true
-			}
-		}
+		seenTo := slices.Contains(labels, to)
 		for _, l := range labels {
 			if l == from {
 				if !seenTo {
