@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -252,29 +253,15 @@ func (s *JSONStore) Delete(_ context.Context, slug string) error {
 // a non-empty set (org-scoped entries with no owner stay out of scoped
 // moderation queues).
 func orgInSet(org string, ids []string) bool {
-	for _, id := range ids {
-		if id == org {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, org)
 }
 
 // matchEntry returns true when e satisfies the (lowercased) text and
 // tag filters. text matches Slug/Name/DisplayName/Description/Author or
 // any tag; tag requires an exact case-insensitive tag match.
 func matchEntry(e Entry, text, tag string) bool {
-	if tag != "" {
-		found := false
-		for _, t := range e.Tags {
-			if strings.EqualFold(t, tag) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
+	if tag != "" && !slices.ContainsFunc(e.Tags, func(t string) bool { return strings.EqualFold(t, tag) }) {
+		return false
 	}
 	if text != "" {
 		hay := strings.ToLower(strings.Join([]string{
