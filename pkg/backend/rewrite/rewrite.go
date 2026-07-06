@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -196,7 +197,7 @@ func (r *Rewriter) Rewrite(ctx context.Context, m Mode, cmd string) (string, boo
 	if rctx.Err() != nil {
 		return cmd, false // timeout / cancellation → passthrough
 	}
-	if !containsInt(r.spec.ApplyExitCodesOrDefault(), exitCode(err)) {
+	if !slices.Contains(r.spec.ApplyExitCodesOrDefault(), exitCode(err)) {
 		return cmd, false
 	}
 	out := strings.TrimSpace(stdout.String())
@@ -384,15 +385,6 @@ func isExecutableFile(p string) bool {
 		return false
 	}
 	return info.Mode()&0o111 != 0
-}
-
-func containsInt(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 func exitCode(err error) int {
