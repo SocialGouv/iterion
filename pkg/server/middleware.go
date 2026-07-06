@@ -208,10 +208,7 @@ func isPublicMarketplaceRead(method, path string) bool {
 		return true
 	}
 	if strings.HasPrefix(path, "/api/v1/marketplace/bots/") {
-		if strings.HasSuffix(path, "/install") {
-			return false
-		}
-		return true
+		return !strings.HasSuffix(path, "/install")
 	}
 	return false
 }
