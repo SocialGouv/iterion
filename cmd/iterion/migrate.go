@@ -391,7 +391,7 @@ func migrateRun(ctx context.Context, src store.RunStore, dst store.RunStore, run
 		}
 	}
 
-	for _, intID := range mustListInteractions(ctx, src, runID, logger) {
+	for _, intID := range listInteractionsBestEffort(ctx, src, runID, logger) {
 		i, err := src.LoadInteraction(ctx, runID, intID)
 		if err != nil {
 			logger.Warn("migrate: load interaction %s/%s: %v", runID, intID, err)
@@ -408,7 +408,7 @@ func migrateRun(ctx context.Context, src store.RunStore, dst store.RunStore, run
 	return nil
 }
 
-func mustListInteractions(ctx context.Context, src store.RunStore, runID string, logger *iterlog.Logger) []string {
+func listInteractionsBestEffort(ctx context.Context, src store.RunStore, runID string, logger *iterlog.Logger) []string {
 	ids, err := src.ListInteractions(ctx, runID)
 	if err != nil {
 		logger.Warn("migrate: list interactions %s: %v", runID, err)
