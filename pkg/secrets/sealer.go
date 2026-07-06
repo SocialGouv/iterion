@@ -45,6 +45,10 @@ var (
 	ErrSealedAuthenticate = errors.New("secrets: authentication failed")
 )
 
+// errNilSealer is returned by the package's Seal*/Open* helpers when
+// called without a configured Sealer.
+var errNilSealer = errors.New("secrets: nil sealer")
+
 // sealedVersionV1 is the current wire-format version. New versions
 // must come with a separate code path so we can migrate transparently
 // (Open accepts any known version; Seal always emits the latest).
@@ -103,7 +107,7 @@ func DecodeBase64Lenient(b64 string) ([]byte, error) {
 // Seal returns version|nonce|ciphertext (with appended GCM tag).
 func (s *AESGCMSealer) Seal(plaintext, aad []byte) ([]byte, error) {
 	if s == nil || s.aead == nil {
-		return nil, errors.New("secrets: nil sealer")
+		return nil, errNilSealer
 	}
 	nonce := make([]byte, aesGCMNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
@@ -119,7 +123,7 @@ func (s *AESGCMSealer) Seal(plaintext, aad []byte) ([]byte, error) {
 // Open verifies and decrypts a sealed blob.
 func (s *AESGCMSealer) Open(sealed, aad []byte) ([]byte, error) {
 	if s == nil || s.aead == nil {
-		return nil, errors.New("secrets: nil sealer")
+		return nil, errNilSealer
 	}
 	if len(sealed) < 1+aesGCMNonceSize+s.aead.Overhead() {
 		return nil, ErrSealedFormat

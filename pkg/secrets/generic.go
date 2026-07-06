@@ -96,14 +96,14 @@ func buildGenericResolution(s GenericSecret, sealer Sealer, currentUserID string
 
 func SealGenericSecret(sealer Sealer, secretID string, plaintext []byte) ([]byte, error) {
 	if sealer == nil {
-		return nil, errors.New("secrets: nil sealer")
+		return nil, errNilSealer
 	}
 	return sealer.Seal(plaintext, genericSecretAAD(secretID))
 }
 
 func OpenGenericSecret(sealer Sealer, secretID string, sealed []byte) ([]byte, error) {
 	if sealer == nil {
-		return nil, errors.New("secrets: nil sealer")
+		return nil, errNilSealer
 	}
 	return sealer.Open(sealed, genericSecretAAD(secretID))
 }

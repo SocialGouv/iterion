@@ -278,7 +278,7 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 // record so it cannot be moved.
 func SealAPIKey(sealer Sealer, keyID string, plaintext []byte) ([]byte, error) {
 	if sealer == nil {
-		return nil, errors.New("secrets: nil sealer")
+		return nil, errNilSealer
 	}
 	return sealer.Seal(plaintext, []byte("api_key:"+keyID))
 }
