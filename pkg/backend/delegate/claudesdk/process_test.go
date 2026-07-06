@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"os/exec"
-	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -46,9 +45,6 @@ func newTestProcess(t *testing.T, ctx context.Context, name string, args ...stri
 // cmd.Wait() blocks indefinitely; close() must terminate the whole group and
 // return in bounded time.
 func TestClose_ForceKillsHungSubtree(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix-only: test relies on /bin/sh and POSIX process groups")
-	}
 	t.Setenv("ITERION_CLAUDE_CODE_CLOSE_GRACE", "200ms")
 	t.Setenv("ITERION_CLAUDE_CODE_CLOSE_TERM", "200ms")
 
@@ -78,9 +74,6 @@ func TestClose_ForceKillsHungSubtree(t *testing.T) {
 // the child cooperates: a process that exits on its own should be reaped on
 // the grace timer, no signals fired.
 func TestClose_GracefulExitFastPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix-only")
-	}
 	t.Setenv("ITERION_CLAUDE_CODE_CLOSE_GRACE", "2s")
 	t.Setenv("ITERION_CLAUDE_CODE_CLOSE_TERM", "2s")
 
@@ -103,9 +96,6 @@ func TestClose_GracefulExitFastPath(t *testing.T) {
 // exiting cleanly, in which case the group is already gone and we want to
 // continue, not surface ESRCH as a failure.
 func TestKillProcessGroup_IdempotentOnESRCH(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix-only")
-	}
 	cmd := exec.Command("sh", "-c", "exit 0")
 	setProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
