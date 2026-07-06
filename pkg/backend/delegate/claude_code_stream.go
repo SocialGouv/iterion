@@ -87,6 +87,28 @@ func resolveOrchStallTimeout() time.Duration {
 	return envDurationOr("ITERION_CLAUDE_CODE_ORCH_STALL_TIMEOUT", defaultOrchStallTimeout)
 }
 
+// defaultNoProgressTimeout bounds how long the session may keep producing
+// output WITHOUT making forward progress. The idle watchdog above only fires
+// on SILENCE (no SDK message at all); it is blind to a session that keeps
+// emitting AssistantMessages — pure text / thinking, re-planning in circles —
+// without ever ACTING. That exact degraded loop was observed after an internet
+// outage: claude streamed reasoning for 20+ minutes (so the idle timer kept
+// resetting) while calling no tools and landing no commits — zero run-level
+// tool events. "Forward progress" here = the agent ACTED or the SDK delivered a
+// result: an AssistantMessage carrying a tool_use, a UserMessage carrying a tool
+// result, or a turn's ResultMessage. Only those reset this timer; a text/
+// thinking-only message does not. When no such progress happens for this budget
+// the session is spinning, so we abort — the error carries "session idle for" so
+// isDelegateRetryable auto-re-executes the node on a fresh subprocess. It is
+// deliberately generous (longer than the hot idle timeout) so a single genuinely
+// long-running tool (a big build/test between its tool_use and its result) does
+// not trip it. 0 disables it.
+const defaultNoProgressTimeout = 25 * time.Minute
+
+func resolveNoProgressTimeout() time.Duration {
+	return envDurationOr("ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT", defaultNoProgressTimeout)
+}
+
 // isBlockingOrchestrationTool reports whether a tool name is one that BLOCKS
 // waiting on a subagent task (as opposed to Task, which spawns and returns).
 func isBlockingOrchestrationTool(name string) bool {
@@ -232,6 +254,31 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 	awaitingBlockingTool := false
 	orchStall := resolveOrchStallTimeout()
 
+	// Forward-progress watchdog (see defaultNoProgressTimeout): a SECOND timer,
+	// distinct from the silence-only idle timer, that resets ONLY on a message
+	// proving the agent acted (tool_use / tool_result / Result) — never on
+	// text/thinking. Fires when the session keeps talking but stops doing.
+	noProgress := resolveNoProgressTimeout()
+	var progressTimer *time.Timer
+	var progressC <-chan time.Time
+	if noProgress > 0 {
+		progressTimer = time.NewTimer(noProgress)
+		defer progressTimer.Stop()
+		progressC = progressTimer.C
+	}
+	resetProgress := func() {
+		if progressTimer == nil {
+			return
+		}
+		if !progressTimer.Stop() {
+			select {
+			case <-progressTimer.C:
+			default:
+			}
+		}
+		progressTimer.Reset(noProgress)
+	}
+
 	for {
 		// Pick the timeout that matches the current phase and reset
 		// the timer for this iteration. Any progress (assistant
@@ -276,6 +323,11 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			// Any incoming item proves the SDK is alive — flip into
 			// hot-timeout mode for the rest of the session.
 			receivedAny = true
+			// progressed = this message proves the agent ACTED (invoked a tool)
+			// or the SDK delivered a result. Only such messages reset the
+			// forward-progress watchdog; a text/thinking-only AssistantMessage
+			// does not (that is exactly the spin the watchdog must catch).
+			progressed := false
 			switch m := it.msg.(type) {
 			case *claudesdk.SystemMessage:
 				b.handleSystemMessage(m, task, &meta)
@@ -292,6 +344,7 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				if m.Message != nil {
 					for _, blk := range m.Message.Content {
 						if tu, ok := blk.(*claudesdk.ToolUseBlock); ok {
+							progressed = true // the agent invoked a tool
 							if tu.Name == "Task" {
 								spawnedTask = true
 							} else if isBlockingOrchestrationTool(tu.Name) {
@@ -303,16 +356,21 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			case *claudesdk.UserMessage:
 				// A tool result came back — the blocking wait (if any) returned.
 				awaitingBlockingTool = false
+				progressed = true // a tool completed and returned a result
 				if err := b.handleUserMessage(m, task, inFlightTools, &consecutiveToolErrors, maxToolErrors, cancelStream); err != nil {
 					return result, meta, err
 				}
 			case *claudesdk.ResultMessage:
 				result = m
+				progressed = true // a turn completed
 				backfillEmptyResult(result, lastAssistantText)
 			default:
 				if it.msg != nil {
 					b.Logger.Debug("[%s#%d/claude-code] 📨 %T message", task.NodeID, task.Iteration, it.msg)
 				}
+			}
+			if progressed {
+				resetProgress()
 			}
 			// Advance the thinking-time anchor to this item's arrival so the
 			// next thinking-bearing turn measures only its own reasoning gap.
@@ -339,6 +397,16 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 			b.Logger.Warn("[%s#%d/claude-code] no SDK message for %s (%s phase) — aborting",
 				task.NodeID, task.Iteration, currentTimeout, phase)
 			return result, meta, fmt.Errorf("claude session idle for %s (%s phase) — aborting (set %s to extend, or 0 to disable)", currentTimeout, phase, envHint)
+		case <-progressC:
+			// The session kept talking (idle timer never fired) but made no
+			// forward progress (no tool call, no result) for the whole
+			// no-progress budget: a spin (re-planning in circles, the
+			// post-outage degraded loop). Abort for auto-retry. "session idle
+			// for" keeps isDelegateRetryable classifying it retryable.
+			cancelStream()
+			b.Logger.Warn("[%s#%d/claude-code] no forward progress (no tool call/result) for %s while still streaming — aborting for auto-retry (spin/degraded loop)",
+				task.NodeID, task.Iteration, noProgress)
+			return result, meta, fmt.Errorf("claude session idle for %s — no forward progress (no tool call or result while still streaming); aborting for auto-retry (tune ITERION_CLAUDE_CODE_NO_PROGRESS_TIMEOUT, 0 to disable)", noProgress)
 		case <-ctx.Done():
 			cancelStream()
 			return result, meta, ctx.Err()
