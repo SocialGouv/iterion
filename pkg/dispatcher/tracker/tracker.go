@@ -105,9 +105,12 @@ type Tracker interface {
 	Comment(ctx context.Context, id, body string) error
 
 	// Claim marks an issue as taken by the given marker (typically
-	// "<hostname>-<pid>"). Native trackers store this in the issue
-	// record; external adapters typically add a "claimed-by:<marker>"
-	// label.
+	// "<hostname>-<pid>"). Native trackers store the marker in the
+	// issue record and enforce it (ErrClaimConflict on collision);
+	// external adapters (GitHub/GitLab/Forgejo) just add the
+	// configured ClaimedLabel — marker is accepted for interface
+	// parity but not recorded or checked, so those forges get no
+	// conflict detection.
 	Claim(ctx context.Context, id, marker string) error
 
 	// Release removes the claim marker. Idempotent — releasing an
