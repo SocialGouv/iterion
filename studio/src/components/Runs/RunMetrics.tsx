@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
 import { useRunMetrics } from "@/hooks/useRunMetrics";
-import { useRunStore } from "@/store/run";
 import { LiveDot } from "@/components/ui/LiveDot";
 import { formatCost, formatMs, formatTokens } from "@/lib/format";
 
@@ -28,17 +27,14 @@ interface Props {
 export const STALL_WARN_SECONDS = 120;
 export const STALL_DANGER_SECONDS = 300;
 
-// RunMetrics renders the second line of the run header: live duration,
-// cost, tokens, branch counts, jump-to-failed shortcut. Stays compact
-// in a horizontal strip; collapses to "+N more" via flex-wrap on
-// narrow viewports.
+// RunMetrics renders the header's live-vitals ribbon: duration, stall
+// badge, cost (+ budget tint/chip), tokens, and the jump-to-failed
+// shortcut. The structural counts (nodes / loops / active / paused / llm
+// steps) live in the Overview's Progress section. Stays compact in a
+// horizontal strip; wraps via flex-wrap on narrow viewports.
 export default function RunMetrics({ active, onJumpToFailed, bare = false }: Props) {
   const nowMs = useNow(active ? 1000 : null);
   const m = useRunMetrics(nowMs);
-  // Run-level "real loops" indicator: the SEMANTIC per-named-loop
-  // iteration counter (matching the `node#N` log label), distinct from
-  // the per-node execution count. Absent for runs with no named loops.
-  const loops = useRunStore((s) => s.snapshot?.run.loops);
 
   // Staleness — surface the silent-stuck case the 2026-05-21 internet
   // outage exposed. When a run is `running` but the backend has stopped
@@ -128,43 +124,10 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
           }
         />
       )}
-      {m.llmStepCount > 0 && (
-        <Metric label="llm steps" value={String(m.llmStepCount)} />
-      )}
-      {loops &&
-        Object.entries(loops)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([name, p]) => (
-            <span
-              key={name}
-              className="inline-flex items-center gap-1"
-              title={`Named loop "${name}" is on iteration ${p.current}${
-                p.max ? ` of a ${p.max}-iteration cap` : " (unbounded)"
-              }. This is the semantic loop counter (matches the run's node#N log label), not the per-node execution count.`}
-              aria-label={`loop ${name}: ${p.current}${p.max ? ` of ${p.max}` : ""}`}
-            >
-              <span className="text-fg-subtle">⟳ {name}</span>
-              <span className="font-mono font-semibold text-fg-default">
-                {p.current}
-                {p.max ? `/${p.max}` : ""}
-              </span>
-            </span>
-          ))}
-      <Metric label="nodes" value={String(m.nodeCount)} />
-      {m.branchCountActive > 0 && (
-        <Metric
-          label="active"
-          value={String(m.branchCountActive)}
-          tone="info"
-        />
-      )}
-      {m.pausedCount > 0 && (
-        <Metric
-          label="paused"
-          value={String(m.pausedCount)}
-          tone="warning"
-        />
-      )}
+      {/* Structural counts (llm steps, named loops, nodes, active,
+          paused) moved to the Overview's Progress section so this
+          always-visible strip stays a lean live-vitals ribbon. Only the
+          critical "failed → jump" affordance stays here. */}
       {m.failedCount > 0 && (
         <button
           type="button"

@@ -55,8 +55,14 @@ export function BriefingSection({ run }: BriefingSectionProps) {
 
 // Keys we recognise as "the operator's headline briefing" — checked in
 // this order. `improvement_prompt` is what every improve-loop bot uses;
-// `brief` and `prompt` are common alternates on ad-hoc bots.
-const AXIS_KEYS = ["improvement_prompt", "brief", "prompt"] as const;
+// `feature_prompt` is feature_dev's; `brief` and `prompt` are common
+// alternates on ad-hoc bots.
+const AXIS_KEYS = [
+  "improvement_prompt",
+  "feature_prompt",
+  "brief",
+  "prompt",
+] as const;
 // Threshold above which a value escapes a single-line Row into its own
 // scrollable <pre>. Multi-line values (any \n) also break out.
 const LONG_INPUT_THRESHOLD = 200;
