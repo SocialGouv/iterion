@@ -2,6 +2,16 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-07-07 — P1+P2 dogfood on an npm fixture: 2 clean upgrade commits, real advisory handled, P2 campaign converged (run 019f3d7b)
+- Status: **VALIDATED** (no-sandbox variant, small-fixture scope) — Phase 1's per-package pipeline and the NEW v2 Phase 2 both behaved as designed end to end in 10m50s.
+- Versions: bot v0.2.0 · iterion `dev+239203525cc8` · `--sandbox none` (sec image path blocked by native:221edac8).
+- Method: CLI run FROM an npm fixture (ms 2.1.1 patch-outdated + debug 4.3.0 minor-outdated carrying the real GHSA ReDoS advisory fixed in 4.3.1), `--merge-into none`, update_scope=libraries, scope=patch,minor, max_packages_per_run=2, max_review_passes=1, `--max-cost-usd 20`.
+- Result: `finished`, P2 `p2_gate.converged=true`, SBOM emitted (docs/renovacy/sbom-c86e7111dfb9.json, 2 packages) on `iterion/run/thunder-hunt-orbitcrest-c493`. **Phase 1**: discover found both; the patch batch committed ms (`chore(deps): batch update 1 patch upgrades`, audit-trail amended in); the minor solo took debug through intel (safe; the START version's ReDoS advisory correctly did not block the clean 4.4.3 target) → upgrade → validate (stable, high) → `chore(deps): update debug to 4.4.3`. **Phase 2 (the ADR-058 conversion under test)**: phase2_decider routed to p2_campaign (minor attempted ⇒ no fast-track); the campaign REVIEWED the cumulative diff with real checks (npm ci --dry-run sync, tree dedup verified — nested ms removed, root 2.1.3 satisfies debug's ^2.1.3 —, npm test, npm audit 0 vulns, ReDoS closed) and reported `review_clean=true, commits_this_pass=0` without inventing fixes; deterministic p2_verify_run re-ran the suite (real exit 0) and the gate converged first pass.
+- Value: real — two correct dependency upgrades with per-package audit trails + SBOM, and the new Phase 2 proved it reviews rather than rubber-stamps or fabricates.
+- Findings / misses: select_candidate re-picked ms in a redundant SOLO right after the batch had landed it (attempted_after_batch ledger gap) — one wasted intel/upgrade cycle, no duplicate commit thanks to the empty-commit guard; filed as a board finding (severity low).
+- Engine hardening: none new (the sandbox path remains gated on native:221edac8).
+- Lessons for next run: a fuller dogfood should cover a BREAKING minor/major (fix_after_upgrade + revert paths) and the sec sandbox once 221edac8 lands; max_review_passes=1 (2 P2 passes max) is the right default for small repos.
+
 ## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
 - Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
 - Versions: bot v0.2.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
