@@ -64,6 +64,15 @@ type ToolCallEntry struct {
 	Input json.RawMessage
 }
 
+// AssistantTextInfo carries one chunk of assistant narration (mid-turn
+// prose), passed to the OnAssistantText hook. Fired per assistant text
+// block for claude_code and per tool-bearing step for claw.
+type AssistantTextInfo struct {
+	Text string
+	// Iteration is the 0-based loop iteration (see LLMRequestInfo.Iteration).
+	Iteration int
+}
+
 // LLMToolCallInfo describes a tool call execution, passed to the OnToolCall hook.
 type LLMToolCallInfo struct {
 	ToolName  string

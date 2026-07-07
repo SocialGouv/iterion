@@ -663,6 +663,16 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 	// own session jsonl at ~/.claude/projects/...); SessionID carries
 	// the anchor the Fork API needs to launch `claude --resume <id>
 	// --fork-session`.
+	// Narration bridge: claude_code streams assistant text blocks; the
+	// store hook filters structured-JSON payloads and persists the rest
+	// as assistant_text events (claw's equivalent is derived from
+	// tool-bearing steps inside onLLMStepFinish).
+	if e.hooks.OnAssistantText != nil {
+		fn := e.hooks.OnAssistantText
+		h.OnAssistantText = func(text string) {
+			fn(nodeID, AssistantTextInfo{Text: text, Iteration: iteration})
+		}
+	}
 	if e.hooks.OnLLMTurnCapture != nil {
 		fn := e.hooks.OnLLMTurnCapture
 		h.OnTurnFinished = func(info delegate.TurnFinishedInfo) {

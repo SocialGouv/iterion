@@ -311,6 +311,14 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 
 	h.emit(nodeID, store.EventLLMStepFinished, data)
 
+	// Mid-loop narration for the conversation views. Only tool-bearing
+	// steps qualify: in claw's agent loop the final (no-tools) step is
+	// the node's answer — often raw structured JSON — which the output
+	// card already renders; re-bubbling it as chat is noise.
+	if step.Text != "" && len(step.ToolCalls) > 0 {
+		h.onAssistantText(nodeID, AssistantTextInfo{Text: step.Text, Iteration: step.Iteration})
+	}
+
 	if step.Text != "" {
 		// Full response, no preview cap — the studio folds the
 		// body under the header so length doesn't crowd the log.
@@ -363,6 +371,35 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		h.logger.Logf(iterlog.LevelInfo, "🧠", "[%s#%d/claw] step %d thinking: ~%d tok, %dms",
 			nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs)
 	}
+}
+
+// onAssistantText implements the OnAssistantText hook. It persists the
+// agent's mid-turn narration as an assistant_text event, skipping
+// payloads that are just the node's structured JSON answer (the output
+// card renders those; a raw-JSON chat bubble is noise). Redaction is
+// handled by the redactingEmitter wrapper like every other event.
+func (h *storeHooks) onAssistantText(nodeID string, info AssistantTextInfo) {
+	text := strings.TrimSpace(info.Text)
+	if text == "" || isLikelyStructuredPayload(text) {
+		return
+	}
+	h.emit(nodeID, store.EventAssistantText, map[string]interface{}{
+		"text":      iterlog.Truncate(text, maxFieldSize),
+		"iteration": info.Iteration,
+	})
+}
+
+// isLikelyStructuredPayload reports whether text is a bare JSON object
+// or array — the shape of a structured-output answer rather than
+// human-facing narration.
+func isLikelyStructuredPayload(text string) bool {
+	if text == "" {
+		return false
+	}
+	if c := text[0]; c != '{' && c != '[' {
+		return false
+	}
+	return json.Valid([]byte(text))
 }
 
 // onLLMTurnCapture implements the OnLLMTurnCapture hook.
@@ -766,6 +803,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		// llm_step_finished events with richer per-step detail.
 		OnLLMRetry:         h.onLLMRetry,
 		OnLLMStepFinish:    h.onLLMStepFinish,
+		OnAssistantText:    h.onAssistantText,
 		OnLLMTurnCapture:   h.onLLMTurnCapture,
 		OnLLMCompacted:     h.onLLMCompacted,
 		OnToolStarted:      h.onToolStarted,

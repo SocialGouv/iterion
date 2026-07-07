@@ -28,11 +28,18 @@ const (
 	EventNodeRecovery       EventType = "node_recovery"
 	EventNodeVerifiedAction EventType = "node_verified_action" // data: {rung, postcondition_met, policy}
 	EventLLMStepFinished    EventType = "llm_step_finished"
-	EventLLMCompacted       EventType = "llm_compacted"
-	EventToolStarted        EventType = "tool_started"
-	EventToolCalled         EventType = "tool_called"
-	EventToolError          EventType = "tool_error"
-	EventArtifactWritten    EventType = "artifact_written"
+	// EventAssistantText carries an agent's mid-turn narration (the
+	// assistant's prose between tool calls) so conversation views can
+	// render the agent "talking" while it works, on both backends
+	// (claude_code streams no llm_step_finished). Structured-payload
+	// text (the node's JSON answer) is filtered at the emitter.
+	// Data: {text, iteration}
+	EventAssistantText   EventType = "assistant_text"
+	EventLLMCompacted    EventType = "llm_compacted"
+	EventToolStarted     EventType = "tool_started"
+	EventToolCalled      EventType = "tool_called"
+	EventToolError       EventType = "tool_error"
+	EventArtifactWritten EventType = "artifact_written"
 	// EventPlanWritten marks a new persisted plan snapshot (an agent's
 	// TodoWrite/todo_write living TODO list, captured to runs/<id>/plans/).
 	// Best-effort + additive; the studio Plans panel refreshes on it.

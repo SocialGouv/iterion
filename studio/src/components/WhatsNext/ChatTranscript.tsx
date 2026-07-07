@@ -163,7 +163,25 @@ function MessageRow({
       return <UserMessageRow message={message} />;
     case "dispatch-candidates":
       return <DispatchCandidatesRow message={message} />;
+    case "assistant-text":
+      return <NarrationRow message={message} />;
   }
+}
+
+// NarrationRow renders the agent's mid-turn narration (assistant_text
+// events) as Nexie's speech bubble — left-aligned, quieter than a
+// structured card, markdown-capable.
+function NarrationRow({
+  message,
+}: {
+  message: Extract<WhatsNextMessage, { kind: "assistant-text" }>;
+}) {
+  if (!message.text) return null;
+  return (
+    <div className="max-w-[92%] rounded-md border border-border-subtle/60 bg-surface-1/60 px-3 py-2">
+      <MarkdownText value={message.text} />
+    </div>
+  );
 }
 
 // DispatchCandidatesRow is the tiny banner that surfaces the

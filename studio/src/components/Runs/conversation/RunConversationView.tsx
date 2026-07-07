@@ -3,6 +3,7 @@ import { useRunChatMessages } from "@/lib/runChat/useRunChatMessages";
 import { useScrollPin } from "@/lib/runChat/useScrollPin";
 import type { RunChatMessage } from "@/lib/runChat/types";
 
+import AssistantTextCard from "./AssistantTextCard";
 import BannerCard from "./BannerCard";
 import ConversationEmptyState from "./ConversationEmptyState";
 import HumanQuestionCard from "./HumanQuestionCard";
@@ -74,6 +75,8 @@ function MessageRow({
   switch (message.kind) {
     case "banner":
       return <BannerCard message={message} />;
+    case "assistant-text":
+      return <AssistantTextCard message={message} />;
     case "node-output":
       return <NodeOutputCard message={message} />;
     case "human-question":
@@ -86,6 +89,17 @@ function MessageRow({
       );
     case "session-closed":
       return <SessionClosedCard message={message} />;
+    case "user-message":
+      // Operator chat queued into the run — right-aligned bubble so
+      // the transcript shows both sides of the conversation (was
+      // previously dropped from the generic view).
+      return (
+        <div className="flex justify-end">
+          <div className="max-w-[85%] rounded-md bg-accent-soft border border-accent/30 px-3 py-2 text-body whitespace-pre-wrap">
+            {message.text}
+          </div>
+        </div>
+      );
     case "extension":
       // Bot-specific resolvers (whats-next) lift these into typed
       // cards before they reach this renderer. Defensive fallback —

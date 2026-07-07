@@ -591,6 +591,14 @@ type TaskHooks struct {
 	// runtime tolerates an empty SessionID (logs a warning, skips the
 	// fork-readiness side of the turn).
 	OnTurnFinished func(info TurnFinishedInfo)
+
+	// OnAssistantText fires with each non-empty assistant text block
+	// streamed mid-session (claude_code) — the agent's narration
+	// between tool calls. The executor bridges it to an assistant_text
+	// store event so conversation views can render the agent "talking"
+	// while it works. Runs on the stream-handling goroutine: must not
+	// block.
+	OnAssistantText func(text string)
 }
 
 // TurnFinishedInfo is the payload of the TaskHooks.OnTurnFinished

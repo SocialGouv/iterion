@@ -462,6 +462,39 @@ function processEvent(
       break;
     }
 
+    case "assistant_text": {
+      // Agent narration — the assistant's mid-turn prose between tool
+      // calls (emitted by both backends; structured-JSON payloads are
+      // filtered engine-side). Rendered as the agent's speech bubble.
+      const nodeId = evt.node_id;
+      if (!nodeId) break;
+      if (resolver.kind(nodeId) === "silent") break;
+      const text = typeof evt.data?.text === "string" ? evt.data.text.trim() : "";
+      if (!text) break;
+      const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
+      // Merge consecutive chunks from the same node turn into one
+      // bubble — claude_code streams one event per text block, and a
+      // bubble per block over-fragments the transcript.
+      const last = out[out.length - 1];
+      if (
+        last &&
+        last.kind === "assistant-text" &&
+        last.nodeId === nodeId &&
+        last.iteration === iter
+      ) {
+        out[out.length - 1] = { ...last, text: `${last.text}\n\n${text}` };
+        break;
+      }
+      out.push({
+        kind: "assistant-text",
+        id: `${nodeId}:${iter}:txt:${evt.seq ?? 0}`,
+        nodeId,
+        iteration: iter,
+        text,
+      });
+      break;
+    }
+
     case "node_recovery": {
       // Engine retried after a transient delegate failure (LLM rate
       // limit, http2 reset, codex endpoint hiccup). Surface the count

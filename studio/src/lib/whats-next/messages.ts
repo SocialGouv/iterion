@@ -142,6 +142,7 @@ export interface PlanHandedOffMessage {
 }
 
 import type {
+  AssistantTextMessage as _AssistantTextMessage,
   BannerMessage as _BannerMessage,
   HumanQuestionMessage as _HumanQuestionMessage,
   SessionClosedMessage as _SessionClosedMessage,
@@ -158,7 +159,8 @@ export type WhatsNextMessage =
   | PlanHandedOffMessage
   | DispatchCandidatesMessage
   | TriageSummaryMessage
-  | _UserMessage;
+  | _UserMessage
+  | _AssistantTextMessage;
 
 // Helper for components: extract a roadmap doc from a raw node output
 // object. Returns null if the shape doesn't match. Used by the

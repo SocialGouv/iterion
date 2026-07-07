@@ -552,6 +552,12 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 				cancelStream()
 				return &ErrRateLimited{Provider: BackendClaudeCode, Detail: strings.TrimSpace(tb.Text)}
 			}
+			// Narration hook: surface the agent's mid-turn prose to the
+			// conversation views. The bridge filters structured-JSON
+			// payloads (the node's answer) before persisting.
+			if task.Hooks.OnAssistantText != nil {
+				task.Hooks.OnAssistantText(tb.Text)
+			}
 		}
 	}
 	return nil
