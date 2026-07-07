@@ -1,16 +1,28 @@
 name: dep-update-guard
 display_name: Vetty
-version: 0.1.0
+version: 2.0.0
+## 2.0.0 — ADR-058 calibrated pass. The v1 `validate` agent (an LLM
+## re-running the build and SELF-REPORTING stable:true) is replaced by
+## the deterministic verify_build/verify_run gate shared with the other
+## v2 bots — the REAL exit code of an out-of-tree verify.sh is now the
+## only path to commit (fail-closed when no script was produced). The
+## read-only security_audit DELIBERATELY stays a separate stage from the
+## mutating align: that separation is a security property (the only
+## agent exposed to hostile package content before mutation is
+## authorized has no write tools, behind a deterministic verdict gate),
+## not over-framing. align gains the G5 pre-existing-failure protocol;
+## the unused pr_review_mode var is dropped.
 description: |
   Reactive security + alignment guard for automated dependency-update
   PRs (Dependabot / Renovate). Triggered per PR, on the bot's own
   branch, Vetty: (1) audits the bump for supply-chain risk — known
   malware, typosquats, compromised-maintainer signals, and CVEs
-  introduced vs resolved; (2) checks reliability by building and
-  running the repo's tests; (3) aligns the consuming code to any
+  introduced vs resolved; (2) aligns the consuming code to any
   breaking change (a JS/TS lib API, Helm chart values, a Go module,
-  …), committing the alignment back onto the PR branch; (4) posts a
-  complete review comment with the verdict and evidence; and (5)
+  …); (3) proves reliability through a DETERMINISTIC build/test gate
+  (the real exit code of the repo's own commands — the only path to
+  commit); (4) commits the alignment back onto the PR branch and posts
+  a complete review comment with the verdict and evidence; and (5)
   escalates to a human when a structuring architectural decision is
   required. It never merges — the merge stays a human call.
 
