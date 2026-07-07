@@ -11,8 +11,9 @@ import (
 // GlobTool returns the tool definition for glob file search.
 func GlobTool() api.Tool {
 	return api.Tool{
-		Name:        "glob",
-		Description: "Find files matching a glob pattern. Returns a newline-separated list of matching file paths.",
+		Name: "glob",
+		Description: "Find files by name with a glob pattern (e.g. '**/*.go', 'src/**/*.test.ts'); returns a newline-separated list of matching paths. " +
+			"Use glob when you know something about the file NAME or layout, grep when you only know its CONTENT, and chain them: glob to scope, then grep the survivors. Prefer this over bash find.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

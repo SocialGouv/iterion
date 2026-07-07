@@ -15,8 +15,10 @@ const maxGrepResults = 1000
 // GrepTool returns the tool definition for grep file search.
 func GrepTool() api.Tool {
 	return api.Tool{
-		Name:        "grep",
-		Description: "Search for a regex pattern in files. Returns matching lines in file:line:content format.",
+		Name: "grep",
+		Description: "Search file contents for a regex pattern; returns matches as file:line:content. " +
+			"Use grep to locate code by what it SAYS (symbols, strings, patterns) and glob to locate files by NAME; narrow large trees with the glob filter (e.g. '*.go'). " +
+			"Prefer this over bash grep, and read the surrounding file before editing anything a match points at.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

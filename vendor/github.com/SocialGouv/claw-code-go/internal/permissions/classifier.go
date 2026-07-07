@@ -97,7 +97,23 @@ func (rc *RuleClassifier) Classify(_ context.Context, toolName string, args map[
 	}
 
 	if _, ok := httpsOnly[toolName]; ok {
-		if url, _ := args["url"].(string); strings.HasPrefix(url, "https://") {
+		url, _ := args["url"].(string)
+		if url == "" {
+			url = subjectFromArgs(args)
+		}
+		if strings.HasPrefix(url, "https://") {
+			return DecisionAllow, nil
+		}
+	}
+
+	// bash: allow commands that are verifiably read-only (same built-in
+	// safe-list the legacy prompt path consults; see readonly.go).
+	if toolName == "bash" {
+		cmd, _ := args["command"].(string)
+		if cmd == "" {
+			cmd = subjectFromArgs(args)
+		}
+		if IsReadOnlyBashCommand(cmd) {
 			return DecisionAllow, nil
 		}
 	}
@@ -106,12 +122,15 @@ func (rc *RuleClassifier) Classify(_ context.Context, toolName string, args map[
 }
 
 // subjectFromArgs extracts a permission-relevant string from a parsed args
-// map, mirroring extractPermissionSubject's key priority.
+// map, mirroring extractPermissionSubject's key priority. "__subject" is the
+// synthetic key parseToolArgs uses when the input was a raw subject string
+// rather than a JSON object.
 func subjectFromArgs(args map[string]any) string {
 	if args == nil {
 		return ""
 	}
 	for _, key := range []string{
+		"__subject",
 		"command", "path", "file_path", "filePath",
 		"notebook_path", "notebookPath", "url",
 		"pattern", "code", "message",

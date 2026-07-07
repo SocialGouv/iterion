@@ -37,6 +37,12 @@ type RuntimePromptConfig struct {
 	MemoryImports       *bool `json:"memoryImports,omitempty"`
 	AutoMemory          *bool `json:"autoMemory,omitempty"`
 	Posture             *bool `json:"posture,omitempty"`
+	Communication       *bool `json:"communication,omitempty"`
+	TaskManagement      *bool `json:"taskManagement,omitempty"`
+	DoingTasks          *bool `json:"doingTasks,omitempty"`
+	ToolPolicy          *bool `json:"toolPolicy,omitempty"`
+	GitSafety           *bool `json:"gitSafety,omitempty"`
+	ContextManagement   *bool `json:"contextManagement,omitempty"`
 	// MemoryMaxBytes caps the combined injected memory content (0 = default).
 	MemoryMaxBytes int `json:"memoryMaxBytes,omitempty"`
 }

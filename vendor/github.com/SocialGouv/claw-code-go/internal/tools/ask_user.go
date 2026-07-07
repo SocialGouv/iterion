@@ -143,8 +143,11 @@ func (t *TUIAsker) Ask(ctx context.Context, q Question) (Answer, error) {
 // AskUserQuestionTool returns the tool definition for ask_user.
 func AskUserQuestionTool() api.Tool {
 	return api.Tool{
-		Name:        "ask_user",
-		Description: "Pause the current task and ask the user a clarifying question. Optional `options` present the user with selectable choices (numbered); when `allow_free_text` is true the user may also type a free response.",
+		Name: "ask_user",
+		Description: "Pause the current task and ask the user a clarifying question. " +
+			"Reserve it for genuine forks the work cannot resolve — missing requirements, credentials, or a choice between materially different approaches. " +
+			"Do not ask permission to continue a task already in flight, and do not ask for facts you can find yourself with tools. " +
+			"Optional `options` present the user with selectable choices (numbered); when `allow_free_text` is true (default if no options) the user may also type a free response.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

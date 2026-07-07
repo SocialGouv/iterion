@@ -21,8 +21,11 @@ type TodoItem struct {
 // TodoWriteTool returns the tool definition for reading/writing the todo list.
 func TodoWriteTool() api.Tool {
 	return api.Tool{
-		Name:        "todo_write",
-		Description: "Read or write the task list stored in .claude/todos.json. Use action=read to retrieve todos, action=write to replace the list.",
+		Name: "todo_write",
+		Description: "Read or write the session task list persisted in .claude/todos.json (action \"read\" returns it, \"write\" replaces it). " +
+			"Use it FREQUENTLY: for any work of three or more steps, record the steps up front, keep exactly one item in_progress, and flip each to done the moment it completes — never batch completions. " +
+			"After a context compaction, re-read the list before continuing. " +
+			"The list is the source of truth for what remains: before ending a turn with unblocked items left, advance the next pending item instead.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

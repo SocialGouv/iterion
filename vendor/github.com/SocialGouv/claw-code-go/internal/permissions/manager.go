@@ -269,6 +269,13 @@ func (m *Manager) checkLegacy(tool, input string) Decision {
 		}
 	}
 
+	// Built-in read-only auto-allow: bash commands that verifiably cannot
+	// mutate state never need a prompt (Claude Code parity). Explicit deny
+	// rules were already consulted above and win.
+	if tool == "bash" && IsReadOnlyBashCommand(input) {
+		return DecisionAllow
+	}
+
 	return DecisionAsk
 }
 

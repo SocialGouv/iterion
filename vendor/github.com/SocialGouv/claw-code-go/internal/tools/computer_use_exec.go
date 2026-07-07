@@ -80,16 +80,16 @@ func currentRunner() computerUseRunner {
 type ComputerUseAction string
 
 const (
-	ActionScreenshot      ComputerUseAction = "screenshot"
-	ActionLeftClick       ComputerUseAction = "left_click"
-	ActionRightClick      ComputerUseAction = "right_click"
-	ActionMiddleClick     ComputerUseAction = "middle_click"
-	ActionDoubleClick     ComputerUseAction = "double_click"
-	ActionType            ComputerUseAction = "type"
-	ActionKey             ComputerUseAction = "key"
-	ActionMouseMove       ComputerUseAction = "mouse_move"
-	ActionCursorPosition  ComputerUseAction = "cursor_position"
-	ActionLeftClickDrag   ComputerUseAction = "left_click_drag"
+	ActionScreenshot     ComputerUseAction = "screenshot"
+	ActionLeftClick      ComputerUseAction = "left_click"
+	ActionRightClick     ComputerUseAction = "right_click"
+	ActionMiddleClick    ComputerUseAction = "middle_click"
+	ActionDoubleClick    ComputerUseAction = "double_click"
+	ActionType           ComputerUseAction = "type"
+	ActionKey            ComputerUseAction = "key"
+	ActionMouseMove      ComputerUseAction = "mouse_move"
+	ActionCursorPosition ComputerUseAction = "cursor_position"
+	ActionLeftClickDrag  ComputerUseAction = "left_click_drag"
 )
 
 // ComputerUseTool returns the tool definition for the computer_use tool. The

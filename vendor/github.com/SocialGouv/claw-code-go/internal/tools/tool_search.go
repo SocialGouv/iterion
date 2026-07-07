@@ -11,8 +11,9 @@ import (
 
 func ToolSearchTool() api.Tool {
 	return api.Tool{
-		Name:        "tool_search",
-		Description: "Search for available tools by name or description. Supports exact selection (select:name1,name2) and keyword search.",
+		Name: "tool_search",
+		Description: "Search the tool catalog by keywords, or fetch exact tools with \"select:name1,name2\" (\"+word\" marks a required term). " +
+			"The visible tool list is not everything: treat this lookup as free and call it BEFORE saying a capability or tool is unavailable — only claim unavailability after it returns no match.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

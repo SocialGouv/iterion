@@ -10,8 +10,9 @@ import (
 // ReadFileTool returns the tool definition for reading files.
 func ReadFileTool() api.Tool {
 	return api.Tool{
-		Name:        "read_file",
-		Description: "Read the contents of a file from the filesystem.",
+		Name: "read_file",
+		Description: "Read a file and return its contents. Always read a file before editing it, and re-read it after external changes instead of relying on memory. " +
+			"Prefer this over bash cat/head/tail. Batch reads of several independent files into one response.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{
@@ -28,8 +29,10 @@ func ReadFileTool() api.Tool {
 // WriteFileTool returns the tool definition for writing files.
 func WriteFileTool() api.Tool {
 	return api.Tool{
-		Name:        "write_file",
-		Description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does.",
+		Name: "write_file",
+		Description: "Create a file or fully overwrite an existing one with the given content. " +
+			"Prefer file_edit when changing part of an existing file — a full-file write clobbers concurrent changes and produces noisy diffs. " +
+			"Never overwrite a file you have not read, and do not proactively create unrequested files (docs, READMEs, examples).",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

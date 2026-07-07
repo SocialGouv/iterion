@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 )
 
-const systemPromptBase = `You are Claude Code, an AI assistant for software engineering tasks. You have access to tools for running bash commands, reading and writing files, searching with glob patterns, and grepping for patterns in code. Use these tools to help users with coding tasks.`
+const systemPromptBase = `You are Claude Code, an interactive agent for software engineering tasks. Use the available tools to investigate the user's codebase and question, make precise changes, and verify the result.`
 
 // ConversationLoop manages the agentic conversation loop with tool use.
 type ConversationLoop struct {
@@ -63,6 +63,10 @@ type ConversationLoop struct {
 
 	// PlanModeActive tracks whether plan mode is currently engaged.
 	PlanModeActive bool
+
+	// pendingReminders queues <system-reminder> payloads for injection at
+	// the next turn boundary (see reminders.go).
+	pendingReminders []string
 
 	// SkillState tracks the currently active skill (if any) so that
 	// allowed-tools restrictions can be enforced at tool dispatch time.
@@ -220,12 +224,35 @@ func (loop *ConversationLoop) systemPrompt() string {
 	p := loop.Config.PromptOrDefault()
 
 	var parts []string
-	parts = append(parts, systemPromptBase)
+	if custom := loop.Config.CustomSystemPrompt(); custom != "" {
+		// A host/user-supplied prompt replaces the authored base (identity,
+		// posture, behavioral sections); context sections keep their toggles.
+		parts = append(parts, custom)
+	} else {
+		parts = append(parts, systemPromptBase)
 
-	// Inject the authored operating-posture section (gated: it is the
-	// heaviest fixed section for small models).
-	if p.Posture {
-		parts = append(parts, clawctx.OperatingPosture)
+		// Inject the authored operating-posture section (gated: it is the
+		// heaviest fixed section for small models), then the behavioral parity
+		// sections it summarizes. The posture stays self-contained so it can run
+		// alone; the sections deepen each area and are individually toggleable.
+		if p.Posture {
+			parts = append(parts, clawctx.OperatingPosture)
+		}
+		if p.Communication {
+			parts = append(parts, clawctx.CommunicationSection)
+		}
+		if p.TaskManagement {
+			parts = append(parts, clawctx.TaskManagementSection)
+		}
+		if p.DoingTasks {
+			parts = append(parts, clawctx.DoingTasksSection)
+		}
+		if p.ToolPolicy {
+			parts = append(parts, clawctx.ToolPolicySection)
+		}
+		if p.GitSafety {
+			parts = append(parts, clawctx.GitSafetySection)
+		}
 	}
 
 	// Inject project context (Phase 12): environment, git status, CLAUDE.md.
@@ -233,6 +260,12 @@ func (loop *ConversationLoop) systemPrompt() string {
 		if ctx := loop.CtxAssembler.Assemble(); ctx != "" {
 			parts = append(parts, ctx)
 		}
+	}
+
+	// Context-management guidance sits after the project context, next to the
+	// compaction summary it explains.
+	if p.ContextManagement {
+		parts = append(parts, clawctx.ContextManagementSection)
 	}
 
 	// Inject compaction summary when the session has one (Phase 6).
@@ -250,6 +283,11 @@ func (loop *ConversationLoop) systemPrompt() string {
 			}
 			parts = append(parts, "Additional tools available via MCP: "+strings.Join(names, ", ")+".")
 		}
+	}
+
+	// Host/user-supplied suffix always closes the prompt.
+	if appended := loop.Config.AppendedSystemPrompt(); appended != "" {
+		parts = append(parts, appended)
 	}
 
 	return strings.Join(parts, "\n\n")
@@ -382,6 +420,7 @@ func (loop *ConversationLoop) SendMessage(ctx context.Context, userText string) 
 	if ShouldCompact(loop.Compaction.LastInputTokens, loop.Session.Messages, loop.Config) {
 		if loop.tryCompact(ctx) {
 			loop.Compaction.CompactionCount++
+			loop.QueueSystemReminder(reminderPostCompaction)
 		}
 	}
 
@@ -403,6 +442,10 @@ func (loop *ConversationLoop) SendMessage(ctx context.Context, userText string) 
 // runOneTurn sends the current session messages to the API and processes the response.
 // Returns the stop_reason.
 func (loop *ConversationLoop) runOneTurn(ctx context.Context) (string, error) {
+	// Turn boundary: deliver any reminders queued by the previous turn's
+	// tools or by compaction before the request is built.
+	loop.flushSystemReminders()
+
 	req := api.CreateMessageRequest{
 		Model:           loop.Config.Model,
 		MaxTokens:       loop.Config.MaxTokens,
@@ -583,6 +626,7 @@ func (loop *ConversationLoop) SendMessageStreaming(ctx context.Context, userText
 	if ShouldCompact(loop.Compaction.LastInputTokens, loop.Session.Messages, loop.Config) {
 		if loop.tryCompact(ctx) {
 			loop.Compaction.CompactionCount++
+			loop.QueueSystemReminder(reminderPostCompaction)
 		}
 	}
 
@@ -626,6 +670,10 @@ func (loop *ConversationLoop) SendMessageStreaming(ctx context.Context, userText
 // runOneTurnStreaming streams one API turn and sends TurnEvents.
 // Returns stop_reason, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, error.
 func (loop *ConversationLoop) runOneTurnStreaming(ctx context.Context, events chan<- TurnEvent) (string, int, int, int, int, error) {
+	// Turn boundary: deliver any reminders queued by the previous turn's
+	// tools or by compaction before the request is built.
+	loop.flushSystemReminders()
+
 	req := api.CreateMessageRequest{
 		Model:           loop.Config.Model,
 		MaxTokens:       loop.Config.MaxTokens,
@@ -758,10 +806,15 @@ func (loop *ConversationLoop) runOneTurnStreaming(ctx context.Context, events ch
 			}
 
 			summary := summarizeToolInput(inputMap)
+			// The permission subject must be the FULL input: rules, the
+			// read-only bash allow-list and user approval must judge the
+			// whole command, never a 60-char display prefix whose tail
+			// could hide a mutation.
+			permSubject := permissionSubject(inputMap)
 
 			// --- Permission check (Phase 5) ---
 			if loop.PermManager != nil {
-				decision := loop.PermManager.CheckCtx(ctx, tb.name, summary)
+				decision := loop.PermManager.CheckCtx(ctx, tb.name, permSubject)
 
 				// Plan mode: describe without executing.
 				if loop.PermManager.Mode == permissions.ModePlan {
@@ -791,7 +844,7 @@ func (loop *ConversationLoop) runOneTurnStreaming(ctx context.Context, events ch
 					case events <- TurnEvent{
 						Type:      TurnEventPermissionAsk,
 						ToolName:  tb.name,
-						ToolInput: summary,
+						ToolInput: permSubject,
 						PermReply: replyCh,
 					}:
 					case <-ctx.Done():
@@ -816,7 +869,7 @@ func (loop *ConversationLoop) runOneTurnStreaming(ctx context.Context, events ch
 						toolResults = append(toolResults, denied)
 						continue
 					case PermDecisionAllowAlways:
-						loop.PermManager.Remember(tb.name, summary, permissions.DecisionAllow, permissions.ScopeAlways)
+						loop.PermManager.Remember(tb.name, permSubject, permissions.DecisionAllow, permissions.ScopeAlways)
 					}
 					// PermDecisionAllowOnce falls through to execution
 				}
@@ -937,8 +990,10 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 		result, err = tools.ExecuteStructuredOutput(input)
 	case "enter_plan_mode":
 		result, err = tools.ExecuteEnterPlanMode(&loop.PlanModeActive, loop.planModeStateDir())
+		loop.queuePlanModeReminder(true, err)
 	case "exit_plan_mode":
 		result, err = tools.ExecuteExitPlanMode(&loop.PlanModeActive, loop.planModeStateDir())
+		loop.queuePlanModeReminder(false, err)
 	case "send_user_message":
 		result, err = tools.ExecuteSendUserMessage(input)
 	// --- Batch 2: task tools ---
@@ -1055,11 +1110,19 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 
 // summarizeToolInput returns a short human-readable summary of tool inputs.
 func summarizeToolInput(input map[string]any) string {
+	v := permissionSubject(input)
+	if len(v) > 60 {
+		return v[:60] + "..."
+	}
+	return v
+}
+
+// permissionSubject returns the full, untruncated permission-relevant input
+// string (the bash command, the file path, the url, …). Permission checks
+// and approvals must always operate on this, never on the display summary.
+func permissionSubject(input map[string]any) string {
 	for _, key := range []string{"command", "path", "file_path", "pattern", "url", "query", "question"} {
 		if v, ok := input[key].(string); ok {
-			if len(v) > 60 {
-				return v[:60] + "..."
-			}
 			return v
 		}
 	}
@@ -1205,9 +1268,9 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 			// Rust: ask-rules take precedence over hook allow.
 			// Only remember as allowed when no ask-rule matches.
 			if loop.PermManager != nil {
-				inputSummary := summarizeToolInput(input)
-				if !loop.PermManager.MatchesAskRule(name, inputSummary) {
-					loop.PermManager.Remember(name, inputSummary, permissions.DecisionAllow, permissions.ScopeAlways)
+				subject := permissionSubject(input)
+				if !loop.PermManager.MatchesAskRule(name, subject) {
+					loop.PermManager.Remember(name, subject, permissions.DecisionAllow, permissions.ScopeAlways)
 				}
 			}
 		case hooks.PermissionDeny:
@@ -1312,8 +1375,10 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 		result, err = tools.ExecuteStructuredOutput(input)
 	case "enter_plan_mode":
 		result, err = tools.ExecuteEnterPlanMode(&loop.PlanModeActive, loop.planModeStateDir())
+		loop.queuePlanModeReminder(true, err)
 	case "exit_plan_mode":
 		result, err = tools.ExecuteExitPlanMode(&loop.PlanModeActive, loop.planModeStateDir())
+		loop.queuePlanModeReminder(false, err)
 	case "send_user_message":
 		result, err = tools.ExecuteSendUserMessage(input)
 	// --- Batch 2: task tools ---

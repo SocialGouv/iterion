@@ -189,6 +189,24 @@ func mergePromptConfig(dst, src *RuntimePromptConfig) *RuntimePromptConfig {
 	if src.Posture != nil {
 		dst.Posture = src.Posture
 	}
+	if src.Communication != nil {
+		dst.Communication = src.Communication
+	}
+	if src.TaskManagement != nil {
+		dst.TaskManagement = src.TaskManagement
+	}
+	if src.DoingTasks != nil {
+		dst.DoingTasks = src.DoingTasks
+	}
+	if src.ToolPolicy != nil {
+		dst.ToolPolicy = src.ToolPolicy
+	}
+	if src.GitSafety != nil {
+		dst.GitSafety = src.GitSafety
+	}
+	if src.ContextManagement != nil {
+		dst.ContextManagement = src.ContextManagement
+	}
 	if src.MemoryMaxBytes != 0 {
 		dst.MemoryMaxBytes = src.MemoryMaxBytes
 	}

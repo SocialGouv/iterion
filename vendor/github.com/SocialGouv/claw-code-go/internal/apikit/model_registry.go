@@ -135,7 +135,7 @@ func (r *ModelRegistry) ensureInit() {
 		// rather than guessing. Update once code.claude.com/docs/en/model-config
 		// publishes the table.
 		{Canonical: "claude-sonnet-4-7", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet", "sonnet-4-7"}, Metadata: anthropicMeta},
-		{Canonical: "claude-sonnet-4-6", Provider: ProviderAnthropic, MaxOutput: 64_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-6"}, Metadata: anthropicMeta,
+		{Canonical: "claude-sonnet-4-6", Provider: ProviderAnthropic, MaxOutput: 128_000, ContextWindow: 1_000_000, Aliases: []string{"sonnet-4-6"}, Metadata: anthropicMeta,
 			SupportedReasoningEfforts: anthropicSonnet46Effort, DefaultReasoningEffort: "high", ThinkingMode: "adaptive"},
 		// Haiku does not support effort — the docs only list Opus and Sonnet.
 		{Canonical: "claude-haiku-4-5", Provider: ProviderAnthropic, MaxOutput: 64_000, ContextWindow: 200_000, Aliases: []string{"haiku", "claude-haiku-4-5-20251213"}, Metadata: anthropicMeta},

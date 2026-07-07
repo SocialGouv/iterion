@@ -13,8 +13,12 @@ const defaultAgentModel = "claude-opus-4-8"
 
 func AgentTool() api.Tool {
 	return api.Tool{
-		Name:        "agent",
-		Description: "Spawn a sub-agent to handle a task. The agent runs in the background with its own conversation loop.",
+		Name: "agent",
+		Description: "Spawn a sub-agent with its own conversation loop to handle a delegated task in the background. " +
+			"Use it for open-ended exploration or self-contained subtasks so intermediate file dumps land in the sub-agent's context instead of yours. " +
+			"Sub-agents are stateless: the prompt must carry ALL needed context (paths, goal, expected report shape). " +
+			"The sub-agent's report is returned to you, not shown to the user — relay what matters. " +
+			"subagent_type: \"explore\" (read-only search), \"plan\", \"verification\", or \"general-purpose\" (default, all tools).",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{
