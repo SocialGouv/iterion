@@ -55,8 +55,14 @@ type ClaudeCodeBackend struct {
 // long Execute method; this prefix carries no post-session state (the
 // closure-capturing hooks — stderr/ask_user/secret/board/inbox — stay in
 // Execute).
-func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option {
+//
+// The second return value is non-nil only for sandboxed tasks: a
+// best-effort cleanup that terminates the in-container claude process
+// recorded by the command wrapper (native:221edac8). Execute must defer
+// it so aborted sessions cannot leak the subprocess.
+func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option, func()) {
 	var opts []claudesdk.Option
+	var sandboxCleanup func()
 
 	// APPEND, do not REPLACE. --system-prompt would discard Claude Code's
 	// native agentic system prompt (tool-use discipline, plan-before-act,
@@ -133,6 +139,14 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option 
 	// application when a builder is set.
 	if task.Sandbox != nil {
 		run := task.Sandbox
+		// Record the in-container PID so the session end can actually
+		// terminate claude: killing the host-side `docker exec` client
+		// leaks the in-container process (native:221edac8 — leaked
+		// claudes stack across retries and starve the forfait). The
+		// wrapper writes its PID to a pidfile then exec's claude (same
+		// PID, same fds); Execute defers killSandboxDelegate.
+		mark := sandboxDelegateMark(task)
+		sandboxCleanup = killSandboxDelegate(run, mark, b.Logger)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			// Surface the resolved CLI invocation so failures like
 			// "session ended without result" can be traced back to a
@@ -147,7 +161,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option 
 			// later wires cmd.StdinPipe() but docker has already closed
 			// stdin on the child, claude reads EOF, and exits 0 with no
 			// output — matching the cli_exit_code=0 silent-failure path.
-			return run.Command(ctx, append([]string{path}, args...), sandbox.ExecOpts{
+			return run.Command(ctx, wrapSandboxDelegateArgv(mark, append([]string{path}, args...)), sandbox.ExecOpts{
 				WorkDir:       cwd,
 				Env:           env,
 				KeepStdinOpen: openStdin,
@@ -172,7 +186,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option 
 		opts = append(opts, claudesdk.WithMaxTurns(task.ToolMaxSteps))
 	}
 
-	return opts
+	return opts, sandboxCleanup
 }
 
 func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Result, err error) {
@@ -212,7 +226,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		})
 	}()
 
-	opts := b.buildTransportOptions(task)
+	opts, sandboxCleanup := b.buildTransportOptions(task)
+	// Terminate the in-container claude on every exit path — clean,
+	// aborted, or panicking. Idempotent: after a clean CLI exit the
+	// recorded PID is gone and the kill script no-ops (native:221edac8).
+	if sandboxCleanup != nil {
+		defer sandboxCleanup()
+	}
 	// Allowed-tools registration is deferred to a single call near the end
 	// of this function. WithAllowedTools APPENDS to the SDK's slice, so
 	// registering the base set here and again below (combined with MCP

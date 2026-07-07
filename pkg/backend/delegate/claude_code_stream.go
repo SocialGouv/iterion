@@ -321,7 +321,14 @@ func (b *ClaudeCodeBackend) runSession(ctx context.Context, prompt string, task 
 				return result, meta, it.err
 			}
 			// Any incoming item proves the SDK is alive — flip into
-			// hot-timeout mode for the rest of the session.
+			// hot-timeout mode for the rest of the session. Log the
+			// time-to-first-message once: the cold-phase silence bug
+			// (native:221edac8) is only diagnosable with this crumb —
+			// a healthy session lands well under the cold budget.
+			if !receivedAny {
+				b.Logger.Info("[%s#%d/claude-code] first stream message after %s (cold budget %s)",
+					task.NodeID, task.Iteration, time.Since(lastItemTime).Round(100*time.Millisecond), coldTimeout)
+			}
 			receivedAny = true
 			// progressed = this message proves the agent ACTED (invoked a tool)
 			// or the SDK delivered a result. Only such messages reset the
