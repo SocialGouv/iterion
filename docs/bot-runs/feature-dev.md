@@ -1,8 +1,21 @@
 # Featurly — `feature-dev` run bilans
 
-Autonomous end-to-end feature development: plan → act → `/simplify` →
-prepare_commit → alternating Claude/GPT review-fix loop → commit, in an isolated
-`worktree: auto`. See [bots/feature-dev/](../../bots/feature-dev/).
+Autonomous end-to-end feature development. **v2 (ADR-058 minimal-framing)
+since 2026-07-07**: one `campaign` agent ships the feature slice by slice
+(commits in stride) against a deterministic build/test gate + bounded
+continuation loop, opt-in MR tail. Pre-v2 bilans below describe the
+retired plan → act → `/simplify` → alternating review-fix → commit
+pipeline. See [bots/feature-dev/](../../bots/feature-dev/).
+
+## 2026-07-07 — v2 minimal-framing PILOT: `iterion validate --strict` shipped in one pass (run 019f3bb4)
+- Status: **VALIDATED** — the ADR-058 conversion's dogfood gate. First live run of the v2 shape (campaign → verify_build → verify_run → gate → mr_gate → done): **converged on the FIRST pass in 11m33s end-to-end** (sandbox setup included), 64 tool calls, 2 LLM nodes. The v1 shape's live e2e expectation for a comparable feature was 40–70 min across ~8 nodes and 15 possible review iterations.
+- Versions: bot feature-dev **v2.0.0** (`11aa9b65b`) · iterion worktree branch @`a497f1ae2` · sandbox-full:edge.
+- Method: CLI `iterion run` from the conversion worktree (static binary), `--store-dir <workspace>/.iterion` (studio-visible), `--merge-into none`, `--max-cost-usd 30 --max-duration 2h`, mono claude (opus-4-8 high, Claude forfait — no cost metric reported). feature_prompt = add `--strict` to `iterion validate` (warnings fail the exit code for CI gating) + `--json` coverage + table-driven tests + docs.
+- Result: `finished`, `gate.converged=true` (real verify_run: passed, not skipped), **2 semantic commits in stride** on storage branch `iterion/run/thunder-sizzle-dawnglyph-ec4d` @`0cd39d446`: `feat(cli): add --strict to iterion validate to fail on warnings` then `docs(cli): document iterion validate --strict flag`. Termination contract honest: `feature_complete=true, commits_this_pass=2`, summary matched the diff.
+- Value: real, wanted CLI feature. Functional proof from the storage branch: `TestValidate_Strict` + `TestValidate_StrictHumanOutput` PASS (existing validate tests untouched-green); behaviour matrix exercised live — 0-warning file + `--strict` → exit 0; warning-bearing file without `--strict` → exit 0 (unchanged default); with `--strict` → exit 1 with `result: INVALID (strict: N warning(s))`.
+- Findings / misses: (1) `validate --json` emits TWO JSON documents on failure (result object + error object) — **pre-existing**, verified against a pre-feature binary; candidate board finding, not a regression. (2) The campaign did not exercise the ask-user or findings-handoff paths (nothing to escalate on a clean feature) — those paths remain structurally tested only. (3) Run-worktree was based on the MAIN checkout HEAD (engine derives the repo from the store-dir side), not the launching worktree's branch — harmless here, worth knowing when dogfooding from a worktree.
+- Engine hardening: none needed — sandbox, verify gate, loop wiring and finalize (storage branch, no FF) all behaved first try.
+- Lessons for next run: the goal-directed v2 contract holds as-is; keep `reasoning_effort: high` (the shape, not the tier, carried it); the verify_build node re-derived `verify.sh` correctly from devbox — no skill gap. GATE PASSED → rollout continues (docs-refresh, adr-cartograph, rgaa-audit, dep-update-guard, secured-renovacy P2, sec-audit-source remediation).
 
 ## 2026-06-25 — issue-comment → MR cloud-k8s e2e GREEN (Claude forfait + GLM; 8 more fixes) (run 019efbc6)
 - Status: **VALIDATED** — the full feature works end-to-end on the deployed preprod (ovh-dev) k8s runner. `/featurly` on project 194 **issue !2** → claude_code-forfait implementer wrote `main.go` → claw **GLM** reviewer approved → commit → push → **MR !13** opened (`iterion/fix-go-doc-comment → main`, author `project_194_bot`) → **back-link comment on issue !2** ("Created MR: …/merge_requests/13"). The 8-fix infra campaign below got the sandbox to *start*; these 8 more drove the run from "empty workspace" all the way to the MR + back-link.
