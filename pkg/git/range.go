@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -363,7 +364,9 @@ func showAt(dir, ref, relPath string) ([]byte, error) {
 	if size, ok := blobSizeAt(dir, ref, relPath); ok && size > diffPayloadCap {
 		return nil, errOversized
 	}
-	cmd := exec.Command("git", "show", ref+":"+relPath)
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+relPath)
 	cmd.Dir = dir
 	cmd.Env = gitEnv()
 	var stderr bytes.Buffer
@@ -371,6 +374,9 @@ func showAt(dir, ref, relPath string) ([]byte, error) {
 	out, err := cmd.Output()
 	if err == nil {
 		return out, nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("git show %s:%s: timed out after %s", ref, relPath, gitCommandTimeout)
 	}
 	msg := stderr.String()
 	if bytes.Contains([]byte(msg), []byte("does not exist")) ||
