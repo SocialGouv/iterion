@@ -9,24 +9,24 @@ import (
 )
 
 // TestLive_Bot_TestCoverage runs the test-coverage bot (Testy) against a
-// package with an exported, untested function. Testy picks the target,
-// writes real tests, runs them through a deterministic verify floor, and
-// converges via a cross-family review loop inside a worktree (worktree:
-// auto + sandbox-full), committing a `test:` change.
+// package with an exported, untested function. v2 (ADR-058
+// minimal-framing): ONE campaign agent writes real tests committing each
+// in stride, then the deterministic gate re-runs the suite and verifies
+// genuinely-new test code landed, inside a worktree (worktree: auto +
+// sandbox-full).
 //
-// Reliability invariants: plan/act/verify_run_tests fire and the verify
+// Reliability invariants: campaign/verify_build/verify_run fire and the
 // gate reports a newly-added test (new_test_code). The quality panel then
 // grades the tests (anti-façade: are the assertions real?) + value.
 //
-// Requires: claude CLI + OpenAI + docker w/ iterion-sandbox-full:edge.
-// Expected: ~40-70 min.
+// Requires: claude CLI + docker w/ iterion-sandbox-full:edge.
+// Expected: ~20-50 min.
 func TestLive_Bot_TestCoverage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireOpenAI(t)
 	requireDockerImage(t, "ghcr.io/socialgouv/iterion-sandbox-full:edge")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-test-coverage-*")
@@ -51,7 +51,7 @@ func Reverse(s string) string {
 	seedCommits := workspaceCommitCount(t, workspaceDir)
 
 	vars := map[string]interface{}{
-		"scope_notes": "Add unit tests for the Reverse function (it has none).",
+		"target": "Add unit tests for the Reverse function (it has none).",
 	}
 	res := runBotLive(t, liveSpec{
 		runIDBase:    "live-test-coverage",
@@ -63,12 +63,15 @@ func Reverse(s string) string {
 		withWorkDir:  true,
 	})
 
-	assertNodesFinished(t, res.events, "plan", "act", "verify_run_tests")
-	if vr, ok := lastNodeOutput(res.events, "verify_run_tests"); ok {
-		t.Logf("verify_run_tests: passed=%v new_test_code=%v", vr["passed"], vr["new_test_code"])
+	assertNodesFinished(t, res.events, "campaign", "verify_build", "verify_run", "gate")
+	if vr, ok := lastNodeOutput(res.events, "verify_run"); ok {
+		t.Logf("verify_run: passed=%v new_test_code=%v", vr["passed"], vr["new_test_code"])
 		if added, _ := vr["new_test_code"].(bool); !added {
-			t.Errorf("expected verify_run_tests.new_test_code=true (a test was added)")
+			t.Errorf("expected verify_run.new_test_code=true (a test was added)")
 		}
+	}
+	if got := workspaceCommitCount(t, workspaceDir); got <= seedCommits {
+		t.Errorf("expected the campaign to land at least one test commit in stride (seed %d, after %d)", seedCommits, got)
 	}
 	t.Logf("commits after run: %d (seed %d)", workspaceCommitCount(t, workspaceDir), seedCommits)
 
