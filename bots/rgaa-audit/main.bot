@@ -1,5 +1,6 @@
 ## ─────────────────────────────────────────────────────────────────────
 ## rgaa-audit (persona: Acci) — universal RGAA 4.1.2 accessibility auditor
+## (v2 — one audit agent, minimal framing, ADR-058)
 ##
 ## READ-ONLY, STATIC. Reviews a project's UI source against the 106 RGAA
 ## criteria (13 themes, WCAG 2.1 AA basis), guided by the bundled
@@ -8,17 +9,27 @@
 ## non-conformities by priority, exports a dated Markdown report under
 ## `audits/` and (optionally) posts one board issue per non-conformity.
 ##
-## Pipeline:
+## Pipeline (single-pass audit — the deterministic gates ARE the report's
+## integrity; no continuation loop needed for a read-only audit):
 ##   inventory      — deterministic bounded listing of the repo
-##   detect_ui      — adaptive agent: is there a UI layer? which stack? DSFR?
-##   rgaa_review    — adaptive agent: theme-by-theme static audit → candidates
-##   scan_health    — DETERMINISTIC anti-façade gate (skills present? examined?)
-##   cap_findings   — DETERMINISTIC overflow guard (severity-sorted top-N NC)
-##   report_card    — write audits/rgaa-<date>.md + post findings to the board
+##   campaign       — ONE adaptive agent (v2: absorbs the v1 detect_ui
+##                    classifier as its opening move): classify the UI
+##                    surface (has_ui / frameworks / DSFR / priority
+##                    paths), then audit theme-by-theme → candidates
+##   scan_health    — DETERMINISTIC anti-façade gate (skills present?
+##                    examined files non-empty when a UI exists?)
+##   cap_findings   — DETERMINISTIC overflow guard (severity-sorted top-N)
+##   report_card    — write audits/rgaa-<date>.md + post board issues
+##
+## v2 (ADR-058): the v1 split detect_ui (claw) → rgaa_review
+## (claude_code) forced a hand-off of the surface classification through
+## a schema; one adaptive agent classifies AND audits in a single
+## session (prompt-cache shared, DSFR MCP reachable from turn one).
+## 6 nodes → 5. The deterministic anti-façade machinery is unchanged.
 ##
 ## Universal: no language/ecosystem enumeration in the DSL — the stack
-## knowledge lives in the skills, the adaptive agents read them and adapt
-## to whatever repo they are pointed at, and the deterministic gate
+## knowledge lives in the skills, the adaptive agent reads them and
+## adapts to whatever repo it is pointed at, and the deterministic gate
 ## verifies the audit actually consulted the criteria.
 ## ─────────────────────────────────────────────────────────────────────
 
@@ -40,44 +51,33 @@ vars:
   ## issues (severity-sorted); the rest are still summarised in the report.
   findings_cap:  int    = 80
   ## Models / effort are env-tunable so the same bot runs lean or deep.
-  ## Set inline on the detect_ui / rgaa_review / report_card node `model:`
-  ## fields as `${ITERION_RGAA_MODEL_*:-default}` — the engine resolves
+  ## Set inline on the campaign / report_card node `model:` fields as
+  ## `${ITERION_RGAA_MODEL_*:-default}` — the engine resolves
   ## `${ENV:-default}` in a node's model field but NOT `{{vars.*}}` refs,
-  ## so the env expression must live directly on the node (same idiom as
-  ## `max_duration` above), not be routed through a var.
+  ## so the env expression must live directly on the node.
 
 ## ─── Schemas ──────────────────────────────────────────────────────────
 
 schema inventory_output:
   listing: string
 
-schema detect_ui_input:
-  listing:     string
-  scope_notes: string
-  scope_globs: string
-
-schema ui_output:
-  ## has_ui is the only boolean gate; everything else is OPEN data so the
-  ## bot never enumerates a closed set of frameworks/languages.
-  has_ui:     bool
-  uses_dsfr:  bool
-  frameworks: json
-  ui_paths:   json
-  summary:    string
-
-schema review_input:
+schema campaign_input:
   workspace_dir: string
+  listing:       string
   scope_notes:   string
   scope_globs:   string
-  has_ui:        bool
-  uses_dsfr:     bool
-  frameworks:    json
-  ui_paths:      json
 
-schema review_output:
-  ## candidates[]: { criterion, theme, title, status (C|NC|NA), severity
-  ## (blocking|major|minor), file, line, problem, remediation, evidence }.
-  ## Only NC entries become board issues; C/NA feed the synthesis tally.
+## campaign_output is the union of the v1 ui_output + review_output:
+## the surface classification AND the audit verdict come from the one
+## agent. has_ui stays the only boolean gate; frameworks/ui_paths are
+## OPEN data so the bot never enumerates a closed set of stacks.
+## candidates[]: { criterion, theme, title, status (C|NC|NA), severity
+## (blocking|major|minor), file, line, problem, remediation, evidence }.
+schema campaign_output:
+  has_ui:          bool
+  uses_dsfr:       bool
+  frameworks:      json
+  ui_paths:        json
   candidates:      json
   examined_files:  json
   themes_covered:  json
@@ -131,99 +131,91 @@ schema report_output:
 
 ## ─── Prompts ──────────────────────────────────────────────────────────
 
-prompt detect_ui_system:
-  You classify a repository's user-interface surface for an RGAA
-  accessibility audit. You are READ-ONLY: inspect, never modify.
-
-  From the inventory listing and a quick look at the repo (use bash /
-  glob / grep / read_file), determine:
-    - has_ui: is there any web user-interface code to audit? (HTML
-      templates, JSX/TSX components, Vue single-file components, Twig /
-      Blade / ERB templates, Angular templates, server-rendered views,
-      raw .html). A pure backend / library / CLI repo has has_ui = false.
-    - frameworks: an OPEN list of the UI technologies you actually see
-      (e.g. "react", "vue", "twig", "plain-html", "angular"). Do not
-      force a fixed taxonomy; report what is there.
-    - uses_dsfr: does the project use the French State Design System
-      (classes prefixed `fr-`, a `@gouvfr/dsfr` or `@codegouvfr/react-dsfr`
-      dependency, or imported DSFR stylesheets)? If so, the audit will
-      compare against the DSFR's accessible reference markup.
-    - ui_paths: a representative, BOUNDED list (≤ 40) of the UI files or
-      directories the deeper review should open first — the highest-value
-      surface (shared components, layouts, forms, navigation).
-
-  Honour the scope hint and scope globs if provided: narrow ui_paths to
-  that area. Keep the listing bounded; do not try to enumerate every file.
-
-prompt detect_ui_user:
-  Repository inventory:
-
-  {{input.listing}}
-
-  Scope hint (may be empty): {{input.scope_notes}}
-  Scope globs (may be empty): {{input.scope_globs}}
-
-  Classify the UI surface and return the structured output.
-
-prompt rgaa_review_system:
+prompt campaign_system:
   You are Acci, an accessibility specialist auditing a UI codebase against
   the RGAA 4.1.2 (Référentiel Général d'Amélioration de l'Accessibilité,
   WCAG 2.1 AA basis). You are READ-ONLY: you produce findings, you never
-  edit code.
+  edit code. You own the whole audit end to end — classify the surface,
+  then audit it, exactly as you would in a focused human session.
 
   FIRST, read your reference skills (they are mirrored under
   `.claude/skills/`): the `rgaa-audit` skill (workflow, C/NC/NA scoring,
   priority grid, report format) and the five `rgaa-criteria-*` skills (the
-  106 criteria across the 13 themes). When the target uses the DSFR
-  (uses_dsfr is true), also read `rgaa-dsfr` and use the DSFR MCP tools
-  (mcp__dsfr__get_component_accessibility / get_component_code /
-  get_color_tokens) as the accessible-markup reference when they are
-  available; if the DSFR MCP tools are absent, degrade gracefully to the
-  generic criteria.
+  106 criteria across the 13 themes).
 
-  THEN audit the UI surface theme by theme (themes 1–13). Open the files
-  in ui_paths first, then widen as needed with glob / grep / read_file.
+  PHASE 0 — CLASSIFY THE SURFACE (your opening move; the v1 pipeline did
+  this in a separate node — it is YOUR first todo now). From the
+  inventory listing and a quick look (bash / glob / grep / read_file):
+    - has_ui: is there any web user-interface code to audit? (HTML
+      templates, JSX/TSX components, Vue SFCs, Twig / Blade / ERB
+      templates, Angular templates, server-rendered views, raw .html).
+      A pure backend / library / CLI repo has has_ui = false — report it
+      honestly and stop there (empty candidates, na_themes = all).
+    - frameworks: an OPEN list of the UI technologies you actually see
+      (e.g. "react", "vue", "twig", "plain-html"). Report what is there.
+    - uses_dsfr: does the project use the French State Design System
+      (classes prefixed `fr-`, a `@gouvfr/dsfr` or
+      `@codegouvfr/react-dsfr` dependency, imported DSFR stylesheets)?
+      When true, also read `rgaa-dsfr` and use the DSFR MCP tools
+      (mcp__dsfr__get_component_accessibility / get_component_code /
+      get_color_tokens) as the accessible-markup reference when
+      available; degrade gracefully to the generic criteria when absent.
+    - ui_paths: a representative, BOUNDED list (≤ 40) of the UI files or
+      directories to open first — the highest-value surface (shared
+      components, layouts, forms, navigation).
+  Honour the scope hint and scope globs: narrow to that area when given.
+
+  THEN audit the UI surface theme by theme (themes 1–13), keeping a
+  LIVING todo of themes/areas as you learn the codebase. Open your
+  ui_paths first, then widen as needed with glob / grep / read_file.
   For each applicable criterion, decide a status:
     - C  (Conforme)       — respected.
     - NC (Non conforme)   — violated: pinpoint the element (file:line +
                             a short code excerpt) and the exact problem.
-    - NA (Non applicable) — no such content in scope (give a one-line reason).
+    - NA (Non applicable) — no such content in scope (one-line reason).
 
   For every NC, classify the priority using the rgaa-audit grid:
     - severity "blocking" 🔴 — blocks access for assistive-tech users
       (missing alt, unlabelled field, empty link, keyboard trap,
       non-focusable interactive control).
-    - severity "major" 🟠 — strong impact, partially workable (insufficient
-      contrast, invisible focus, broken heading hierarchy, non-explicit
-      link, status message with no aria-live).
+    - severity "major" 🟠 — strong impact, partially workable
+      (insufficient contrast, invisible focus, broken heading hierarchy,
+      non-explicit link, status message with no aria-live).
     - severity "minor" 🟡 — slight friction (missing autocomplete, absent
       table caption, unsignalled new window).
 
-  Anti-façade rules (this is a real audit, not a rubber stamp):
-    - Cite the criterion number (e.g. "1.1", "3.2", "11.1") on EVERY finding.
-    - Never mark a criterion C unless you actually verified it in the code.
-      If a criterion needs a rendered page to judge (true colour contrast on
-      an image, real caption synchronisation), mark it NA with the reason
-      "requires runtime verification" rather than guessing C.
-    - Record examined_files honestly: the files you really opened. The run
-      is gated on this — an empty examined_files on a repo with a UI surface
-      fails the audit.
+  Anti-façade rules (this is a real audit, not a rubber stamp — a
+  deterministic gate re-checks you):
+    - Cite the criterion number (e.g. "1.1", "3.2", "11.1") on EVERY
+      finding.
+    - Never mark a criterion C unless you actually verified it in the
+      code. If a criterion needs a rendered page to judge (true colour
+      contrast on an image, real caption synchronisation), mark it NA
+      with the reason "requires runtime verification" rather than
+      guessing C.
+    - Record examined_files honestly: the files you really opened. The
+      run is gated on this — an empty examined_files on a repo with a UI
+      surface fails the audit.
     - Do not invent files or line numbers.
 
   Compute conformity_pct = round(C / (C + NC) × 100) over applicable
   criteria (exclude NA from the denominator). List themes_covered (theme
   numbers you reached) and na_themes (themes ruled out, with reason).
 
-prompt rgaa_review_user:
+prompt campaign_user:
   Audit target: {{input.workspace_dir}}
-  UI frameworks detected: {{input.frameworks}}
-  Uses DSFR: {{input.uses_dsfr}}
-  Priority files/dirs to open first: {{input.ui_paths}}
+
+  Repository inventory (deterministic, bounded):
+
+  {{input.listing}}
+
   Scope hint (may be empty): {{input.scope_notes}}
   Scope globs (may be empty): {{input.scope_globs}}
 
-  Run the RGAA audit and return candidates[], examined_files,
-  themes_covered, na_themes, conformity_pct and a short summary.
+  Classify the UI surface (phase 0), then run the RGAA audit theme by
+  theme. Return has_ui, uses_dsfr, frameworks, ui_paths, candidates[],
+  examined_files, themes_covered, na_themes, conformity_pct and a short
+  summary.
 
 prompt report_card_system:
   You turn a finished RGAA audit into (1) a dated Markdown conformance
@@ -285,7 +277,7 @@ prompt report_card_user:
 ## Deterministic bounded inventory: top-level entries + manifest/build
 ## files, vendor/build/cache dirs pruned, depth-capped, count-capped.
 ## Language-agnostic — no UI extension enumeration here (that is the
-## adaptive detect_ui agent's job).
+## adaptive campaign's phase-0 job).
 tool inventory:
   command: `WS={{vars.workspace_dir}} python3 -c "
 import os, json
@@ -312,35 +304,25 @@ print(json.dumps({'listing': listing}))
 "`
   output: inventory_output
 
-agent detect_ui:
-  backend: "claw"
-  model: "${ITERION_RGAA_MODEL_DETECT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_RGAA_EFFORT_DETECT:-medium}"
-  input: detect_ui_input
-  output: ui_output
-  system: detect_ui_system
-  user: detect_ui_user
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 25
-  readonly: true
-
-## The deep audit. claude_code so the bundled rgaa-* skills are mirrored
-## to .claude/skills/ and (when wired) the DSFR MCP tools are reachable.
-agent rgaa_review:
+## The one adaptive auditor (v2: absorbs the v1 detect_ui classifier).
+## claude_code so the bundled rgaa-* skills are mirrored to
+## .claude/skills/ and the DSFR MCP tools are reachable from turn one —
+## classification and deep audit share one session + prompt cache.
+agent campaign:
   backend: "claude_code"
   model: "${ITERION_RGAA_MODEL_REVIEW:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_RGAA_EFFORT_REVIEW:-high}"
-  input: review_input
-  output: review_output
-  system: rgaa_review_system
-  user: rgaa_review_user
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
   tools: [bash, read_file, glob, grep]
-  tool_max_steps: 80
+  tool_max_steps: 100
   readonly: true
 
 ## DETERMINISTIC anti-façade gate. Hard-fails the run when the RGAA
-## criteria skills are not mirrored (the review had no reference grid) or
-## when a UI surface exists but the review examined zero files (façade).
+## criteria skills are not mirrored (the audit had no reference grid) or
+## when a UI surface exists but the campaign examined zero files (façade).
 ## This is the degenerate Verified-Action quad (recipe == postcondition,
 ## no recovery): the gate stays deterministic.
 tool scan_health:
@@ -436,31 +418,22 @@ workflow rgaa_audit:
     max_tokens: 2000000
     max_iterations: 200
 
-  inventory -> detect_ui with {
-    listing:     "{{outputs.inventory.listing}}",
-    scope_notes: "{{vars.scope_notes}}",
-    scope_globs: "{{vars.scope_globs}}"
-  }
-
-  detect_ui -> rgaa_review with {
+  inventory -> campaign with {
     workspace_dir: "{{vars.workspace_dir}}",
+    listing:       "{{outputs.inventory.listing}}",
     scope_notes:   "{{vars.scope_notes}}",
-    scope_globs:   "{{vars.scope_globs}}",
-    has_ui:        "{{outputs.detect_ui.has_ui}}",
-    uses_dsfr:     "{{outputs.detect_ui.uses_dsfr}}",
-    frameworks:    "{{outputs.detect_ui.frameworks}}",
-    ui_paths:      "{{outputs.detect_ui.ui_paths}}"
+    scope_globs:   "{{vars.scope_globs}}"
   }
 
-  rgaa_review -> scan_health with {
+  campaign -> scan_health with {
     workspace_dir:  "{{vars.workspace_dir}}",
-    has_ui:         "{{outputs.detect_ui.has_ui}}",
-    examined_files: "{{outputs.rgaa_review.examined_files}}",
-    candidates:     "{{outputs.rgaa_review.candidates}}"
+    has_ui:         "{{outputs.campaign.has_ui}}",
+    examined_files: "{{outputs.campaign.examined_files}}",
+    candidates:     "{{outputs.campaign.candidates}}"
   }
 
   scan_health -> cap_findings with {
-    candidates: "{{outputs.rgaa_review.candidates}}",
+    candidates: "{{outputs.campaign.candidates}}",
     cap:        "{{vars.findings_cap}}"
   }
 
@@ -472,12 +445,12 @@ workflow rgaa_audit:
     candidates:     "{{outputs.cap_findings.candidates}}",
     total_nc:       "{{outputs.cap_findings.total_nc}}",
     capped:         "{{outputs.cap_findings.capped}}",
-    themes_covered: "{{outputs.rgaa_review.themes_covered}}",
-    na_themes:      "{{outputs.rgaa_review.na_themes}}",
-    conformity_pct: "{{outputs.rgaa_review.conformity_pct}}",
-    examined_files: "{{outputs.rgaa_review.examined_files}}",
-    frameworks:     "{{outputs.detect_ui.frameworks}}",
-    uses_dsfr:      "{{outputs.detect_ui.uses_dsfr}}",
+    themes_covered: "{{outputs.campaign.themes_covered}}",
+    na_themes:      "{{outputs.campaign.na_themes}}",
+    conformity_pct: "{{outputs.campaign.conformity_pct}}",
+    examined_files: "{{outputs.campaign.examined_files}}",
+    frameworks:     "{{outputs.campaign.frameworks}}",
+    uses_dsfr:      "{{outputs.campaign.uses_dsfr}}",
     health:         "{{outputs.scan_health}}"
   }
 
