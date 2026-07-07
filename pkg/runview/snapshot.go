@@ -86,7 +86,12 @@ type RunHeader struct {
 	// pins captured on the run, surfaced so the studio Overview can show
 	// what the run was launched with. Empty when none were set.
 	ModelOverrides []store.RunModelOverride `json:"model_overrides,omitempty"`
-	CreatedAt      time.Time                `json:"created_at"`
+	// Budget is the effective budget cap set captured at launch (after
+	// overrides + cloud ceiling clamp), surfaced so the studio Overview
+	// draws budget meters with a denominator. Nil when the workflow
+	// declared no budget: block. See store.RunBudget.
+	Budget    *store.RunBudget `json:"budget,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
 	UpdatedAt      time.Time                `json:"updated_at"`
 	FinishedAt     *time.Time               `json:"finished_at,omitempty"`
 	Error          string                   `json:"error,omitempty"`
@@ -911,6 +916,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Inputs:            r.Inputs,
 		PermissionMode:    r.PermissionMode,
 		ModelOverrides:    r.ModelOverrides,
+		Budget:            r.Budget,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,

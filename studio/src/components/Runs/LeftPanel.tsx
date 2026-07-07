@@ -3,7 +3,6 @@ import {
   ChevronLeftIcon,
   CommitIcon,
   FileTextIcon,
-  InfoCircledIcon,
   ReaderIcon,
 } from "@radix-ui/react-icons";
 
@@ -18,7 +17,6 @@ import type { RunFile, RunFilesMode, RunHeader } from "@/api/runs";
 
 import FilesPanel from "./FilesPanel";
 import CommitsPanel from "./CommitsPanel";
-import InfoPanel from "./InfoPanel";
 import OverviewPanel from "./leftPanel/OverviewPanel";
 
 // Collapsed mirrors VSCode's activity bar (~36px); expanded matches the
@@ -29,13 +27,12 @@ const EXPANDED_PX = 320;
 const COLLAPSED_KEY = "run-console-v1.left-collapsed";
 const ACTIVE_TAB_KEY = "run-console-v1.left-tab";
 
-// Overview leads: the run's launch config (axis, inputs, launch flags)
-// is what an operator needs to orient BEFORE reading the diffs. Files
-// and Commits follow because they're the run's OUTPUT; Info sits last
-// as the runtime-details detail sheet. Existing operators with a
-// persisted tab (files/commits/info) keep their preference — only
-// fresh installs default to Overview.
-const LEFT_TABS = ["overview", "files", "commits", "info"] as const;
+// Overview leads: it is now the run's mission control — status, budget
+// meters, progress, briefing, config, outcome, and (folded in) the raw
+// details that used to be the Info tab. Files and Commits follow as the
+// run's OUTPUT. A persisted "info" preference (the removed tab) falls
+// back to Overview via readEnumFlag.
+const LEFT_TABS = ["overview", "files", "commits"] as const;
 type LeftTab = (typeof LEFT_TABS)[number];
 
 function readActiveTab(): LeftTab {
@@ -50,23 +47,28 @@ interface LeftPanelProps {
   // large-changeset banner's "Edit .gitignore" shortcut.
   onEditFile?: (path: string) => void;
   onMergeComplete?: () => void;
+  // Selects the first failed node on the canvas — wired down to the
+  // Overview's Progress "failed" chip.
+  onJumpToFailed?: (nodeId: string) => void;
 }
 
 // LeftPanel owns the chrome (collapse/expand, tab strip, footer) and
-// delegates content rendering to the per-tab components. The three
-// data-heavy tabs (Files, Commits, Info) mount unconditionally so
-// their WS-driven refresh keeps going even when hidden — the cost is
-// negligible compared to the UX of seeing count badges stay live.
-// Overview is pure props off `run`, mounted alongside the rest.
+// delegates content rendering to the per-tab components. Files and
+// Commits mount unconditionally so their WS-driven refresh keeps going
+// even when hidden. Overview is the mission-control dashboard; it has its
+// own live subscriptions (metrics, file/commit counts) and mounts
+// alongside the rest. Default-expanded now that the Overview carries
+// enough value to justify the space on first launch.
 export default function LeftPanel({
   runId,
   run,
   onSelectFile,
   onEditFile,
   onMergeComplete,
+  onJumpToFailed,
 }: LeftPanelProps) {
   const [collapsed, setCollapsed] = useState<boolean>(() =>
-    readBooleanFlag(COLLAPSED_KEY, true),
+    readBooleanFlag(COLLAPSED_KEY, false),
   );
   const [activeTab, setActiveTab] = useState<LeftTab>(() => readActiveTab());
 
@@ -131,19 +133,6 @@ export default function LeftPanel({
             <CommitIcon />
           </button>
         </Tooltip>
-        <Tooltip content="Show run info">
-          <button
-            type="button"
-            onClick={() => {
-              setActiveTab("info");
-              toggleCollapsed();
-            }}
-            aria-label="Show run info"
-            className="relative inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg-default"
-          >
-            <InfoCircledIcon />
-          </button>
-        </Tooltip>
       </aside>
     );
   }
@@ -173,11 +162,6 @@ export default function LeftPanel({
               label: "Commits",
               icon: <CommitIcon className="h-3.5 w-3.5" />,
             },
-            {
-              value: "info",
-              label: "Info",
-              icon: <InfoCircledIcon className="h-3.5 w-3.5" />,
-            },
           ]}
           variant="underline"
           listClassName="flex-1 px-1"
@@ -194,15 +178,12 @@ export default function LeftPanel({
           </IconButton>
         </div>
       </div>
-      {/* The three data-heavy tabs (Files, Commits, Info) mount
-          unconditionally so live refresh keeps running on the inactive
-          ones. The hidden tab body is collapsed via `hidden`
-          (display: none) — using flex-col on the visible one so the
-          inner panel's `flex-1` grows on the column axis (height) and
-          its width is bounded by the aside's stretch (no horizontal
-          overflow when a file path is wider than the panel). Overview
-          is a pure projection of `run`, no live subscription — safe
-          to mount alongside the rest. */}
+      {/* All tabs mount unconditionally so live refresh keeps running on
+          the inactive ones (Files/Commits WS-driven counts; Overview's
+          own metrics + file/commit-count subscriptions). The hidden tab
+          body is collapsed via `hidden` (display: none) — flex-col on the
+          visible one so the inner panel's `flex-1` grows on the column
+          axis (height) and its width is bounded by the aside's stretch. */}
       <div
         className={
           activeTab === "overview"
@@ -210,7 +191,12 @@ export default function LeftPanel({
             : "hidden"
         }
       >
-        <OverviewPanel run={run} />
+        <OverviewPanel
+          runId={runId}
+          run={run}
+          onSwitchTab={onTabChange}
+          onJumpToFailed={onJumpToFailed}
+        />
       </div>
       <div
         className={
@@ -237,15 +223,6 @@ export default function LeftPanel({
           run={run}
           onMergeComplete={onMergeComplete}
         />
-      </div>
-      <div
-        className={
-          activeTab === "info"
-            ? "flex-1 min-h-0 min-w-0 flex flex-col"
-            : "hidden"
-        }
-      >
-        <InfoPanel run={run} />
       </div>
     </aside>
   );

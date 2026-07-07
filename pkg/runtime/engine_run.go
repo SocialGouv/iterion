@@ -173,7 +173,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 {
+	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -200,6 +200,15 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// clobbering it with nil.
 		if len(e.modelOverrides) > 0 {
 			run.ModelOverrides = e.modelOverrides
+		}
+		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
+		// in cloud, the platform ceiling clamp — both mutate wf.Budget
+		// before the engine runs) so the studio Overview draws budget meters
+		// with a denominator. A resume that raises a cap re-parses the
+		// budget, so overwriting is correct; the non-nil guard preserves a
+		// prior snapshot if a --force resume dropped the budget: block.
+		if b := snapshotBudgetForPersist(e.workflow.Budget); b != nil {
+			run.Budget = b
 		}
 		if e.bundle != nil {
 			run.BundleHash = e.bundle.Hash

@@ -165,6 +165,40 @@ export interface RunModelOverride {
   provider?: string;
 }
 
+// Effective budget cap set captured at launch — the workflow's `budget:`
+// block after recipe/preset/CLI overrides and, in cloud, the platform
+// ceiling clamp. Mirrors pkg/store.RunBudget. A zero/absent field means
+// "no cap on that dimension"; the whole object is absent when the
+// workflow declared no budget. `max_duration` is a Go duration string
+// ("30m", "1h30m") — parse with parseGoDuration from lib/duration.
+export interface RunBudget {
+  max_cost_usd?: number;
+  max_tokens?: number;
+  max_iterations?: number;
+  max_duration?: string;
+  max_parallel_branches?: number;
+}
+
+// The persisted budget-consumption fields carried on the run checkpoint —
+// authoritative across resume segments, unlike the event-derived live
+// totals which reset per segment. Mirror of the store.Checkpoint budget_*
+// fields; the rest of the checkpoint stays opaque.
+export interface CheckpointBudget {
+  budget_tokens_used?: number;
+  budget_cost_usd?: number;
+  budget_iterations_used?: number;
+  budget_elapsed_ns?: number;
+  cost_usd_total?: number;
+}
+
+// Run checkpoint as far as the UI reads it: typed budget-consumption +
+// paused-node fields, remainder left opaque via the index signature.
+export type RunCheckpoint = CheckpointBudget & {
+  node_id?: string;
+  interaction_id?: string;
+  [key: string]: unknown;
+};
+
 export interface RunHeader {
   id: string;
   // Deterministic, human-friendly run label. Empty for legacy runs
@@ -191,12 +225,17 @@ export interface RunHeader {
   // Display-only, surfaced in the Overview's "Launched with". Empty when
   // none were set.
   model_overrides?: RunModelOverride[];
+  // Effective budget caps captured at launch, surfaced so the Overview
+  // draws budget meters with a denominator. Absent when the workflow
+  // declared no budget: block; meters then degrade to bare stats.
+  budget?: RunBudget;
   created_at: string;
   updated_at: string;
   finished_at?: string;
   error?: string;
-  // Checkpoint shape varies; opaque is fine for the UI.
-  checkpoint?: unknown;
+  // Typed for the budget-consumption + paused-node fields the UI reads;
+  // the rest of the checkpoint stays opaque. See RunCheckpoint.
+  checkpoint?: RunCheckpoint;
   // Filesystem path the run executed in (worktree or cwd). Empty for
   // pre-feature runs; the modified-files panel keys off this to decide
   // whether to render at all.
