@@ -2,6 +2,13 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
+- Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
+- Versions: bot v0.1.0 (unchanged) · iterion worktree branch (rollout of 2026-07-07, see git log)
+- Shape: Audited for the ADR-058 rollout: already minimal (4 nodes, deterministic verify_devbox + commit_devbox). No structural change — deliberate no-op.
+- Reference proof of the shared mechanism: feature-dev v2 pilot run 019f3bb4 (one pass, 11m33s, 2 in-stride commits, deterministic gate converged — see docs/bot-runs/feature-dev.md) and the Willy/Billy v2 tours.
+- Next: a dedicated live dogfood + bilan in this file before the bot counts as validated in its v2 shape.
+
 ## 2026-06-14 — failed at detect_stack: claude_code structured output is best-effort (runs 019ec59d, 019ec5a1)
 
 - Status: **failed** (first node, both attempts). Not fixed — actionable finding

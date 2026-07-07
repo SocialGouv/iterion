@@ -9,6 +9,13 @@ missing parts, runs the alternating Claude/GPT review-fix loop to convergence,
 then commits. Inputs are typically the `type:feature-gap` issues filed by the
 adr-cartograph (Adry) bot.
 
+## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
+- Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
+- Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
+- Shape: ONE campaign agent closes the gap spec (living todo from a seam survey, one verified commit per missing item, preservation discipline + Adry ADR-ownership in the contract, findings→board) against the deterministic verify_build/verify_run gate + bounded continuation_loop. 12 nodes → 5 exec; the survey/plan/act/simplify chain and the round_robin cross-family review/fix loop are retired.
+- Reference proof of the shared mechanism: feature-dev v2 pilot run 019f3bb4 (one pass, 11m33s, 2 in-stride commits, deterministic gate converged — see docs/bot-runs/feature-dev.md) and the Willy/Billy v2 tours.
+- Next: a dedicated live dogfood + bilan in this file before the bot counts as validated in its v2 shape.
+
 ## 2026-06-14 — clone transport validation, SANDBOXED (run 019ec75f)
 
 - **Status: validated** — Fini produced a real, correct, tested security fix

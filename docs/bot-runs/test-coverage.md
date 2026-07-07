@@ -12,6 +12,13 @@ that catch a real regression, NOT coverage %.
 
 ---
 
+## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
+- Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
+- Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
+- Shape: ONE campaign agent writes mutation-proof tests committing each gap in stride; the deterministic gate re-runs the repo suite AND requires genuinely-new test code measured against the RUN BASE (reflog-oldest — in-stride commits count, pre-run history cannot fake it). The in-tree .test_coverage.verify.sh scratch + commit-time reset hack are gone. 13 nodes → 5 exec.
+- Reference proof of the shared mechanism: feature-dev v2 pilot run 019f3bb4 (one pass, 11m33s, 2 in-stride commits, deterministic gate converged — see docs/bot-runs/feature-dev.md) and the Willy/Billy v2 tours.
+- Next: a dedicated live dogfood + bilan in this file before the bot counts as validated in its v2 shape.
+
 ## 2026-06-23 — scope-auto run + a NEW engine finding (run 019ef5d3)
 - Status: **partial** — the bot's scope-auto path validated; run failed mid-loop on a
   distinct gpt-5.5-forfait engine limit (NOT a bot defect, NOT the accumulator fix).

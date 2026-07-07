@@ -11,6 +11,13 @@ reviewers, deterministic `streak_check` (two cross-family approvals), a
 agents can't truncate the audit set. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
+- Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
+- Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
+- Shape: The deterministic audit machinery (scan_docs, scan_code_surface, build_manifest with the bounded severity-sorted/doc-chunked working set, author_docs DEFAULT-CREATE, mark_issue, audit cache) is kept in full; the alternating review/fix relay + its accumulators are replaced by ONE campaign that adjudicates the manifest and commits each aligned doc in stride. New deterministic gates: scope_check (writeable-set vs run base) + verify + coverage-in-gate; the cache is now fed by the manifest's mechanical verified_pairs. 16 nodes → 11 exec; worktree: auto.
+- Reference proof of the shared mechanism: feature-dev v2 pilot run 019f3bb4 (one pass, 11m33s, 2 in-stride commits, deterministic gate converged — see docs/bot-runs/feature-dev.md) and the Willy/Billy v2 tours.
+- Next: a dedicated live dogfood + bilan in this file before the bot counts as validated in its v2 shape.
+
 ## 2026-06-22 — docs/studio-visuals branch self-review (run 019eef81)
 
 - **Status: validated** — caught two real doc/code drifts, fixed both,

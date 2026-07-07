@@ -8,6 +8,13 @@ ADRs in `docs/adr/`, plus a feature-completeness audit; files optional
 handoff issues to `adr-rechallenge` (re-challenge) and `feature-gap-fill`
 (gap completion). Template: docs-refresh (Doki).
 
+## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
+- Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
+- Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
+- Shape: scan_adrs + read-only survey_code + build_manifest (re-globbing the live adr_dir each pass) are kept; the round_robin review/fix relay is replaced by ONE campaign that re-applies the decision-vs-mechanic checks, authors one ADR per commit in stride, and files the rechallenge/feature-gap handoffs itself (board caps). Deterministic scope gate = adr_dir/*.md-only vs run base. 15 nodes → 10 exec; worktree: auto (v1 committed terminally on the live tree).
+- Reference proof of the shared mechanism: feature-dev v2 pilot run 019f3bb4 (one pass, 11m33s, 2 in-stride commits, deterministic gate converged — see docs/bot-runs/feature-dev.md) and the Willy/Billy v2 tours.
+- Next: a dedicated live dogfood + bilan in this file before the bot counts as validated in its v2 shape.
+
 ## 2026-06-22 — 13 ADRs on GLM-5.2, survived anthropic failover (run 019ef04e-a02e)
 
 - Status: **validated (high value)** — authored ADRs 029-041.

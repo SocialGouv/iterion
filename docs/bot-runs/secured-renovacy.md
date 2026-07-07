@@ -2,6 +2,13 @@
 
 Index + template: [README.md](README.md). Newest first.
 
+## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
+- Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
+- Versions: bot v0.2.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
+- Shape: SCOPED pass: Phase 1 per-package pipeline untouched (ADR-055 unit-convergence — its security/CVE/revert/SBOM gates are deliberately reified). Phase 2's alternating relay (alt_review/reviewer_claude/reviewer_gpt/streak_check/fix_*/review_commit_auto + review_mode/mono_family) became ONE p2_campaign on the run's cumulative diff (git diff start_sha) + the deterministic p2_verify gate + review_pass_loop. With this, bots/review_topology_test.go's enforced list emptied and the file was deleted (machinery guarded by e2e/review_topology_test.go).
+- Reference proof of the shared mechanism: feature-dev v2 pilot run 019f3bb4 (one pass, 11m33s, 2 in-stride commits, deterministic gate converged — see docs/bot-runs/feature-dev.md) and the Willy/Billy v2 tours.
+- Next: a dedicated live dogfood + bilan in this file before the bot counts as validated in its v2 shape.
+
 ## 2026-06-14 — first full validated run (safe mode, run 019ec5c5)
 
 - Status: **validated.** Full end-to-end run in safe mode on a clean iterion

@@ -123,3 +123,28 @@ somehow skipped resolution) behaves as DUAL — a pure non-regression.
 - Reference wiring: [bots/branch-improve-loop/main.bot](../../bots/branch-improve-loop/main.bot)
 - Convergence contract: "Review loops must converge to an asymptote" in
   [CLAUDE.md](../../CLAUDE.md), [docs/asymptote-bench.md](../asymptote-bench.md)
+
+## Addendum (2026-07-07) — flagship bots migrated to ADR-058; topology becomes a generic opt-in
+
+The five bots this ADR was built for have all left the cross-family
+reviewer shape: whole-improve-loop and branch-improve-loop first
+(ADR-058 v2, 2026-07-03), then feature-dev, docs-refresh and
+secured-renovacy Phase 2 (the fleet-wide rollout, 2026-07-07). Their
+convergence oracle is now the deterministic verify gate + termination
+contract of the v2 campaign shape; the `review_mode`/`mono_family` vars
+are no longer declared by any catalog bot.
+
+The MACHINERY built here stays, deliberately:
+- `pkg/reviewtopology` (resolution + `InjectIfDeclared`) and its three
+  call surfaces (CLI `--review-mode`, studio/API `review_mode`,
+  dispatcher bot_arg) remain a **generic opt-in facility** — a future
+  or third-party reviewer-loop bot re-adopts the topology by declaring
+  the vars and using a `condition` router.
+- The non-vacuous guard moved from `bots/review_topology_test.go`
+  (deleted — its enforced list became empty) to
+  `e2e/review_topology_test.go` + `e2e/testdata/review_topology_mini.bot`,
+  which drive DUAL/MONO/auto behaviour end-to-end against the runtime.
+
+The ADR body above remains historically accurate for what was built and
+why; per ADR-058, cross-family review is an *optional amplification*,
+no longer the default convergence mechanism.
