@@ -489,9 +489,15 @@ var claudeKeychainOAuthSource = func() string {
 // service exists in the user's keychain. Existence only — it never reads or
 // prints the secret.
 func keychainHasItem(service string) bool {
+	// Bounded: this runs on the studio's periodic (30s) detection poll.
+	// The ACL is expected to avoid a prompt (see doc comment above), but
+	// a re-locked keychain can still pop a GUI auth dialog — without a
+	// timeout that would wedge the poll goroutine indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	// Absolute path: a GUI-launched iterion may have a minimal PATH that
 	// omits /usr/bin, but /usr/bin/security is always present on macOS.
-	cmd := exec.Command("/usr/bin/security", "find-generic-password", "-s", service)
+	cmd := exec.CommandContext(ctx, "/usr/bin/security", "find-generic-password", "-s", service)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run() == nil
