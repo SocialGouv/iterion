@@ -436,7 +436,9 @@ var (
 )
 
 func defaultCrontabRead() (string, error) {
-	cmd := exec.Command("crontab", "-l")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "crontab", "-l")
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -452,7 +454,9 @@ func defaultCrontabRead() (string, error) {
 }
 
 func defaultCrontabWrite(text string) error {
-	cmd := exec.Command("crontab", "-")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "crontab", "-")
 	cmd.Stdin = strings.NewReader(text)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
