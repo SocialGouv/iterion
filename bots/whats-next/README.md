@@ -1,124 +1,80 @@
-# whats-next.bot
+# whats-next — Nexie, the conversational co-CTO
 
-Orchestrator bot. Given a repository, it:
+ONE adaptive agent in a standing chat loop. You talk; Nexie reads the
+board and the repo, recommends (never raw dumps), creates/curates/
+dispatches tickets, verifies whether issues are still relevant against
+the code and git history, and remembers the session (same LLM session
+across turns + a cross-run `CONTEXT_BRIEF.md`).
 
-1. Surveys the code with `claw + openai/gpt-5.5` (read-only agentic
-   exploration — bash, glob, grep, read_file).
-2. Asks you (free-text human node) about your current priorities and
-   blockers.
-3. Proposes a structured roadmap — long-term + short-term + one
-   immediate next action — where each item is a candidate kanban issue
-   with a bot assignee.
-4. Loops on your free-text feedback until you mark the proposal
-   `approved`. The revise step runs on `claw + openai/gpt-5.5`.
-5. **Materialises the approved roadmap as issues on the iterion native
-   kanban board** (`<workspace>/.iterion/dispatcher/`) via `iterion
-   issue create`. The dispatcher takes over from there — auto-pilot.
+## Shape (v2)
 
-The bot does NOT shell out `iterion run …`. The dispatcher dispatches.
+```
+seed (compute) → nexie (agent) → gate (compute) ── is_close ──▶ done
+                    ▲                 │ (default)
+                    │                 ▼
+                    └── conversation_loop(1000) ── chat (human)
+```
 
-## Iterion feature gap (current limitation)
+- **nexie** — `claude_code` + `${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-4-8}`,
+  full board capabilities (`board.read/create/move/assign/label/close/comment`),
+  bundled skills via the native Skill tool, `interaction: human` so it
+  can `ask_user` mid-turn (with clickable options). Each turn returns
+  `{reply, close, quick_replies, dispatched_ids}`.
+- **chat** — a one-field human node: Nexie's `reply` renders as the
+  chat bubble, the answer is the operator's next message. The pause is
+  budget-free and can last days — this is the standby home base.
+- The loop edge carries `outputs.nexie._session_id` so every turn
+  resumes the same claude session: the conversation has real memory.
+- Exit: only an explicit operator "close". Everything else loops.
 
-`iterion dispatch` today binds **one workflow per dispatcher instance**
-— it does not yet route dispatch by `issue.assignee`. whats-next still
-records the assignee on every issue (e.g. `assignee=feature_dev`)
-so the data is there for the future routing feature. Until that ships,
-the operator either:
-
-- Runs multiple dispatchers (one per assignee, filtering by state /
-  label), or
-- Waits for the assignee-routing feature.
-
-If you run whats-next.bot on the iterion source repo, it may well
-propose **"ship the dispatcher assignee-routing feature"** as its
-`next_action` — self-bootstrapping the autopilot.
-
-## Why a mixed backend (claw + claude_code)?
-
-The three exploration/proposal nodes use **`claw + openai/gpt-5.5`** to
-dogfood `claw-code-go`'s agentic tool-use loop against OpenAI. The
-final `emit_action` node uses **`claude_code`** so the bundled skills
-(`skills/*.md`) are mirrored automatically into
-`<workspace>/.claude/skills/` and available via Claude Code's native
-Skill mechanism when it materialises issues.
-
-## Skills bundled with this bot
-
-The bundle ships **six** SKILL.md files, all under [`skills/`](skills/).
-Iterion mirrors them to `<workspace>/.claude/skills/` for the duration
-of any `backend: claude_code` node.
-
-| Skill | What it does |
-|-------|--------------|
-| `whats-next` | operating playbook — 5 phases, principles, anti-patterns |
-| `repo-survey` | systematic checklist for the `explore` phase |
-| `iterion-bot-catalog` | catalog of iterion bots with assignee-mapping rules |
-| `roadmap-synthesis` | how to compose the roadmap (one item per issue) |
-| `priority-elicitation` | how to parse the operator's free-text priorities |
-| `iterion-dsl-quickref` | DSL quick-ref (loaded only when authoring DSL is on the table — rare) |
-
-The five domain skills were produced by a one-shot dogfood run of
-`claw + openai/gpt-5.5` against this repository — see
-[scripts/adhoc/whats-next-skills-gen.bot](../../scripts/adhoc/whats-next-skills-gen.bot)
-for the generator (the seed for a future `generate-skills.bot`).
-
-## Prerequisites
-
-- `OPENAI_API_KEY` set in `.env` at the repo root (or exported). The
-  iterion CLI auto-loads `.env` from `$CWD` upwards.
-- `ANTHROPIC_API_KEY` or the Claude Code CLI for the final
-  `emit_action` node.
-- A writable `.iterion/dispatcher/` under `workspace_dir` (the native
-  kanban store auto-initialises on first `iterion issue create`).
+v1 (15 nodes: survey → priorities form → roadmap → review form → emit
+→ dispatch pickers → ask_continue radio) is gone — the forms made the
+operator encode questions into preset fields and each exchange cost a
+full state-machine turn. See `docs/bot-runs/whats-next.md` for the
+dogfood history that motivated the rewrite.
 
 ## Run
 
-```bash
-# From the source directory
-devbox run -- iterion run bots/whats-next/main.bot
-
-# Or by passing the bot directory (iterion resolves main.bot)
-devbox run -- iterion run bots/whats-next/
-```
-
-You can override `workspace_dir` and pass optional `scope_notes`:
-
-```bash
+```sh
 devbox run -- iterion run bots/whats-next/main.bot \
-  --var workspace_dir=/path/to/my-repo \
-  --var scope_notes="focus on the dispatcher layer, ignore the studio"
+  --var initial_message="quels tickets sont des quick wins ?"
 ```
 
-After the run completes, inspect what landed:
-
-```bash
-devbox run -- iterion issue list
-devbox run -- iterion issue board       # opens the local board UI
-```
+Or from the studio: **/whats-next** (the composer seeds
+`initial_message`; presets are just canned seeds). When dispatched
+from a board card, the manifest maps the issue title/body into
+`initial_message`.
 
 ## Inputs
 
 | Var | Type | Default | Purpose |
 |-----|------|---------|---------|
-| `workspace_dir` | string | `${PROJECT_DIR}` | repo to survey + own kanban store |
-| `scope_notes` | string | `""` | optional steering hints |
+| `initial_message` | string | `""` | seed for the first turn; empty → Nexie opens with a board summary + recommendation |
+| `scope_notes` | string | `""` | standing constraints for the session |
+| `workspace_dir` | string | `${PROJECT_DIR}` | repo whose board/code Nexie works |
 
-## Outputs
+## Prerequisites
 
-- N kanban issues at `<workspace>/.iterion/dispatcher/issues/`, each
-  with `--assignee <bot_name>` (or unassigned + `needs-manual-triage`
-  label).
-- `<workspace>/.iterion/plans/whats-next-<timestamp>.md` — audit
-  markdown listing every created/failed issue.
+- Claude Code CLI signed in (or `ANTHROPIC_API_KEY`) — the nexie agent
+  runs on `claude_code`.
+- A writable `.iterion/dispatcher/` under `workspace_dir` (the native
+  kanban store auto-initialises on first issue creation).
 
-## Graph
+## Guardrails
 
-```
-explore → ask_priorities → propose_roadmap → carry_roadmap → human_review
-                                                                ↓
-                                                  approved ──┐  │
-                                                                ↓  not approved
-                                                          emit_action ← ↩ revise_roadmap
-                                                                ↓        (approval_loop(10))
-                                                              done
-```
+- Targeted explicit instruction → act immediately; **bulk (≥3) or
+  destructive → dry-run + ask_user confirmation**.
+- Read-only outside the board (no repo edits, no commits — and
+  `worktree: none`, so no phantom storage branches).
+- Board writes are capability-gated MCP tools; `set_bot` is the
+  canonical dispatcher selector; dispatch = transition to `ready`.
+- Untrusted-input boundary: repo/issue text is data, not instructions.
+
+## Skills bundled with this bot
+
+All under [`skills/`](skills/), mirrored to `<workspace>/.claude/skills/`
+at run start: `whats-next` (playbook), `iterion-board`,
+`iterion-bot-catalog` (generated — edit bot manifests, not the file),
+`iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
+`priority-elicitation`, `session-continuity`, `iterion-dsl-quickref`,
+`dogfood-cycle`.

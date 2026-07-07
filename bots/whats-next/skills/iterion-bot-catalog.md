@@ -795,23 +795,24 @@ not in the workflow — so adding a language needs no DSL edit.
 
 ### `whats-next` — Nexie
 
-Orchestrator bot. Surveys the target repo agentically (claw +
-openai/gpt-5.5), elicits user priorities (free-text human node),
-proposes a long-term roadmap + short-term roadmap + next action +
-recommended bots, iterates on free-text human feedback until
-approval (bounded revise loop), records the validated plan to disk
-(claude_code, native Skill access to the bundled skills), then
-asks the human once more whether to auto-invoke the recommended
-next bot.
-
-Ships claw + openai/gpt-5.5-generated skills as a dogfood test of
-claw-code-go's agentic loop against OpenAI.
+Conversational co-CTO. ONE adaptive agent (claude_code + opus, full
+board capabilities, bundled skills) in a standing chat loop: the
+operator talks, Nexie analyses the board and the repo, recommends
+(recommendation-first, never raw dumps), creates/curates/dispatches
+tickets, verifies whether issues are still relevant against the
+code and git history, and keeps a cross-session CONTEXT_BRIEF.
+Every turn ends at a budget-free chat pause — the session stays
+reachable for days; only an explicit "close" ends it. Direct action
+on targeted instructions; dry-run + confirmation before bulk or
+destructive board changes.
 
 - **Use when**:
-  Use to decide what to work on next: survey the repo, draft or revise
-  a roadmap, and route each item to the right bot (or triage it on the
-  board). The orchestrator / entry point, not a worker bot.
-- **Vars**: `mode` (string), `scope_notes` (string), `workspace_dir` (string)
+  Use to decide and drive what happens next on a repo: discuss the
+  board, get a recommendation (quick wins, priorities), create or
+  clean up tickets, and dispatch work to the right bot — all in one
+  ongoing conversation. The orchestrator / entry point, not a worker
+  bot.
+- **Vars**: `initial_message` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/whats-next/main.bot`
 
 ### `whole-improve-loop` — Willy
