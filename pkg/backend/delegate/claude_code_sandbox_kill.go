@@ -56,8 +56,16 @@ func sandboxDelegatePIDFile(mark string) string {
 // in-container PID lands in the pidfile before exec replaces the shell
 // with the real command (same PID, same fds — the NDJSON stdin protocol
 // is unaffected). POSIX-sh only: no bashisms, dash-safe.
+//
+// The wrapper is also SELF-CLEANING on respawn: the in-executor retry
+// loop re-runs the same builder (same mark), so before recording its own
+// PID it kills whatever previous attempt the pidfile still points to —
+// without this, retry N leaves attempt N-1 running and the leak stacks
+// inside a single Execute (observed live: 3 claudes after 2 retries).
 func wrapSandboxDelegateArgv(mark string, argv []string) []string {
-	script := "echo $$ > " + sandboxDelegatePIDFile(mark) + " && exec \"$@\""
+	pidFile := sandboxDelegatePIDFile(mark)
+	script := "[ -f " + pidFile + " ] && kill -KILL $(cat " + pidFile + ") 2>/dev/null; " +
+		"echo $$ > " + pidFile + " && exec \"$@\""
 	return append([]string{"sh", "-c", script, "iterion-delegate"}, argv...)
 }
 

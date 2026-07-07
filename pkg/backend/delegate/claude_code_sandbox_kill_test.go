@@ -22,6 +22,11 @@ func TestWrapSandboxDelegateArgv(t *testing.T) {
 	if !strings.Contains(script, "echo $$ >") || !strings.Contains(script, `exec "$@"`) {
 		t.Errorf("script %q must write $$ then exec \"$@\" (PID-preserving)", script)
 	}
+	// Self-cleaning on respawn: the in-executor retry reuses the mark, so
+	// the wrapper must kill the previous attempt before recording itself.
+	if !strings.Contains(script, "kill -KILL $(cat "+sandboxDelegatePIDFile("campaign-0-123")+")") {
+		t.Errorf("script %q must kill the previous pidfile occupant before writing its own PID", script)
+	}
 	// $0 placeholder then the untouched original argv.
 	rest := got[4:]
 	if len(rest) != len(argv) {
