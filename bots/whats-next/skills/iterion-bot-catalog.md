@@ -248,19 +248,20 @@ dispatcher routes on it), never the persona.
 ### `adr-cartograph` — Adry
 
 Observes the code-as-implemented and produces committable ADR markdown
-(Nygard format) in docs/adr/ — every ADR is a "constat" recording the
-decision the code embodies, so a future maintainer can re-challenge it.
-Also produces a completeness audit for in-flight features: what is fully
-implemented vs what is missing/unfinished.
+(Nygard format) in docs/adr/ — one capable agent over a deterministic
+drift manifest, minimal framing. Every ADR is a "constat" recording
+the decision the code embodies (decision-vs-mechanic three-check dam
+against ADR-spam), authored one `docs(adr):` commit at a time in
+stride. Also surfaces feature-completeness gaps.
 
-Idempotent: re-running on a converged tree does (almost) nothing — no
-new ADR, no commit. Reuses docs-refresh's sha-cache + a detect_changes
-early-exit so a no-op pass is essentially free.
+Idempotent: the manifest re-globs the live ADR directory each pass,
+so a converged tree yields no drift, no commits, and a fast exit; the
+sha-cache pre-verifies unchanged entries across runs.
 
-Read-only on code (no code-modification phase — it only writes .md under
-docs/adr/). Optional handoff: files type:adr-rechallenge issues routed
-to the adr-rechallenge bot and type:feature-gap issues routed to the
-feature-gap-fill bot.
+Read-only on code — a deterministic scope gate fails the run if
+anything outside docs/adr/*.md changed. Handoffs: files
+type:adr-rechallenge issues (aged ADRs) and type:feature-gap issues
+(medium/high gaps) to the board inbox.
 
 - **Use when**:
   Run after a code-mutating session (feature_dev, branch-improve-loop,
@@ -268,7 +269,7 @@ feature-gap-fill bot.
   cadence to keep docs/adr/ honest against the code. Use
   --var rechallenge_after_days=90 to invite re-challenge on ADRs older
   than that.
-- **Vars**: `adr_dir` (string), `audit_cache_path` (string), `bundle_self_path` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diff_since` (string), `excluded_dirs` (string), `issue_id` (string), `max_recovery_iterations` (int), `max_review_iterations` (int), `rechallenge_after_days` (int), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `adr_dir` (string), `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diff_since` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (int), `rechallenge_after_days` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/adr-cartograph/main.bot`
 
 ### `adr-rechallenge` — ReArchi
@@ -352,11 +353,12 @@ Reactive security + alignment guard for automated dependency-update
 PRs (Dependabot / Renovate). Triggered per PR, on the bot's own
 branch, Vetty: (1) audits the bump for supply-chain risk — known
 malware, typosquats, compromised-maintainer signals, and CVEs
-introduced vs resolved; (2) checks reliability by building and
-running the repo's tests; (3) aligns the consuming code to any
+introduced vs resolved; (2) aligns the consuming code to any
 breaking change (a JS/TS lib API, Helm chart values, a Go module,
-…), committing the alignment back onto the PR branch; (4) posts a
-complete review comment with the verdict and evidence; and (5)
+…); (3) proves reliability through a DETERMINISTIC build/test gate
+(the real exit code of the repo's own commands — the only path to
+commit); (4) commits the alignment back onto the PR branch and posts
+a complete review comment with the verdict and evidence; and (5)
 escalates to a human when a structuring architectural decision is
 required. It never merges — the merge stays a human call.
 
@@ -374,7 +376,7 @@ audit ran and the build is green before anything is committed.
   alignment onto the PR branch. Not for human PRs (use Revi /
   review-pr), and not for proactively opening update PRs (that is
   Renovacy / secured-renovacy).
-- **Vars**: `base_ref` (string), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_review_mode` (string), `pr_url` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `max_fix_iterations` (int), `post_to_board` (bool), `pr_author` (string), `pr_url` (string), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/dep-update-guard/main.bot`
 
 ### `devbox-setup` — Devy
@@ -403,32 +405,26 @@ before it lands).
 
 ### `docs-refresh` — Doki
 
-Documentation refresh bot. Detects mismatches between project
-documentation (README, docs/*.md, CLAUDE.md, bundled skills,
-Go code comments) and the actual current state of the code, then
-fixes the DOCS (never the code) and auto-commits on convergence.
-When a repo has NO documentation yet, it bootstraps an initial
-doc set (configurable docs_dir, default "docs") authored from the
-code, then refreshes it through the same review loop.
+Documentation refresh bot — one capable agent over a deterministic
+drift manifest, minimal framing. Detects mismatches between project
+documentation (README, docs/*.md, CLAUDE.md, bundled skills, Go code
+comments) and the actual current state of the code, then fixes the
+DOCS (never the code), committing each aligned doc in stride. When a
+repo has NO documentation yet, it bootstraps an initial doc set
+(configurable docs_dir, default "docs") authored from the code, then
+refreshes it through the same campaign.
 
-Workflow shape mirrors branch-improve-loop: alternating
-claude_code (opus-4-8) and claw (openai/gpt-5.5) reviewers,
-deterministic streak_check requiring two cross-family approvals,
-prepare_commit + commit_changes phase.
+Anti-Goodhart by construction: a deterministic scanner enumerates the
+immutable doc footprint; build_manifest mechanically verifies every
+code anchor and hands the campaign a bounded, severity-sorted drift
+working set; a deterministic scope gate fails the run if anything
+outside the doc writeable-set changed; and convergence requires the
+mechanical anchor coverage to meet its target — the agent cannot
+rubber-stamp its own alignment.
 
-Specificity vs branch-improve-loop: a deterministic upstream
-scan_docs tool node enumerates the doc footprint once (find +
-sha1sum) so agents cannot truncate the audit set. Reviewers and
-fixers operate against this immutable footprint. The fixer is
-forbidden from touching anything but `.md` files in scope and
-Go code comments — code logic edits are an automatic blocker
-on the next iteration.
-
-The bot ships 5 skills capturing the anti-Goodhart rules:
-docs-refresh (playbook), doc-mismatch-taxonomy (10-value enum),
-doc-scope-enumeration (scanner contract), anti-facade-fix-rules
-(substantive fix discipline), doc-verification-checklist (judge
-STEP-0 preamble).
+The bot ships 5 skills capturing the discipline: docs-refresh
+(playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
+anti-facade-fix-rules, doc-verification-checklist.
 
 - **Use when**:
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
@@ -436,7 +432,7 @@ STEP-0 preamble).
   code↔doc drift — or when a repo has NO docs yet and needs an initial
   set authored from the code. Fixes the DOCS only (never code logic)
   and commits.
-- **Vars**: `audit_cache_path` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_recovery_iterations` (int), `max_review_chunk_docs` (int), `max_review_iterations` (int), `mono_family` (string), `review_mode` (string), `scope_notes` (string), `workspace_dir` (string)
+- **Vars**: `audit_cache_path` (string), `baseline` (string), `bundle_self_path` (string), `cli_surface_globs` (string), `code_scope_globs` (string), `coverage_target_pct` (int), `diagnostic_surface_globs` (string), `diff_since` (string), `doc_globs` (string), `docs_dir` (string), `excluded_dirs` (string), `go_comment_globs` (string), `issue_id` (string), `max_drift_candidates` (int), `max_passes` (int), `max_review_chunk_docs` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/docs-refresh/main.bot`
 
 ### `evolve` — Evoly
@@ -490,36 +486,41 @@ Showcase of two iterion features:
 
 ### `feature-dev` — Featurly
 
-Autonomous end-to-end feature development. Takes a `feature_prompt`
-input, plans (Claude Code, read-only), implements (session-inherit),
-invokes /simplify, then runs the alternating Claude/GPT review-fix
-loop until two consecutive cross-family approvals.
+Autonomous end-to-end feature development — one capable agent, its
+natural flow, minimal framing. Takes a `feature_prompt` input; the
+campaign explores, builds a living todo of slices, and ships the
+feature one verified semantic commit at a time (tests included, ADRs
+authored for non-trivial decisions). A deterministic build/test gate +
+bounded continuation loop re-poke it until the feature is complete and
+the tree is green; an opt-in MR tail pushes the series and opens the
+merge/pull request.
 
 - **Use when**:
   Use when an item can be phrased as one feature with a clear,
   externally-visible "done" state (new endpoint, UI affordance, CLI
   flag). Also the route for "build a new bot" work — point
   feature_prompt at the new .bot file to author.
-- **Vars**: `feature_prompt` (string, required), `mono_family` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `review_mode` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `feature_prompt` (string, required), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-dev/main.bot`
 
 ### `feature-gap-fill` — Fini
 
-Gap-driven feature completer. Specialisation of feature_dev: the input
-is a STRUCTURED gap spec ("here is what's implemented, here is what's
-missing") rather than a feature description from zero. Fini reads the
-partial implementation, completes the missing parts, runs the
-alternating Claude/GPT review-fix loop until two cross-family
-approvals, then commits. Use feature_dev for greenfield work; use Fini
-to FINISH an existing partial implementation without re-architecting
-what already works.
+Gap-driven feature completer — one capable agent, its natural flow,
+minimal framing. The input is a STRUCTURED gap spec ("here is what's
+implemented, here is what's missing") rather than a feature description
+from zero. The campaign surveys the seams, closes the missing items one
+verified commit at a time (preserving what already works), and a
+deterministic build/test gate + bounded continuation loop re-poke it
+until the gap is closed and the tree is green. Use feature_dev for
+greenfield work; use Fini to FINISH an existing partial implementation
+without re-architecting what already works.
 
 - **Use when**:
   Run on a type:feature-gap issue created by the adr-cartograph (Adry)
   bot, OR manually via --var gap_spec='<spec>' when an operator wants to
   close a specific gap on a feature. Prefer feature_dev when the work is
   greenfield (no existing partial implementation to preserve).
-- **Vars**: `gap_spec` (string, required), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
 
 ### `revi-converse` — Revi (converse)
@@ -572,16 +573,16 @@ or commits code — that is the improve-loops' job (Billy / Willy).
 
 ### `rgaa-audit` — Acci
 
-Universal RGAA 4.1.2 accessibility auditor (read-only). Statically
-reviews a project's UI source (HTML, JSX/TSX, Vue, Twig, CSS) against
-the 106 RGAA criteria across 13 themes (WCAG 2.1 AA basis), guided by
-the bundled rgaa-criteria-* skills and — when the target uses the
-Système de Design de l'État — the DSFR MCP tools. Scores each
-applicable criterion C / NC / NA, classifies non-conformities by
-priority (🔴 Bloquant / 🟠 Majeur / 🟡 Mineur), exports a dated
-Markdown conformance report under `audits/` and (optionally) posts one
-board issue per non-conformity, labelled by severity + theme +
-criterion.
+Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit
+agent over deterministic gates. Statically reviews a project's UI
+source (HTML, JSX/TSX, Vue, Twig, CSS) against the 106 RGAA criteria
+across 13 themes (WCAG 2.1 AA basis), guided by the bundled
+rgaa-criteria-* skills and — when the target uses the Système de
+Design de l'État — the DSFR MCP tools. Scores each applicable
+criterion C / NC / NA, classifies non-conformities by priority
+(🔴 Bloquant / 🟠 Majeur / 🟡 Mineur), exports a dated Markdown
+conformance report under `audits/` and (optionally) posts one board
+issue per non-conformity, labelled by severity + theme + criterion.
 
 Static analysis only: it reads source code, it does not launch a
 browser or run a DOM scanner. A deterministic scan_health gate
@@ -673,15 +674,16 @@ dependency (libs, languages, frameworks, devops, ci_cd) across every
 recognised package ecosystem, aligns consuming code on breaking
 changes, cross-references CVE feeds, and runs heuristic malware
 detection on the new versions + transitively-introduced libs. Phase 2
-closes with an alternating Claude/GPT review/fix loop until cross-
-family approval.
+closes with ONE review campaign over the run's cumulative diff,
+gated by a deterministic build/test verify (ADR-058) — fixes land as
+in-stride commits until the diff is clean and the tree is green.
 
 - **Use when**:
   Use when dependency risk is the priority: CVE alerts, stale
   lockfiles, version bumps. MUTATES dependency manifests/lockfiles and
   aligns consuming code on breaking changes. Ask before running with
   major_policy: attempt.
-- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_packages_per_run` (int), `mono_family` (string), `override_install_cmd` (string), `override_upgrade_cmd` (string), `review_mode` (string), `scope` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
+- **Vars**: `fix_loop_default` (int), `fix_loop_major` (int), `major_policy` (string), `max_packages_per_run` (int), `max_review_passes` (int), `override_install_cmd` (string), `override_upgrade_cmd` (string), `scope` (string), `scratch_dir` (string), `update_scope` (string), `user_prompt` (string), `workspace_dir` (string)
 - **Path**: `bots/secured-renovacy/main.bot`
 
 ### `supply-shield` — Shieldy
@@ -751,13 +753,12 @@ a CVE tomorrow as advisories land. Point `cache_path` at
 
 ### `test-coverage` — Testy
 
-Autonomous test-coverage augmentation. Points at a target area (a
-path, package, or free description — or nothing, in which case Testy
-picks the lowest-coverage / most-critical / most-recently-changed
-code itself), plans which tests are missing, writes them with the
-repo's OWN test framework, proves they pass with a deterministic
-gate, then runs the alternating Claude/GPT review-fix loop until two
-consecutive cross-family approvals.
+Autonomous test-coverage augmentation — one capable agent, its natural
+flow, minimal framing. Points at a target area (a path, package, or
+free description — or nothing, in which case Testy picks the
+lowest-coverage / most-critical / most-recently-changed code itself),
+builds a living todo of coverage gaps, and closes them one verified
+`test:` commit at a time with the repo's OWN test framework.
 
 The operator chooses which test types to add via checkboxes (unit /
 integration / e2e) plus a free-text field for any other kind
@@ -766,13 +767,12 @@ nothing is checked, Testy chooses the types that fit the code and the
 repo's conventions.
 
 Anti-façade by design: the success metric is NOT coverage percentage
-— it is meaningful tests that would CATCH A REAL REGRESSION. A
-deterministic gate proves the repo's own suite still passes and that
-genuinely-new test code was added; the cross-family reviewers reject
-any test that would still pass if the code under test were stubbed or
-returned wrong values (zero-assertion tests, tautologies,
-characterization snapshots that lock in unverified output,
-over-mocking).
+— it is meaningful tests that would CATCH A REAL REGRESSION. The
+campaign's contract enforces the mutation test (a test must fail if
+the code under test were stubbed broken) and forbids zero-assertion
+tests, tautologies, unverified snapshots and over-mocking; a
+deterministic gate proves the repo's own suite still passes AND that
+genuinely-new test code actually landed in the diff.
 
 Stack-agnostic: how to detect the test runner, where tests live, and
 how to write each test type idiomatically lives in the bot's skills,
@@ -790,7 +790,7 @@ not in the workflow — so adding a language needs no DSL edit.
   feature-dev — though feature-dev already writes tests for the feature
   it ships). Testy's job is coverage of code that already exists.
 - **Triggers**: test, tests, testing, coverage, test-coverage, unit-test, add-tests, augment-tests
-- **Vars**: `extra_test_kinds` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
+- **Vars**: `baseline` (string), `extra_test_kinds` (string), `max_passes` (int), `scratch_dir` (string), `target` (string), `test_e2e` (bool), `test_integration` (bool), `test_unit` (bool), `workspace_dir` (string)
 - **Path**: `bots/test-coverage/main.bot`
 
 ### `whats-next` — Nexie
