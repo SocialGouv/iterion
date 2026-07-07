@@ -208,6 +208,12 @@ prompt review_system:
      `false_positive` (heuristic mis-fired — common cause: test
      fixtures, dev-only paths, false entropy on legitimate
      compressed data).
+     ASYMMETRY when the evidence stays ambiguous after reading it: an
+     over-confident `false_positive` on real malware ships a
+     compromise; an over-cautious `valid` costs one operator triage.
+     When you cannot resolve the doubt from the source, keep the
+     signal `valid` and say in `summary` what you could not verify —
+     never dismiss on a hunch.
      For a `vuln-db-known` signal (type == "vuln-db-known") the evidence
      is a PUBLISHED advisory (the signal's `advisory` id + `aliases`)
      emitted by govulncheck / pip-audit / npm audit — treat it as

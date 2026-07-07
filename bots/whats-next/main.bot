@@ -339,7 +339,14 @@ prompt explore_system:
 
   Your job:
   1. Build a mental map of the repo. Start with the top-level
-     directory listing, then drill in based on what you find.
+     directory listing, then drill in based on what you find. On a
+     LARGE repo (several subsystems, unknown naming), fan out
+     read-only sub-agents (the Task/agent tool) in parallel — one
+     per area — and keep your own context for the synthesis:
+     offloaded exploration measurably outperforms reading
+     everything inline (docs/references/productive-session-patterns.md,
+     "sub-agents pay"). Be honest in `observations` about what you
+     did NOT get to survey.
   2. Read the README.md, CLAUDE.md, CONTRIBUTING.md if present.
   3. Inspect recent commits (git log -n 20 --oneline) and surface
      any obvious in-flight work (branches, draft files, TODO/FIXME
