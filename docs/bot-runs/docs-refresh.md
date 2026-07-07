@@ -11,6 +11,16 @@ reviewers, deterministic `streak_check` (two cross-family approvals), a
 agents can't truncate the audit set. Runs on ANY repo; iterion is the
 reference self-host case.
 
+## 2026-07-07 — v2 dogfood on iterion's own docs: 4 real fixes in stride, honest non-convergence on manifest FPs, self-filed findings (run 019f3d4d-1aed)
+- Status: **VALIDATED** — every v2 mechanism behaved as designed over 3 passes, including the honesty-under-chunking clause and the findings handoff; the residual is manifest-heuristic quality, filed as issues.
+- Versions: bot v2.0.0 · iterion `dev+239203525cc8` · no sandbox, worktree: auto.
+- Method: CLI run, `--store-dir <workspace>/.iterion`, `--merge-into none`, `diff_since=origin/main`, `bundle_self_path=bots/docs-refresh`, `max_passes=2`, `--max-cost-usd 20 --max-duration 1h`. 27m32s wall, 3 campaign passes (NB: `as loop(N)` bounds LOOP-BACKS, so N=2 ⇒ up to 3 passes — wording fixed across the v2 bots after this run).
+- Result: `finished` (loop exhausted → ship-what-is-banked). Scan: 197 docs, 3592 anchors, 48 mechanically drifted, coverage 97%. **Pass 1: 4 real doc fixes, one commit each in stride** on `iterion/run/ash-throb-laserdoom-aa99` (dead ADR-010/ADR-053 links after renames, dead pkg/ links in the totality doc, goldens scenario list aligned with the Nexie v2 rewrite). Passes 2-3: the re-manifested chunks were **100% heuristic false positives** — the campaign verified each at the anchor (ls/find evidence), refused to "fix" non-drift, reported `docs_aligned=false` with `commits_this_pass=0`, and did NOT rubber-stamp under chunking (106 docs still deferred). scope_check clean ×3; verify green ×3; cache rewritten with **178 mechanically-verified entries** (the new verified_pairs path); mark_issue no-op (no issue_id).
+- Value: real doc repairs landed + the run itself produced its follow-up work: the campaign **self-filed** the manifest-bug finding (native:cbf91e1f — .tsx→.ts truncation ×17, repo-root-relative link base, [link-text] vs ](target) extraction) after checking the inbox first and REFERENCING the operator-filed dismissed-pairs improvement (native:8c6dc311) instead of duplicating it.
+- Findings / misses: build_manifest's extractor needs the 3 fixes above (severity low — FPs cost passes, not correctness); without persisted dismissals each pass re-adjudicates the same FPs (native:8c6dc311).
+- Engine hardening: none needed by this run.
+- Lessons for next run: on a healthy doc tree, `max_passes=1` (2 passes) suffices — extra passes only re-judge FPs until the manifest fixes land; `diff_since=origin/main` correctly prioritised the fresh drift.
+
 ## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
 - Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
 - Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
