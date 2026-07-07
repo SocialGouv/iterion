@@ -1,20 +1,18 @@
-import { type ReactNode } from "react";
-
-import { CopyIcon } from "@radix-ui/react-icons";
-
-import { StatusBadge, Tooltip } from "@/components/ui";
-import { useCopyTimer } from "@/hooks/useCopyTimer";
+import { StatusBadge } from "@/components/ui";
 import { basename, formatDurationBetween, formatRelative } from "@/lib/format";
 import type { RunHeader } from "@/api/runs";
+
+import { Mono, Row, Section } from "./leftPanel/InfoPrimitives";
 
 interface InfoPanelProps {
   run: RunHeader | null;
 }
 
-// InfoPanel renders a compact summary of the run's metadata: workflow
-// + identity, status + timing, inputs, worktree refs, and merge state.
-// The other tabs (Files, Commits) cover the actual artefacts; this one
-// is for "where did this run come from and where are its commits?".
+// InfoPanel renders the run's runtime DETAILS: identity, timing,
+// worktree/merge state, error. The run's LAUNCH CONFIG (inputs, axis,
+// permission mode, ...) lives on the Overview tab so operators read
+// "what was this run asked to do?" separately from "how did it play
+// out?" — see leftPanel/OverviewPanel.
 export default function InfoPanel({ run }: InfoPanelProps) {
   if (!run) {
     return (
@@ -66,16 +64,6 @@ export default function InfoPanel({ run }: InfoPanelProps) {
             </span>
           </Row>
         </Section>
-
-        {run.inputs && Object.keys(run.inputs).length > 0 && (
-          <Section title="Inputs">
-            {Object.entries(run.inputs).map(([k, v]) => (
-              <Row key={k} label={k}>
-                <Mono title={String(v)}>{truncate(String(v), 80)}</Mono>
-              </Row>
-            ))}
-          </Section>
-        )}
 
         <Section title="Worktree">
           <Row label="Mode">
@@ -153,79 +141,6 @@ export default function InfoPanel({ run }: InfoPanelProps) {
       </div>
     </div>
   );
-}
-
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <section>
-      <h3 className="text-caption font-semibold uppercase tracking-wide text-fg-muted mb-1">
-        {title}
-      </h3>
-      <div className="space-y-1">{children}</div>
-    </section>
-  );
-}
-
-function Row({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="grid grid-cols-[80px_1fr] gap-2 text-micro">
-      <span className="text-fg-subtle truncate">{label}</span>
-      <div className="min-w-0 truncate text-fg-default">{children}</div>
-    </div>
-  );
-}
-
-interface MonoProps {
-  children: string;
-  copyable?: boolean;
-  title?: string;
-}
-
-function Mono({ children, copyable, title }: MonoProps) {
-  const { copied, trigger } = useCopyTimer<boolean>(1500);
-  const onCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(children);
-      trigger(true);
-    } catch {
-      // clipboard unavailable in insecure contexts — silent
-    }
-  };
-  if (!copyable) {
-    return (
-      <code className="font-mono text-caption text-fg-default" title={title}>
-        {children}
-      </code>
-    );
-  }
-  return (
-    <Tooltip content={copied ? "Copied" : title ?? "Click to copy"}>
-      <button
-        type="button"
-        onClick={() => void onCopy()}
-        className="inline-flex items-center gap-1 font-mono text-caption text-fg-default hover:text-info"
-      >
-        <span className="truncate">{children}</span>
-        <CopyIcon className="h-3 w-3 shrink-0 text-fg-subtle" />
-      </button>
-    </Tooltip>
-  );
-}
-
-function truncate(s: string, n: number): string {
-  return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }
 
 // mergeStatusLabel humanises the raw RunHeader.merge_status string for
