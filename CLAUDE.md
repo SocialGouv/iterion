@@ -989,6 +989,16 @@ separate store:
   files → git there reports a phantom "all files deleted". The engine now
   auto-remaps a repo-root override back to the worktree (with a warning), but
   omitting it is cleaner.
+- **Sandboxed dogfood fixtures must NOT live under `/tmp/claude-<uid>/`**
+  (the Claude Code scratchpad, e.g. `/tmp/claude-1000/...`). Docker creates
+  the bind target's missing parent dirs root-owned inside the container,
+  which shadows the in-container Claude CLI's own temp root
+  (`/tmp/claude-$UID`) — claude then hangs silently before its first stdout
+  byte, so every claude_code attempt dies on the 90s cold-phase timeout
+  (surgically isolated 2026-07-07 while validating native:221edac8: the
+  same fixture at `/tmp/probe-fixture` boots in 3s, at
+  `/tmp/claude-1000/<x>` it hangs). Clone fixtures to a neutral path
+  (e.g. `/tmp/iterion-probe-<x>/`) before a sandboxed run.
 
 The same applies to a dedicated server instance you spin up from a worktree to
 exercise modified engine code: bind it to the operator's store dir (or tell

@@ -9,8 +9,20 @@ missing parts, runs the alternating Claude/GPT review-fix loop to convergence,
 then commits. Inputs are typically the `type:feature-gap` issues filed by the
 adr-cartograph (Adry) bot.
 
+## 2026-07-07 — SANDBOXED path validated end-to-end after root-causing native:221edac8 (run 019f3e27)
+- Status: **VALIDATED (sandboxed)** — closes the sandbox blocker from the morning's dogfood party. Same gap_spec as the party runs, full sandbox (`iterion-sandbox-full:edge`), zero delegate retries.
+- Versions: bot v2.0.0 · iterion `dev+a239f80eb` (the fix stack below).
+- Method: CLI run from a fixture clone at a **neutral path** (`/tmp/iterion-probe-221e/fini-fixture3` — NOT the Claude scratchpad, see defect 3), `--store-dir <workspace>/.iterion`, `--merge-into none`, `post_to_board=false`, `--max-cost-usd 8`. ~9 min wall.
+- Result: `finished`; campaign `gap_closed=true, commits_this_pass=1, needs_human=false` → verify_run `passed=true` → gate `converged=true`; storage branch `iterion/run/magneto-chase-vortexvape-5c36` @ 3d7996637b9d `feat(user): validate empty name and email without '@', add table-driven tests`; **0 delegate_retry / 0 delegate_error** on the whole run (vs 100% cold-abort pre-fix); container cleaned up, no leaked claude processes.
+- Engine hardening — native:221edac8 was THREE stacked defects, all closed:
+  1. **`~/.claude.json` not mounted** (root cause): host_state carried the `~/.claude` dir but not the sibling top-level config file; in-container claude saw the host's config backups (inside the mounted dir) with no config → manual-restore stderr loop, zero stdout forever → 90s cold-abort every attempt. Fix `a239f80eb` (+ regression test). Bisect proof: prompt-arg claude printed the restore error; stream-json hung mute; with the mount the init frame arrived in 3s.
+  2. **The leak**: aborting the docker-exec client never killed the in-container claude; in-executor retries stacked (3-5 observed). Fix `ec31b056f` (pidfile-then-exec wrapper + deferred TERM→KILL) + `834a53a5c` (wrapper self-cleans on respawn). Proven live: exactly 1 claude + 1 pidfile across retries.
+  3. **Dogfood-method artifact** (not an iterion bug): probe fixtures lived under `/tmp/claude-1000/…` (the operator-agent scratchpad); docker creates the bind's parents ROOT-OWNED in-container, shadowing claude's own temp root `/tmp/claude-$UID` → silent pre-init hang even with 1+2 fixed. Surgical A/B: same fixture at `/tmp/probe-fixture` boots in 3s, under `/tmp/claude-1000/` hangs. Now documented in CLAUDE.md (dogfood section).
+- Side-finding: native:e6cd506e — sandboxed board MCP HTTP endpoint unreachable on Linux docker (no host-gateway alias + loopback-bound listener); claude tolerates it (tools absent, no hang).
+- Lessons for next run: sandboxed dogfoods are unblocked; always clone fixtures to a neutral path; `ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT` takes a Go duration (`5m`), not a bare number.
+
 ## 2026-07-07 — v2 dogfood: gap closed + tests green in 4m06s (run 019f3d6e, after a sandbox saga on 019f3d4d-07b8)
-- Status: **VALIDATED** (no-sandbox variant) — the v2 mechanism is proven end to end; the SANDBOXED path is blocked by an engine bug filed as native:221edac8.
+- Status: **VALIDATED** (no-sandbox variant) — the v2 mechanism is proven end to end; the SANDBOXED path is blocked by an engine bug filed as native:221edac8 (since closed — see the 019f3e27 bilan above).
 - Versions: bot v2.0.0 · iterion `dev+239203525cc8`.
 - Method: CLI run FROM the fixture repo (cwd = the target — lesson below), `--store-dir <workspace>/.iterion`, `--merge-into none`, `--sandbox none`, gap_spec = User.Validate stub + missing validations + table tests, `--max-cost-usd 15`. 4m06s wall, converged first pass.
 - Result: `finished`, `gate.converged=true`. **1 commit in stride** (`feat(user): validate empty name and email without '@'` + `Bot: feature-gap-fill` trailer) on `iterion/run/pixel-leap-borealroar-d544` — all 3 missing items on the existing seam, granularity defensible (same function + its table test). Deterministic verify: go build + go test green. Functional proof from the delivered branch: `TestUserValidate` 3/3 subtests PASS.
