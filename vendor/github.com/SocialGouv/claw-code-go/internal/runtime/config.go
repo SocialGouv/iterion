@@ -27,8 +27,11 @@ type MCPServerConfig struct {
 
 // Config holds runtime configuration for the CLI.
 type Config struct {
-	Model     string
-	MaxTokens int
+	Model string
+	// OracleModel is the model the oracle tool consults (must live on the
+	// session client's provider). Empty = the session model.
+	OracleModel string
+	MaxTokens   int
 	// SystemPrompt, when set, REPLACES the authored base (identity sentence,
 	// posture and behavioral sections). Context sections (environment, git,
 	// CLAUDE.md, memory, compaction, MCP) still follow their toggles —
@@ -344,6 +347,9 @@ func LoadConfig() *Config {
 	if s.Model != "" {
 		cfg.Model = s.Model
 	}
+	if s.OracleModel != "" {
+		cfg.OracleModel = s.OracleModel
+	}
 	if s.MaxTokens != 0 {
 		cfg.MaxTokens = s.MaxTokens
 	}
@@ -382,6 +388,9 @@ func LoadConfig() *Config {
 	}
 	if model := os.Getenv("ANTHROPIC_MODEL"); model != "" {
 		cfg.Model = model
+	}
+	if model := os.Getenv("CLAW_ORACLE_MODEL"); model != "" {
+		cfg.OracleModel = model
 	}
 	if baseURL := os.Getenv("ANTHROPIC_BASE_URL"); baseURL != "" {
 		cfg.BaseURL = baseURL

@@ -49,9 +49,10 @@ type RuleClassifier struct {
 
 // defaultAllowTools is the documented safe-list used when AllowTools is nil.
 var defaultAllowTools = map[string]struct{}{
-	"read_file": {},
-	"glob":      {},
-	"grep":      {},
+	"read_file":       {},
+	"glob":            {},
+	"grep":            {},
+	"semantic_search": {},
 }
 
 // defaultHTTPSOnly is the documented HTTPS-only safe-list used when

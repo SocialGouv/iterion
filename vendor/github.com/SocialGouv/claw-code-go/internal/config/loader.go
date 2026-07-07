@@ -10,7 +10,10 @@ import (
 // Settings holds the merged configuration from all settings sources.
 // Fields correspond to JSON keys in .claude/settings.json.
 type Settings struct {
-	Model          string   `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// OracleModel is the model consulted by the oracle tool (same provider
+	// as the session client). Empty = the session model.
+	OracleModel    string   `json:"oracleModel,omitempty"`
 	PermissionMode string   `json:"permissionMode,omitempty"`
 	AllowedTools   []string `json:"allowedTools,omitempty"`
 	BlockedTools   []string `json:"blockedTools,omitempty"`
@@ -118,6 +121,9 @@ func LoadForDir(cwd string) *Settings {
 func merge(dst, src *Settings) {
 	if src.Model != "" {
 		dst.Model = src.Model
+	}
+	if src.OracleModel != "" {
+		dst.OracleModel = src.OracleModel
 	}
 	if src.PermissionMode != "" {
 		dst.PermissionMode = src.PermissionMode

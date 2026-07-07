@@ -9,7 +9,9 @@ import (
 	"time"
 )
 
-const defaultAgentModel = "claude-opus-4-8"
+// defaultAgentModel is empty: a spawn with no explicit model inherits the
+// session model (or the subagent type's own override) at spawn time.
+const defaultAgentModel = ""
 
 func AgentTool() api.Tool {
 	return api.Tool{
@@ -17,8 +19,9 @@ func AgentTool() api.Tool {
 		Description: "Spawn a sub-agent with its own conversation loop to handle a delegated task in the background. " +
 			"Use it for open-ended exploration or self-contained subtasks so intermediate file dumps land in the sub-agent's context instead of yours. " +
 			"Sub-agents are stateless: the prompt must carry ALL needed context (paths, goal, expected report shape). " +
-			"The sub-agent's report is returned to you, not shown to the user — relay what matters. " +
-			"subagent_type: \"explore\" (read-only search), \"plan\", \"verification\", or \"general-purpose\" (default, all tools).",
+			"The spawn returns a task_id; keep working — you are notified at a later turn when it finishes, and task_output returns its report. " +
+			"The report is not shown to the user — relay what matters. " +
+			"subagent_type: \"explore\" (read-only search), \"plan\", \"verification\", \"general-purpose\" (default, all tools), or any type you registered with define_subagent.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{
@@ -109,6 +112,7 @@ func AllowedToolsForSubagent(subagentType string) map[string]bool {
 		"read_file":         true,
 		"glob":              true,
 		"grep":              true,
+		"semantic_search":   true,
 		"web_fetch":         true,
 		"web_search":        true,
 		"tool_search":       true,
@@ -148,3 +152,7 @@ func slugify(s string) string {
 	}
 	return s
 }
+
+// SlugifyAgentLabel derives a short display label from free text (exported
+// for the workflow engine's default agent labels).
+func SlugifyAgentLabel(s string) string { return slugify(s) }

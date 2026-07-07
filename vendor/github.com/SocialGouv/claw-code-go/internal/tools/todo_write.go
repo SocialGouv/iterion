@@ -10,12 +10,20 @@ import (
 
 const todosPath = ".claude/todos.json"
 
-// TodoItem represents a single task in the todo list.
+// TodoItem represents a single task in the todo list. The optional
+// task-graph fields (active_form, owner, blocks, blocked_by) share the
+// task registry's vocabulary and persist as written; the flat todo list
+// does not enforce edge reciprocity — use the task_* tools when the
+// dependency graph itself must be maintained.
 type TodoItem struct {
-	ID       string `json:"id"`
-	Content  string `json:"content"`
-	Status   string `json:"status"`   // "pending" | "in_progress" | "done"
-	Priority string `json:"priority"` // "high" | "medium" | "low"
+	ID         string   `json:"id"`
+	Content    string   `json:"content"`
+	Status     string   `json:"status"`   // "pending" | "in_progress" | "done" ("completed" accepted as alias)
+	Priority   string   `json:"priority"` // "high" | "medium" | "low"
+	ActiveForm string   `json:"active_form,omitempty"`
+	Owner      string   `json:"owner,omitempty"`
+	Blocks     []string `json:"blocks,omitempty"`
+	BlockedBy  []string `json:"blocked_by,omitempty"`
 }
 
 // TodoWriteTool returns the tool definition for reading/writing the todo list.
@@ -44,10 +52,16 @@ func TodoWriteTool() api.Tool {
 					Items: &api.Property{
 						Type: "object",
 						Properties: map[string]api.Property{
-							"id":       {Type: "string", Description: "Stable identifier for the todo item."},
-							"content":  {Type: "string", Description: "Human-readable task description."},
-							"status":   {Type: "string", Enum: []any{"pending", "in_progress", "done"}, Description: "Current state of the item."},
-							"priority": {Type: "string", Enum: []any{"high", "medium", "low"}, Description: "Priority tier."},
+							"id":          {Type: "string", Description: "Stable identifier for the todo item."},
+							"content":     {Type: "string", Description: "Human-readable task description."},
+							"status":      {Type: "string", Enum: []any{"pending", "in_progress", "done"}, Description: "Current state of the item (\"completed\" is accepted as an alias of done)."},
+							"priority":    {Type: "string", Enum: []any{"high", "medium", "low"}, Description: "Priority tier."},
+							"active_form": {Type: "string", Description: "Optional present-tense label shown while in progress."},
+							"owner":       {Type: "string", Description: "Optional owner (agent name or 'user')."},
+							"blocks": {Type: "array", Description: "Optional ids of items this one blocks.",
+								Items: &api.Property{Type: "string"}},
+							"blocked_by": {Type: "array", Description: "Optional ids of items this one waits on.",
+								Items: &api.Property{Type: "string"}},
 						},
 						Required: []string{"content", "status"},
 					},
@@ -112,12 +126,16 @@ func writeTodos(input map[string]any) (string, error) {
 	}
 
 	// Validate each item
-	for i, t := range todos {
+	for i := range todos {
+		t := &todos[i]
 		if t.ID == "" {
 			return "", fmt.Errorf("todo_write: item %d missing id", i)
 		}
 		if t.Content == "" {
 			return "", fmt.Errorf("todo_write: item %d (%s) missing content", i, t.ID)
+		}
+		if t.Status == "completed" { // task-graph vocabulary alias
+			t.Status = "done"
 		}
 		switch t.Status {
 		case "pending", "in_progress", "done":

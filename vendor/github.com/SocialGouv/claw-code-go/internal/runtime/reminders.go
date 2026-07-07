@@ -34,12 +34,15 @@ func SystemReminder(text string) string {
 }
 
 // QueueSystemReminder schedules a reminder for injection at the next turn
-// boundary. Safe to call from tool execution (same goroutine as the loop).
+// boundary. Goroutine-safe: background subagent completions queue from
+// their own goroutines.
 func (loop *ConversationLoop) QueueSystemReminder(text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
+	loop.remindersMu.Lock()
 	loop.pendingReminders = append(loop.pendingReminders, text)
+	loop.remindersMu.Unlock()
 }
 
 // flushSystemReminders drains the queue into a single injected user-role
@@ -47,15 +50,22 @@ func (loop *ConversationLoop) QueueSystemReminder(text string) {
 // at that boundary the previous message is either the user's text or a
 // tool_result message, so an extra user message merges cleanly after it.
 func (loop *ConversationLoop) flushSystemReminders() {
-	if len(loop.pendingReminders) == 0 || loop.Session == nil {
+	if loop.Session == nil {
+		return // keep the queue; a session may be attached later
+	}
+	loop.remindersMu.Lock()
+	pending := loop.pendingReminders
+	loop.pendingReminders = nil
+	loop.remindersMu.Unlock()
+
+	if len(pending) == 0 {
 		return
 	}
-	wrapped := make([]string, len(loop.pendingReminders))
-	for i, r := range loop.pendingReminders {
+	wrapped := make([]string, len(pending))
+	for i, r := range pending {
 		wrapped[i] = SystemReminder(r)
 	}
 	text := strings.Join(wrapped, "\n\n")
-	loop.pendingReminders = nil
 
 	loop.Session.Messages = append(loop.Session.Messages, api.Message{
 		Role:       "user",

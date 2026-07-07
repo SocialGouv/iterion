@@ -73,6 +73,37 @@ func (s TaskStatus) IsTerminal() bool {
 	return s == StatusCompleted || s == StatusFailed || s == StatusStopped
 }
 
+// ParseStatusAlias resolves a status name in either vocabulary: the native
+// execution names (created, running, completed, failed, stopped) or Claude
+// Code's task-graph work-item names (pending→created, in_progress→running,
+// completed, deleted is handled by the caller as a removal).
+func ParseStatusAlias(s string) (TaskStatus, bool) {
+	switch s {
+	case "pending":
+		return StatusCreated, true
+	case "in_progress":
+		return StatusRunning, true
+	}
+	for i, name := range statusStrings {
+		if name == s {
+			return TaskStatus(i), true
+		}
+	}
+	return 0, false
+}
+
+// WorkStatus renders the status in the task-graph work-item vocabulary
+// (pending / in_progress / completed / failed / stopped).
+func (s TaskStatus) WorkStatus() string {
+	switch s {
+	case StatusCreated:
+		return "pending"
+	case StatusRunning:
+		return "in_progress"
+	}
+	return s.String()
+}
+
 // ---------------------------------------------------------------------------
 // TaskPacket
 // ---------------------------------------------------------------------------
@@ -132,11 +163,17 @@ func ValidatePacket(p TaskPacket) (*TaskPacket, error) {
 // Task
 // ---------------------------------------------------------------------------
 
-// Task represents a sub-agent task.
+// Task represents a sub-agent task. It doubles as a work item in the
+// task graph (Claude Code 2.1.172 vocabulary): Subject/ActiveForm/Owner
+// describe the item, Blocks/BlockedBy wire dependency edges, and the
+// read-time Blocked/WorkStatus fields render the graph state.
 type Task struct {
 	TaskID      string        `json:"task_id"`
 	Prompt      string        `json:"prompt"`
+	Subject     string        `json:"subject,omitempty"`
 	Description *string       `json:"description,omitempty"`
+	ActiveForm  string        `json:"active_form,omitempty"`
+	Owner       string        `json:"owner,omitempty"`
 	TaskPacket  *TaskPacket   `json:"task_packet,omitempty"`
 	Status      TaskStatus    `json:"status"`
 	CreatedAt   uint64        `json:"created_at"`
@@ -144,6 +181,17 @@ type Task struct {
 	Messages    []TaskMessage `json:"messages"`
 	Output      string        `json:"output"`
 	TeamID      *string       `json:"team_id,omitempty"`
+
+	// Blocks / BlockedBy are dependency edges by task id, maintained
+	// reciprocally by the registry (A blocks B ⟺ B blocked-by A).
+	Blocks    []string `json:"blocks,omitempty"`
+	BlockedBy []string `json:"blocked_by,omitempty"`
+
+	// Blocked and WorkStatus are derived at read time (Get/List): Blocked is
+	// true while any BlockedBy task exists and is not completed; WorkStatus
+	// is the Status in work-item vocabulary (pending/in_progress/completed).
+	Blocked    bool   `json:"blocked,omitempty"`
+	WorkStatus string `json:"work_status,omitempty"`
 }
 
 // clone returns a deep copy of the task, including the Messages slice.
@@ -169,6 +217,13 @@ func (t *Task) clone() Task {
 		}
 		c.TaskPacket = &p
 	}
+	if t.Blocks != nil {
+		c.Blocks = append([]string(nil), t.Blocks...)
+	}
+	if t.BlockedBy != nil {
+		c.BlockedBy = append([]string(nil), t.BlockedBy...)
+	}
+	c.WorkStatus = t.Status.WorkStatus()
 	return c
 }
 
@@ -219,7 +274,11 @@ func (r *Registry) CreateFromPacket(packet TaskPacket) (Task, error) {
 func (r *Registry) createTask(prompt string, description *string, packet *TaskPacket) Task {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.createLocked(prompt, description, packet).clone()
+}
 
+// createLocked allocates and registers a task. Caller must hold r.mu.
+func (r *Registry) createLocked(prompt string, description *string, packet *TaskPacket) *Task {
 	r.counter++
 	ts := nowSecs()
 	taskID := fmt.Sprintf("task_%08x_%d", ts, r.counter)
@@ -236,7 +295,199 @@ func (r *Registry) createTask(prompt string, description *string, packet *TaskPa
 		Output:      "",
 	}
 	r.tasks[taskID] = t
-	return t.clone()
+	return t
+}
+
+// ---------------------------------------------------------------------------
+// Task graph (work items with dependencies)
+// ---------------------------------------------------------------------------
+
+// TaskSpec describes a task at creation in the task-graph vocabulary.
+// Prompt and Subject are aliases: either may be provided, the other is
+// seeded from it so both the execution path (Prompt) and the work-item
+// rendering (Subject) stay populated.
+type TaskSpec struct {
+	Prompt      string
+	Subject     string
+	Description *string
+	ActiveForm  string
+	Owner       string
+	Blocks      []string
+	BlockedBy   []string
+}
+
+// TaskFieldUpdate mutates work-item fields on an existing task. Nil
+// pointers leave the field untouched. AddBlocks/AddBlockedBy append
+// dependency edges (reciprocally). Deleted removes the task from the
+// graph, cleaning its edges from every other task.
+type TaskFieldUpdate struct {
+	Subject      *string
+	Description  *string
+	ActiveForm   *string
+	Owner        *string
+	Status       *TaskStatus
+	AddBlocks    []string
+	AddBlockedBy []string
+	Deleted      bool
+}
+
+// CreateWithSpec creates a task carrying the work-item fields and wires the
+// dependency edges reciprocally. Referencing an unknown task id in
+// Blocks/BlockedBy is an explicit error.
+func (r *Registry) CreateWithSpec(spec TaskSpec) (Task, error) {
+	prompt := strings.TrimSpace(spec.Prompt)
+	subject := strings.TrimSpace(spec.Subject)
+	if prompt == "" {
+		prompt = subject
+	}
+	if subject == "" {
+		subject = prompt
+	}
+	if prompt == "" {
+		return Task{}, fmt.Errorf("task: 'prompt' or 'subject' is required")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, id := range spec.Blocks {
+		if _, ok := r.tasks[id]; !ok {
+			return Task{}, fmt.Errorf("%w: %s (referenced in blocks)", ErrNotFound, id)
+		}
+	}
+	for _, id := range spec.BlockedBy {
+		if _, ok := r.tasks[id]; !ok {
+			return Task{}, fmt.Errorf("%w: %s (referenced in blocked_by)", ErrNotFound, id)
+		}
+	}
+
+	t := r.createLocked(prompt, spec.Description, nil)
+	t.Subject = subject
+	t.ActiveForm = strings.TrimSpace(spec.ActiveForm)
+	t.Owner = strings.TrimSpace(spec.Owner)
+	r.addEdgesLocked(t, spec.Blocks, spec.BlockedBy)
+
+	c := t.clone()
+	c.Blocked = r.blockedLocked(t)
+	return c, nil
+}
+
+// SetFields applies a work-item field update. Deleted removes the task and
+// returns its last snapshot.
+func (r *Registry) SetFields(taskID string, u TaskFieldUpdate) (Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, err := r.getByID(taskID)
+	if err != nil {
+		return Task{}, err
+	}
+
+	if u.Deleted {
+		c := t.clone()
+		r.removeLocked(taskID)
+		return c, nil
+	}
+
+	for _, id := range u.AddBlocks {
+		if _, ok := r.tasks[id]; !ok {
+			return Task{}, fmt.Errorf("%w: %s (referenced in add_blocks)", ErrNotFound, id)
+		}
+	}
+	for _, id := range u.AddBlockedBy {
+		if _, ok := r.tasks[id]; !ok {
+			return Task{}, fmt.Errorf("%w: %s (referenced in add_blocked_by)", ErrNotFound, id)
+		}
+	}
+
+	if u.Subject != nil {
+		t.Subject = strings.TrimSpace(*u.Subject)
+	}
+	if u.Description != nil {
+		t.Description = u.Description
+	}
+	if u.ActiveForm != nil {
+		t.ActiveForm = strings.TrimSpace(*u.ActiveForm)
+	}
+	if u.Owner != nil {
+		t.Owner = strings.TrimSpace(*u.Owner)
+	}
+	if u.Status != nil {
+		t.Status = *u.Status
+	}
+	r.addEdgesLocked(t, u.AddBlocks, u.AddBlockedBy)
+	t.UpdatedAt = nowSecs()
+
+	c := t.clone()
+	c.Blocked = r.blockedLocked(t)
+	return c, nil
+}
+
+// addEdgesLocked wires blocks/blocked-by edges reciprocally, skipping
+// duplicates and self-references. Caller must hold r.mu and have validated
+// that every referenced id exists.
+func (r *Registry) addEdgesLocked(t *Task, blocks, blockedBy []string) {
+	for _, id := range blocks {
+		if id == t.TaskID {
+			continue
+		}
+		t.Blocks = appendUnique(t.Blocks, id)
+		other := r.tasks[id]
+		other.BlockedBy = appendUnique(other.BlockedBy, t.TaskID)
+		other.UpdatedAt = nowSecs()
+	}
+	for _, id := range blockedBy {
+		if id == t.TaskID {
+			continue
+		}
+		t.BlockedBy = appendUnique(t.BlockedBy, id)
+		other := r.tasks[id]
+		other.Blocks = appendUnique(other.Blocks, t.TaskID)
+		other.UpdatedAt = nowSecs()
+	}
+}
+
+// blockedLocked reports whether any dependency of t is still incomplete.
+// Edges to since-removed tasks are ignored. Caller must hold r.mu.
+func (r *Registry) blockedLocked(t *Task) bool {
+	for _, id := range t.BlockedBy {
+		if dep, ok := r.tasks[id]; ok && dep.Status != StatusCompleted {
+			return true
+		}
+	}
+	return false
+}
+
+// removeLocked deletes a task and strips its id from every other task's
+// edges. Caller must hold r.mu.
+func (r *Registry) removeLocked(taskID string) {
+	delete(r.tasks, taskID)
+	for _, other := range r.tasks {
+		other.Blocks = removeString(other.Blocks, taskID)
+		other.BlockedBy = removeString(other.BlockedBy, taskID)
+	}
+}
+
+func appendUnique(list []string, v string) []string {
+	for _, x := range list {
+		if x == v {
+			return list
+		}
+	}
+	return append(list, v)
+}
+
+func removeString(list []string, v string) []string {
+	out := list[:0]
+	for _, x := range list {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Get retrieves a task by ID. Returns (Task, true) if found.
@@ -248,7 +499,9 @@ func (r *Registry) Get(taskID string) (Task, bool) {
 	if !ok {
 		return Task{}, false
 	}
-	return t.clone(), true
+	c := t.clone()
+	c.Blocked = r.blockedLocked(t)
+	return c, true
 }
 
 // List returns all tasks, optionally filtered by status.
@@ -259,7 +512,9 @@ func (r *Registry) List(statusFilter *TaskStatus) []Task {
 	result := make([]Task, 0, len(r.tasks))
 	for _, t := range r.tasks {
 		if statusFilter == nil || t.Status == *statusFilter {
-			result = append(result, t.clone())
+			c := t.clone()
+			c.Blocked = r.blockedLocked(t)
+			result = append(result, c)
 		}
 	}
 	return result
@@ -377,7 +632,8 @@ func (r *Registry) AssignTeam(taskID string, teamID string) error {
 	return nil
 }
 
-// Remove hard-deletes a task. Returns the removed task if it existed.
+// Remove hard-deletes a task, stripping its dependency edges from every
+// remaining task. Returns the removed task if it existed.
 func (r *Registry) Remove(taskID string) *Task {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -386,8 +642,8 @@ func (r *Registry) Remove(taskID string) *Task {
 	if !ok {
 		return nil
 	}
-	delete(r.tasks, taskID)
 	c := t.clone()
+	r.removeLocked(taskID)
 	return &c
 }
 
