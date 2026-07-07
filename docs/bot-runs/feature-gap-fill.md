@@ -9,6 +9,18 @@ missing parts, runs the alternating Claude/GPT review-fix loop to convergence,
 then commits. Inputs are typically the `type:feature-gap` issues filed by the
 adr-cartograph (Adry) bot.
 
+## 2026-07-07 — v2 dogfood: gap closed + tests green in 4m06s (run 019f3d6e, after a sandbox saga on 019f3d4d-07b8)
+- Status: **VALIDATED** (no-sandbox variant) — the v2 mechanism is proven end to end; the SANDBOXED path is blocked by an engine bug filed as native:221edac8.
+- Versions: bot v2.0.0 · iterion `dev+239203525cc8`.
+- Method: CLI run FROM the fixture repo (cwd = the target — lesson below), `--store-dir <workspace>/.iterion`, `--merge-into none`, `--sandbox none`, gap_spec = User.Validate stub + missing validations + table tests, `--max-cost-usd 15`. 4m06s wall, converged first pass.
+- Result: `finished`, `gate.converged=true`. **1 commit in stride** (`feat(user): validate empty name and email without '@'` + `Bot: feature-gap-fill` trailer) on `iterion/run/pixel-leap-borealroar-d544` — all 3 missing items on the existing seam, granularity defensible (same function + its table test). Deterministic verify: go build + go test green. Functional proof from the delivered branch: `TestUserValidate` 3/3 subtests PASS.
+- Findings / misses (the saga — 3 lessons, all operator/engine, none bot-contract):
+  1. **Launching a sandboxed bot against a fixture repo requires cwd = the fixture** (or the engine's workdir), NEVER `--var workspace_dir=<path>`: the sandbox mounts the RUN's workspace, so an out-of-tree workspace_dir doesn't exist in-container. First launch (019f3d4a) mis-launched that way, cancelled.
+  2. **Engine bug native:221edac8**: on the properly-launched sandboxed run (019f3d4d-07b8), the in-container claude emitted ZERO bytes for 90s repeatedly; each cold-abort LEAKED the claude subprocess in-container (4-5 stacked), compounding. Auth is healthy in an identical throwaway container (claude auth status OK, 2.1.175) and the same bot ran perfectly with `--sandbox none` — the sandboxed delegate stdin/stream path is the suspect. Testy's sandboxed run worked 90min earlier, so it may be load/ordering sensitive.
+  3. `ITERION_CLAUDE_CODE_STREAM_COLD_TIMEOUT` takes a Go duration (`5m`), NOT bare millis — `300000` parses as invalid → silent 90s fallback (worth a startup warning; candidate small fix).
+- Engine hardening: native:221edac8 (subprocess leak + stream-abort) filed severity:high with the full evidence.
+- Lessons for next run: keep `--sandbox none` for fixture-repo dogfoods until 221edac8 lands; re-run the sandboxed variant afterwards to close the loop.
+
 ## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
 - Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
 - Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)
