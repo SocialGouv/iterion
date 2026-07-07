@@ -199,6 +199,8 @@ func (d *proxyDispatcher) callTool(ctx context.Context, name string, input json.
 			Question:         data.AskUser.Question,
 			PendingToolUseID: data.AskUser.PendingToolUseID,
 			Conversation:     data.AskUser.Conversation,
+			Options:          data.AskUser.Options,
+			AllowFreeText:    data.AskUser.AllowFreeText,
 		}
 	}
 	if data.Error != "" {

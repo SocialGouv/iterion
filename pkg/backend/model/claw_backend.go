@@ -526,6 +526,7 @@ func askUserResult(err error) (delegate.Result, bool) {
 	questions := map[string]interface{}{
 		delegate.AskUserQuestionKey: ask.Question,
 	}
+	delegate.AddAskUserOptionKeys(questions, ask.Options, ask.AllowFreeText)
 	if ask.PermissionMarker != nil {
 		questions[permission.InteractionMarkerKey] = ask.PermissionMarker
 	}

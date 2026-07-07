@@ -740,12 +740,27 @@ type ErrAskUser struct {
 	PendingToolUseID string
 	Conversation     json.RawMessage
 
+	// Options carries the structured selectable answers when the LLM
+	// called ask_user with an options list. The studio renders them as
+	// clickable choices; the answer wire shape stays a plain string
+	// (the picked option's id, or free text when AllowFreeText).
+	Options       []AskUserOption
+	AllowFreeText bool
+
 	// PermissionMarker is set (non-nil) when this suspension is a
 	// tool-permission gate pause rather than an LLM ask_user call. It
 	// carries the structured request (tool, input, rule) so the pause
 	// surfaces as an approval card and the runtime can compute the grant
 	// on resume. See pkg/backend/permission.Marker.
 	PermissionMarker map[string]any
+}
+
+// AskUserOption is one selectable answer of a structured ask_user call.
+// Mirrors claw-code-go's tools.Option so the delegate package stays
+// SDK-agnostic while both backends share one wire shape.
+type AskUserOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 func (e *ErrAskUser) Error() string {
@@ -798,6 +813,76 @@ func (e *ErrTransient) Error() string {
 // {{input.ask_user_response}} in their prompts if they want explicit
 // handling beyond the auto-prepended context block.
 const AskUserQuestionKey = "ask_user_response"
+
+// Presentation keys stamped alongside AskUserQuestionKey when the LLM
+// called ask_user with structured options. Reserved (underscore) keys:
+// the studio detects AskUserOptionsKey to render clickable choices
+// instead of a bare textarea; the runtime treats them as opaque
+// passthrough (ValidateOutput ignores extra keys, doPause persists the
+// questions map raw). The recorded answer stays a plain string — the
+// picked option's id, or typed text when AskUserAllowFreeTextKey.
+const (
+	AskUserOptionsKey       = "_ask_user_options"
+	AskUserAllowFreeTextKey = "_ask_user_allow_free_text"
+)
+
+// AddAskUserOptionKeys stamps the structured-options presentation keys
+// onto an _interaction_questions map. No-op without options so plain
+// free-text ask_user pauses keep their historical single-key shape.
+// Options serialize as []map so the checkpoint's JSON round-trip is
+// loss-free.
+func AddAskUserOptionKeys(questions map[string]interface{}, options []AskUserOption, allowFreeText bool) {
+	if len(options) == 0 {
+		return
+	}
+	list := make([]interface{}, 0, len(options))
+	for _, o := range options {
+		list = append(list, map[string]interface{}{"id": o.ID, "label": o.Label})
+	}
+	questions[AskUserOptionsKey] = list
+	questions[AskUserAllowFreeTextKey] = allowFreeText
+}
+
+// ParseAskUserToolInput extracts the structured option fields from a raw
+// ask_user tool-input map (the claude_code PreToolUse hook's view of the
+// call). Mirrors claw-code-go's ParseAskUserInput semantics: malformed
+// entries are skipped rather than erroring (the hook must never fail the
+// interception), labels are capped, and free text defaults to allowed
+// when no options are given.
+func ParseAskUserToolInput(in map[string]any) (options []AskUserOption, allowFreeText bool) {
+	const (
+		maxOptions   = 32
+		maxOptionLen = 200
+	)
+	if raw, ok := in["options"].([]any); ok {
+		for _, item := range raw {
+			if len(options) == maxOptions {
+				break
+			}
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			label, _ := m["label"].(string)
+			id = strings.TrimSpace(id)
+			label = strings.TrimSpace(label)
+			if id == "" || label == "" {
+				continue
+			}
+			if len(label) > maxOptionLen {
+				label = label[:maxOptionLen]
+			}
+			options = append(options, AskUserOption{ID: id, Label: label})
+		}
+	}
+	if v, ok := in["allow_free_text"].(bool); ok {
+		allowFreeText = v
+	} else if len(options) == 0 {
+		allowFreeText = true
+	}
+	return options, allowFreeText
+}
 
 // Reserved input keys used to relay ask_user pause/resume state across
 // runtime → executor → backend. Owned by the delegate package because

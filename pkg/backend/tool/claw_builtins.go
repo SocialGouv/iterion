@@ -216,7 +216,11 @@ type AskUserHandler func(ctx context.Context, q clawtools.Question) (clawtools.A
 func RegisterAskUser(reg *Registry, handler AskUserHandler) error {
 	if handler == nil {
 		handler = func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
-			return clawtools.Answer{}, &delegate.ErrAskUser{Question: q.Prompt}
+			ask := &delegate.ErrAskUser{Question: q.Prompt, AllowFreeText: q.AllowFreeText}
+			for _, o := range q.Options {
+				ask.Options = append(ask.Options, delegate.AskUserOption{ID: o.ID, Label: o.Label})
+			}
+			return clawtools.Answer{}, ask
 		}
 	}
 	asker := clawtools.NewProgrammaticAsker(handler)

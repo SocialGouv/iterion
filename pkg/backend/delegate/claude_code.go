@@ -285,7 +285,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// still works (and is the only path when sandboxed).
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	var pendingQuestion atomic.Value   // string
+	var pendingQuestion atomic.Value   // pendingAskUser
 	var pendingPermission atomic.Value // map[string]any (permission marker)
 	opts = b.wireAskUserHook(task, opts, &extraAllowedTools, &pendingQuestion, cancelStream)
 
@@ -340,9 +340,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// Native ask_user capture takes precedence over any error: if the hook
 	// fired, the resulting context cancellation surfaces here as ctx.Err(),
 	// which we must not treat as a failure.
-	if q, ok := pendingQuestion.Load().(string); ok && q != "" {
+	if p, ok := pendingQuestion.Load().(pendingAskUser); ok && p.Question != "" {
 		marker, _ := pendingPermission.Load().(map[string]any)
-		return b.buildAskUserPendingResult(task, q, marker, rm, sessMeta, currentFingerprint, duration, readStderr()), nil
+		return b.buildAskUserPendingResult(task, p, marker, rm, sessMeta, currentFingerprint, duration, readStderr()), nil
 	}
 
 	if streamErr != nil {
@@ -439,7 +439,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 // readability; the per-field semantics (Duration, ExitCode=0, Stderr,
 // SessionID-from-rm, SessionFingerprint) are identical to the original
 // inline path.
-func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, q string, marker map[string]any, rm *claudesdk.ResultMessage, sessMeta sessionMeta, currentFingerprint string, duration time.Duration, stderr string) Result {
+func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUser, marker map[string]any, rm *claudesdk.ResultMessage, sessMeta sessionMeta, currentFingerprint string, duration time.Duration, stderr string) Result {
 	if marker != nil {
 		b.Logger.Info("[%s#%d/claude-code] 🔐 tool-permission approval escalated to the runtime", task.NodeID, task.Iteration)
 	} else {
@@ -449,7 +449,8 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, q string, marke
 	if rm != nil {
 		sessID = rm.SessionID
 	}
-	questions := map[string]interface{}{AskUserQuestionKey: q}
+	questions := map[string]interface{}{AskUserQuestionKey: p.Question}
+	AddAskUserOptionKeys(questions, p.Options, p.AllowFreeText)
 	if marker != nil {
 		questions[permission.InteractionMarkerKey] = marker
 	}
