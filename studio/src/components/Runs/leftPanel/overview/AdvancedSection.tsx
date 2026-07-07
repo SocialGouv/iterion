@@ -1,8 +1,7 @@
 import { basename, formatRelative } from "@/lib/format";
 import type { RunHeader } from "@/api/runs";
 
-import { Mono, Row } from "../InfoPrimitives";
-import { OverviewSection } from "./OverviewSection";
+import { Mono, Row, Section } from "../InfoPrimitives";
 
 interface AdvancedSectionProps {
   run: RunHeader;
@@ -14,7 +13,7 @@ interface AdvancedSectionProps {
 // hero's status, the outcome's commit/branch) is NOT repeated here.
 export function AdvancedSection({ run }: AdvancedSectionProps) {
   return (
-    <OverviewSection title="Advanced details" defaultOpen={false}>
+    <Section title="Advanced details" collapsible defaultOpen={false}>
       <Row label="ID">
         <Mono copyable>{run.id}</Mono>
       </Row>
@@ -48,6 +47,6 @@ export function AdvancedSection({ run }: AdvancedSectionProps) {
           {run.error}
         </div>
       )}
-    </OverviewSection>
+    </Section>
   );
 }

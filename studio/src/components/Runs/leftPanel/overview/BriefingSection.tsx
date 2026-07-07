@@ -1,8 +1,7 @@
 import { CopyButton } from "@/components/ui";
 import type { RunHeader } from "@/api/runs";
 
-import { Section } from "../InfoPrimitives";
-import { OverviewSection } from "./OverviewSection";
+import { Row, Section } from "../InfoPrimitives";
 
 interface BriefingSectionProps {
   run: RunHeader;
@@ -24,8 +23,9 @@ export function BriefingSection({ run }: BriefingSectionProps) {
   return (
     <>
       {axis !== null && (
-        <OverviewSection
+        <Section
           title={axisSectionTitle(axisKey)}
+          collapsible
           defaultOpen={axis.length < 240}
           headerRight={
             <CopyButton
@@ -39,7 +39,7 @@ export function BriefingSection({ run }: BriefingSectionProps) {
           <pre className="m-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-border-subtle bg-surface-2 px-2 py-1.5 font-mono text-caption text-fg-default">
             {axis}
           </pre>
-        </OverviewSection>
+        </Section>
       )}
 
       {otherInputEntries.length > 0 && (
@@ -104,10 +104,9 @@ function InputRow({ label, value }: InputRowProps) {
 
   if (isEmpty) {
     return (
-      <div className="grid grid-cols-[80px_1fr] gap-2 text-micro">
-        <span className="text-fg-subtle truncate">{label}</span>
+      <Row label={label}>
         <span className="text-fg-subtle italic">(empty)</span>
-      </div>
+      </Row>
     );
   }
 

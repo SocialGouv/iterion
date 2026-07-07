@@ -3,8 +3,7 @@ import { type ReactNode } from "react";
 import { ProviderIcon } from "@/components/icons/ProviderIcon";
 import type { RunHeader, RunModelOverride } from "@/api/runs";
 
-import { Row } from "../InfoPrimitives";
-import { OverviewSection } from "./OverviewSection";
+import { Row, Section } from "../InfoPrimitives";
 
 interface ConfigurationSectionProps {
   run: RunHeader;
@@ -20,13 +19,13 @@ export function ConfigurationSection({ run }: ConfigurationSectionProps) {
   const fields = collectLaunchedWith(run);
   if (fields.length === 0) return null;
   return (
-    <OverviewSection title="Launched with" defaultOpen={false}>
+    <Section title="Launched with" collapsible defaultOpen={false}>
       {fields.map((f) => (
         <Row key={f.label} label={f.label}>
           {f.render}
         </Row>
       ))}
-    </OverviewSection>
+    </Section>
   );
 }
 

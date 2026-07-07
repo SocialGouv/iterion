@@ -22,11 +22,10 @@ export function useRunBudgetCaps(run: RunHeader | null): RunBudgetCaps {
     const b = run?.budget;
     const pos = (n: number | undefined): number | null =>
       typeof n === "number" && n > 0 ? n : null;
-    const durMs = parseGoDuration(b?.max_duration);
     const maxCostUsd = pos(b?.max_cost_usd);
     const maxTokens = pos(b?.max_tokens);
     const maxIterations = pos(b?.max_iterations);
-    const maxDurationMs = durMs != null && durMs > 0 ? durMs : null;
+    const maxDurationMs = pos(parseGoDuration(b?.max_duration) ?? undefined);
     return {
       maxCostUsd,
       maxTokens,

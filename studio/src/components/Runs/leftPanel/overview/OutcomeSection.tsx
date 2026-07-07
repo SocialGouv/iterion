@@ -18,7 +18,10 @@ interface OutcomeSectionProps {
 // has none yet. Absorbs the worktree/merge data that used to live on the
 // Info tab, with an operator-actionable twist (the cross-tab buttons).
 export function OutcomeSection({ runId, run, onSwitchTab }: OutcomeSectionProps) {
-  const files = useRunFiles(runId, "");
+  // Match FilesPanel's default mode so react-query dedupes onto one cache
+  // entry (no extra fetch) and the "N files changed" count agrees with the
+  // Files tab (mode "" = uncommitted only, a subset of combined).
+  const files = useRunFiles(runId, "combined");
   const commits = useRunCommits(runId);
   const fileCount = files.data?.files?.length ?? 0;
   const commitCount = commits.data?.commits?.length ?? 0;

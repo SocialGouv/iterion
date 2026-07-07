@@ -4,22 +4,53 @@
 import { type ReactNode } from "react";
 
 import { CopyIcon } from "@radix-ui/react-icons";
+import { ChevronRight } from "lucide-react";
 
 import { Tooltip } from "@/components/ui";
 import { useCopyTimer } from "@/hooks/useCopyTimer";
 
 // Section is a labelled block. `headerRight` slots optional trailing
-// controls in the title row (e.g. a copy button) so the section header
-// stays a single line — set by OverviewPanel's Axis block.
+// controls in the title row (e.g. a copy button). When `collapsible`,
+// it wraps a native <details> with a rotating chevron so a long section
+// (a briefing prompt, launch config, advanced details) can be folded
+// away; `defaultOpen` sets the initial state. An onClickCapture guard on
+// `headerRight` stops that control (e.g. a copy button) from toggling the
+// section when clicked.
 export function Section({
   title,
   children,
   headerRight,
+  collapsible = false,
+  defaultOpen = true,
 }: {
   title: string;
   children: ReactNode;
   headerRight?: ReactNode;
+  collapsible?: boolean;
+  defaultOpen?: boolean;
 }) {
+  if (collapsible) {
+    return (
+      <details className="group" open={defaultOpen}>
+        <summary className="flex items-center justify-between gap-2 mb-1 cursor-pointer list-none select-none [&::-webkit-details-marker]:hidden">
+          <span className="inline-flex items-center gap-1 text-caption font-semibold uppercase tracking-wide text-fg-muted">
+            <ChevronRight
+              size={12}
+              className="text-fg-subtle transition-transform duration-[var(--motion-fast)] group-open:rotate-90"
+              aria-hidden
+            />
+            {title}
+          </span>
+          {headerRight && (
+            <span className="shrink-0" onClickCapture={(e) => e.preventDefault()}>
+              {headerRight}
+            </span>
+          )}
+        </summary>
+        <div className="space-y-1 mt-1">{children}</div>
+      </details>
+    );
+  }
   return (
     <section>
       <div className="flex items-center justify-between mb-1">

@@ -31,7 +31,7 @@ export default function OperatorPauseBanner({ run }: Props) {
       addToast("Resume requested", "info");
     });
 
-  const checkpointNode = (run.checkpoint as { node_id?: string } | undefined)?.node_id;
+  const checkpointNode = run.checkpoint?.node_id;
 
   return (
     <div

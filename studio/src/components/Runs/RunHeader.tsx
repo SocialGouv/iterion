@@ -85,8 +85,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // — paused, finished, failed, cancelled. We don't gate by status
   // because "fork from a finished run" is a perfectly valid use case
   // (re-run the last LLM turn with different inputs).
-  const checkpointNode =
-    (run.checkpoint as { node_id?: string } | undefined)?.node_id ?? null;
+  const checkpointNode = run.checkpoint?.node_id ?? null;
   const canFork = Boolean(checkpointNode);
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel

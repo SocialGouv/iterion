@@ -108,10 +108,10 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     eventlog: 30,
   });
 
-  // Left panel collapse is owned here (not inside LeftPanel) so the
-  // horizontal main-row Group can omit the left Panel entirely while
-  // collapsed and hand the freed width to the canvas. Persisted under the
-  // same key LeftPanel used to own.
+  // Left panel collapse + width are owned here (not inside LeftPanel) so
+  // "Reset layout" can reach them alongside the panel-size layouts, and so
+  // the drag-controlled width survives LeftPanel re-mounts. Persisted under
+  // the same key LeftPanel used to own.
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() =>
     readBooleanFlag(LEFT_COLLAPSED_KEY, false),
   );
@@ -173,10 +173,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     horiz.resetAll();
     resetLayout();
     onLeftResize(LEFT_WIDTH_DEFAULT);
-    if (leftCollapsed) {
-      setLeftCollapsed(false);
-      writeBooleanFlag(LEFT_COLLAPSED_KEY, false);
-    }
+    if (leftCollapsed) toggleLeftCollapsed();
     useUIStore.getState().addToast("Console layout reset", "success");
   };
 
@@ -379,10 +376,10 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   // but the transcript stays readable in the floating / docked panel.
   const chatInputDisabled = isQueued || isTerminal;
 
-  // The center column (canvas + node detail + optional right docks over
-  // the bottom drawer). Extracted so it can render either inside the
-  // resizable main-row Group (left panel expanded) or beside the fixed
-  // collapsed rail, without duplicating the tree.
+  // The center column: the canvas + node-detail top split over the bottom
+  // drawer, with the optional right-hand Side dock. Extracted to a const to
+  // keep the already-deep return readable — it's a flex sibling of the
+  // left panel, sized to fill the remaining width.
   const centerColumn = (
     <>
       <Group

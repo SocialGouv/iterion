@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 
+import { EmptyState } from "@/components/ui";
+import { useNow } from "@/hooks/useNow";
 import { useRunMetrics } from "@/hooks/useRunMetrics";
 import { useRunStore } from "@/store/run";
 import type { RunHeader } from "@/api/runs";
@@ -47,11 +49,7 @@ export default function OverviewPanel({
   const metrics = useRunMetrics(nowMs);
 
   if (!run) {
-    return (
-      <div className="flex flex-col min-h-0 min-w-0 flex-1 w-full items-center justify-center px-3 py-8 text-center text-xs text-fg-subtle">
-        Loading…
-      </div>
-    );
+    return <EmptyState message="Loading…" />;
   }
 
   return (
@@ -76,20 +74,4 @@ export default function OverviewPanel({
       </div>
     </div>
   );
-}
-
-// Local 1Hz ticker for the live duration + current-node elapsed. Mirrors
-// RunMetrics' private useNow: a null interval snaps once (terminal run)
-// then stops, so a finished run doesn't re-render every second.
-function useNow(intervalMs: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (intervalMs === null) {
-      setNow(Date.now());
-      return;
-    }
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
 }

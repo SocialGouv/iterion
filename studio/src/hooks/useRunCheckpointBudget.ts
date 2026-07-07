@@ -22,6 +22,9 @@ export function useRunCheckpointBudget(
     const c = run?.checkpoint;
     if (!c) return null;
     const tokensUsed = c.budget_tokens_used ?? 0;
+    // Prefer the SharedBudget consumption; fall back to the cumulative
+    // cost_usd_total ledger only for legacy checkpoints that predate
+    // budget_cost_usd (the two track together in practice).
     const costUsd = c.budget_cost_usd ?? c.cost_usd_total ?? 0;
     const iterationsUsed = c.budget_iterations_used ?? 0;
     const elapsedMs =
