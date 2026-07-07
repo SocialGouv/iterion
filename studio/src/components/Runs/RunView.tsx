@@ -18,10 +18,9 @@ import {
   writeStringFlag,
 } from "@/lib/localStorageFlag";
 
-import BrowserPane from "./BrowserPane";
 import FileDiffDialog from "./FileDiffDialog";
 import FileEditDialog from "./FileEditDialog";
-import FloatingChatPanel, { ChatPanelContent } from "./FloatingChatPanel";
+import FloatingChatPanel from "./FloatingChatPanel";
 import OperatorPauseBanner from "./OperatorPauseBanner";
 import LeftPanel, {
   clampLeftWidth,
@@ -35,6 +34,7 @@ import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
 import { BottomTabPanel } from "./runView/BottomTabPanel";
 import { ExpandStrip, ResizeSeparator } from "./runView/PanelChrome";
+import { SideDock } from "./runView/SideDock";
 import { RunMetricsBar } from "./runView/RunMetricsBar";
 import { RunViewLoadError, RunViewSkeleton } from "./runView/RunViewLoadStates";
 import {
@@ -161,7 +161,10 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   // useHorizontalLayout for the picking logic.
   const browserRightDocked = browserDock === "right" && browserAvailable;
   const chatDockedRight = chatDock === "docked-right";
-  const horiz = useHorizontalLayout({ browserRightDocked, chatDockedRight });
+  // Browser + Chat share one tabbed right-hand Side dock (SideDock), so a
+  // single "is the side dock open?" bit drives the horizontal layout.
+  const sideDockOpen = browserRightDocked || chatDockedRight;
+  const horiz = useHorizontalLayout({ sideDockOpen });
 
   const onResetLayout = () => {
     // Each layout's reset() bumps its own groupKey, remounting the Groups so
@@ -448,40 +451,25 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                 </Panel>
               </>
             )}
-            {browserRightDocked && (
+            {sideDockOpen && (
               <>
                 <ResizeSeparator orientation="horizontal" />
                 <Panel
-                  id="browserRight"
-                  defaultSize={horiz.browserRightSize}
+                  id="side"
+                  defaultSize={horiz.sideSize}
                   minSize={18}
                   className="min-h-0"
                 >
-                  <div className="h-full border-l border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
-                    <BrowserPane
-                      runId={runId}
-                      scrubSeq={scrubSeq}
-                      dock={browserDock}
-                      onDockChange={setBrowserDock}
-                    />
-                  </div>
-                </Panel>
-              </>
-            )}
-            {chatDockedRight && (
-              <>
-                <ResizeSeparator orientation="horizontal" />
-                <Panel
-                  id="chat"
-                  defaultSize={horiz.chatPanelSize}
-                  minSize={20}
-                  className="min-h-0"
-                >
-                  <ChatPanelContent
+                  <SideDock
                     runId={runId}
-                    inputDisabled={chatInputDisabled}
-                    onUndock={() => setChatDock("floating")}
-                    onClose={() => setChatDock("closed")}
+                    chatDockedRight={chatDockedRight}
+                    browserRightDocked={browserRightDocked}
+                    scrubSeq={scrubSeq}
+                    browserDock={browserDock}
+                    onBrowserDockChange={setBrowserDock}
+                    chatInputDisabled={chatInputDisabled}
+                    onUndockChat={() => setChatDock("floating")}
+                    onCloseChat={() => setChatDock("closed")}
                   />
                 </Panel>
               </>
