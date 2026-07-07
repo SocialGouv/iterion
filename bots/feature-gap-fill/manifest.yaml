@@ -1,15 +1,25 @@
 name: feature-gap-fill
 display_name: Fini
-version: 0.1.0
+version: 2.0.0
+## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
+## v1 staged pipeline (survey_existing → plan → act → simplify → alternating
+## Claude/GPT review-fix loop → prepare_commit → commit_changes, 12 nodes)
+## with ONE adaptive `campaign` agent given the gap spec + a
+## standing-autonomy contract (living todo from the missing items, one
+## verified commit per item in stride, preservation discipline), a
+## deterministic build/test gate, and a bounded continuation loop. git is
+## the durable state — a re-dispatch re-runs the campaign, which reads
+## `git log` and continues. See docs/references/productive-session-patterns.md.
 description: |
-  Gap-driven feature completer. Specialisation of feature_dev: the input
-  is a STRUCTURED gap spec ("here is what's implemented, here is what's
-  missing") rather than a feature description from zero. Fini reads the
-  partial implementation, completes the missing parts, runs the
-  alternating Claude/GPT review-fix loop until two cross-family
-  approvals, then commits. Use feature_dev for greenfield work; use Fini
-  to FINISH an existing partial implementation without re-architecting
-  what already works.
+  Gap-driven feature completer — one capable agent, its natural flow,
+  minimal framing. The input is a STRUCTURED gap spec ("here is what's
+  implemented, here is what's missing") rather than a feature description
+  from zero. The campaign surveys the seams, closes the missing items one
+  verified commit at a time (preserving what already works), and a
+  deterministic build/test gate + bounded continuation loop re-poke it
+  until the gap is closed and the tree is green. Use feature_dev for
+  greenfield work; use Fini to FINISH an existing partial implementation
+  without re-architecting what already works.
 when_to_use: |
   Run on a type:feature-gap issue created by the adr-cartograph (Adry)
   bot, OR manually via --var gap_spec='<spec>' when an operator wants to
