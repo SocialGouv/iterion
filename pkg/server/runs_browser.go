@@ -87,6 +87,14 @@ func (s *Server) handleBrowserCDP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	// This proxy is the session's only consumer (handleBrowserAttach spawns
+	// a fresh Chromium per attach; nothing else reconnects to it), so once
+	// the WS pump tears down there's nobody left to serve — Detach closes
+	// the CDP pipe and unblocks/frees the pump goroutine still parked in
+	// sess.CDPConn.Read, and its subprocess. Without this, every browser
+	// pane disconnect leaked the Chromium process and that goroutine for
+	// the life of the server.
+	defer func() { _ = s.browserSessions.Detach(runID, sessionID) }()
 	conn.SetReadLimit(browserCDPMaxFrame)
 
 	// Both pumps share an err channel; the first one to drain
