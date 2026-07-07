@@ -217,6 +217,18 @@ func (loop *ConversationLoop) workspaceRoot() string {
 	return wd
 }
 
+// sessionTodosPath keys the out-of-tree todo file by workspace fingerprint
+// PLUS session id, so concurrent sessions in the same directory never share
+// a checklist (embedders without a session identity get the plain
+// per-workspace default via tools.ExecuteTodoWrite).
+func (loop *ConversationLoop) sessionTodosPath() string {
+	key := clawctx.WorkspaceFingerprint(loop.workspaceRoot())
+	if loop.Session != nil && loop.Session.ID != "" {
+		key += "-" + loop.Session.ID
+	}
+	return tools.TodosPathForKey(key)
+}
+
 // planModeStateDir returns the directory for plan mode state persistence.
 // Returns empty string if no config directory is available.
 func (loop *ConversationLoop) planModeStateDir() string {
@@ -991,7 +1003,7 @@ func (loop *ConversationLoop) ExecuteToolQuiet(ctx context.Context, name string,
 			return tools.AskUserFallback(q)
 		}
 	case "todo_write":
-		result, err = tools.ExecuteTodoWrite(input)
+		result, err = tools.ExecuteTodoWriteAt(input, loop.sessionTodosPath())
 	// --- Batch 2: simple stateless tools ---
 	case "sleep":
 		result, err = tools.ExecuteSleep(input)
@@ -1384,7 +1396,7 @@ func (loop *ConversationLoop) ExecuteTool(ctx context.Context, name string, inpu
 		}
 		return cb
 	case "todo_write":
-		result, err = tools.ExecuteTodoWrite(input)
+		result, err = tools.ExecuteTodoWriteAt(input, loop.sessionTodosPath())
 	// --- Batch 2: simple stateless tools ---
 	case "sleep":
 		result, err = tools.ExecuteSleep(input)
