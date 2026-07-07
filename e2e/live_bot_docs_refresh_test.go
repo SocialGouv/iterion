@@ -10,24 +10,23 @@ import (
 
 // TestLive_Bot_DocsRefresh runs the docs-refresh bot (Doki) against a
 // fixture with a deliberate doc/code drift: the README documents a wrong
-// function signature. Doki is a cross-family alternating review loop that
-// detects drift, fixes the docs (never code logic), and converges.
+// function signature. v2 (ADR-058 minimal-framing): the deterministic
+// audit machinery (scan → manifest) hands ONE campaign agent the drift
+// set; the campaign fixes the docs (never code logic) committing in
+// stride, then the deterministic gates (scope, build, coverage) re-check.
 //
-// Reliability invariants: the scan + manifest + at least one reviewer
-// fire; the run converges (streak_check.stop) or exhausts its bounded
-// loop (both acceptable); and the drift gets corrected (a doc commit
-// lands, or streak_check reports zero remaining drift). The quality panel
-// then grades the doc edits + value.
+// Reliability invariants: scan + manifest + campaign + gate fire; and
+// the drift gets corrected (a doc commit lands, or the final manifest
+// reports zero remaining drift). The quality panel then grades the doc
+// edits + value.
 //
-// Requires: claude CLI (reviewer_claude/fix_claude) + OpenAI (reviewer_gpt).
-// Expected: ~20-40 min.
+// Requires: claude CLI. Expected: ~10-30 min.
 func TestLive_Bot_DocsRefresh(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireOpenAI(t)
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-docs-refresh-*")
 	if err != nil {
@@ -55,10 +54,10 @@ Call it with exactly three integers.
 	seedCommits := seedGoModuleFixture(t, workspaceDir, files)
 
 	vars := map[string]interface{}{
-		"workspace_dir":         workspaceDir,
-		"scope_notes":           "Align README with the actual Go API.",
-		"max_review_iterations": 6, // bound cost; the fixture is tiny
-		"diff_since":            "",
+		"workspace_dir": workspaceDir,
+		"scope_notes":   "Align README with the actual Go API.",
+		"max_passes":    3, // bound cost; the fixture is tiny
+		"diff_since":    "",
 	}
 	res := runBotLive(t, liveSpec{
 		runIDBase:    "live-docs-refresh",
@@ -69,15 +68,9 @@ Call it with exactly three integers.
 		timeout:      40 * time.Minute,
 	})
 
-	// Reliability invariants: the scan + manifest + a reviewer must fire,
-	// and the convergence gate must have been evaluated at least once.
-	assertNodesFinished(t, res.events, "scan_docs", "build_manifest")
-	if countFinished(res.events, "reviewer_claude")+countFinished(res.events, "reviewer_gpt") == 0 {
-		t.Errorf("expected at least one reviewer to fire")
-	}
-	if countFinished(res.events, "streak_check") == 0 {
-		t.Errorf("expected the convergence gate (streak_check) to be evaluated")
-	}
+	// Reliability invariants: the deterministic machinery + the campaign
+	// must fire, and the convergence gate must have been evaluated.
+	assertNodesFinished(t, res.events, "scan_docs", "build_manifest", "campaign", "scope_check", "verify_run", "gate")
 
 	// The drift should be corrected: either a doc commit landed, or the
 	// final manifest reports zero remaining drift (already-aligned).

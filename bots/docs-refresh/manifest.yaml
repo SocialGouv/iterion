@@ -1,33 +1,42 @@
 name: docs-refresh
 display_name: Doki
-version: 0.17.0
+version: 2.0.0
+## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). The
+## deterministic audit machinery is KEPT in full (scan_docs footprint,
+## scan_code_surface, build_manifest anchor verification with the
+## severity-sorted / doc-chunked bounded working set); the alternating
+## cross-family review/fix assembly line (alt → reviewer_claude/gpt →
+## streak_check + its dismissed-pairs/pushback/chronic accumulators →
+## fix_claude/gpt → prepare_commit → commit_changes → detect_doc_changes)
+## is replaced by ONE adaptive `campaign` agent that adjudicates the
+## manifest's drift set and commits each aligned doc in stride. New
+## deterministic gates: scope_check (writeable-set containment vs the
+## run base) + the shared verify_build/verify_run build gate; the gate
+## converges on docs_aligned ∧ scope_ok ∧ build green ∧ mechanical
+## coverage ≥ target. The inter-run cache now records the manifest's
+## MECHANICALLY verified pairs. 16 nodes → 11; review_mode/mono_family
+## retired. See docs/references/productive-session-patterns.md.
 description: |
-  Documentation refresh bot. Detects mismatches between project
-  documentation (README, docs/*.md, CLAUDE.md, bundled skills,
-  Go code comments) and the actual current state of the code, then
-  fixes the DOCS (never the code) and auto-commits on convergence.
-  When a repo has NO documentation yet, it bootstraps an initial
-  doc set (configurable docs_dir, default "docs") authored from the
-  code, then refreshes it through the same review loop.
+  Documentation refresh bot — one capable agent over a deterministic
+  drift manifest, minimal framing. Detects mismatches between project
+  documentation (README, docs/*.md, CLAUDE.md, bundled skills, Go code
+  comments) and the actual current state of the code, then fixes the
+  DOCS (never the code), committing each aligned doc in stride. When a
+  repo has NO documentation yet, it bootstraps an initial doc set
+  (configurable docs_dir, default "docs") authored from the code, then
+  refreshes it through the same campaign.
 
-  Workflow shape mirrors branch-improve-loop: alternating
-  claude_code (opus-4-8) and claw (openai/gpt-5.5) reviewers,
-  deterministic streak_check requiring two cross-family approvals,
-  prepare_commit + commit_changes phase.
+  Anti-Goodhart by construction: a deterministic scanner enumerates the
+  immutable doc footprint; build_manifest mechanically verifies every
+  code anchor and hands the campaign a bounded, severity-sorted drift
+  working set; a deterministic scope gate fails the run if anything
+  outside the doc writeable-set changed; and convergence requires the
+  mechanical anchor coverage to meet its target — the agent cannot
+  rubber-stamp its own alignment.
 
-  Specificity vs branch-improve-loop: a deterministic upstream
-  scan_docs tool node enumerates the doc footprint once (find +
-  sha1sum) so agents cannot truncate the audit set. Reviewers and
-  fixers operate against this immutable footprint. The fixer is
-  forbidden from touching anything but `.md` files in scope and
-  Go code comments — code logic edits are an automatic blocker
-  on the next iteration.
-
-  The bot ships 5 skills capturing the anti-Goodhart rules:
-  docs-refresh (playbook), doc-mismatch-taxonomy (10-value enum),
-  doc-scope-enumeration (scanner contract), anti-facade-fix-rules
-  (substantive fix discipline), doc-verification-checklist (judge
-  STEP-0 preamble).
+  The bot ships 5 skills capturing the discipline: docs-refresh
+  (playbook), doc-mismatch-taxonomy, doc-scope-enumeration,
+  anti-facade-fix-rules, doc-verification-checklist.
 when_to_use: |
   Use when README / CLAUDE.md / docs/**/*.md / bundled skills are
   stale versus the code, before a release, or whenever a survey flags

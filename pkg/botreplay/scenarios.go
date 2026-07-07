@@ -82,14 +82,26 @@ func Scenarios() []Scenario {
 			},
 		},
 		{
-			Bot:            "docs-refresh",
-			Name:           "reviewer_gpt_approve",
-			Node:           "reviewer_gpt",
-			CheckAssignees: true, // docs-refresh routes no work to bots; scan must stay clean
+			Bot:              "docs-refresh",
+			Name:             "campaign_docs_aligned",
+			Node:             "campaign",
+			RequiredNonEmpty: []string{"summary"},
+			CheckAssignees:   true, // docs-refresh routes no work to bots; scan must stay clean
 			Input: map[string]interface{}{
-				"prior_pushback":               []interface{}{},
-				"prior_pushback_justification": "",
-				"previous_scanned_areas":       []interface{}{},
+				"total_docs":                  float64(3),
+				"total_anchors":               float64(12),
+				"verified_anchors":            float64(11),
+				"drifted_anchors":             float64(1),
+				"unverifiable_anchors":        float64(0),
+				"manifest_coverage_pct":       float64(91),
+				"coverage_target_pct":         float64(80),
+				"drift_candidates":            []interface{}{},
+				"docs_with_drift_count":       float64(1),
+				"chunked":                     false,
+				"chunk_doc_count":             float64(1),
+				"max_review_chunk_docs":       float64(30),
+				"recently_changed_code_files": []interface{}{},
+				"fail_log":                    "",
 			},
 		},
 	}
