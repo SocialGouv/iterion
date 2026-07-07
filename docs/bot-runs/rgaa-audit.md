@@ -7,6 +7,14 @@ non-conformity. See [bots/rgaa-audit/](../../bots/rgaa-audit/).
 Earlier runs (pre-dedicated-file) are recorded in the 2026-06 campaign
 bilans.
 
+## 2026-07-07 — re-run post status-fix: the 5 NC now flow through the gates into the report — VALIDATED (run 019f3de8)
+- Status: **VALIDATED** — closes the morning run's partial: with the d6b966f03 fix live (mandatory per-candidate status + fail-safe NC counting), the same scope now yields scan_health nc_count=5 and a report with full detailed NC blocks.
+- Versions: bot v2.0.0 (+status fix) · iterion `dev+239203525cc8` · no sandbox.
+- Method: identical scope to 019f3d3b-7aea (studio/src/**, post_to_board=false, report out-of-tree), 6m13s wall.
+- Result: `finished`; 22 files examined; **nc_count=5** through scan_health AND cap_findings; report `rgaa-2026-07-07-2.md` (incremental suffix worked) carries the detailed non-conformities with file anchors + corrections — [NC] 11.10 aria-invalid on validated fields, [NC] 5.7 table header scope, [NC] 5.4/5.5 captions, etc. — and an honest 72% conformity over 18 applicable criteria (vs the broken run's 93%/0-NC façade-adjacent output).
+- Value: a genuinely actionable a11y worklist for the studio SPA; the run also demonstrates the fail-safe gate philosophy (surfacing beats dropping) end to end.
+- Lessons: with post_to_board=true these 5 NC would land as labelled board issues — enable it on the next scheduled run.
+
 ## 2026-07-07 — v2 dogfood on the iterion studio SPA: coherent report, status-field gate hole found + fixed (run 019f3d3b-7aea)
 - Status: **partial** — the run finished clean and produced a genuinely useful report, but a bot bug dropped its 4 concrete findings between the campaign and the report. Bug fixed same-day (see Engine/bot hardening); needs one re-run to be **validated**.
 - Versions: bot v2.0.0 · iterion `dev+239203525cc8` · no sandbox (read-only host run).
