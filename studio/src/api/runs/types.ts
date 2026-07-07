@@ -155,6 +155,16 @@ export interface ExecutionState {
 }
 
 // Mirror of runview.RunHeader.
+// One launch-time model/backend override rule captured on the run: the
+// node selector (id / glob / kind / "*") plus whatever it pins. Mirrors
+// pkg/store.RunModelOverride.
+export interface RunModelOverride {
+  selector: string;
+  backend?: string;
+  model?: string;
+  provider?: string;
+}
+
 export interface RunHeader {
   id: string;
   // Deterministic, human-friendly run label. Empty for legacy runs
@@ -176,6 +186,11 @@ export interface RunHeader {
   // Workflow-declared tool-permission gate mode ("off" | "ask" | "deny").
   // Empty/off = no gate. The header badges ask/deny. See docs/permissions.md.
   permission_mode?: string;
+  // Launch-time per-node/-group model/backend pins captured on the run
+  // (studio dropdowns / CLI --model/--backend / HTTP model_overrides).
+  // Display-only, surfaced in the Overview's "Launched with". Empty when
+  // none were set.
+  model_overrides?: RunModelOverride[];
   created_at: string;
   updated_at: string;
   finished_at?: string;

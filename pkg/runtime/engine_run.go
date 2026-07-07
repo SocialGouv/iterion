@@ -173,7 +173,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" {
+	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -195,6 +195,12 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// declared posture; a run-level --permission override refines it per
 		// node but isn't reflected here.
 		run.PermissionMode = e.workflow.Permission
+		// Guard on len>0 so a resume (which never re-supplies overrides)
+		// preserves the value persisted at the original launch instead of
+		// clobbering it with nil.
+		if len(e.modelOverrides) > 0 {
+			run.ModelOverrides = e.modelOverrides
+		}
 		if e.bundle != nil {
 			run.BundleHash = e.bundle.Hash
 			run.BundlePath = e.bundle.SourcePath

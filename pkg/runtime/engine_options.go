@@ -234,6 +234,16 @@ func WithAutoMerge(auto bool) EngineOption {
 	return func(e *Engine) { e.autoMerge = auto }
 }
 
+// WithModelOverrides records the launch-time per-node/-group model/
+// backend pins so the engine persists them (display-only) on the run
+// record. The overrides are applied to the executor separately at
+// launch; this option exists solely so the studio Overview can show
+// what a run was launched with. Empty on resume (not re-supplied), so
+// the persisted value is left untouched — see engine_run.go.
+func WithModelOverrides(o []store.RunModelOverride) EngineOption {
+	return func(e *Engine) { e.modelOverrides = o }
+}
+
 // WithForceResume allows resuming a run even when the workflow source has
 // changed since the run was started. The hash mismatch is logged as a warning
 // instead of causing an error.

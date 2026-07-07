@@ -1,7 +1,7 @@
 import { type ReactNode } from "react";
 
 import { CopyButton, StatusBadge } from "@/components/ui";
-import type { RunHeader } from "@/api/runs";
+import type { RunHeader, RunModelOverride } from "@/api/runs";
 
 import { Row, Section } from "./InfoPrimitives";
 
@@ -210,10 +210,11 @@ interface LaunchedWithField {
 
 // collectLaunchedWith produces the compact "how was this run
 // configured?" summary. We render only fields ACTUALLY carried on the
-// RunHeader wire (see pkg/runview/snapshot.go RunHeader) — options
-// like model_overrides / review_mode / compress ride CreateRunRequest
-// but aren't persisted on the snapshot header, so we don't fabricate
-// rows for them.
+// RunHeader wire (see pkg/runview/snapshot.go RunHeader). model_overrides
+// IS persisted (so the Overview shows what a run launched with);
+// review_mode is resolved into inputs (shown in the Inputs section);
+// other options like compress ride CreateRunRequest but aren't on the
+// header, so we don't fabricate rows for them.
 function collectLaunchedWith(run: RunHeader): LaunchedWithField[] {
   const fields: LaunchedWithField[] = [];
 
@@ -232,6 +233,21 @@ function collectLaunchedWith(run: RunHeader): LaunchedWithField[] {
     fields.push({
       label: "Permission",
       render: <span>{run.permission_mode}</span>,
+    });
+  }
+
+  if (run.model_overrides && run.model_overrides.length > 0) {
+    fields.push({
+      label: run.model_overrides.length > 1 ? "Models" : "Model",
+      render: (
+        <span className="flex flex-col gap-0.5">
+          {run.model_overrides.map((o, i) => (
+            <span key={i} className="font-mono text-caption break-words">
+              {formatModelOverride(o)}
+            </span>
+          ))}
+        </span>
+      ),
     });
   }
 
@@ -267,6 +283,15 @@ function collectLaunchedWith(run: RunHeader): LaunchedWithField[] {
   }
 
   return fields;
+}
+
+// formatModelOverride renders one override rule as
+// "<selector> → <pins>", where pins is the non-empty subset of
+// model / backend / provider (e.g. "agent → claude-sonnet-5" or
+// "reviewer_* → gpt-5.5 · claw").
+function formatModelOverride(o: RunModelOverride): string {
+  const pins = [o.model, o.backend, o.provider].filter(Boolean).join(" · ");
+  return pins ? `${o.selector} → ${pins}` : o.selector;
 }
 
 function formatSource(source: NonNullable<RunHeader["source"]>): string {

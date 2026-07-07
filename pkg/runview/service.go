@@ -173,6 +173,27 @@ func toModelOverrides(entries []ModelOverrideEntry) model.ModelOverrides {
 	return o
 }
 
+// toRunModelOverrides converts the launch entries into the persisted,
+// display-only representation stamped on the run record (so the studio
+// Overview can show what a run was launched with). Distinct from
+// toModelOverrides, which builds the engine's live override set applied
+// to the executor.
+func toRunModelOverrides(entries []ModelOverrideEntry) []store.RunModelOverride {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]store.RunModelOverride, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, store.RunModelOverride{
+			Selector: e.Selector,
+			Backend:  e.Backend,
+			Model:    e.Model,
+			Provider: e.Provider,
+		})
+	}
+	return out
+}
+
 // ResumeSpec describes a resume request.
 type ResumeSpec struct {
 	RunID    string
