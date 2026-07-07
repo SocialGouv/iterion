@@ -121,7 +121,9 @@ func worktreeStateClean(wtPath string) (clean, hasUntracked bool, err error) {
 // stderr would break the error-substring matching downstream, and a
 // `watchexec -r` SIGTERM could interrupt an in-flight update-ref).
 func runGit(wtPath string, args ...string) (string, error) {
-	out, err := gitCmd(append([]string{"-C", wtPath}, args...)...).CombinedOutput()
+	cmd, cancel := gitCmd(append([]string{"-C", wtPath}, args...)...)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 

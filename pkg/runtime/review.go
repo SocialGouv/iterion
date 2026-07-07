@@ -467,12 +467,16 @@ func (e *Engine) buildCompanionMessage(rs *runState, hn *ir.HumanNode, turns []s
 // reviewDiffContext returns a bounded diff of the run's commits for the
 // companion. Best-effort: returns "" on any git error.
 func reviewDiffContext(wtCtx *worktreeContext) string {
-	out, err := gitCmd("-C", wtCtx.wtPath, "diff", "--stat", wtCtx.originalTip+"..HEAD").Output()
+	statCmd, statCancel := gitCmd("-C", wtCtx.wtPath, "diff", "--stat", wtCtx.originalTip+"..HEAD")
+	out, err := statCmd.Output()
+	statCancel()
 	stat := ""
 	if err == nil {
 		stat = strings.TrimSpace(string(out))
 	}
-	full, ferr := gitCmd("-C", wtCtx.wtPath, "diff", wtCtx.originalTip+"..HEAD").Output()
+	fullCmd, fullCancel := gitCmd("-C", wtCtx.wtPath, "diff", wtCtx.originalTip+"..HEAD")
+	full, ferr := fullCmd.Output()
+	fullCancel()
 	body := ""
 	if ferr == nil {
 		body = string(full)

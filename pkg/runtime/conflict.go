@@ -134,7 +134,9 @@ func UnmergedPaths(repoRoot string) ([]string, error) {
 // err on a git failure — callers should treat that as "couldn't tell"
 // rather than "no conflicts".
 func unmergedPaths(repoRoot string) ([]string, error) {
-	out, err := gitCmd("-C", repoRoot, "ls-files", "--unmerged", "-z").Output()
+	cmd, cancel := gitCmd("-C", repoRoot, "ls-files", "--unmerged", "-z")
+	out, err := cmd.Output()
+	cancel()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files --unmerged: %w", err)
 	}
@@ -306,7 +308,10 @@ func StageResolvedFile(repoRoot, path, content string) error {
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	if out, err := gitCmd("-C", repoRoot, "add", "--", path).CombinedOutput(); err != nil {
+	cmd, cancel := gitCmd("-C", repoRoot, "add", "--", path)
+	out, err := cmd.CombinedOutput()
+	cancel()
+	if err != nil {
 		return fmt.Errorf("git add %s: %v\noutput: %s", path, err, string(out))
 	}
 	return nil
@@ -330,7 +335,9 @@ func FinalizeConflictMerge(repoRoot, message string) (string, error) {
 	if remaining, err := unmergedPaths(repoRoot); err == nil && len(remaining) > 0 {
 		return "", fmt.Errorf("still unmerged: %s", strings.Join(remaining, ", "))
 	}
-	out, err := gitCmd("-C", repoRoot, "commit", "-m", message).CombinedOutput()
+	cmCmd, cmCancel := gitCmd("-C", repoRoot, "commit", "-m", message)
+	out, err := cmCmd.CombinedOutput()
+	cmCancel()
 	if err != nil {
 		return "", fmt.Errorf("git commit: %v\noutput: %s", err, string(out))
 	}
@@ -349,7 +356,10 @@ func AbortConflictMerge(repoRoot string) error {
 	if repoRoot == "" {
 		return fmt.Errorf("repo root required")
 	}
-	if out, err := gitCmd("-C", repoRoot, "reset", "--merge").CombinedOutput(); err != nil {
+	cmd, cancel := gitCmd("-C", repoRoot, "reset", "--merge")
+	out, err := cmd.CombinedOutput()
+	cancel()
+	if err != nil {
 		return fmt.Errorf("git reset --merge: %v\noutput: %s", err, string(out))
 	}
 	return nil
@@ -363,8 +373,9 @@ func GitSymbolicRef(repoRoot string) (string, error) {
 	if repoRoot == "" {
 		return "", fmt.Errorf("repo root required")
 	}
-	cmd := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	cmd, cancel := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
 	out, err := cmd.Output()
+	cancel()
 	if err != nil {
 		// Exit code 1 with empty output means detached HEAD — not an
 		// error worth surfacing. Anything else is a real git failure.

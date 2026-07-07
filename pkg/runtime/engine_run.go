@@ -514,9 +514,11 @@ func (e *Engine) reconstructWorktreeContext(r *store.Run) *worktreeContext {
 		return nil
 	}
 	originalBranch := ""
-	if out, brErr := gitCmd("-C", r.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); brErr == nil {
+	brCmd, brCancel := gitCmd("-C", r.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if out, brErr := brCmd.Output(); brErr == nil {
 		originalBranch = strings.TrimSpace(string(out))
 	}
+	brCancel()
 	return &worktreeContext{
 		repoRoot:       r.RepoRoot,
 		wtPath:         r.WorkDir,
