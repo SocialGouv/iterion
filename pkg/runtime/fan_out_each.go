@@ -341,7 +341,14 @@ func buildFanOutDAG(items []interface{}, keyField, depsField string) ([][]int, e
 
 	depsIdx := make([][]int, len(items))
 	for i, it := range items {
-		m := it.(map[string]interface{})
+		// Every item was already asserted as a map in the loop above (which
+		// errors out otherwise), but re-check here rather than trust that
+		// invariant across a refactor — a panic on a DAG-scheduled fan-out
+		// would surface as a run crash, not a clean error.
+		m, ok := it.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("DAG: item %d is not an object, cannot read key %q", i, keyField)
+		}
 		raw, ok := m[depsField]
 		if !ok || raw == nil {
 			continue // no dependencies
