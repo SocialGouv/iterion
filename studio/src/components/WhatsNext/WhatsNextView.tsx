@@ -246,11 +246,20 @@ export default function WhatsNextView() {
 // readQuickReplies lifts Nexie's suggested next messages off the chat
 // pause's questions payload (`quick_replies: json` on the turn output,
 // mapped into the chat node's input). Tolerates absent / malformed
-// payloads — chips are sugar, never load-bearing.
+// payloads — chips are sugar, never load-bearing. A `json`-typed schema
+// field can arrive as the literal TEXT of a JSON array (the LLM emits
+// the array stringified) — parse that shape too.
 function readQuickReplies(
   questions: Record<string, unknown> | undefined,
 ): string[] {
-  const raw = questions?.quick_replies;
+  let raw = questions?.quick_replies;
+  if (typeof raw === "string" && raw.trim().startsWith("[")) {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((v): v is string => typeof v === "string" && v.trim().length > 0)

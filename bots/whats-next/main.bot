@@ -117,6 +117,8 @@ prompt nexie_system:
                        "Montre le backlog", "Nettoie les périmés").
                        [] when a suggestion would be noise.
       dispatched_ids — ids you moved to `ready` this turn, else [].
+    quick_replies and dispatched_ids are JSON ARRAYS of strings —
+    emit real arrays, never a stringified "[…]".
   - Mid-turn, when you cannot proceed without the operator (a real
     decision, a bulk confirmation), call the `ask_user` tool — with
     `options` when a closed choice helps (the studio renders them as
