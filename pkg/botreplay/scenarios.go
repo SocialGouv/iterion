@@ -33,24 +33,25 @@ func (s Scenario) FixturePath() string {
 }
 
 // Scenarios returns the wired golden scenarios for this iteration:
-// feature_dev, whats-next (the assignee-bearing bot, two scenarios), and
-// docs-refresh. The claw-backed reviewer/proposer nodes are the cheapest to
-// record live; emit_action (claude_code + board MCP + filesystem) is the
-// headline created_issues scenario and is the heaviest to re-record.
+// feature_dev (the v2 campaign termination contract), whats-next (the
+// assignee-bearing bot, two scenarios), and docs-refresh. The ADR-058 v2
+// bots' `campaign` nodes are claude_code whole-session agents — recording
+// them live is impractical (cost, side-effects, interaction: human), so
+// their fixtures are hand-authored seeds frozen against the termination
+// schema (same provenance tier as the original seeds; see the _note field).
 func Scenarios() []Scenario {
 	return []Scenario{
 		{
-			Bot:            "feature-dev",
-			Name:           "reviewer_gpt_approve",
-			Node:           "reviewer_gpt",
-			CheckAssignees: true, // verdict_output carries no assignees; scan must stay clean
+			Bot:              "feature-dev",
+			Name:             "campaign_feature_complete",
+			Node:             "campaign",
+			RequiredNonEmpty: []string{"summary"},
+			CheckAssignees:   true, // campaign_output carries no assignees; scan must stay clean
 			Vars: map[string]string{
 				"feature_prompt": "add Answer() int returning 42 in answer.go",
 			},
 			Input: map[string]interface{}{
-				"prior_pushback":               []interface{}{},
-				"prior_pushback_justification": "",
-				"previous_scanned_areas":       []interface{}{},
+				"fail_log": "",
 			},
 		},
 		{

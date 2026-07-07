@@ -17,15 +17,14 @@ import (
 //
 // When a genuinely new review-loop bot is added, add it here.
 //
-// whole-improve-loop and branch-improve-loop are intentionally NOT in this
-// set: their v2 shape (ADR-058 — one adaptive `campaign` agent that
-// self-reviews via a fresh re-review of the work + the deterministic
+// whole-improve-loop, branch-improve-loop and feature-dev are intentionally
+// NOT in this set: their v2 shape (ADR-058 — one adaptive `campaign` agent
+// that self-reviews via a fresh re-review of the work + the deterministic
 // build/test gate + its own judgment, the operator's proven manual pattern)
 // has no cross-family reviewer nodes and no `condition` review router, so the
 // ADR-052 mono/dual topology invariant does not apply to them. See
-// bots/whole-improve-loop/main.bot and bots/branch-improve-loop/main.bot.
+// bots/whole-improve-loop/main.bot for the reference shape.
 var reviewLoopBots = []string{
-	"feature-dev",
 	"docs-refresh",
 	"secured-renovacy",
 }

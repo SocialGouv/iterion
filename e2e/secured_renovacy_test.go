@@ -28,6 +28,24 @@ var securedRenovacyStubInputs = map[string]interface{}{
 	"update_scope":         "libraries",
 }
 
+// approveVerdict returns an "approved" cross-family verdict for the
+// Phase-2 review-loop stubs. (Historically shared with feature-dev's v1
+// stub tests; feature-dev v2 retired its reviewers, so the helper now
+// lives with its last consumer and goes away when secured-renovacy's
+// Phase 2 converts to the ADR-058 campaign shape.)
+func approveVerdict(family string) map[string]interface{} {
+	return map[string]interface{}{
+		"approved":      true,
+		"family":        family,
+		"blockers":      []interface{}{},
+		"fix_plan":      "",
+		"confidence":    "high",
+		"scanned_areas": []interface{}{"pkg/runtime"},
+		"_session_id":   "sess-rev-" + family,
+		"_tokens":       100,
+	}
+}
+
 // stackProfileStub returns a minimal detect_stack output that satisfies
 // the stack_profile schema (ecosystems json, primary_ecosystem_id, plus
 // the legacy primary-mirror fields). Used by every secured-renovacy

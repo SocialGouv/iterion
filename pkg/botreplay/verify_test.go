@@ -114,9 +114,9 @@ func TestVerifyRequiredNonEmpty(t *testing.T) {
 }
 
 // TestVerifySchema_RealBot exercises the schema lookup + validation path
-// against a real compiled bot (feature_dev's reviewer_gpt → verdict_output),
-// so a schema change in the .bot file that breaks the golden contract is
-// caught here too — not just in TestGoldens.
+// against a real compiled bot (feature_dev's v2 campaign →
+// campaign_output), so a schema change in the .bot file that breaks the
+// golden contract is caught here too — not just in TestGoldens.
 func TestVerifySchema_RealBot(t *testing.T) {
 	wf, err := CompileBot("feature-dev")
 	if err != nil {
@@ -125,50 +125,52 @@ func TestVerifySchema_RealBot(t *testing.T) {
 
 	good := &Fixture{
 		Bot:  "feature-dev",
-		Node: "reviewer_gpt",
+		Node: "campaign",
 		Output: map[string]interface{}{
-			"approved":      true,
-			"family":        "gpt",
-			"blockers":      []interface{}{},
-			"fix_plan":      "",
-			"confidence":    "high",
-			"scanned_areas": []interface{}{"pkg/runtime"},
+			"feature_complete": true,
+			// JSON-decoded numbers arrive as float64 — mirror that here
+			// (a Go int literal is rejected by the integer check).
+			"commits_this_pass": float64(2),
+			"work_remaining":    "",
+			"needs_human":       false,
+			"human_note":        "",
+			"summary":           "shipped the feature slice by slice",
 		},
 	}
 	if err := VerifySchema(good, wf); err != nil {
-		t.Errorf("valid verdict_output rejected: %v", err)
+		t.Errorf("valid campaign_output rejected: %v", err)
 	}
 
-	// Missing the required `family` field.
+	// Missing the required `feature_complete` field (the done-oracle).
 	bad := &Fixture{
 		Bot:  "feature-dev",
-		Node: "reviewer_gpt",
+		Node: "campaign",
 		Output: map[string]interface{}{
-			"approved":      true,
-			"blockers":      []interface{}{},
-			"fix_plan":      "",
-			"confidence":    "high",
-			"scanned_areas": []interface{}{},
+			"commits_this_pass": float64(2),
+			"work_remaining":    "",
+			"needs_human":       false,
+			"human_note":        "",
+			"summary":           "shipped",
 		},
 	}
 	if err := VerifySchema(bad, wf); err == nil {
-		t.Error("verdict_output missing `family` should fail schema validation")
+		t.Error("campaign_output missing `feature_complete` should fail schema validation")
 	}
 
-	// Out-of-enum `family` value.
-	hallucinatedFamily := &Fixture{
+	// Wrong type on `commits_this_pass` (int field carrying a string).
+	wrongType := &Fixture{
 		Bot:  "feature-dev",
-		Node: "reviewer_gpt",
+		Node: "campaign",
 		Output: map[string]interface{}{
-			"approved":      true,
-			"family":        "missing-patch",
-			"blockers":      []interface{}{},
-			"fix_plan":      "",
-			"confidence":    "high",
-			"scanned_areas": []interface{}{},
+			"feature_complete":  true,
+			"commits_this_pass": "two",
+			"work_remaining":    "",
+			"needs_human":       false,
+			"human_note":        "",
+			"summary":           "shipped",
 		},
 	}
-	if err := VerifySchema(hallucinatedFamily, wf); err == nil {
-		t.Error("verdict_output with out-of-enum `family` should fail schema validation")
+	if err := VerifySchema(wrongType, wf); err == nil {
+		t.Error("campaign_output with string commits_this_pass should fail schema validation")
 	}
 }

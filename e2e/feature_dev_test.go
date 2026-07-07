@@ -2,327 +2,253 @@ package e2e
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// featureDevStubInputs mirrors what the runtime would receive from a
-// real launch: the `feature_prompt` and `workspace_dir` mapped via
-// `vars:` defaults. The stub never reads them — the dev-phase stubs
-// return canned outputs — but supplying them keeps the run.json
-// inspect-able and reflects the live invocation path.
-var featureDevStubInputs = map[string]interface{}{
-	"feature_prompt": "stub: add Answer() int returning 42 in answer.go",
-	"workspace_dir":  "/tmp/feature-dev-stub",
+// featureDevState models feature_dev's v2 "one agent ships the feature"
+// shape (ADR-058, sibling of whole_improve_loop's campaignState): a single
+// adaptive `campaign` agent implements + commits the feature slice by slice
+// (git is the durable state), then the deterministic build/test gate
+// re-checks the tree and the continuation loop runs another pass until the
+// campaign reports feature_complete AND the tree is green. The stub drives
+// the ONE property the control flow depends on: gate.converged =
+// verify_run.passed ∧ campaign.feature_complete.
+type featureDevState struct {
+	// completeBy: the campaign reports feature_complete=true on/after this
+	// pass (1-based). Earlier passes report false with work remaining.
+	completeBy   int
+	pass         int      // how many campaign passes have run
+	failLogsSeen []string // the input.fail_log the campaign saw on each pass
 }
 
-// devPhaseStubs registers stubs for plan / act / simplify so the
-// alternating review loop receives a session-id chain. All three nodes
-// must produce a session id because subsequent edges relay it via
-// `with {_session_id: "{{outputs.X._session_id}}"}` mappings.
-func devPhaseStubs(exec *scenarioExecutor) {
-	exec.on("plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
+// stubFeatureDevCampaign registers the baseline stubs for a green
+// continuation: campaign (the adaptive agent), the verify_build→verify_run
+// gate (green), and finalize_mr. Individual tests override a node afterward
+// (later .on wins) to exercise a red verify pass or the MR path.
+func stubFeatureDevCampaign(exec *scenarioExecutor, st *featureDevState) {
+	exec.on("campaign", func(in map[string]interface{}) (map[string]interface{}, error) {
+		st.pass++
+		fl := ""
+		if raw, ok := in["fail_log"]; ok {
+			fl = strings.TrimSpace(toStr(raw))
+		}
+		st.failLogsSeen = append(st.failLogsSeen, fl)
+		complete := st.pass >= st.completeBy
+		commits := 2
+		remaining := "wire the handler + its tests"
+		if complete {
+			commits = 1
+			remaining = ""
+		}
 		return map[string]interface{}{
-			"_session_id": "sess-plan-1",
-			"_tokens":     200,
-			"_cost_usd":   0.02,
+			"feature_complete":  complete,
+			"commits_this_pass": commits,
+			"work_remaining":    remaining,
+			"needs_human":       false,
+			"human_note":        "",
+			"summary":           "shipped feature slices this pass",
+			"_tokens":           10,
 		}, nil
 	})
-	exec.on("act", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"_session_id": "sess-act-1",
-			"_tokens":     400,
-			"_cost_usd":   0.04,
-		}, nil
+	exec.on("verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
 	})
-	exec.on("simplify", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"_session_id": "sess-simp-1",
-			"_tokens":     150,
-			"_cost_usd":   0.015,
-		}, nil
+	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
-}
-
-// commitPhaseStubs registers prepare_commit + commit_changes stubs that
-// produce a schema-valid commit_output and a successful commit_result.
-// Tests can override commit_changes to assert it is called with the
-// expected relayed fields (see TestVibeFeatureDev_CommitInputRelay).
-func commitPhaseStubs(exec *scenarioExecutor) {
-	exec.on("prepare_commit", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("finalize_mr", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{
-			"_session_id":  "sess-commit-1",
-			"type":         "feat",
-			"scope":        "answer",
-			"subject":      "add Answer() returning 42",
-			"full_message": "feat(answer): add Answer() returning 42",
-			"files":        []interface{}{"answer.go"},
-			"committed":    false,
-			"_tokens":      120,
-		}, nil
-	})
-	exec.on("commit_changes", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"success": true,
-			"output":  "[main abc1234] feat(answer): add Answer() returning 42",
+			"opened": true, "url": "https://forge/mr/1", "branch": "iterion/improve/x",
+			"back_linked": false, "skipped_reason": "", "summary": "opened", "_tokens": 5,
 		}, nil
 	})
 }
 
-// approveVerdict returns the canonical "approved" verdict shape for the
-// given reviewer family. Both reviewers share the same output schema
-// (`verdict_output`) so the family is the only distinguishing field.
-func approveVerdict(family string) map[string]interface{} {
-	return map[string]interface{}{
-		"approved":      true,
-		"family":        family,
-		"blockers":      []interface{}{},
-		"fix_plan":      "",
-		"confidence":    "high",
-		"scanned_areas": []interface{}{"pkg/runtime"},
-		"_session_id":   "sess-rev-" + family,
-		"_tokens":       100,
-	}
-}
-
-// rejectVerdict returns a "rejected with blockers" verdict that will
-// route the run through the same-family fixer per the bot's edge
-// conditions (`!approved && family == 'X' && length(blockers) > 0`).
-func rejectVerdict(family string) map[string]interface{} {
-	return map[string]interface{}{
-		"approved":      false,
-		"family":        family,
-		"blockers":      []interface{}{"missing test"},
-		"fix_plan":      "add a Go test for Answer()",
-		"confidence":    "high",
-		"scanned_areas": []interface{}{"pkg/runtime"},
-		"_session_id":   "sess-rev-" + family,
-		"_tokens":       100,
-	}
-}
-
-// TestVibeFeatureDev_HappyPath drives the canonical end-to-end flow:
-//
-//	plan → act → simplify → alt → reviewer_claude(approve) →
-//	streak_check → alt → reviewer_gpt(approve) → streak_check.stop →
-//	prepare_commit → commit_changes(success:true) → done
-//
-// Asserts: a single commit was produced, no fixers were called, and
-// the run reached `finished`.
-func TestVibeFeatureDev_HappyPath(t *testing.T) {
+// TestVibeFeatureDev_ConvergesFirstPass pins the fast path: the campaign
+// reports feature_complete=true on the first pass and the gate is green, so
+// the run converges immediately — one campaign pass, straight to done
+// (open_mr defaults false → no MR).
+func TestVibeFeatureDev_ConvergesFirstPass(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
-
-	devPhaseStubs(exec)
-	commitPhaseStubs(exec)
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("claude"), nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("gpt"), nil
-	})
+	st := &featureDevState{completeBy: 1}
+	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vfd-happy", featureDevStubInputs); err != nil {
+	if err := eng.Run(context.Background(), "run-fd-first", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-
-	run, err := s.LoadRun(context.Background(), "run-vfd-happy")
+	run, err := s.LoadRun(context.Background(), "run-fd-first")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
 	if run.Status != store.RunStatusFinished {
 		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
 	}
-	if exec.callCount("commit_changes") != 1 {
-		t.Errorf("expected commit_changes once, got %d", exec.callCount("commit_changes"))
+	if got := exec.callCount("campaign"); got != 1 {
+		t.Errorf("campaign called %d times, want 1 (feature_complete + green on the first pass converges immediately)", got)
 	}
-	if exec.wasCalled("fix_claude") || exec.wasCalled("fix_gpt") {
-		t.Errorf("no fixer should run on happy path (claude=%d, gpt=%d)",
-			exec.callCount("fix_claude"), exec.callCount("fix_gpt"))
-	}
-	for _, devNode := range []string{"plan", "act", "simplify", "prepare_commit"} {
-		if exec.callCount(devNode) != 1 {
-			t.Errorf("expected %s once, got %d", devNode, exec.callCount(devNode))
-		}
+	if exec.wasCalled("finalize_mr") {
+		t.Errorf("finalize_mr fired with open_mr=false — the MR path must be opt-in")
 	}
 }
 
-// TestVibeFeatureDev_FixThenCommit simulates a single fix cycle before
-// reaching the commit:
-//
-//	round 1: reviewer_claude rejects → fix_claude
-//	round 2: reviewer_gpt approves → streak_check (no streak yet — gpt
-//	         saw a fix between rounds, not a reviewer approval)
-//	round 3: reviewer_claude approves → streak_check.stop → commit
-//
-// Asserts: fix_claude ran exactly once, commit_changes once, run finished.
-func TestVibeFeatureDev_FixThenCommit(t *testing.T) {
+// TestVibeFeatureDev_ContinuesUntilComplete is the canonical v2 flow: the
+// campaign reports feature_complete=false on pass 1 (work remains) then true
+// on pass 2, the deterministic gate is green both times, and the continuation
+// loop runs a second campaign pass before converging.
+func TestVibeFeatureDev_ContinuesUntilComplete(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
-
-	devPhaseStubs(exec)
-	commitPhaseStubs(exec)
-
-	claudeCalls := 0
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		claudeCalls++
-		if claudeCalls == 1 {
-			return rejectVerdict("claude"), nil
-		}
-		return approveVerdict("claude"), nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("gpt"), nil
-	})
-	exec.on("fix_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"applied":                true,
-			"summary":                "added missing test",
-			"pushback":               []interface{}{},
-			"pushback_justification": "",
-			"_session_id":            "sess-fix-claude-1",
-			"_tokens":                250,
-		}, nil
-	})
+	st := &featureDevState{completeBy: 2}
+	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vfd-fix", featureDevStubInputs); err != nil {
+	if err := eng.Run(context.Background(), "run-fd-continue", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-
-	run, err := s.LoadRun(context.Background(), "run-vfd-fix")
+	run, err := s.LoadRun(context.Background(), "run-fd-continue")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
 	if run.Status != store.RunStatusFinished {
 		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
 	}
-	if exec.callCount("fix_claude") != 1 {
-		t.Errorf("expected fix_claude once, got %d", exec.callCount("fix_claude"))
+	if got := exec.callCount("campaign"); got != 2 {
+		t.Errorf("campaign called %d times, want 2 (pass 1 incomplete → continuation → pass 2 complete)", got)
 	}
-	if exec.callCount("commit_changes") != 1 {
-		t.Errorf("expected commit_changes once, got %d", exec.callCount("commit_changes"))
+	if got := exec.callCount("verify_run"); got != 2 {
+		t.Errorf("verify_run called %d times, want 2 (the deterministic gate runs each pass)", got)
+	}
+	// Both passes green → the continuation was driven by feature_complete=false,
+	// not a red build; the fail_log must have stayed empty.
+	for i, fl := range st.failLogsSeen {
+		if fl != "" {
+			t.Errorf("pass %d saw fail_log %q, want empty (green gate → continuation, not a red-fix)", i+1, fl)
+		}
 	}
 }
 
-// TestVibeFeatureDev_LoopExhausted forces the review loop to never
-// converge: claude always approves, gpt always rejects with blockers.
-// The bounded `review_loop(15)` exhausts without a cross-family streak,
-// and the bot FAILS HONESTLY (routes to the fail node) rather than
-// silently committing unreviewed work — see "fail honestly on loop
-// exhaustion" (13dbfb53).
-//
-// Asserts: the run fails (reaches the fail node) and commit_changes was
-// NEVER called (no false commit on exhaustion).
-func TestVibeFeatureDev_LoopExhausted(t *testing.T) {
+// TestVibeFeatureDev_RedVerifyRoutesBackToCampaign pins the tight
+// real-feedback loop: the campaign claims feature_complete every pass, but
+// the deterministic gate is RED on pass 1 (the campaign broke the build) and
+// green on pass 2. converged = green ∧ feature_complete, so the red build
+// must route back to campaign WITH the failure log even though the agent
+// claimed completion.
+func TestVibeFeatureDev_RedVerifyRoutesBackToCampaign(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
-
-	devPhaseStubs(exec)
-	commitPhaseStubs(exec)
-
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("claude"), nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return rejectVerdict("gpt"), nil
-	})
-	exec.on("fix_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"applied":                true,
-			"summary":                "tried",
-			"pushback":               []interface{}{},
-			"pushback_justification": "",
-			"_session_id":            "sess-fix-gpt-1",
-			"_tokens":                250,
-		}, nil
+	st := &featureDevState{completeBy: 1} // the agent claims done every pass
+	stubFeatureDevCampaign(exec, st)
+	verifyCalls := 0
+	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		verifyCalls++
+		if verifyCalls == 1 {
+			return map[string]interface{}{
+				"passed": false, "skipped": false, "exit_code": 1,
+				"log_tail": "stub build failure: undefined symbol NewHandler", "_tokens": 1,
+			}, nil
+		}
+		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	// Loop exhaustion must surface as an error (the bot routes to the
-	// fail node), not a silent success that commits unreviewed work.
-	if err := eng.Run(context.Background(), "run-vfd-exhausted", featureDevStubInputs); err == nil {
-		t.Fatal("Run: expected loop exhaustion to fail honestly (reach fail node), got nil error")
+	if err := eng.Run(context.Background(), "run-fd-red", nil); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-
-	run, err := s.LoadRun(context.Background(), "run-vfd-exhausted")
+	run, err := s.LoadRun(context.Background(), "run-fd-red")
 	if err != nil {
 		t.Fatalf("LoadRun: %v", err)
 	}
-	if run.Status != store.RunStatusFailed {
-		t.Fatalf("status = %s, want %s (loop exhaustion fails honestly)",
-			run.Status, store.RunStatusFailed)
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
 	}
-	if exec.callCount("commit_changes") != 0 {
-		t.Errorf("commit_changes should NOT run when reviewers never streak (got %d)",
-			exec.callCount("commit_changes"))
+	if got := exec.callCount("campaign"); got != 2 {
+		t.Errorf("campaign called %d times, want 2 (a red gate forces a fix pass even though the agent claimed feature_complete)", got)
+	}
+	if len(st.failLogsSeen) < 2 || !strings.Contains(st.failLogsSeen[1], "stub build failure") {
+		t.Errorf("second campaign pass fail_log = %v, want it to carry the real build failure so the agent fixes what it broke", st.failLogsSeen)
 	}
 }
 
-// TestVibeFeatureDev_CommitInputRelay verifies that the
-// prepare_commit → commit_changes edge correctly relays the
-// `with { full_message, files, workspace_dir }` mapping. The
-// commit_changes stub captures its input and the test inspects what
-// the runtime templated in from prepare_commit.outputs and vars.
-func TestVibeFeatureDev_CommitInputRelay(t *testing.T) {
+// TestVibeFeatureDev_MRPathOnConverge pins the opt-in MR path: with
+// open_mr=true a converged run opens the MR/PR (finalize_mr) before
+// finishing — the issue-label → PR lineage.
+func TestVibeFeatureDev_MRPathOnConverge(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
 	exec := newScenarioExecutor()
-
-	devPhaseStubs(exec)
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("claude"), nil
-	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("gpt"), nil
-	})
-
-	expectedFiles := []interface{}{"answer.go", "answer_test.go"}
-	expectedMessage := "feat(answer): add Answer() returning 42\n\nWith a Go test."
-	exec.on("prepare_commit", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"_session_id":  "sess-commit-1",
-			"type":         "feat",
-			"scope":        "answer",
-			"subject":      "add Answer() returning 42",
-			"full_message": expectedMessage,
-			"files":        expectedFiles,
-			"committed":    false,
-			"_tokens":      120,
-		}, nil
-	})
-
-	var capturedInput map[string]interface{}
-	exec.on("commit_changes", func(input map[string]interface{}) (map[string]interface{}, error) {
-		capturedInput = input
-		return map[string]interface{}{
-			"success": true,
-			"output":  "[main abc1234] feat(answer): add Answer() returning 42",
-		}, nil
-	})
+	st := &featureDevState{completeBy: 1}
+	stubFeatureDevCampaign(exec, st)
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), "run-vfd-relay", featureDevStubInputs); err != nil {
+	inputs := map[string]interface{}{"open_mr": true}
+	if err := eng.Run(context.Background(), "run-fd-mr", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	run, err := s.LoadRun(context.Background(), "run-fd-mr")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if !exec.wasCalled("finalize_mr") {
+		t.Errorf("finalize_mr did not fire with open_mr=true — the converged series must open an MR")
+	}
+}
 
-	if capturedInput == nil {
-		t.Fatalf("commit_changes was never invoked")
+// TestVibeFeatureDev_Structural pins the v2 IR shape: the campaign entry,
+// the adaptive campaign/verify_build agents, the deterministic verify_run
+// tool + gate/mr_gate computes, and the ABSENCE of every retired v1 node
+// (the plan/act/simplify session chain and the cross-family review/fix/
+// commit machinery). Drift here — e.g. reintroducing a blocking upfront
+// plan node or a reviewer — breaks the ADR-058 mechanism silently.
+func TestVibeFeatureDev_Structural(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
+
+	if wf.Entry != "campaign" {
+		t.Errorf("workflow entry = %q, want %q (the mission starts working immediately — no blocking upfront plan node)", wf.Entry, "campaign")
 	}
-	if got, _ := capturedInput["full_message"].(string); got != expectedMessage {
-		t.Errorf("full_message relay: got %q, want %q", got, expectedMessage)
+	for _, id := range []string{"campaign", "verify_build", "finalize_mr"} {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			t.Fatalf("workflow missing expected agent node %q", id)
+		}
+		if _, ok := node.(*ir.AgentNode); !ok {
+			t.Errorf("node %q is %T, want *ir.AgentNode (adaptive)", id, node)
+		}
 	}
-	if got, _ := capturedInput["workspace_dir"].(string); got != featureDevStubInputs["workspace_dir"] {
-		t.Errorf("workspace_dir relay: got %q, want %q", got, featureDevStubInputs["workspace_dir"])
+	if node, ok := wf.Nodes["verify_run"]; !ok {
+		t.Errorf("workflow missing expected tool node %q", "verify_run")
+	} else if _, ok := node.(*ir.ToolNode); !ok {
+		t.Errorf("node %q is %T, want *ir.ToolNode (deterministic gate)", "verify_run", node)
 	}
-	gotFiles, _ := capturedInput["files"].([]interface{})
-	if len(gotFiles) != len(expectedFiles) {
-		t.Errorf("files relay: got %d files, want %d", len(gotFiles), len(expectedFiles))
+	for _, id := range []string{"gate", "mr_gate"} {
+		node, ok := wf.Nodes[id]
+		if !ok {
+			t.Fatalf("workflow missing expected compute node %q", id)
+		}
+		if _, ok := node.(*ir.ComputeNode); !ok {
+			t.Errorf("node %q is %T, want *ir.ComputeNode (deterministic)", id, node)
+		}
+	}
+	// The retired v1 dev-chain + review machinery must be gone.
+	for _, id := range []string{
+		"plan", "act", "simplify",
+		"alt", "reviewer_claude", "reviewer_gpt", "streak_check",
+		"fix_claude", "fix_gpt", "prepare_commit", "commit_changes",
+	} {
+		if _, ok := wf.Nodes[id]; ok {
+			t.Errorf("retired v1 node %q is still present — v2 is one campaign agent, not the plan/act/review assembly line", id)
+		}
 	}
 }
