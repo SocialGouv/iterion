@@ -8,14 +8,11 @@ import { useServerInfoStore } from "@/store/serverInfo";
 
 interface Props {
   bot: FirstClassBot;
-  // Called when the user submits the launcher (form or bare Start) with
-  // the launcher var map and the optional form answer. The parent
-  // (WhatsNextView) launches the bot with the vars and stashes the
-  // form answer to auto-submit into the matching human turn.
-  onLaunch?: (params: {
-    vars: Record<string, string>;
-    formAnswer?: FormAnswer;
-  }) => void;
+  // Called when the user submits the launcher (form or bare Start)
+  // with the launch var map. When the bot declares a `seedVar`, the
+  // launcher form's answer text is already folded into the vars under
+  // that name (the bot reads it as the first operator message).
+  onLaunch?: (params: { vars: Record<string, string> }) => void;
   busy?: boolean;
   errorMessage?: string | null;
 }
@@ -58,19 +55,17 @@ export default function SessionLauncher({
   );
   const launch = (formAnswer?: FormAnswer) => {
     if (!onLaunch || busy || !varsReady) return;
-    onLaunch({ vars, formAnswer });
+    // Seed-var wiring: the launcher form is a single question whose
+    // answer (a canned preset or the operator's own text) becomes the
+    // bot's first message via vars[seedVar].
+    const next = { ...vars };
+    if (bot.seedVar && formAnswer) {
+      const first = Object.values(formAnswer)[0];
+      const text = Array.isArray(first) ? first.join(", ") : first ?? "";
+      if (text.trim() !== "") next[bot.seedVar] = text.trim();
+    }
+    onLaunch({ vars: next });
   };
-  // Fast-path launch: skip the priorities form + the explore/propose
-  // survey loop, route the workflow straight to the board-picker via
-  // vars.mode. The bot's classify_entry compute reads vars.mode and
-  // routes to load_dispatch_candidates. Empty formAnswer so the
-  // ask_priorities auto-submit effect is a no-op (that human node
-  // isn't reached on the fast path).
-  const launchDispatchOnly = () => {
-    if (!onLaunch || busy || !varsReady) return;
-    onLaunch({ vars: { ...vars, mode: "dispatch_only" }, formAnswer: undefined });
-  };
-  const supportsFastDispatch = Boolean(bot.supportsDispatchOnly);
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-4">
@@ -132,22 +127,6 @@ export default function SessionLauncher({
           </div>
         )}
 
-        {supportsFastDispatch && (
-          <div className="pt-3 border-t border-border-subtle space-y-1">
-            <p className="text-micro text-fg-subtle">
-              Skip the survey — pick directly from the current board:
-            </p>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy || !varsReady}
-              onClick={launchDispatchOnly}
-              title="Skip explore + propose_roadmap. Goes straight to a checkbox of current backlog + ready items."
-            >
-              {busy ? "Starting…" : "Dispatch existing board items"}
-            </Button>
-          </div>
-        )}
       </div>
     </div>
   );

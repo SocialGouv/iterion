@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { humanStatus } from "./WhatsNextView";
+import { humanStatus } from "./whatsNextView/humanStatus";
 
-describe("WhatsNextView.humanStatus", () => {
+describe("humanStatus", () => {
   it("shows progress phases with sentence-case + ellipsis", () => {
     expect(humanStatus("launching", null)).toBe("Launching…");
     expect(humanStatus("submitting", "running")).toBe("Submitting…");

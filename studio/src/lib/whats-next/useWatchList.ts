@@ -6,11 +6,6 @@ import { getIssue, type NativeIssue } from "@/api/native";
 import type { RunEvent } from "@/api/runs";
 import { useRunStore } from "@/store/run";
 
-const DISPATCH_NODE_IDS: ReadonlySet<string> = new Set([
-  "ask_which_to_process",
-  "ask_which_to_dispatch_more",
-]);
-
 const POLL_INTERVAL_MS = 15_000;
 
 const STORAGE_PREFIX_OBSERVED = "iterion.watchlist.observed:";
@@ -36,19 +31,17 @@ export interface UseWatchListResult {
   acknowledgeUpdates: () => void;
 }
 
-// deriveWatchedIds is the MVP3b watch-list source of truth. It unions
-// the server-authoritative list (Run.WatchedIssueIDs, mirrored into
-// RunHeader — durable across reloads, captures every dispatch path)
-// with the event-derived list (live during the session, before the next
-// snapshot refresh surfaces a fresh stamp). Server entries lead so
-// ordering is stable across reloads; legacy runs persisted before the
-// field existed fall back to the event list alone (serverWatched
-// undefined). The union dedups while preserving first-seen order.
+// deriveWatchedIds — the watch-list source of truth is the
+// server-authoritative Run.WatchedIssueIDs, stamped from any node
+// output carrying `dispatched_ids` (whats-next v2's nexie turn output
+// declares it). The v1 event-derived seeding (checkbox answers on the
+// removed ask_which_to_* human nodes) is gone — Nexie dispatches
+// through board tools and the server stamp covers every path.
 export function deriveWatchedIds(
   serverWatched: ReadonlyArray<string> | undefined,
-  events: ReadonlyArray<RunEvent>,
+  _events: ReadonlyArray<RunEvent>,
 ): string[] {
-  return dedupeNonEmpty([...(serverWatched ?? []), ...extractDispatchedIds(events)]);
+  return dedupeNonEmpty([...(serverWatched ?? [])]);
 }
 
 function dedupeNonEmpty(ids: ReadonlyArray<string>): string[] {
@@ -59,30 +52,6 @@ function dedupeNonEmpty(ids: ReadonlyArray<string>): string[] {
     if (seen.has(id)) continue;
     seen.add(id);
     out.push(id);
-  }
-  return out;
-}
-
-function extractDispatchedIds(events: ReadonlyArray<RunEvent>): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const evt of events) {
-    if (evt.type !== "human_answers_recorded") continue;
-    if (!evt.node_id || !DISPATCH_NODE_IDS.has(evt.node_id)) continue;
-    const answers = evt.data?.answers as Record<string, unknown> | undefined;
-    const raw = answers?.["selected_issue_ids"];
-    if (!Array.isArray(raw)) continue;
-    for (const v of raw) {
-      if (typeof v !== "string" || v.length === 0) continue;
-      // Defence-in-depth against a regressed server re-introducing a
-      // stringified array ("[]" / "[native:x]") as an element — those are
-      // never real issue ids and produced the phantom "[]" watch row +
-      // 404 spam (bilan whats-next finding #5; backend fix ed7caa5f).
-      if (v.startsWith("[")) continue;
-      if (seen.has(v)) continue;
-      seen.add(v);
-      out.push(v);
-    }
   }
   return out;
 }

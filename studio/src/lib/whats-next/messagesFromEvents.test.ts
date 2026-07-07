@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import type { RunEvent, RunSnapshot } from "@/api/runs";
+import type { RunEvent } from "@/api/runs";
 import {
   FIRST_CLASS_BOTS,
   type FirstClassBot,
@@ -26,25 +26,7 @@ function evt(
   };
 }
 
-function snapshotWith(
-  outputs: Record<string, Record<string, unknown>>,
-): RunSnapshot {
-  return {
-    run: {
-      id: "run_test",
-      workflow_name: "whats-next",
-      status: "running",
-      created_at: "",
-      updated_at: "",
-      active_duration_ms: 0,
-      checkpoint: { outputs },
-    },
-    executions: [],
-    last_seq: 0,
-  };
-}
-
-describe("messagesFromEvents", () => {
+describe("messagesFromEvents (whats-next v2)", () => {
   it("returns no messages when the stream is empty", () => {
     nextSeq = 1;
     const out = messagesFromEvents({
@@ -55,41 +37,135 @@ describe("messagesFromEvents", () => {
     expect(out).toEqual([]);
   });
 
-  it("pushes a running banner on node_started for an agent node", () => {
+  it("pushes a running banner on node_started for the nexie agent", () => {
     nextSeq = 1;
     const out = messagesFromEvents({
       bot: whatsNext,
-      events: [evt("node_started", { node_id: "explore" })],
+      events: [evt("node_started", { node_id: "nexie" })],
       snapshot: null,
     });
     expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
       kind: "banner",
-      nodeId: "explore",
+      nodeId: "nexie",
       status: "running",
-      label: "Surveying the repository",
+      label: "Nexie is working",
     });
   });
 
-  it("flips the banner to done on node_finished (summary lives on the survey card)", () => {
+  it("keeps seed and gate silent", () => {
     nextSeq = 1;
     const out = messagesFromEvents({
       bot: whatsNext,
       events: [
-        evt("node_started", { node_id: "explore" }),
-        evt("node_finished", { node_id: "explore" }),
+        evt("node_started", { node_id: "seed" }),
+        evt("node_finished", { node_id: "seed" }),
+        evt("node_started", { node_id: "gate" }),
+        evt("node_finished", { node_id: "gate" }),
       ],
-      snapshot: snapshotWith({ explore: { summary: "A short summary." } }),
+      snapshot: null,
     });
-    // Banner closes + survey-card with the summary appears below it.
-    expect(out).toHaveLength(2);
+    expect(out).toEqual([]);
+  });
+
+  it("renders the chat pause with Nexie's reply (instructions) as the prompt, then flips to answered", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      bot: whatsNext,
+      events: [
+        evt("node_started", { node_id: "chat" }),
+        evt("human_input_requested", {
+          node_id: "chat",
+          data: {
+            interaction_id: "run_test_chat",
+            instructions: "Voici mon analyse — je recommande le ticket A.",
+            questions: { reply: "…", quick_replies: ["Dispatche A"] },
+          },
+        }),
+        evt("human_answers_recorded", {
+          node_id: "chat",
+          data: {
+            interaction_id: "run_test_chat",
+            answers: { message: "ok, dispatche A" },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+    expect(out).toHaveLength(1);
     expect(out[0]).toMatchObject({
-      kind: "banner",
-      status: "done",
+      kind: "human-question",
+      nodeId: "chat",
+      status: "answered",
+      prompt: "Voici mon analyse — je recommande le ticket A.",
+      userReply: "ok, dispatche A",
     });
+  });
+
+  it("folds assistant_text narration into a bubble, merging consecutive chunks of the same turn", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      bot: whatsNext,
+      events: [
+        evt("node_started", { node_id: "nexie" }),
+        evt("assistant_text", {
+          node_id: "nexie",
+          data: { text: "Je regarde le board.", iteration: 0 },
+        }),
+        evt("assistant_text", {
+          node_id: "nexie",
+          data: { text: "3 candidats sérieux.", iteration: 0 },
+        }),
+      ],
+      snapshot: null,
+    });
+    expect(out).toHaveLength(2);
     expect(out[1]).toMatchObject({
-      kind: "survey-card",
-      summary: "A short summary.",
+      kind: "assistant-text",
+      nodeId: "nexie",
+      text: "Je regarde le board.\n\n3 candidats sérieux.",
+    });
+  });
+
+  it("surfaces an ask_user pause on the AGENT node as a human-question keyed by interaction id", () => {
+    nextSeq = 1;
+    const out = messagesFromEvents({
+      bot: whatsNext,
+      events: [
+        evt("node_started", { node_id: "nexie" }),
+        evt("human_input_requested", {
+          node_id: "nexie",
+          data: {
+            interaction_id: "run_test_nexie_ask",
+            questions: {
+              ask_user_response: "Close these 4 stale tickets?",
+              _ask_user_options: [
+                { id: "yes", label: "Close all 4" },
+                { id: "no", label: "Keep them" },
+              ],
+              _ask_user_allow_free_text: false,
+            },
+          },
+        }),
+        evt("human_answers_recorded", {
+          node_id: "nexie",
+          data: {
+            interaction_id: "run_test_nexie_ask",
+            answers: { ask_user_response: "yes" },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+    // Banner (running) + the ask_user question card.
+    const question = out.find((m) => m.kind === "human-question");
+    expect(question).toMatchObject({
+      kind: "human-question",
+      nodeId: "nexie",
+      id: "run_test_nexie_ask",
+      status: "answered",
+      prompt: "Close these 4 stale tickets?",
+      userReply: "yes",
     });
   });
 
@@ -98,8 +174,8 @@ describe("messagesFromEvents", () => {
     const out = messagesFromEvents({
       bot: whatsNext,
       events: [
-        evt("node_started", { node_id: "explore" }),
-        evt("node_started", { node_id: "explore" }),
+        evt("node_started", { node_id: "nexie" }),
+        evt("node_started", { node_id: "nexie" }),
       ],
       snapshot: null,
     });
@@ -117,246 +193,5 @@ describe("messagesFromEvents", () => {
       snapshot: null,
     });
     expect(out).toEqual([]);
-  });
-
-  it("does NOT render carry_roadmap (silent kind)", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "carry_roadmap" }),
-        evt("node_finished", { node_id: "carry_roadmap" }),
-      ],
-      snapshot: null,
-    });
-    expect(out).toEqual([]);
-  });
-
-  it("renders a human-question on human_input_requested, then flips to answered on human_answers_recorded", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "ask_priorities" }),
-        evt("human_input_requested", {
-          node_id: "ask_priorities",
-          data: { iteration: 0 },
-        }),
-        evt("human_answers_recorded", {
-          node_id: "ask_priorities",
-          data: { iteration: 0, answers: { context: "ship the board" } },
-        }),
-      ],
-      snapshot: null,
-    });
-    expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({
-      kind: "human-question",
-      nodeId: "ask_priorities",
-      status: "answered",
-      userReply: "ship the board",
-    });
-  });
-
-  it("emits a roadmap-card after propose_roadmap when the snapshot carries a valid roadmap", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "propose_roadmap" }),
-        evt("node_finished", { node_id: "propose_roadmap" }),
-      ],
-      snapshot: snapshotWith({
-        propose_roadmap: {
-          long_term: [],
-          short_term: [{ title: "X", body: "y", assignee: "vibe", args: {} }],
-          next_action: { title: "A", body: "b", assignee: "", args: {} },
-          rationale: "because",
-        },
-      }),
-    });
-    expect(out).toHaveLength(2);
-    const card = out[1];
-    expect(card).toMatchObject({
-      kind: "roadmap-card",
-      iteration: 0,
-    });
-    if (card && card.kind === "roadmap-card") {
-      expect(card.roadmap.rationale).toBe("because");
-      expect(card.roadmap.short_term).toHaveLength(1);
-      expect(card.roadmap.next_action?.title).toBe("A");
-    }
-  });
-
-  it("creates a fresh roadmap-card on each revise iteration (loop)", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "revise_roadmap", data: { iteration: 1 } }),
-        evt("node_finished", { node_id: "revise_roadmap", data: { iteration: 1 } }),
-        evt("node_started", { node_id: "revise_roadmap", data: { iteration: 2 } }),
-        evt("node_finished", { node_id: "revise_roadmap", data: { iteration: 2 } }),
-      ],
-      snapshot: snapshotWith({
-        revise_roadmap: {
-          long_term: [],
-          short_term: [],
-          next_action: { title: "rev", body: "", assignee: "", args: {} },
-          rationale: "",
-        },
-      }),
-    });
-    // 2 banners (iter 1 + iter 2) + 2 roadmap cards
-    expect(out.filter((m) => m.kind === "banner")).toHaveLength(2);
-    expect(out.filter((m) => m.kind === "roadmap-card")).toHaveLength(2);
-  });
-
-  it("emits a survey-card after explore with summary + open_questions", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "explore" }),
-        evt("node_finished", { node_id: "explore" }),
-      ],
-      snapshot: snapshotWith({
-        explore: {
-          summary: "Surveyed iterion. 3 active areas.",
-          open_questions: [
-            "Should we prioritise board work?",
-            "Sandbox or runtime?",
-          ],
-          observations: "Long-form observation text...",
-          toplevel_dirs: ["pkg", "cmd", "examples"],
-          recent_commits: [{ hash: "abc", subject: "hi" }],
-        },
-      }),
-    });
-    // Banner + survey-card
-    expect(out).toHaveLength(2);
-    const card = out[1];
-    if (card?.kind === "survey-card") {
-      expect(card.summary).toBe("Surveyed iterion. 3 active areas.");
-      expect(card.openQuestions).toHaveLength(2);
-      expect(card.observations).toBe("Long-form observation text...");
-      expect(card.toplevelDirs).toEqual(["pkg", "cmd", "examples"]);
-    } else {
-      throw new Error("expected survey-card");
-    }
-  });
-
-  it("emits an issues-summary card after emit_action", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "emit_action" }),
-        evt("node_finished", { node_id: "emit_action" }),
-      ],
-      snapshot: snapshotWith({
-        emit_action: {
-          plan_path: "/tmp/p.md",
-          created_issues: [
-            {
-              id: "native:1",
-              title: "T1",
-              horizon: "next_action",
-              assignee: "vibe",
-            },
-          ],
-          failed_issues: [],
-          summary: "Created 1 issue.",
-        },
-      }),
-    });
-    const card = out.find((m) => m.kind === "issues-summary");
-    expect(card).toBeDefined();
-    if (card && card.kind === "issues-summary") {
-      expect(card.createdIssues).toHaveLength(1);
-      expect(card.createdIssues[0]!.id).toBe("native:1");
-      expect(card.summary).toBe("Created 1 issue.");
-    }
-  });
-
-  it("accumulates tool_started progress on the active banner", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "explore" }),
-        evt("tool_started", {
-          node_id: "explore",
-          data: { tool: "bash", input: { command: "ls -la" } },
-        }),
-        evt("tool_started", {
-          node_id: "explore",
-          data: { tool: "read_file", input: { file_path: "README.md" } },
-        }),
-        evt("tool_started", {
-          node_id: "explore",
-          data: { tool: "glob", input: { pattern: "**/*.go" } },
-        }),
-      ],
-      snapshot: null,
-    });
-    expect(out).toHaveLength(1);
-    const banner = out[0];
-    if (banner?.kind === "banner") {
-      expect(banner.progress?.toolCount).toBe(3);
-      expect(banner.progress?.latestTool).toBe("glob");
-      expect(banner.progress?.latestToolHint).toBe("**/*.go");
-    }
-  });
-
-  it("drops banner progress once the node finishes", () => {
-    nextSeq = 1;
-    const out = messagesFromEvents({
-      bot: whatsNext,
-      events: [
-        evt("node_started", { node_id: "explore" }),
-        evt("tool_started", {
-          node_id: "explore",
-          data: { tool: "bash", input: { command: "ls" } },
-        }),
-        evt("node_finished", { node_id: "explore" }),
-      ],
-      snapshot: snapshotWith({ explore: { summary: "Surveyed." } }),
-    });
-    // Banner + survey-card.
-    expect(out).toHaveLength(2);
-    const banner = out[0];
-    if (banner?.kind === "banner") {
-      expect(banner.status).toBe("done");
-      expect(banner.progress).toBeUndefined();
-    }
-  });
-
-  it("renders run_finished / run_failed / run_cancelled as session-closed markers", () => {
-    nextSeq = 1;
-    const finished = messagesFromEvents({
-      bot: whatsNext,
-      events: [evt("run_finished")],
-      snapshot: null,
-    });
-    expect(finished).toMatchObject([{ kind: "session-closed", reason: "finished" }]);
-
-    nextSeq = 1;
-    const failed = messagesFromEvents({
-      bot: whatsNext,
-      events: [evt("run_failed")],
-      snapshot: null,
-    });
-    expect(failed).toMatchObject([{ kind: "session-closed", reason: "failed" }]);
-
-    nextSeq = 1;
-    const cancelled = messagesFromEvents({
-      bot: whatsNext,
-      events: [evt("run_cancelled")],
-      snapshot: null,
-    });
-    expect(cancelled).toMatchObject([
-      { kind: "session-closed", reason: "cancelled" },
-    ]);
   });
 });

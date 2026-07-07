@@ -4,7 +4,6 @@ import { ExternalLinkIcon } from "@radix-ui/react-icons";
 
 import { cancelRun } from "@/api/runs";
 import { useConfirm } from "@/hooks/useConfirm";
-import { useUIStore } from "@/store/ui";
 import type { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
 import { humanStatus } from "./humanStatus";
@@ -74,7 +73,6 @@ export default function SessionHeader({
         )}
       </h2>
       <div className="flex items-baseline gap-3">
-        <QuickModeToggle />
         {session.runId && (
           <Link
             href={`/runs/${encodeURIComponent(session.runId)}`}
@@ -107,23 +105,3 @@ export default function SessionHeader({
   );
 }
 
-// QuickModeToggle is the SessionHeader control that flips the
-// ask_continue footer between the structured action+detail form and
-// the free-text Quick mode. Persisted via the ui store so the
-// operator's preference survives reloads + sessions.
-function QuickModeToggle() {
-  const quickMode = useUIStore((s) => s.whatsNextQuickMode);
-  const setQuickMode = useUIStore((s) => s.setWhatsNextQuickMode);
-  return (
-    <button
-      type="button"
-      onClick={() => setQuickMode(!quickMode)}
-      className={`text-micro hover:underline cursor-pointer ${
-        quickMode ? "text-accent-text" : "text-fg-subtle"
-      }`}
-      title="Quick mode: type a free-text instruction on the ask_continue turn instead of picking from the form. A dry-run banner lets you confirm the interpreted action."
-    >
-      {quickMode ? "⚡ Quick mode" : "Quick mode"}
-    </button>
-  );
-}

@@ -7,10 +7,7 @@ import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 
 import HumanChatTurn from "./HumanChatTurn";
-import IssuesSummaryCard from "./IssuesSummaryCard";
 import NodeBanner from "./NodeBanner";
-import RoadmapCard from "./RoadmapCard";
-import SurveyCard from "./SurveyCard";
 
 interface Props {
   messages: WhatsNextMessage[];
@@ -34,10 +31,11 @@ interface Props {
   // True while a submit is in-flight; disables inputs on the pending
   // human-question turn.
   busyMessageId?: string | null;
-  // When set, skip this message id while mapping — used by
-  // WhatsNextView to lift the pending human turn out of the inline
-  // transcript and into a fixed-footer slot below.
-  excludeMessageId?: string;
+  // When set, this pending human turn's INPUT is owned by the unified
+  // composer below the transcript: the turn still renders inline (the
+  // assistant bubble — Nexie's reply — must stay in the flow), but
+  // its own textarea/buttons are suppressed.
+  composerHandlesId?: string;
 }
 
 export default function ChatTranscript({
@@ -45,7 +43,7 @@ export default function ChatTranscript({
   bot,
   onHumanSubmit,
   busyMessageId = null,
-  excludeMessageId,
+  composerHandlesId,
 }: Props) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -66,20 +64,16 @@ export default function ChatTranscript({
   };
 
   // Re-pin to the bottom when the message count grows OR when the
-  // footer toggles (excludeMessageId set ↔ unset). Without the second
-  // dep the bottom panel growing/shrinking — e.g. AgentChatbox →
-  // pending HumanChatTurn footer with a larger form — would shift the
-  // visible region without firing a scrollIntoView, and the most
-  // recent message slips below the fold.
+  // composer takes/releases a pending turn (the footer height shifts).
   useEffect(() => {
     if (!atBottomRef.current) return;
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, excludeMessageId]);
+  }, [messages.length, composerHandlesId]);
 
   // ResizeObserver on the scroll container catches in-place height
   // changes that the deps array misses: the textarea growing as the
-  // user types, the WizardForm expanding when "Other" is picked, etc.
-  // Only fires the re-pin when the user is already at the bottom.
+  // user types, a bubble expanding, etc. Only fires the re-pin when
+  // the user is already at the bottom.
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
@@ -91,28 +85,25 @@ export default function ChatTranscript({
     return () => obs.disconnect();
   }, []);
 
-  const renderedMessages = excludeMessageId
-    ? messages.filter((m) => m.id !== excludeMessageId)
-    : messages;
-
   return (
     <div
       ref={scrollContainerRef}
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-3 space-y-4"
     >
-      {renderedMessages.map((m) => (
+      {messages.map((m) => (
         <MessageRow
           key={m.id}
           message={m}
           bot={bot}
           onHumanSubmit={onHumanSubmit}
           busy={m.kind === "human-question" && busyMessageId === m.id}
+          inputHidden={m.id === composerHandlesId}
         />
       ))}
-      {renderedMessages.length === 0 && (
+      {messages.length === 0 && (
         <p className="text-body text-fg-subtle italic">
-          The session will start as soon as iterion finishes the first survey.
+          The conversation will start as soon as Nexie's first turn begins.
         </p>
       )}
       <div ref={endRef} />
@@ -125,11 +116,13 @@ function MessageRow({
   bot,
   onHumanSubmit,
   busy,
+  inputHidden,
 }: {
   message: WhatsNextMessage;
   bot?: FirstClassBot;
   onHumanSubmit?: Props["onHumanSubmit"];
   busy: boolean;
+  inputHidden: boolean;
 }) {
   switch (message.kind) {
     case "banner":
@@ -140,6 +133,7 @@ function MessageRow({
         <HumanChatTurn
           message={message}
           form={form}
+          inputHidden={inputHidden}
           onSubmit={
             onHumanSubmit
               ? (outcome) => onHumanSubmit(message.id, outcome)
@@ -149,20 +143,10 @@ function MessageRow({
         />
       );
     }
-    case "roadmap-card":
-      return <RoadmapCard message={message} />;
-    case "issues-summary":
-      return <IssuesSummaryCard message={message} />;
-    case "survey-card":
-      return <SurveyCard message={message} />;
     case "session-closed":
       return <SessionClosedRow message={message} />;
-    case "plan-handed-off":
-      return <PlanHandedOffRow message={message} />;
     case "user-message":
       return <UserMessageRow message={message} />;
-    case "dispatch-candidates":
-      return <DispatchCandidatesRow message={message} />;
     case "assistant-text":
       return <NarrationRow message={message} />;
   }
@@ -184,38 +168,13 @@ function NarrationRow({
   );
 }
 
-// DispatchCandidatesRow is the tiny banner that surfaces the
-// load_dispatch_candidates output ("N candidates ready to pick"). The
-// real UX lives on the next human turn (ask_which_to_dispatch_more)
-// where the candidates list becomes a checkbox column — this row just
-// gives the operator a chronological hint that the agent ran.
-function DispatchCandidatesRow({
-  message,
-}: {
-  message: Extract<WhatsNextMessage, { kind: "dispatch-candidates" }>;
-}) {
-  const count = message.candidates.length;
-  const label =
-    count === 0
-      ? "No dispatchable items on the board"
-      : `${count} candidate${count === 1 ? "" : "s"} ready to pick`;
-  return (
-    <div className="rounded border border-info/30 bg-info-soft/30 px-3 py-2 text-micro text-fg-default">
-      <div className="font-medium">{label}</div>
-      {message.summary && (
-        <div className="mt-0.5 text-fg-muted">{message.summary}</div>
-      )}
-    </div>
-  );
-}
-
 // UserMessageRow renders an operator-queued chat message inline in
 // the transcript, anchored to the chronological position of the
 // originating `user_message_queued` event. The status pill makes the
 // lifecycle explicit — operators saw "delivered" and assumed the bot
 // had acted on the request, when in fact it only meant "now in the
-// agent's conversation context". The new labels distinguish "in
-// agent's context" from "agent read it" so the contract is clear.
+// agent's conversation context". The labels distinguish "in agent's
+// context" from "agent read it" so the contract is clear.
 function UserMessageRow({
   message,
 }: {
@@ -289,13 +248,11 @@ function SessionClosedRow({
 }: {
   message: Extract<WhatsNextMessage, { kind: "session-closed" }>;
 }) {
-  // "finished" no longer means "plan handed off" — that's now the
-  // dedicated PlanHandedOffRow milestone fired when emit_action lands.
   // A "finished" run reaches Done because the operator EXPLICITLY
-  // closed the session (action=close); "standby" / "I'm done for now"
-  // keeps the run paused and reachable, so it never lands here. The
-  // composer below stays live (it re-seeds a fresh session), so frame
-  // this as a soft close, not a dead end.
+  // closed the session; standby keeps the run paused and reachable,
+  // so it never lands here. The composer below stays live (it
+  // re-seeds a fresh session), so frame this as a soft close, not a
+  // dead end.
   const label =
     message.reason === "finished"
       ? "Session closed — send a message to start a fresh one."
@@ -313,45 +270,6 @@ function SessionClosedRow({
       className={`text-micro text-center italic border-t border-border-subtle pt-3 ${cls}`}
     >
       {label}
-    </div>
-  );
-}
-
-function PlanHandedOffRow({
-  message,
-}: {
-  message: Extract<WhatsNextMessage, { kind: "plan-handed-off" }>;
-}) {
-  // Copy intentionally does NOT mention ticket state — the actual
-  // initial state depends on the bot version (new DSL creates in
-  // backlog and lets the triage loop transition; older bots created
-  // straight in ready). The IssuesSummaryCard above shows the live
-  // list; the milestone just confirms emit_action landed.
-  //
-  // createdCount comes from the emit_action `created_issues` array,
-  // which some bot versions / degraded board-MCP runs leave empty even
-  // when the run summary reports issues materialised. Asserting "0
-  // issues created on the board" right above a summary that says "6
-  // materialised" reads as a failure/contradiction — so when the count
-  // is 0 we render the bare milestone and let the summary (below, and
-  // the IssuesSummaryCard above) carry the real detail.
-  const issueLabel =
-    message.createdCount === 1 ? "1 issue" : `${message.createdCount} issues`;
-  return (
-    <div className="border-t border-success/40 pt-3 text-center">
-      <div className="inline-flex items-center gap-2 rounded-full border border-success/40 bg-success-soft px-3 py-1 text-body text-success-fg">
-        <span aria-hidden="true">✓</span>
-        <span>
-          {message.createdCount > 0
-            ? `Plan handed off — ${issueLabel} created on the board`
-            : "Plan handed off"}
-        </span>
-      </div>
-      {message.summary && (
-        <div className="mt-1 text-micro italic text-fg-muted">
-          {message.summary}
-        </div>
-      )}
     </div>
   );
 }

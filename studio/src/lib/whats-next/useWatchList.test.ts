@@ -1,76 +1,32 @@
 import { describe, expect, it } from "vitest";
 
-import type { RunEvent } from "@/api/runs";
 import {
   deriveWatchedIds,
   formatUpdatesAsChatMessage,
   type WatchUpdate,
 } from "./useWatchList";
 
-function dispatchEvent(ids: string[], seq = 1): RunEvent {
-  return {
-    seq,
-    timestamp: "2026-05-28T10:00:00Z",
-    type: "human_answers_recorded",
-    run_id: "run-1",
-    node_id: "ask_which_to_process",
-    data: { answers: { selected_issue_ids: ids } },
-  };
-}
-
 describe("deriveWatchedIds", () => {
-  it("falls back to event-derived ids for legacy runs (server undefined)", () => {
-    expect(deriveWatchedIds(undefined, [dispatchEvent(["native:a", "native:b"])])).toEqual([
-      "native:a",
-      "native:b",
-    ]);
-  });
-
-  it("uses the server list as the primary, reload-durable source", () => {
+  it("uses the server list (Run.WatchedIssueIDs) as the sole source", () => {
     expect(deriveWatchedIds(["native:x", "native:y"], [])).toEqual([
       "native:x",
       "native:y",
     ]);
   });
 
-  it("unions server + event ids, server first, deduped", () => {
-    const got = deriveWatchedIds(
-      ["native:x", "native:a"],
-      [dispatchEvent(["native:a", "native:b"])],
-    );
-    expect(got).toEqual(["native:x", "native:a", "native:b"]);
+  it("dedupes while preserving first-seen order", () => {
+    expect(
+      deriveWatchedIds(["native:x", "native:a", "native:x"], []),
+    ).toEqual(["native:x", "native:a"]);
   });
 
-  it("drops empty/whitespace ids", () => {
+  it("drops empty ids", () => {
     expect(deriveWatchedIds(["native:x", ""], [])).toEqual(["native:x"]);
   });
 
-  it("returns empty when neither source has ids", () => {
+  it("returns empty when the server list is absent or empty", () => {
     expect(deriveWatchedIds(undefined, [])).toEqual([]);
     expect(deriveWatchedIds([], [])).toEqual([]);
-  });
-
-  it("ignores a stringified-array selected_issue_ids ('[]') — phantom-watch guard", () => {
-    // Bilan whats-next finding #5: a regressed server emitted
-    // selected_issue_ids as the STRING "[]" (not an array), which became a
-    // phantom watch row → GET /api/issues/%5B%5D 404 spam.
-    const evt = {
-      seq: 1,
-      timestamp: "2026-05-28T10:00:00Z",
-      type: "human_answers_recorded",
-      run_id: "run-1",
-      node_id: "ask_which_to_process",
-      data: { answers: { selected_issue_ids: "[]" } },
-    } as unknown as RunEvent;
-    expect(deriveWatchedIds(undefined, [evt])).toEqual([]);
-  });
-
-  it("drops stringified-array elements ('[]', '[native:x]') from the id list", () => {
-    expect(
-      deriveWatchedIds(undefined, [
-        dispatchEvent(["[]", "native:a", "[native:x]"]),
-      ]),
-    ).toEqual(["native:a"]);
   });
 });
 
