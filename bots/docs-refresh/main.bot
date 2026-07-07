@@ -227,6 +227,10 @@ vars:
   ## pass is one manifest→campaign→verify cycle; the run stops
   ## (shipping what is banked) when the docs are reported aligned +
   ## the gates are green, or when this cap is hit.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
 
 ## ─── Prompts ────────────────────────────────────────────────────

@@ -113,6 +113,10 @@ vars:
   ## hit. Sizes the declared continuation loop. Raise it (with the budget) for
   ## a big axis on a large repo; the agent commits in stride, so every pass
   ## banks real, landed work.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────

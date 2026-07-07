@@ -109,6 +109,10 @@ vars:
   ## is one campaign→verify cycle; the run stops (shipping what is banked)
   ## when the feature is reported complete + the tree is green, or when
   ## this cap is hit. Sizes the declared continuation loop.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────

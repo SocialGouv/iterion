@@ -113,6 +113,10 @@ vars:
 
   ## Phase 2 (v2, ADR-058): hard cap on review-campaign PASSES — each
   ## pass is one campaign→verify cycle over the run's cumulative diff.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
   max_review_passes: int = 5
 
 ## ─── Prompts : workflow-level escalation policy ────────────────────

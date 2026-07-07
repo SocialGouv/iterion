@@ -147,6 +147,10 @@ vars:
 
   ## Hard cap on continuation PASSES — the convergence backstop. Each
   ## pass is one manifest→campaign→verify cycle.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
   max_passes: int = 6
 
 
