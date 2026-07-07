@@ -17,18 +17,18 @@ import (
 // Store is isolated to the temp workspace (any handoff board issues stay
 // contained) and loaded as a bundle so Adry's skills mirror.
 //
-// Reliability invariants: scan_adrs + survey_code fire, and the run
-// produces ADRs (a commit beyond seed or files under docs/adr) or
-// converges. Then the quality panel grades the ADRs + value.
+// Reliability invariants (v2 ADR-058): scan_adrs + survey_code +
+// build_manifest + campaign + gate fire, and the run produces ADRs (a
+// commit beyond seed or files under docs/adr) or converges. Then the
+// quality panel grades the ADRs + value.
 //
-// Requires: claude CLI + OpenAI. Expected: ~20-40 min.
+// Requires: claude CLI. Expected: ~15-35 min.
 func TestLive_Bot_AdrCartograph(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireOpenAI(t)
 	t.Setenv("ITERION_TEST_STORE_DIR", "workspace") // isolate any handoff board issues
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-adr-cartograph-*")
@@ -86,7 +86,7 @@ func Handler(s *Store) http.Handler {
 		maxResumes:   10,
 	})
 
-	assertNodesFinished(t, res.events, "scan_adrs", "survey_code")
+	assertNodesFinished(t, res.events, "scan_adrs", "survey_code", "build_manifest", "campaign", "gate")
 	adrsWritten := len(gitOut(workspaceDir, "ls-files", "docs/adr")) > 0
 	committed := workspaceCommitCount(t, workspaceDir) > seedCommits
 	t.Logf("adr-cartograph outcome: adrFilesPresent=%v committed=%v", adrsWritten, committed)
