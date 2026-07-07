@@ -90,12 +90,12 @@ type RunHeader struct {
 	// overrides + cloud ceiling clamp), surfaced so the studio Overview
 	// draws budget meters with a denominator. Nil when the workflow
 	// declared no budget: block. See store.RunBudget.
-	Budget    *store.RunBudget `json:"budget,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
-	UpdatedAt      time.Time                `json:"updated_at"`
-	FinishedAt     *time.Time               `json:"finished_at,omitempty"`
-	Error          string                   `json:"error,omitempty"`
-	Checkpoint     *store.Checkpoint        `json:"checkpoint,omitempty"`
+	Budget     *store.RunBudget  `json:"budget,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+	UpdatedAt  time.Time         `json:"updated_at"`
+	FinishedAt *time.Time        `json:"finished_at,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	Checkpoint *store.Checkpoint `json:"checkpoint,omitempty"`
 	// WorkDir is the absolute filesystem path the run executed in
 	// (per-run worktree when Worktree is true, otherwise inherited cwd).
 	// Empty for runs created before this field was persisted; the studio
