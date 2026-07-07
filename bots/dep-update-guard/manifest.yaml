@@ -63,7 +63,6 @@ forge:
     # webhooks.Config.AuthorAllowlist via the orchestrator.
     author_allowlist: ["dependabot[bot]", "renovate[bot]"]
     launch_vars:
-      pr_review_mode: summary
       post_to_board: "false"
   rationale: |
     Vetty reads the PR's dependency bump, audits it for supply-chain
