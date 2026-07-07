@@ -1,8 +1,26 @@
 # Nexie — `whats-next` run bilans
 
-Orchestrator / board-triage bot. Surveys the repo, elicits priorities, proposes
-a roadmap, materialises it as kanban issues, and triages the board. See
-[bots/whats-next/](../../bots/whats-next/).
+Conversational co-CTO (v2: ONE agent in a chat loop — board intelligence,
+ticket curation against code reality, dispatch). See
+[bots/whats-next/](../../bots/whats-next/). Bilans before 2026-07-07 cover
+the v1 form state machine (survey → priorities form → roadmap → review form
+→ emit → dispatch pickers).
+
+## 2026-07-07 — v2 conversational rewrite, first live session (run 019f3beb)
+
+- Status: **validated (high value)** — replayed the exact scenario that killed v1 the same morning (run 019f3afc-era session 019f3b6b: operator asked for quick wins, got raw checkbox forms, gave up) and delivered everything v1 couldn't, in 2 turns.
+- Versions: bot whats-next **0.2.0** (v2 single-agent rewrite) · iterion c5960220e (worktree branch `worktree-nexie-v2-conversational`)
+- Method: CLI `iterion run` from the feature worktree, `--store-dir /home/jo/lab/ai/iterion/.iterion` (operator-visible store + REAL board, 13 backlog items), claude_code + claude-opus-4-8 forfait. Turn 2 via `iterion resume --answer message=…`. Containment: no dispatch instructed; one explicitly-instructed close of a verified-obsolete ticket.
+- Result: **2 turns, ~1m40 each** (turn 1: 09:31:33→09:33:15; turn 2: +99s LLM, 6007 tok, $0.40). Session left in standby (paused at `chat`) — the living co-CTO surface, reachable from the studio.
+- Value:
+  - Turn 1 ("quels quick wins ?"): analysed all 13 items, correctly split the 10 `source:evolve` epics from real candidates, flagged `0bc0c9ab` (Revi pass) as **blocked** (reviews branches that never ran) and `2304ee89` (Willy gap) as **probably obsolete — citing the commits that obsoleted it** (dc22b626 explore-mode, fb60b075 v2 rewrite, ADR-057) *unprompted*, recommended `2047e34d` (deadline robustness) with a sharp rationale, and offered next steps as quick-reply chips. Recommendation-first, French-mirrored — the exact contract.
+  - Turn 2 ("vérifie en détail, si confirmé ferme-le, ne touche à rien d'autre"): re-verified against git history (timeline v0.5.0 explore-mode → v2 rewrite 2026-07-03, prescribed mechanism gone, intent covered by v2), closed `2304ee89` → `done` **with a trace comment** (`comment_issue` + `close_issue`), touched nothing else. Guarded-curation behavior exactly as designed.
+  - Session continuity confirmed: turn 2 reused turn 1's claude session (`_session_id` loop-edge mapping) — zero re-analysis.
+  - 3 `assistant_text` narration events landed in the transcript (B2 works live); `quick_replies`/`dispatched_ids` emitted as real arrays after the prompt-contract fix.
+- Findings / engine hardening (both fixed in-branch):
+  1. **json-typed schema fields can arrive stringified** (`"[\"…\"]"`) from claude_code's formatting pass — first golden recording caught it. Hardened the studio quick_replies reader (server-side `extractStringIDs` already tolerated it) + pinned "real arrays" in the prompt. (`c5960220e`)
+  2. **Linked-worktree promotion claimed foreign workspaces** (HIGH): this run, launched from the Claude Code session worktree with `worktree: none`, got stamped `Worktree=true` with the session worktree as work_dir — close-time finalization would have created an `iterion/run/*` branch there and best-effort **FF'd the operator's checked-out `main` onto the feature branch's HEAD**. Root cause: `runPersistWorkspace`'s promotion matched ANY linked worktree, not just delegated ones. Fixed: promotion now requires explicit `WithWorkDir` delegation (dispatcher/studio paths keep it); pinned by `TestRunPersistWorkspace_WorkspaceAuthority`. (`c01f96fd5`; this run's run.json neutralized by hand.)
+- Lessons for next run: keep dogfooding from the operator store — the real board is what makes the curation behaviors measurable. Next session should exercise a real **dispatch** (set_bot + ready + WatchPanel pickup) and a **bulk confirmation** (ask_user options chips in the studio). The studio process must run the new build to render narration + chips.
 
 ## 2026-06-22 — z.ai/GLM-5.2 dogfood + mid-run anthropic failover (run 019ef04f-a5ff)
 
