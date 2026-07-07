@@ -265,6 +265,23 @@ type finalizeResult struct {
 func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.Logger) finalizeResult {
 	res := finalizeResult{}
 
+	// 0. Safety invariant: the worktree MUST be a dedicated tree, never
+	// the operator's live checkout. If it collapsed to the repo root — a
+	// phantom-worktree run whose WorkDir resolved to repoRoot (seen via
+	// RecoverFinalize on a run persisted with WorkDir==RepoRoot) — then
+	// the wip-bank `git commit` below runs IN the main checkout and lands
+	// on the operator's CURRENT branch, silently committing unrelated
+	// uncommitted work. The "never merge a wip-banked HEAD" guard in
+	// step 5 can't save this: the commit is already on their branch.
+	// Refuse outright — no commit, preserve as-is, warn.
+	if samePath(wc.wtPath, wc.repoRoot) {
+		if logger != nil {
+			logger.Warn("runtime: finalize: worktree path %s is the repo root — refusing to bank/promote (would commit on the operator's branch); preserving, recover any run output by hand", wc.wtPath)
+		}
+		res.PreserveWorktree = true
+		return res
+	}
+
 	// 1. Read the worktree's current HEAD.
 	finalSHA := readHEAD(wc.wtPath)
 	if finalSHA == "" {
@@ -893,6 +910,18 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 	}
 	if !r.Worktree || r.WorkDir == "" || r.RepoRoot == "" {
 		return nil // not a worktree run — nothing to recover
+	}
+	// Phantom-worktree guard: a run whose WorkDir collapsed to the repo
+	// root has no dedicated worktree to finalize — its WorkDir IS the
+	// operator's live checkout. Recovering it would bank uncommitted
+	// changes (possibly unrelated operator WIP) onto their current
+	// branch. Skip. finalizeWorktree enforces the same invariant as a
+	// backstop, but returning here avoids the misleading recovery logs.
+	if samePath(r.WorkDir, r.RepoRoot) {
+		if logger != nil {
+			logger.Warn("runtime: RecoverFinalize: run %s WorkDir %s == repo root — not a dedicated worktree; skipping recovery so uncommitted work is not banked onto the operator's branch", r.ID, r.WorkDir)
+		}
+		return nil
 	}
 	if r.FinalBranch != "" || r.FinalCommit != "" {
 		return nil // already finalized

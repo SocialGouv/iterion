@@ -90,6 +90,73 @@ func TestFinalizeWorktree_NoCommits(t *testing.T) {
 	}
 }
 
+// TestFinalizeWorktree_RefusesRepoRootAsWorktree — the safety invariant:
+// when the "worktree" path IS the repo root (a phantom-worktree run whose
+// WorkDir collapsed to the operator's live checkout), finalize must NEVER
+// git-commit there — doing so lands uncommitted work on the operator's
+// CURRENT branch. It refuses: no bank commit, no storage branch, and it
+// signals PreserveWorktree so the caller won't `git worktree remove` the
+// main repo.
+func TestFinalizeWorktree_RefusesRepoRootAsWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	// Dirty the live checkout with an uncommitted change — stands in for
+	// the operator's unrelated WIP (or the run's own uncommitted output).
+	writeFile(t, filepath.Join(repo, "dirty.txt"), "uncommitted\n")
+
+	res := finalizeWorktree(worktreeContext{
+		repoRoot:       repo,
+		wtPath:         repo, // the phantom: "worktree" == main checkout
+		originalBranch: "main",
+		originalTip:    originalTip,
+	}, finalizeOptions{runName: "phantom-run-0001", runID: "run_p"}, nil)
+
+	if res.FinalCommit != "" || res.FinalBranch != "" {
+		t.Fatalf("expected no promotion when wtPath==repoRoot, got %+v", res)
+	}
+	if !res.PreserveWorktree {
+		t.Errorf("PreserveWorktree = false, want true (must not clean the live checkout)")
+	}
+	// The operator's branch must be UNTOUCHED — no wip commit created.
+	if headNow := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "HEAD"))); headNow != originalTip {
+		t.Errorf("repo HEAD moved to %s (want %s) — finalize committed on the operator's branch", headNow, originalTip)
+	}
+	// The uncommitted change must still be uncommitted (not banked away).
+	if st := strings.TrimSpace(string(mustOutput(t, repo, "git", "status", "--porcelain"))); st == "" {
+		t.Errorf("working tree is clean — finalize banked the uncommitted change instead of leaving it")
+	}
+	// No storage branch either.
+	if br, _ := exec.Command("git", "-C", repo, "branch", "--list", "iterion/run/*").Output(); strings.TrimSpace(string(br)) != "" {
+		t.Errorf("storage branch created: %q — expected none", string(br))
+	}
+}
+
+// TestRecoverFinalize_SkipsPhantomWorktree — RecoverFinalize on a run
+// whose persisted WorkDir == RepoRoot (the phantom) must be a no-op: it
+// must not bank the live checkout's uncommitted changes onto the
+// operator's branch, and must not stamp FinalCommit/FinalBranch.
+func TestRecoverFinalize_SkipsPhantomWorktree(t *testing.T) {
+	repo, originalTip := initBareishRepo(t)
+	writeFile(t, filepath.Join(repo, "dirty.txt"), "uncommitted\n")
+
+	r := &store.Run{
+		ID:         "run_phantom",
+		Worktree:   true,
+		WorkDir:    repo,
+		RepoRoot:   repo, // collapsed to the operator's live checkout
+		BaseCommit: originalTip,
+		Status:     store.RunStatusCancelled,
+	}
+	if err := RecoverFinalize(context.Background(), tmpStore(t), r, nil); err != nil {
+		t.Fatalf("RecoverFinalize returned error: %v", err)
+	}
+	if r.FinalCommit != "" || r.FinalBranch != "" {
+		t.Errorf("RecoverFinalize stamped finalization (%q/%q) — expected skip", r.FinalCommit, r.FinalBranch)
+	}
+	if headNow := strings.TrimSpace(string(mustOutput(t, repo, "git", "rev-parse", "HEAD"))); headNow != originalTip {
+		t.Errorf("repo HEAD moved to %s (want %s) — recovery committed on the operator's branch", headNow, originalTip)
+	}
+}
+
 // TestFinalizeWorktree_HappyPath_FFCurrent — commits in the worktree,
 // main is clean, FF is possible → branch created + main fast-forwarded.
 func TestFinalizeWorktree_HappyPath_FFCurrent(t *testing.T) {
