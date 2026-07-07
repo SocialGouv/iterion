@@ -173,6 +173,13 @@ prompt campaign_system:
     - NC (Non conforme)   — violated: pinpoint the element (file:line +
                             a short code excerpt) and the exact problem.
     - NA (Non applicable) — no such content in scope (one-line reason).
+  EVERY candidates[] entry MUST carry an explicit `status` field with
+  one of exactly "C" / "NC" / "NA" (plus criterion, theme, title,
+  severity, file, line, problem, remediation, evidence for NC). The
+  deterministic gates count NC entries BY that field — an entry without
+  it would be mis-counted, so the gate treats a status-less entry that
+  carries a severity/problem as NC (fail-safe), and your conformity_pct
+  must be consistent with the statuses you emit.
 
   For every NC, classify the priority using the rgaa-audit grid:
     - severity "blocking" 🔴 — blocks access for assistive-tech users
@@ -342,7 +349,18 @@ skills_dir = os.path.join(ws, '.claude', 'skills')
 crit = glob.glob(os.path.join(skills_dir, 'rgaa-criteria-*.md'))
 skills_present = len(crit)
 examined_count = len(examined) if isinstance(examined, list) else 0
-nc = [c for c in cands if isinstance(c, dict) and str(c.get('status','')).upper() == 'NC']
+def is_nc(c):
+    if not isinstance(c, dict):
+        return False
+    st = str(c.get('status') or '').strip().upper()
+    if st == 'NC':
+        return True
+    # fail-safe: a finding-shaped entry (severity/problem present) with a
+    # missing or unknown status counts as NC — surfacing beats dropping.
+    if st in ('', 'NONE') and (c.get('severity') or c.get('problem')):
+        return True
+    return False
+nc = [c for c in cands if is_nc(c)]
 banner = ''
 healthy = True
 if skills_present == 0:
@@ -382,7 +400,16 @@ def rank(c):
     if not isinstance(c, dict):
         return 0
     return RANK.get(str(c.get('severity','')).strip().lower(), 0)
-nc = [c for c in cands if isinstance(c, dict) and str(c.get('status','')).upper() == 'NC']
+def is_nc(c):
+    if not isinstance(c, dict):
+        return False
+    st = str(c.get('status') or '').strip().upper()
+    if st == 'NC':
+        return True
+    if st in ('', 'NONE') and (c.get('severity') or c.get('problem')):
+        return True
+    return False
+nc = [c for c in cands if is_nc(c)]
 nc.sort(key=rank, reverse=True)
 kept = nc[:cap]
 capped = max(0, len(nc) - cap)
