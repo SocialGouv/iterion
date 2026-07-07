@@ -214,8 +214,16 @@ func forkWorktree(parent *store.Run, spec ForkSpec, turn *store.TurnCheckpoint, 
 	if spec.RewindCode {
 		target = store.NodeSnapshotRef(parent.ID, spec.NodeID, turn.LoopIter)
 	}
-	out, err := exec.Command("git", "-C", parent.RepoRoot, "worktree", "add", newWtPath, target).CombinedOutput()
+	// Bounded: this runs synchronously inside the fork HTTP handler; a
+	// wedged git process (stale index.lock, a hung filter) would
+	// otherwise pin the request goroutine forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", parent.RepoRoot, "worktree", "add", newWtPath, target).CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git worktree add %s %s: timed out", newWtPath, target)
+		}
 		return "", fmt.Errorf("git worktree add %s %s: %w\noutput: %s", newWtPath, target, err, out)
 	}
 	return newWtPath, nil
