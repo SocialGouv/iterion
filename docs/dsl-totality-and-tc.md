@@ -28,7 +28,7 @@ greppable, and flagged by diagnostics.
 ## Why the default is total
 
 - **Every cycle must be a declared bounded loop.** The compiler runs a
-  three-colour DFS (`validateUndeclaredCycles`, [pkg/dsl/ir/validate.go](pkg/dsl/ir/validate.go))
+  three-colour DFS (`validateUndeclaredCycles`, [pkg/dsl/ir/validate.go](../pkg/dsl/ir/validate.go))
   and emits **C019** for any back-edge without an `as name(...)` declaration. A
   graph with no `unbounded` loop has a statically-bounded number of node
   executions.
@@ -36,15 +36,15 @@ greppable, and flagged by diagnostics.
   call site, applied once per element of an already-materialised finite slice —
   there is no way to store a lambda, return it, or recurse, so no fixpoint is
   constructible (the Dhall/Starlark posture). The `maxEvalVisits` budget bounds
-  even adversarial nested combinators ([pkg/dsl/expr/expr.go](pkg/dsl/expr/expr.go),
+  even adversarial nested combinators ([pkg/dsl/expr/expr.go](../pkg/dsl/expr/expr.go),
   `TestExpr_VisitBudget`).
 
 ## How opt-in Turing-completeness works
 
 `as name(unbounded)` removes the user iteration cap. Termination is **relocated
 from compile-time to runtime** by two mechanisms in
-[pkg/runtime/engine.go](pkg/runtime/engine.go) /
-[pkg/runtime/helpers.go](pkg/runtime/helpers.go):
+[pkg/runtime/engine.go](../pkg/runtime/engine.go) /
+[pkg/runtime/helpers.go](../pkg/runtime/helpers.go):
 
 1. **Fuel** (`resolveLoopMax`): effective ceiling = per-loop fuel, else
    `budget.max_iterations`, else `defaultUnboundedFuel = 1000` — **never 0**, so
@@ -84,7 +84,7 @@ Compilation is a two-phase pipeline that emits ~110 diagnostics
 (C001–C195 + bundlelint C200–C230). The full catalogue, with severity and fix,
 is in [references/diagnostics.md](references/diagnostics.md); a drift guard
 (`TestDiagCodesAreDocumented`) and a uniqueness guard (`TestDiagCodesAreUnique`)
-in [pkg/dsl/ir/diag_codes_test.go](pkg/dsl/ir/diag_codes_test.go) keep that
+in [pkg/dsl/ir/diag_codes_test.go](../pkg/dsl/ir/diag_codes_test.go) keep that
 catalogue accurate and every code unambiguous.
 
 | Phase | Owns | Examples |
