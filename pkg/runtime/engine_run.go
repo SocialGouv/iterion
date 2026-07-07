@@ -275,15 +275,24 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if worktreeActive {
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
-		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" {
+		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated {
 			// workDir is a git working tree that the runtime didn't set
 			// up itself. Only promote this to a managed-worktree baseline
-			// when the workspace is already isolated from the operator's main
-			// checkout (for example, a dispatcher-seeded linked worktree). An
-			// explicit `worktree: none` run launched from the main checkout is
-			// intentionally in-place: stamping Worktree=true there would make
-			// resume/review-gate finalization reconstruct a worktree context
-			// against the user's checkout and potentially branch/merge/clean it.
+			// when the workspace was DELEGATED to the engine (WithWorkDir —
+			// dispatcher-seeded per-issue worktrees, studio-bound dirs) AND
+			// is already isolated from the operator's main checkout. Both
+			// gates matter:
+			//   - An explicit `worktree: none` run launched from the main
+			//     checkout is intentionally in-place — stamping Worktree=true
+			//     would make resume/review-gate finalization reconstruct a
+			//     worktree context against the user's checkout and
+			//     potentially branch/merge/clean it.
+			//   - A defaulted-CWD run from inside a FOREIGN linked worktree
+			//     (a Claude Code session worktree, an operator's manual
+			//     `git worktree add`) is equally the operator's own place:
+			//     without the workDirDelegated gate, closing such a run
+			//     would create an iterion/run/* branch there and best-effort
+			//     FF the operator's checked-out branch onto its HEAD.
 			mainRepoRoot := gitlib.FindMainRepoRoot(e.workDir)
 			if mainRepoRoot != "" && mainRepoRoot != worktreeRoot {
 				if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
