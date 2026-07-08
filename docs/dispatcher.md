@@ -454,6 +454,41 @@ The zero-config mode (`iterion dispatch`) uses exactly this mechanism
 to wire each embedded bot to the issue title/body — see
 [pkg/cli/dispatch_defaults.go](../pkg/cli/dispatch_defaults.go).
 
+## Deterministic ticket router (PR-aware)
+
+Opt-in. When enabled, an **unassigned** new issue (no `Bot`, no
+`Assignee`) is routed BEFORE the normal resolution by whether a PR
+already links it:
+
+- **No linked PR** → the issue routes to the implement bot (Featurly,
+  `feature-dev` by default) and is stamped `bot:featurly`. Featurly
+  implements it and opens a PR — which the inbound **PR-webhook** then
+  picks up (Revi review, or Billy on a same-repo ticket PR — see
+  [webhooks.md](webhooks.md)).
+- **A PR already links it** → the dispatcher **steps aside** (records a
+  dispatch-skip, stamps `bot:billy` for visibility) and does **not**
+  launch anything. The PR-webhook owns that work: it runs the
+  branch-improvement bot (Billy) on the **PR branch**. Dispatching Billy
+  from the issue would be wrong — an issue carries no PR branch, so
+  Billy would review an empty diff. This is the **ticket↔PR dedup**:
+  Billy runs exactly once, on the PR, via the webhook.
+
+```yaml
+ticket_router:
+  enabled: true
+  implement_bot: feature-dev   # bot for a PR-less issue (default)
+```
+
+The PR-existence check + the visible `bot:*` label are **best-effort
+tracker capabilities** (`HasLinkedPR` / `ApplyLabel`, type-asserted at
+runtime). The GitHub adapter implements both via the `gh` CLI; a tracker
+that can't answer "does this issue have a linked PR?" (native/forgejo
+today) degrades to routing every unassigned issue to the implement bot —
+it never blocks an issue and never dedups against a PR-webhook it can't
+observe. An explicit per-ticket `Bot`/assignee always wins; the router
+only touches fully-unassigned issues. Implemented in
+[pkg/dispatcher/loop.go](../pkg/dispatcher/loop.go) (`routeUnassignedIssue`).
+
 ## Hot-reload
 
 The dispatcher watches `iterion.dispatcher.yaml` via fsnotify with a

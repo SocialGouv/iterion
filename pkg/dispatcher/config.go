@@ -47,7 +47,39 @@ type Config struct {
 	// ticket with iss.Bot set on it will fail to dispatch.
 	Bots botregistry.Config `yaml:"bots,omitempty" json:"bots,omitempty"`
 
+	// TicketRouter, when Enabled, routes an UNASSIGNED new issue
+	// deterministically BEFORE the normal bot/assignee resolution: an issue a PR
+	// already links is left to the inbound PR-webhook (which runs the
+	// branch-improve bot on the PR branch) — the dispatcher steps aside to avoid
+	// a second, branch-less (empty-diff) run, the ticket<->PR dedup; an issue
+	// with no linked PR routes to ImplementBot (feature-dev by default) to
+	// implement it. Off by default: existing dispatchers keep running the
+	// default workflow for unassigned issues. See docs/dispatcher.md.
+	TicketRouter TicketRouterConfig `yaml:"ticket_router,omitempty" json:"ticket_router,omitempty"`
+
 	SourcePath string `yaml:"-" json:"-"`
+}
+
+// TicketRouterConfig gates + tunes the deterministic ticket router. It is an
+// opt-in (Enabled=false by default). The PR-existence check + the visible
+// bot:featurly/bot:billy label are best-effort tracker capabilities: a tracker
+// that can't answer "does this issue have a linked PR?" degrades to routing
+// every unassigned issue to the implement bot (never blocks, never dedups
+// against a PR-webhook it can't observe).
+type TicketRouterConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// ImplementBot is the bot a PR-less unassigned issue routes to. Empty =
+	// "feature-dev" (Featurly). It must be resolvable (bots.paths /
+	// assignee_workflows) or dispatch honest-fails on it.
+	ImplementBot string `yaml:"implement_bot,omitempty" json:"implement_bot,omitempty"`
+}
+
+// ImplementBotOrDefault returns the configured implement bot, or "feature-dev".
+func (t TicketRouterConfig) ImplementBotOrDefault() string {
+	if t.ImplementBot != "" {
+		return t.ImplementBot
+	}
+	return "feature-dev"
 }
 
 // TrackerConfig is the discriminated tracker definition. Kind selects
