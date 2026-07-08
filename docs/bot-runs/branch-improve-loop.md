@@ -1,5 +1,65 @@
 # Billy — branch-improvement validation
 
+## 2026-07-08 — re-dogfood post-improvement (P1-P4), same PR #72 target, $1.80 (run 019f41af)
+
+- Status: **validated — reliability + integration confirmed; production excellent.**
+  Improvements are RIGHT and SAFE; this run's shape (1 pass, no MR) did not trigger
+  the two biggest savers (see "P1/P2 not exercised live" below — an honesty note, not
+  a regression).
+- Versions: bot branch-improve-loop @ `b7ea4bd78` (P1 forge_auth_probe + P4
+  tool_max_steps 40→20 in `db812f0dc`; P2 verify_probe + P3 verify_build effort in
+  `b7ea4bd78`) · iterion static binary `v0.31.0+b7ea4bd78` (built CGO_ENABLED=0,
+  invoked directly so `os.Executable()` bind-mounts the fresh binary into the sandbox).
+- Method: **apples-to-apples with the pilot below.** Same target: independent clone
+  `/tmp/iterion-pr72-clone` **reset to the RAW PR #72 tip** `4b2394b94` (the pilot's
+  added test removed, so Billy re-finds the gap). `sandbox` inline
+  (iterion-sandbox-full:edge), `worktree: auto` bases on the clone's HEAD (CWD =
+  clone), `--store-dir <main>/.iterion` so the run is **visible in the operator's
+  studio** while operating on the clone (setupWorktree bases on CWD's git root but
+  writes the worktree under `--store-dir`). `base_ref=main`, **`open_mr=false`**,
+  `--merge-into none`, `--max-cost-usd 12`.
+- Result: **converged in ONE pass, 8.5 min, $1.80 (31.8k tok).** Billy reviewed
+  `main…4b2394b94` (the per-node `timeout:` feature) across all layers and re-found the
+  exact same gap the pilot did — the parser/AST/IR/C199 were tested but the RUNTIME
+  enforcement path was not — and added `pkg/backend/model/executor_timeout_test.go`
+  (+115: a `blockingBackend` that blocks on the ctx deadline + `immediateBackend`
+  happy path, asserting the bounded context cuts the node off AND that a
+  context-deadline error is **not** retried). Commit `f5f55d5` on storage branch
+  `iterion/run/ash-pulse-starforge-1c89`. `verify_run` re-ran `go build ./... && go
+  test ./pkg/dsl/… ./pkg/backend/model/…` → **green** (so the added test compiles and
+  passes). Graph flow: campaign → verify_probe → verify_build → verify_run → gate
+  (converged) → mr_gate (open_mr=false) → done.
+- Cost story vs the pilot's $2.26 (honest breakdown): campaign ~$1.17 (18.9k tok, was
+  $1.31/21.2k — run variance on a slightly different pass) + verify_build ~$0.68 (12.9k
+  tok, P3 effort now `medium`) + verify_run (deterministic tool, 9.8s) + **no
+  finalize_mr** (open_mr=false avoided the pilot's $0.26). Net −$0.46 (~20%), of which
+  ~$0.26 is the avoided MR finalize and ~$0.20 is campaign variance; **P3's verify_build
+  delta was only ~$0.01** — verify.sh authoring uses little thinking, so `high→medium`
+  barely moves it here (it will matter more on repos with a heavier build-capture step).
+- **P1/P2 not exercised live (by design of this run's shape) — structurally proven:**
+  - P2 (verify_probe skips verify_build) only fires on **pass 2+**; this run converged
+    in 1 pass, so verify_probe correctly ran at `iteration=0` → `fresh=false` → routed
+    to verify_build (the new node integrates without breaking the happy path). The
+    **skip** path rests on `TestVerifyProbeLoopIterationWiring` (proves the loop
+    iteration reaches the tool via the campaign→verify_probe edge with-mapping into node
+    input — {{loop.*}} does NOT resolve inside a tool command) + the python-logic cases
+    (fresh=true only when iteration>0 AND verify.sh valid) + `iterion validate`.
+  - P1 (forge_auth_probe short-circuits finalize_mr when no push credential) only fires
+    when `open_mr=true`; this run used `open_mr=false` (mr_gate → done), so the probe
+    wasn't reached. Its logic is deterministic + unit-covered.
+- Reliability: **HIGH.** Same target → same high-value conclusion (add the runtime
+  enforcement test), reproduced independently. The two new deterministic nodes
+  (verify_probe, forge_auth_probe) slotted into the graph with zero runtime surprise.
+- Engine hardening: none needed. The e2e scenario sweeps gained stubs for the two new
+  nodes (`aad7bddce`, `test(e2e): stub verify_probe + forge_auth_probe`) so
+  `go test ./e2e/` stays green.
+- Lessons for next run: to **measure P2's $0.69/pass saving live**, point Billy at a
+  ≥2-pass target (a branch with 2+ real issues, or a synthetic branch with a planted
+  build-affecting change so pass 2 re-runs). To **measure P1's skip live**, run
+  `open_mr=true` with no forge_token and no host `gh` auth → forge_auth_probe → done.
+  For a pure production/cost demonstration this 1-pass/no-MR run is the right shape and
+  $1.80/8.5min is a good point; the structural savers show on longer/MR runs.
+
 ## 2026-07-08 — pilot on a real contributor PR (#72), converged in 1 pass (run 019f415c)
 
 - Status: **validated — high-quality single-commit improvement.**
