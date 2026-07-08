@@ -62,6 +62,20 @@ runner:
   # image's `iterion` ENTRYPOINT runs and `args` becomes the subcommand.
   command: []
   args: ["runner"]
+  # image (optional, full "repo:tag") overrides the shared iterion.image for the
+  # RUNNER pods only — e.g. ghcr.io/socialgouv/iterion-runner-devbox:edge, the
+  # devbox-first-class runner where bots `devbox run` the target repo's toolchain
+  # (cross-language/version). Empty = the shared iterion.image (server + runner
+  # identical, today's behaviour).
+  image: ""
+  imagePullPolicy: ""
+  # podSecurityContext / containerSecurityContext override the shared
+  # .Values.securityContext / .Values.containerSecurityContext for the RUNNER
+  # only. The devbox runner image runs as uid 1000 (Nix store owned by `devbox`),
+  # so set runAsUser/runAsGroup/fsGroup: 1000 when using it. Empty = inherit the
+  # shared context.
+  podSecurityContext: {}
+  containerSecurityContext: {}
   # Prometheus metrics port for the runner. Defaults to the same
   # value as server.metricsPort to keep dashboards uniform; override
   # if your platform requires distinct ports per component.
