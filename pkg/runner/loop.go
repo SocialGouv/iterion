@@ -428,6 +428,15 @@ type Config struct {
 	// value the way pkg/cli/run.go does for `iterion run`.
 	SandboxDefault   string
 	SandboxHostState string
+
+	// SandboxOverride carries ITERION_SANDBOX_OVERRIDE (cfg.Sandbox.Override)
+	// into the engine at CLI-override strength, where "none" beats a
+	// workflow's inline `sandbox:` block. Set to "none" on runners that are
+	// themselves the isolation boundary (a k8s runner pod shipping its own
+	// toolchain): a bot's sandbox block — written for local runs — must not
+	// spawn a sibling sandbox pod there. SandboxDefault cannot express this
+	// (a workflow block outranks the default tier).
+	SandboxOverride string
 }
 
 // Runner is the long-running consumer loop.
@@ -1105,6 +1114,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// driver (host_state=auto has no host filesystem to bind).
 		runtime.WithSandboxDefault(r.cfg.SandboxDefault),
 		runtime.WithSandboxHostStateDefault(r.cfg.SandboxHostState),
+		// CLI-strength override (ITERION_SANDBOX_OVERRIDE): "none" on a
+		// runner that is itself the isolation boundary beats a bot's inline
+		// sandbox block, so the run executes directly in the runner pod.
+		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
 	}
 	// Bundle skills: a bot-qualified run mirrors its bundle's skills/ into
 	// <workspace>/.claude/skills exactly like a local `iterion run
