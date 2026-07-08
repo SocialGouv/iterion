@@ -416,6 +416,20 @@ schema verify_result:
   exit_code: int
   log_tail: string
 
+## verify_probe output — deterministic "is a usable verify.sh already prepared?"
+## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
+## the script is missing/invalid or on the first pass. fresh=true reuses it.
+## verify_probe input — the continuation-loop iteration, mapped on the
+## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
+## tool command (only input/vars/run do), so the iteration is passed in as node
+## input via the edge data-mapping. Pass 1 = iteration 0 (always regenerate).
+schema verify_probe_input:
+  iteration: int
+
+schema verify_probe_state:
+  fresh: bool
+  reason: string
+
 ## gate is the deterministic continuation decision. converged = the tree is
 ## green AND the campaign reported the branch diff clean. fail_log relays the
 ## real build failure to the campaign on a RED pass (empty when green).
@@ -469,13 +483,50 @@ agent campaign:
   session: fresh
   interaction: human
 
+## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
+## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
+## (~$0.69/13k tok EVERY pass); once pass 1 has authored verify.sh, re-authoring
+## it every pass is pure waste. This tool answers "reuse it?" in ~50ms of
+## subprocess: fresh=true when verify.sh exists, is non-empty, and passes
+## `sh -n` — AND this is not the first pass (iteration>0), so pass 1 of every run
+## always (re)generates verify.sh for the CURRENT tree, defeating a stale script
+## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
+## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
+tool verify_probe:
+  command: `SCRATCH={{vars.scratch_dir}} ITER="{{input.iteration}}" python3 -c "
+import os, subprocess, json
+scratch = os.environ.get('SCRATCH', '.')
+script = os.path.join(scratch, 'verify.sh')
+try:
+    iteration = int(os.environ.get('ITER', '0') or '0')
+except ValueError:
+    iteration = 0
+fresh = False
+if iteration <= 0:
+    reason = 'first pass of this run: (re)generate verify.sh for the current tree'
+elif not os.path.isfile(script):
+    reason = 'no verify.sh in the scratch dir yet'
+elif os.path.getsize(script) == 0:
+    reason = 'verify.sh is empty'
+else:
+    chk = subprocess.run(['sh', '-n', script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if chk.returncode != 0:
+        reason = 'verify.sh failed the sh -n syntax check: ' + (chk.stdout or '')[-300:]
+    else:
+        fresh = True
+        reason = 'verify.sh present and valid; reuse it (skip verify_build)'
+print(json.dumps({'fresh': fresh, 'reason': reason}))
+"`
+  input: verify_probe_input
+  output: verify_probe_state
+
 ## verify_build — adaptive, stack-agnostic gate authoring (writes
 ## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-fix
 ## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
   output: verify_plan
   system: verify_system
   user: verify_user
@@ -629,7 +680,14 @@ workflow branch_improve_loop:
 
   ## Each pass: the campaign reviews+improves the branch diff (committing each
   ## fix in stride), then the deterministic build/test gate re-checks the tree.
-  campaign -> verify_build
+  campaign -> verify_probe with {
+    iteration: "{{loop.continuation_loop.iteration}}"
+  }
+  ## verify_probe reuses an already-valid verify.sh (skipping the LLM
+  ## verify_build) on passes 2+; the first pass of every run regenerates it for
+  ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
+  verify_probe -> verify_run when fresh
+  verify_probe -> verify_build when not fresh
   verify_build -> verify_run
   verify_run -> gate
 
