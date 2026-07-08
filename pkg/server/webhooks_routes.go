@@ -49,6 +49,7 @@ type webhookConfigReq struct {
 	EventAllowlist     []string          `json:"event_allowlist,omitempty"`
 	AuthorAllowlist    []string          `json:"author_allowlist,omitempty"`
 	LabelAllowlist     []string          `json:"label_allowlist,omitempty"`
+	BlockForkPRs       *bool             `json:"block_fork_prs,omitempty"`
 	RateLimit          *webhooks.Rate    `json:"rate_limit,omitempty"`
 	MonthlyCallLimit   *int              `json:"monthly_call_limit,omitempty"`
 	LaunchVars         map[string]string `json:"launch_vars,omitempty"`
@@ -243,6 +244,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		EventAllowlist:     req.EventAllowlist,
 		AuthorAllowlist:    req.AuthorAllowlist,
 		LabelAllowlist:     req.LabelAllowlist,
+		BlockForkPRs:       req.BlockForkPRs != nil && *req.BlockForkPRs,
 		RateLimit:          rate,
 		LaunchVars:         req.LaunchVars,
 		KeyOverrides:       req.KeyOverrides,
@@ -405,6 +407,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LabelAllowlist != nil {
 		cfg.LabelAllowlist = req.LabelAllowlist
+	}
+	if req.BlockForkPRs != nil {
+		cfg.BlockForkPRs = *req.BlockForkPRs
 	}
 	if req.RateLimit != nil {
 		cfg.RateLimit = *req.RateLimit
