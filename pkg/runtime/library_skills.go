@@ -57,21 +57,17 @@ func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, logge
 			}
 			dirsReady = true
 		}
-		// Mirror as <dest>/<name>/SKILL.md (directory form) or <dest>/<name>.md
-		// (flat form), matching how the skill is stored on disk so both
-		// claude_code's native lookup and the claw skill tool discover it.
-		var destPath, markerPath string
-		if filepath.Base(srcPath) == "SKILL.md" {
-			skillDir := filepath.Join(dest, name)
-			if err := os.MkdirAll(skillDir, 0o755); err != nil {
-				return nil, fmt.Errorf("runtime/library: mkdir %s: %w", skillDir, err)
-			}
-			destPath = filepath.Join(skillDir, "SKILL.md")
-			markerPath = filepath.Join(markerDir, name+".SKILL.md.sha256")
-		} else {
-			destPath = filepath.Join(dest, name+".md")
-			markerPath = filepath.Join(markerDir, name+".md.sha256")
+		// Always mirror as <dest>/<name>/SKILL.md (directory form): a flat
+		// <name>.md is NOT discovered as a skill by claude_code's Skill tool
+		// (only the directory form is — Agent Skills spec), and claw discovers
+		// both, so the directory form is the one that satisfies both backends.
+		// A source that is already <name>/SKILL.md maps to the same dest.
+		skillDir := filepath.Join(dest, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return nil, fmt.Errorf("runtime/library: mkdir %s: %w", skillDir, err)
 		}
+		destPath := filepath.Join(skillDir, "SKILL.md")
+		markerPath := filepath.Join(markerDir, name+".SKILL.md.sha256")
 		if _, err := reconcileSkillFile(srcPath, destPath, markerPath, logger); err != nil {
 			return nil, fmt.Errorf("runtime/library: mirror skill %q: %w", name, err)
 		}

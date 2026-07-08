@@ -643,10 +643,10 @@ func resolveWorkflow(opts RunOptions) (wf *ir.Workflow, hash, filePath, displayN
 	// parent directory looks like a bundle (has skills/ or
 	// manifest.yaml), promote to KindBundleDir on the parent so the
 	// runtime mirrors the bundled skills/ into .claude/skills/ at run
-	// time. Without this promotion, prompts that read
-	// `.claude/skills/<name>.md` silently get nothing on bare-file
-	// launches — observed with bots/whats-next/main.bot where the
-	// explore prompt reads `.claude/skills/repo-survey.md`.
+	// time (as <name>/SKILL.md — the directory form claude_code's Skill
+	// tool discovers). Without this promotion, nodes that invoke a skill
+	// silently get nothing on bare-file launches — observed with
+	// bots/whats-next/main.bot whose nodes invoke skills like repo-survey.
 	if parent := bundleParentOf(resolved); parent != "" {
 		opened, openErr := bundle.OpenDir(parent)
 		if openErr == nil {
