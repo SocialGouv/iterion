@@ -479,6 +479,17 @@ ticket_router:
   implement_bot: feature-dev   # bot for a PR-less issue (default)
 ```
 
+**GitHub setup note.** GitHub's `gh issue edit --add-label` errors if the
+label doesn't already exist in the repo, so the visible `bot:featurly` /
+`bot:billy` labels (and the tracker's `claimed_label`) must be
+**pre-created** (`gh label create bot:featurly …`). The label apply is
+best-effort and never blocks the routing decision, but the **claim**
+(same `--add-label` seam) does — an issue can't be dispatched until its
+`claimed_label` exists. A GitHub issue also needs a `state_mapping` state
+to be a candidate at all (an unlabeled issue with no mapped state is
+skipped). The native tracker auto-manages its labels, so this only
+applies to the github/forgejo adapters.
+
 The PR-existence check + the visible `bot:*` label are **best-effort
 tracker capabilities** (`HasLinkedPR` / `ApplyLabel`, type-asserted at
 runtime). The GitHub adapter implements both via the `gh` CLI; a tracker
