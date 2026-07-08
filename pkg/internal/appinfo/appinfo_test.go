@@ -17,10 +17,10 @@ func TestSandboxImageTag(t *testing.T) {
 		version string
 		want    string
 	}{
-		{"v0.32.0", "v0.32.0"}, // release build → version-pinned tag
-		{"dev", "edge"},        // default (no ldflags) → rolling edge
-		{"", "edge"},           // empty → rolling edge
-		{"0.32.0", "edge"},     // bare semver (no v) → rolling edge
+		{"v0.32.0", "v0.32.0"},   // release build → version-pinned tag
+		{"dev", "edge"},          // default (no ldflags) → rolling edge
+		{"", "edge"},             // empty → rolling edge
+		{"0.32.0", "edge"},       // bare semver (no v) → rolling edge
 		{"  v1.2.3  ", "v1.2.3"}, // ldflags whitespace is trimmed
 	}
 	for _, c := range cases {
