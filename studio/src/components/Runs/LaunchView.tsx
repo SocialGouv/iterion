@@ -50,6 +50,14 @@ export default function LaunchView() {
   const [doc, setDoc] = useState<IterDocument | null>(null);
   const currentSource = useDocumentStore((s) => s.currentSource);
   const setCurrentSource = useDocumentStore((s) => s.setCurrentSource);
+  // The in-memory editor buffer, used to launch an UNSAVED workflow (no
+  // ?file= path). This is the cloud path: the server pod's rootfs is
+  // read-only, so /files/save 500s and there is never an on-disk path to
+  // reference — the launch API takes inline `source` instead (see
+  // resolveWorkflowPath: cloud mode returns the empty file_path and runs
+  // off Source). Also lets a fresh local buffer launch before its first
+  // save.
+  const storeDocument = useDocumentStore((s) => s.document);
   const [values, setValues] = useState<Record<string, string>>({});
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [attachments, setAttachments] = useState<Record<string, AttachmentValue | null>>({});
@@ -111,7 +119,20 @@ export default function LaunchView() {
 
   useEffect(() => {
     if (!filePath) {
-      setError("Missing ?file=<path> query parameter");
+      // No ?file= path — launch the unsaved editor buffer via inline
+      // source. The launch API (resolveWorkflowPath) runs off Source when
+      // file_path is empty, so this is a first-class path, not a fallback
+      // hack; it is the ONLY way to launch in cloud mode, where the pod
+      // rootfs is read-only and a workflow can never be saved to disk.
+      if (storeDocument && currentSource) {
+        setDoc(storeDocument);
+        const fields = pickVars(storeDocument);
+        const initial: Record<string, string> = {};
+        for (const f of fields) initial[f.name] = defaultStringFor(f);
+        setValues(initial);
+        return;
+      }
+      setError("No workflow to launch — open or write one in the editor first.");
       return;
     }
     let cancelled = false;
@@ -132,7 +153,7 @@ export default function LaunchView() {
     return () => {
       cancelled = true;
     };
-  }, [filePath, setCurrentSource]);
+  }, [filePath, setCurrentSource, storeDocument, currentSource]);
 
   const fields = pickVars(doc);
 
@@ -385,8 +406,11 @@ export default function LaunchView() {
     left: (
       <>
         <span className="text-xs font-semibold text-fg-muted">Launch run</span>
-        <span className="text-xs text-fg-subtle font-mono truncate max-w-md" title={filePath}>
-          {filePath}
+        <span
+          className="text-xs text-fg-subtle font-mono truncate max-w-md"
+          title={filePath || "Unsaved workflow"}
+        >
+          {filePath || "Unsaved workflow"}
         </span>
       </>
     ),
