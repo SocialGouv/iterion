@@ -1,5 +1,42 @@
 # Billy — branch-improvement validation
 
+## 2026-07-08 — pilot on a real contributor PR (#72), converged in 1 pass (run 019f415c)
+
+- Status: **validated — high-quality single-commit improvement.**
+- Versions: bot branch-improve-loop (feat/agent-node-timeout tree) · iterion 1f5082f (static, F7 skills fix in the engine)
+- Method: local run, `sandbox: auto` (iterion-sandbox-full:edge, devbox toolchain
+  so the build/test gate has Go — the cloud runner does NOT, cf. F6). Independent
+  clone checked out on the PR branch `feat/agent-node-timeout` so `worktree: auto`
+  bases on the PR (NOT main — a linked git worktree bases on the shared repo HEAD,
+  which is main; an independent clone was required). `base_ref=main`,
+  `max_passes=2`, `open_mr=true`, `mr_branch=iterion/billy/pr-72-pilot`.
+- Result: **converged in ONE pass.** Billy reviewed `main...feat/agent-node-timeout`
+  (the per-node `timeout:` feature), found the parser + C199 validation were tested
+  but the RUNTIME enforcement path (`executeBackend` deriving the bounded context —
+  the feature's behavioral heart) was not, and added
+  `pkg/backend/model/executor_timeout_test.go` (+108: `TestNodeTimeout_Enforced` with
+  a ctx-blocking backend + 20ms timeout, plus a happy-path immediate backend). The
+  deterministic build/test gate (`verify_run`) passed green. Exactly the test a good
+  human reviewer would add. Pushed by hand to `iterion/billy/pr-72-pilot` → draft PR
+  #82 (base = the PR branch, so the diff is just Billy's addition).
+- Cost: campaign $1.31 (21.2k tok) · verify_build $0.69 (13.1k tok) · verify_run
+  (deterministic tool, 9.7s) · finalize_mr $0.26 (6.8k tok) = **~$2.26, ~9 min**.
+- F7 (engine) re-validated here too: `finalize_mr` successfully `Launching skill:
+  forge-mr-create` — the directory-form skills fix works on the local sandboxed path,
+  not just cloud.
+- Efficiency/reliability misses to fix (operator asked to bring Billy to a Willy-grade
+  production/cost ratio):
+  - **finalize_mr burns budget discovering there are no credentials**: with no
+    forge_token mounted and no `gh auth`, the agent ran 4 probe commands before
+    abandoning the push. A deterministic pre-check should skip finalize_mr (or
+    short-circuit it) when no push credential is present.
+  - **verify_build ($0.69)** re-authors the build/test script each run — candidate for
+    caching / lower effort.
+- Lessons for next run: base the worktree on the PR via an INDEPENDENT clone (a linked
+  worktree bases on main). Provide a `forge_token` (or run in a `gh`-authed shell) if
+  you want Billy to self-push; otherwise recover the commit from the `iterion/run/<name>`
+  storage branch the engine always creates and push by hand.
+
 ## 2026-06-14 — re-validation on a clean clone + good dead-code judgment (run 019ec5bc)
 
 - Status: **validated.** Re-ran in the C082 worktree studio (non-watchexec) on a
