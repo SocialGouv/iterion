@@ -1,0 +1,74 @@
+# syntax=docker/dockerfile:1.7
+#
+# Devbox-first-class runner image (experiment, jo's direction 2026-07-08).
+#
+# WHY. The cloud runner pod already provides ISOLATION on Kubernetes (namespace,
+# cgroups, network policy) — so the per-run sandbox SIBLING pod is redundant
+# there. The only thing a build-needing bot (Billy / branch-improve, feature-dev)
+# lacks in the base runner image (debian-slim + node + LLM CLIs) is the target
+# repo's TOOLCHAIN (e.g. Go). Rather than bake one stack in, this runner ships
+# Nix + devbox: a bot runs `devbox run -- <build>` and the target repo's own
+# devbox.json provisions its EXACT tools + versions — cross-language,
+# cross-version, per-repo. iterion itself is devbox-first, so `devbox run -- task
+# build` gives Billy Go 1.26 for free.
+#
+# Base: jetpackio/devbox (Nix + devbox + git), the same foundation as
+# sandbox/slim, plus the FULL runner toolset (node/claude/codex, gh/glab/kubectl,
+# python3/jq) and the static iterion binary + bot catalog.
+#
+# DEPLOY NOTE (2nd step, not here): this image runs as uid 1000 (devbox) so Nix
+# works — the runner Helm securityContext.runAsUser must match (base runner is
+# 10001). And an ephemeral pod has an empty Nix store, so first `devbox run`
+# re-downloads the toolchain; a persistent Nix store (PVC or a warm binary
+# cache) keeps it fast across runs.
+
+ARG ITERION_IMAGE=ghcr.io/socialgouv/iterion:edge
+FROM ${ITERION_IMAGE} AS iterion-bin
+
+FROM jetpackio/devbox:latest@sha256:04562895294750bab6fcf75533a35566a854d272256933fa9c416e7f9859186f
+
+USER root
+
+# Runner toolset — mirrors the root Dockerfile runtime stage: git + certs + tini
+# + procps + curl + passwd + python3 + jq, and node 24 for the LLM CLIs.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg jq procps tini git python3 passwd \
+ && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# gh + glab (Revi posts reviews from the runner pod) + kubectl (parity with the
+# base runner image; also used by the k8s sandbox driver if ever enabled).
+ARG GLAB_VERSION=1.102.0
+ARG GH_VERSION=2.65.0
+ARG KUBECTL_VERSION=v1.36.0
+RUN set -eux; ARCH="$(dpkg --print-architecture)"; \
+    curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${ARCH}.tar.gz" | tar -xz -C /usr/local/bin --strip-components=1 bin/glab; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" | tar -xz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${ARCH}/bin/gh"; \
+    case "$ARCH" in amd64) KARCH=amd64;; arm64) KARCH=arm64;; *) echo "unsupported arch $ARCH" >&2; exit 1;; esac; \
+    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KARCH}/kubectl"; \
+    chmod +x /usr/local/bin/glab /usr/local/bin/gh /usr/local/bin/kubectl
+
+# Static iterion binary + pinned LLM CLIs (claude + codex) + bot catalog, from
+# the iterion image (all built there; static CGO_ENABLED=0 runs on this base).
+COPY --from=iterion-bin /usr/local/bin/iterion /usr/local/bin/iterion
+COPY --from=iterion-bin /opt/iterion/llm-clis/node_modules /opt/iterion/llm-clis/node_modules
+COPY --from=iterion-bin /opt/iterion/bots /opt/iterion/bots
+RUN ln -sf /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude \
+ && ln -sf /opt/iterion/llm-clis/node_modules/.bin/codex  /usr/local/bin/codex
+
+# System git identity for in-pod commits (bots pushing to PR branches).
+RUN git config --system user.email "bot@iterion.dev" \
+ && git config --system user.name "iterion-bot"
+
+ENV ITERION_BOTS_PATH=/opt/iterion/bots \
+    PATH="/opt/iterion/llm-clis/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
+
+# Run as the devbox user (uid 1000) so Nix + devbox work (the base's Nix store is
+# owned by devbox). Differs from the base runner's uid 10001 — see DEPLOY NOTE.
+USER 1000
+WORKDIR /home/devbox
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/iterion"]
+CMD ["runner"]
