@@ -31,6 +31,11 @@ type GitHubOptions struct {
 	IncludeLabels []string
 	ExcludeLabels []string
 
+	// AuthorAllowlist, when non-empty, restricts candidates to issues opened by
+	// one of these logins (case-insensitive) — the trusted-author scope for
+	// auto-dispatch on a public repo. Empty = any author.
+	AuthorAllowlist []string
+
 	// StateMapping maps a workflow state name to a label predicate.
 	// The first entry that matches in iteration order determines
 	// the issue's WorkflowState. Map iteration order is unspecified
@@ -119,6 +124,9 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	}
 	out2 := make([]Issue, 0, len(raw))
 	for _, r := range raw {
+		if !a.authorAllowed(r.Author.Login) {
+			continue // author not in the trusted-author allowlist
+		}
 		iss := a.toIssue(r)
 		if iss.WorkflowState == "" {
 			continue // doesn't match any configured state
@@ -126,6 +134,20 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 		out2 = append(out2, iss)
 	}
 	return out2, nil
+}
+
+// authorAllowed reports whether an issue author passes AuthorAllowlist
+// (case-insensitive). An empty allowlist admits any author.
+func (a *GitHubAdapter) authorAllowed(login string) bool {
+	if len(a.opts.AuthorAllowlist) == 0 {
+		return true
+	}
+	for _, allowed := range a.opts.AuthorAllowlist {
+		if strings.EqualFold(allowed, login) {
+			return true
+		}
+	}
+	return false
 }
 
 // RefreshStates returns the current state for each ID (which on the

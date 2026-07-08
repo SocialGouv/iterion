@@ -30,12 +30,13 @@ func buildGitHubTrackerFromConfig(cfg *GitHubTrackerConfig) (tracker.Tracker, er
 	}
 	mapping := buildLabelSelectorMapping(cfg.StateMapping)
 	return tracker.NewGitHub(tracker.GitHubOptions{
-		Repo:          cfg.Repo,
-		Token:         cfg.Token,
-		IncludeLabels: cfg.IncludeLabels,
-		ExcludeLabels: cfg.ExcludeLabels,
-		ClaimedLabel:  cfg.ClaimedLabel,
-		StateMapping:  mapping,
+		Repo:            cfg.Repo,
+		Token:           cfg.Token,
+		IncludeLabels:   cfg.IncludeLabels,
+		ExcludeLabels:   cfg.ExcludeLabels,
+		AuthorAllowlist: cfg.AuthorAllowlist,
+		ClaimedLabel:    cfg.ClaimedLabel,
+		StateMapping:    mapping,
 	})
 }
 

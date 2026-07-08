@@ -36,6 +36,46 @@ func TestGitHubHasLinkedPR(t *testing.T) {
 	}
 }
 
+// TestGitHubListCandidates_AuthorAllowlist: with a non-empty AuthorAllowlist,
+// only issues opened by an allowed author (case-insensitive) are candidates —
+// the trusted-author scope for auto-dispatch.
+func TestGitHubListCandidates_AuthorAllowlist(t *testing.T) {
+	fake := &fakeGH{
+		listOut: mustJSON([]map[string]any{
+			{
+				"number": 1, "title": "from alice", "state": "open",
+				"labels":    []map[string]string{{"name": "ready"}},
+				"author":    map[string]string{"login": "alice"},
+				"createdAt": "2026-05-01T00:00:00Z", "updatedAt": "2026-05-01T00:00:00Z",
+				"url": "https://github.com/owner/repo/issues/1",
+			},
+			{
+				"number": 2, "title": "from mallory", "state": "open",
+				"labels":    []map[string]string{{"name": "ready"}},
+				"author":    map[string]string{"login": "mallory"},
+				"createdAt": "2026-05-02T00:00:00Z", "updatedAt": "2026-05-02T00:00:00Z",
+				"url": "https://github.com/owner/repo/issues/2",
+			},
+		}),
+	}
+	a, err := tracker.NewGitHub(tracker.GitHubOptions{
+		Repo:            "owner/repo",
+		Command:         fake.cmd,
+		AuthorAllowlist: []string{"Alice"}, // case-insensitive
+		StateMapping:    map[string]tracker.LabelSelector{"ready": {LabelsInclude: []string{"ready"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.ListCandidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.HasSuffix(got[0].ID, "#1") {
+		t.Fatalf("only alice's issue #1 should be a candidate, got %+v", got)
+	}
+}
+
 // TestGitHubApplyLabel: the visible bot:* association reuses the gh
 // issue-edit --add-label seam.
 func TestGitHubApplyLabel(t *testing.T) {

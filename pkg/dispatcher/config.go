@@ -125,6 +125,11 @@ type GitHubTrackerConfig struct {
 	ClaimedLabel  string                   `yaml:"claimed_label,omitempty" json:"claimed_label,omitempty"`
 	IncludeLabels []string                 `yaml:"include_labels,omitempty" json:"include_labels,omitempty"`
 	ExcludeLabels []string                 `yaml:"exclude_labels,omitempty" json:"exclude_labels,omitempty"`
+	// AuthorAllowlist restricts dispatch to issues OPENED BY one of these
+	// logins (case-insensitive; e.g. the repo's trusted team members). Empty =
+	// any author. The anti-abuse scope for auto-dispatch on a public repo — a
+	// drive-by issue from an untrusted author is never auto-processed.
+	AuthorAllowlist []string `yaml:"author_allowlist,omitempty" json:"author_allowlist,omitempty"`
 }
 
 // ForgejoTrackerConfig configures the forgejo (Gitea-compatible) adapter.
