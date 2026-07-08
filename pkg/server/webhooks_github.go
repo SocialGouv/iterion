@@ -93,15 +93,29 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
-	if !ok {
-		return
+	// PR-open bot selection: a same-repo PR that implements a tracked issue
+	// routes to the branch-improvement bot (Billy) to harden it — and dedup the
+	// ticket lane; standalone PRs and every fork PR keep the default reviewer
+	// (Revi). selectForgePRBot has already validated AllowsBot for a non-empty
+	// return, so only the fall-through path needs resolveReviewBot's gate.
+	botID := selectForgePRBot(cfg, p)
+	if botID == "" {
+		var ok bool
+		if botID, ok = s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP); !ok {
+			return
+		}
 	}
 
 	// Idempotency: one launch per (tenant, webhook, repo, PR#, head sha).
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
 
-	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
+	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
+	var vars map[string]string
+	if botID == branchImproveBotID {
+		vars = branchImproveVars(p.TargetBranch, scopeNotes, cfg.LaunchVars)
+	} else {
+		vars = reviewPRVars(p.PRURL, p.TargetBranch, scopeNotes, cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
+	}
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 }

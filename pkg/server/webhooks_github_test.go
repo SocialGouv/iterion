@@ -107,6 +107,84 @@ func TestGitHubWebhook_HappyPath(t *testing.T) {
 	}
 }
 
+// ghTicketPR: a same-repo PR (head.repo == base repo) that closes an issue.
+const ghTicketPR = `{
+  "action": "opened", "number": 9,
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 9, "title": "Add subtract", "body": "Implements subtraction.\n\nFixes #12",
+    "html_url": "https://github.com/acme/widgets/pull/9", "state": "open",
+    "head": {"ref": "feat/subtract", "sha": "aaa111", "repo": {"full_name": "acme/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
+  "sender": {"login": "alice"}
+}`
+
+// ghForkTicketPR: same ticket link but head.repo is a FORK → the guard keeps it
+// on the reviewer path.
+const ghForkTicketPR = `{
+  "action": "opened", "number": 10,
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 10, "title": "Add subtract", "body": "Fixes #12",
+    "html_url": "https://github.com/acme/widgets/pull/10", "state": "open",
+    "head": {"ref": "patch-1", "sha": "bbb222", "repo": {"full_name": "mallory/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
+  "sender": {"login": "mallory"}
+}`
+
+// TestGitHubWebhook_TicketPRRoutesToBilly: a same-repo PR that closes an issue,
+// on a webhook that enables Billy, launches branch-improve-loop with Billy's
+// vars (open_mr=false — the PR already exists; no pr_url — not the review path).
+func TestGitHubWebhook_TicketPRRoutesToBilly(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var gotBot string
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotBot, gotVars = botID, vars
+		return "run-billy", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"} // enable Billy on this repo
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghTicketPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotBot != "branch-improve-loop" {
+		t.Fatalf("ticket PR must route to Billy, got %q", gotBot)
+	}
+	if gotVars["open_mr"] != "false" || gotVars["base_ref"] != "main" {
+		t.Fatalf("billy vars: %v", gotVars)
+	}
+	if !strings.Contains(gotVars["scope_notes"], "Add subtract") {
+		t.Fatalf("scope_notes must carry the PR title/body: %q", gotVars["scope_notes"])
+	}
+	if _, ok := gotVars["pr_url"]; ok {
+		t.Fatalf("billy path must not use reviewPRVars (pr_url present): %v", gotVars)
+	}
+}
+
+// TestGitHubWebhook_ForkTicketPRStaysOnReviewer: the fork guard — a fork PR that
+// closes an issue must NOT route to the mutating bot; it stays on the reviewer.
+func TestGitHubWebhook_ForkTicketPRStaysOnReviewer(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var gotBot string
+	s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotBot = botID
+		return "run-x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghForkTicketPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotBot != "review-pr" {
+		t.Fatalf("fork PR must stay on the reviewer (fork guard), got %q", gotBot)
+	}
+}
+
 func TestGitHubWebhook_BadHMAC(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {

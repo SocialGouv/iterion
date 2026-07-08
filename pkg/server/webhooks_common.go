@@ -9,8 +9,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
+	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
 // maxWebhookBodyBytes caps the inbound payload every provider handler
@@ -70,6 +72,11 @@ const defaultWebhookBotReviewPR = "review-pr"
 // path with the args ignored — matching today's behaviour.
 const defaultWebhookBotReviConverse = "revi-converse"
 
+// branchImproveBotID is the branch-improvement bot (Billy) the PR-open path
+// routes to — instead of the default reviewer — when a same-repo PR implements
+// a tracked issue. See selectForgePRBot.
+const branchImproveBotID = "branch-improve-loop"
+
 // webhookEventMeta is the provider-agnostic carrier of "what happened
 // upstream" the common helpers consume. Every field is optional: a
 // provider that doesn't have e.g. a project path leaves it empty and
@@ -113,6 +120,50 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 	mergeVarsInto(vars, extra)
 	mergeVarsInto(vars, launchVars)
 	return vars
+}
+
+// branchImproveVars builds the launch vars for the branch-improvement bot
+// (Billy) reacting to a PR-open: it reviews + hardens the PR's branch diff over
+// its base. baseRef is the PR's target branch; scopeNotes carries the PR
+// title+body (which includes the "Fixes #N" ticket link). open_mr=false — the
+// PR already exists, so Billy commits onto the checked-out PR branch rather
+// than opening a second MR. The webhook's LaunchVars win last so an operator
+// can override per repo (e.g. pin max_passes or a scratch path).
+func branchImproveVars(baseRef, scopeNotes string, launchVars map[string]string) map[string]string {
+	vars := map[string]string{
+		"base_ref":    baseRef,
+		"scope_notes": scopeNotes,
+		"open_mr":     "false",
+	}
+	mergeVarsInto(vars, launchVars)
+	return vars
+}
+
+// selectForgePRBot deterministically routes a PR-open delivery to the
+// branch-improvement bot (Billy) instead of the default reviewer (Revi) when
+// ALL of:
+//   - the PR is NOT from a fork (IsCrossRepo) — a fork PR pushing through a
+//     MUTATING bot is the budget-exhaustion vector, so it stays on the
+//     read-only review path pending operator validation (the fork guard);
+//   - the PR links a tracked issue ("Fixes #N" in the title/body) — the PR is
+//     finishing a ticket, so Billy hardens it. This is also the ticket↔PR
+//     dedup: the PR's Billy run IS the work, so the ticket lane should not also
+//     spin up a fresh feature run (Featurly); and
+//   - the webhook actually enables Billy (AllowsBot).
+//
+// Returns "" to fall through to resolveReviewBot (the existing Revi/default
+// resolution) — the behaviour for standalone PRs and every fork PR.
+func selectForgePRBot(cfg webhooks.Config, p prforge.Parsed) string {
+	if p.IsCrossRepo() {
+		return ""
+	}
+	if len(forge.ParseIssueRefs(true, p.Title, p.Description)) == 0 {
+		return ""
+	}
+	if !cfg.AllowsBot(branchImproveBotID) {
+		return ""
+	}
+	return branchImproveBotID
 }
 
 // resolveReviewBot picks the bot id for a forge-specific review-PR

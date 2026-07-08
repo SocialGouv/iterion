@@ -45,6 +45,10 @@ type PullRequest struct {
 type Ref struct {
 	Ref string `json:"ref"`
 	SHA string `json:"sha"`
+	// Repo is the repository the branch lives in. For a fork PR, head.repo
+	// differs from base.repo (full_name) — the signal the fork guard reads to
+	// keep an untrusted fork PR off the mutating auto-launch path.
+	Repo Repository `json:"repo"`
 }
 
 type Sender struct {
