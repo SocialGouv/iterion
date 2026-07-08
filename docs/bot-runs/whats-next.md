@@ -6,6 +6,35 @@ ticket curation against code reality, dispatch). See
 the v1 form state machine (survey → priorities form → roadmap → review form
 → emit → dispatch pickers).
 
+## 2026-07-08 — first cloud-prod session + skills-format engine fix (run 019f412x)
+
+- Status: **validated after two engine fixes** — Nexie ran conversationally in
+  cloud prod for the first time; two blockers found + fixed on the way.
+- Versions: bot whats-next 0.2.0 · iterion cloud prod `:edge` (fixes deployed mid-session up to 6a03866)
+- Method: cloud prod (ovh-prod), studio → What's Next → "What's next?". No repo
+  connected (empty workspace), so board+survey only.
+- Result: after the fixes, Nexie loaded the board (empty), surveyed the
+  workspace, wrote a CONTEXT_BRIEF to workspace memory, and returned a precise
+  "J0 — board+repo empty, tell me the project" recommendation. Board MCP tools
+  (list_issues/list_labels/set_bot/transition_issue) all wired.
+- Engine hardening surfaced by this run:
+  - **Nexie couldn't launch in cloud at all**: the What's Next SessionLauncher
+    posts `createRun({file_path})` with no source, and handleLaunchRun rejects a
+    bare file_path in cloud; whats-next is a non-embedded bundle. Fixed:
+    handleLaunchRun/handleResumeRun now resolve a catalog `bots/<name>` path (or
+    `bot_id`) off the pod FS and carry BotID so the runner mirrors the bundle's
+    skills — the same gesture the webhook/scheduler/board launchers use. SPA
+    passes `bot_id`.
+  - **`Skill(whats-next)` → "Unknown skill"** even though the mirror reported
+    `skills mirrored=11`: iterion mirrored flat `<name>.md` files, but Claude
+    Code's Skill tool only discovers the directory form `<name>/SKILL.md` (Agent
+    Skills spec). Fixed: mirror always writes the directory form (satisfies both
+    claude_code and claw). Nexie ran WITHOUT its playbook skill until this
+    landed — it still functioned via board tools + bash, just degraded.
+- Lessons for next run: launching a catalog bundle by `bot_id` is the clean cloud
+  path (no source upload). A repo-connected session (forge-synced board) is the
+  next thing to exercise — this one had an empty workspace.
+
 ## 2026-07-07 — v2 conversational rewrite, first live session (run 019f3beb)
 
 - Status: **validated (high value)** — replayed the exact scenario that killed v1 the same morning (run 019f3afc-era session 019f3b6b: operator asked for quick wins, got raw checkbox forms, gave up) and delivered everything v1 couldn't, in 2 turns.
