@@ -124,16 +124,32 @@ export default function LaunchView() {
       // file_path is empty, so this is a first-class path, not a fallback
       // hack; it is the ONLY way to launch in cloud mode, where the pod
       // rootfs is read-only and a workflow can never be saved to disk.
-      if (storeDocument && currentSource) {
-        setDoc(storeDocument);
-        const fields = pickVars(storeDocument);
-        const initial: Record<string, string> = {};
-        for (const f of fields) initial[f.name] = defaultStringFor(f);
-        setValues(initial);
+      //
+      // The live edit buffer is the document store's AST (currentSource is
+      // only the last opened/saved file's text, stale after edits), so we
+      // derive the source from it via /api/unparse before launching.
+      if (!storeDocument) {
+        setError("No workflow to launch — open or write one in the editor first.");
         return;
       }
-      setError("No workflow to launch — open or write one in the editor first.");
-      return;
+      let cancelled = false;
+      filesApi
+        .unparse(storeDocument)
+        .then((src) => {
+          if (cancelled) return;
+          setCurrentSource(src);
+          setDoc(storeDocument);
+          const fields = pickVars(storeDocument);
+          const initial: Record<string, string> = {};
+          for (const f of fields) initial[f.name] = defaultStringFor(f);
+          setValues(initial);
+        })
+        .catch((e) => {
+          if (!cancelled) setError(errorMessage(e));
+        });
+      return () => {
+        cancelled = true;
+      };
     }
     let cancelled = false;
     filesApi
@@ -153,7 +169,7 @@ export default function LaunchView() {
     return () => {
       cancelled = true;
     };
-  }, [filePath, setCurrentSource, storeDocument, currentSource]);
+  }, [filePath, setCurrentSource, storeDocument]);
 
   const fields = pickVars(doc);
 
