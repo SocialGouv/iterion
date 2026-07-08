@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -257,6 +258,56 @@ func TestGitHubWebhook_IdempotentReplay(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected exactly one launch, got %d", calls)
+	}
+}
+
+// TestGitHubWebhook_RelaunchAfterFailure pins F5: a delivery whose launch
+// FAILED (no run created) must be relaunchable by a redelivery of the same
+// event — a transient failure (broken bot, LLM 5xx, deploy window) must not
+// poison re-review for that (repo, PR#, head sha) until a new commit changes
+// the idempotency key. The first launch errors (502); the redelivery relaunches
+// (202), it is NOT swallowed as a terminal duplicate.
+func TestGitHubWebhook_RelaunchAfterFailure(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", fmt.Errorf("transient launch failure")
+		}
+		return "run-ok", nil
+	}
+	cfg, pt := ghConfig(t, s)
+
+	w1 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w1, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if w1.Code != http.StatusBadGateway {
+		t.Fatalf("first (failed launch): code=%d body=%s", w1.Code, w1.Body.String())
+	}
+
+	// Redeliver the SAME event: must relaunch, not short-circuit as duplicate.
+	w2 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w2, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if w2.Code != http.StatusAccepted {
+		t.Fatalf("redelivery must relaunch after a prior failure: code=%d body=%s", w2.Code, w2.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w2.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusLaunched || resp["run_id"] != "run-ok" {
+		t.Fatalf("relaunch resp: %v", resp)
+	}
+	if calls != 2 {
+		t.Fatalf("expected two launch attempts (fail then succeed), got %d", calls)
+	}
+
+	// A THIRD delivery, now that the run succeeded, is a terminal duplicate.
+	w3 := httptest.NewRecorder()
+	s.handleGitHubWebhook(w3, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if w3.Code != http.StatusOK {
+		t.Fatalf("post-success replay must be duplicate: code=%d", w3.Code)
+	}
+	if calls != 2 {
+		t.Fatalf("post-success replay must not relaunch, got %d calls", calls)
 	}
 }
 

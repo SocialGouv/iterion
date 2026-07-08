@@ -234,13 +234,26 @@ func (s *Server) insertAndLaunchWebhook(
 	// Denied events are recorded under a random key (see step 3), never
 	// under idemKey, so this lookup misses them and a retry-after-reset
 	// still launches.
+	//
+	// EXCEPTION — a prior LAUNCH FAILURE (StatusLaunchError: no run was ever
+	// created, RunID empty) is RETRYABLE, not a terminal duplicate. A
+	// transient failure (a temporarily-broken bot, an LLM 5xx, a deploy
+	// window) must be relaunchable by a redelivery of the SAME event; else
+	// the failure poisons re-review for that exact (repo, PR#, head sha)
+	// until a new commit changes the key. We reuse that row (below) instead
+	// of short-circuiting.
+	var reusePriorFailure *webhooks.Delivery
 	if s.webhookDeliveries != nil {
 		if existing, err := s.webhookDeliveries.GetByIdempotencyKey(ctx, idemKey); err == nil {
-			s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
-			writeJSONStatus(w, http.StatusOK, map[string]string{
-				"status": webhooks.StatusDuplicate, "run_id": existing.RunID, "delivery_id": existing.ID,
-			})
-			return
+			if existing.Status != webhooks.StatusLaunchError {
+				s.markWebhookOutcome(cfg.Provider, webhooks.StatusDuplicate)
+				writeJSONStatus(w, http.StatusOK, map[string]string{
+					"status": webhooks.StatusDuplicate, "run_id": existing.RunID, "delivery_id": existing.ID,
+				})
+				return
+			}
+			ex := existing
+			reusePriorFailure = &ex
 		}
 	}
 
@@ -255,11 +268,23 @@ func (s *Server) insertAndLaunchWebhook(
 	}
 
 	// 3. Idempotency insert (durable dedupe backstop for concurrent
-	// deliveries of the same event that both passed step 1).
+	// deliveries of the same event that both passed step 1) — OR reuse a
+	// prior failed row (retry of a StatusLaunchError delivery, above).
 	delivery := newWebhookDelivery(cfg, meta, webhooks.StatusAccepted, payloadHash, srcIP)
 	delivery.IdempotencyKey = idemKey
 	delivery.BotID = botID
-	if s.webhookDeliveries != nil {
+	if reusePriorFailure != nil {
+		// Retry: keep the prior row's identity + received-at, clear the
+		// error, and UPDATE it (Insert would ErrDuplicate on the idemKey).
+		delivery.ID = reusePriorFailure.ID
+		delivery.ReceivedAt = reusePriorFailure.ReceivedAt
+		if s.webhookDeliveries != nil {
+			if err := s.webhookDeliveries.Update(ctx, delivery); err != nil {
+				httpError(w, http.StatusInternalServerError, "reset failed delivery: %v", err)
+				return
+			}
+		}
+	} else if s.webhookDeliveries != nil {
 		if err := s.webhookDeliveries.Insert(ctx, delivery); err != nil {
 			if errors.Is(err, webhooks.ErrDuplicate) {
 				// Read back the prior delivery so the duplicate 200
