@@ -84,6 +84,16 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	}
 	meta := prforgePRMeta(p)
 
+	// Fork guard (opt-in): a fork PR (head repo != base repo) is untrusted, so
+	// when the webhook enables block_fork_prs it never auto-launches ANY bot —
+	// the operator validates it first (anti budget-exhaustion). Filtered as a
+	// clean 200 so the forge keeps the hook enabled.
+	if cfg.BlockForkPRs && p.IsCrossRepo() {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "fork PR blocked by block_fork_prs (operator validation required)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
+
 	if !p.IsReviewable() ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||

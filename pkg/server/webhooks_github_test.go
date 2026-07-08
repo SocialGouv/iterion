@@ -185,6 +185,34 @@ func TestGitHubWebhook_ForkTicketPRStaysOnReviewer(t *testing.T) {
 	}
 }
 
+// TestGitHubWebhook_BlockForkPRs: with block_fork_prs on, a fork PR is filtered
+// (NO bot launches) — the opt-in anti budget-exhaustion boundary.
+func TestGitHubWebhook_BlockForkPRs(t *testing.T) {
+	s := newWebhookTestServer(t)
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+	cfg.BlockForkPRs = true
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghForkTicketPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("fork PR must be filtered with block_fork_prs, got %v", resp)
+	}
+	if launched != 0 {
+		t.Fatalf("no bot may launch on a blocked fork PR, launched=%d", launched)
+	}
+}
+
 func TestGitHubWebhook_BadHMAC(t *testing.T) {
 	s := newWebhookTestServer(t)
 	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {

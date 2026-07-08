@@ -110,6 +110,15 @@ type Config struct {
 	// pull_request / issue_comment paths.
 	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
 
+	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
+	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
+	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary
+	// can open many to trigger costly bot runs), so an operator must validate it
+	// before a bot runs. Off by default (fork PRs still auto-review via Revi;
+	// the mutating branch-improve bot never runs on a fork regardless — see
+	// selectForgePRBot). Recommended ON for a public repo.
+	BlockForkPRs bool `bson:"block_fork_prs,omitempty" json:"block_fork_prs,omitempty"`
+
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The
 	// inbound payload's MR-URL host must match it or the delivery is
