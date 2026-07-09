@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/SocialGouv/iterion/bots"
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -1206,16 +1207,22 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.WithoutCancel(spanCtx)
-	// Scope the resume to the run's tenant: Resume runs tenant-scoped store
-	// queries (cloud Mongo) that panic without a tenant on the context — the
-	// HTTP middleware authenticates the /api/runs route but does NOT stamp the
-	// store tenant marker (unlike the /api/teams/{id}/… routes). Derive it from
-	// the run itself, the authoritative owner (a super-admin may resume a run in
-	// any team). Empty on a local single-tenant store — WithTenant("") is a
-	// no-op there.
-	if runMeta.TenantID != "" {
-		ctx = store.WithTenant(ctx, runMeta.TenantID)
+	// Scope the resume to a tenant: Resume runs tenant-scoped store queries
+	// (cloud Mongo) that panic without a tenant on the context — the HTTP
+	// middleware authenticates the /api/runs route but does NOT stamp the store
+	// tenant marker (unlike the /api/teams/{id}/… routes). Prefer the run's own
+	// TenantID (the authoritative owner — a super-admin may resume a run in any
+	// team); fall back to the caller's active team when the run has none, which
+	// happens for a run orphaned before it ever executed (the runner stamps
+	// TenantID at execution start, so a never-run queued/failed row can be
+	// empty). Empty on a local single-tenant store → WithTenant no-ops.
+	tenantID := runMeta.TenantID
+	if tenantID == "" {
+		if id, ok := auth.FromContext(r.Context()); ok {
+			tenantID = id.TeamID
+		}
 	}
+	ctx = store.WithTenant(ctx, tenantID)
 	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,
