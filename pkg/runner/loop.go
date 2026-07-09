@@ -1257,13 +1257,24 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		}
 	}
 	// Cloud sandboxes have no ~/.gitconfig (the host bind-mount is dropped on
-	// kubernetes and the runner pod has none of its own), so seed a default
+	// kubernetes and the runner pod has none of its own), so seed an
 	// author/committer in the clone's LOCAL config. It travels into the sandbox
 	// with .git, so commit-producing bots (feature-dev's commit_changes, willy,
-	// billy, docs-refresh, …) don't fail "Author identity unknown". Overridable
-	// via ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
-	_ = r.runGit(ctx, dir, "", "config", "user.name", gitAuthorName())
-	_ = r.runGit(ctx, dir, "", "config", "user.email", gitAuthorEmail())
+	// billy, docs-refresh, …) don't fail "Author identity unknown".
+	//
+	// Prefer the identity that OWNS the push token (resolved from the forge) so
+	// a pushed commit is attributed to the real pusher, not a stray account
+	// sharing the fallback email. Falls back to a neutral bot identity (never a
+	// real person's) when there's no token or resolution fails. Overridable via
+	// ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
+	authorName, authorEmail := gitAuthorName(), gitAuthorEmail()
+	if tok != "" {
+		if n, e, ok := resolveForgeCommitterIdentity(ctx, msg.RepoURL, tok); ok {
+			authorName, authorEmail = n, e
+		}
+	}
+	_ = r.runGit(ctx, dir, "", "config", "user.name", authorName)
+	_ = r.runGit(ctx, dir, "", "config", "user.email", authorEmail)
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
 	return dir, nil
@@ -1276,14 +1287,20 @@ func gitAuthorName() string {
 	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_NAME")); v != "" {
 		return v
 	}
-	return "iterion"
+	return "iterion-runner[bot]"
 }
 
 func gitAuthorEmail() string {
 	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_EMAIL")); v != "" {
 		return v
 	}
-	return "iterion@users.noreply.github.com"
+	// A `.invalid` domain (RFC 2606, reserved, never resolvable) guarantees this
+	// fallback maps to NO GitHub account — the commit shows the bot name as
+	// plain text, never a stray individual. The default was
+	// `iterion@users.noreply.github.com`, which GitHub silently attributed to an
+	// unrelated real user "iterion". The push-token identity above is the
+	// preferred, attributed path; this only fires token-less.
+	return "iterion-runner@bot.iterion.invalid"
 }
 
 // seedRunScratchIgnore locally excludes iterion's per-run scratch — the

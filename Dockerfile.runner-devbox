@@ -59,8 +59,8 @@ RUN ln -sf /opt/iterion/llm-clis/node_modules/.bin/claude /usr/local/bin/claude 
  && ln -sf /opt/iterion/llm-clis/node_modules/.bin/codex  /usr/local/bin/codex
 
 # System git identity for in-pod commits (bots pushing to PR branches).
-RUN git config --system user.email "bot@iterion.dev" \
- && git config --system user.name "iterion-bot"
+RUN git config --system user.email "iterion-runner@bot.iterion.invalid" \
+ && git config --system user.name "iterion-runner[bot]"
 
 ENV ITERION_BOTS_PATH=/opt/iterion/bots \
     PATH="/opt/iterion/llm-clis/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
