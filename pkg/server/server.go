@@ -326,6 +326,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			Webhooks:        s.webhookConfigs,
 			Secrets:         s.genericSecrets,
 			Sealer:          s.sealer,
+			Bindings:        s.botBindings,
 			Bots:            s.forgeBotForge,
 			Invocations:     s.forgeBotInvocations,
 			Schedules:       cfg.ScheduledBots,

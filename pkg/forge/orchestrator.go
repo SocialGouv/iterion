@@ -39,7 +39,16 @@ type Orchestrator struct {
 	Webhooks     webhooks.ConfigStore
 	Secrets      secrets.GenericSecretStore
 	Sealer       secrets.Sealer
-	Bots         BotForgeLookup
+	// Bindings, when set, gets a bot-secret binding per enabled bot pinning
+	// the managed forge token under the bot's workflow-secret name (forge_token).
+	// The webhook secret override (Tier-0) only reaches the DIRECT webhook launch
+	// path; a run launched from a promoted board card goes through the board
+	// coordinator's runs.Launch, which resolves generic secrets by (tenant, bot)
+	// binding — so without this binding an issue-labeled → Featurly → PR run
+	// has no forge_token and can't open its PR. nil (older wiring / self-hosted)
+	// = no binding, direct-webhook path unaffected.
+	Bindings secrets.BotSecretBindingStore
+	Bots     BotForgeLookup
 	// Invocations returns a bot's manifest invocations so Provision can build
 	// the webhook CommandMap. Optional: nil leaves CommandMap empty (the
 	// GitLab /revi special-case still works; other commands just aren't
@@ -75,6 +84,41 @@ func (o *Orchestrator) clock() time.Time {
 		return o.Now()
 	}
 	return time.Now().UTC()
+}
+
+// ensureBotBinding upserts a (tenant, bot, secretName) → secretID binding so
+// board-coordinator launches resolve the managed forge token by bot. Idempotent
+// on the (tenant, bot, name) triple: an existing binding for the same name is
+// re-pointed at secretID (a re-provision may rotate the managed secret), a new
+// one is created. No-op when the store isn't wired.
+func (o *Orchestrator) ensureBotBinding(ctx context.Context, tenantID, botID, secretName, secretID string) error {
+	if o.Bindings == nil {
+		return nil
+	}
+	existing, err := o.Bindings.ListByTenantBot(ctx, tenantID, botID)
+	if err != nil {
+		return err
+	}
+	for _, b := range existing {
+		if b.SecretNameForWorkflow == secretName {
+			if b.SecretID == secretID {
+				return nil
+			}
+			b.SecretID = secretID
+			b.UpdatedAt = o.clock()
+			return o.Bindings.Update(ctx, b)
+		}
+	}
+	now := o.clock()
+	return o.Bindings.Create(ctx, secrets.BotSecretBinding{
+		ID:                    o.id(),
+		TenantID:              tenantID,
+		BotID:                 botID,
+		SecretID:              secretID,
+		SecretNameForWorkflow: secretName,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	})
 }
 
 func (o *Orchestrator) id() string {
@@ -232,6 +276,16 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 			}
 		}
 		secretOverrides[secretName] = managedSecretID
+
+		// Also bind the managed token under the bot's workflow-secret name so a
+		// board-coordinator launch (issue-labeled → Featurly/Billy) — which
+		// resolves by (tenant, bot) binding, not the webhook override — can
+		// authenticate its push/PR. A binding failure is surfaced (not masked):
+		// without it those runs silently can't open their PR, exactly the
+		// failure this closes.
+		if err := o.ensureBotBinding(ctx, req.TenantID, b, secretName, managedSecretID); err != nil {
+			return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", secretName, b, err)
+		}
 	}
 
 	if authorOpen {

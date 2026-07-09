@@ -127,6 +127,7 @@ func newTestOrch(t *testing.T) (*Orchestrator, *fakeAdmin, secrets.Sealer) {
 		Integrations: NewMemoryRepoIntegrationStore(),
 		Webhooks:     webhooks.NewMemoryConfigStore(),
 		Secrets:      secrets.NewMemoryGenericSecretStore(),
+		Bindings:     secrets.NewMemoryBotSecretBindingStore(),
 		Sealer:       sealer,
 		Bots:         testBotLookup,
 		AdminFor:     func(context.Context, Connection) (Admin, error) { return fa, nil },
@@ -303,6 +304,15 @@ func TestProvision_SingleBot(t *testing.T) {
 	}
 	if cfg.SecretOverrides["forge_token"] != conn.ManagedSecretID {
 		t.Errorf("secret override forge_token = %q, want %q", cfg.SecretOverrides["forge_token"], conn.ManagedSecretID)
+	}
+	// A bot-binding mirrors the override so a board-coordinator launch (which
+	// resolves by (tenant, bot) binding, not the webhook override) authenticates.
+	binds, err := o.Bindings.ListByTenantBot(ctx, "t1", "review-pr")
+	if err != nil {
+		t.Fatalf("list bindings: %v", err)
+	}
+	if len(binds) != 1 || binds[0].SecretNameForWorkflow != "forge_token" || binds[0].SecretID != conn.ManagedSecretID {
+		t.Errorf("bot binding = %+v, want forge_token → %q", binds, conn.ManagedSecretID)
 	}
 	if cfg.ProvisionedBy != "forge:conn-1" {
 		t.Errorf("provisioned_by = %q", cfg.ProvisionedBy)
