@@ -98,6 +98,9 @@ runner:
     # installs to avoid collision when several iterion releases share
     # a NATS cluster.
     consumerName: iterion-runners
+    # JetStream account the stream lives in. Required by the KEDA scaler;
+    # single-tenant JetStream (no NATS accounts) uses the global default "$G".
+    account: "$G"
   # Sandbox toggle for the runner pod. When enabled, the chart
   # provisions the additional RBAC the runner needs to create per-run
   # sibling pods via the kubernetes sandbox driver (Phase 5 V1).
