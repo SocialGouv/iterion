@@ -108,6 +108,32 @@ runner:
   # sandbox feature; turn on per-environment via values-prod.yaml.
   sandbox:
     enabled: false
+  # --- Persistent build cache (warm runner pods) --------------------
+  # A bot's verify gate re-clones the target repo per run into an
+  # ephemeral workdir, so a fresh/scaled-up runner pod otherwise
+  # re-downloads Go modules and recompiles from cold every time (the
+  # dominant cost seen in live runs). Enabling this mounts a shared RWX
+  # volume for GOMODCACHE + GOCACHE so every pod starts warm.
+  #
+  # accessModes MUST be ReadWriteMany when >1 replica (KEDA/replicas):
+  # the Go module cache is read-mostly and the build cache is
+  # content-addressed + concurrency-safe, so pods share one warm volume.
+  # storageClass must provide RWX and honour fsGroup (OVH:
+  # openebs-nfs-hspeed). The Nix toolchain store (/nix) is intentionally
+  # NOT cached here — it is baked warm in the runner image; a shared RWX
+  # live /nix risks store-DB corruption across the fleet, so its
+  # scale-up warm-fix is a binary-cache substituter (ADR), not a mount.
+  cache:
+    enabled: false
+    # existingClaim: use a pre-created PVC instead of the chart's own.
+    existingClaim: ""
+    # storageClass: leave "" to use the cluster default (must be RWX for
+    # multi-replica). On OVH set openebs-nfs-hspeed.
+    storageClass: ""
+    accessModes:
+      - ReadWriteMany
+    size: 20Gi
+    mountPath: /cache
 
 # --- HTTP exposure --------------------------------------------------
 service:
