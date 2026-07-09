@@ -137,12 +137,21 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 // instead of stranding in the cloud runner's ephemeral worktree. The webhook's
 // LaunchVars win last so an operator can override per repo (e.g. pin
 // max_passes or a scratch path).
-func branchImproveVars(baseRef, sourceBranch, scopeNotes string, launchVars map[string]string) map[string]string {
+func branchImproveVars(baseRef, sourceBranch, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
 	vars := map[string]string{
 		"base_ref":    baseRef,
 		"scope_notes": scopeNotes,
-		"open_mr":     "false",
-		"push_branch": sourceBranch,
+	}
+	if asPR {
+		// Open a separate PR targeting the contributor's source branch — the
+		// author reviews the bot's hardening as an isolated diff. Billy derives
+		// its own mr_branch (iterion/improve/<run>) and opens base=source.
+		vars["open_mr"] = "true"
+		vars["mr_base"] = sourceBranch
+	} else {
+		// Commit + push directly onto the PR's own source branch (in-place).
+		vars["open_mr"] = "false"
+		vars["push_branch"] = sourceBranch
 	}
 	mergeVarsInto(vars, launchVars)
 	return vars

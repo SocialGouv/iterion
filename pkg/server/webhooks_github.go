@@ -123,7 +123,7 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
 	var vars map[string]string
 	if botID == branchImproveBotID {
-		vars = branchImproveVars(p.TargetBranch, p.SourceBranch, scopeNotes, cfg.LaunchVars)
+		vars = branchImproveVars(p.TargetBranch, p.SourceBranch, scopeNotes, cfg.BranchImproveAsPR, cfg.LaunchVars)
 	} else {
 		vars = reviewPRVars(p.PRURL, p.TargetBranch, scopeNotes, cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
 	}

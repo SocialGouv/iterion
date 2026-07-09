@@ -51,6 +51,7 @@ type webhookConfigReq struct {
 	LabelAllowlist      []string          `json:"label_allowlist,omitempty"`
 	BlockForkPRs        *bool             `json:"block_fork_prs,omitempty"`
 	AutoImplementOnOpen *bool             `json:"auto_implement_on_open,omitempty"`
+	BranchImproveAsPR   *bool             `json:"branch_improve_as_pr,omitempty"`
 	RateLimit           *webhooks.Rate    `json:"rate_limit,omitempty"`
 	MonthlyCallLimit    *int              `json:"monthly_call_limit,omitempty"`
 	LaunchVars          map[string]string `json:"launch_vars,omitempty"`
@@ -415,6 +416,9 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AutoImplementOnOpen != nil {
 		cfg.AutoImplementOnOpen = *req.AutoImplementOnOpen
+	}
+	if req.BranchImproveAsPR != nil {
+		cfg.BranchImproveAsPR = *req.BranchImproveAsPR
 	}
 	if req.RateLimit != nil {
 		cfg.RateLimit = *req.RateLimit

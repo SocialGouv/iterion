@@ -110,6 +110,17 @@ type Config struct {
 	// pull_request / issue_comment paths.
 	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
 
+	// BranchImproveAsPR changes how the branch-improvement bot (Billy) lands
+	// its hardening on a PR it reviews. Default (false): it commits + pushes
+	// directly onto the PR's own source branch (in-place — the author merges
+	// its PR and gets the improvements with it). True: Billy instead opens a
+	// SEPARATE PR targeting that source branch, so the author reviews the bot's
+	// changes as an isolated diff before integrating them — the right posture
+	// for a third-party contributor's work (they stay in control of their
+	// branch). Routes Billy through open_mr=true + mr_base=<source branch>
+	// instead of the direct push-back.
+	BranchImproveAsPR bool `bson:"branch_improve_as_pr,omitempty" json:"branch_improve_as_pr,omitempty"`
+
 	// AutoImplementOnOpen, when true, dispatches the implementer bot on a
 	// freshly-OPENED issue (not only a labeled one) — the zero-touch lane where
 	// iterion turns every new issue into a PR without a manual label. OFF by
