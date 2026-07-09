@@ -282,6 +282,7 @@ type jsonAgentDecl struct {
 	Model             string               `json:"model,omitempty"`
 	Backend           string               `json:"backend,omitempty"`
 	Provider          string               `json:"provider,omitempty"`
+	Command           string               `json:"command,omitempty"`
 	MCP               *jsonMCPConfigDecl   `json:"mcp,omitempty"`
 	Input             string               `json:"input,omitempty"`
 	Output            string               `json:"output,omitempty"`
@@ -317,6 +318,7 @@ type jsonJudgeDecl struct {
 	Model             string               `json:"model,omitempty"`
 	Backend           string               `json:"backend,omitempty"`
 	Provider          string               `json:"provider,omitempty"`
+	Command           string               `json:"command,omitempty"`
 	MCP               *jsonMCPConfigDecl   `json:"mcp,omitempty"`
 	Input             string               `json:"input,omitempty"`
 	Output            string               `json:"output,omitempty"`
@@ -1013,6 +1015,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Model:             a.Model,
 		Backend:           a.Backend,
 		Provider:          a.Provider,
+		Command:           a.Command,
 		MCP:               mcpConfigToJSON(a.MCP),
 		Input:             a.Input,
 		Output:            a.Output,
@@ -1050,6 +1053,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Model:             j.Model,
 		Backend:           j.Backend,
 		Provider:          j.Provider,
+		Command:           j.Command,
 		MCP:               mcpConfigToJSON(j.MCP),
 		Input:             j.Input,
 		Output:            j.Output,
@@ -1515,6 +1519,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Model:             ja.Model,
 			Backend:           ja.Backend,
 			Provider:          ja.Provider,
+			Command:           ja.Command,
 			MCP:               mcpConfigFromJSON(ja.MCP),
 			Input:             ja.Input,
 			Output:            ja.Output,
@@ -1566,6 +1571,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Model:             jj.Model,
 			Backend:           jj.Backend,
 			Provider:          jj.Provider,
+			Command:           jj.Command,
 			MCP:               mcpConfigFromJSON(jj.MCP),
 			Input:             jj.Input,
 			Output:            jj.Output,

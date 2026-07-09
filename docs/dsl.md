@@ -97,6 +97,7 @@ agent reviewer:
 |----------|-------------|
 | `model` | LLM model identifier (supports `${ENV_VAR}`) |
 | `backend` | Execution backend: `claw` (default, in-process LLM), `claude_code` (recommended for tool use), `codex` (discouraged, see [Delegation](delegation.md)) |
+| `command` | Per-node CLI binary override, honored by the `claude_code` backend: run this node with an alternate **claude-code-compatible** CLI instead of the default `claude` (e.g. a pinned build or a compatible wrapper). The target must speak the claude-code CLI protocol (Session mode: `--print`, `--input-format`/`--output-format stream-json` with the prompt on stdin, `--permission-mode`, `--append-system-prompt`) — a CLI with a different interface is **not** supported. Swaps the **binary only**, not credentials/endpoint. Supports `${ENV_VAR}`. Ignored (with a `C174` warning) on `claw`/`codex`. |
 | `input` / `output` | Schema references for structured I/O |
 | `publish` | Persist output as a named artifact |
 | `system` / `user` | Prompt references |

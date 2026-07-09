@@ -635,6 +635,36 @@ func TestAgentSessionFork(t *testing.T) {
 	assertEq(t, "Backend", a.Backend, "claude_code")
 }
 
+func TestAgentCommand(t *testing.T) {
+	src := `agent alt_worker:
+  model: "claude-opus-4-8"
+  backend: "claude_code"
+  command: "claude-canary"
+  system: sys
+  user: usr
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "Command", a.Command, "claude-canary")
+}
+
+func TestJudgeCommand(t *testing.T) {
+	src := `judge alt_reviewer:
+  model: "claude-opus-4-8"
+  backend: "claude_code"
+  command: "claude-canary"
+  system: sys
+  user: usr
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	j := res.File.Judges[0]
+	assertEq(t, "Command", j.Command, "claude-canary")
+}
+
 func TestAgentReasoningEffort(t *testing.T) {
 	src := `agent planner:
   model: "claude-4"

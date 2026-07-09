@@ -127,8 +127,16 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	}
 	opts = append(opts, claudesdk.WithModel(model))
 
-	if b.Command != "" {
-		opts = append(opts, claudesdk.WithCLIPath(b.Command))
+	// CLI binary path: the per-node task override (DSL `command:`, an
+	// alternate claude-code-compatible CLI) wins over the backend-level
+	// default; the shared backend is
+	// left unmutated so it can serve other nodes with their own override.
+	cliPath := b.Command
+	if task.Command != "" {
+		cliPath = task.Command
+	}
+	if cliPath != "" {
+		opts = append(opts, claudesdk.WithCLIPath(cliPath))
 	}
 
 	// When the run is sandboxed, route the claude CLI subprocess
@@ -740,8 +748,16 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		model = defaultClaudeCodeModel
 	}
 	opts = append(opts, claudesdk.WithModel(model))
-	if b.Command != "" {
-		opts = append(opts, claudesdk.WithCLIPath(b.Command))
+	// CLI binary path: the per-node task override (DSL `command:`, an
+	// alternate claude-code-compatible CLI) wins over the backend-level
+	// default; the shared backend is
+	// left unmutated so it can serve other nodes with their own override.
+	cliPath := b.Command
+	if task.Command != "" {
+		cliPath = task.Command
+	}
+	if cliPath != "" {
+		opts = append(opts, claudesdk.WithCLIPath(cliPath))
 	}
 
 	// Capture every spawned subprocess so promptWithTimeout can SIGKILL
