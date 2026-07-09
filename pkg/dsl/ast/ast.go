@@ -457,6 +457,7 @@ type LLMDecl struct {
 	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
 	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "xhigh", "max"
+	Timeout           string           // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = none; may contain ${VAR} env refs
 	Readonly          bool             // when true, node is not considered mutating for workspace safety
 	Interaction       InteractionMode  // interaction handling (default none)
 	InteractionPrompt string           // prompt reference guiding LLM for llm_or_human decisions

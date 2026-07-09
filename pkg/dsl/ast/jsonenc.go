@@ -297,6 +297,7 @@ type jsonAgentDecl struct {
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	Timeout           string               `json:"timeout,omitempty"`
 	Readonly          bool                 `json:"readonly,omitempty"`
 	Interaction       string               `json:"interaction,omitempty"`
 	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
@@ -331,6 +332,7 @@ type jsonJudgeDecl struct {
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	Timeout           string               `json:"timeout,omitempty"`
 	Readonly          bool                 `json:"readonly,omitempty"`
 	Interaction       string               `json:"interaction,omitempty"`
 	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
@@ -1026,6 +1028,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		ToolMaxSteps:      a.ToolMaxSteps,
 		MaxTokens:         a.MaxTokens,
 		ReasoningEffort:   a.ReasoningEffort,
+		Timeout:           a.Timeout,
 		Readonly:          a.Readonly,
 		Interaction:       interactionModeToStr[a.Interaction],
 		InteractionPrompt: a.InteractionPrompt,
@@ -1062,6 +1065,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		ToolMaxSteps:      j.ToolMaxSteps,
 		MaxTokens:         j.MaxTokens,
 		ReasoningEffort:   j.ReasoningEffort,
+		Timeout:           j.Timeout,
 		Readonly:          j.Readonly,
 		Interaction:       interactionModeToStr[j.Interaction],
 		InteractionPrompt: j.InteractionPrompt,
@@ -1526,6 +1530,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			ToolMaxSteps:      ja.ToolMaxSteps,
 			MaxTokens:         ja.MaxTokens,
 			ReasoningEffort:   ja.ReasoningEffort,
+			Timeout:           ja.Timeout,
 			Readonly:          ja.Readonly,
 			Interaction:       interaction,
 			InteractionPrompt: ja.InteractionPrompt,
@@ -1576,6 +1581,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			ToolMaxSteps:      jj.ToolMaxSteps,
 			MaxTokens:         jj.MaxTokens,
 			ReasoningEffort:   jj.ReasoningEffort,
+			Timeout:           jj.Timeout,
 			Readonly:          jj.Readonly,
 			Interaction:       interaction,
 			InteractionPrompt: jj.InteractionPrompt,

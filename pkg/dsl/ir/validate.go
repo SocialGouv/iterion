@@ -28,6 +28,7 @@ func (c *compiler) validate(w *Workflow) {
 	c.validateUndeclaredCycles(w)
 	c.validateLoopIterations(w)
 	c.validateReasoningEffort(w)
+	c.validateNodeTimeout(w)
 	c.validateSecrets(w)
 	c.validateTemplateRefs(w)
 	c.validateNodeMaxTokensVsBudget(w)

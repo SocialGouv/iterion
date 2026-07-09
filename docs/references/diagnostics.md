@@ -108,6 +108,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C119** | error | subbot without source | A `subbot` node has no `source:` child `.bot` | Add `source: <path>.bot` to the subbot |
 | **C120** | warning | Index on scalar | A subscript `[...]` is applied to a statically-scalar value (string/bool/int/float), which is not indexable | Index an array/map, or drop the subscript |
 | **C121** | error | Enum literal never matches | A `when "field == 'literal'"` / `!=` comparison (or a `compute` expression) compares an enum-typed field against a literal that is not one of its `enum:` values — the comparison can never match, so it is almost always a typo | Use a declared enum value, or fix the field's `enum:` set. `json` fields and unresolved refs are never flagged |
+| **C122** | error | Invalid node timeout | An agent/judge `timeout:` is not a positive Go duration (after `${VAR:-default}` expansion) | Use a positive Go duration string, e.g. `timeout: "20m"` or `"1200s"` |
 | **C170** | error | Invalid memory visibility | `memory: visibility:` has an unknown value | Use a known visibility (`bot`/`project`/`cross_project`/`user`/`org`/`global`) |
 | **C171** | error | Memory visibility conflict | `memory: visibility:` is combined with the legacy `project_root:` | Use `visibility:` alone — drop the legacy `project_root:` |
 | **C172** | warning | Malformed provider step | A `provider:` chain element of the `provider:model` form has an empty provider or model part | Provide both parts, e.g. `anthropic:claude-sonnet-4-6` |

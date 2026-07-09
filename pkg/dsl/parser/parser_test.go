@@ -589,6 +589,34 @@ func TestJudgeMaxTokens(t *testing.T) {
 	assertEq(t, "MaxTokens", j.MaxTokens, 1024)
 }
 
+func TestAgentTimeout(t *testing.T) {
+	src := `agent worker:
+  model: "claude-sonnet-4-6"
+  system: sys
+  user: usr
+  timeout: "30s"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "Timeout", a.Timeout, "30s")
+}
+
+func TestJudgeTimeout(t *testing.T) {
+	src := `judge reviewer:
+  model: "claude-sonnet-4-6"
+  system: sys
+  user: usr
+  timeout: "${NODE_TIMEOUT:-20m}"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	j := res.File.Judges[0]
+	assertEq(t, "Timeout", j.Timeout, "${NODE_TIMEOUT:-20m}")
+}
+
 func TestAgentSessionFork(t *testing.T) {
 	src := `agent commit_namer:
   model: "claude-4"

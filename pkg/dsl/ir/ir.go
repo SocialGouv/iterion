@@ -162,6 +162,7 @@ type LLMFields struct {
 	UserPrompt      string // prompt reference name
 	MaxTokens       int    // per-node cap on output tokens (0 = backend default)
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max"
+	Timeout         string // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = no per-node bound; may contain ${VAR} env refs
 	Readonly        bool   // when true, node is not considered mutating for workspace safety
 }
 

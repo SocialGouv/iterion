@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -38,6 +39,7 @@ type backendFields struct {
 	cursors          *ir.CursorInvocation
 	compress         string // node-level `compress:` value ("" = unset)
 	permission       string // node-level `permission:` mode override ("" = inherit)
+	timeout          string // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
 }
 
 // extractBackendFields normalises the LLM-relevant fields shared by
@@ -65,6 +67,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			permission:       n.Permission,
+			timeout:          n.Timeout,
 		}, nil
 	case *ir.JudgeNode:
 		return backendFields{
@@ -83,6 +86,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			permission:       n.Permission,
+			timeout:          n.Timeout,
 		}, nil
 	default:
 		return backendFields{}, fmt.Errorf("model: extractBackendFields called with unsupported node type %T", node)
@@ -200,6 +204,22 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	if err != nil {
 		return nil, err
 	}
+
+	// Per-node `timeout:` bounds this node's whole backend interaction
+	// (task build + dispatch + schema-retry). WithTimeout derives from the
+	// incoming ctx, so whichever fires first — this bound or the workflow
+	// budget deadline already carried on ctx — wins; expiry surfaces as
+	// context.DeadlineExceeded and fails the node cleanly. Compile-time
+	// validation (C122) already rejects malformed durations, so a parse
+	// error here is defensive: skip the bound rather than fail the node.
+	if f.timeout != "" {
+		if d, derr := time.ParseDuration(ir.ExpandEnvWithDefault(f.timeout)); derr == nil && d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+	}
+
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {

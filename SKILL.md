@@ -64,6 +64,7 @@ agent my_agent:
   tool_max_steps: 15                       ## max tool-use iterations (0 = unlimited)
   max_tokens: 8000                         ## per-call output cap (0 = backend default)
   reasoning_effort: high                   ## low | medium | high | xhigh | max
+  timeout: "20m"                           ## per-node wall-clock bound (Go duration; supports ${VAR:-default})
   readonly: true                           ## not considered mutating for workspace safety
   interaction: llm_or_human                ## none | human | llm | llm_or_human
   interaction_prompt: my_interaction_prompt ## prompt ref for LLM interaction decisions
