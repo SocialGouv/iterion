@@ -133,7 +133,8 @@ const ghForkTicketPR = `{
 // TestGitHubWebhook_TicketPRRoutesToBilly: a same-repo PR that closes an issue,
 // on a webhook that enables Billy, launches branch-improve-loop with Billy's
 // vars (open_mr=false — the PR already exists; push_branch set — Billy pushes
-// in-place onto the PR; pr_url carried so Billy can post its review comment).
+// in-place onto the PR; no pr_url — Billy is the mutating in-place path, not
+// the reviewPRVars review path, and it declares no pr_url var to consume).
 func TestGitHubWebhook_TicketPRRoutesToBilly(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var gotBot string
@@ -162,8 +163,8 @@ func TestGitHubWebhook_TicketPRRoutesToBilly(t *testing.T) {
 	if gotVars["push_branch"] != "feat/subtract" {
 		t.Fatalf("billy path must set push_branch to the PR source branch (in-place push, not the review path): %v", gotVars)
 	}
-	if gotVars["pr_url"] == "" {
-		t.Fatalf("billy carries pr_url so it can post its review-comment feedback on the PR: %v", gotVars)
+	if _, ok := gotVars["pr_url"]; ok {
+		t.Fatalf("billy path must not use reviewPRVars (pr_url present): %v", gotVars)
 	}
 }
 
