@@ -378,6 +378,50 @@ gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
 
+## Third-party agent CLIs (`kimi`, and the CLI-agent seam)
+
+Some agent CLIs have an argument protocol **disjoint from claude-code's**
+Session mode (`--print`, prompt on stdin, `--append-system-prompt`, …), so
+neither `backend: claude_code` nor the per-node `command:` override (which
+only swaps the *binary* while keeping claude-code's argv) can drive them.
+Moonshot's **`kimi-code`** is the motivating case — it takes the prompt as
+`-p <prompt>` (`kimi --print …` errors with `unknown option '--print'`):
+
+```
+kimi -p <prompt> --output-format {text,stream-json} [-m <alias>]
+```
+
+iterion ships a dedicated **`kimi`** backend for it:
+
+```yaml
+agent implement:
+  backend: "kimi"
+  model: "moonshot/kimi-k2"    # the provider segment is stripped → `-m kimi-k2`
+  system: "…the task…"
+```
+
+Under the hood, `kimi` is a concrete instance of a generic **CLI-agent
+backend** (`delegate.CLIAgentBackend` + `CLIAgentProtocol`, see
+[ADR-065](adr/065-dedicated-cli-agent-backend.md)) that builds the target
+CLI's *own* command line, runs it with a wall-clock timeout (inside the run's
+sandbox container when one is active), parses its stdout (kimi emits a
+claude-code-style `stream-json` stream) into the structured result, and retries
+on a no-output / network transient. Adding another such CLI is a new protocol
+*value*, not new plumbing.
+
+Behavioural notes specific to CLI-agent backends:
+
+- **Explicit opt-in.** `kimi` is never auto-detected; you select it with
+  `backend: "kimi"`. No Moonshot credential silently re-targets a run.
+- **Credentials** are resolved by the CLI itself from its own env/config (e.g.
+  `$MOONSHOT_API_KEY`) — iterion inherits the host environment and does not
+  fight the CLI's native resolution.
+- **Tools are not host-gated.** Like `codex`, kimi runs with its *own* built-in
+  toolset; a node's `tools:` list is advisory. For a hard tool-permission
+  boundary use `claude_code` (permission gate) or `claw` (native restriction).
+- **Effort** has no effect (kimi has no reasoning-effort dial); **sessions**
+  are captured for observability but resume/fork is not yet wired.
+
 ## Editor UX
 
 The studio calls `GET /api/backends/detect` at mount time. The
