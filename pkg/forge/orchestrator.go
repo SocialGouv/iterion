@@ -214,8 +214,17 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 		return ProvisionResult{}, fmt.Errorf("forge: bots %v declare no forge events to subscribe to", desiredBots)
 	}
 
-	// Idempotent no-op: same bots + same events already provisioned.
+	// Idempotent no-op: same bots + same events already provisioned. Still
+	// reconcile the per-bot token bindings before returning — an integration
+	// provisioned before the binding fix landed has none, so the board-launch
+	// path can't authenticate until a re-provision backfills them. Cheap and
+	// idempotent (ensureBotBinding no-ops when the binding already matches).
 	if hasExisting && equalStringSet(existing.BotIDs, desiredBots) && equalStringSet(existing.EventsNormalized, eventsNormalized) {
+		for _, b := range desiredBots {
+			if err := o.ensureBotBinding(ctx, req.TenantID, b, frByBot[b].SecretName(), existing.ManagedSecretID); err != nil {
+				return ProvisionResult{}, fmt.Errorf("forge: bind %s for bot %s: %w", frByBot[b].SecretName(), b, err)
+			}
+		}
 		return ProvisionResult{
 			IntegrationID:   existing.ID,
 			WebhookID:       existing.WebhookID,
