@@ -137,10 +137,13 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 // instead of stranding in the cloud runner's ephemeral worktree. The webhook's
 // LaunchVars win last so an operator can override per repo (e.g. pin
 // max_passes or a scratch path).
-func branchImproveVars(baseRef, sourceBranch, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
+func branchImproveVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
 	vars := map[string]string{
 		"base_ref":    baseRef,
 		"scope_notes": scopeNotes,
+		// The PR Billy is hardening — post_pr_feedback comments its review
+		// verdict on it so the author reads the conclusion in the forge.
+		"pr_url": prURL,
 	}
 	if asPR {
 		// Open a separate PR targeting the contributor's source branch — the

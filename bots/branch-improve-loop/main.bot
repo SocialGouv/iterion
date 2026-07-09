@@ -161,6 +161,12 @@ vars:
   ## dying with the ephemeral cloud-runner worktree. Empty (default) keeps
   ## today's behaviour (commits stay on the local storage branch).
   push_branch: string = ""
+  ## The PR Billy is hardening, as a forge URL
+  ## (https://github.com/<owner>/<repo>/pull/<n>). When set, post_pr_feedback
+  ## posts Billy's review verdict as a comment ON that PR so the author sees
+  ## the conclusion (what was corrected, or "reviewed clean") in the forge, not
+  ## only in the iterion run. The PR-webhook trigger sets it. Empty = skip.
+  pr_url: string = ""
 
 secrets:
   ## Forge access for push + MR creation + the issue back-link. Mounted as a
@@ -390,6 +396,37 @@ prompt finalize_mr_user:
   Push the branch, open the MR/PR, post the back-link when a source issue is
   given, and return the structured result.
 
+prompt post_feedback_system:
+  You are Billy leaving your review verdict AS A COMMENT on the pull request you
+  just hardened, so the author reads your conclusion in the forge — not only in
+  an iterion run they never see. Post ONE concise, respectful comment and stop.
+
+  ## How to post
+  Authenticate gh from the mounted forge token, then comment on the PR:
+    tok=$(cat /run/iterion/secrets/forge_token 2>/dev/null) || tok="$GH_TOKEN"
+    GH_TOKEN="$tok" gh pr comment <pr_url> --body-file <file>
+  Write the body to a scratch file (never inline a multi-paragraph --body). If
+  pr_url is empty, do nothing and return posted=false, note="no pr_url".
+
+  ## What to write (Markdown, no decorative bold, honest)
+  - A one-line verdict: "Reviewed clean — nothing to change." when the branch
+    was clean and you pushed nothing; else "Hardened this PR — pushed N fix(es)."
+  - 2–5 bullets of what you actually found / changed, grounded in the review
+    summary. Do NOT invent issues; if the summary says clean, say clean.
+  - If you pushed commits, note they are on this branch for the author to review.
+  - Sign off as an automated iterion review so the author knows it's a bot.
+
+  Do NOT re-review, re-run tests, or push code here — that already happened. This
+  node ONLY posts the comment. Return {posted, note}.
+
+prompt post_feedback_user:
+  PR to comment on (empty → skip): {{input.pr_url}}
+  Branch was clean (no real issues found): {{input.branch_clean}}
+  Commits pushed to the PR branch this run: {{input.commits_pushed}} ({{input.push_reason}})
+
+  Your review summary to distil into the comment:
+  {{input.review_summary}}
+
 ## ─── Schemas ────────────────────────────────────────────────────
 
 ## campaign's input: the deterministic gate's failure log from the PREVIOUS
@@ -452,6 +489,18 @@ schema mr_gate_output:
 schema push_state:
   pushed: bool
   reason: string
+
+## post_pr_feedback I/O — Billy's review verdict comment on the PR.
+schema post_feedback_input:
+  pr_url: string
+  review_summary: string
+  branch_clean: bool
+  commits_pushed: bool
+  push_reason: string
+
+schema post_feedback_output:
+  posted: bool
+  note: string
 
 ## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
 ## LLM agent) is only ever entered when a push credential actually exists.
@@ -735,6 +784,22 @@ agent finalize_mr:
   ## makes impossible (the node is only entered when a push credential exists).
   tool_max_steps: 20
 
+## post_pr_feedback — Billy leaves his review verdict as a COMMENT on the PR he
+## just hardened, so the author sees the conclusion in the forge. claude_code
+## for gh + the mounted forge_token; low effort (it only distils a summary +
+## posts one comment). Reached on the PR-context path after push_back_tool.
+agent post_pr_feedback:
+  backend: "claude_code"
+  model: "${ITERION_BRANCH_IMPROVE_FEEDBACK_MODEL:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_BRANCH_IMPROVE_FEEDBACK_EFFORT:-low}"
+  input: post_feedback_input
+  output: post_feedback_output
+  system: post_feedback_system
+  user: post_feedback_user
+  tools: [bash, read_file]
+  ## ~3-5 commands nominal (write body file + gh pr comment); 8 is headroom.
+  tool_max_steps: 8
+
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow branch_improve_loop:
@@ -818,7 +883,17 @@ workflow branch_improve_loop:
   ## says why in the run report).
   push_auth_probe -> push_back_tool when available
   push_auth_probe -> done when not available
-  push_back_tool -> done
+  ## After the deterministic push (pushed or clean no-op), Billy posts his
+  ## review verdict as a comment ON the PR so the author reads the conclusion
+  ## in the forge, carrying the campaign summary + the push result.
+  push_back_tool -> post_pr_feedback with {
+    pr_url:         "{{vars.pr_url}}",
+    review_summary: "{{outputs.campaign.summary}}",
+    branch_clean:   "{{outputs.campaign.branch_clean}}",
+    commits_pushed: "{{outputs.push_back_tool.pushed}}",
+    push_reason:    "{{outputs.push_back_tool.reason}}"
+  }
+  post_pr_feedback -> done
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
   ## per-pass commits) + opens the MR/PR and (when source_issue_ref is set)

@@ -95,7 +95,7 @@ func TestSelectForgePRBot(t *testing.T) {
 // Operator LaunchVars win last.
 func TestBranchImproveVars(t *testing.T) {
 	// Default (asPR=false): push directly onto the PR's source branch.
-	v := branchImproveVars("main", "feat/subtract", "Add subtract\n\nFixes #12", false, map[string]string{"max_passes": "3"})
+	v := branchImproveVars("main", "feat/subtract", "https://github.com/acme/api/pull/12", "Add subtract\n\nFixes #12", false, map[string]string{"max_passes": "3"})
 	if v["base_ref"] != "main" {
 		t.Errorf("base_ref = %q, want main", v["base_ref"])
 	}
@@ -111,13 +111,16 @@ func TestBranchImproveVars(t *testing.T) {
 	if v["max_passes"] != "3" {
 		t.Errorf("operator LaunchVars must win: max_passes = %q, want 3", v["max_passes"])
 	}
+	if v["pr_url"] != "https://github.com/acme/api/pull/12" {
+		t.Errorf("pr_url = %q, want the PR URL (for Billy's review comment)", v["pr_url"])
+	}
 }
 
 // TestBranchImproveVars_AsPR: with branch_improve_as_pr, Billy opens a separate
 // PR targeting the contributor's source branch (open_mr=true, mr_base=source)
 // instead of pushing in-place — the author reviews the bot's diff in isolation.
 func TestBranchImproveVars_AsPR(t *testing.T) {
-	v := branchImproveVars("main", "feat/subtract", "notes", true, nil)
+	v := branchImproveVars("main", "feat/subtract", "https://github.com/acme/api/pull/9", "notes", true, nil)
 	if v["open_mr"] != "true" {
 		t.Errorf("open_mr = %q, want true (opens a PR)", v["open_mr"])
 	}
