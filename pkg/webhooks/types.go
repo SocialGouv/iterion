@@ -110,6 +110,14 @@ type Config struct {
 	// pull_request / issue_comment paths.
 	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
 
+	// AutoImplementOnOpen, when true, dispatches the implementer bot on a
+	// freshly-OPENED issue (not only a labeled one) — the zero-touch lane where
+	// iterion turns every new issue into a PR without a manual label. OFF by
+	// default: labeling an issue (LabelAllowlist) stays the deliberate opt-in,
+	// so enabling this is a per-webhook decision to auto-act on ALL new issues.
+	// The labeled path keeps working alongside it.
+	AutoImplementOnOpen bool `bson:"auto_implement_on_open,omitempty" json:"auto_implement_on_open,omitempty"`
+
 	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
 	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
 	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary

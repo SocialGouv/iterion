@@ -85,6 +85,13 @@ func (p ParsedIssue) IsLabeled() bool {
 	return p.Action == "labeled" && p.LabelName != ""
 }
 
+// IsOpened reports whether this is the "opened" action — a freshly created
+// issue. The zero-touch path (webhook AutoImplementOnOpen) keys on it to
+// dispatch the implementer without waiting for a label.
+func (p ParsedIssue) IsOpened() bool {
+	return p.Action == "opened"
+}
+
 // SubjectID is the stable per-issue identifier used in delivery records.
 func (p ParsedIssue) SubjectID() string {
 	return "issue:" + strconv.FormatInt(p.IssueNumber, 10)
