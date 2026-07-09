@@ -27,9 +27,10 @@ const (
 	HostDesktop HostKind = "desktop"
 
 	// HostCloud: `iterion server` / `iterion runner` running inside
-	// a kubernetes pod. Default to kubernetes driver if available;
-	// noop otherwise (Phase 5 wires KubernetesDriver; Phase 0 uses
-	// noop everywhere).
+	// a kubernetes pod. Defaults to the kubernetes driver (sibling
+	// sandbox pods) when registered; noop otherwise. Runners that are
+	// themselves the isolation boundary neutralize workflow sandbox
+	// blocks instead via ITERION_SANDBOX_OVERRIDE=none (docs/sandbox.md).
 	HostCloud HostKind = "cloud"
 )
 
