@@ -70,5 +70,17 @@ ENV ITERION_BOTS_PATH=/opt/iterion/bots \
 USER 1000
 WORKDIR /home/devbox
 
+# Warm the Nix store with the dominant toolchain (Go + go-task) so the FIRST
+# `devbox run` on a Go repo — iterion itself, and most SocialGouv repos — reuses
+# the baked store paths instead of re-downloading ~500MB from cache.nixos.org on
+# every ephemeral pod's cold start (the DEPLOY NOTE's "first run re-downloads").
+# A target repo's devbox.json requesting the SAME go@1.26 (same pinned nixpkgs)
+# hits these store paths directly. Best-effort: `|| true` so a transient
+# resolver/network blip never breaks the image build — an un-warmed store just
+# falls back to today's on-demand download. The scalable, stack-agnostic fix
+# remains a shared binary-cache substituter (S3/attic) or a persistent /nix PVC;
+# this bakes the 80% case without standing up a service.
+RUN timeout 900 sh -c 'devbox global add go@1.26 go-task@latest && devbox global install' >/dev/null 2>&1 || true
+
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/iterion"]
 CMD ["runner"]
