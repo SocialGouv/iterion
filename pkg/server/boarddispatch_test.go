@@ -124,3 +124,41 @@ func TestBoardDispatcher_ClaimConflictSkips(t *testing.T) {
 		t.Errorf("semaphore slot leaked on failed claim: %d held", len(d.sem))
 	}
 }
+
+// liftBoardLaunchContext must round-trip the webhook launch context stamped by
+// ensureBoardCard: repo + BYOK key/secret overrides come off the reserved keys
+// into the LaunchSpec, the bot's own vars are preserved, and the reserved keys
+// never leak into those vars. Without this the board-coordinator launch has no
+// overrides (the webhook's never reach it).
+func TestLiftBoardLaunchContext(t *testing.T) {
+	botArgs := map[string]string{
+		"feature_prompt":        "add X",
+		boardRepoURLKey:         "https://github.com/acme/api.git",
+		boardRepoRefKey:         "main",
+		boardKeyOverridesKey:    `{"anthropic":"key-1"}`,
+		boardSecretOverridesKey: `{"forge_token":"sec-1"}`,
+	}
+	lc := liftBoardLaunchContext(botArgs)
+	if lc.RepoURL != "https://github.com/acme/api.git" || lc.RepoRef != "main" {
+		t.Errorf("repo lifted wrong: %q %q", lc.RepoURL, lc.RepoRef)
+	}
+	if lc.KeyOverrides["anthropic"] != "key-1" {
+		t.Errorf("key overrides = %v", lc.KeyOverrides)
+	}
+	if lc.SecretOverrides["forge_token"] != "sec-1" {
+		t.Errorf("secret overrides = %v", lc.SecretOverrides)
+	}
+	if lc.Vars["feature_prompt"] != "add X" {
+		t.Errorf("bot var dropped: %v", lc.Vars)
+	}
+	for _, reserved := range []string{boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey} {
+		if _, leaked := lc.Vars[reserved]; leaked {
+			t.Errorf("reserved key %q leaked into bot vars", reserved)
+		}
+	}
+	// A malformed override blob must not fail the lift (best-effort).
+	bad := liftBoardLaunchContext(map[string]string{boardKeyOverridesKey: "{not json"})
+	if bad.KeyOverrides != nil && len(bad.KeyOverrides) != 0 {
+		t.Errorf("malformed blob should yield no overrides, got %v", bad.KeyOverrides)
+	}
+}
