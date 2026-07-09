@@ -72,3 +72,5 @@ first bilan for a bot lands.
 | Acci | `rgaa-audit` | RGAA 4.1.2 accessibility audit (read-only) | [rgaa-audit.md](rgaa-audit.md) |
 | ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |
+
+> Tip: `iterion report --run-id <id>` reconstructs a merged run’s full chronological report at any time.
