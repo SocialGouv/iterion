@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -303,11 +304,23 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 	var outBuf, errBuf bytes.Buffer
 	argv := append([]string{binary}, args...)
 
+	// A stdin-delivery protocol (PromptViaStdin) must route its prompt
+	// through the sandbox ExecOpts, NOT by setting cmd.Stdin after the
+	// driver builds the command: the docker/k8s drivers only allocate a
+	// forwarded stdin (`docker exec --interactive`) when opts.Stdin (or
+	// KeepStdinOpen) is set, so a post-hoc cmd.Stdin would be silently
+	// dropped inside the container.
+	var stdin io.Reader
+	if stdinPrompt != "" {
+		stdin = strings.NewReader(stdinPrompt)
+	}
+
 	var cmd *exec.Cmd
 	if task.Sandbox != nil {
 		cmd = task.Sandbox.Command(runCtx, argv, sandbox.ExecOpts{
 			Env:     envSliceToMap(b.Protocol.ResolveEnv, ctx),
 			WorkDir: task.WorkDir,
+			Stdin:   stdin,
 		})
 	} else {
 		cmd = exec.CommandContext(runCtx, binary, args...) // #nosec G204 — binary/args are backend-configured, not attacker-controlled.
@@ -315,12 +328,10 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 		if task.WorkDir != "" {
 			cmd.Dir = task.WorkDir
 		}
+		cmd.Stdin = stdin
 	}
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
-	if stdinPrompt != "" {
-		cmd.Stdin = strings.NewReader(stdinPrompt)
-	}
 
 	runErr := cmd.Run()
 	stdout = outBuf.String()
