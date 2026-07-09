@@ -54,11 +54,25 @@ const (
 
 // Default retention values from plan §C.2.
 const (
-	DefaultStreamMaxAge   = 24 * time.Hour
-	DefaultStreamMaxRetry = 3
+	DefaultStreamMaxAge = 24 * time.Hour
+	// DefaultStreamMaxRetry is the consumer's MaxDeliver — how many times a
+	// message is redelivered before it parks in the DLQ. A run in flight
+	// renews its ack every HeartbeatInterval (InProgress), so this budget is
+	// only consumed by a run that CANNOT make progress: a genuine crash, OR a
+	// message that waited un-claimed in a deep queue past AckWait because every
+	// runner was busy (the burst case — 5 runs onto 3 static pods). 8 (× the
+	// 10-minute AckWait ≈ 80 min) absorbs a bursty backlog without giving up,
+	// while still parking a truly stuck run. The real capacity lever is KEDA
+	// autoscaling on queue depth (charts runner.keda); this is the resilience
+	// floor for when the pool is momentarily saturated.
+	DefaultStreamMaxRetry = 8
 	DefaultDLQMaxAge      = 7 * 24 * time.Hour
 	DefaultLockTTL        = 60 * time.Second
-	DefaultAckWait        = 5 * time.Minute
+	// DefaultAckWait is the per-delivery ack deadline. Longer than a single
+	// heartbeat interval so one missed heartbeat doesn't trigger a spurious
+	// redelivery; 10 min also covers a cold devbox/Nix first-run before the
+	// first heartbeat lands.
+	DefaultAckWait = 10 * time.Minute
 )
 
 // Config carries the connection settings for the cloud queue.
