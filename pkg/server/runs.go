@@ -1156,16 +1156,20 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	// Load the run once: its persisted FilePath is the fallback when the body
+	// omits one, and its TenantID is required to scope the resume's Mongo
+	// queries (see below). LoadRunCtx looks a run up by id without a tenant
+	// filter, so it is safe to call before the tenant is on the context.
+	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		span.SetStatus(codes.Error, "run not found")
+		return
+	}
 	// Resolve file path: explicit body wins, falling back to the
 	// FilePath persisted at launch.
 	filePath := req.FilePath
 	if filePath == "" {
-		runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
-		if err != nil {
-			s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
-			span.SetStatus(codes.Error, "run not found")
-			return
-		}
 		filePath = runMeta.FilePath
 		if filePath == "" && req.Source == "" {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required (run has no persisted FilePath)")
@@ -1202,6 +1206,16 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.WithoutCancel(spanCtx)
+	// Scope the resume to the run's tenant: Resume runs tenant-scoped store
+	// queries (cloud Mongo) that panic without a tenant on the context — the
+	// HTTP middleware authenticates the /api/runs route but does NOT stamp the
+	// store tenant marker (unlike the /api/teams/{id}/… routes). Derive it from
+	// the run itself, the authoritative owner (a super-admin may resume a run in
+	// any team). Empty on a local single-tenant store — WithTenant("") is a
+	// no-op there.
+	if runMeta.TenantID != "" {
+		ctx = store.WithTenant(ctx, runMeta.TenantID)
+	}
 	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,
