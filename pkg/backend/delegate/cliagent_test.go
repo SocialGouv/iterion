@@ -5,13 +5,33 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 )
+
+// recordingRun is a minimal sandbox.Run that records the ExecOpts handed to
+// Command and runs a canned host command in the container's stead, so a
+// backend's sandbox wiring can be asserted without a real container.
+type recordingRun struct {
+	gotOpts sandbox.ExecOpts
+	script  string // sh -c body the fake "container" runs
+}
+
+func (r *recordingRun) Driver() string { return "recording" }
+func (r *recordingRun) Command(ctx context.Context, _ []string, opts sandbox.ExecOpts) *exec.Cmd {
+	r.gotOpts = opts
+	return exec.CommandContext(ctx, "sh", "-c", r.script) // #nosec G204 — test fixture
+}
+func (r *recordingRun) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	return sandbox.ExecResult{}, nil
+}
+func (r *recordingRun) Cleanup(context.Context) error { return nil }
 
 func testLogger() *iterlog.Logger { return iterlog.New(iterlog.LevelError, io.Discard) }
 
@@ -160,6 +180,35 @@ printf '%s\n' '{"type":"result","result":"{\"answer\":\"42\"}","session_id":"s9"
 	}
 	if res.Tokens != 10 {
 		t.Errorf("Tokens = %d, want 10", res.Tokens)
+	}
+}
+
+// TestCLIAgentSandboxStdin guards that a PromptViaStdin protocol running under
+// a sandbox routes its prompt through sandbox.ExecOpts.Stdin (so the container
+// driver allocates a forwarded stdin), rather than a post-hoc cmd.Stdin the
+// driver silently drops.
+func TestCLIAgentSandboxStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stdinbot",
+		DefaultBinary:  "stdinbot",
+		PromptViaStdin: true,
+		ParseOutput:    parseStreamJSONText,
+	}
+	run := &recordingRun{script: `printf '%s\n' '{"type":"result","result":"ok"}'`}
+	b := &CLIAgentBackend{Protocol: proto, Logger: testLogger()}
+	_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "the prompt", Sandbox: run})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if run.gotOpts.Stdin == nil {
+		t.Fatal("ExecOpts.Stdin is nil — prompt would be dropped inside the container")
+	}
+	got, _ := io.ReadAll(run.gotOpts.Stdin)
+	if string(got) != "the prompt" {
+		t.Errorf("stdin = %q, want %q", got, "the prompt")
 	}
 }
 
