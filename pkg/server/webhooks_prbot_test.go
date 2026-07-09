@@ -52,15 +52,20 @@ func TestSelectForgePRBot(t *testing.T) {
 }
 
 // TestBranchImproveVars checks Billy's PR-open launch vars: it reviews the PR's
-// branch diff over the PR base, carries the PR title+body as scope, and does
-// NOT open a second MR (the PR already exists). Operator LaunchVars win last.
+// branch diff over the PR base, carries the PR title+body as scope, does NOT
+// open a second MR (the PR already exists), and declares the PR's source
+// branch as push_branch so the bot's push-back lands its commits ON the PR.
+// Operator LaunchVars win last.
 func TestBranchImproveVars(t *testing.T) {
-	v := branchImproveVars("main", "Add subtract\n\nFixes #12", map[string]string{"max_passes": "3"})
+	v := branchImproveVars("main", "feat/subtract", "Add subtract\n\nFixes #12", map[string]string{"max_passes": "3"})
 	if v["base_ref"] != "main" {
 		t.Errorf("base_ref = %q, want main", v["base_ref"])
 	}
 	if v["open_mr"] != "false" {
 		t.Errorf("open_mr = %q, want false (PR already exists)", v["open_mr"])
+	}
+	if v["push_branch"] != "feat/subtract" {
+		t.Errorf("push_branch = %q, want feat/subtract (the PR source branch)", v["push_branch"])
 	}
 	if v["scope_notes"] == "" {
 		t.Error("scope_notes must carry the PR title+body")

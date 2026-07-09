@@ -154,6 +154,13 @@ vars:
   ## "native:<id>" (local board) or a forge issue URL. When set, finalize_mr
   ## posts the opened MR's URL back as a comment on it.
   source_issue_ref: string = ""
+  ## PR-context push-back: the existing forge branch the run's commits belong
+  ## to (the PR's source branch). When set with open_mr=false and the campaign
+  ## banked commits, the deterministic push_back_tool pushes HEAD to it — the
+  ## PR-webhook trigger sets this so Billy's fixes land ON the PR instead of
+  ## dying with the ephemeral cloud-runner worktree. Empty (default) keeps
+  ## today's behaviour (commits stay on the local storage branch).
+  push_branch: string = ""
 
 secrets:
   ## Forge access for push + MR creation + the issue back-link. Mounted as a
@@ -439,6 +446,12 @@ schema gate_state:
 
 schema mr_gate_output:
   open_mr: bool
+  push_back: bool
+
+## push_back_tool output — deterministic result of the PR-branch push.
+schema push_state:
+  pushed: bool
+  reason: string
 
 ## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
 ## LLM agent) is only ever entered when a push credential actually exists.
@@ -585,12 +598,17 @@ compute gate:
     converged: "outputs.verify_run.passed && outputs.campaign.branch_clean"
     fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
 
-## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
-## edges use the C012-exhaustive simple form. No LLM, no shell.
+## mr_gate routes the post-convergence tail into at most ONE of two
+## mutually-exclusive booleans (the unconditional edge to done is the C012
+## fallback when neither matches): open_mr (finalize path), push_back
+## (PR-context: no MR wanted but a target forge branch is declared — whether
+## anything NEW exists to push is decided by push_back_tool's own rev-list,
+## the in-repo truth across all passes). No LLM, no shell.
 compute mr_gate:
   output: mr_gate_output
   expr:
     open_mr: "vars.open_mr"
+    push_back: "!vars.open_mr && vars.push_branch != ''"
 
 ## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
 ## LLM agent (claude_code, opus); entering it with NO push credential mounted
@@ -620,6 +638,83 @@ except Exception:
 print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
 "`
   output: forge_auth_state
+
+## push_auth_probe — the push-back path's copy of the credential pre-flight
+## (a graph node is a unique instance, so the open_mr and push_back paths
+## each carry their own probe). Same contract as forge_auth_probe.
+tool push_auth_probe:
+  command: `python3 -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
+## push_back_tool — DETERMINISTIC push of the run's HEAD onto the declared
+## forge branch (the PR's source branch). The in-repo truth decides: when
+## rev-list shows nothing new over origin/<push_branch> it no-ops cleanly, so
+## a converged-with-no-commits pass never errors. The token comes from the
+## mounted forge_token secret or a *_TOKEN env and is redacted from any
+## failure output; it is tried under the common forge basic-auth usernames
+## (x-access-token = GitHub, oauth2 = GitLab-style). No LLM — the push is a
+## mechanical act once the campaign banked the commits.
+tool push_back_tool:
+  command: `PUSH_BRANCH={{vars.push_branch}} python3 -c "
+import os, subprocess, json, re
+branch = os.environ.get('PUSH_BRANCH', '').strip()
+if not branch:
+    print(json.dumps({'pushed': False, 'reason': 'no push_branch declared'})); raise SystemExit(0)
+def run(*a, **kw):
+    return subprocess.run(list(a), capture_output=True, text=True, timeout=kw.get('timeout', 120))
+r = run('git', 'fetch', 'origin', branch)
+if r.returncode != 0:
+    print(json.dumps({'pushed': False, 'reason': 'fetch origin/' + branch + ' failed: ' + (r.stderr or r.stdout).strip()[-160:]})); raise SystemExit(0)
+r = run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD')
+ahead = int((r.stdout or '0').strip() or '0') if r.returncode == 0 else -1
+if ahead == 0:
+    print(json.dumps({'pushed': False, 'reason': 'nothing to push: HEAD not ahead of origin/' + branch})); raise SystemExit(0)
+tok = ''
+p = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(p) and os.path.getsize(p) > 0:
+        tok = open(p).read().strip()
+except OSError:
+    pass
+if not tok:
+    for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+        if os.environ.get(v):
+            tok = os.environ[v].strip(); break
+if not tok:
+    print(json.dumps({'pushed': False, 'reason': 'no forge token available'})); raise SystemExit(0)
+r = run('git', 'remote', 'get-url', 'origin')
+m = re.match(r'https://(?:[^@/]+@)?([^/]+)/(.+?)(?:\\.git)?$', (r.stdout or '').strip())
+if not m:
+    print(json.dumps({'pushed': False, 'reason': 'origin is not an https remote'})); raise SystemExit(0)
+host, path = m.group(1), m.group(2)
+last = ''
+for user in ('x-access-token', 'oauth2'):
+    url = 'https://' + user + ':' + tok + '@' + host + '/' + path + '.git'
+    r = run('git', 'push', url, 'HEAD:refs/heads/' + branch, timeout=180)
+    if r.returncode == 0:
+        print(json.dumps({'pushed': True, 'reason': 'pushed ' + str(ahead) + ' commit(s) HEAD->' + branch + ' as ' + user})); raise SystemExit(0)
+    last = (r.stderr or r.stdout).strip().replace(tok, '***')[-200:]
+print(json.dumps({'pushed': False, 'reason': 'push failed: ' + last}))
+"`
+  output: push_state
 
 ## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-pass commits.
 ## claude_code so the bundled forge-mr-create skill is mirrored and the board
@@ -708,11 +803,22 @@ workflow branch_improve_loop:
   ## Unconditional fallthrough after the loop-back retries are spent.
   gate -> mr_gate
 
-  ## Converged (or capped) → optional MR path, else finish. When open_mr, first
-  ## the deterministic forge_auth_probe checks a push credential EXISTS before we
-  ## pay the finalize_mr agent turn.
+  ## Converged (or capped) → exactly one of: MR path, PR push-back path, or
+  ## finish (mr_gate's three booleans are mutually exclusive). Each remote
+  ## path first pays a ~100ms deterministic credential probe before any
+  ## agent/push work.
   mr_gate -> forge_auth_probe when open_mr
-  mr_gate -> done when not open_mr
+  mr_gate -> push_auth_probe when push_back
+  mr_gate -> done
+
+  ## PR-context push-back: credential present → deterministically push the
+  ## run's HEAD onto the PR's source branch (push_back_tool no-ops when
+  ## rev-list shows nothing new). Absent → finish; the commits stay on the
+  ## engine's storage branch (ephemeral on cloud runners — the probe result
+  ## says why in the run report).
+  push_auth_probe -> push_back_tool when available
+  push_auth_probe -> done when not available
+  push_back_tool -> done
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
   ## per-pass commits) + opens the MR/PR and (when source_issue_ref is set)

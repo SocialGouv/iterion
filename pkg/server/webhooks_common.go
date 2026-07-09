@@ -127,13 +127,17 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 // its base. baseRef is the PR's target branch; scopeNotes carries the PR
 // title+body (which includes the "Fixes #N" ticket link). open_mr=false — the
 // PR already exists, so Billy commits onto the checked-out PR branch rather
-// than opening a second MR. The webhook's LaunchVars win last so an operator
-// can override per repo (e.g. pin max_passes or a scratch path).
-func branchImproveVars(baseRef, scopeNotes string, launchVars map[string]string) map[string]string {
+// than opening a second MR; push_branch (the PR's source branch) routes those
+// commits through the bot's deterministic push-back so they land ON the PR
+// instead of stranding in the cloud runner's ephemeral worktree. The webhook's
+// LaunchVars win last so an operator can override per repo (e.g. pin
+// max_passes or a scratch path).
+func branchImproveVars(baseRef, sourceBranch, scopeNotes string, launchVars map[string]string) map[string]string {
 	vars := map[string]string{
 		"base_ref":    baseRef,
 		"scope_notes": scopeNotes,
 		"open_mr":     "false",
+		"push_branch": sourceBranch,
 	}
 	mergeVarsInto(vars, launchVars)
 	return vars
