@@ -45,6 +45,7 @@ const (
 	DiagArtifactLabelsNoPublish  DiagCode = "C049" // artifact_labels: set on a node with no publish: (nothing to attach to)
 	DiagMemoryInvalidVisibility  DiagCode = "C170" // memory: unknown visibility value
 	DiagMemoryVisibilityConflict DiagCode = "C171" // memory: visibility: with the legacy project_root:
+	DiagBadPromptInclude         DiagCode = "C055" // prompt {{include "..."}} marker could not be resolved
 
 	// Attachments diagnostics
 	DiagDuplicateAttachment       DiagCode = "C050" // attachment name declared more than once
