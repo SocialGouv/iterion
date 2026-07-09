@@ -40,14 +40,16 @@ func (c AppConfig) UserAuthConfigured() bool { return c.ClientID != "" && c.Clie
 
 // RuntimeInstallationPermissions is the least-privilege permission subset an
 // installation token minted for iterion is pinned to — exactly what the forge
-// layer needs (read/push code, open+comment PRs, manage the per-repo webhook,
-// the mandatory metadata baseline) and nothing more. Mirrors the App manifest
-// (BuildAppManifest); pinning it at mint time means a token stays minimal even
-// if the installation is later granted broader permissions on the forge.
+// layer needs (read/push code, open+comment PRs, comment the source issue for
+// the MR back-link, manage the per-repo webhook, the mandatory metadata
+// baseline) and nothing more. Mirrors the App manifest (BuildAppManifest);
+// pinning it at mint time means a token stays minimal even if the installation
+// is later granted broader permissions on the forge.
 func RuntimeInstallationPermissions() map[string]string {
 	return map[string]string{
 		"contents":         "write",
 		"pull_requests":    "write",
+		"issues":           "write", // finalize_mr posts the PR URL back on the source issue
 		"metadata":         "read",
 		"repository_hooks": "write",
 	}
