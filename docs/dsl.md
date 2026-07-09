@@ -51,9 +51,9 @@ prompt review_system:
 ```
 
 The path is resolved **relative to the directory of the `.bot` file**.
-Absolute paths, paths that escape the `.bot` directory (via `..`), and
-files larger than 256 KiB are rejected with diagnostic `C055`, as is a
-missing file. Included text may itself contain `{{...}}` template
+Absolute paths, paths that escape the `.bot` directory (via `..` or a
+symlink resolving outside it), and files larger than 256 KiB are rejected
+with diagnostic `C055`, as is a missing file. Included text may itself contain `{{...}}` template
 references, which resolve normally after inclusion.
 
 ## Schemas
