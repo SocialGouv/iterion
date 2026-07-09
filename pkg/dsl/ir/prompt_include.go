@@ -69,10 +69,9 @@ func readPromptInclude(baseDir, rel string) (string, error) {
 		baseDir = "."
 	}
 	full := filepath.Join(baseDir, filepath.Clean(rel))
-	// Confine the resolved path to baseDir's subtree.
-	within, err := filepath.Rel(baseDir, full)
-	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("include %q: path escapes the .bot directory", rel)
+	// Confine the resolved path to baseDir's subtree (lexical guard).
+	if err := confineToBase(baseDir, full); err != nil {
+		return "", fmt.Errorf("include %q: %w", rel, err)
 	}
 	info, err := os.Stat(full)
 	if err != nil {
@@ -80,6 +79,23 @@ func readPromptInclude(baseDir, rel string) (string, error) {
 	}
 	if info.IsDir() {
 		return "", fmt.Errorf("include %q: is a directory, not a file", rel)
+	}
+	// Re-check containment AFTER symlink resolution: a symlink INSIDE
+	// baseDir pointing outside it passes the lexical guard above but would
+	// still leak arbitrary host files (secrets, /etc/passwd) into the
+	// prompt. Resolve both operands so the comparison is apples-to-apples
+	// — matches the symlink-aware containment used by pkg/server and
+	// pkg/bundle.
+	realBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("include %q: resolve base dir: %w", rel, err)
+	}
+	realFull, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return "", fmt.Errorf("include %q: %w", rel, err)
+	}
+	if err := confineToBase(realBase, realFull); err != nil {
+		return "", fmt.Errorf("include %q: %w", rel, err)
 	}
 	if info.Size() > maxPromptIncludeBytes {
 		return "", fmt.Errorf("include %q: file is %d bytes, over the %d byte limit", rel, info.Size(), maxPromptIncludeBytes)
@@ -89,4 +105,15 @@ func readPromptInclude(baseDir, rel string) (string, error) {
 		return "", fmt.Errorf("include %q: %w", rel, err)
 	}
 	return string(data), nil
+}
+
+// confineToBase reports an error if full is not baseDir itself or a path
+// underneath it. Both are compared lexically via filepath.Rel; callers
+// that need symlink safety resolve their operands first.
+func confineToBase(baseDir, full string) error {
+	within, err := filepath.Rel(baseDir, full)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes the .bot directory")
+	}
+	return nil
 }

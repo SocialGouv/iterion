@@ -111,6 +111,46 @@ func TestReadPromptInclude_RejectsUnsafePaths(t *testing.T) {
 	}
 }
 
+func TestReadPromptInclude_RejectsSymlinkEscape(t *testing.T) {
+	// A symlink INSIDE the base dir that points to a file OUTSIDE it must
+	// be refused — the lexical guard alone would let it through and leak
+	// arbitrary host files into the prompt.
+	base := t.TempDir()
+	outsideDir := t.TempDir()
+	secret := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("top secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link.md")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	if _, err := readPromptInclude(base, "link.md"); err == nil {
+		t.Fatal("expected symlink-escape to be rejected, got nil (host file leaked)")
+	}
+}
+
+func TestReadPromptInclude_AllowsSymlinkWithinBase(t *testing.T) {
+	// A symlink that stays inside the base dir is legitimate and must work.
+	base := t.TempDir()
+	target := filepath.Join(base, "real.md")
+	const body = "shared rules"
+	if err := os.WriteFile(target, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	got, err := readPromptInclude(base, "link.md")
+	if err != nil {
+		t.Fatalf("unexpected error for in-base symlink: %v", err)
+	}
+	if got != body {
+		t.Fatalf("content mismatch: got %q want %q", got, body)
+	}
+}
+
 func TestReadPromptInclude_SizeCap(t *testing.T) {
 	dir := t.TempDir()
 	big := make([]byte, maxPromptIncludeBytes+1)
