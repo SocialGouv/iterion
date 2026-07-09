@@ -309,8 +309,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 // failure that one retry can plausibly fix (parse-fallback OR missing-
 // required-field), one retry through retryDelegateLoop is attempted —
 // inheriting the standard transient-backoff budget — and the retry
-// result is re-validated. The OnDelegateRetry observer hook fires for
-// the schema-fallback retry (otherwise invisible to outer observers,
+// result is re-validated. The retry does not replay the identical prompt:
+// its UserPrompt (plus, for multimodal tasks, an extra text ContentBlock)
+// is augmented with a delimited feedback block naming the validation error
+// so the model can correct itself. The OnDelegateRetry observer hook fires
+// for the schema-fallback retry (otherwise invisible to outer observers,
 // which only see transient-error retries), token / duration are
 // accumulated across the first attempt + retry so per-node accounting
 // reflects the full cost paid, and stampDelegateOutputMeta is re-applied
@@ -362,12 +365,29 @@ func (e *ClawExecutor) validateAndRetry(
 		di.Attempt = 1
 		e.hooks.OnDelegateRetry(f.id, di)
 	}
+	// Build a retry copy of the task whose UserPrompt (and, for multimodal
+	// tasks, an extra text ContentBlock) carries a delimited feedback block
+	// naming the validation failure, so the model can correct its output
+	// instead of blindly re-running the identical prompt. The ORIGINAL task
+	// is preserved untouched — its token/duration accounting has already
+	// been accumulated above and must not be disturbed.
+	retryTask := *task
+	feedback := formatSchemaRetryFeedback(err)
+	retryTask.UserPrompt = appendSchemaRetryFeedback(retryTask.UserPrompt, feedback)
+	if len(retryTask.UserContent) > 0 {
+		// Copy the slice header so appending feedback to the retry task does
+		// not mutate the original task's backing array.
+		retryTask.UserContent = append(
+			append([]delegate.ContentBlock(nil), retryTask.UserContent...),
+			delegate.ContentBlock{Type: "text", Text: feedback},
+		)
+	}
 	// Route the schema-fallback retry through retryDelegateLoop so it
 	// inherits the same transient-error backoff every other delegate call
 	// gets — a direct backend.Execute here skipped the retry budget and
 	// gave up on the first transient SDK hiccup.
 	retryResult, retryErr := e.retryDelegateLoop(ctx, f.id, backendName, func() (delegate.Result, error) {
-		return backend.Execute(ctx, *task)
+		return backend.Execute(ctx, retryTask)
 	})
 	if retryErr != nil || retryResult.ParseFallback {
 		return result, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
@@ -383,6 +403,31 @@ func (e *ClawExecutor) validateAndRetry(
 		return retryResult, fmt.Errorf("model: node %q: structured output invalid after retry: %w", f.id, retryValErr)
 	}
 	return retryResult, nil
+}
+
+// schemaRetryFeedbackMarker delimits the schema-validation feedback block
+// injected into a retry prompt. Kept as a const so tests can assert on it
+// without duplicating the literal.
+const schemaRetryFeedbackMarker = "[OUTPUT SCHEMA VALIDATION FAILED]"
+
+// formatSchemaRetryFeedback renders the delimited feedback block appended to
+// a retry prompt when structured output fails validation. err is the concrete
+// validation failure (missing field, parse fallback) so the model knows what
+// to fix.
+func formatSchemaRetryFeedback(err error) string {
+	return fmt.Sprintf(
+		"%s\n%s\nReturn a corrected response that matches the required output schema exactly. Output only the JSON object.",
+		schemaRetryFeedbackMarker, err,
+	)
+}
+
+// appendSchemaRetryFeedback appends the feedback block to an existing user
+// prompt, separated by a blank line. An empty prompt yields the feedback alone.
+func appendSchemaRetryFeedback(prompt, feedback string) string {
+	if prompt == "" {
+		return feedback
+	}
+	return prompt + "\n\n" + feedback
 }
 
 // buildTask assembles the delegate.Task for an agent/judge LLM node from the
