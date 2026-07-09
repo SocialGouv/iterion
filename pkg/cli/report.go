@@ -78,16 +78,21 @@ func RunReport(opts ReportOptions, p *Printer) error {
 // ---------------------------------------------------------------------------
 
 type report struct {
-	RunID      string           `json:"run_id"`
-	Workflow   string           `json:"workflow"`
-	Status     string           `json:"status"`
-	Duration   string           `json:"duration"`
-	CreatedAt  time.Time        `json:"created_at"`
-	FinishedAt *time.Time       `json:"finished_at,omitempty"`
-	Error      string           `json:"error,omitempty"`
-	Metrics    reportMetrics    `json:"metrics"`
-	Steps      []reportStep     `json:"steps"`
-	Artifacts  []reportArtifact `json:"artifacts"`
+	RunID    string `json:"run_id"`
+	Workflow string `json:"workflow"`
+	Status   string `json:"status"`
+	Duration string `json:"duration"`
+	// VerifyCommand is the build+test command the run's verify gate settled
+	// on (e.g. "devbox run -- go build ./..."), lifted from the verify
+	// authoring node's summary so it is greppable in the report header
+	// instead of buried in node output. Empty when the run has no verify node.
+	VerifyCommand string           `json:"verify_command,omitempty"`
+	CreatedAt     time.Time        `json:"created_at"`
+	FinishedAt    *time.Time       `json:"finished_at,omitempty"`
+	Error         string           `json:"error,omitempty"`
+	Metrics       reportMetrics    `json:"metrics"`
+	Steps         []reportStep     `json:"steps"`
+	Artifacts     []reportArtifact `json:"artifacts"`
 }
 
 type reportMetrics struct {
@@ -295,6 +300,15 @@ func (rb *reportBuilder) sumNodeFinished(evt *store.Event, step *reportStep) boo
 			rb.rpt.Metrics.ThinkingMs += extractInt(outMap, "_thinking_ms")
 			if s, ok := outMap["summary"].(string); ok {
 				summary = truncate(s, 200)
+				// The verify authoring node's contract is {prepared, summary}
+				// where summary is "the command you settled on" — surface its
+				// first line as the header `verify:` line (no new detection,
+				// just the node's existing output).
+				if _, isVerifyPlan := outMap["prepared"]; isVerifyPlan {
+					if cmd := firstLine([]byte(s)); cmd != "" {
+						rb.rpt.VerifyCommand = cmd
+					}
+				}
 			}
 			// For judge nodes
 			if approved, ok := outMap["approved"].(bool); ok {
@@ -438,6 +452,12 @@ func renderMarkdown(rpt *report) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("# Run Report: %s\n\n", rpt.RunID))
+
+	// Resolved verify command, hoisted to the header so it is greppable at a
+	// glance instead of buried in the verify node's output.
+	if rpt.VerifyCommand != "" {
+		sb.WriteString(fmt.Sprintf("verify: %s\n\n", rpt.VerifyCommand))
+	}
 
 	// Summary table.
 	sb.WriteString("## Summary\n\n")
