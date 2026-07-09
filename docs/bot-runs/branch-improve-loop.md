@@ -56,6 +56,42 @@
   first devbox run per pod re-downloads the Nix toolchain (~2-4 min — the PVC
   warm-store follow-on).
 
+### The issue → Featurly → PR half of the cycle (runs 019f4582 / 019f4590, fixes 4–6)
+
+Labeling an issue `implement` is meant to route to the implementer (Featurly)
+and open a PR that then re-triggers Billy — the other half of the loop. Two
+more gaps surfaced, both fixed live:
+
+- **Routing (fix 4, `2281a2eff`)**: a 3-bot webhook with no pinned default
+  routed `issues/labeled` to **review-pr** (run 019f4582), which stopped at
+  `diff_precheck` — an issue has no diff to review. `resolveReviewBot`'s
+  SelectBot→review-pr fallback is right for a PR delivery, wrong for an issue.
+  New `selectIssueLabeledBot` (pinned default → feature-dev → fallback), the
+  issue-path counterpart to `selectForgePRBot`, wired on GitHub+GitLab.
+  Validated: issue #86 → run **019f4590 = feature_dev**, and Featurly shipped a
+  genuine, high-quality feature (threaded a `*log.Logger` through the whole
+  generic-secret resolution path so silent credential drops become greppable —
+  the erreurs-explicites finding the debugging itself surfaced), build+test
+  green.
+- **Forge token on the board-launch path (fixes 5+6, `483e69a3f` + `9b339c999`)**:
+  Featurly implemented but `forge_auth_probe` found no `forge_token`, so it
+  never opened its PR (`secrets_ref` null). Root cause: an issue-labeled
+  delivery makes a **board card**, and the board coordinator
+  ([boarddispatch.go](../../pkg/server/boarddispatch.go)) launches via
+  `runs.Launch(BotID)` — which resolves generic secrets by (tenant, bot)
+  **binding**, NOT the webhook secret override (that only reaches the direct
+  webhook path). Forge provisioning set only the override; the tier-3 name
+  fallback misses (stored `forge_github_<conn>` ≠ workflow `forge_token`). Fix:
+  the orchestrator now upserts a per-bot `forge_token` binding at provision
+  (fix 5), reconciled even on an idempotent re-provision so an
+  already-provisioned integration is backfilled (fix 6). This is a general
+  cloud-BaaS fix: EVERY board-launched bot that pushes (Featurly, Billy on the
+  board path) needed it, not just this cycle.
+- Standing gap (deferred): fully zero-touch issue handling still needs the
+  cloud dispatcher (the webhook `issues` path is labeled-only by design); and
+  carrying the webhook's secret_overrides/launch_vars onto the board card
+  itself would make the board path robust without a binding (belt-and-braces).
+
 ## 2026-07-08 — re-dogfood post-improvement (P1-P4), same PR #72 target, $1.80 (run 019f41af)
 
 - Status: **validated — reliability + integration confirmed; production excellent.**
