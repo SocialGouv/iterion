@@ -24,6 +24,12 @@ spec:
         # KEDA scrapes /jsz on the NATS monitoring port (default 8222),
         # NOT the client URL. See _helpers.tpl for resolution order.
         natsServerMonitoringEndpoint: {{ include "iterion.nats.monitoringEndpoint" . | quote }}
+        # The JetStream account the stream lives in. REQUIRED by the scaler
+        # (v2.x errors "no account name or id given" without it). Single-tenant
+        # JetStream deployments (no NATS accounts configured) use the global
+        # default account "$G"; override runner.keda.account for a multi-account
+        # NATS.
+        account: {{ default "$G" .Values.runner.keda.account | quote }}
         stream: {{ .Values.config.nats.stream | quote }}
         consumer: {{ default "iterion-runners" .Values.runner.keda.consumerName | quote }}
         lagThreshold: {{ .Values.runner.keda.lagThreshold | quote }}

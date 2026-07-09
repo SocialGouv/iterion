@@ -80,50 +80,41 @@ func (a *ForgejoAdapter) Name() string { return "forgejo" }
 func (a *ForgejoAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	const pageSize = 50
 	out := make([]Issue, 0)
-	for page := 1; ; page++ {
-		q := url.Values{}
-		q.Set("state", "open")
-		q.Set("type", "issues")
-		q.Set("limit", fmt.Sprintf("%d", pageSize))
-		q.Set("page", fmt.Sprintf("%d", page))
-		if len(a.opts.IncludeLabels) > 0 {
-			q.Set("labels", strings.Join(a.opts.IncludeLabels, ","))
-		}
-		endpoint := fmt.Sprintf("/repos/%s/issues?%s", a.opts.Repo, q.Encode())
+	err := paginateUntilShort(pageSize, 100, a.opts.Logger,
+		fmt.Sprintf("forgejo tracker: ListCandidates hit the 100-page cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters", a.opts.Repo),
+		func(page int) (int, error) {
+			q := url.Values{}
+			q.Set("state", "open")
+			q.Set("type", "issues")
+			q.Set("limit", fmt.Sprintf("%d", pageSize))
+			q.Set("page", fmt.Sprintf("%d", page))
+			if len(a.opts.IncludeLabels) > 0 {
+				q.Set("labels", strings.Join(a.opts.IncludeLabels, ","))
+			}
+			endpoint := fmt.Sprintf("/repos/%s/issues?%s", a.opts.Repo, q.Encode())
 
-		var raw []forgejoIssue
-		if err := a.do(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
-			return nil, err
-		}
-		for _, r := range raw {
-			labels := labelNames(r.Labels)
-			if anyOfString(labels, a.opts.ExcludeLabels) {
-				continue
+			var raw []forgejoIssue
+			if err := a.do(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
+				return 0, err
 			}
-			if slices.Contains(labels, a.opts.ClaimedLabel) {
-				continue
+			for _, r := range raw {
+				labels := labelNames(r.Labels)
+				if anyOfString(labels, a.opts.ExcludeLabels) {
+					continue
+				}
+				if slices.Contains(labels, a.opts.ClaimedLabel) {
+					continue
+				}
+				iss := a.toIssue(r)
+				if iss.WorkflowState == "" {
+					continue
+				}
+				out = append(out, iss)
 			}
-			iss := a.toIssue(r)
-			if iss.WorkflowState == "" {
-				continue
-			}
-			out = append(out, iss)
-		}
-		// Stop when the page is short or empty — Forgejo doesn't ship
-		// a reliable Link header on every release, so the cheapest
-		// portable signal is "got fewer than pageSize entries".
-		if len(raw) < pageSize {
-			break
-		}
-		// Belt + suspenders: cap total pages to avoid runaway loops on
-		// pathological responses (e.g. a buggy server returning
-		// pageSize entries forever).
-		if page >= 100 {
-			if a.opts.Logger != nil {
-				a.opts.Logger.Warn("forgejo tracker: ListCandidates hit the 100-page cap on repo %s — beyond this point issues are silently dropped from dispatch; consider tightening label filters", a.opts.Repo)
-			}
-			break
-		}
+			return len(raw), nil
+		})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

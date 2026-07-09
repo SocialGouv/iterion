@@ -35,6 +35,7 @@ type backendFields struct {
 	compaction       *ir.Compaction
 	memory           *ir.Memory
 	capabilities     []string
+	skills           []string
 	cursors          *ir.CursorInvocation
 	compress         string // node-level `compress:` value ("" = unset)
 	permission       string // node-level `permission:` mode override ("" = inherit)
@@ -62,6 +63,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compaction:       n.Compaction,
 			memory:           n.Memory,
 			capabilities:     n.Capabilities,
+			skills:           n.Skills,
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			permission:       n.Permission,
@@ -80,6 +82,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compaction:       n.Compaction,
 			memory:           n.Memory,
 			capabilities:     n.Capabilities,
+			skills:           n.Skills,
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			permission:       n.Permission,
@@ -207,7 +210,7 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// incoming ctx, so whichever fires first — this bound or the workflow
 	// budget deadline already carried on ctx — wins; expiry surfaces as
 	// context.DeadlineExceeded and fails the node cleanly. Compile-time
-	// validation (C199) already rejects malformed durations, so a parse
+	// validation (C122) already rejects malformed durations, so a parse
 	// error here is defensive: skip the bound rather than fail the node.
 	if f.timeout != "" {
 		if d, derr := time.ParseDuration(ir.ExpandEnvWithDefault(f.timeout)); derr == nil && d > 0 {
@@ -515,6 +518,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	}
 	e.applyMemorySpec(&task, f.memory)
 	task.CursorFragments = resolveCursorFragments(f.cursors, e.cursors)
+	task.SkillHints = e.resolveSkillHints(f.skills)
 	e.applyPresetFragment(&task, input, td)
 
 	effectiveTools := e.assembleEffectiveTools(f, backendName, effectiveCaps, ultracode)
@@ -650,6 +654,40 @@ func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string
 		frag += "Relevant skills (consult before acting): " + strings.Join(e.presetSkills, ", ")
 	}
 	task.PresetFragment = frag
+}
+
+// resolveSkillHints builds the "## Skills" hint list for a node: the union of
+// the node's `skills:` list and the workflow-level default, filtered to those
+// that resolved in the library at run start (present in e.skillHints), sorted
+// by name for prompt-cache stability. An unresolved reference is silently
+// dropped here — the runtime mirror already logged a warning when it couldn't
+// find it. Returns nil when the node references no resolved skills.
+func (e *ClawExecutor) resolveSkillHints(nodeSkills []string) []delegate.SkillHint {
+	if len(e.skillHints) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, s := range nodeSkills {
+		if !seen[s] {
+			seen[s] = true
+			names = append(names, s)
+		}
+	}
+	for _, s := range e.wfSkills {
+		if !seen[s] {
+			seen[s] = true
+			names = append(names, s)
+		}
+	}
+	var hints []delegate.SkillHint
+	for _, n := range names {
+		if desc, ok := e.skillHints[n]; ok {
+			hints = append(hints, delegate.SkillHint{Name: n, Description: desc})
+		}
+	}
+	slices.SortFunc(hints, func(a, b delegate.SkillHint) int { return cmp.Compare(a.Name, b.Name) })
+	return hints
 }
 
 // assembleEffectiveTools produces the per-node tool allowlist by

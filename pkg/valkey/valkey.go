@@ -66,9 +66,6 @@ func New(opts Options) (*Client, error) {
 	}
 }
 
-// Wrap adapts an existing universal client (test seam — e.g. miniredis).
-func Wrap(rdb redis.UniversalClient) *Client { return &Client{rdb: rdb} }
-
 // Redis returns the underlying client for the store implementations.
 func (c *Client) Redis() redis.UniversalClient { return c.rdb }
 

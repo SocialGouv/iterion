@@ -10,7 +10,10 @@ import (
 // Settings holds the merged configuration from all settings sources.
 // Fields correspond to JSON keys in .claude/settings.json.
 type Settings struct {
-	Model          string   `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// OracleModel is the model consulted by the oracle tool (same provider
+	// as the session client). Empty = the session model.
+	OracleModel    string   `json:"oracleModel,omitempty"`
 	PermissionMode string   `json:"permissionMode,omitempty"`
 	AllowedTools   []string `json:"allowedTools,omitempty"`
 	BlockedTools   []string `json:"blockedTools,omitempty"`
@@ -119,6 +122,9 @@ func merge(dst, src *Settings) {
 	if src.Model != "" {
 		dst.Model = src.Model
 	}
+	if src.OracleModel != "" {
+		dst.OracleModel = src.OracleModel
+	}
 	if src.PermissionMode != "" {
 		dst.PermissionMode = src.PermissionMode
 	}
@@ -188,6 +194,24 @@ func mergePromptConfig(dst, src *RuntimePromptConfig) *RuntimePromptConfig {
 	}
 	if src.Posture != nil {
 		dst.Posture = src.Posture
+	}
+	if src.Communication != nil {
+		dst.Communication = src.Communication
+	}
+	if src.TaskManagement != nil {
+		dst.TaskManagement = src.TaskManagement
+	}
+	if src.DoingTasks != nil {
+		dst.DoingTasks = src.DoingTasks
+	}
+	if src.ToolPolicy != nil {
+		dst.ToolPolicy = src.ToolPolicy
+	}
+	if src.GitSafety != nil {
+		dst.GitSafety = src.GitSafety
+	}
+	if src.ContextManagement != nil {
+		dst.ContextManagement = src.ContextManagement
 	}
 	if src.MemoryMaxBytes != 0 {
 		dst.MemoryMaxBytes = src.MemoryMaxBytes

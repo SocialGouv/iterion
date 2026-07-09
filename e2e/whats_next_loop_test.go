@@ -1,16 +1,20 @@
-// E2E smoke loop for the operator's whats-next → board → dispatcher →
-// bot → findings-inbox cycle. No LLM calls and no runtime IR execution;
-// the whats-next side is represented by a static IR check on the
-// emit_action prompt plus boardops calls that mirror what emit_action /
-// assign_to_bots / a dispatched bot do, while the board + dispatcher are
-// the real native store + actor driven by a StubRunner.
+// E2E coverage for the whats-next v2 conversational bot + the board →
+// dispatcher smoke loop.
 //
-// Regression guards bundled into the tests:
-//   - commit 89249f02 — emit_action's user prompt MUST reference
-//     {{input.selected_titles}} so the LLM-side filter actually fires
-//     (TestWhatsNext_EmitAction_UserPromptReferencesSelectedTitles), and
-//     the filter contract itself is pinned behaviourally against the
-//     board (TestWhatsNext_EmitAction_SelectedTitlesFilterMatrix).
+// whats-next v2 is ONE agent (`nexie`) in a chat loop (seed → nexie ⇄
+// chat, gate compute, explicit-close exit). The tests here:
+//   - pin the v2 graph contract statically (worktree: none, the
+//     LOAD-BEARING `_session_id` mapping on the loop edge, interaction
+//     enabled on nexie) — TestWhatsNextV2_GraphContract;
+//   - drive the chat loop with the stub executor: pause at chat, resume
+//     with an operator message, assert the second turn receives BOTH the
+//     message and the prior turn's session id, then explicit-close —
+//     TestWhatsNextV2_ChatLoop_PauseResumeClose;
+//   - drive a mid-turn ask_user pause with structured options through
+//     the engine (pause envelope persisted, resume re-invokes the same
+//     node with the answer) — TestWhatsNextV2_AskUserOptions_PauseResume.
+//
+// Board/dispatcher regression guards (bot-agnostic, kept from v1):
 //   - commit 45eafe28 — dispatcher MUST auto-transition in_progress →
 //     review on a clean run finish (otherwise the issue stays eligible
 //     and gets re-dispatched on the next tick)
@@ -28,34 +32,239 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// TestWhatsNext_EmitAction_UserPromptReferencesSelectedTitles guards
-// commit 89249f02. The fix surfaced `{{input.selected_titles}}` in the
-// emit_action_user prompt so the LLM applies the operator's per-item
-// selection BEFORE materialising roadmap items as kanban issues.
-// Without that reference the filter silently degrades to "create every
-// item" — the failure mode that prompted the 7-vs-5 issue-count
-// mismatch caught in the 2026-05-24 dogfood.
-func TestWhatsNext_EmitAction_UserPromptReferencesSelectedTitles(t *testing.T) {
+// TestWhatsNextV2_GraphContract pins the v2 shape statically:
+//   - `worktree: none` — Nexie mutates the board + memory only; the v1
+//     default (auto) produced phantom storage branches and aimed
+//     workspace_dir at a tree without .iterion.
+//   - the chat → nexie loop edge MUST map `_session_id` from
+//     outputs.nexie — session continuity resolves ONLY from the input
+//     map, so dropping the mapping silently degrades every turn to an
+//     amnesiac one-shot (the v1 failure mode).
+//   - nexie keeps `interaction` enabled (ask_user) and an inheriting
+//     session mode.
+func TestWhatsNextV2_GraphContract(t *testing.T) {
 	wf := compileFixture(t, "whats-next/main.bot")
-	p, ok := wf.Prompts["emit_action_user"]
-	if !ok {
-		t.Fatal("emit_action_user prompt missing from whats-next/main.bot")
+
+	if wf.Worktree != "none" {
+		t.Errorf("workflow worktree = %q, want \"none\" (Nexie must not run in a git worktree)", wf.Worktree)
 	}
-	if !strings.Contains(p.Body, "selected_titles") {
-		t.Fatalf("emit_action_user prompt no longer references selected_titles — regression of 89249f02\nprompt body:\n%s", p.Body)
+
+	nexie, ok := wf.Nodes["nexie"].(*ir.AgentNode)
+	if !ok {
+		t.Fatal("nexie agent node missing from whats-next/main.bot")
+	}
+	if nexie.Interaction != ir.InteractionHuman {
+		t.Errorf("nexie interaction = %v, want human (ask_user must be armed)", nexie.Interaction)
+	}
+	if nexie.Session != ir.SessionInheritIfAvailable {
+		t.Errorf("nexie session = %v, want inherit_if_available", nexie.Session)
+	}
+
+	var loopEdge *ir.Edge
+	for _, e := range wf.Edges {
+		if e.From == "chat" && e.To == "nexie" {
+			loopEdge = e
+			break
+		}
+	}
+	if loopEdge == nil {
+		t.Fatal("chat -> nexie loop edge missing")
+	}
+	if loopEdge.LoopName == "" {
+		t.Error("chat -> nexie edge must carry a loop tag (bounded conversation)")
+	}
+	mappings := make(map[string]string, len(loopEdge.With))
+	for _, m := range loopEdge.With {
+		mappings[m.Key] = m.Raw
+	}
+	sess, ok := mappings["_session_id"]
+	if !ok {
+		t.Fatal("chat -> nexie edge lost the _session_id mapping — session continuity silently degrades to amnesiac one-shot turns")
+	}
+	if want := "{{outputs.nexie._session_id}}"; sess != want {
+		t.Errorf("_session_id mapping = %q, want %q", sess, want)
+	}
+	if _, ok := mappings["operator_message"]; !ok {
+		t.Error("chat -> nexie edge must map operator_message from the chat answer")
+	}
+}
+
+// TestWhatsNextV2_ChatLoop_PauseResumeClose drives the conversation
+// loop end-to-end with the stub executor: turn 1 pauses at chat; the
+// operator's answer re-invokes nexie WITH the message and the prior
+// turn's session id; turn 2 closes explicitly and the run finishes.
+func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whats-next/main.bot")
+	exec := newScenarioExecutor()
+
+	var secondTurnInput map[string]interface{}
+	exec.on("nexie", func(input map[string]interface{}) (map[string]interface{}, error) {
+		turn := exec.callCount("nexie")
+		if turn == 1 {
+			return map[string]interface{}{
+				"reply":          "Board: 3 tickets. Je recommande `fix-doctor` (quick win).",
+				"close":          false,
+				"quick_replies":  []interface{}{"Dispatche-le"},
+				"dispatched_ids": []interface{}{},
+				// The real delegate stamps these; the loop edge maps them
+				// back into turn 2's input.
+				"_session_id":          "sess-nexie-1",
+				"_session_fingerprint": "fp-anthropic",
+			}, nil
+		}
+		secondTurnInput = input
+		return map[string]interface{}{
+			"reply":          "Session archivée.",
+			"close":          true,
+			"quick_replies":  []interface{}{},
+			"dispatched_ids": []interface{}{},
+			"_session_id":    "sess-nexie-1",
+		}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "e2e-nexie-chat", nil)
+	if !errors.Is(err, runtime.ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused at chat, got: %v", err)
+	}
+	run, _ := s.LoadRun(context.Background(), "e2e-nexie-chat")
+	if run.Checkpoint == nil || run.Checkpoint.NodeID != "chat" {
+		t.Fatalf("checkpoint node = %v, want chat", run.Checkpoint)
+	}
+	// Nexie's reply must ride the pause: the chat node's input IS the
+	// questions payload the studio renders.
+	if got := fmt.Sprint(run.Checkpoint.InteractionQuestions["reply"]); got == "" || got == "<nil>" {
+		t.Errorf("chat pause lost Nexie's reply: questions=%v", run.Checkpoint.InteractionQuestions)
+	}
+
+	// Operator answers → loop re-invokes nexie with message + session id.
+	err = eng.Resume(context.Background(), "e2e-nexie-chat", map[string]interface{}{
+		"message": "ok, ferme la session",
+	})
+	if err != nil {
+		t.Fatalf("resume error: %v", err)
+	}
+
+	if got := exec.callCount("nexie"); got != 2 {
+		t.Fatalf("nexie called %d times, want 2", got)
+	}
+	if secondTurnInput == nil {
+		t.Fatal("second nexie turn input not captured")
+	}
+	if got := secondTurnInput["operator_message"]; got != "ok, ferme la session" {
+		t.Errorf("turn 2 operator_message = %v, want the chat answer", got)
+	}
+	if got := secondTurnInput["_session_id"]; got != "sess-nexie-1" {
+		t.Errorf("turn 2 _session_id = %v, want sess-nexie-1 (conversation continuity broken)", got)
+	}
+
+	run, _ = s.LoadRun(context.Background(), "e2e-nexie-chat")
+	if run.Status != store.RunStatusFinished {
+		t.Errorf("status after explicit close = %s, want finished", run.Status)
+	}
+}
+
+// TestWhatsNextV2_AskUserOptions_PauseResume drives a mid-turn ask_user
+// pause with structured options through the engine: the executor
+// signals ErrNeedsInteraction (as the claude_code/claw backends do when
+// the LLM calls ask_user), the run pauses with the options envelope
+// persisted, and the resume re-invokes the SAME node with the picked
+// option riding the prior-interaction keys.
+func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "whats-next/main.bot")
+	exec := newScenarioExecutor()
+
+	questions := map[string]interface{}{
+		delegate.AskUserQuestionKey: "Close these 4 stale tickets?",
+	}
+	delegate.AddAskUserOptionKeys(questions, []delegate.AskUserOption{
+		{ID: "yes", Label: "Close all 4"},
+		{ID: "no", Label: "Keep them"},
+	}, false)
+
+	var resumedInput map[string]interface{}
+	exec.on("nexie", func(input map[string]interface{}) (map[string]interface{}, error) {
+		if exec.callCount("nexie") == 1 {
+			return nil, &model.ErrNeedsInteraction{
+				NodeID:    "nexie",
+				Questions: questions,
+				SessionID: "sess-ask-1",
+				// Non-empty Backend marks this as a delegate pause so the
+				// resume path re-invokes the node (reInvokeBackend) instead
+				// of treating the answers as the node's output.
+				Backend: "stub",
+			}
+		}
+		resumedInput = input
+		return map[string]interface{}{
+			"reply":          "Fermé les 4 tickets périmés.",
+			"close":          true,
+			"quick_replies":  []interface{}{},
+			"dispatched_ids": []interface{}{},
+		}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+
+	err := eng.Run(context.Background(), "e2e-nexie-askuser", nil)
+	if !errors.Is(err, runtime.ErrRunPaused) {
+		t.Fatalf("expected ErrRunPaused at ask_user, got: %v", err)
+	}
+	run, _ := s.LoadRun(context.Background(), "e2e-nexie-askuser")
+	if run.Checkpoint == nil || run.Checkpoint.NodeID != "nexie" {
+		t.Fatalf("checkpoint node = %v, want nexie (mid-turn pause)", run.Checkpoint)
+	}
+	// The structured-options presentation keys must survive persistence
+	// verbatim — the studio detects them to render clickable choices.
+	opts, ok := run.Checkpoint.InteractionQuestions[delegate.AskUserOptionsKey].([]interface{})
+	if !ok || len(opts) != 2 {
+		t.Fatalf("options envelope lost on pause: %v", run.Checkpoint.InteractionQuestions)
+	}
+	if run.Checkpoint.BackendSessionID != "sess-ask-1" {
+		t.Errorf("BackendSessionID = %q, want sess-ask-1 (same-session resume anchor)", run.Checkpoint.BackendSessionID)
+	}
+
+	// Operator clicks "Close all 4" → answer is the option id.
+	err = eng.Resume(context.Background(), "e2e-nexie-askuser", map[string]interface{}{
+		delegate.AskUserQuestionKey: "yes",
+	})
+	if err != nil {
+		t.Fatalf("resume error: %v", err)
+	}
+	if got := exec.callCount("nexie"); got != 2 {
+		t.Fatalf("nexie called %d times, want 2 (re-invoked after answer)", got)
+	}
+	if resumedInput == nil {
+		t.Fatal("resumed nexie input not captured")
+	}
+	if got := resumedInput[delegate.PriorAskUserAnswerKey]; got != "yes" {
+		t.Errorf("resumed input %s = %v, want \"yes\"", delegate.PriorAskUserAnswerKey, got)
+	}
+
+	run, _ = s.LoadRun(context.Background(), "e2e-nexie-askuser")
+	if run.Status != store.RunStatusFinished {
+		t.Errorf("status after resume+close = %s, want finished", run.Status)
 	}
 }
 
@@ -203,101 +412,6 @@ func titlesOf(issues []*native.Issue) []string {
 		out = append(out, iss.Title)
 	}
 	return out
-}
-
-// applySelectedTitles mirrors emit_action_system step 0: the operator's
-// per-item selection filter, applied BEFORE materialising roadmap items
-// as kanban issues. Encoding the prose contract as executable Go pins the
-// behaviour the LLM is instructed to follow; the static prompt guard
-// (TestWhatsNext_EmitAction_UserPromptReferencesSelectedTitles) is the
-// complementary check that the real emit_action_user prompt still carries
-// that instruction. There is no Go-side production filter to call here —
-// the filtering is performed by the LLM per the prompt — so this helper
-// is the executable spec, exercised by TestWhatsNext_EmitAction_SelectedTitlesFilterMatrix.
-//
-// Contract (see bots/whats-next/main.bot, emit_action_system step 0):
-//   - empty / nil / ["all"] (case-insensitive) → keep EVERY item
-//     (default approve-all behaviour).
-//   - otherwise → keep only items whose title exactly matches an entry in
-//     the selection; unmatched selection entries are dropped silently.
-func applySelectedTitles(items, selected []string) []string {
-	if len(selected) == 0 {
-		return slices.Clone(items)
-	}
-	if len(selected) == 1 && strings.EqualFold(strings.TrimSpace(selected[0]), "all") {
-		return slices.Clone(items)
-	}
-	want := make(map[string]bool, len(selected))
-	for _, s := range selected {
-		want[s] = true
-	}
-	out := make([]string, 0, len(items))
-	for _, it := range items {
-		if want[it] {
-			out = append(out, it)
-		}
-	}
-	return out
-}
-
-// TestWhatsNext_EmitAction_SelectedTitlesFilterMatrix pins the behavioural
-// contract of emit_action's per-item selection (commit 89249f02) at the
-// board level: given a proposed roadmap and the operator's selection,
-// only the surviving items become kanban issues. The static prompt guard
-// proves the LLM is told to filter; this proves the downstream board ends
-// up with exactly the selected subset (and that the empty / "all" default
-// still materialises everything). No dispatcher — pure boardops, ~instant.
-func TestWhatsNext_EmitAction_SelectedTitlesFilterMatrix(t *testing.T) {
-	roadmap := []string{"Refactor X", "Implement Y", "Document Z"}
-	caps := boardops.NewCapabilities("board.create,board.read")
-
-	cases := []struct {
-		name     string
-		selected []string
-		want     []string
-	}{
-		{"nil selection → approve-all", nil, roadmap},
-		{"empty selection → approve-all", []string{}, roadmap},
-		{"all sentinel → approve-all", []string{"all"}, roadmap},
-		{"ALL sentinel is case-insensitive", []string{"ALL"}, roadmap},
-		{"explicit subset", []string{"Refactor X", "Document Z"}, []string{"Refactor X", "Document Z"}},
-		{"subset drops unmatched selection entry", []string{"Refactor X", "Nonexistent"}, []string{"Refactor X"}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ns, err := native.NewStore(t.TempDir() + "/dispatcher")
-			if err != nil {
-				t.Fatalf("NewStore: %v", err)
-			}
-
-			// emit_action materialises only the surviving items as
-			// `backlog` issues (state per emit_action_system step 3a).
-			for _, title := range applySelectedTitles(roadmap, tc.selected) {
-				args, _ := json.Marshal(map[string]any{"title": title, "state": native.StateBacklog})
-				if _, err := boardops.Call(ns, caps, "create_issue", args); err != nil {
-					t.Fatalf("create_issue %q: %v", title, err)
-				}
-			}
-
-			list, err := ns.List(native.ListFilter{States: []string{native.StateBacklog}})
-			if err != nil {
-				t.Fatalf("List: %v", err)
-			}
-			got := make(map[string]bool, len(list))
-			for _, iss := range list {
-				got[iss.Title] = true
-			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("created %d issues %v, want %d %v", len(list), titlesOf(list), len(tc.want), tc.want)
-			}
-			for _, w := range tc.want {
-				if !got[w] {
-					t.Errorf("expected issue %q on board, missing; board has %v", w, titlesOf(list))
-				}
-			}
-		})
-	}
 }
 
 // TestWhatsNext_Loop_FindingsInboxSurvivesDispatch drives the full

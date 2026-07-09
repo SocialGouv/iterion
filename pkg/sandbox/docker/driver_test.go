@@ -107,8 +107,6 @@ func TestContainerShortIDPassesThroughShort(t *testing.T) {
 
 func TestStartRejectsForeignPreparedSpec(t *testing.T) {
 	d := &Driver{rt: RuntimeDocker}
-	type otherPrepared struct{ name string }
-	_ = otherPrepared{}
 	// Use a noop-shaped PreparedSpec — DriverName != docker, must reject.
 	_, err := d.Start(context.Background(), foreignPrepared{}, sandbox.RunInfo{})
 	if err == nil {

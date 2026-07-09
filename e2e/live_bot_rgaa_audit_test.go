@@ -19,8 +19,9 @@ import (
 // the RGAA criteria skills mirror (its scan_health gate hard-fails
 // without them).
 //
-// Reliability invariants: inventory + detect_ui + rgaa_review fire,
-// rgaa_review surfaces ≥1 non-conformity, and the report is written. Then
+// Reliability invariants (v2 ADR-058): inventory + the one campaign
+// auditor fire, the campaign surfaces ≥1 non-conformity, and the report
+// is written. Then
 // the quality panel grades the findings + value.
 //
 // Requires: claude CLI + OpenAI. Expected: ~10-25 min.
@@ -68,8 +69,8 @@ func TestLive_Bot_RgaaAudit(t *testing.T) {
 		timeout:      25 * time.Minute,
 	})
 
-	assertNodesFinished(t, res.events, "inventory", "detect_ui", "rgaa_review")
-	assertOutputFieldsNonEmpty(t, res.events, "rgaa_review", "candidates")
+	assertNodesFinished(t, res.events, "inventory", "campaign", "scan_health")
+	assertOutputFieldsNonEmpty(t, res.events, "campaign", "candidates")
 	if rc, ok := lastNodeOutput(res.events, "report_card"); ok {
 		if p, _ := rc["report_path"].(string); p != "" {
 			t.Logf("rgaa report written: %s", p)
@@ -88,9 +89,9 @@ func TestLive_Bot_RgaaAudit(t *testing.T) {
 }
 
 func rgaaWorkProduct(res liveResult) string {
-	rev, _ := lastNodeOutput(res.events, "rgaa_review")
+	rev, _ := lastNodeOutput(res.events, "campaign")
 	rc, _ := lastNodeOutput(res.events, "report_card")
-	work := "## rgaa_review candidates\n"
+	work := "## campaign candidates\n"
 	if rev != nil {
 		work += sprintAny(rev["candidates"]) + "\nconformity_pct: " + sprintAny(rev["conformity_pct"])
 	}

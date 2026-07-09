@@ -1,109 +1,78 @@
 # adr-cartograph (Adry)
 
-Read-only ADR cartographer + completeness auditor.
+Read-only ADR cartographer + completeness auditor — **v2
+minimal-framing** (ADR-058).
 
 ## What it does
 
 Adry walks the code as currently implemented and produces committable
 **Architecture Decision Records** in `docs/adr/` (Nygard format). Every
 ADR Adry writes is a **constat** — a record of the decision the code
-embodies, with the trade-offs it implies and the alternatives that were
-not taken — so a future maintainer can re-challenge it later when the
-constraints change.
+embodies, with the trade-off it implies and the alternative that was
+not taken — so a future maintainer can re-challenge it. It also
+surfaces feature-completeness gaps and hands them off as board issues.
 
-Alongside the ADR pass, Adry produces a **completeness audit** for
-in-flight features: what is fully implemented, what is stubbed, what is
-TODO-marked, what was wired but never tested. The audit lives in the
-generated ADRs themselves (under a "Consequences / Known gaps" section)
-and, optionally, as `type:feature-gap` issues on the native board.
+## Shape (v2 — deterministic manifest + one campaign agent)
 
-## Idempotency guarantee
+```
+scan_adrs ──▶ survey_code ──▶ build_manifest ──▶ campaign
+campaign ──▶ scope_check ──▶ verify_build ──▶ verify_run ──▶ gate
+gate ──▶ mark_issue_for_review ──▶ update_cache ──▶ done   when converged
+gate ──▶ build_manifest   as continuation_loop(max_passes) — re-diff, next pass
+```
 
-Adry is **reasonably idempotent**. If the ADRs already match the code and
-nothing drifted, a re-run does (almost) nothing — no new ADR, no commit,
-no board churn.
+- **`scan_adrs`** — deterministic ADR inventory: front-matter parse,
+  `next_adr_number`, duplicates, inter-run sha-cache pre-verification.
+- **`survey_code`** — read-only adaptive survey producing structured
+  `decisions[]` (three-check discipline from
+  `skills/decision-vs-mechanic.md`) and `gaps[]`
+  (`skills/completeness-taxonomy.md`), evidence-cited.
+- **`build_manifest`** — deterministic differ: decisions vs the ADR
+  directory → `decision_drift`; ADR citations vs the filesystem →
+  `adr_orphans`; plus `gaps_for_handoff`, `adrs_aged_out` and the
+  mechanical `coverage_pct`. **Re-globs the live `adr_dir` each pass**,
+  so ADRs the campaign authors are seen and coverage rises.
+- **`campaign`** — one adaptive claude_code agent: re-applies the three
+  checks against the cited code, authors/updates ONE ADR per commit
+  (`docs(adr): NNN …` + `Bot: adr-cartograph` trailer), dismisses
+  mechanics honestly, files the `type:feature-gap` /
+  `type:adr-rechallenge` handoff issues.
+- **`scope_check`** — deterministic containment: only `.md` under
+  `adr_dir` (+ the cache file) may change since the run base; anything
+  else fails the gate and bounces back.
+- **`verify_build` + `verify_run`** — the shared stack-agnostic build
+  gate (cheap universal floor for a docs-only bot).
+- **`gate`** — `converged = build green ∧ scope_ok ∧ adrs_aligned ∧
+  coverage_pct ≥ coverage_target_pct`.
 
-The levers:
+The v1 alternating cross-family review/fix relay (alt →
+reviewer_claude/gpt → streak_check + dismissed-ids/pushback/chronic
+accumulators → fix_claude/gpt → prepare_commit → commit_changes →
+detect_changes → enforce_fix_scope) is retired — see the header comment
+in `main.bot` and git history.
 
-- `scan_adrs` cross-references the inter-run sha-cache at
-  `.adr-cartograph-cache.json` (repo-root dotfile, gitignorable). When
-  every ADR's content sha AND its cited code-file shas match the prior
-  run, the ADR is `pre_verified` and the survey/build_manifest passes
-  skip it.
-- `detect_changes` is a deterministic `git status --porcelain` guard
-  between the converged review and the commit phase: a review-only
-  convergence (no new/edited markdown) bypasses `prepare_commit` +
-  `commit_changes` and goes straight to the audit-cache refresh + done.
-- Handoff issues are filed **inside** `prepare_commit`, so a no-op
-  re-run never spams the board.
+## Inputs (main vars)
 
-## Read-only on code
-
-Adry **never** edits source code. Its fixer agents (`fix_claude`,
-`fix_gpt`) are scoped to `docs/adr/`, and the `enforce_fix_scope`
-deterministic tool reverts (`git checkout --`) any edit whose path does
-not start with `{{vars.adr_dir}}/`. The only outputs of an Adry run that
-touch the working tree are `.md` files under that directory.
-
-## Handoff to sibling bots
-
-Adry can file **optional** backlog issues on the native board (claude_code
-runtime opens `mcp__iterion_board__*` tools when the `prepare_commit`
-node's `capabilities:` list includes `board.create` + `board.assign`):
-
-- **`type:adr-rechallenge`** — when an ADR is older than
-  `--var rechallenge_after_days=N` (`0` = disabled, the default) or when
-  the recorded "consequence triggered" condition has fired. Routed to the
-  `adr-rechallenge` bot via `set_bot`.
-- **`type:feature-gap`** — for each in-flight feature whose completeness
-  gap is severity `medium` or `high`. Routed to the `feature-gap-fill`
-  bot via `set_bot`; the gap spec rides on `fields.bot_args`.
-
-Both follow whats-next's discipline: `list_labels` first (board.read)
-before assigning labels, `set_bot` (not `assign_issue`) for bot routing,
-the `source:adr-cartograph` label so the issues are traceable back.
-
-## Key vars
-
-| var | default | meaning |
+| Var | Default | Description |
 |---|---|---|
-| `workspace_dir` | `${PROJECT_DIR}` | repo root (the worktree under sandbox). |
-| `adr_dir` | `docs/adr` | universal Nygard convention. Override per-repo if needed. |
-| `audit_cache_path` | `.adr-cartograph-cache.json` | repo-root dotfile — gitignorable. NOT `.iterion/`. |
-| `code_scope_globs` | `""` | empty = whole workspace minus `excluded_dirs`. |
-| `excluded_dirs` | `.iterion,.works,.claude,vendor,node_modules,.git,dist,build,out` | hard-skip dirs. |
-| `diff_since` | `""` | optional incremental hint (e.g. `--var diff_since=main`). |
-| `max_review_iterations` | `10` | bounded review loop. |
-| `max_recovery_iterations` | `15` | bounded fix loop. |
-| `coverage_target_pct` | `80` | streak gate threshold. |
-| `rechallenge_after_days` | `0` | `0` = never invite re-challenge; `90` = age out after 3 months. |
-| `scope_notes` | `""` | operator's attention pin (dispatched from issue body). |
-| `bundle_self_path` | `""` | set to `bots/adr-cartograph` when Adry runs against the iterion repo. |
-| `issue_id` | `""` | dispatcher-attached issue id (no-op when run manually). |
+| `adr_dir` | `docs/adr` | ADR location (Nygard convention) |
+| `code_scope_globs` | `""` | Survey surface (empty = whole workspace minus excluded_dirs) |
+| `scope_notes` | `""` | Operator attention pin |
+| `coverage_target_pct` | `80` | Mechanical coverage the gate requires |
+| `rechallenge_after_days` | `0` | >0 files rechallenge issues for older ADRs |
+| `diff_since` | `""` | Incremental prioritisation hint |
+| `audit_cache_path` | `.adr-cartograph-cache.json` | Inter-run cache (gitignore it) |
+| `baseline` | `""` | Known pre-existing failures to SKIP (G5) |
+| `max_passes` | `6` | Continuation-loop cap |
 
-## Workflow shape
+## Run
 
-`scan_adrs` → `survey_code` → `build_manifest` → alternating
-`reviewer_claude` (claude_code/opus) / `reviewer_gpt` (claw/gpt-5.5) →
-`streak_check` (cross-family double-approval + coverage gate) →
-`detect_changes` → `prepare_commit` (drafts message, files handoff
-issues) → `commit_changes` → `mark_issue_for_review` →
-`update_cache` → `done`.
+```bash
+iterion run bots/adr-cartograph/main.bot \
+  --var scope_notes='Document the storage-engine and transport decisions' \
+  --var rechallenge_after_days=90
+```
 
-Fix path: `fix_claude` / `fix_gpt` (writes ADR markdown ONLY) →
-`enforce_fix_scope` (reverts non-`docs/adr/` edits, bounded
-`recovery_loop`) → `build_manifest` (re-run so reviewers see the fresh
-state).
-
-Loop-exhaustion fallthroughs route to `fail` (NOT `done`) so a
-deterministic non-convergence is visible.
-
-## Skills shipped
-
-| skill | purpose |
-|---|---|
-| `adry.md` | operating playbook — mission, immutable rules, idempotency, handoff. |
-| `adr-format.md` | the EXACT Nygard format used in `docs/adr/` (filename, front-matter, sections). |
-| `adr-scope-detection.md` | heuristics for locating where ADRs live in a repo. |
-| `decision-vs-mechanic.md` | what is ADR-worthy vs what is a mechanical refactor. |
-| `completeness-taxonomy.md` | enum-locked kinds of feature gap Adry recognises. |
+Skills shipped: `adry`, `decision-vs-mechanic`, `completeness-taxonomy`,
+`adr-format`, `adr-scope-detection`, `verify-build`. See
+[main.bot](main.bot) for the full DSL.

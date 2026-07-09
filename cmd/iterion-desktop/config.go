@@ -5,16 +5,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 // configSchemaVersion is bumped whenever the on-disk Config shape changes
 // in a non-additive way. Migrations live in migrateConfig().
-const configSchemaVersion = 1
+//
+// v2 adds Project.Kind + the cloud-connection fields (CloudURL, …). The
+// migration is purely additive — existing entries are stamped Kind="local".
+const configSchemaVersion = 2
 
 // recentProjectsCap bounds the MRU list — beyond this we drop the oldest.
 const recentProjectsCap = 20
@@ -45,16 +50,40 @@ type Config struct {
 	mu sync.Mutex `json:"-"`
 }
 
-// Project is a registered iterion project that the user has interacted
-// with. Stored in the MRU list and selected via CurrentProjectID.
+// ProjectKindLocal / ProjectKindCloud discriminate a MRU entry. An empty
+// Kind is treated as local (back-compat with v1 configs).
+const (
+	ProjectKindLocal = "local"
+	ProjectKindCloud = "cloud"
+)
+
+// Project is a registered connection the user has interacted with — either
+// a LOCAL iterion project (a directory + optional store, served by the
+// embedded server / per-project daemon) or a CLOUD connection (a remote
+// iterion instance reached over the authenticating loopback proxy). Both
+// kinds share the one MRU list and the CurrentProjectID selector so the
+// switcher, sort/cap logic, and every binding stay uniform.
 type Project struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
+	Kind       string    `json:"kind,omitempty"` // "local" (default/empty) | "cloud"
 	Dir        string    `json:"dir"`
 	StoreDir   string    `json:"store_dir,omitempty"`
 	LastOpened time.Time `json:"last_opened"`
 	Color      string    `json:"color,omitempty"`
+
+	// Cloud-connection fields (Kind == "cloud" only; empty for local).
+	// The refresh token is NEVER stored here — it lives in the OS keychain
+	// under "cloud_refresh:<ID>" (see keychain.go / cloud.go).
+	CloudURL     string `json:"cloud_url,omitempty"`      // remote base, e.g. https://cloud.iterion.io
+	CloudUserID  string `json:"cloud_user_id,omitempty"`  // identity + keychain namespacing
+	CloudEmail   string `json:"cloud_email,omitempty"`    // display in the switcher
+	ActiveOrgID  string `json:"active_org_id,omitempty"`  // last-selected org (cache)
+	ActiveTeamID string `json:"active_team_id,omitempty"` // last-selected team (cache)
 }
+
+// IsCloud reports whether this entry is a remote cloud connection.
+func (p *Project) IsCloud() bool { return p.Kind == ProjectKindCloud }
 
 // WindowState is the persisted geometry restored on next startup.
 type WindowState struct {
@@ -151,6 +180,16 @@ func migrateConfig(c *Config) {
 		}
 		c.Version = 1
 	}
+	if c.Version == 1 {
+		// v1 → v2: Project gained Kind + cloud fields. Stamp every existing
+		// entry as local (v1 only ever held local projects). Idempotent.
+		for i := range c.RecentProjects {
+			if c.RecentProjects[i].Kind == "" {
+				c.RecentProjects[i].Kind = ProjectKindLocal
+			}
+		}
+		c.Version = 2
+	}
 }
 
 // Save serialises and atomically writes the config. Tempfile + rename so
@@ -228,6 +267,7 @@ func (c *Config) AddProject(absDir string) Project {
 	p := Project{
 		ID:         randomID(),
 		Name:       filepath.Base(absDir),
+		Kind:       ProjectKindLocal,
 		Dir:        absDir,
 		LastOpened: time.Now().UTC(),
 	}
@@ -236,6 +276,56 @@ func (c *Config) AddProject(absDir string) Project {
 	c.sortByMRU()
 	c.capRecents()
 	return p
+}
+
+// AddCloudConnection inserts (or refreshes) a remote cloud connection keyed
+// on (cloudURL, userID) — the same identity can be registered once per
+// remote. Mirrors AddProject's MRU/current/refresh semantics but carries no
+// Dir/StoreDir. Caller is responsible for Save(). The refresh token is not
+// touched here; it is persisted to the keychain by the login path.
+func (c *Config) AddCloudConnection(cloudURL, userID, email, name string) Project {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.RecentProjects {
+		p := &c.RecentProjects[i]
+		if p.IsCloud() && p.CloudURL == cloudURL && p.CloudUserID == userID {
+			p.LastOpened = time.Now().UTC()
+			p.CloudEmail = email
+			if name != "" {
+				p.Name = name
+			}
+			c.CurrentProjectID = p.ID
+			c.sortByMRU()
+			return *p
+		}
+	}
+	if name == "" {
+		name = cloudDisplayName(cloudURL)
+	}
+	p := Project{
+		ID:          randomID(),
+		Name:        name,
+		Kind:        ProjectKindCloud,
+		CloudURL:    cloudURL,
+		CloudUserID: userID,
+		CloudEmail:  email,
+		LastOpened:  time.Now().UTC(),
+	}
+	c.RecentProjects = append(c.RecentProjects, p)
+	c.CurrentProjectID = p.ID
+	c.sortByMRU()
+	c.capRecents()
+	return p
+}
+
+// cloudDisplayName derives a switcher label from a cloud base URL (host,
+// stripped of a leading "www."), falling back to the raw string.
+func cloudDisplayName(cloudURL string) string {
+	u, err := url.Parse(cloudURL)
+	if err != nil || u.Host == "" {
+		return cloudURL
+	}
+	return strings.TrimPrefix(u.Host, "www.")
 }
 
 // ProjectByID returns a copy of the project entry with the given id, or

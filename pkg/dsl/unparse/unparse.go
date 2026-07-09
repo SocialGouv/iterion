@@ -205,7 +205,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			Model: a.Model, Backend: a.Backend, Provider: a.Provider,
 			Input: a.Input, Output: a.Output, Publish: a.Publish,
 			System: a.System, User: a.User, Session: a.Session,
-			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities,
+			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Timeout:  a.Timeout,
 			Readonly: a.Readonly, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
@@ -236,7 +236,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			Model: j.Model, Backend: j.Backend, Provider: j.Provider,
 			Input: j.Input, Output: j.Output, Publish: j.Publish,
 			System: j.System, User: j.User, Session: j.Session,
-			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities,
+			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Timeout:  j.Timeout,
 			Readonly: j.Readonly, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
@@ -547,6 +547,9 @@ func (w *fileWriter) writeWorkflows(workflows []*ast.WorkflowDecl) {
 		if len(wf.Capabilities) > 0 {
 			fmt.Fprintf(&w.b, "  capabilities: [%s]\n", strings.Join(wf.Capabilities, ", "))
 		}
+		if len(wf.Skills) > 0 {
+			fmt.Fprintf(&w.b, "  skills: [%s]\n", quoteList(wf.Skills))
+		}
 
 		if wf.Worktree != "" {
 			writeProp(&w.b, "worktree", wf.Worktree)
@@ -833,6 +836,7 @@ type llmFields struct {
 	Session                             ast.SessionMode
 	Tools, ToolPolicy                   []string
 	Capabilities                        []string
+	Skills                              []string
 	ToolMaxSteps, MaxTokens             int
 	ReasoningEffort                     string
 	Timeout                             string
@@ -886,6 +890,9 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if len(f.Capabilities) > 0 {
 		fmt.Fprintf(b, "  capabilities: [%s]\n", strings.Join(f.Capabilities, ", "))
+	}
+	if len(f.Skills) > 0 {
+		fmt.Fprintf(b, "  skills: [%s]\n", quoteList(f.Skills))
 	}
 	if f.ToolMaxSteps > 0 {
 		fmt.Fprintf(b, "  tool_max_steps: %d\n", f.ToolMaxSteps)

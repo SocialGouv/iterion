@@ -62,6 +62,20 @@ runner:
   # image's `iterion` ENTRYPOINT runs and `args` becomes the subcommand.
   command: []
   args: ["runner"]
+  # image (optional, full "repo:tag") overrides the shared iterion.image for the
+  # RUNNER pods only — e.g. ghcr.io/socialgouv/iterion-runner-devbox:edge, the
+  # devbox-first-class runner where bots `devbox run` the target repo's toolchain
+  # (cross-language/version). Empty = the shared iterion.image (server + runner
+  # identical, today's behaviour).
+  image: ""
+  imagePullPolicy: ""
+  # podSecurityContext / containerSecurityContext override the shared
+  # .Values.securityContext / .Values.containerSecurityContext for the RUNNER
+  # only. The devbox runner image runs as uid 1000 (Nix store owned by `devbox`),
+  # so set runAsUser/runAsGroup/fsGroup: 1000 when using it. Empty = inherit the
+  # shared context.
+  podSecurityContext: {}
+  containerSecurityContext: {}
   # Prometheus metrics port for the runner. Defaults to the same
   # value as server.metricsPort to keep dashboards uniform; override
   # if your platform requires distinct ports per component.
@@ -84,6 +98,9 @@ runner:
     # installs to avoid collision when several iterion releases share
     # a NATS cluster.
     consumerName: iterion-runners
+    # JetStream account the stream lives in. Required by the KEDA scaler;
+    # single-tenant JetStream (no NATS accounts) uses the global default "$G".
+    account: "$G"
   # Sandbox toggle for the runner pod. When enabled, the chart
   # provisions the additional RBAC the runner needs to create per-run
   # sibling pods via the kubernetes sandbox driver (Phase 5 V1).

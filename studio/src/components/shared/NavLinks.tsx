@@ -17,10 +17,12 @@ import {
   GearIcon,
   Component1Icon,
   LockClosedIcon,
+  MixIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
 import { useAuth } from "@/auth/AuthContext";
+import { useRuns } from "@/hooks/useRuns";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
   selectEditorTabs,
@@ -42,6 +44,7 @@ export type Section =
   | "marketplace"
   | "plugins"
   | "secrets"
+  | "skills"
   | "org"
   | "team"
   | "integrations"
@@ -110,6 +113,19 @@ export default function NavLinks({ collapsed }: Props) {
   const alertUnseen = useUIStore((s) => s.alertUnseen);
   const clearAlertUnseen = useUIStore((s) => s.clearAlertUnseen);
 
+  // Runs waiting on the operator (paused_waiting_human). Distinct from
+  // alertUnseen (run-health alerts): a pending question is not a fault,
+  // but it IS the operator's turn — surface a persistent count on the
+  // Runs entry and a dot on What's Next when a Nexie session waits.
+  const { runs: pausedRuns } = useRuns({
+    status: "paused_waiting_human",
+    limit: 50,
+  });
+  const pausedCount = pausedRuns.length;
+  const whatsNextWaiting = pausedRuns.some(
+    (r) => r.bundle_name === "whats-next" || r.workflow_name === "whats_next",
+  );
+
   // Primary nav is organised into labelled groups so the rail reads as a
   // hierarchy instead of a flat list: Workspace (author + run), Operate
   // (the kanban / dispatch / automation control surfaces), and Extend
@@ -133,6 +149,9 @@ export default function NavLinks({ collapsed }: Props) {
   }
   if (info?.plugins_enabled) {
     extend.push({ section: "plugins", href: "/plugins", label: "Plugins", icon: Component1Icon });
+  }
+  if (info?.skills_enabled) {
+    extend.push({ section: "skills", href: "/skills", label: "Skills", icon: MixIcon });
   }
 
   // Neither the org nor the team is a primary nav entry: the org lives in the
@@ -185,7 +204,14 @@ export default function NavLinks({ collapsed }: Props) {
             // Run-health alert dot rides the Runs entry: an operator who
             // looked away sees a run needs attention. Acknowledged (cleared)
             // when they click into the Runs section.
-            const showAlertDot = section === "runs" && alertUnseen > 0;
+            const showAlertDot =
+              (section === "runs" && alertUnseen > 0) ||
+              (section === "whatsNext" && whatsNextWaiting);
+            // Pending-input badge: how many runs sit at a human pause,
+            // waiting for the operator. Persistent (derived from run
+            // status, not an ack counter) — it clears when the questions
+            // are answered, not when the entry is clicked.
+            const badgeCount = section === "runs" ? pausedCount : 0;
             return (
               <NavRow
                 key={section}
@@ -196,6 +222,7 @@ export default function NavLinks({ collapsed }: Props) {
                 collapsed={collapsed}
                 sublistKind={withSublist ? section : null}
                 showAlertDot={showAlertDot}
+                badgeCount={badgeCount}
                 onNavClick={section === "runs" ? clearAlertUnseen : undefined}
               />
             );
@@ -214,10 +241,13 @@ interface NavRowProps {
   collapsed: boolean;
   sublistKind: "editor" | "runs" | null;
   showAlertDot?: boolean;
+  // Count of runs waiting on operator input, rendered as a small
+  // numeric badge next to the label (icon-corner dot when collapsed).
+  badgeCount?: number;
   onNavClick?: () => void;
 }
 
-function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, showAlertDot, onNavClick }: NavRowProps) {
+function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, showAlertDot, badgeCount = 0, onNavClick }: NavRowProps) {
   const editorTabs = useTabsStore(useShallow(selectEditorTabs));
   const runTabs = useTabsStore(useShallow(selectRunTabs));
   const tabs =
@@ -263,8 +293,20 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
           href={href}
           className={`inline-flex items-center gap-2 min-w-0 flex-1 focus:outline-none ${collapsed ? "justify-center" : ""}`}
           aria-current={isActive ? "page" : undefined}
-          title={showAlertDot ? `${label} — run needs attention` : label}
-          aria-label={showAlertDot ? `${label}, run needs attention` : label}
+          title={
+            badgeCount > 0
+              ? `${label} — ${badgeCount} waiting for your input`
+              : showAlertDot
+                ? `${label} — run needs attention`
+                : label
+          }
+          aria-label={
+            badgeCount > 0
+              ? `${label}, ${badgeCount} waiting for your input`
+              : showAlertDot
+                ? `${label}, run needs attention`
+                : label
+          }
           onClick={onNavClick}
         >
           <span className="relative inline-flex shrink-0">
@@ -277,8 +319,22 @@ function NavRow({ href, label, icon: Icon, isActive, collapsed, sublistKind, sho
                 aria-hidden="true"
               />
             )}
+            {!showAlertDot && badgeCount > 0 && collapsed && (
+              <span
+                className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-warning ring-2 ring-surface-1"
+                aria-hidden="true"
+              />
+            )}
           </span>
           {!collapsed && <span className="truncate">{label}</span>}
+          {!collapsed && badgeCount > 0 && (
+            <span
+              className="ml-auto shrink-0 rounded-full bg-warning-soft border border-warning/40 px-1.5 text-caption font-semibold text-fg-default leading-4"
+              aria-hidden="true"
+            >
+              {badgeCount}
+            </span>
+          )}
         </Link>
         {sublistKind && tabs.length > 0 && (
           <button

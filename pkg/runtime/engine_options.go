@@ -234,6 +234,16 @@ func WithAutoMerge(auto bool) EngineOption {
 	return func(e *Engine) { e.autoMerge = auto }
 }
 
+// WithModelOverrides records the launch-time per-node/-group model/
+// backend pins so the engine persists them (display-only) on the run
+// record. The overrides are applied to the executor separately at
+// launch; this option exists solely so the studio Overview can show
+// what a run was launched with. Empty on resume (not re-supplied), so
+// the persisted value is left untouched — see engine_run.go.
+func WithModelOverrides(o []store.RunModelOverride) EngineOption {
+	return func(e *Engine) { e.modelOverrides = o }
+}
+
 // WithForceResume allows resuming a run even when the workflow source has
 // changed since the run was started. The hash mismatch is logged as a warning
 // instead of causing an error.
@@ -245,8 +255,20 @@ func WithForceResume(force bool) EngineOption {
 // for resolving the `${PROJECT_DIR}` placeholder in workflow var defaults.
 // When unset, defaults to os.Getwd() at Run() time. With worktree: auto on
 // the workflow, the engine overrides this with the per-run worktree path.
+//
+// Passing the workspace explicitly also marks it as DELEGATED to the
+// engine (dispatcher-seeded per-issue worktrees, studio-bound dirs):
+// runPersistWorkspace may then adopt a linked-worktree workspace as a
+// managed-worktree baseline (Worktree=true → finalization authority).
+// A defaulted CWD stays the operator's own place — the engine never
+// claims lifecycle authority over it (a `worktree: none` run launched
+// from inside a foreign linked worktree, e.g. a Claude Code session
+// worktree, must not get branched/FF'd/cleaned on close).
 func WithWorkDir(dir string) EngineOption {
-	return func(e *Engine) { e.workDir = dir }
+	return func(e *Engine) {
+		e.workDir = dir
+		e.workDirDelegated = dir != ""
+	}
 }
 
 // WithBundle attaches a resolved `.botz` bundle to the engine. The

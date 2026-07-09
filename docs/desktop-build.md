@@ -52,10 +52,16 @@ Debian trixie / Ubuntu 24.04 no longer ship.
 
 ## System dependencies
 
-Wails build = native compile = system dev headers. Devbox/Nix is **not** the
-right place for them: nixpkgs ships webkitgtk and gtk3 with split outputs, but
-devbox only pulls the runtime output, leaving headers and `.pc` files behind.
-We use the host package manager instead.
+Wails build = native compile = system dev headers. The **default** path uses
+the host package manager (apt) — that's what the devcontainer and CI runners
+use. `devbox install` links only the **runtime** output of gtk3/webkitgtk, so
+their headers and `.pc` files (the `-dev` outputs) are absent and a plain
+`devbox run -- go build -tags desktop,webkit2_41` fails at pkg-config.
+
+If you **can't** use apt/sudo (a restricted shell, a bare Nix box), you don't
+have to — nix *can* provide the headers; see
+[Alternative: nix-provided headers](#alternative-nix-provided-headers-no-apt--no-sudo)
+below.
 
 ### Debian / Ubuntu (devcontainer + GitHub Actions runners)
 
@@ -83,6 +89,68 @@ The CI runs on `windows-latest`. Wails uses WebView2 which is bundled with
 modern Windows; the build needs `nsis` only for the installer step (`-nsis`
 flag in the Taskfile target). On the runner this is auto-installed via the
 [`Wails CLI`] download.
+
+### Alternative: nix-provided headers (no apt / no sudo)
+
+nixpkgs **does** ship the gtk3/webkitgtk headers — devbox just doesn't realise
+the `-dev` outputs. You can realise them yourself from the *same* nixpkgs the
+devbox flake pins (fetched from `cache.nixos.org`, not compiled) and point
+pkg-config at them, with no apt and no sudo. The wrapper does it for you:
+
+```sh
+# compile / vet / test the desktop package (no GUI needed):
+scripts/desktop/nix-pkgconfig-env.sh go test -tags desktop,webkit2_41 ./cmd/iterion-desktop/
+
+# a RUNNABLE GUI binary additionally needs the `production` tag — Wails' Linux
+# app impl is gated behind `production` (or `dev`); without it the binary starts
+# and prints "Wails applications will not build without the correct build tags"
+# (it fell back to app_default_unix.go). `wails build` injects this tag for you;
+# a plain `go build` must pass it:
+scripts/desktop/nix-pkgconfig-env.sh \
+  go build -tags desktop,webkit2_41,production -o ./iterion-desktop ./cmd/iterion-desktop/
+```
+
+Two non-obvious things the script handles (and that trip up a hand-rolled
+attempt):
+
+- The nix **pkg-config wrapper ignores a bare `PKG_CONFIG_PATH`** — it reads a
+  target-specific `PKG_CONFIG_PATH_<arch>_unknown_linux_gnu` and overwrites the
+  plain one. The script exports the target variable.
+- gtk/webkit resolve a large tree of transitive `Requires:`, so the path must
+  include **every** `-dev` output's `pkgconfig` dir in the closure, not just
+  gtk's and webkit's. The script derives that from `nix-store -qR`.
+
+This is enough to **compile, vet, and run the Go tests** for the desktop
+package (including the cloud-connection code and its integration tests).
+Producing an installable bundle (`.deb`/AppImage) still wants the apt tooling
+(`dpkg-dev`, `patchelf`, `linuxdeploy`, …); the nix path covers the Go build,
+not the packaging.
+
+> **⚠ The nix path is for COMPILING/TESTING, not for a binary you RUN on a
+> non-NixOS host.** A binary linked against nix gtk/webkit also pulls nix's
+> Mesa/`libEGL`/`libGL` (via the baked `RUNPATH`), and nix's `libEGL` cannot
+> find a non-NixOS system's GPU drivers (it looks under the nix store, not
+> `/usr/lib/.../dri`). At runtime it aborts with
+> `Could not create default EGL display: EGL_BAD_PARAMETER` and the window is
+> **black** (only the native GTK menu bar paints). A **runnable / distributable**
+> Linux GUI must link the SYSTEM webkit + libEGL so it can reach the host's GPU
+> drivers. On a host that already has the apt `-dev` packages + a Go 1.26
+> toolchain, build OUTSIDE devbox so no `NIX_LDFLAGS` `-rpath` is baked:
+>
+> ```sh
+> env -i HOME="$HOME" PATH=/usr/local/go/bin:/usr/bin:/bin \
+>   CGO_ENABLED=1 CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+>   PKG_CONFIG=/usr/bin/pkg-config \
+>   PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+>   go build -tags desktop,webkit2_41,production \
+>     -o build/bin/iterion-desktop-linux-amd64 ./cmd/iterion-desktop/
+> ```
+>
+> Verify it is clean with `ldd build/bin/iterion-desktop-linux-amd64` in a
+> plain shell: **no `/nix/store` paths**, `libEGL`/`libwebkit2gtk-4.1` resolving
+> under `/lib/x86_64-linux-gnu`. (The canonical Taskfile target
+> `desktop:build:linux:amd64` does the equivalent via the system pkg-config;
+> `env -i` outside devbox is the fallback when you can't easily get a clean PATH.)
 
 ## Building locally (Linux)
 

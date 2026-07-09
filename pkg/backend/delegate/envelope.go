@@ -113,6 +113,8 @@ type AskUserToolFail struct {
 	Question         string          `json:"question"`
 	PendingToolUseID string          `json:"pending_tool_use_id,omitempty"`
 	Conversation     json.RawMessage `json:"conversation,omitempty"`
+	Options          []AskUserOption `json:"options,omitempty"`
+	AllowFreeText    bool            `json:"allow_free_text,omitempty"`
 }
 
 // AskUserData is the payload of an [EnvelopeAskUser]. Mirrors the

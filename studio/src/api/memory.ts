@@ -3,6 +3,7 @@
 // tenant/user come from the auth identity (cookie), never the URL.
 
 import { ApiError, FeatureUnavailableError, extractErrorMessage, guard404, request } from "./client";
+import { apiBase } from "@/lib/scope";
 
 export { FeatureUnavailableError };
 
@@ -40,7 +41,7 @@ export interface MemoryDocumentMeta {
   blob_key?: string;
 }
 
-const BASE_URL = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
+const BASE_URL = apiBase().replace(/\/$/, "");
 
 function spaceQuery(ref: MemorySpaceRef, extra?: Record<string, string>): string {
   const sp = new URLSearchParams();

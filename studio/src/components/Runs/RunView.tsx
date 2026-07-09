@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useParams } from "wouter";
 import { Group, Panel } from "react-resizable-panels";
@@ -10,20 +10,31 @@ import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import { useLayoutPersistence } from "@/hooks/useLayoutPersistence";
 import { useRunToasts } from "@/hooks/useRunToasts";
 import { useRunKeyboard } from "@/hooks/useRunKeyboard";
-import { writeBooleanFlag, writeStringFlag } from "@/lib/localStorageFlag";
+import {
+  readBooleanFlag,
+  readJSONFlag,
+  writeBooleanFlag,
+  writeJSONFlag,
+  writeStringFlag,
+} from "@/lib/localStorageFlag";
 
-import BrowserPane from "./BrowserPane";
 import FileDiffDialog from "./FileDiffDialog";
 import FileEditDialog from "./FileEditDialog";
-import FloatingChatPanel, { ChatPanelContent } from "./FloatingChatPanel";
+import FloatingChatPanel from "./FloatingChatPanel";
 import OperatorPauseBanner from "./OperatorPauseBanner";
-import LeftPanel from "./LeftPanel";
+import LeftPanel, {
+  clampLeftWidth,
+  LEFT_COLLAPSED_KEY,
+  LEFT_WIDTH_DEFAULT,
+  LEFT_WIDTH_KEY,
+} from "./LeftPanel";
 import NodeDetailPanel from "./NodeDetailPanel";
 import QueuedBanner from "./QueuedBanner";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
 import { BottomTabPanel } from "./runView/BottomTabPanel";
 import { ExpandStrip, ResizeSeparator } from "./runView/PanelChrome";
+import { SideDock } from "./runView/SideDock";
 import { RunMetricsBar } from "./runView/RunMetricsBar";
 import { RunViewLoadError, RunViewSkeleton } from "./runView/RunViewLoadStates";
 import {
@@ -97,6 +108,34 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     eventlog: 30,
   });
 
+  // Left panel collapse + width are owned here (not inside LeftPanel) so
+  // "Reset layout" can reach them alongside the panel-size layouts, and so
+  // the drag-controlled width survives LeftPanel re-mounts. Persisted under
+  // the same key LeftPanel used to own.
+  const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() =>
+    readBooleanFlag(LEFT_COLLAPSED_KEY, false),
+  );
+  const toggleLeftCollapsed = useCallback(() => {
+    setLeftCollapsed((prev) => {
+      const next = !prev;
+      writeBooleanFlag(LEFT_COLLAPSED_KEY, next);
+      return next;
+    });
+  }, []);
+
+  // Resizable width of the (expanded) left panel — an explicit persisted
+  // pixel width + drag handle (see LeftPanel). Not a react-resizable-panels
+  // Panel: that library's measure-based initial sizing collapsed a flex-1
+  // left panel to its content width.
+  const [leftWidth, setLeftWidth] = useState<number>(() =>
+    clampLeftWidth(readJSONFlag<number>(LEFT_WIDTH_KEY, LEFT_WIDTH_DEFAULT)),
+  );
+  const onLeftResize = useCallback((w: number) => {
+    const next = clampLeftWidth(w);
+    setLeftWidth(next);
+    writeJSONFlag(LEFT_WIDTH_KEY, next);
+  }, []);
+
   // Persisted run-console layout/dock dials. The cross-cutting effects
   // below (auto-reveal Browser, "Show event log" token, browserDock →
   // bottomTab redirect) drive the raw setters this hook exposes.
@@ -122,7 +161,10 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   // useHorizontalLayout for the picking logic.
   const browserRightDocked = browserDock === "right" && browserAvailable;
   const chatDockedRight = chatDock === "docked-right";
-  const horiz = useHorizontalLayout({ browserRightDocked, chatDockedRight });
+  // Browser + Chat share one tabbed right-hand Side dock (SideDock), so a
+  // single "is the side dock open?" bit drives the horizontal layout.
+  const sideDockOpen = browserRightDocked || chatDockedRight;
+  const horiz = useHorizontalLayout({ sideDockOpen });
 
   const onResetLayout = () => {
     // Each layout's reset() bumps its own groupKey, remounting the Groups so
@@ -130,6 +172,8 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     verticalLayout.reset();
     horiz.resetAll();
     resetLayout();
+    onLeftResize(LEFT_WIDTH_DEFAULT);
+    if (leftCollapsed) toggleLeftCollapsed();
     useUIStore.getState().addToast("Console layout reset", "success");
   };
 
@@ -332,190 +376,196 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   // but the transcript stays readable in the floating / docked panel.
   const chatInputDisabled = isQueued || isTerminal;
 
-  return (
-    <ReactFlowProvider>
-      <div className="h-full w-full overflow-hidden flex flex-col">
-        <RunHeader
-          run={snapshot.run}
-          active={active}
-          wsState={wsState}
-          onResetLayout={onResetLayout}
-        />
-        {isQueued ? (
-          <QueuedBanner run={snapshot.run} />
-        ) : (
-          <>
-            <RunMetricsBar
-              active={active}
-              events={events}
-              liveSeq={liveSeq}
-              scrubSeq={scrubSeq}
-              onScrubChange={setScrubSeq}
-              onJumpToFailed={handleJumpToFailed}
-            />
-            {snapshot.run.status === "paused_operator" && (
-              <OperatorPauseBanner run={snapshot.run} />
-            )}
-          </>
-        )}
-      <div className="flex-1 min-h-0 flex">
-        <LeftPanel
-          runId={runId}
-          run={snapshot.run}
-          onSelectFile={handleSelectFile}
-          onEditFile={handleEditFile}
-          onMergeComplete={refreshSnapshot}
-        />
-        <div className="flex-1 min-h-0 flex flex-col">
+  // The center column: the canvas + node-detail top split over the bottom
+  // drawer, with the optional right-hand Side dock. Extracted to a const to
+  // keep the already-deep return readable — it's a flex sibling of the
+  // left panel, sized to fill the remaining width.
+  const centerColumn = (
+    <>
+      <Group
+        orientation="vertical"
+        className="flex-1 min-h-0"
+        key={verticalLayout.groupKey}
+        defaultLayout={verticalLayout.layout}
+        onLayoutChanged={verticalLayout.onChange}
+      >
+        <Panel id="top" defaultSize={70} minSize={30} className="min-h-0">
           <Group
-            orientation="vertical"
-            className="flex-1 min-h-0"
-            key={verticalLayout.groupKey}
-            defaultLayout={verticalLayout.layout}
-            onLayoutChanged={verticalLayout.onChange}
+            orientation="horizontal"
+            className="h-full w-full"
+            // horiz.active switches instance per dock mode and its
+            // groupKey carries the reset nonce, so the Group remounts both
+            // on a dock toggle (clean flexGrow redistribution) and on reset.
+            key={horiz.active.groupKey}
+            defaultLayout={horiz.active.layout}
+            onLayoutChanged={horiz.active.onChange}
           >
-            <Panel id="top" defaultSize={70} minSize={30} className="min-h-0">
-              <Group
-                orientation="horizontal"
-                className="h-full w-full"
-                // horiz.active switches instance per dock mode and its
-                // groupKey carries the reset nonce, so the Group remounts both
-                // on a dock toggle (clean flexGrow redistribution) and on reset.
-                key={horiz.active.groupKey}
-                defaultLayout={horiz.active.layout}
-                onLayoutChanged={horiz.active.onChange}
-              >
+            <Panel
+              id="canvas"
+              defaultSize={horiz.canvasSize}
+              minSize={25}
+              className="min-h-0"
+            >
+              <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
+                <RunCanvasIR
+                  runId={runId}
+                  executions={displayedExecutions}
+                  selectedNodeId={wfSelectedNodeId}
+                  onSelectNode={handleSelectNode}
+                  iterationByNode={iterationByNode}
+                  onSelectIteration={handleSelectIteration}
+                  runtimeOverrideByNode={runtimeOverrideByNode}
+                  followLive={followLiveNode}
+                  onToggleFollowLive={handleToggleFollowLive}
+                />
+              </div>
+            </Panel>
+            {!detailCollapsed && (
+              <>
+                <ResizeSeparator orientation="horizontal" />
                 <Panel
-                  id="canvas"
-                  defaultSize={horiz.canvasSize}
-                  minSize={25}
+                  id="detail"
+                  defaultSize={horiz.detailSize}
+                  minSize={18}
                   className="min-h-0"
                 >
-                  <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
-                    <RunCanvasIR
+                  <div className="h-full border-l border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
+                    <NodeDetailPanel
                       runId={runId}
-                      executions={displayedExecutions}
-                      selectedNodeId={wfSelectedNodeId}
-                      onSelectNode={handleSelectNode}
-                      iterationByNode={iterationByNode}
+                      filePath={snapshot.run.file_path}
+                      executions={selectedNodeExecutions}
+                      selectedIteration={selectedNodeIteration}
                       onSelectIteration={handleSelectIteration}
-                      runtimeOverrideByNode={runtimeOverrideByNode}
+                      events={displayedEvents}
                       followLive={followLiveNode}
                       onToggleFollowLive={handleToggleFollowLive}
+                      subscribeLogs={wsHandle.subscribeLogs}
+                      unsubscribeLogs={wsHandle.unsubscribeLogs}
+                      onCollapse={toggleDetailCollapsed}
+                      logClampBytes={logClampBytes}
                     />
                   </div>
                 </Panel>
-                {!detailCollapsed && (
-                  <>
-                    <ResizeSeparator orientation="horizontal" />
-                    <Panel
-                      id="detail"
-                      defaultSize={horiz.detailSize}
-                      minSize={18}
-                      className="min-h-0"
-                    >
-                      <div className="h-full border-l border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
-                        <NodeDetailPanel
-                          runId={runId}
-                          filePath={snapshot.run.file_path}
-                          executions={selectedNodeExecutions}
-                          selectedIteration={selectedNodeIteration}
-                          onSelectIteration={handleSelectIteration}
-                          events={displayedEvents}
-                          followLive={followLiveNode}
-                          onToggleFollowLive={handleToggleFollowLive}
-                          subscribeLogs={wsHandle.subscribeLogs}
-                          unsubscribeLogs={wsHandle.unsubscribeLogs}
-                          onCollapse={toggleDetailCollapsed}
-                          logClampBytes={logClampBytes}
-                        />
-                      </div>
-                    </Panel>
-                  </>
-                )}
-                {browserRightDocked && (
-                  <>
-                    <ResizeSeparator orientation="horizontal" />
-                    <Panel
-                      id="browserRight"
-                      defaultSize={horiz.browserRightSize}
-                      minSize={18}
-                      className="min-h-0"
-                    >
-                      <div className="h-full border-l border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
-                        <BrowserPane
-                          runId={runId}
-                          scrubSeq={scrubSeq}
-                          dock={browserDock}
-                          onDockChange={setBrowserDock}
-                        />
-                      </div>
-                    </Panel>
-                  </>
-                )}
-                {chatDockedRight && (
-                  <>
-                    <ResizeSeparator orientation="horizontal" />
-                    <Panel
-                      id="chat"
-                      defaultSize={horiz.chatPanelSize}
-                      minSize={20}
-                      className="min-h-0"
-                    >
-                      <ChatPanelContent
-                        runId={runId}
-                        inputDisabled={chatInputDisabled}
-                        onUndock={() => setChatDock("floating")}
-                        onClose={() => setChatDock("closed")}
-                      />
-                    </Panel>
-                  </>
-                )}
-              </Group>
-            </Panel>
-            {!eventlogCollapsed && (
+              </>
+            )}
+            {sideDockOpen && (
               <>
-                <ResizeSeparator orientation="vertical" />
+                <ResizeSeparator orientation="horizontal" />
                 <Panel
-                  id="eventlog"
-                  defaultSize={30}
-                  minSize={10}
+                  id="side"
+                  defaultSize={horiz.sideSize}
+                  minSize={18}
                   className="min-h-0"
                 >
-                  <BottomTabPanel
+                  <SideDock
                     runId={runId}
-                    bottomTab={bottomTab}
-                    onSelectTab={(t: BottomTab) => handleSetBottomTab(t)}
-                    browserAvailable={browserAvailable}
+                    chatDockedRight={chatDockedRight}
                     browserRightDocked={browserRightDocked}
-                    browserDock={browserDock}
-                    setBrowserDock={setBrowserDock}
                     scrubSeq={scrubSeq}
-                    scrubbing={scrubbing}
-                    followTail={followTail}
-                    setFollowTail={setFollowTail}
-                    displayedEvents={displayedEvents}
-                    eventLogSelection={eventLogSelection}
-                    onEventSelect={handleEventSelect}
-                    onClearSelection={handleClearSelection}
-                    onCollapse={toggleEventlogCollapsed}
-                    onSelectNode={handleSelectNode}
-                    subscribeLogs={wsHandle.subscribeLogs}
-                    unsubscribeLogs={wsHandle.unsubscribeLogs}
-                    logClampBytes={logClampBytes}
+                    browserDock={browserDock}
+                    onBrowserDockChange={setBrowserDock}
+                    chatInputDisabled={chatInputDisabled}
+                    onUndockChat={() => setChatDock("floating")}
+                    onCloseChat={() => setChatDock("closed")}
                   />
                 </Panel>
               </>
             )}
           </Group>
-          {eventlogCollapsed && (
-            <ExpandStrip
-              orientation="bottom"
-              label="Show event log"
-              onClick={toggleEventlogCollapsed}
-            />
+        </Panel>
+        {!eventlogCollapsed && (
+          <>
+            <ResizeSeparator orientation="vertical" />
+            <Panel
+              id="eventlog"
+              defaultSize={30}
+              minSize={10}
+              className="min-h-0"
+            >
+              <BottomTabPanel
+                runId={runId}
+                bottomTab={bottomTab}
+                onSelectTab={(t: BottomTab) => handleSetBottomTab(t)}
+                browserAvailable={browserAvailable}
+                browserRightDocked={browserRightDocked}
+                browserDock={browserDock}
+                setBrowserDock={setBrowserDock}
+                scrubSeq={scrubSeq}
+                scrubbing={scrubbing}
+                followTail={followTail}
+                setFollowTail={setFollowTail}
+                displayedEvents={displayedEvents}
+                eventLogSelection={eventLogSelection}
+                onEventSelect={handleEventSelect}
+                onClearSelection={handleClearSelection}
+                onCollapse={toggleEventlogCollapsed}
+                onSelectNode={handleSelectNode}
+                subscribeLogs={wsHandle.subscribeLogs}
+                unsubscribeLogs={wsHandle.unsubscribeLogs}
+                logClampBytes={logClampBytes}
+              />
+            </Panel>
+          </>
+        )}
+      </Group>
+      {eventlogCollapsed && (
+        <ExpandStrip
+          orientation="bottom"
+          label="Show event log"
+          onClick={toggleEventlogCollapsed}
+        />
+      )}
+    </>
+  );
+
+  return (
+    <ReactFlowProvider>
+      <div className="h-full w-full overflow-hidden flex flex-col">
+        {/* Unified header block: the identity/actions rows + the live-
+            vitals ribbon (+ scrubber) read as one bordered unit. Both
+            children render `bare` so this container owns the single
+            bottom border instead of each painting its own. */}
+        <div className="shrink-0 border-b border-border-default">
+          <RunHeader
+            run={snapshot.run}
+            active={active}
+            wsState={wsState}
+            onResetLayout={onResetLayout}
+            bare
+          />
+          {isQueued ? (
+            <QueuedBanner run={snapshot.run} />
+          ) : (
+            <>
+              <RunMetricsBar
+                active={active}
+                events={events}
+                liveSeq={liveSeq}
+                scrubSeq={scrubSeq}
+                onScrubChange={setScrubSeq}
+                onJumpToFailed={handleJumpToFailed}
+                bare
+              />
+              {snapshot.run.status === "paused_operator" && (
+                <OperatorPauseBanner run={snapshot.run} />
+              )}
+            </>
           )}
         </div>
+      <div className="flex-1 min-h-0 flex">
+        <LeftPanel
+          runId={runId}
+          run={snapshot.run}
+          collapsed={leftCollapsed}
+          onToggleCollapsed={toggleLeftCollapsed}
+          width={leftWidth}
+          onResize={onLeftResize}
+          onSelectFile={handleSelectFile}
+          onEditFile={handleEditFile}
+          onMergeComplete={refreshSnapshot}
+          onJumpToFailed={handleJumpToFailed}
+        />
+        <div className="flex-1 min-h-0 flex flex-col">{centerColumn}</div>
         {detailCollapsed && (
           <ExpandStrip
             orientation="right"

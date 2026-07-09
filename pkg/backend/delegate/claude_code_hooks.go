@@ -88,6 +88,17 @@ func (b *ClaudeCodeBackend) installEditMissResilience(opts []claudesdk.Option, t
 	}))
 }
 
+// pendingAskUser carries an intercepted ask_user call (or a
+// tool-permission Ask prompt) from a PreToolUse hook to the
+// post-session escalation check in Execute. Options/AllowFreeText
+// mirror the ask_user tool's structured input; a permission pause
+// carries only Question.
+type pendingAskUser struct {
+	Question      string
+	Options       []AskUserOption
+	AllowFreeText bool
+}
+
 // wireAskUserHook registers iterion's native ask_user MCP server and a
 // PreToolUse hook that captures the question and cancels the stream the
 // moment the LLM calls ask_user (mirrors the claw backend's in-process
@@ -95,9 +106,10 @@ func (b *ClaudeCodeBackend) installEditMissResilience(opts []claudesdk.Option, t
 // (os.Executable) and the host /tmp --mcp-config are both invisible inside
 // the container, so claude would reject the missing config and exit before
 // producing a result — the [INTERACTION PROTOCOL] JSON fallback covers that
-// case. Stores the captured question into pendingQuestion and extends extras
-// with the ask_user tool name only when the node already restricts its
-// toolset (an empty AllowedTools means "no restriction").
+// case. Stores the captured question (with any structured options) into
+// pendingQuestion and extends extras with the ask_user tool name only when
+// the node already restricts its toolset (an empty AllowedTools means "no
+// restriction").
 func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, extras *[]string, pendingQuestion *atomic.Value, cancelStream context.CancelFunc) []claudesdk.Option {
 	if !task.InteractionEnabled || task.Sandbox != nil {
 		return opts
@@ -120,7 +132,8 @@ func (b *ClaudeCodeBackend) wireAskUserHook(task Task, opts []claudesdk.Option, 
 		Matcher: &matcher,
 		Handler: func(_ context.Context, in claudesdk.HookCallbackInput) (claudesdk.HookOutput, error) {
 			if q, ok := in.ToolInput["question"].(string); ok && q != "" {
-				pendingQuestion.Store(q)
+				options, allowFree := ParseAskUserToolInput(in.ToolInput)
+				pendingQuestion.Store(pendingAskUser{Question: q, Options: options, AllowFreeText: allowFree})
 				cancelStream()
 			}
 			return claudesdk.HookOutput{
@@ -173,7 +186,7 @@ func (b *ClaudeCodeBackend) wirePermissionHook(task Task, opts []claudesdk.Optio
 				// stream — the post-session check reuses the ask_user
 				// pending path to pause the run. The marker carries the
 				// structured request so the runtime can auto-grant on resume.
-				pendingQuestion.Store(permission.AskPrompt(in.ToolName, in.ToolInput, rule))
+				pendingQuestion.Store(pendingAskUser{Question: permission.AskPrompt(in.ToolName, in.ToolInput, rule)})
 				pendingPermission.Store(permission.Marker(in.ToolName, in.ToolInput, rule))
 				cancelStream()
 				return claudesdk.HookOutput{

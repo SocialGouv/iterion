@@ -109,6 +109,16 @@ type PendingAuth struct {
 	// resolved external identity to this user instead of running the normal
 	// login/signup logic. Empty for an ordinary sign-in flow.
 	LinkUserID string
+
+	// Desktop marks a flow initiated by the DESKTOP app. Instead of setting
+	// browser cookies and redirecting to an SPA path, the callback mints a
+	// single-use exchange ticket and redirects to DesktopRedirect (a loopback
+	// URL the desktop listens on); the desktop then redeems the ticket for
+	// tokens at /api/auth/desktop/exchange over its native client. Keeps the
+	// IdP redirect_uri on the stable cloud origin (no IdP reconfiguration) and
+	// keeps the refresh token out of any URL. Empty for browser flows.
+	Desktop         bool
+	DesktopRedirect string
 }
 
 // StateStore is the persistence interface for PendingAuth records.

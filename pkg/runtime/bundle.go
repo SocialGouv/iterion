@@ -134,19 +134,49 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
 		return fmt.Errorf("runtime/bundle: mkdir markers %s: %w", markerDir, err)
 	}
-	destPath := filepath.Join(dest, name)
 	if info.IsDir() {
+		destPath := filepath.Join(dest, name)
 		if _, statErr := os.Stat(destPath); statErr == nil {
 			return nil
 		}
 		return copyDir(srcPath, destPath)
 	}
-	_, err = reconcileSkillFile(srcPath, destPath, filepath.Join(markerDir, name+".sha256"), logger)
+	// File skill → directory form <dest>/<stem>/SKILL.md (see skillDestDirForm).
+	skillDir, skillDest, markerPath, derr := skillDestDirForm(dest, markerDir, name)
+	if derr != nil {
+		return derr
+	}
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return fmt.Errorf("runtime/bundle: mkdir %s: %w", skillDir, err)
+	}
+	_, err = reconcileSkillFile(srcPath, skillDest, markerPath, logger)
 	return err
 }
 
+// skillDestDirForm computes the destination for a FLAT source skill file so it
+// lands in the DIRECTORY form Claude Code's Skill tool requires:
+// <dest>/<stem>/SKILL.md. A flat <dest>/<name>.md is NOT discovered as a skill
+// by claude_code — only the directory form is (Agent Skills spec); claw's
+// skill_manager discovers BOTH the flat and directory forms, so the directory
+// form satisfies both backends. stem drops a trailing ".md" ("whats-next.md" →
+// dir "whats-next"); the marker keys on "<stem>.SKILL.md.sha256" (same scheme
+// as mirrorLibrarySkills). The caller mkdirs the returned skillDir before
+// reconciling into destPath.
+func skillDestDirForm(dest, markerDir, srcName string) (skillDir, destPath, markerPath string, err error) {
+	stem := strings.TrimSuffix(srcName, ".md")
+	if stem == "" || stem == "." || stem == ".." || strings.ContainsAny(stem, "/\\") {
+		return "", "", "", fmt.Errorf("runtime/bundle: invalid skill file name %q", srcName)
+	}
+	skillDir = filepath.Join(dest, stem)
+	destPath = filepath.Join(skillDir, "SKILL.md")
+	markerPath = filepath.Join(markerDir, stem+".SKILL.md.sha256")
+	return skillDir, destPath, markerPath, nil
+}
+
 // mirrorBundleSkills copies every top-level entry from bundle.SkillsDir
-// into <workDir>/.claude/skills/.
+// into <workDir>/.claude/skills/. A flat "<name>.md" source is mirrored as the
+// directory form "<name>/SKILL.md" (see skillDestDirForm); a source that is
+// already a directory is copied through unchanged.
 //
 // Collision policy (v2 of docs/bundles.md "workspace wins" rule):
 //   - File doesn't exist → copy, record marker.
@@ -203,8 +233,17 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 			mirrored++
 			continue
 		}
-		// File skill: shared reconciliation with MirrorSingleSkill.
-		outcome, err := reconcileSkillFile(srcPath, destPath, filepath.Join(markerDir, name+".sha256"), logger)
+		// File skill → mirror as <dest>/<stem>/SKILL.md (directory form) so
+		// the claude_code Skill tool discovers it; a flat <name>.md is
+		// invisible to it. Shared reconciliation with MirrorSingleSkill.
+		skillDir, skillDest, markerPath, derr := skillDestDirForm(dest, markerDir, name)
+		if derr != nil {
+			return derr
+		}
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			return fmt.Errorf("runtime/bundle: mkdir %s: %w", skillDir, err)
+		}
+		outcome, err := reconcileSkillFile(srcPath, skillDest, markerPath, logger)
 		if err != nil {
 			return err
 		}

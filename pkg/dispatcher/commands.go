@@ -53,7 +53,12 @@ func forceRemoveSandboxContainer(logger *iterlog.Logger, runID string) {
 	// both cases, so the only reliable discriminator is which stream
 	// got the output. Combined output would lump the two and break the
 	// "happy path on missing container" detection.
-	cmd := exec.Command("docker", "rm", "--force", containerName)
+	// Bounded: a wedged docker daemon must not pin this detached
+	// goroutine (and its child process) forever — cmd.Run() below would
+	// otherwise block indefinitely with no caller able to cancel it.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "rm", "--force", containerName)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -789,7 +794,13 @@ func (c *Dispatcher) cleanupWorkspace(entry *runningEntry, beforeRemove *Hook, e
 // the probe itself failed (not a git checkout, git absent) — callers treat
 // that as "unknown", not as dirty.
 func workspaceIsDirty(path string) (bool, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
+	// Bounded: this runs on the dispatcher's single actor goroutine (see
+	// docs/dispatcher.md), so a wedged git process here (stale
+	// index.lock, a hung network-mounted workspace) would stall the
+	// entire actor loop, not just this call.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	cmd.Dir = path
 	out, err := cmd.Output()
 	if err != nil {

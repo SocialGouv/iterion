@@ -1,13 +1,14 @@
 package runview
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
 
 // BundleSkill is one entry in a bundle's skill catalog. Mirrors the
@@ -104,54 +105,16 @@ func (s *Service) ListRunBundleSkills(ctx context.Context, runID string) ([]Bund
 }
 
 // readSkillFile opens a SKILL.md and pulls `name:` + `description:`
-// out of its YAML-ish frontmatter block (delimited by `---` lines).
-// Returns ok=true even when the frontmatter is missing — the body of
-// the skill exists, so the catalog entry is still meaningful. ok=false
-// only when the file can't be opened.
+// out of its YAML-ish frontmatter block via the shared skilllib
+// parser. Returns ok=true even when the frontmatter is missing — the
+// body of the skill exists, so the catalog entry is still meaningful.
+// ok=false only when the file can't be opened.
 func readSkillFile(path string) (BundleSkill, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return BundleSkill{}, false
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	sk := BundleSkill{}
-	// Walk to the opening "---", then collect lines until the closing
-	// "---". Tolerant of leading whitespace and missing frontmatter
-	// (a SKILL.md without a frontmatter block is valid; the catalog
-	// row just lacks a description).
-	opened := false
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		trimmed := strings.TrimSpace(line)
-		if !opened {
-			if trimmed == "---" {
-				opened = true
-				continue
-			}
-			if trimmed == "" {
-				continue
-			}
-			break // first non-frontmatter content line → no frontmatter
-		}
-		if trimmed == "---" {
-			break
-		}
-		k, v, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(k))
-		val := strings.TrimSpace(v)
-		val = strings.TrimPrefix(val, "\"")
-		val = strings.TrimSuffix(val, "\"")
-		switch key {
-		case "name":
-			sk.Name = val
-		case "description":
-			sk.Description = val
-		}
-	}
-	return sk, true
+	name, desc := skilllib.ScanFrontmatter(f)
+	return BundleSkill{Name: name, Description: desc}, true
 }

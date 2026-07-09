@@ -6,9 +6,10 @@
 import { errorMessage } from "@/lib/errorHints";
 import { apiRequest } from "./client";
 import { getDesktopWsBase, isDesktop, isWailsHosted } from "@/lib/desktopBridge";
+import { apiBase, isScopedPane, resolveScopedWsUrl } from "@/lib/scope";
 
 const BASE = "/api/v1/dispatcher";
-const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
+const API_BASE = apiBase();
 
 function request<T>(path: string, init?: RequestInit): Promise<T> {
   return apiRequest<T>(BASE + path, init);
@@ -265,6 +266,12 @@ export function cancelIssue(id: string): Promise<{ status: string }> {
 // snapshot with no live updates.
 export async function openWS(): Promise<WebSocket> {
   const path = `${BASE}/ws`;
+  // Workspace pane: dial the pane's backend directly (ws base + ticket over
+  // the demux proxy). `path` is already the backend-native /api/... form, so
+  // resolveScopedWsUrl leaves it intact and only prepends the ws base.
+  if (isScopedPane()) {
+    return new WebSocket(await resolveScopedWsUrl(path));
+  }
   if (isDesktop()) {
     const desktopUrl = await getDesktopWsBase(path);
     if (desktopUrl) return new WebSocket(desktopUrl);

@@ -73,6 +73,7 @@ const (
 	TokenTools
 	TokenToolPolicy
 	TokenCapabilities
+	TokenSkills
 	TokenArtifactLabels
 	TokenToolMaxSteps
 	TokenReasoningEffort
@@ -245,6 +246,7 @@ var tokenNames = map[TokenType]string{
 	TokenTools:              "tools",
 	TokenToolPolicy:         "tool_policy",
 	TokenCapabilities:       "capabilities",
+	TokenSkills:             "skills",
 	TokenArtifactLabels:     "artifact_labels",
 	TokenToolMaxSteps:       "tool_max_steps",
 	TokenReasoningEffort:    "reasoning_effort",
@@ -381,6 +383,7 @@ var keywords = map[string]TokenType{
 	"tools":                 TokenTools,
 	"tool_policy":           TokenToolPolicy,
 	"capabilities":          TokenCapabilities,
+	"skills":                TokenSkills,
 	"artifact_labels":       TokenArtifactLabels,
 	"tool_max_steps":        TokenToolMaxSteps,
 	"reasoning_effort":      TokenReasoningEffort,
@@ -473,11 +476,4 @@ type Token struct {
 	Value  string // raw text of the token
 	Line   int    // 1-based
 	Column int    // 1-based
-}
-
-func (t Token) String() string {
-	if t.Value != "" {
-		return fmt.Sprintf("%s(%q)@%d:%d", t.Type, t.Value, t.Line, t.Column)
-	}
-	return fmt.Sprintf("%s@%d:%d", t.Type, t.Line, t.Column)
 }

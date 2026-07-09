@@ -373,15 +373,7 @@ func (s *MongoBotSecretBindingStore) Get(ctx context.Context, id string) (BotSec
 	if err != nil {
 		return BotSecretBinding{}, err
 	}
-	var b BotSecretBinding
-	err = s.coll.FindOne(ctx, filter).Decode(&b)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return BotSecretBinding{}, ErrBindingNotFound
-	}
-	if err != nil {
-		return BotSecretBinding{}, fmt.Errorf("secrets: get bot binding: %w", err)
-	}
-	return b, nil
+	return mongoutil.FindOne[BotSecretBinding](ctx, s.coll, filter, ErrBindingNotFound, "secrets: get bot binding")
 }
 
 func (s *MongoBotSecretBindingStore) Update(ctx context.Context, b BotSecretBinding) error {
@@ -390,14 +382,7 @@ func (s *MongoBotSecretBindingStore) Update(ctx context.Context, b BotSecretBind
 		return ErrBindingTenantMissing
 	}
 	b.TenantID = tenantID
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": b.ID, "tenant_id": tenantID}, b)
-	if err != nil {
-		return fmt.Errorf("secrets: update bot binding: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrBindingNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": b.ID, "tenant_id": tenantID}, b, nil, ErrBindingNotFound, "secrets: update bot binding")
 }
 
 func (s *MongoBotSecretBindingStore) Delete(ctx context.Context, id string) error {
@@ -405,14 +390,7 @@ func (s *MongoBotSecretBindingStore) Delete(ctx context.Context, id string) erro
 	if err != nil {
 		return err
 	}
-	res, err := s.coll.DeleteOne(ctx, filter)
-	if err != nil {
-		return fmt.Errorf("secrets: delete bot binding: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrBindingNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, filter, ErrBindingNotFound, "secrets: delete bot binding")
 }
 
 func (s *MongoBotSecretBindingStore) ListByTenantBot(ctx context.Context, tenantID, botID string) ([]BotSecretBinding, error) {
@@ -432,14 +410,6 @@ func (s *MongoBotSecretBindingStore) ListByTenant(ctx context.Context, tenantID 
 }
 
 func (s *MongoBotSecretBindingStore) list(ctx context.Context, filter bson.M) ([]BotSecretBinding, error) {
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("secrets: list bot bindings: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []BotSecretBinding
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("secrets: decode bot bindings: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[BotSecretBinding](ctx, s.coll, filter, "created_at",
+		"secrets: list bot bindings", "secrets: decode bot bindings")
 }

@@ -1,21 +1,35 @@
 name: adr-cartograph
 display_name: Adry
-version: 0.1.0
+version: 2.0.0
+## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). The
+## deterministic machinery is KEPT (scan_adrs inventory + cache,
+## survey_code read-only decision/gap survey, build_manifest differ that
+## re-globs the live adr_dir each pass); the alternating cross-family
+## review/fix relay (alt round_robin → reviewer_claude/gpt →
+## streak_check + accumulators → fix_claude/gpt → prepare_commit →
+## commit_changes → detect_changes → enforce_fix_scope) is replaced by
+## ONE adaptive campaign agent that authors/refreshes ADRs one commit at
+## a time in stride, files the handoff issues itself, and converges via
+## deterministic gates (scope containment vs the run base + build gate +
+## mechanical coverage ≥ target). 15 nodes → 10; runs in worktree: auto
+## now that commits land in stride. See
+## docs/references/productive-session-patterns.md.
 description: |
   Observes the code-as-implemented and produces committable ADR markdown
-  (Nygard format) in docs/adr/ — every ADR is a "constat" recording the
-  decision the code embodies, so a future maintainer can re-challenge it.
-  Also produces a completeness audit for in-flight features: what is fully
-  implemented vs what is missing/unfinished.
+  (Nygard format) in docs/adr/ — one capable agent over a deterministic
+  drift manifest, minimal framing. Every ADR is a "constat" recording
+  the decision the code embodies (decision-vs-mechanic three-check dam
+  against ADR-spam), authored one `docs(adr):` commit at a time in
+  stride. Also surfaces feature-completeness gaps.
 
-  Idempotent: re-running on a converged tree does (almost) nothing — no
-  new ADR, no commit. Reuses docs-refresh's sha-cache + a detect_changes
-  early-exit so a no-op pass is essentially free.
+  Idempotent: the manifest re-globs the live ADR directory each pass,
+  so a converged tree yields no drift, no commits, and a fast exit; the
+  sha-cache pre-verifies unchanged entries across runs.
 
-  Read-only on code (no code-modification phase — it only writes .md under
-  docs/adr/). Optional handoff: files type:adr-rechallenge issues routed
-  to the adr-rechallenge bot and type:feature-gap issues routed to the
-  feature-gap-fill bot.
+  Read-only on code — a deterministic scope gate fails the run if
+  anything outside docs/adr/*.md changed. Handoffs: files
+  type:adr-rechallenge issues (aged ADRs) and type:feature-gap issues
+  (medium/high gaps) to the board inbox.
 when_to_use: |
   Run after a code-mutating session (feature_dev, branch-improve-loop,
   bmady) lands non-trivial decisions, before a release, or on a nightly

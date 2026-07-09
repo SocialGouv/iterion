@@ -121,49 +121,13 @@ func worktreeStateClean(wtPath string) (clean, hasUntracked bool, err error) {
 // stderr would break the error-substring matching downstream, and a
 // `watchexec -r` SIGTERM could interrupt an in-flight update-ref).
 func runGit(wtPath string, args ...string) (string, error) {
-	out, err := gitCmd(append([]string{"-C", wtPath}, args...)...).CombinedOutput()
+	cmd, cancel := gitCmd(append([]string{"-C", wtPath}, args...)...)
+	defer cancel()
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
-// Ref builders live in pkg/store so the Fork API can share them
-// without importing pkg/runtime. Aliased here so the engine's call
-// sites read naturally.
-var (
-	nodeSnapshotRef = store.NodeSnapshotRef
-	turnSnapshotRef = store.TurnSnapshotRef
-)
-
-// listIterionRefs enumerates every ref under `refs/iterion/runs/<runID>/`,
-// returning their full ref names. Empty slice (no error) when the
-// namespace is empty for this run.
-func listIterionRefs(wtPath, runID string) ([]string, error) {
-	out, err := runGit(wtPath, "for-each-ref", "--format=%(refname)", "refs/iterion/runs/"+runID+"/")
-	if err != nil {
-		return nil, fmt.Errorf("list iterion refs: %w\noutput: %s", err, out)
-	}
-	var refs []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			refs = append(refs, line)
-		}
-	}
-	return refs, nil
-}
-
-// deleteIterionRefs removes every ref under `refs/iterion/runs/<runID>/`.
-// Used by the per-run GC pass run by the runview service janitor (Phase
-// 5). Safe to call on a run that never wrote any snapshots — git
-// silently no-ops on unknown refs.
-func deleteIterionRefs(wtPath, runID string) error {
-	refs, err := listIterionRefs(wtPath, runID)
-	if err != nil {
-		return err
-	}
-	for _, r := range refs {
-		if out, err := runGit(wtPath, "update-ref", "-d", r); err != nil {
-			return fmt.Errorf("delete %s: %w\noutput: %s", r, err, out)
-		}
-	}
-	return nil
-}
+// nodeSnapshotRef builds ref names in pkg/store so the Fork API can
+// share them without importing pkg/runtime. Aliased here so the
+// engine's call sites read naturally.
+var nodeSnapshotRef = store.NodeSnapshotRef

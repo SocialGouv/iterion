@@ -153,6 +153,10 @@ export interface ServerInfo {
   // entry conditionally. Cloud mode uses the auth-gated team/personal secrets
   // UI instead (this flag stays false there).
   secrets_enabled?: boolean;
+  // skills_enabled is true in local (non-cloud) mode: the SPA surfaces the
+  // Skills library management view + nav entry. No sealing, so it gates on
+  // mode alone.
+  skills_enabled?: boolean;
   // forge_github_app_configured is true when the server has a GitHub App
   // configured (ITERION_FORGE_GITHUB_APP_*). The forge ConnectForm only offers
   // the "Install GitHub App" mode when true — otherwise it dead-ends on a 400.

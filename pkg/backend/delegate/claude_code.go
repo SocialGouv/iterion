@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -54,8 +55,14 @@ type ClaudeCodeBackend struct {
 // long Execute method; this prefix carries no post-session state (the
 // closure-capturing hooks — stderr/ask_user/secret/board/inbox — stay in
 // Execute).
-func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option {
+//
+// The second return value is non-nil only for sandboxed tasks: a
+// best-effort cleanup that terminates the in-container claude process
+// recorded by the command wrapper (native:221edac8). Execute must defer
+// it so aborted sessions cannot leak the subprocess.
+func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option, func()) {
 	var opts []claudesdk.Option
+	var sandboxCleanup func()
 
 	// APPEND, do not REPLACE. --system-prompt would discard Claude Code's
 	// native agentic system prompt (tool-use discipline, plan-before-act,
@@ -132,6 +139,14 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option 
 	// application when a builder is set.
 	if task.Sandbox != nil {
 		run := task.Sandbox
+		// Record the in-container PID so the session end can actually
+		// terminate claude: killing the host-side `docker exec` client
+		// leaks the in-container process (native:221edac8 — leaked
+		// claudes stack across retries and starve the forfait). The
+		// wrapper writes its PID to a pidfile then exec's claude (same
+		// PID, same fds); Execute defers killSandboxDelegate.
+		mark := sandboxDelegateMark(task)
+		sandboxCleanup = killSandboxDelegate(run, mark, b.Logger)
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			// Surface the resolved CLI invocation so failures like
 			// "session ended without result" can be traced back to a
@@ -146,7 +161,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option 
 			// later wires cmd.StdinPipe() but docker has already closed
 			// stdin on the child, claude reads EOF, and exits 0 with no
 			// output — matching the cli_exit_code=0 silent-failure path.
-			return run.Command(ctx, append([]string{path}, args...), sandbox.ExecOpts{
+			return run.Command(ctx, wrapSandboxDelegateArgv(mark, append([]string{path}, args...)), sandbox.ExecOpts{
 				WorkDir:       cwd,
 				Env:           env,
 				KeepStdinOpen: openStdin,
@@ -171,7 +186,7 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) []claudesdk.Option 
 		opts = append(opts, claudesdk.WithMaxTurns(task.ToolMaxSteps))
 	}
 
-	return opts
+	return opts, sandboxCleanup
 }
 
 func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Result, err error) {
@@ -211,7 +226,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		})
 	}()
 
-	opts := b.buildTransportOptions(task)
+	opts, sandboxCleanup := b.buildTransportOptions(task)
+	// Terminate the in-container claude on every exit path — clean,
+	// aborted, or panicking. Idempotent: after a clean CLI exit the
+	// recorded PID is gone and the kill script no-ops (native:221edac8).
+	if sandboxCleanup != nil {
+		defer sandboxCleanup()
+	}
 	// Allowed-tools registration is deferred to a single call near the end
 	// of this function. WithAllowedTools APPENDS to the SDK's slice, so
 	// registering the base set here and again below (combined with MCP
@@ -284,7 +305,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// still works (and is the only path when sandboxed).
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	var pendingQuestion atomic.Value   // string
+	var pendingQuestion atomic.Value   // pendingAskUser
 	var pendingPermission atomic.Value // map[string]any (permission marker)
 	opts = b.wireAskUserHook(task, opts, &extraAllowedTools, &pendingQuestion, cancelStream)
 
@@ -339,9 +360,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	// Native ask_user capture takes precedence over any error: if the hook
 	// fired, the resulting context cancellation surfaces here as ctx.Err(),
 	// which we must not treat as a failure.
-	if q, ok := pendingQuestion.Load().(string); ok && q != "" {
+	if p, ok := pendingQuestion.Load().(pendingAskUser); ok && p.Question != "" {
 		marker, _ := pendingPermission.Load().(map[string]any)
-		return b.buildAskUserPendingResult(task, q, marker, rm, sessMeta, currentFingerprint, duration, readStderr()), nil
+		return b.buildAskUserPendingResult(task, p, marker, rm, sessMeta, currentFingerprint, duration, readStderr()), nil
 	}
 
 	if streamErr != nil {
@@ -438,7 +459,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 // readability; the per-field semantics (Duration, ExitCode=0, Stderr,
 // SessionID-from-rm, SessionFingerprint) are identical to the original
 // inline path.
-func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, q string, marker map[string]any, rm *claudesdk.ResultMessage, sessMeta sessionMeta, currentFingerprint string, duration time.Duration, stderr string) Result {
+func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUser, marker map[string]any, rm *claudesdk.ResultMessage, sessMeta sessionMeta, currentFingerprint string, duration time.Duration, stderr string) Result {
 	if marker != nil {
 		b.Logger.Info("[%s#%d/claude-code] 🔐 tool-permission approval escalated to the runtime", task.NodeID, task.Iteration)
 	} else {
@@ -448,7 +469,8 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, q string, marke
 	if rm != nil {
 		sessID = rm.SessionID
 	}
-	questions := map[string]interface{}{AskUserQuestionKey: q}
+	questions := map[string]interface{}{AskUserQuestionKey: p.Question}
+	AddAskUserOptionKeys(questions, p.Options, p.AllowFreeText)
 	if marker != nil {
 		questions[permission.InteractionMarkerKey] = marker
 	}
@@ -660,6 +682,22 @@ func (b *ClaudeCodeBackend) runRecoveryFormatterPass(ctx context.Context, task T
 	}
 }
 
+// hostSpawnEnv returns the process environment with the per-task env entries
+// appended (last-wins), matching the SDK's default host spawn
+// (claudesdk/process.go: cmd.Env = os.Environ() then append) and Pass 1. The
+// host-side CommandBuilder installed by formatOutput to capture the spawned
+// cmd would otherwise set cmd.Env to ONLY the per-task entries, stripping
+// PATH/HOME and any ambient credential env from the structured-output format
+// pass. Appending the per-task entries last preserves their precedence over
+// inherited values (os/exec keeps the last occurrence of a duplicate key).
+func hostSpawnEnv(extra map[string]string) []string {
+	base := os.Environ()
+	for k, v := range extra {
+		base = append(base, k+"="+v)
+	}
+	return base
+}
+
 // formatOutput performs the second pass of two-pass execution: resumes the
 // Pass 1 session with WithOutputFormat (no tools) to guarantee structured JSON
 // output conforming to the schema. The model already has full context from the
@@ -758,12 +796,14 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
 			cmd := exec.CommandContext(ctx, path, args...)
 			cmd.Dir = cwd
-			if len(env) > 0 {
-				cmd.Env = make([]string, 0, len(env))
-				for k, v := range env {
-					cmd.Env = append(cmd.Env, k+"="+v)
-				}
-			}
+			// Seed os.Environ() before the per-task entries — matching the
+			// SDK's default host spawn (claudesdk/process.go) and Pass 1 — so
+			// the format pass inherits PATH/HOME and any ambient credential
+			// env instead of running with a stripped environment. The prior
+			// code set cmd.Env to ONLY the per-task entries, dropping the
+			// inherited env (CLAUDE_CODE_EFFORT_LEVEL is always present, so the
+			// strip always fired). Per-task entries stay last so they still win.
+			cmd.Env = hostSpawnEnv(env)
 			captureCmd(cmd)
 			return cmd
 		}))

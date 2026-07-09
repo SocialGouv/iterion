@@ -1,14 +1,25 @@
 name: secured-renovacy
 display_name: Renovacy
-version: 0.1.0
+version: 0.2.0
+## 0.2.0 — Phase 2 converted to ADR-058 minimal-framing (SCOPED pass:
+## Phase 1's per-package pipeline is untouched — its security/CVE/
+## revert/SBOM gates are deliberately reified in the graph, ADR-055
+## unit-convergence at work). The Phase-2 alternating Claude/GPT
+## review/fix relay (alt_review condition router, reviewer_claude/gpt,
+## streak_check, fix_claude/gpt, review_commit_auto, review_mode/
+## mono_family vars) is replaced by ONE p2_campaign agent reviewing the
+## run's cumulative diff (git diff start_sha, fixes committed in
+## stride) + the deterministic p2_verify_build/p2_verify_run build gate
+## + a bounded review_pass_loop. 40 → 37 exec nodes.
 description: |
   Multi-stack agentic dependency upgrade pipeline. Updates every kind of
   dependency (libs, languages, frameworks, devops, ci_cd) across every
   recognised package ecosystem, aligns consuming code on breaking
   changes, cross-references CVE feeds, and runs heuristic malware
   detection on the new versions + transitively-introduced libs. Phase 2
-  closes with an alternating Claude/GPT review/fix loop until cross-
-  family approval.
+  closes with ONE review campaign over the run's cumulative diff,
+  gated by a deterministic build/test verify (ADR-058) — fixes land as
+  in-stride commits until the diff is clean and the tree is green.
 when_to_use: |
   Use when dependency risk is the priority: CVE alerts, stale
   lockfiles, version bumps. MUTATES dependency manifests/lockfiles and

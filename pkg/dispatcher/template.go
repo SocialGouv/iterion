@@ -144,14 +144,6 @@ func (t *Template) Render(ctx TemplateContext) (string, error) {
 	return sb.String(), nil
 }
 
-// String returns the original template source.
-func (t *Template) String() string {
-	if t == nil {
-		return ""
-	}
-	return t.raw
-}
-
 func resolveRef(ns string, path []string, ctx TemplateContext) (string, error) {
 	switch ns {
 	case "issue":

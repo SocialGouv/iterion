@@ -1,43 +1,41 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 
 import {
   DEFAULT_WHATS_NEXT_BOT_ID,
   getFirstClassBot,
 } from "@/lib/whats-next/firstClassBots";
 import { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
-import type { FormAnswer } from "@/lib/whats-next/questionForm";
+import {
+  askUserAllowsFreeText,
+  askUserOptions,
+  ASK_USER_RESPONSE_KEY,
+} from "@/lib/askUserOptions";
 
 import { queueMessage } from "@/api/queueMessages";
 import AgentChatbox from "@/components/shared/AgentChatbox";
-import { useUIStore } from "@/store/ui";
+import { Button } from "@/components/ui/Button";
 import ChatTranscript from "./ChatTranscript";
 import PreFlightPanel from "./PreFlightPanel";
 import SessionLauncher from "./SessionLauncher";
 import WatchPanel from "./WatchPanel";
-import PendingTurnFooter from "./whatsNextView/PendingTurnFooter";
-import QuickModeFooter from "./whatsNextView/QuickModeFooter";
 import ResumeFooter from "./whatsNextView/ResumeFooter";
 import SessionHeader from "./whatsNextView/SessionHeader";
 import { composerPlaceholder } from "./whatsNextView/composerPlaceholder";
-import { contextPrefixFor, resolveDynamicForm } from "./whatsNextView/forms";
 
-// Re-export the pure helpers covered by smartContinue.test.ts /
-// humanStatus.test.ts so the test imports `from "./WhatsNextView"`
-// continue to resolve unchanged.
-export {
-  previousContinueAction,
-  smartContinueDefault,
-} from "./whatsNextView/smartContinue";
-export { humanStatus } from "./whatsNextView/humanStatus";
-
-// WhatsNextView is the /whats-next route. It owns one whats-next session at a
-// time via the useWhatsNextSession hook: the launcher creates the run,
-// the transcript reads from the run store, and human turns are
-// submitted via the hook's submitHumanAnswer.
+// WhatsNextView is the /whats-next route — Nexie's chat. It owns one
+// whats-next session at a time via the useWhatsNextSession hook.
+//
+// v2: ONE always-on composer is the single input surface. Depending on
+// the session state, a submitted message:
+//   - answers the pending `chat` pause (Nexie's turn-end question),
+//   - answers a pending mid-turn ask_user pause,
+//   - queues into the running agent's inbox,
+//   - or re-seeds a fresh session (vars[seedVar] = the text).
+// Clickable chips ride above the composer: Nexie's quick_replies on a
+// chat pause, the structured options on an ask_user pause.
 
 export default function WhatsNextView() {
   const bot = getFirstClassBot(DEFAULT_WHATS_NEXT_BOT_ID);
-  const quickMode = useUIStore((s) => s.whatsNextQuickMode);
   // Hooks must be called unconditionally — pass a dummy bot if the
   // lookup miss happens (in practice it can't since DEFAULT_WHATS_NEXT_BOT_ID
   // is a const key, but the early-return branch needs valid hook order).
@@ -52,75 +50,52 @@ export default function WhatsNextView() {
     },
   );
 
-  // Stashed launcher form answer awaiting auto-submission into the
-  // first matching pending human turn. Lives in a ref so the
-  // auto-submit effect can read + clear it without re-rendering when
-  // unrelated state changes. Operators who refresh the page mid-run
-  // before the bot reaches the target turn lose the stash and answer
-  // the form once it appears in the chat — acceptable degradation.
-  const pendingLauncherAnswer = useRef<FormAnswer | null>(null);
-
-  // submit is shaped to match HumanChatTurn's contract:
-  //   outcome = { text, approved?, formAnswer? }
-  //
-  // When a node declares a rich `form:` in nodeMap, the FormAnswer's
-  // question ids ARE the answer keys, so we forward verbatim.
-  // Otherwise we look up textField/approvedField to build the
-  // answers object from the legacy text + actions UI:
-  //   ask_priorities → { context: text }
-  //   human_review   → { feedback: text, approved: bool }
-  const onHumanSubmit = useCallback(
-    (
-      messageId: string,
-      outcome: {
-        text: string;
-        approved?: boolean;
-        formAnswer?: Record<string, string | string[]>;
-      },
-    ) => {
-      const m = bot
-        ? session.messages.find((x) => x.id === messageId)
-        : undefined;
-      const entry = m && m.kind === "human-question" && bot
-        ? bot.nodeMap[m.nodeId]
-        : undefined;
-      if (!bot || !m || m.kind !== "human-question" || !entry) return;
-      // When the chat turn supplies BOTH a formAnswer (from the
-      // checkbox column, e.g. human_review's selected_titles) AND
-      // approved/text (from the Approve / Request-revision buttons),
-      // merge the two: the form covers the structured fields the
-      // bot declared in its output schema, the action covers the
-      // verdict + feedback. Either alone (form-only turn, or pure
-      // actions turn) keeps the existing behaviour.
-      const answers: Record<string, unknown> = outcome.formAnswer
-        ? { ...outcome.formAnswer }
-        : {};
-      if (entry.textField && outcome.text !== "") {
-        answers[entry.textField] = outcome.text;
-      }
-      if (entry.approvedField && outcome.approved !== undefined) {
-        answers[entry.approvedField] = outcome.approved;
-      }
-      void session.submitHumanAnswer(messageId, answers);
-    },
-    [bot, session],
+  const pendingHumanQuestion = session.messages.find(
+    (m): m is Extract<typeof m, { kind: "human-question" }> =>
+      m.kind === "human-question" && m.status === "pending",
   );
 
-  // onComposerSend backs the always-on composer (the footer's last
-  // branch). It renders only when there's no pending human turn, so
-  // the run is either still working or already closed:
-  //   - closed (no run / finished / failed / cancelled) → re-seed a
-  //     fresh session, delivering this message as the ask_priorities
-  //     answer (auto-submitted by the launcher-stash effect below).
-  //     Nexie's workspace memory reloads on the new run, so it picks
-  //     up where the closed session left off — continuity without a
-  //     resumable engine (a finished run can't be resumed).
-  //   - working (running/queued) → inject the message into the live
-  //     agent loop's inbox via queueMessage.
+  // A pending ask_user pause (mid-turn agent question) answers with a
+  // single string under ask_user_response; the chat node's pause
+  // answers with {message}. Both flow through the same composer.
+  const pendingIsAskUser =
+    !!pendingHumanQuestion?.questions &&
+    ASK_USER_RESPONSE_KEY in pendingHumanQuestion.questions;
+  const pendingAnswerKey = pendingIsAskUser
+    ? ASK_USER_RESPONSE_KEY
+    : bot?.nodeMap[pendingHumanQuestion?.nodeId ?? ""]?.textField ?? "message";
+
+  // Clickable chips: ask_user structured options win; otherwise the
+  // chat turn's quick_replies (Nexie's suggested next messages).
+  const options = pendingIsAskUser
+    ? askUserOptions(pendingHumanQuestion?.questions)
+    : [];
+  const allowFreeText = pendingIsAskUser
+    ? askUserAllowsFreeText(pendingHumanQuestion?.questions)
+    : true;
+  const quickReplies: string[] = !pendingIsAskUser
+    ? readQuickReplies(pendingHumanQuestion?.questions)
+    : [];
+
+  const submitPending = useCallback(
+    (value: string) => {
+      if (!pendingHumanQuestion) return;
+      void session.submitHumanAnswer(pendingHumanQuestion.id, {
+        [pendingAnswerKey]: value,
+      });
+    },
+    [pendingHumanQuestion, pendingAnswerKey, session],
+  );
+
+  // The unified composer routing (see the file comment).
   const onComposerSend = useCallback(
     async (text: string, opts: { skills: string[] }) => {
       const trimmed = text.trim();
       if (trimmed === "") return;
+      if (pendingHumanQuestion) {
+        submitPending(trimmed);
+        return;
+      }
       const status = session.runStatus;
       const closed =
         !session.runId ||
@@ -128,37 +103,19 @@ export default function WhatsNextView() {
         status === "failed" ||
         status === "cancelled";
       if (closed) {
-        pendingLauncherAnswer.current = { context: trimmed };
-        await session.launch(session.lastVars ?? {});
+        const seedVar = bot?.seedVar ?? "initial_message";
+        await session.launch({
+          ...(session.lastVars ?? {}),
+          [seedVar]: trimmed,
+        });
         return;
       }
       // Not closed ⇒ runId is truthy (it's part of the `closed`
       // disjunction above), so the run is live: inject into its inbox.
       await queueMessage(session.runId!, trimmed, { skills: opts.skills });
     },
-    [session],
+    [pendingHumanQuestion, submitPending, session, bot?.seedVar],
   );
-
-  // pendingHumanQuestion + the launcher-stash auto-submit effect are
-  // declared before the early return below so the effect runs on every
-  // render (rules-of-hooks); it no-ops until a bot is present.
-  const pendingHumanQuestion = session.messages.find(
-    (m): m is Extract<typeof m, { kind: "human-question" }> =>
-      m.kind === "human-question" && m.status === "pending",
-  );
-  // Auto-submit the stashed launcher form answer into the first pending
-  // human-question whose node id matches launcherFormTarget. The operator
-  // picked their priority before the bot ran; once explore finishes and
-  // ask_priorities surfaces, we resolve it silently rather than re-asking.
-  useEffect(() => {
-    if (!bot || !bot.launcherFormTarget) return;
-    if (!pendingHumanQuestion) return;
-    if (pendingHumanQuestion.nodeId !== bot.launcherFormTarget) return;
-    const stash = pendingLauncherAnswer.current;
-    if (!stash) return;
-    pendingLauncherAnswer.current = null;
-    void session.submitHumanAnswer(pendingHumanQuestion.id, stash);
-  }, [pendingHumanQuestion, bot?.launcherFormTarget, session]);
 
   if (!bot) {
     return (
@@ -169,23 +126,16 @@ export default function WhatsNextView() {
   }
 
   const inSession = session.status !== "idle";
-
-  // When the engine is waiting on a human turn, render that turn at
-  // the bottom (in a fixed-footer wrapper) instead of the generic
-  // AgentChatbox. Avoids the inline + footer double-render by passing
-  // excludeMessageId to ChatTranscript. (pendingHumanQuestion is declared
-  // above with the launcher-stash effect to keep that hook unconditional.)
-  const pendingForm = pendingHumanQuestion
-    ? resolveDynamicForm(pendingHumanQuestion, session.messages, bot.nodeMap)
-    : undefined;
+  const busyPending =
+    !!pendingHumanQuestion &&
+    session.busyMessageId === pendingHumanQuestion.id;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
         {!inSession ? (
           <SessionLauncher
             bot={bot}
-            onLaunch={({ vars, formAnswer }) => {
-              if (formAnswer) pendingLauncherAnswer.current = formAnswer;
+            onLaunch={({ vars }) => {
               void session.launch(vars);
             }}
             busy={session.status === "launching"}
@@ -206,9 +156,24 @@ export default function WhatsNextView() {
               <ChatTranscript
                 messages={session.messages}
                 bot={bot}
-                onHumanSubmit={onHumanSubmit}
                 busyMessageId={session.busyMessageId}
-                excludeMessageId={pendingHumanQuestion?.id}
+                // The pending turn stays inline as Nexie's bubble; its
+                // input lives in the unified composer below. The
+                // onHumanSubmit fallback only fires for a pending card
+                // the composer somehow doesn't own (defensive).
+                composerHandlesId={pendingHumanQuestion?.id}
+                onHumanSubmit={(messageId, outcome) => {
+                  const m = session.messages.find((x) => x.id === messageId);
+                  if (!m || m.kind !== "human-question") return;
+                  const isAsk =
+                    !!m.questions && ASK_USER_RESPONSE_KEY in m.questions;
+                  const key = isAsk
+                    ? ASK_USER_RESPONSE_KEY
+                    : bot.nodeMap[m.nodeId]?.textField ?? "message";
+                  void session.submitHumanAnswer(messageId, {
+                    [key]: outcome.text,
+                  });
+                }}
               />
             )}
             {session.errorMessage && (
@@ -219,62 +184,84 @@ export default function WhatsNextView() {
             {session.runId &&
             (session.runStatus === "failed_resumable" ||
               session.runStatus === "cancelled") ? (
-              // Terminal-but-resumable wins over PendingTurnFooter:
-              // the form on a dead run is misleading — submitting goes
-              // through resumeRun which would force-resume the engine
-              // anyway, but the operator's mental model "the form is
-              // active" is wrong. Surface Resume explicitly first; the
-              // form's pending question gets re-shown by the new
-              // engine instance after Resume kicks the run forward.
+              // Terminal-but-resumable wins over the composer: submitting
+              // a pause answer against a dead run misleads. Resume first;
+              // the pending question is re-shown by the new engine pass.
               <ResumeFooter
                 runStatus={session.runStatus}
                 busy={session.status === "submitting"}
                 onResume={() => void session.resume()}
               />
-            ) : pendingHumanQuestion &&
-              quickMode &&
-              pendingHumanQuestion.nodeId === "ask_continue" ? (
-              <QuickModeFooter
-                busy={session.busyMessageId === pendingHumanQuestion.id}
-                contextPrefix={contextPrefixFor(
-                  pendingHumanQuestion,
-                  session.messages,
-                )}
-                onSubmit={(answers) =>
-                  void session.submitHumanAnswer(pendingHumanQuestion.id, answers)
-                }
-              />
-            ) : pendingHumanQuestion ? (
-              <PendingTurnFooter
-                message={pendingHumanQuestion}
-                form={pendingForm}
-                busy={session.busyMessageId === pendingHumanQuestion.id}
-                contextPrefix={contextPrefixFor(
-                  pendingHumanQuestion,
-                  session.messages,
-                )}
-                onSubmit={(outcome) =>
-                  onHumanSubmit(pendingHumanQuestion.id, outcome)
-                }
-              />
             ) : (
-              // Always-on composer. Renders for live work (queues into
-              // the running loop) AND for a closed session (re-seeds a
-              // fresh run) so Nexie is never a dead end — replaces the
-              // old "hide the box on terminal runs" behaviour that
-              // stranded the operator on "Session ended." embedded:
-              // queued messages are folded into the transcript above.
               session.runId && (
-                <AgentChatbox
-                  runId={session.runId}
-                  embedded
-                  placeholder={composerPlaceholder(session.runStatus)}
-                  onSend={onComposerSend}
-                />
+                <div className="border-t border-border-subtle">
+                  {(options.length > 0 || quickReplies.length > 0) && (
+                    <div className="flex flex-wrap gap-2 px-4 pt-3">
+                      {options.map((o) => (
+                        <Button
+                          key={o.id}
+                          variant="secondary"
+                          size="sm"
+                          disabled={busyPending}
+                          onClick={() => submitPending(o.id)}
+                        >
+                          {o.label}
+                        </Button>
+                      ))}
+                      {quickReplies.map((q) => (
+                        <Button
+                          key={q}
+                          variant="secondary"
+                          size="sm"
+                          disabled={busyPending}
+                          onClick={() => submitPending(q)}
+                        >
+                          {q}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                  {/* ask_user with options may disallow free text — the
+                      chips above are then the only input. */}
+                  {(!pendingIsAskUser || allowFreeText || options.length === 0) && (
+                    <AgentChatbox
+                      runId={session.runId}
+                      embedded
+                      placeholder={composerPlaceholder(
+                        session.runStatus,
+                        !!pendingHumanQuestion,
+                      )}
+                      onSend={onComposerSend}
+                    />
+                  )}
+                </div>
               )
             )}
           </div>
         )}
     </div>
   );
+}
+
+// readQuickReplies lifts Nexie's suggested next messages off the chat
+// pause's questions payload (`quick_replies: json` on the turn output,
+// mapped into the chat node's input). Tolerates absent / malformed
+// payloads — chips are sugar, never load-bearing. A `json`-typed schema
+// field can arrive as the literal TEXT of a JSON array (the LLM emits
+// the array stringified) — parse that shape too.
+function readQuickReplies(
+  questions: Record<string, unknown> | undefined,
+): string[] {
+  let raw = questions?.quick_replies;
+  if (typeof raw === "string" && raw.trim().startsWith("[")) {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    .slice(0, 4);
 }

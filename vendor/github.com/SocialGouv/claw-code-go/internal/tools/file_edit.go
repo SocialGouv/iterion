@@ -10,8 +10,9 @@ import (
 // FileEditTool returns the tool definition for targeted string-replace file edits.
 func FileEditTool() api.Tool {
 	return api.Tool{
-		Name:        "file_edit",
-		Description: "Edit a file by replacing an exact string with new content. Errors if old_string is not found or appears more than once.",
+		Name: "file_edit",
+		Description: "Edit a file by replacing an exact string with new content. Errors if old_string is not found or appears more than once — copy the text exactly as read_file returned it (indentation included) and include enough surrounding lines to make it unique. " +
+			"Read the file first: never edit content you have not just read. Prefer several small targeted edits over one wholesale rewrite.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

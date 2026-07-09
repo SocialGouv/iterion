@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
@@ -249,16 +248,5 @@ func (s *Server) handleDeleteApiKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) canMutateApiKey(ctx context.Context, id auth.Identity, k secrets.ApiKey) bool {
-	if id.IsSuperAdmin {
-		return true
-	}
-	if k.ScopeUserID != "" {
-		return k.ScopeUserID == id.UserID
-	}
-	// Team-scoped: require admin/owner role on that team.
-	mb, err := s.authStore().GetMembership(ctx, id.UserID, k.ScopeTeamID)
-	if err != nil {
-		return false
-	}
-	return mb.Role.AtLeast(identity.RoleAdmin)
+	return s.canMutateScopedRecord(ctx, id, k.ScopeUserID, k.ScopeTeamID)
 }

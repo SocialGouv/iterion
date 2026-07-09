@@ -2,6 +2,7 @@ package generic
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -51,7 +52,7 @@ func TestParseRequest_RejectsTooManyVars(t *testing.T) {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		fmtKey := "k" + strvarN(i)
+		fmtKey := "k" + strconv.Itoa(i)
 		b.WriteString(`"` + fmtKey + `": "v"`)
 	}
 	b.WriteString(`}}`)
@@ -65,18 +66,4 @@ func TestParseRequest_RejectsMalformedJSON(t *testing.T) {
 	if _, err := ParseRequest([]byte(`{bad`)); err == nil {
 		t.Fatal("malformed json should error")
 	}
-}
-
-// strvarN avoids fmt import in test to keep deps minimal — itoa is fine
-// for the small range we generate.
-func strvarN(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var digits []byte
-	for i > 0 {
-		digits = append([]byte{byte('0' + i%10)}, digits...)
-		i /= 10
-	}
-	return string(digits)
 }

@@ -35,7 +35,7 @@ by a single contract:
    writing to the **Mongo** store; the server pod shares no filesystem, so
    fsnotify (which all of 1–3 ultimately rely on) does not apply. Events
    already stream via a Mongo **change-stream** source
-   ([pkg/runview/eventstream](../../pkg/runview/eventstream/iface.go),
+   ([pkg/runview/runstream](../../pkg/runview/runstream/iface.go),
    wired in `cmd/iterion/server.go`); **logs have no cloud path at all** —
    the runner logs to pod stderr and the Mongo store persists no run.log.
 

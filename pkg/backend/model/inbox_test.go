@@ -124,8 +124,9 @@ func TestStoreInboxBinder_NilSafety(t *testing.T) {
 }
 
 // TestBuildOperatorMessage_FormatsBlock verifies the synthetic user
-// turn carries the [OPERATOR MESSAGE] prefix and concatenates
-// multiple texts with a separator so the LLM can distinguish them.
+// turn opens with the <system-reminder> provenance header (which states
+// the content carries user authority) and concatenates multiple texts
+// with a separator so the LLM can distinguish them.
 func TestBuildOperatorMessage_FormatsBlock(t *testing.T) {
 	t.Helper()
 	msg := buildOperatorMessage([]string{"first", "second"})
@@ -136,11 +137,17 @@ func TestBuildOperatorMessage_FormatsBlock(t *testing.T) {
 		t.Fatalf("content = %+v, want single text block", msg.Content)
 	}
 	text := msg.Content[0].Text
-	if !strings.HasPrefix(text, "[OPERATOR MESSAGE]") {
-		t.Errorf("text does not start with marker: %q", text)
+	if !strings.HasPrefix(text, "<system-reminder>") {
+		t.Errorf("text does not start with the reminder envelope: %q", text)
+	}
+	if !strings.Contains(text, "user instructions") {
+		t.Errorf("header must assert user authority: %q", text)
 	}
 	if !strings.Contains(text, "first") || !strings.Contains(text, "second") {
 		t.Errorf("text missing original messages: %q", text)
+	}
+	if strings.Contains(text[len("<system-reminder>"):], "<system-reminder>") {
+		t.Errorf("operator texts must stay OUTSIDE the envelope: %q", text)
 	}
 }
 

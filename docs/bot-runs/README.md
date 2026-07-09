@@ -68,5 +68,7 @@ first bilan for a bot lands.
 | Bmady | `bmady` | BMAD multi-persona human-gated delivery | [bmady.md](bmady.md) |
 | Devy | `devbox-setup` | devbox.json bootstrap | [devbox-setup.md](devbox-setup.md) |
 | Adry | `adr-cartograph` | ADR cartographer + completeness audit (idempotent) | [adr-cartograph.md](adr-cartograph.md) |
+| Vetty | `dep-update-guard` | Dependabot/Renovate PR guard (audit + align + deterministic verify) | [dep-update-guard.md](dep-update-guard.md) |
+| Acci | `rgaa-audit` | RGAA 4.1.2 accessibility audit (read-only) | [rgaa-audit.md](rgaa-audit.md) |
 | ReArchi | `adr-rechallenge` | human-gated ADR re-challenge | [adr-rechallenge.md](adr-rechallenge.md) |
 | Fini | `feature-gap-fill` | gap-driven feature completion loop | [feature-gap-fill.md](feature-gap-fill.md) |

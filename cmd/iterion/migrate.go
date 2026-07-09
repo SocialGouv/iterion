@@ -157,11 +157,7 @@ func runMigrateOrgs(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("migrate orgs: build mongo: %w", err)
 	}
-	defer func() {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer closeCancel()
-		_ = ms.Close(closeCtx)
-	}()
+	defer closeCloudStoreWithTimeout(ms)
 
 	idStore := identity.NewMongoStore(ms.DB())
 	if err := idStore.EnsureSchema(ctx); err != nil {
@@ -253,11 +249,7 @@ func runMigrateToCloud(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("migrate: build mongo: %w", err)
 		}
-		defer func() {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer closeCancel()
-			_ = ms.Close(closeCtx)
-		}()
+		defer closeCloudStoreWithTimeout(ms)
 		dst = ms
 	}
 
@@ -399,7 +391,7 @@ func migrateRun(ctx context.Context, src store.RunStore, dst store.RunStore, run
 		}
 	}
 
-	for _, intID := range mustListInteractions(ctx, src, runID, logger) {
+	for _, intID := range listInteractionsBestEffort(ctx, src, runID, logger) {
 		i, err := src.LoadInteraction(ctx, runID, intID)
 		if err != nil {
 			logger.Warn("migrate: load interaction %s/%s: %v", runID, intID, err)
@@ -416,7 +408,7 @@ func migrateRun(ctx context.Context, src store.RunStore, dst store.RunStore, run
 	return nil
 }
 
-func mustListInteractions(ctx context.Context, src store.RunStore, runID string, logger *iterlog.Logger) []string {
+func listInteractionsBestEffort(ctx context.Context, src store.RunStore, runID string, logger *iterlog.Logger) []string {
 	ids, err := src.ListInteractions(ctx, runID)
 	if err != nil {
 		logger.Warn("migrate: list interactions %s: %v", runID, err)
@@ -466,11 +458,7 @@ func preflightCloudTargets(ctx context.Context, cfg iterconfig.Config, logger *i
 	if err != nil {
 		return fmt.Errorf("mongo connect: %w", err)
 	}
-	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = probeStore.Close(closeCtx)
-	}()
+	defer closeCloudStoreWithTimeout(probeStore)
 	var status bson.M
 	if err := probeStore.RunsCollection().Database().RunCommand(ctx, bson.D{{Key: "replSetGetStatus", Value: 1}}).Decode(&status); err != nil {
 		return fmt.Errorf("mongo replSetGetStatus failed (the cloud server requires a replica set for change-streams): %w", err)

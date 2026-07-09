@@ -131,6 +131,14 @@ func (s *Server) registerAuthRoutes() {
 	s.mux.HandleFunc("GET /api/auth/providers", s.handleListProviders)
 	s.mux.HandleFunc("GET /api/auth/oidc/{provider}/start", s.handleOIDCStart)
 	s.mux.HandleFunc("GET /api/auth/oidc/{provider}/callback", s.handleOIDCCallback)
+	// Desktop SSO: redeem a single-use ticket (minted by the OIDC callback for
+	// a desktop flow) for tokens. Public + login-rate-limited — it is pre-auth
+	// and the ticket is the sole credential.
+	s.mux.HandleFunc("POST /api/auth/desktop/exchange", loginLimit(s.handleDesktopExchange))
+	// WS ticket: authenticated caller mints a single-use ticket to open a WS
+	// with ?ticket= instead of a JWT-in-URL. NOT public — it runs behind
+	// requireAuth so the identity is already resolved.
+	s.mux.HandleFunc("POST /api/ws/ticket", s.handleWSTicket)
 	s.mux.HandleFunc("GET /api/auth/invitations/lookup", s.handleInvitationLookup)
 	s.mux.HandleFunc("POST /api/auth/invitations/accept", s.handleInvitationAcceptForLoggedIn)
 
@@ -723,51 +731,79 @@ func (s *Server) beginOIDCFlow(w http.ResponseWriter, r *http.Request, name, lin
 	}
 	redirectURI := s.oidcRedirectURI(name)
 	// A link flow always returns to settings; only a sign-in honours ?next=.
+	// A DESKTOP sign-in instead validates ?next= as a loopback URL and, at the
+	// callback, mints a single-use ticket + 302s there (see handleOIDCCallback
+	// + desktop_sso.go) rather than setting browser cookies.
 	next := ""
+	desktop := false
+	desktopRedirect := ""
 	if linkUserID == "" {
-		next = safeNext(r.URL.Query().Get("next"))
+		if r.URL.Query().Get("desktop") == "1" {
+			desktopRedirect = safeDesktopRedirect(r.URL.Query().Get("next"))
+			if desktopRedirect == "" {
+				httpError(w, http.StatusBadRequest, "desktop flow requires a loopback next= URL")
+				return
+			}
+			desktop = true
+		} else {
+			next = safeNext(r.URL.Query().Get("next"))
+		}
 	}
 	authURL, err := c.AuthorizeURL(r.Context(), redirectURI, state, verifier)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "build authorize URL: %v", err)
 		return
 	}
-	binding, err := newAgentBindingToken()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "internal error")
-		return
+	// The agent-binding cookie is a BROWSER login-CSRF guard: it is set on the
+	// /start response and re-presented by the same browser at /callback. A
+	// DESKTOP flow calls /start from its native client (so the cookie would go
+	// there, not the browser that completes the callback) — binding is instead
+	// guaranteed by the desktop-controlled loopback listener + the single-use
+	// state + PKCE. So skip the cookie and store an empty AgentBinding, which
+	// the callback treats as "no browser binding to check" (same as CLI/SDK).
+	binding := ""
+	if !desktop {
+		binding, err = newAgentBindingToken()
+		if err != nil {
+			httpError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	if err := s.oidcStates.Put(r.Context(), oidc.PendingAuth{
-		Provider:      name,
-		State:         state,
-		CodeVerifier:  verifier,
-		RedirectURI:   redirectURI,
-		NextURL:       next,
-		IssuedAt:      time.Now().UTC(),
-		AgentBinding:  binding,
-		TenantID:      tenantID,
-		OrgProviderID: providerID,
-		LinkUserID:    linkUserID,
+		Provider:        name,
+		State:           state,
+		CodeVerifier:    verifier,
+		RedirectURI:     redirectURI,
+		NextURL:         next,
+		IssuedAt:        time.Now().UTC(),
+		AgentBinding:    binding,
+		TenantID:        tenantID,
+		OrgProviderID:   providerID,
+		LinkUserID:      linkUserID,
+		Desktop:         desktop,
+		DesktopRedirect: desktopRedirect,
 	}); err != nil {
 		httpError(w, http.StatusInternalServerError, "persist state: %v", err)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     oidcAgentBindingCookie,
-		Value:    binding,
-		Path:     "/api/auth/oidc/",
-		Domain:   s.cfg.CookieDomain,
-		HttpOnly: true,
-		Secure:   s.cfg.CookieSecure,
-		// SameSite=Lax is required: the callback is a top-level GET
-		// navigation from the IdP and Strict would block the cookie.
-		// Lax is sufficient because we additionally require the cookie
-		// value to match PendingAuth.AgentBinding at /callback — a
-		// cross-site script can't read the cookie (HttpOnly) and can't
-		// set a cookie for iterion's origin (same-origin policy).
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int((10 * time.Minute).Seconds()),
-	})
+	if binding != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     oidcAgentBindingCookie,
+			Value:    binding,
+			Path:     "/api/auth/oidc/",
+			Domain:   s.cfg.CookieDomain,
+			HttpOnly: true,
+			Secure:   s.cfg.CookieSecure,
+			// SameSite=Lax is required: the callback is a top-level GET
+			// navigation from the IdP and Strict would block the cookie.
+			// Lax is sufficient because we additionally require the cookie
+			// value to match PendingAuth.AgentBinding at /callback — a
+			// cross-site script can't read the cookie (HttpOnly) and can't
+			// set a cookie for iterion's origin (same-origin policy).
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   int((10 * time.Minute).Seconds()),
+		})
+	}
 	if r.URL.Query().Get("format") == "json" {
 		writeJSON(w, map[string]string{"authorize_url": authURL})
 		return
@@ -892,6 +928,27 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("sso login failed via %s: %v", name, err)
 		}
 		redirectSSOError(w, r, ssoErrorForAuth(err), provQ)
+		return
+	}
+	// Desktop flow: don't set browser cookies. Mint a single-use ticket holding
+	// this LoginResult and 302 to the desktop's loopback listener with it; the
+	// desktop redeems it at /api/auth/desktop/exchange over its native client
+	// (see desktop_sso.go). The refresh token thus never enters a URL.
+	if pending.Desktop {
+		if s.desktopTickets == nil {
+			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			return
+		}
+		ticket, mintErr := s.desktopTickets.Mint(r.Context(), res)
+		if mintErr != nil {
+			redirectSSOError(w, r, ssoErrExchangeFailed, provQ)
+			return
+		}
+		sep := "?"
+		if strings.Contains(pending.DesktopRedirect, "?") {
+			sep = "&"
+		}
+		http.Redirect(w, r, pending.DesktopRedirect+sep+"ticket="+url.QueryEscape(ticket), http.StatusFound)
 		return
 	}
 	s.setAuthCookies(w, res.AccessToken, res.AccessExpires, res.RefreshToken, res.RefreshExpires)

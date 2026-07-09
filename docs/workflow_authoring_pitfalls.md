@@ -255,16 +255,29 @@ the metrics. The goal stayed unmet.
 
 ---
 
-## Review loops must converge to an asymptote
+## Improvement loops must converge to an asymptote
 
-A review/judge loop (feature_dev, branch_improve_loop,
-whole_improve_loop, docs-refresh, secured-renovacy) must **converge to an
-asymptote** — settle into a stable approved state and stop. A slight,
-very occasional oscillation is acceptable; it must be the rare
-exception. **The rule is the asymptote**, never sustained oscillation.
-`iterion bench asymptote` (docs/asymptote-bench.md) measures it.
+An improvement/review loop must **converge to an asymptote** — settle
+into a stable approved state and stop. A slight, very occasional
+oscillation is acceptable; it must be the rare exception. **The rule is
+the asymptote**, never sustained oscillation. `iterion bench asymptote`
+(docs/asymptote-bench.md) measures it.
 
-What produces convergence — preserve these:
+**The shipped mechanism (ADR-058 v2 — the whole loop fleet since
+2026-07-07):** one `campaign` agent + a deterministic verify gate + a
+machine-checkable termination contract + a bounded
+`continuation_loop(max_passes)`. `gate.converged = <done-flag> ∧ gates
+green`; the campaign commits each unit in stride (git is the state), so
+loop exhaustion ships what is banked instead of discarding it.
+Oscillation is structurally absent — there is one context per pass and
+no reviewer/fixer relay to re-litigate. The honesty clause
+("under-reporting only costs a pass; over-reporting lands you right
+back here") plus the deterministic gate is what keeps the done-flag
+truthful.
+
+**If you author a NEW cross-family reviewer loop** (an optional
+amplification — no catalog bot ships one any more), the historical
+convergence mechanisms are mandatory:
 - **`streak_check`**: exit on N *consecutive cross-family* approvals,
   not one pass; a low-confidence rejection is non-blocking so noise
   doesn't reset the streak.
@@ -275,17 +288,21 @@ What produces convergence — preserve these:
   so verdicts trend monotonically.
 - Bounded `max_iterations` is the backstop, not the design.
 
-The fastest way to **break** convergence: make a reviewer judge the
-**wrong artifact**. The implementer's work is in the **uncommitted
-working tree** (commit runs only after review passes). Reviewers MUST
-diff `git diff HEAD` — **never `git diff HEAD^...HEAD`** (the last
-*commit* = the base). The latter makes a reviewer report "feature not
-implemented" against work that is plainly present, splitting the verdict
-(the other reviewer, diffing correctly, approves) so the streak never
-arms → infinite oscillation. This exact bug lived in feature_dev's
-reviewer_gpt anchor protocol; every other loop bot diffs the working
-tree. **When a loop oscillates, first confirm every reviewer diffs the
-same, correct (uncommitted) artifact — `git diff HEAD`.**
+The fastest way to **break** convergence in any shape: judge the
+**wrong artifact**. Work-in-progress lives in the **working tree**
+(and, under v2, in the run's in-stride commits). Anything that reviews
+a change MUST diff the working tree against the right base —
+`git diff HEAD` for uncommitted work, `git diff <run-base>` for a v2
+run's cumulative series — **never `git diff HEAD^...HEAD`** (the last
+*commit* = the base). The historical v1 bug: feature_dev's
+reviewer_gpt diffed `HEAD^...HEAD`, reported "feature not implemented"
+against work that was plainly present, split the cross-family verdict
+and oscillated forever. Same family of bug: `git diff HEAD` omits
+*untracked* files — new files must be `git add -N`/`git add -A`'d
+before diffing or a change that ADDS files reads as missing. The v2
+campaign contracts bake `git add -A` into the per-unit commit step.
+**When a loop won't converge, first confirm the judge is diffing the
+same, correct artifact.**
 
 ---
 

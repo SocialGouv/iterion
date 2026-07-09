@@ -1,6 +1,9 @@
 package delegate
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // watchCapabilityPrefix flags a capability as addressing the watch
 // subsystem (watch.subscribe / watch.unsubscribe).
@@ -11,10 +14,13 @@ const watchCapabilityPrefix = "watch."
 // only (see pkg/backend/tool/claw_watch_tools.go); the claude_code path
 // uses this to warn rather than silently drop the capability.
 func HasWatchCapability(caps []string) bool {
-	for _, c := range caps {
-		if strings.HasPrefix(c, watchCapabilityPrefix) {
-			return true
-		}
-	}
-	return false
+	return hasCapabilityPrefix(caps, watchCapabilityPrefix)
+}
+
+// hasCapabilityPrefix reports whether caps contains an entry starting
+// with prefix (e.g. "board." or "watch.").
+func hasCapabilityPrefix(caps []string, prefix string) bool {
+	return slices.ContainsFunc(caps, func(c string) bool {
+		return strings.HasPrefix(c, prefix)
+	})
 }

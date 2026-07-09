@@ -462,6 +462,39 @@ function processEvent(
       break;
     }
 
+    case "assistant_text": {
+      // Agent narration — the assistant's mid-turn prose between tool
+      // calls (emitted by both backends; structured-JSON payloads are
+      // filtered engine-side). Rendered as the agent's speech bubble.
+      const nodeId = evt.node_id;
+      if (!nodeId) break;
+      if (resolver.kind(nodeId) === "silent") break;
+      const text = typeof evt.data?.text === "string" ? evt.data.text.trim() : "";
+      if (!text) break;
+      const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
+      // Merge consecutive chunks from the same node turn into one
+      // bubble — claude_code streams one event per text block, and a
+      // bubble per block over-fragments the transcript.
+      const last = out[out.length - 1];
+      if (
+        last &&
+        last.kind === "assistant-text" &&
+        last.nodeId === nodeId &&
+        last.iteration === iter
+      ) {
+        out[out.length - 1] = { ...last, text: `${last.text}\n\n${text}` };
+        break;
+      }
+      out.push({
+        kind: "assistant-text",
+        id: `${nodeId}:${iter}:txt:${evt.seq ?? 0}`,
+        nodeId,
+        iteration: iter,
+        text,
+      });
+      break;
+    }
+
     case "node_recovery": {
       // Engine retried after a transient delegate failure (LLM rate
       // limit, http2 reset, codex endpoint hiccup). Surface the count
@@ -491,18 +524,6 @@ function processEvent(
     case "human_input_requested": {
       const nodeId = evt.node_id;
       if (!nodeId) break;
-      const kind = resolver.kind(nodeId);
-      if (kind !== "human") break;
-
-      // The runtime omits `iteration` from human_input_requested
-      // event payloads today — only node_started carries it. Without
-      // the fallback, the second human turn of a revise loop shares
-      // the iter-0 key with the first, the dedupe check below drops
-      // it, and the user sees the answered iter-0 bubble (no form)
-      // instead of the new pending iter-1 form.
-      const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
-      const key = humanId(nodeId, iter);
-      if (humanIdx.has(key)) break; // dedupe replay
       // Pull through the runtime-supplied questions payload (set when
       // the engine resolved field definitions from the workflow's
       // human node or from an LLM-fill step). The form renderer uses
@@ -511,6 +532,31 @@ function processEvent(
         evt.data?.questions && typeof evt.data.questions === "object"
           ? (evt.data.questions as Record<string, unknown>)
           : undefined;
+      // ask_user pauses live on AGENT nodes (the agent called the
+      // ask_user tool mid-turn, questions carry `ask_user_response`).
+      // They must surface as chat turns too — previously only
+      // human-kind nodes did, leaving agent questions invisible in
+      // the transcript.
+      const isAskUser = !!questions && "ask_user_response" in questions;
+      const kind = resolver.kind(nodeId);
+      if (kind !== "human" && !isAskUser) break;
+
+      // The runtime omits `iteration` from human_input_requested
+      // event payloads today — only node_started carries it. Without
+      // the fallback, the second human turn of a revise loop shares
+      // the iter-0 key with the first, the dedupe check below drops
+      // it, and the user sees the answered iter-0 bubble (no form)
+      // instead of the new pending iter-1 form.
+      const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
+      // ask_user turns key on the interaction id: one agent turn can
+      // pause several times (…_1, …_2 suffixes engine-side), and the
+      // nodeId:iter key would dedupe every pause after the first.
+      const interactionId =
+        typeof evt.data?.interaction_id === "string" && evt.data.interaction_id
+          ? (evt.data.interaction_id as string)
+          : undefined;
+      const key = isAskUser && interactionId ? interactionId : humanId(nodeId, iter);
+      if (humanIdx.has(key)) break; // dedupe replay
       const hints = resolver.humanRenderHints?.(nodeId);
       // The runtime resolves a human node's `instructions:` prompt against
       // the paused node's input and ships it on the event, so a generic
@@ -544,12 +590,18 @@ function processEvent(
                   : undefined,
             } satisfies ReviewGateMeta)
           : undefined;
+      // ask_user prompt = the agent's question text itself (there is
+      // no instructions: prompt on an agent pause).
+      const askUserPrompt =
+        isAskUser && typeof questions?.ask_user_response === "string"
+          ? (questions.ask_user_response as string)
+          : undefined;
       const idx = out.length;
       out.push({
         kind: "human-question",
         id: key,
         nodeId,
-        prompt: hints?.prompt ?? instructions ?? "Reply to continue.",
+        prompt: hints?.prompt ?? instructions ?? askUserPrompt ?? "Reply to continue.",
         status: "pending",
         actions: hints?.actions,
         quickActions: hints?.quickActions,
@@ -571,7 +623,19 @@ function processEvent(
       // older format may still surface in replay.
       let nodeId = evt.node_id;
       let key: string;
-      if (nodeId) {
+      // ask_user turns are keyed on the interaction id (see the
+      // human_input_requested case) — match on it first.
+      const answeredInteractionId =
+        typeof evt.data?.interaction_id === "string" && evt.data.interaction_id
+          ? (evt.data.interaction_id as string)
+          : undefined;
+      if (answeredInteractionId && humanIdx.has(answeredInteractionId)) {
+        key = answeredInteractionId;
+        if (!nodeId) {
+          const entry = out[humanIdx.get(key)!] as HumanQuestionMessage | undefined;
+          nodeId = entry?.nodeId;
+        }
+      } else if (nodeId) {
         // Same iteration-fallback rationale as human_input_requested:
         // the runtime omits `iteration` from this event payload, so
         // we read it from the most recent node_started.
@@ -587,8 +651,9 @@ function processEvent(
         break;
       }
       if (!nodeId) break;
-      const kind = resolver.kind(nodeId);
-      if (kind !== "human") break;
+      // No resolver-kind gate here: the humanIdx lookup below is the
+      // real guard (a card exists only if the pause case pushed one —
+      // human node or ask_user agent pause alike).
       const idx = humanIdx.get(key);
       if (idx === undefined) break;
       const current = out[idx] as HumanQuestionMessage;

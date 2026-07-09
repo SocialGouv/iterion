@@ -132,7 +132,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
+	botID, ok := s.selectIssueLabeledBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
 	}
@@ -161,9 +161,7 @@ func gitlabIssueLabeledVars(p gitlab.ParsedIssue, launchVars map[string]string, 
 		"open_mr":          "true",
 		"source_issue_ref": p.URL,
 	}
-	for k, v := range launchVars {
-		vars[k] = v
-	}
+	mergeVarsInto(vars, launchVars)
 	return vars
 }
 
@@ -408,12 +406,8 @@ func buildCommandVars(p gitlab.ParsedNote, route webhooks.CommandRoute, args str
 		"base_ref":    p.TargetBranch,
 		"scope_notes": strings.TrimSpace(p.MRTitle + "\n\n" + p.MRDesc),
 	}
-	for k, v := range route.ContextVars {
-		vars[k] = v
-	}
-	for k, v := range launchVars {
-		vars[k] = v
-	}
+	mergeVarsInto(vars, route.ContextVars)
+	mergeVarsInto(vars, launchVars)
 	if route.ArgsVar != "" && strings.TrimSpace(args) != "" {
 		vars[route.ArgsVar] = args
 	}
@@ -435,12 +429,8 @@ func buildGitLabIssueCommandVars(p gitlab.ParsedNote, route webhooks.CommandRout
 		"base_ref":    p.DefaultBranch,
 		"scope_notes": strings.TrimSpace(p.IssueTitle + "\n\n" + p.IssueDesc),
 	}
-	for k, v := range route.ContextVars {
-		vars[k] = v
-	}
-	for k, v := range launchVars {
-		vars[k] = v
-	}
+	mergeVarsInto(vars, route.ContextVars)
+	mergeVarsInto(vars, launchVars)
 	if route.ArgsVar != "" && strings.TrimSpace(args) != "" {
 		vars[route.ArgsVar] = args
 	}

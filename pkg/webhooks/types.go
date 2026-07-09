@@ -110,6 +110,34 @@ type Config struct {
 	// pull_request / issue_comment paths.
 	LabelAllowlist []string `bson:"label_allowlist,omitempty" json:"label_allowlist,omitempty"`
 
+	// BranchImproveAsPR changes how the branch-improvement bot (Billy) lands
+	// its hardening on a PR it reviews. Default (false): it commits + pushes
+	// directly onto the PR's own source branch (in-place — the author merges
+	// its PR and gets the improvements with it). True: Billy instead opens a
+	// SEPARATE PR targeting that source branch, so the author reviews the bot's
+	// changes as an isolated diff before integrating them — the right posture
+	// for a third-party contributor's work (they stay in control of their
+	// branch). Routes Billy through open_mr=true + mr_base=<source branch>
+	// instead of the direct push-back.
+	BranchImproveAsPR bool `bson:"branch_improve_as_pr,omitempty" json:"branch_improve_as_pr,omitempty"`
+
+	// AutoImplementOnOpen, when true, dispatches the implementer bot on a
+	// freshly-OPENED issue (not only a labeled one) — the zero-touch lane where
+	// iterion turns every new issue into a PR without a manual label. OFF by
+	// default: labeling an issue (LabelAllowlist) stays the deliberate opt-in,
+	// so enabling this is a per-webhook decision to auto-act on ALL new issues.
+	// The labeled path keeps working alongside it.
+	AutoImplementOnOpen bool `bson:"auto_implement_on_open,omitempty" json:"auto_implement_on_open,omitempty"`
+
+	// BlockForkPRs, when true, filters (never auto-launches ANY bot on) a PR
+	// whose head branch lives in a DIFFERENT repo than its base — a fork PR.
+	// The anti budget-exhaustion boundary: a fork PR is untrusted (an adversary
+	// can open many to trigger costly bot runs), so an operator must validate it
+	// before a bot runs. Off by default (fork PRs still auto-review via Revi;
+	// the mutating branch-improve bot never runs on a fork regardless — see
+	// selectForgePRBot). Recommended ON for a public repo.
+	BlockForkPRs bool `bson:"block_fork_prs,omitempty" json:"block_fork_prs,omitempty"`
+
 	// ForgeBaseURL, when set, pins the forge instance this webhook's bot
 	// token may call back to (e.g. "https://gitlab.example.com"). The
 	// inbound payload's MR-URL host must match it or the delivery is

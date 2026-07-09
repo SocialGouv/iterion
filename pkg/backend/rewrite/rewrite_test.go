@@ -13,13 +13,6 @@ func TestParseModeAndResolve(t *testing.T) {
 	if ParseMode("ON") != On || ParseMode("ultra") != Ultra || ParseMode("") != Off || ParseMode("true") != On {
 		t.Fatal("ParseMode mapping wrong")
 	}
-	// Precedence: override > node > workflow > env.
-	if got := Resolve("", "off", "on", ""); got != Off {
-		t.Errorf("node off must win over workflow on, got %v", got)
-	}
-	if got := Resolve("ultra", "off", "", ""); got != Ultra {
-		t.Errorf("override must win, got %v", got)
-	}
 	// Tool node: node-only opt-in; override can force-off but never force-on.
 	if got := ResolveToolNode("on", ""); got != Off {
 		t.Errorf("override on must NOT force-enable a tool node, got %v", got)

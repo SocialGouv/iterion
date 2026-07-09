@@ -200,13 +200,13 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 	if exec.callCount("emit_sbom") != 1 {
 		t.Errorf("expected emit_sbom once, got %d", exec.callCount("emit_sbom"))
 	}
-	if exec.wasCalled("reviewer_claude") || exec.wasCalled("reviewer_gpt") {
-		t.Errorf("phase2 reviewers should NOT run when only_patches_attempted=true")
+	if exec.wasCalled("p2_campaign") {
+		t.Errorf("the Phase-2 review campaign should NOT run when only_patches_attempted=true")
 	}
 	if exec.wasCalled("upgrade") || exec.wasCalled("install") {
 		t.Errorf("per-package nodes should NOT run on patch fast-track")
 	}
-	// Note: phase2_decider, intel_join, streak_check, join_files,
+	// Note: phase2_decider, intel_join, p2_gate, join_files,
 	// mark_failed_and_continue are `compute` nodes — evaluated by the
 	// runtime's expression engine, NOT routed through NodeExecutor.
 	// They never show up in scenarioExecutor.calls; assertions cover
@@ -231,8 +231,8 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 //	align_code → validate_upgrade(stable:true) → prepare_commit → join_files →
 //	commit_changes → write_audit_md(was_batch:false) →
 //	select_candidate(has_more:false) → phase2_decider(go_done:false) →
-//	alt_review → reviewer_claude(approve) → streak_check → alt_review →
-//	reviewer_gpt(approve) → streak_check.stop → emit_sbom → done
+//	p2_campaign(review_clean) → p2_verify_build → p2_verify_run →
+//	p2_gate(converged) → emit_sbom → done
 func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
@@ -376,11 +376,18 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 			"was_batch": false,
 		}, nil
 	})
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("claude"), nil
+	exec.on("p2_campaign", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"review_clean": true, "commits_this_pass": 1, "issues_remaining": "",
+			"needs_human": false, "human_note": "", "summary": "reviewed the series",
+			"_tokens": 5,
+		}, nil
 	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("gpt"), nil
+	exec.on("p2_verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
+	})
+	exec.on("p2_verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
 	exec.on("emit_sbom", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"success": true, "path": "docs/renovacy/sbom-abc.json", "count": 1}, nil
@@ -400,7 +407,7 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
 	}
 	for _, gate := range []string{"upgrade", "install", "align_code", "validate_upgrade",
-		"prepare_commit", "commit_changes", "reviewer_claude", "reviewer_gpt", "emit_sbom"} {
+		"prepare_commit", "commit_changes", "p2_campaign", "p2_verify_run", "emit_sbom"} {
 		if !exec.wasCalled(gate) {
 			t.Errorf("expected per-package node %q to be called, was not", gate)
 		}
@@ -414,7 +421,7 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 // per-package fix loop: validate_upgrade returns stable=false on the
 // first invocation, fix_after_upgrade applies, validate_upgrade
 // returns stable=true on the second invocation. The run then proceeds
-// through commit and exits via the phase2 reviewers.
+// through commit and exits via the Phase-2 review campaign.
 func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
@@ -545,11 +552,18 @@ func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
 	exec.on("write_audit_md", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"success": true, "output": "amended", "was_batch": false}, nil
 	})
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("claude"), nil
+	exec.on("p2_campaign", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{
+			"review_clean": true, "commits_this_pass": 1, "issues_remaining": "",
+			"needs_human": false, "human_note": "", "summary": "reviewed the series",
+			"_tokens": 5,
+		}, nil
 	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return approveVerdict("gpt"), nil
+	exec.on("p2_verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
+	})
+	exec.on("p2_verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
 	exec.on("emit_sbom", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"success": true, "path": "docs/renovacy/sbom.json", "count": 1}, nil

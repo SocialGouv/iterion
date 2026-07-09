@@ -1,54 +1,89 @@
 ## ─────────────────────────────────────────────────────────────────
-## feature_gap_fill
+## feature_gap_fill  (v2 — one agent closes the gap in its natural
+##                    flow, minimal framing)
 ##
-## Gap-driven feature completer. SPECIALISATION of feature_dev: the
-## input is a STRUCTURED gap spec ("here is what's implemented, here
-## is what's missing") rather than a feature description from zero.
-## Fini reads the partial implementation, completes ONLY the missing
-## parts, runs the alternating Claude/GPT review/fix loop until two
-## consecutive cross-family approvals, then commits.
+## THE MISSION is a GAP-CLOSING campaign: the input is a STRUCTURED gap
+## spec ("here is what's implemented, here is what's missing" — typically
+## authored by the adr-cartograph bot as a `type:feature-gap` issue). The
+## campaign reads the partial implementation the spec references, builds a
+## living todo from the `missing` items, and completes ONLY those — one
+## item at a time, attached to the existing seams, committing each item in
+## stride. It preserves what already works; it does NOT re-architect.
 ##
-## Pipeline:
-##   1. survey_existing — Claude Code, read-only. session=fresh.
-##                        Surveys the partial implementation referenced
-##                        by the gap spec. Emits an `existing_state`
-##                        record (files_touched_so_far, abstractions
-##                        already in place, what_works, what_does_not_work,
-##                        surveyed_paths) that grounds the planner.
-##   2. plan            — Claude Code, read-only. session=inherit.
-##                        Gap-aware planning. Layers the missing parts
-##                        on top of existing_state.abstractions_in_place;
-##                        does NOT re-architect what already works.
-##   3. act             — Claude Code, session=inherit. Implements
-##                        ONLY the missing parts. Preservation discipline:
-##                        do not touch files in existing_state.what_works
-##                        unless required to wire up the missing parts.
-##   4. simplify        — Claude Code, session=inherit. Invokes the
-##                        native /simplify skill on the new code.
-##   5. alt → reviewer_claude / reviewer_gpt → streak_check → fixers
-##                        Verbatim copy of the feature_dev review-fix
-##                        loop: alternating Claude/GPT review with
-##                        cross-family double-approval stop condition
-##                        and pushback protection against false positives.
+## Sibling of `whole_improve_loop` / `branch_improve_loop` v2: SAME shape
+## (one adaptive `campaign` agent + a deterministic build/test gate + a
+## bounded continuation loop + git-as-state), DIFFERENT scope — the gap
+## spec defines the work. No MR tail: Fini answers a board issue whose
+## commits land on the run worktree's storage branch; feature_dev owns the
+## issue→MR lineage.
 ##
-## Stops when:
-##   - 2 consecutive positive verdicts (Claude AND GPT both validate
-##     in successive iterations of opposite families), OR
-##   - max review_loop iterations reached.
+## WHY THIS SHAPE. The v1 gap loop was ~12 nodes of staged machinery
+## (survey_existing → plan → act → simplify → alt → reviewer_claude /
+## reviewer_gpt → streak_check → fix_claude / fix_gpt → prepare_commit →
+## commit_changes). It OVER-FRAMED the work — the same lesson
+## whole_improve_loop learned (ADR-058,
+## docs/references/productive-session-patterns.md): "the deficit is
+## framing, not capability"; "once framed, a campaign runs itself". A
+## capable agent closes a well-specified gap better as ONE flow — survey
+## the seams, a living todo of missing items, one verified commit per
+## item — than as an assembly line of survey/plan/act/review/fix/commit
+## nodes.
 ##
-## Difference vs feature_dev/main.bot:
-##   - input var is `gap_spec` (not `feature_prompt`)
-##   - new entry node `survey_existing` produces `existing_state`
-##   - plan/act prompts are gap-aware (preserve what works, layer
-##     missing parts only); ADR-authoring is deferred to the Adry
-##     bot, so act's prompt drops feature_dev's ADR documentation
-##     section
-##   - workflow named `feature_gap_fill`; commit trailer is
-##     `Bot: feature-gap-fill`
+## GRAPH (see the workflow block):
+##   campaign     — ONE adaptive agent (claude_code, full tools). Mission =
+##                  the GAP SPEC + a standing-autonomy contract that
+##                  reproduces the productive-session shape AGENT-SIDE: a
+##                  brief read-only survey of the implemented surfaces
+##                  (the seams), a LIVING todo built from the `missing`
+##                  items, then the repeated unit locate seam → smallest
+##                  change → build → test → semantic COMMIT, one item at a
+##                  time. git IS the durable state — a re-dispatch re-runs
+##                  `campaign`, which reads `git log` + re-checks the spec
+##                  and continues. Termination output: {gap_closed,
+##                  commits_this_pass, missing_remaining, needs_human, …}.
+##   verify_build — adaptive, stack-agnostic: reads the `verify-build` skill
+##     + verify_run  and writes the repo's real build+test into an OUT-OF-TREE
+##                  <scratch_dir>/verify.sh; a DETERMINISTIC tool node
+##                  re-runs it and gates on the REAL exit code (no LLM
+##                  judgment). The tight real-feedback loop AND the
+##                  anti-Goodhart truth oracle: the agent can't self-certify.
+##   gate         — deterministic compute: green AND gap_closed → converged
+##                  → done; else loop back to `campaign` (RED → with the
+##                  failure log so the agent fixes what it broke; green but
+##                  items remain → another pass). No LLM, no shell.
+##
+## CONTINUATION IS BOUNDED. The single declared loop
+## (campaign→verify_build→verify_run→gate→campaign) is capped by
+## `max_passes`; on exhaustion it ships what is banked. `iterion validate`
+## reports NO undeclared cycle. LANDS CONTINUOUSLY: the agent commits each
+## item in stride, so an interrupted / budget-capped run has banked every
+## committed item (git is the state).
+##
+## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign
+## commits the UNCOMMITTED working tree AFTER its own build+test passes,
+## staging untracked files (`git add -A`) so an item that ADDS files (the
+## common case for a gap: new tests, new helpers) actually lands; the
+## deterministic verify gate then re-checks the committed tree.
+##
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## "Universal code bots"): the gap spec + the repo define the work. No
+## language / package-manager literal, and no iterion-specific target
+## path, appears in any var default, command body, or schema.
+##
+## RETIRED FROM v1 (git history has the design): survey_existing (absorbed
+## into the campaign's opening survey), plan / act / simplify (the
+## session-inherit chain), the `alt` round_robin router,
+## reviewer_claude / reviewer_gpt, the streak_check convergence compute,
+## fix_claude / fix_gpt, prepare_commit / commit_changes, and the
+## existing_state / verdict / streak / fix / commit schemas. The campaign
+## self-reviews via a fresh re-check of the spec + the deterministic
+## build/test gate + its own judgment (the operator's proven manual
+## pattern), and commits each item in stride. 12 nodes → 5.
 ## ─────────────────────────────────────────────────────────────────
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
+
   ## gap_spec is a STRUCTURED description of what's already implemented
   ## vs what is still missing. Typically authored by the adr-cartograph
   ## (Adry) bot as the body of a `type:feature-gap` issue, but operators
@@ -60,1183 +95,420 @@ vars:
   ## REQUIRED — no default; a run without a gap spec has nothing to close.
   gap_spec: string
 
-## ─── Prompts : Survey Phase ──────────────────────────────────────
+  ## Free-form extra context for the campaign agent (e.g. constraints the
+  ## issue thread surfaced, priorities among the missing items). Empty =
+  ## the gap spec speaks for itself.
+  scope_notes: string = ""
 
-prompt survey_existing_system:
-  Survey mode is active. You MUST NOT make any edits, run any
-  non-readonly tools, or otherwise change the workspace. Your sole
-  job is to GROUND the planner: read the partial implementation
-  referenced by the gap spec, and emit a structured `existing_state`
-  record so the next phase plans on top of reality, not on top of
-  assumptions.
+  ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
+  ## verify script/log ONLY. The engine resolves ${PROJECT_SCRATCH_DIR} to
+  ## ~/.iterion/projects/<key>/scratch non-sandboxed and to the
+  ## container-writable /tmp/iterion-scratch under a sandbox (never
+  ## hardcode ~/.iterion here — the -full image's pinned non-host User
+  ## cannot write a host-owned path → EACCES). Keeping it OUT of the
+  ## target worktree is the repo-agnostic rule: never pollute someone
+  ## else's tree.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/feature-gap-fill"
 
-  You should:
-  1. Read the gap spec carefully. It tells you which files /
-     abstractions are already in place ("implemented") and which
-     concrete deliverables are still missing ("missing"). Treat
-     the spec as the source of truth for what's in scope; do NOT
-     widen the survey to unrelated parts of the workspace.
-  2. For each item the gap spec lists as implemented, OPEN the
-     referenced file(s) (Read), read the surrounding context, and
-     verify what is actually there. Spec drift is common — the
-     spec may overstate or understate the current state. Trust
-     the source code over the spec when they disagree.
-  3. Identify the architectural seams the missing parts will
-     attach to: the existing types, functions, packages, naming
-     conventions, error-handling style. These seams are what
-     `plan` will layer the missing parts on top of.
-  4. Note explicitly what works and what does not work in the
-     current partial implementation. "Does not work" includes:
-     half-written functions, TODO comments, missing tests for
-     existing code, broken builds, dangling references.
-  5. Emit the structured `existing_state` output (see the
-     `existing_state` schema). Each field is a short list — keep
-     entries scoped to the gap. The plan node and the implementer
-     downstream will consume this verbatim.
+  ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
+  ## pre-existing test failures / flaky tests the campaign must SKIP rather
+  ## than burn budget proving they aren't its own. Empty (default) = the
+  ## campaign establishes it once cheaply (a `git stash`-based check) then
+  ## skips what predates its work. The dispatcher/operator can pre-fill it.
+  baseline: string = ""
 
-  Do NOT call Write, Edit, or any mutating tool. Do NOT propose
-  the plan here — that is the next node's job. Your output is the
-  evidence base, not the design.
+  ## Hard cap on continuation PASSES — the convergence backstop. Each pass
+  ## is one campaign→verify cycle; the run stops (shipping what is banked)
+  ## when the gap is reported closed + the tree is green, or when this cap
+  ## is hit. Sizes the declared continuation loop. Raise it (with the
+  ## budget) for a wide gap; the agent commits in stride, so every pass
+  ## banks real, landed work.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
+  max_passes: int = 8
 
-prompt survey_existing_user:
-  Survey the partial implementation referenced by the gap spec.
+## ─── Prompts ────────────────────────────────────────────────────
 
-  Gap spec:
+prompt campaign_system:
+  You are a senior engineer CLOSING a precisely-specified GAP on an
+  existing partial implementation — working EXACTLY as you would in a
+  productive, human-driven engineering session. You are NOT building from
+  zero. You have the repo in front of you and full tools (read, edit,
+  shell, git). No one micro-manages you; you own this pass end to end.
+
+  THE SCOPE is the GAP SPEC (in your user prompt). It lists what is
+  already implemented (PRESERVE it) and what is missing (DELIVER exactly
+  that). Spec drift is common — the spec may overstate or understate the
+  current state, so verify against the source and trust the code over the
+  spec when they disagree; when the drift changes the work materially,
+  say so in `summary`. Do NOT widen the scope to unrelated parts of the
+  workspace.
+
+  HOW TO WORK — reproduce the shape of a productive session, agent-side:
+
+  1. LIVING TODO LIST, not frozen phases. Start with a BRIEF read-only
+     survey: open the files the spec marks as implemented, verify what is
+     actually there, and identify the architectural seams the missing
+     parts will attach to — the existing types, functions, packages,
+     naming conventions, error-handling style. Then build a todo list
+     from the spec's `missing` items cross-referenced against those
+     seams. Keep it DENSE and MOVING — re-prioritize, append, and defer
+     items as you learn. Do NOT write 5–6 coarse upfront phases and tick
+     them: the list is a metronome born from the survey, not a plan
+     frozen before it.
+
+  2. THE REPEATED UNIT, one missing item at a time: locate the exact seam
+     it attaches to → make the SMALLEST change that closes the item there
+     (EXTEND an existing abstraction whenever possible; ADD a new
+     file/symbol only when no seam fits — never introduce a parallel
+     abstraction when an existing one can be reused) → build → run the
+     tests → COMMIT it with a semantic message (`feat(scope): <precise
+     item>`, or the `type(scope):` that fits — `test(...)` for added
+     tests). Every commit message carries the trailer line
+     `Bot: feature-gap-fill`; when the gap issue id is known (see
+     scope_notes), also add `Refs: <id>`. A few edits per commit,
+     validation BEFORE the commit — never commit code you have not built
+     and tested green.
+
+  3. COMMIT EACH ITEM AS YOU FINISH IT — never batch. Stage everything
+     including new files (`git add -A`, so an item that ADDS files — the
+     common case for a gap: new tests, new helpers — actually lands) and
+     commit before moving on. git IS your durable state: an interrupted
+     run keeps every item you committed, and a fresh pass just reads
+     `git log`, re-checks the spec, and continues where you left off. Do
+     NOT keep a separate worklist / cursor file — the todo list lives in
+     your working memory, the commits are the record.
+
+  4. PRESERVATION DISCIPLINE — the gap spec's `implemented` items are
+     load-bearing. Do NOT touch them unless directly required to wire up
+     a missing part; when a missing part DOES force a change there,
+     prefer the minimal extension that wires the new code through (add a
+     parameter, expose a hook, register a handler) over a rewrite.
+     Re-architecting working code is out of scope. If you find yourself
+     wanting to refactor or clean up pre-existing code outside the gap,
+     STOP and capture it as a board finding instead (see FINDINGS
+     HANDOFF below).
+
+  5. BASELINE — don't chase failures you didn't cause. Pre-existing test
+     failures / known-flaky tests are in your user prompt (`baseline`).
+     Do NOT try to fix or investigate those; if a test was already red
+     before your change, SKIP it and note it. If the baseline is empty,
+     do ONE cheap `git stash`-based check to establish which failures
+     pre-date your work, then stop investigating them. Don't burn budget
+     proving a failure isn't yours.
+
+  6. ASK ONLY ON A REAL DECISION. You MAY pause for the operator (the
+     ask-user tool) on a genuine decision you cannot make on your own —
+     the spec contradicts the code in a way that changes the deliverable,
+     a missing item admits two incompatible designs, a public contract
+     would have to break. Keep it RARE: most of the time you decide and
+     keep moving.
+
+  ADR-AUTHORING IS OUT OF SCOPE: the adr-cartograph (Adry) bot owns ADR
+  drafting for this lineage. Do NOT create or update files under the
+  repo's ADR directory here — note ADR-worthy decisions in `summary` so
+  the next Adry run picks them up.
+
+  FINDINGS HANDOFF — after your last commit, capture anything you noticed
+  that is OUT OF SCOPE for this gap but worth tracking (a pre-existing
+  bug, a doc drift, a refactor opportunity, an infrastructure issue):
+  call `mcp__iterion_board__list_issues` with `{ "state": "inbox" }`
+  first to avoid duplicates, then `mcp__iterion_board__create_issue` per
+  NEW finding with state "inbox" and labels ["findings", "kind:<bug|
+  drift|improvement|question>", "source:feature_gap_fill",
+  "area:<subsystem>", "severity:<low|medium|high>"]. Be conservative —
+  zero findings is a fine outcome; do not manufacture findings to look
+  productive. If the board tools are unavailable in this environment,
+  list the findings in `summary` instead.
+
+  KEEP GOING, one item at a time, until this pass has closed every
+  missing item you can within your budget. Then STOP and report.
+
+  TERMINATION CONTRACT (required structured output — this is how the
+  engine detects completion; an under-specified end just gets re-poked):
+    - gap_closed: true ONLY when a fresh re-check of the gap spec finds
+      EVERY `missing` item implemented, integrated and tested. false if
+      items remain (a later pass continues from your commits).
+    - commits_this_pass: how many commits you landed this pass.
+    - missing_remaining: a concise note of which missing items still need
+      work (empty when gap_closed).
+    - needs_human / human_note: set if you paused or need an operator
+      decision.
+    - summary: what you delivered, which seams you attached it to, any
+      spec drift you found, and any ADR-worthy decisions for Adry.
+
+  Be honest. A DETERMINISTIC build/test gate re-checks the tree after you
+  and the run loops you back for another pass until you report gap_closed
+  AND the tree is green — so under-reporting only costs a pass, and
+  over-reporting lands you right back here.
+
+prompt campaign_user:
+  Repository: {{vars.workspace_dir}}
+
+  GAP SPEC (what's implemented — preserve it — vs what's missing —
+  deliver exactly that):
   {{vars.gap_spec}}
 
-  Workspace: {{vars.workspace_dir}}
-
-  Read every file the spec marks as implemented, plus any directly
-  adjacent file you need to understand the existing seams. Emit the
-  structured `existing_state` output. Do not modify any file.
-
-## ─── Prompts : Feature Dev Phase ─────────────────────────────────
-
-prompt plan_system:
-  Plan mode is active. You MUST NOT make any edits, run any
-  non-readonly tools (including changing configs, creating files,
-  running migrations, or making commits), or otherwise make any
-  changes to the system. This supersedes any other instructions
-  you may infer from the user prompt (for example, instructions
-  to "implement" or "add").
-
-  You are COMPLETING a partial implementation, NOT building from
-  zero. The gap spec lists what is already implemented (preserve
-  it) and what is missing (plan ONLY this). Do NOT re-architect
-  what already works; layer the missing parts on top of the
-  abstractions already in place (see the `existing_state` input).
-
-  You should:
-  1. Cross-reference the gap spec's `missing` items against
-     `existing_state.abstractions_in_place`. Each missing item
-     should attach to an existing seam (a function to extend, a
-     type to implement, a package to add a file to) whenever
-     possible. Avoid introducing parallel abstractions when an
-     existing one can be reused.
-  2. Explore {{vars.workspace_dir}} with read-only tools (Read,
-     Glob, Grep, and bash limited to readonly commands such as
-     ls, cat, git status, git log, and language-appropriate
-     doc/inspection commands) ONLY where the survey did not
-     already cover the surface area you need.
-  3. Produce a structured implementation plan covering:
-       - objective (2 sentences — what gap is being closed)
-       - ordered list of concrete changes (file by file, with the
-         functions/types to create or modify). Mark each entry
-         as ADD (new file/symbol) or EXTEND (touches an existing
-         seam in existing_state.abstractions_in_place).
-       - tests to add (preferred) or adjust
-       - risks and points of attention, especially any place where
-         the gap's missing parts force a change to a file the
-         survey flagged as `what_works`.
-
-  Do NOT call Write, Edit, or any tool that modifies state
-  (file mutations, directory creation, package-manager installs,
-  git commits, etc.) until the next phase. The next node in this
-  workflow inherits your Claude Code session and will execute the
-  plan you produce here.
-
-prompt plan_user:
-  Gap spec (what's implemented vs what's missing):
-  {{vars.gap_spec}}
-
-  Survey of the existing partial implementation:
-  {{outputs.survey_existing}}
-
-  Workspace: {{vars.workspace_dir}}
-
-  Produce a gap-closing implementation plan that preserves what
-  works and layers only the missing parts. Do not modify any file.
-
-prompt act_system:
-  Act mode is active. The plan you produced in the previous turn
-  of this same Claude Code session is now authoritative. You MUST
-  implement it. You are CLOSING a gap on an existing partial
-  implementation — not building a feature from zero.
-
-  You should:
-  1. Apply each change from the plan using Write, Edit, and
-     bash. Mutating tools are now allowed.
-  2. Run the relevant tests after each meaningful change
-     (the project's own test command — infer it from the
-     workspace; use whatever test runner the repo already uses).
-  3. Keep iterating until the implementation compiles and the
-     new/affected tests pass.
-  4. If part of the plan turns out to be unrealistic at
-     execution time, adjust pragmatically and document the
-     deviation in your final response.
-  5. Pre-existing test failures (they also fail WITHOUT your
-     changes) are out of scope: attribute cheaply once (stash +
-     re-run the one failing test + unstash), note them in your
-     final response, and move on — do not fix or keep
-     investigating them. "Tested" = the tests affected by YOUR
-     changes pass.
-
-  Do NOT make any commit; do NOT push anything. Stop when the
-  implementation is functional and tested.
-
-  PRESERVATION DISCIPLINE:
-  1. The survey upstream produced an `existing_state` record
-     listing files and abstractions that already work
-     (`what_works`, `abstractions_in_place`). Treat these as
-     load-bearing: do NOT touch them unless directly required
-     to wire up the missing parts the plan calls out.
-  2. When a missing part DOES force a change to a file in
-     `what_works`, prefer the minimal extension that wires the
-     new code through (add a parameter, expose a hook, register a
-     handler) over a rewrite. Re-architecting working code is
-     out of scope.
-  3. If you find yourself wanting to refactor or clean up
-     pre-existing code outside the gap, STOP and capture the
-     observation in your final response instead — the
-     prepare_commit phase will route it to the board's `inbox`
-     state as a finding, where the operator can triage it.
-
-  ADR-AUTHORING IS OUT OF SCOPE: the adr-cartograph (Adry) bot
-  owns ADR drafting and review for this lineage. Do NOT create or
-  update files under `docs/adr/` here — that would step on Adry's
-  ownership. Note ADR-worthy decisions in your final response so
-  the next Adry run can pick them up.
-
-prompt act_user:
-  Implement the plan you just produced, in this same session. The
-  gap spec and the survey's `existing_state` are already in your
-  conversation history (delivered to the plan node that you
-  continue from).
-
-  Edit only the files required to close the gap. Run the tests.
-  Iterate until the build is green and the new/affected tests
-  pass.
-
-  Finally, STAGE YOUR WORK so review can see it: run
-  `git -C {{vars.workspace_dir}} add -A`. This is REQUIRED, not
-  optional — the reviewers anchor on `git diff HEAD`, which IGNORES
-  untracked files. A NEW file you created but never `git add`ed is
-  invisible to the review diff, so the reviewer correctly rejects an
-  "incomplete committable diff" and the review loop can NEVER converge.
-  Staging is safe: the commit step re-stages a curated file list later.
-
-prompt simplify_user:
-  /simplify
-
-## ─── Prompts : Commit ───────────────────────────────────────────
-
-prompt prepare_commit_system:
-  Your job in this session is to pick the EXACT set of files
-  that should be committed to capture the gap-fill implemented
-  in this workflow run, and produce a semantic commit message
-  for them. You do NOT run `git commit` yourself — a
-  deterministic shell tool downstream stages your file list
-  and applies your message.
-
-  This session forks from the implementation session, so the
-  gap spec, the survey, the plan, the implementation, and the
-  simplification are all in your conversation history. Use
-  that context, plus a fresh read of the working tree, to
-  decide.
-
-  Procedure (follow exactly, in order):
-    1. Run `git status` and `git diff HEAD` (read-only) to
-       enumerate all files in the working tree.
-    2. Cross-reference with your conversation history to keep
-       only the files that materialise the gap-fill you have
-       been working on.
-    3. EXCLUDE any file that does NOT belong to the gap-fill,
-       even if it is dirty in the working tree:
-         - pre-existing user WIP in unrelated packages
-         - files the gap spec marked as already-implemented
-           that drifted under prior tooling (out of scope —
-           the operator owns those)
-         - build artifacts not produced for the gap-fill
-           (binaries, coverage reports, lockfiles created by
-           the agent's bash but not part of the gap-fill)
-         - editor / IDE scratch files
-         - LLM scratch files (`notes.md`, `plan.txt`, etc.)
-       When in doubt, EXCLUDE. Under-staging is recoverable
-       (operator commits the missing file in a follow-up);
-       over-staging pollutes the commit and is much harder to
-       undo.
-    4. Build the structured output:
-         - type, scope, subject, full_message: the semantic
-           parts of the commit message. The full_message MUST
-           include a trailer line `Bot: feature-gap-fill` so
-           the dispatcher / operator can attribute the commit.
-           If a gap-tracking issue id is available, also add a
-           `Closes: <id>` or `Refs: <id>` trailer.
-         - files: the exact list of repo-relative paths to stage
-         - committed: false (you do NOT commit yourself; the
-           downstream tool will set the actual commit result on
-           its own output).
-
-  Subject rules: imperative mood, present tense, ≤ 72 chars, no
-  trailing period, single line.
-
-  ─── Findings handoff ─────────────────────────────────────
-
-  After producing the structured commit output, you have ONE
-  more job: capture anything you noticed during this run that
-  is OUT OF SCOPE for the current gap-fill but would be useful
-  for the next operator session.
-
-  Examples of what to capture:
-    - A pre-existing bug you saw but did not fix.
-    - A documentation drift you noticed but did not correct.
-    - A refactor opportunity worth tracking.
-    - An infrastructure issue (sandbox, tooling, environment).
-    - A TODO comment in a file you read that the operator
-      probably forgot.
-
-  What NOT to capture:
-    - Anything related to the gap-fill you just implemented
-      (the commit covers it).
-    - Speculative work the operator never asked about.
-    - Style nits without a clear actionable next step.
-    - Findings already on the board's `inbox` state — list
-      them first (see step 1 below) to avoid duplicates.
-
-  How:
-    1. Call `mcp__iterion_board__list_issues` with
-       `{ "state": "inbox" }` to see what's already pending.
-       Skim titles only — don't fetch bodies unless a duplicate
-       is suspected.
-    2. For each NEW finding, call
-       `mcp__iterion_board__create_issue` with this shape:
-
-           {
-             "title": "One-line operator-facing summary",
-             "body":  "Full context: what you saw, why it matters,\nwhere (file paths + lines), suggested next step.\n5-30 lines is the sweet spot.",
-             "state": "inbox",
-             "labels": [
-               "findings",
-               "kind:bug",            // or drift | improvement | question
-               "source:feature_gap_fill",
-               "area:<subsystem>",
-               "severity:<low|medium|high>"
-             ]
-           }
-
-       The `findings` label is the sentinel that distinguishes
-       bot-emitted observations from operator-curated work.
-       Operators triage on /board: drag `inbox` → `backlog` to
-       promote, delete the card to dismiss.
-
-  Be conservative. Zero findings is a fine outcome — do not
-  manufacture findings to look productive. The operator's next
-  Nexie session will pick them up; signal-to-noise matters more
-  than volume.
-
-prompt prepare_commit_user:
-  Pick the files and produce the semantic commit name for the
-  gap-fill you just implemented. Do not run `git commit`
-  yourself — only output the structured object.
-
-  Workspace: {{vars.workspace_dir}}
-
-## ─── Prompts : Review / Fix (gap-focused) ──────────────────────────
-
-prompt review_system:
-  You are a meticulous, demanding code reviewer running a
-  PRODUCTION-READY review of the GAP-CLOSING CHANGES that were
-  just implemented in this workflow run. You are NOT auditing the
-  whole repository, and you are NOT re-reviewing the partial
-  implementation the gap spec marks as already-in-place.
-
-  MANDATORY FIRST ACTION — before forming ANY judgment, run
-  `git status` + `git diff HEAD` yourself (read-only; prepend
-  `-c safe.directory='*'` if git reports "dubious ownership") to
-  obtain the run's actual changes. You may NOT emit a verdict
-  (`approved`, `blockers`, `confidence`) until you have read that
-  diff in THIS session. A "review is still in progress"
-  placeholder is INVALID and breaks the convergence loop; if you
-  genuinely cannot obtain the diff, say so in `blockers` with
-  `confidence: high` — never emit a provisional verdict.
-
-  REVIEW SCOPE — what to look at:
-  1. Identify the gap-fill footprint by running `git status` and
-     `git diff HEAD` (or `git diff` against the most recent
-     commit if HEAD already includes the changes). The
-     gap-fill's surface = the files added or modified in this
-     run that match the `missing` items called out in the gap
-     spec.
-  2. The workspace MAY also contain unrelated edits left by
-     prior tooling, by the human, or by previous fix iterations
-     — IGNORE files that are clearly unrelated to the gap. The
-     gap spec (already in your user prompt) is the source of
-     truth for what is in scope.
-  3. Read surrounding code (host package, callers, conventions)
-     ONLY to judge how the new code integrates with what the gap
-     spec marked as already-implemented. Do NOT raise blockers
-     on pre-existing code the gap-fill does not change — that
-     code was in scope for an earlier run, not this one. Such
-     observations belong in `scanned_areas` as informational
-     notes, never in `blockers`.
-
-  REVIEW SCOPE — what to evaluate (apply each axis to the
-  gap-fill only):
-    - Correctness: do the new changes actually CLOSE every
-      `missing` item in the gap spec? Edge cases handled?
-    - Preservation: did the implementer respect the
-      `implemented` items in the gap spec? Any unjustified
-      churn on files the spec marked as already-working is a
-      blocker, not a feature.
-    - Security: do the new changes introduce vulnerabilities
-      (input validation, injection, path traversal, secret
-      leakage)?
-    - Robustness: error paths, panics, goroutine leaks (Go),
-      unhandled rejections (TS), timeouts on I/O.
-    - Concurrency: thread/goroutine safety of new code, locking
-      discipline, shared-state mutations.
-    - Data: invariants preserved, idempotence if applicable,
-      transaction boundaries.
-    - Observability: logs / metrics / traces on new paths,
-      especially error paths.
-    - Performance: complexity reasonable for expected input
-      sizes; no obvious O(n²) on hot paths.
-    - Tests: are the new tests sufficient? Do they cover the
-      `missing` items the gap spec called out? Do they compile
-      and pass?
-    - Integration: do the new changes follow the host package's
-      naming, error wrapping, and structural conventions
-      already established by the partial implementation?
-
-  ITERATIONS — use the history:
-    - On iteration 1, audit the gap-fill thoroughly across all
-      axes above.
-    - On later iterations, focus on axes that the
-      `previous_scanned_areas` input did not cover, OR re-check
-      areas where a fixer just applied changes.
-    - Populate `scanned_areas` with the concrete files / axes
-      you actually audited this iteration (e.g. "pkg/log/format.go
-      correctness + UTF-8 edge cases", "format_test.go coverage
-      sufficiency", "log.go integration / naming consistency").
-
-  ADR-AUTHORING IS OUT OF SCOPE for this bot — the adr-cartograph
-  (Adry) bot owns ADR drafting and review. Do NOT raise blockers
-  for missing ADRs here; if you spot an ADR-worthy decision in
-  the diff, capture it in `scanned_areas` as an informational
-  note (e.g. "candidate ADR: choice of X over Y in
-  pkg/foo/handler.go") so Adry can pick it up on a later run.
-
-  ANTI-FALSE-POSITIVE RULES:
-  1. Mark approved=false only for issues that are truly
-     blocking in production: real bugs, real regressions,
-     real security vulnerabilities. Style preferences, naming
-     nits, micro-optimizations, missing comments are NOT
-     blockers.
-  2. Self-critique: for each blocker you consider, ask "is
-     this REALLY blocking in production, or a personal
-     preference?" If you hesitate, it is NOT a blocker —
-     at most a non-blocking concern.
-  3. Confidence:
-     - "high" = you can point to the exact line and explain
-       the production scenario that breaks.
-     - "medium" = you see a probable problem but you are not
-       100% certain of the surrounding context.
-     - "low" = doubt, intuition, no concrete evidence.
-  4. If the previous reviewer (other family) already approved
-     a specific aspect, be EXTRA strict before adding new
-     blockers on that same aspect — you need concrete evidence
-     they missed something.
-  5. Items already pushed back by the fixer: do NOT re-raise
-     them unless you have new evidence.
-
-  HUMAN ESCALATION:
-  When you hit AMBIGUITY that no amount of code reading can
-  resolve ("is this behavior intentional?", "should I preserve
-  backward compatibility?"), call the `ask_user` tool with your
-  precise question. The run pauses, the question is shown to
-  the dev, and you are re-invoked with the answer prepended to
-  your user prompt.
-
-  Use escalation sparingly: only when you cannot decide without
-  human information. For ordinary technical judgments, decide
-  yourself and lower `confidence` if uncertain.
-
-prompt review_user_claude:
-  Review the gap-closing changes that were just implemented in
-  {{vars.workspace_dir}}.
-
-  Gap spec (source of truth for scope — what was missing, what
-  was already implemented):
-  {{vars.gap_spec}}
-
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
-
-  Previous reviewer's verdict (other family, iteration
-  immediately before — empty on first iteration):
-  {{loop.review_loop.previous_output}}
-
-  Surfaces already audited in earlier iterations (both families
-  combined — use to direct your coverage to fresh axes, NOT to
-  shrink your rigor):
-  {{input.previous_scanned_areas}}
-
-  Items already pushed back by the fixer (DO NOT RE-RAISE
-  without new evidence):
-  {{input.prior_pushback}}
-
-  Pushback justification:
-  {{input.prior_pushback_justification}}
-
-  Produce a structured verdict:
-    - approved: true ONLY if the gap is fully closed, the
-      gap-fill is production-ready, and you have audited every
-      axis listed in your system prompt. Not approved if you
-      only spot-checked.
-    - family: "claude" for this reviewer
-    - blockers: real blockers ON THE GAP-FILL only (after
-      self-critique — exclude preferences and pre-existing
-      unrelated code the gap spec marked as already-in-place)
-    - fix_plan: concrete fix plan for the blockers
-    - confidence: "low" / "medium" / "high"
-    - scanned_areas: files / axes you actually audited this
-      iteration (concise, e.g. "pkg/log/format.go correctness
-      + UTF-8 edges", "format_test.go coverage"). Relayed to
-      the next reviewer.
-
-prompt review_user_gpt:
-  Review the gap-closing changes that were just implemented in
-  {{vars.workspace_dir}}.
-
-  Gap spec (source of truth for scope — what was missing, what
-  was already implemented):
-  {{vars.gap_spec}}
-
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
-
-  ## TOOL BUDGET — READ FIRST (tight — only 12 tool calls total)
-  ## This budget exists because the 2026-05-26 dogfood died at
-  ## reviewer_gpt with context_length_exceeded after 5-10 grep
-  ## calls — tool-loop accumulation blows the ChatGPT-forfait
-  ## context window.
-  ##
-  ## Anchor protocol — do EXACTLY this at iteration start, then
-  ## commit to a verdict. The gap-fill is in the WORKING TREE,
-  ## UNCOMMITTED (the commit step runs only AFTER review passes), so
-  ## diff against HEAD — NOT `HEAD^...HEAD` (that shows the last commit,
-  ## i.e. the base, and makes you wrongly conclude "the gap-fill isn't
-  ## implemented", which loops the review forever instead of converging):
-  ##   1. `bash: git -C {{vars.workspace_dir}} diff HEAD --shortstat`
-  ##      (1 call → total lines changed)
-  ##   2. `bash: git -C {{vars.workspace_dir}} diff HEAD --name-only`
-  ##      (1 call → file list)
-  ##   3. Pick 2-3 files of interest from step 2. `read_file` each
-  ##      ONCE (3 calls max).
-  ##   4. Optional: one targeted `grep` per concern raised, max 2-3.
-  ##   5. Emit verdict.
-  ##
-  ## TOTAL: ~8 tool calls, well under the 12 cap. Going over the
-  ## cap → run dies → operator has to babysit. DO NOT re-enumerate
-  ## the diff with multiple grep calls — trust step 1+2.
-
-  Previous reviewer's verdict (other family, iteration
-  immediately before — empty on first iteration):
-  {{loop.review_loop.previous_output}}
-
-  Surfaces already audited in earlier iterations:
-  {{input.previous_scanned_areas}}
-
-  Items already pushed back by the fixer (DO NOT RE-RAISE
-  without new evidence):
-  {{input.prior_pushback}}
-
-  Pushback justification:
-  {{input.prior_pushback_justification}}
-
-  Produce a structured verdict:
-    - approved: true ONLY if the gap is fully closed, the
-      gap-fill is production-ready, and you have audited every
-      axis listed in your system prompt.
-    - family: "gpt" for this reviewer
-    - blockers: real blockers ON THE GAP-FILL only
-    - fix_plan: concrete fix plan for the blockers
-    - confidence: "low" / "medium" / "high"
-    - scanned_areas: files / axes you actually audited this
-      iteration (concise). Relayed to the next reviewer.
-
-prompt fix_system:
-  You are an expert developer fixing blockers raised by a
-  reviewer on the gap-closing changes that were just implemented
-  in this workflow run.
-
-  SCOPE:
-  1. Apply concrete code edits to fix the blockers reported in
-     your input. Stay within the gap-fill footprint — do NOT
-     refactor or "clean up" pre-existing code the gap spec
-     marked as already-in-place, even if you notice issues.
-  2. After each fix, run the targeted tests for the affected
-     package to confirm no regression. If the host project has
-     a top-level test task (whatever invocation the repo's CI
-     uses), run it before declaring success.
-
-  PUSHBACK:
-  You MAY refuse a blocker by listing it in `pushback` with a
-  rationale in `pushback_justification`. Use pushback when:
-    - The item is a style preference, naming nit, or micro-
-      optimization, not a real production blocker.
-    - The item targets pre-existing code outside the gap-fill
-      scope (the reviewer should not have flagged it — that
-      surface was in scope for an earlier run, not this one).
-    - The item contradicts the gap spec (e.g., reviewer asks
-      for behaviour the gap spec marked as out-of-scope, or
-      asks you to re-implement an item the spec marked as
-      already-implemented).
-  Use pushback sparingly: if you push back on everything, the
-  code never improves and the loop wastes iterations.
-
-  HUMAN ESCALATION:
-  If a blocker is genuinely ambiguous (multiple valid
-  approaches, missing spec), call the `ask_user` tool with
-  your precise question. Do NOT use this for technical
-  decisions you can make alone.
-
-  ADR-AUTHORING IS OUT OF SCOPE: the adr-cartograph (Adry) bot
-  owns ADR drafting and review for this lineage. Do NOT create
-  or update files under `docs/adr/` here. If your fix forces an
-  ADR-worthy decision, note it in your `summary` so the next
-  Adry run can pick it up.
-
-prompt fix_user:
-  Apply concrete fixes to the blockers below, in
-  {{vars.workspace_dir}}. Stay within the gap-fill scope (the
-  reviewer's user prompt — already in your conversation history,
-  including the gap spec — is the source of truth for what the
-  gap-fill covers).
-
-  Reported blockers:
-  {{input.blockers}}
-
-  Proposed fix plan:
-  {{input.fix_plan}}
-
-  For EACH blocker:
-    - If it is a real production-blocking issue on the
-      gap-fill: read the file, apply the fix, run the
-      relevant tests.
-    - If it is NOT blocking (style preference, micro-opt) OR
-      it targets pre-existing code outside the gap-fill scope:
-      add the exact item to `pushback` with a clear rationale
-      in `pushback_justification`.
-
-  After applying fixes, STAGE everything: run
-  `git -C {{vars.workspace_dir}} add -A` so any NEW files are visible
-  to the next reviewer's `git diff HEAD` (it ignores untracked files —
-  an unstaged new file reads as "missing implementation" and blocks
-  convergence forever). Safe: the commit step re-stages its own list.
-
-  Output:
-    - applied: true if at least one fix was applied
-    - summary: summary of fixes applied
-    - pushback: refused items (empty if all fixed)
-    - pushback_justification: rationale for the pushback
+  Extra context / notes (empty = the spec speaks for itself):
+  {{vars.scope_notes}}
+
+  BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
+  establish it once cheaply, then skip what predates your work):
+  {{vars.baseline}}
+
+  Deterministic gate feedback from the PREVIOUS pass (empty on the first
+  pass; when present, the build/test tree was RED after your last pass —
+  FIX exactly what this shows before continuing the gap):
+  {{input.fail_log}}
+
+  Close the gap one missing item at a time — locate the seam → smallest
+  change → build → test → commit — until a fresh re-check of the spec
+  finds nothing missing. Read `git log` first to see what earlier passes
+  already landed. Then report the termination contract (gap_closed,
+  commits_this_pass, missing_remaining).
+
+## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
+## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
+## the repo's real build+test into <scratch_dir>/verify.sh; a DETERMINISTIC
+## tool node (verify_run) re-runs it and gates on the REAL exit code. No
+## language / package manager is named here — the gate stays universal while
+## the verdict stays deterministic. verify_build does NOT fix code: a RED gate
+## routes back to `campaign` (the one capable agent) to fix what it broke.
+
+prompt verify_system:
+  You are a release engineer. A gap-closing pass just applied changes to
+  this repository and committed them. Your single job: capture how THIS repo
+  builds and tests itself into a re-runnable script the deterministic gate
+  will execute. You do NOT change code.
+
+  STEPS:
+  1. Detect how THIS repo builds and tests itself — read the `verify-build`
+     skill. Use the repo's OWN toolchain (a task runner / Makefile target, a
+     package-manager test script, or a language build+test command),
+     HONOURING any pinned toolchain (version managers, lockfiles, devbox,
+     GOTOOLCHAIN). Do NOT assume a language.
+  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
+     (an OUT-OF-TREE scratch path, NOT inside the repo — create it first with
+     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND its tests
+     (or the closest fast equivalent) and exits non-zero on any failure. Keep
+     it to the commands a developer of THIS repo would run; no network-heavy
+     or destructive steps.
+  3. PRE-EXISTING failures: some repos are already red on the base tree,
+     before this run touched anything. Scope `verify.sh` to the build plus the
+     test targets the campaign's changes actually affect (package/module
+     level), so the gate measures THIS run's work and a red base can't absorb
+     it — and list any excluded pre-existing failures in your summary.
+  4. Run it ONCE to confirm the script itself is valid (the commands resolve).
+     You do NOT fix code here: if the build is RED because the campaign broke
+     something, the deterministic gate reports it and the campaign fixes it on
+     the next pass. Just make `verify.sh` faithfully run the repo's real
+     build+test.
+  5. If the repo genuinely has no build/test system (pure docs/config), write
+     a script that echoes that and exits 0, and say so.
+
+  A deterministic tool node RE-RUNS your script and gates the run on its real
+  exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh` exists
+  and reflects the repo's real build+test; summary = the command you settled
+  on and any pre-existing failures you scoped out.
+
+prompt verify_user:
+  Repository to verify: {{vars.workspace_dir}}
+
+  Capture the repo's real build + test into `{{vars.scratch_dir}}/verify.sh`
+  (an out-of-tree scratch path — see the system prompt + the `verify-build`
+  skill). Do NOT change code; the deterministic gate runs your script and the
+  campaign fixes any red on the next pass.
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
-## existing_state grounds the planner in the partial implementation
-## that already exists. Each field is a short list scoped to the gap
-## the run is closing — NOT a whole-repo survey. The plan node and
-## the implementer downstream consume it verbatim:
-##   - files_touched_so_far: the files the gap spec marked (and the
-##     survey confirmed) as part of the existing partial implementation
-##   - abstractions_in_place: the types / functions / packages the
-##     missing parts should attach to (the seams)
-##   - what_works: load-bearing files / behaviours the implementer
-##     MUST preserve (no churn unless directly required)
-##   - what_does_not_work: known gaps in the existing partial
-##     implementation that ARE in scope for this run
-##   - surveyed_paths: the paths the survey actually read, kept so
-##     the reviewer can cross-check coverage on later iterations
-schema existing_state:
-  files_touched_so_far: string[]
-  abstractions_in_place: string[]
-  what_works: string[]
-  what_does_not_work: string[]
-  surveyed_paths: string[]
+## campaign's input: the deterministic gate's failure log from the PREVIOUS
+## pass (empty on the first pass and on a green-but-more-work continuation).
+schema campaign_input:
+  fail_log: string
 
-schema review_input:
-  prior_pushback: string[]
-  prior_pushback_justification: string
-  ## previous_scanned_areas accumulates the audit surfaces from
-  ## ALL prior reviewer iterations (both families). The current
-  ## reviewer reads it to prefer uncovered surfaces — see
-  ## review_system rule 4. Empty on the first iteration.
-  previous_scanned_areas: string[]
-
-schema verdict_output:
-  approved: bool
-  ## family is enum-constrained: a model that hallucinates a third
-  ## value (we observed gpt-5.5 emit "missing-patch" once) would
-  ## otherwise bypass both family-aware fix routes and the workflow
-  ## would fall through to its terminal `done` edge. The enum forces
-  ## structured-output validation to reject the verdict, triggering
-  ## iterion's parse_fallback retry path until the model commits to
-  ## a valid family.
-  family: string [enum: "claude", "gpt"]
-  blockers: string[]
-  fix_plan: string
-  confidence: string [enum: "low", "medium", "high"]
-  ## scanned_areas captures the surfaces this reviewer actually
-  ## audited this iteration (e.g. "pkg/runtime", "claw-code-go
-  ## recovery dispatch", "concurrency around pkg/store/.lock").
-  ## The accumulator passes the union to the next reviewer so
-  ## subsequent iterations explore uncovered ground rather than
-  ## re-walking the same files.
-  scanned_areas: string[]
-
-## streak_check relays approved/blockers/fix_plan/family from its
-## input (the current reviewer's verdict) and computes a
-## deterministic stop signal based on the previous reviewer's
-## verdict. The `family` passthrough lets the fix routing pick the
-## same-family fixer so the fix session can inherit the reviewer's
-## context (and benefit from prompt-cache hits).
-##
-## Soft-approval: a low-confidence rejection (`approved=false` AND
-## `confidence=="low"`) is treated as approved for streak/fix
-## routing purposes. The reviewer's own uncertainty isn't a strong
-## enough signal to trigger a fix cycle and risk a false-positive
-## loop.
-##
-## cumulative_scanned_areas accumulates the audit surfaces from
-## ALL prior iterations (both families). The accumulator pattern
-## relies on `outputs.streak_check` resolving to the PREVIOUS
-## iteration's output during the current expression evaluation
-## (rs.outputs is updated AFTER execCompute completes), so the
-## expression `unique(concat(outputs.streak_check.cumulative_scanned_areas,
-## input.scanned_areas))` produces a union, tail-capped (last 40) so a reviewer's input stays bounded (avoids context_length_exceeded on long runs).
-## On the first iteration `outputs.streak_check` is nil → concat
-## treats it as empty → result == unique(input.scanned_areas).
-schema streak_state:
-  stop: bool
-  approved: bool
-  family: string
-  blockers: string[]
-  fix_plan: string
-  cumulative_scanned_areas: string[]
-
-schema fix_input:
-  blockers: string[]
-  fix_plan: string
-
-schema fix_output:
-  applied: bool
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the engine
+## keys convergence on. gap_closed is the done-oracle (a fresh re-check of the
+## gap spec finds every missing item delivered); the rest is observability.
+schema campaign_output:
+  gap_closed: bool
+  commits_this_pass: int
+  missing_remaining: string
+  needs_human: bool
+  human_note: string
   summary: string
-  pushback: string[]
-  pushback_justification: string
 
-schema commit_output:
-  type: string [enum: "feat", "fix", "refactor", "test", "docs", "chore"]
-  scope: string
-  subject: string
-  full_message: string
-  files: string[]
-  committed: bool
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
 
-schema commit_tool_input:
-  full_message: string
-  files: string[]
-  workspace_dir: string
+## verify_result is the DETERMINISTIC gate's contract. `passed` is set from
+## the real process exit code of re-running <scratch_dir>/verify.sh — NOT an
+## LLM judgment. `skipped` is true only when no verify script was produced
+## (treated as pass but surfaced loudly, never a silent façade).
+schema verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
 
-schema commit_result:
-  success: bool
-  output: string
+## gate is the deterministic continuation decision. converged = the tree is
+## green AND the campaign reported the gap fully closed. fail_log relays the
+## real build failure to the campaign on a RED pass (empty when green).
+schema gate_state:
+  converged: bool
+  fail_log: string
 
-## ─── Nodes : Feature Dev Phase ──────────────────────────────────
+## ─── Nodes ──────────────────────────────────────────────────────
 
-## survey_existing is the gap-driven entry point. It grounds the
-## planner in the partial implementation referenced by the gap spec
-## by reading the implemented surfaces and emitting an
-## `existing_state` record. Read-only: the prompt already enforces
-## "no mutating tools", and `readonly: true` adds the runtime guard.
-## session: fresh — this is the first agent in the workflow, so there
-## is no parent session to inherit from. plan inherits from here.
-agent survey_existing:
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset (read/edit/shell/git) so it works exactly like a native Claude
+## Code session: a brief survey of the seams, a living todo of missing
+## items, one verified commit per item, in stride. session: fresh — a fresh
+## pass re-derives its todo from the spec + `git log` (git is the durable
+## state). reasoning_effort high, not max: the productive-session data says
+## the working SHAPE, not the model tier, is the lever (framing >
+## capability). interaction: human — the agent may pause for the operator
+## on a genuine mid-flight decision (kept rare by the contract). Board
+## capabilities power the end-of-pass findings handoff (out-of-scope
+## observations → inbox), replacing v1's prepare_commit handoff.
+agent campaign:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  ## Bounded session — see act's tool_max_steps note. Survey is a
-  ## read-only sweep scoped to the gap spec, so a tighter cap is fine.
-  tool_max_steps: 50
-  system: survey_existing_system
-  user: survey_existing_user
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
   session: fresh
-  readonly: true
-  output: existing_state
-  ## Persist the survey as a versioned artifact (studio Artifact tab +
-  ## `iterion report`) — the operator can read it independently of the
-  ## downstream plan/act/commit chain.
-  publish: existing_state_artifact
-
-agent plan:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  ## Bounded session — see act's tool_max_steps note. Plan is read-only
-  ## exploration, so a tighter cap is fine.
-  tool_max_steps: 60
-  system: plan_system
-  user: plan_user
-  ## session: inherit from survey_existing — the survey already read
-  ## the implemented surfaces; plan benefits from the cached file
-  ## context and the reasoning chain. plan_system re-asserts the
-  ## read-only contract for this turn.
-  session: inherit
-  ## Persist the plan as a versioned artifact (studio Artifact tab +
-  ## `iterion report`) — no extra LLM call; publish only redirects the
-  ## already-computed output. `act` still inherits the plan via the session.
-  publish: plan_artifact
-
-agent act:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  ## Bound the agentic session (maps to claude --max-turns). Unbounded, a
-  ## high/max-effort implementer accretes tool-result context until the CLI
-  ## dies ("session ended without result message" — observed ~553 tool
-  ## calls, then a doomed resume that wedged in a tool-error loop).
-  ## error_max_turns is now a graceful partial stop (see
-  ## pkg/backend/delegate/claude_code.go), so the alternating review/fix
-  ## loop completes anything this cap truncates instead of crashing.
-  tool_max_steps: 120
-  system: act_system
-  user: act_user
-  session: inherit
-
-agent simplify:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  ## Bounded session — see act's tool_max_steps note.
-  tool_max_steps: 50
-  user: simplify_user
-  session: inherit
-
-## ─── Nodes : Commit ─────────────────────────────────────────────
-
-## prepare_commit forks the simplify session so it inherits the
-## full gap-fill context (survey, plan, implementation, simplification).
-## Read-only: it runs `git status` / `git diff HEAD` to identify
-## the file set, then emits a structured commit plan (semantic
-## message + files to stage). It never stages or commits.
-##
-## The downstream `tool commit_changes` does the deterministic
-## `git add -- <files> && git commit -m <msg>`. Splitting intent
-## (this node) from execution (the tool) means the structured
-## output IS the audit record — the operator can replay or
-## inspect what was supposed to be committed independently of
-## what `git log` shows.
-agent prepare_commit:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  output: commit_output
-  system: prepare_commit_system
-  user: prepare_commit_user
-  session: fork
-  readonly: true
+  interaction: human
   capabilities: [board.read, board.create]
 
-## commit_changes is a deterministic shell tool — no LLM. It
-## stages exactly the file list produced by prepare_commit (via
-## `git add -- <files>`, leveraging iterion's string[]
-## substitution from pkg/backend/model/executor.go's
-## shellEscapeValue) and commits with the semantic message. The
-## guard `git diff --cached --quiet || git commit` skips the
-## commit if `git add` ended up staging nothing — e.g. when the
-## file list resolved to paths that were already at HEAD.
-tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -- {{input.files}} && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}})"
-  input: commit_tool_input
-  output: commit_result
-
-## ─── Nodes : Review / Fix Loop ──────────────────────────────────
-
-router alt:
-  mode: round_robin
-
-judge reviewer_claude:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  ## Reviewer effort is DECOUPLED from the implementer's effort
-  ## (ITERION_VIBE_EFFORT_CLAUDE drives plan/act/fix) and defaults to
-  ## MEDIUM. A max-effort reviewer is pathologically thorough — it always
-  ## finds or re-raises *some* blocker, so the "two consecutive
-  ## cross-family approvals" gate never closes and the loop oscillates to
-  ## the review_loop bound (observed: a spend-cap run ground ~5h / ~$47 /
-  ## 9+ rounds at max without converging, even flagging a non-compiling
-  ## test a fixer had just added). Medium keeps the reviewer honest about
-  ## REAL production issues without the false-positive churn. This is the
-  ## reliable convergence dial — tune reviewer strictness here, keep the
-  ## implementer at high/max separately.
-  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-medium}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_claude
-  session: fresh
-  ## When the LLM hits genuine uncertainty (ambiguous spec, missing
-  ## context, impossible-to-decide trade-off), it can escalate to
-  ## the human running the CLI by emitting `_needs_interaction:
-  ## true` + `_interaction_questions: {...}` in its JSON output.
-  ## The runtime catches this, pauses, prompts the dev in their
-  ## terminal, and re-invokes the reviewer with the answer mapped
-  ## into its input — preserving session continuity.
-  interaction: human
-
-judge reviewer_gpt:
-  ## Explicit backend pin: model "openai/gpt-5.5" only works via the
-  ## claw backend. Without this, the auto-resolver falls back to
-  ## ITERION_BACKEND_PREFERENCE (default "claude_code,claw") and
-  ## routes the node through claude_code, which doesn't recognise
-  ## openai/* models — the agent returns a meta-error string instead
-  ## of the structured verdict and the schema validator fails the run.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  ## Reviewer effort knob, shared with reviewer_claude via
-  ## ITERION_VIBE_EFFORT_REVIEW (default MEDIUM) — see reviewer_claude for
-  ## the convergence rationale. Medium is also the safe ceiling on the
-  ## ChatGPT-forfait gpt-5.5 endpoint: "high" reserves enough reasoning
-  ## tokens to blow the per-call cap when combined with non-trivial tool
-  ## output (mirrors docs-refresh's 822ec4ac). If you raise
-  ## ITERION_VIBE_EFFORT_REVIEW above medium, watch the gpt-5.5 cap.
-  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-medium}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_gpt
-  session: fresh
-  ## claw backend uses snake_case tool names. Without these the
-  ## reviewer can't read the workspace and produces a
-  ## "no filesystem access" verdict — the claw runtime exposes
-  ## these via tool.RegisterClawBuiltins.
-  tools: [bash, read_file, glob, grep]
-  ## tool_max_steps: 30 → 12. With the build_diff_manifest output
-  ## as the reviewer's primary input, the tool budget is purely for
-  ## spot-checks against specific files. Tighter cap forces the LLM
-  ## to commit to a verdict instead of re-enumerating the diff via
-  ## grep (the loop pattern that hit context_length_exceeded on
-  ## the 2026-05-26 issue #5 dogfood).
-  tool_max_steps: 12
-  interaction: human
-
-## Deterministic streak detector.
-##
-## stop=true iff the current AND previous reviewers (opposite
-## families) both APPROVED, where "approved" is HIGH-CONFIDENCE-
-## GATED: a rejection still counts as approval unless it carries a
-## `confidence: high` blocker. Rationale — in an autonomous loop
-## only high-confidence, production-breaking blockers should hold
-## up the ship: medium/low concerns are recorded in scanned_areas
-## but don't gate, because (a) the operator reviews the final diff
-## and (b) two independent reviewers almost always surface SOME
-## medium nit each round, so gating on medium makes "two
-## consecutive cross-family approvals" statistically unreachable
-## (the oscillation that ground a spend-cap run ~5h/$47 without
-## converging). High-confidence blockers still reset the streak
-## and route to the same-family fixer.
-##
-## The `approved` passthrough field is the same high-confidence-
-## gated value, so the downstream `when approved` edge keeps
-## alternating WITHOUT invoking the fixer on medium/low concerns;
-## only a `confidence: high` blocker flips approved=false and
-## triggers a fix. That is what keeps the loop converging.
-compute streak_check:
-  output: streak_state
-  expr:
-    stop: "(input.approved || input.confidence != 'high') && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
-    approved: "input.approved || input.confidence != 'high'"
-    family: "input.family"
-    blockers: "input.blockers"
-    fix_plan: "input.fix_plan"
-    cumulative_scanned_areas: "tail(unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas)), 40)"
-
-## Per-family fixers. Each one inherits the SAME-family reviewer's
-## session via `session: inherit` + `_session_id` mapping on the
-## edge — so the fixer reuses the prompt cache, the workspace files
-## already loaded, and the reviewer's reasoning chain. The result
-## is one session per loop iteration per family (not two), which
-## both shortens latency and dramatically reduces token cost:
-## without inheritance every fixer would re-scan the workspace.
-agent fix_claude:
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-item
+## session. high, not max: mechanical capture of the repo's build/test.
+agent verify_build:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  ## Bounded session — see act's tool_max_steps note.
-  tool_max_steps: 80
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  ## Same escalation contract as the reviewers — the fixer can ask
-  ## the dev a question (e.g. clarify the intent of an ambiguous
-  ## blocker) instead of guessing.
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  session: fresh
   interaction: human
 
-agent fix_gpt:
-  ## See reviewer_gpt comment — same backend pin rationale.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  ## claw needs the same read/write toolset the reviewer used so
-  ## the fixer can actually apply edits.
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 30
-  interaction: human
+## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
+## <scratch_dir>/verify.sh and reports the REAL exit code. No language /
+## package manager appears here — it executes whatever verify_build wrote, so
+## the gate stays universal while the verdict stays deterministic. python3 for
+## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
+tool verify_run:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+import os, subprocess, json
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+script = os.path.join(scratch, 'verify.sh')
+if not os.path.exists(script):
+    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
+    raise SystemExit(0)
+rc = 0
+out = ''
+try:
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
+    out = p.stdout or ''
+    rc = p.returncode
+except subprocess.TimeoutExpired as e:
+    out = (e.output or '') + chr(10) + '[verify timed out after 1500s]'
+    rc = 124
+except Exception as e:
+    out = 'verify_run could not execute the script: ' + str(e)
+    rc = 1
+try:
+    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
+        lf.write(out)
+except OSError:
+    pass
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: verify_result
+
+## gate — the deterministic continuation decision. Reads the real gate result
+## (outputs.verify_run.passed) AND the campaign's termination output
+## (outputs.campaign.gap_closed), both fresh in the loop BODY (the same
+## discipline whole_improve_loop's gate uses to read the loop-head safely).
+## converged = green AND the gap is fully closed. On a RED pass fail_log
+## carries the real build failure to the campaign; empty when green. No LLM,
+## no shell.
+compute gate:
+  output: gate_state
+  expr:
+    converged: "outputs.verify_run.passed && outputs.campaign.gap_closed"
+    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow feature_gap_fill:
-  entry: survey_existing
+  ## Entry is the campaign itself — the mission starts working IMMEDIATELY
+  ## (the opening survey is the campaign's own first move, not a blocking
+  ## upstream node). A re-dispatch's campaign reads `git log`, re-checks the
+  ## spec, and continues from the commits earlier passes banked.
+  entry: campaign
 
-  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/.
-  ## This shields the user's main working tree from any mutations the
-  ## workflow makes, makes prepare_commit's job structurally correct (no
-  ## WIP visible to misclassify), and turns failure cleanup into a
-  ## one-line `git worktree remove`. See docs / worktree-runs-plan.md
-  ## for the artifact-pollution caveat: even in a fresh worktree, the
-  ## dev phase can introduce un-gitignored build outputs, so prepare_commit
-  ## still has to discriminate — but on a much smaller noise floor.
+  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/. The bot
+  ## mutates code AND commits; the worktree + finalize FF guarantees: (a) the
+  ## operator's main checkout is untouched during the run, (b) on convergence
+  ## the commits land on a persistent branch `iterion/run/<friendly-name>` AND
+  ## fast-forward the operator's currently-checked-out branch (best-effort,
+  ## skipped with a warning on conflict).
   worktree: auto
 
-  ## Container isolation on top of the worktree. The `act` / `simplify`
-  ## phase runs arbitrary build/test commands (`go test`, `npm install`,
-  ## `cargo build`, …) that the bot infers from the project — the worktree
-  ## alone doesn't sandbox those.
-  ##
-  ## Why inline mode (not `mode: auto`)?
-  ## The iterion-sandbox-{slim,full} images don't ship `claude` — every
-  ## claude_code agent here shells out to the CLI, so post_create MUST
-  ## install it. iterion currently drops post_create / mounts / env when
-  ## `mode: auto` falls back to the default image (pkg/runtime/sandbox.go),
-  ## so we can't combine "auto fallback" with "install claude into the
-  ## container". Inline mode lets us pin both the image and the bootstrap
-  ## script. Operators wanting a different image just edit this block —
-  ## the inline `image:` ref is the single override point.
-  ##
-  ## Mounting ~/.claude carries the host's OAuth / ANTHROPIC_API_KEY
-  ## credentials so the in-container CLI doesn't need a fresh login
-  ## each run. Writable because claude_code persists per-session
-  ## transcripts under ~/.claude/projects/<hash>/<session>.jsonl and
-  ## iterion's formatter-pass resumes them via `claude --resume`.
+  ## Container isolation. campaign runs the repo's build, tests, linters and
+  ## git; verify runs the build/test. Inline sandbox config (vs `mode: auto`)
+  ## so the post_create that installs claude inside the container is honoured
+  ## — see feature_dev/main.bot for the full rationale.
   sandbox:
-    ## `iterion-sandbox-full` = slim + Go + Python 3 + pnpm. Pulled
-    ## once, cached locally. Operators with a different toolchain
-    ## (Java, Ruby, Elixir, …) point this at their own image — or
-    ## switch to slim and add a `devbox install` step in post_create
-    ## with the workspace's devbox.json.
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "1000:1000"
     mounts: ["type=bind,source=${localEnv:HOME}/.claude,target=/home/devbox/.claude,consistency=cached"]
     env:
       CLAUDE_CONFIG_DIR: "/home/devbox/.claude"
-    ## post_create installs claude_code if absent (the sandbox images
-    ## don't ship it). Kept minimal on purpose: anything heavier (a
-    ## `devbox install` pulling Nix packages for the workspace's
-    ## toolchain, an `npm install` against the project's
-    ## package.json, etc.) belongs in the agent's `act` step where
-    ## it's observable + has the run's budget rather than dying
-    ## silently here on a post_create timeout.
-    ##
-    ## Gate on `claude --version` (runs the binary), NOT `command -v
-    ## claude` (mere existence): `npm install -g` occasionally exits 0
-    ## leaving a broken/partial binary (observed: a `claude.exe`
-    ## symlink whose target wasn't fully written → `exec format
-    ## error` mid-run). `command -v` would see that broken claude and
-    ## skip the reinstall forever. We also VERIFY after install and
-    ## exit 1 on failure so a still-broken claude fails post_create
-    ## (a clean sandbox-setup error the dispatcher retries with a
-    ## fresh container) instead of failing cryptically on the first
-    ## claude_code node. See native:c6d93a2a.
     post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 1
-    max_duration: "4h"
-    max_cost_usd: 120
+    max_duration: "2h"
+    max_cost_usd: 60
 
   compaction:
     threshold: 0.9
     preserve_recent: 8
 
-  ## ═══ Phase 1 : Survey → Plan → Act → Simplify ═════════════════
-  ## All four nodes share one Claude Code session via
-  ## `session: inherit` on plan/act/simplify. Survey emits the
-  ## `existing_state` record (also pulled into plan's user prompt
-  ## as `{{outputs.survey_existing}}`); plan emits text only;
-  ## act executes the plan in the same conversation; simplify
-  ## invokes the native /simplify skill on the freshly-modified
-  ## code.
-  survey_existing -> plan with {
-    _session_id: "{{outputs.survey_existing._session_id}}"
-  }
-  plan -> act with {
-    _session_id: "{{outputs.plan._session_id}}"
-  }
-  act -> simplify with {
-    _session_id: "{{outputs.act._session_id}}"
-  }
+  ## Each pass: the campaign closes missing items (committing each in
+  ## stride), then the deterministic build/test gate re-checks the tree.
+  campaign -> verify_build
+  verify_build -> verify_run
+  verify_run -> gate
 
-  ## Hand off to the alternating review/fix loop. Reviewers run
-  ## with `session: fresh` (re-scan the workspace independently)
-  ## so they aren't biased by the dev session's reasoning chain.
-  simplify -> alt
-
-  ## ═══ Phase 2 : Alternating Review / Fix Loop ══════════════════
-  ## Verbatim from whole_improve_loop/main.bot (entry was alt).
-  ##
-  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
-  ## Each reviewer receives the OTHER family's most recent fixer
-  ## pushback so it knows which items to skip — the alternation
-  ## guarantees the cross-family pushback comes from the previous
-  ## iteration's fixer of the opposing family. On the first
-  ## iteration both `outputs.fix_*` are empty → fields render as
-  ## empty strings and the prompt's "ne re-flague pas ces items"
-  ## section is harmless.
-  alt -> reviewer_claude with {
-    prior_pushback: "{{outputs.fix_gpt.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
+  ## Converged (green AND the campaign reports the gap fully closed) → done.
+  gate -> done when converged
+  ## Not converged → another campaign pass. RED carries the failure log so the
+  ## agent fixes what it broke; green-but-more-work carries an empty log so the
+  ## agent simply continues the gap. This closes the single declared loop
+  ## (campaign→verify_build→verify_run→gate→campaign); the loop-back reads
+  ## outputs.gate.fail_log (a BODY node — never the loop-head campaign's own
+  ## output on its back-edge, which would read a loop-entry-frozen value).
+  gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
+    fail_log: "{{outputs.gate.fail_log}}"
   }
-  alt -> reviewer_gpt with {
-    prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
-  }
-
-  ## Both reviewers feed into streak_check. The loop is attached
-  ## here so the runtime snapshots the reviewer's verdict as
-  ## `loop.review_loop.previous_output` for the NEXT iteration to
-  ## inspect — eliminating the manual `previous_verdict` relay.
-  reviewer_claude -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_claude.approved}}",
-    family: "{{outputs.reviewer_claude.family}}",
-    blockers: "{{outputs.reviewer_claude.blockers}}",
-    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}",
-    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}"
-  }
-  reviewer_gpt -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_gpt.approved}}",
-    family: "{{outputs.reviewer_gpt.family}}",
-    blockers: "{{outputs.reviewer_gpt.blockers}}",
-    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}",
-    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
-  }
-
-  ## ═══ Phase 3 : Commit on streak success ═══════════════════════
-  ## Cross-family double-approval reached. prepare_commit (forked
-  ## from simplify) emits the structured commit intent;
-  ## commit_changes deterministically applies it.
-  streak_check -> prepare_commit when stop with {
-    _session_id: "{{outputs.simplify._session_id}}"
-  }
-
-  prepare_commit -> commit_changes with {
-    full_message: "{{outputs.prepare_commit.full_message}}",
-    files: "{{outputs.prepare_commit.files}}",
-    workspace_dir: "{{vars.workspace_dir}}"
-  }
-
-  commit_changes -> done
-
-  ## Otherwise approved (no streak yet, OR a non-high-confidence
-  ## rejection treated as soft-approved, OR rejection without concrete
-  ## blockers — see below): keep alternating without fixing.
-  ## Expression form is shown here both to demonstrate the new
-  ## syntax and so future authors can extend the predicate (e.g.
-  ## tighten the soft-approval condition) by enriching the
-  ## quoted expression.
-  ##
-  ## NOTE: this edge does NOT carry `review_loop` so the loop
-  ## counter (and the previous_output snapshot) is incremented
-  ## ONCE per cycle on the reviewer→streak_check edge above. The
-  ## cycle is still bounded because that edge IS loop-bearing.
-  streak_check -> alt when "approved"
-
-  ## High-confidence rejection WITH concrete blockers: route
-  ## to the SAME-family fixer so it can inherit the reviewer's
-  ## session (one session per iteration per family — see
-  ## fix_claude / fix_gpt comments). `_session_id` reads directly
-  ## from the most recent reviewer output rather than going through
-  ## streak_check, because compute passthrough strips the
-  ## underscore-prefixed metadata fields.
-  ##
-  ## The `length(blockers) > 0` guard avoids invoking the fixer
-  ## when the reviewer rejected on coverage grounds alone (e.g.
-  ## "cumulative coverage is partial at iteration 0/15") with no
-  ## production-blocking issue identified. In that case the fixer
-  ## has nothing to fix — burning a session round-trip and tokens
-  ## (~$0.15/$0.43 observed in vibe_review run_1777560043656) only
-  ## to push back. The unconditional alt fallthrough below picks
-  ## those up so alternation continues without a wasted fix call.
-  ##
-  ## Edge order matters: iterion evaluates conditional edges top-
-  ## down, first match wins. We list both family-specific fixers
-  ## before the unconditional `done` fallthrough so loop-exhaustion
-  ## still terminates cleanly.
-  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_claude._session_id}}"
-  }
-  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_gpt._session_id}}"
-  }
-
-  ## Recovery cycle uses a separate loop name so its counter doesn't
-  ## interfere with the review_loop snapshot semantics. Sized large
-  ## enough to allow review_loop to be the binding constraint. Both
-  ## fixers share the loop counter — total fix attempts across both
-  ## families are capped at 20.
-  fix_claude -> alt as recovery_loop(20)
-  fix_gpt    -> alt as recovery_loop(20)
-
-  ## Loop exhaustion fallbacks: when a bounded loop hits its limit
-  ## the loop-bearing edges above are skipped and execution falls
-  ## through to these terminal edges. Route to `fail`, NOT `done`:
-  ## exhausting the review/recovery loop WITHOUT streak_check ever
-  ## firing `stop` means no convergence and no commit — reporting
-  ## `finished` there is a silent empty success, and the dispatcher
-  ## would mark the ticket done/review as if work landed. `fail` is
-  ## non-resumable so a deterministic non-convergence isn't
-  ## re-dispatched in a loop. Legit success is
-  ## streak_check (stop) → prepare_commit → commit_changes → done.
-  reviewer_claude -> fail
-  reviewer_gpt    -> fail
-  fix_claude      -> fail
-  fix_gpt         -> fail
-  ## streak_check's catch-all routes back to `alt` (not a terminal) so
-  ## an unmatched conditional state (e.g. a hallucinated family that
-  ## escapes the enum, or any future expression edge case) keeps
-  ## the loop cycling rather than silently terminating. The bounded
-  ## review_loop counter on the reviewer→streak_check edges still
-  ## guarantees the workflow eventually exits — exhaustion routes
-  ## via the reviewer→fail fallthrough above.
-  streak_check    -> alt
+  ## continuation_loop exhausted (max_passes hit while items still remain) →
+  ## finish anyway, shipping what is banked (every committed item is real,
+  ## landed work; the last campaign_output's missing_remaining tells the
+  ## operator what is left). Unconditional fallthrough after the loop-back
+  ## retries are spent.
+  gate -> done

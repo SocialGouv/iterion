@@ -103,6 +103,12 @@ export type { SpinnerProps, SpinnerSize } from "./Spinner";
 export { LiveDot } from "./LiveDot";
 export type { LiveDotProps, LiveDotTone, LiveDotSize } from "./LiveDot";
 
+export { Stat } from "./Stat";
+export type { StatProps, StatTone, StatSize } from "./Stat";
+
+export { Meter } from "./Meter";
+export type { MeterProps, MeterTone, MeterSize } from "./Meter";
+
 export { CopyButton } from "./CopyButton";
 export type { CopyButtonProps } from "./CopyButton";
 

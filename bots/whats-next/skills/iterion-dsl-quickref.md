@@ -115,6 +115,9 @@ agent w:
   interaction_prompt: ask_msg   # used when interaction is llm or llm_or_human
   interaction_model: "openai/gpt-5.5"
   capabilities: [board.read, board.create, board.move]   # opens MCP-gated tools
+  skills: ["changelog-writer", "house-style"]   # skill-library refs (quote kebab names);
+                                # mirrored into .claude/skills/ + listed under a ## Skills
+                                # prompt section (also settable workflow-wide). docs/skills-library.md
   # watch.subscribe / watch.unsubscribe (claw backend): mcp.iterion_watch.*
   # — subscribe a run to a board issue; the runtime queues a message to the
   #   run whenever that issue changes state (track dispatched tickets)

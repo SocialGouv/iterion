@@ -33,62 +33,67 @@ func (s Scenario) FixturePath() string {
 }
 
 // Scenarios returns the wired golden scenarios for this iteration:
-// feature_dev, whats-next (the assignee-bearing bot, two scenarios), and
-// docs-refresh. The claw-backed reviewer/proposer nodes are the cheapest to
-// record live; emit_action (claude_code + board MCP + filesystem) is the
-// headline created_issues scenario and is the heaviest to re-record.
+// feature_dev + docs-refresh (the ADR-058 v2 campaign termination
+// contracts — their claude_code whole-session `campaign` nodes are
+// impractical to record live (cost, side-effects, interaction: human),
+// so those fixtures are hand-authored seeds frozen against the
+// termination schema; see the _note field) and whats-next (v2 — one
+// conversational nexie turn, recorded live: claude_code + board MCP).
 func Scenarios() []Scenario {
 	return []Scenario{
 		{
-			Bot:            "feature-dev",
-			Name:           "reviewer_gpt_approve",
-			Node:           "reviewer_gpt",
-			CheckAssignees: true, // verdict_output carries no assignees; scan must stay clean
+			Bot:              "feature-dev",
+			Name:             "campaign_feature_complete",
+			Node:             "campaign",
+			RequiredNonEmpty: []string{"summary"},
+			CheckAssignees:   true, // campaign_output carries no assignees; scan must stay clean
 			Vars: map[string]string{
 				"feature_prompt": "add Answer() int returning 42 in answer.go",
 			},
 			Input: map[string]interface{}{
-				"prior_pushback":               []interface{}{},
-				"prior_pushback_justification": "",
-				"previous_scanned_areas":       []interface{}{},
+				"fail_log": "",
 			},
 		},
 		{
-			Bot:            "whats-next",
-			Name:           "propose_roadmap_basic",
-			Node:           "propose_roadmap",
-			CheckAssignees: true, // roadmap_item.assignee must resolve to a real bot or be ""
-			Vars: map[string]string{
-				"scope_notes": "",
-			},
-			Input: map[string]interface{}{
-				"exploration":     map[string]interface{}{"observations": []interface{}{}},
-				"user_priorities": "improve test coverage and developer tooling",
-				"workspace_dir":   "",
-			},
-		},
-		{
+			// whats-next v2: ONE conversational agent. The golden freezes a
+			// full nexie turn (reply + close + quick_replies + dispatched_ids)
+			// against the nexie_turn schema; the assignee scan keeps any bot
+			// names it mentions honest (it routes work via set_bot, so a
+			// hallucinated bot name is the expensive failure).
 			Bot:              "whats-next",
-			Name:             "emit_action_basic",
-			Node:             "emit_action",
-			RequiredNonEmpty: []string{"created_issues"},
+			Name:             "nexie_turn_basic",
+			Node:             "nexie",
+			RequiredNonEmpty: []string{"reply"},
 			CheckAssignees:   true,
+			Vars: map[string]string{
+				"scope_notes":     "",
+				"initial_message": "Quels sont les quick wins sur ce board ? Recommande-m'en un.",
+			},
 			Input: map[string]interface{}{
-				"roadmap":         map[string]interface{}{},
-				"user_priorities": "improve test coverage and developer tooling",
-				"workspace_dir":   "",
-				"selected_titles": []interface{}{},
+				"operator_message": "Quels sont les quick wins sur ce board ? Recommande-m'en un.",
 			},
 		},
 		{
-			Bot:            "docs-refresh",
-			Name:           "reviewer_gpt_approve",
-			Node:           "reviewer_gpt",
-			CheckAssignees: true, // docs-refresh routes no work to bots; scan must stay clean
+			Bot:              "docs-refresh",
+			Name:             "campaign_docs_aligned",
+			Node:             "campaign",
+			RequiredNonEmpty: []string{"summary"},
+			CheckAssignees:   true, // docs-refresh routes no work to bots; scan must stay clean
 			Input: map[string]interface{}{
-				"prior_pushback":               []interface{}{},
-				"prior_pushback_justification": "",
-				"previous_scanned_areas":       []interface{}{},
+				"total_docs":                  float64(3),
+				"total_anchors":               float64(12),
+				"verified_anchors":            float64(11),
+				"drifted_anchors":             float64(1),
+				"unverifiable_anchors":        float64(0),
+				"manifest_coverage_pct":       float64(91),
+				"coverage_target_pct":         float64(80),
+				"drift_candidates":            []interface{}{},
+				"docs_with_drift_count":       float64(1),
+				"chunked":                     false,
+				"chunk_doc_count":             float64(1),
+				"max_review_chunk_docs":       float64(30),
+				"recently_changed_code_files": []interface{}{},
+				"fail_log":                    "",
 			},
 		},
 	}

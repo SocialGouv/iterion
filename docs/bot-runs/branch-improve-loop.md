@@ -1,5 +1,194 @@
 # Billy — branch-improvement validation
 
+## 2026-07-09 — first CLOUD runs: PR-webhook → Billy on the devbox runner (runs 019f43a3 / 019f43c7 / 019f4551)
+
+- Status: **validated (cloud E2E) — 3 engine/bot gaps found live, all fixed in-session.**
+  The full production trigger chain ran for the first time: real GitHub PR
+  ([#84](https://github.com/SocialGouv/iterion/pull/84), `Fixes #83`) → forge
+  webhook (`selectForgePRBot` routes Billy, not Revi) → NATS queue → devbox
+  runner pod (uid 1000) → campaign/verify/gate.
+- Versions: bot @ `1d076a618` (adds the push-back tail) · iterion `:edge`
+  36fb786b5→56a5680f1 · runner image `iterion-runner-devbox:edge` ·
+  webhook `d291059c` (bots review-pr + branch-improve-loop + feature-dev,
+  block_fork_prs, author allowlist Viczei+devthejo).
+- Method: PR-open/reopen events on SocialGouv/iterion#84 (a real fix: the
+  vv0.32.0/vmain version-injection bug). Re-triggers need a NEW head sha +
+  close/reopen — the delivery idem key is (PR#, head sha) and launch-success
+  rows are terminal; `/billy` comments from the connection identity are
+  loop-guard-filtered (self).
+- Result per run:
+  - `019f43a3` **failed in 17s**: Billy's inline `sandbox:` block → kubernetes
+    driver → `ITERION_POD_IP env var is empty` (the chart deliberately doesn't
+    provision sibling-pod sandboxing). → **Fix 1** `36fb786b5`:
+    `ITERION_SANDBOX_OVERRIDE=none` (CLI-strength, beats the workflow block;
+    chart auto-sets it when `runner.sandbox.enabled=false`) — the runner pod IS
+    the isolation boundary.
+  - `019f43c7` **finished, 1-pass converged (~7 min)**: verify.sh settled on
+    `devbox run -- go build ./...` + targeted tests — the repo's devbox-pinned
+    Go toolchain, i.e. the devbox-first-class runner goal proven live. campaign
+    caught a REAL defect (the PR's new test file wasn't gofmt-clean — CI lint
+    would have rejected it) and committed the fix (`ef540115`)… which **died
+    with the pod-ephemeral worktree**: `mr_gate` open_mr=false went straight to
+    done. → **Fix 2** `1d076a618`: deterministic push-back — webhook passes
+    `push_branch` (PR source branch); `mr_gate → push_auth_probe →
+    push_back_tool` (no-LLM python3 push, rev-list oracle so a
+    converged-no-commits pass no-ops, token redacted from failures).
+  - `019f4551` **finished; new path routed** (`…gate>mr_gate>push_auth_probe>done`)
+    but the probe found NO credential: `materializeFileSecretsNoSandbox` gated
+    on the STATIC `wf.Sandbox != nil` — under the override the run executes
+    in-pod and nobody materialized `forge_token` (the launch HAD sealed it into
+    the bundle: the stored secret's last_used_at == launch instant). → **Fix 3**
+    `56a5680f1`: gate on the RESOLVED decision via new
+    `runtime.WorkflowSandboxActive(wf, override, default)`.
+- Value: the run 019f43c7 catch (gofmt) was real and manually reapplied as
+  `a2cf464a9`; the three fixes harden the entire cloud-runner class of bots
+  (any bot with a sandbox block + file secrets), not just Billy.
+- Findings / misses: secret-resolution failures are SILENT at several layers
+  (`buildGenericResolution` ok=false without a log; publisher skips empty
+  plaintexts) — an erreurs-explicites hardening candidate. CI race job flake:
+  `TestReconcileStalled_ForceReapsCtxIgnoringWorker` (pkg/dispatcher) failed on
+  56a5680f1, 5× green locally with -race — known concurrency-flake family.
+- Engine hardening: `36fb786b5` (+ chart 0.33.0, umbrella `3a20e24`),
+  `1d076a618`, `56a5680f1`; stale factory comment `afbdd6be3`.
+- Lessons for next run: consult the RESOLVED sandbox mode everywhere run
+  inputs depend on it; self-triggering a webhook from the connection identity
+  hits the loop-guard (use a fresh head sha + close/reopen, or another actor);
+  first devbox run per pod re-downloads the Nix toolchain (~2-4 min — the PVC
+  warm-store follow-on).
+
+### The issue → Featurly → PR half of the cycle (runs 019f4582 / 019f4590, fixes 4–6)
+
+Labeling an issue `implement` is meant to route to the implementer (Featurly)
+and open a PR that then re-triggers Billy — the other half of the loop. Two
+more gaps surfaced, both fixed live:
+
+- **Routing (fix 4, `2281a2eff`)**: a 3-bot webhook with no pinned default
+  routed `issues/labeled` to **review-pr** (run 019f4582), which stopped at
+  `diff_precheck` — an issue has no diff to review. `resolveReviewBot`'s
+  SelectBot→review-pr fallback is right for a PR delivery, wrong for an issue.
+  New `selectIssueLabeledBot` (pinned default → feature-dev → fallback), the
+  issue-path counterpart to `selectForgePRBot`, wired on GitHub+GitLab.
+  Validated: issue #86 → run **019f4590 = feature_dev**, and Featurly shipped a
+  genuine, high-quality feature (threaded a `*log.Logger` through the whole
+  generic-secret resolution path so silent credential drops become greppable —
+  the erreurs-explicites finding the debugging itself surfaced), build+test
+  green.
+- **Forge token on the board-launch path (fixes 5+6, `483e69a3f` + `9b339c999`)**:
+  Featurly implemented but `forge_auth_probe` found no `forge_token`, so it
+  never opened its PR (`secrets_ref` null). Root cause: an issue-labeled
+  delivery makes a **board card**, and the board coordinator
+  ([boarddispatch.go](../../pkg/server/boarddispatch.go)) launches via
+  `runs.Launch(BotID)` — which resolves generic secrets by (tenant, bot)
+  **binding**, NOT the webhook secret override (that only reaches the direct
+  webhook path). Forge provisioning set only the override; the tier-3 name
+  fallback misses (stored `forge_github_<conn>` ≠ workflow `forge_token`). Fix:
+  the orchestrator now upserts a per-bot `forge_token` binding at provision
+  (fix 5), reconciled even on an idempotent re-provision so an
+  already-provisioned integration is backfilled (fix 6). This is a general
+  cloud-BaaS fix: EVERY board-launched bot that pushes (Featurly, Billy on the
+  board path) needed it, not just this cycle.
+- Standing gap (deferred): fully zero-touch issue handling still needs the
+  cloud dispatcher (the webhook `issues` path is labeled-only by design); and
+  carrying the webhook's secret_overrides/launch_vars onto the board card
+  itself would make the board path robust without a binding (belt-and-braces).
+
+## 2026-07-08 — re-dogfood post-improvement (P1-P4), same PR #72 target, $1.80 (run 019f41af)
+
+- Status: **validated — reliability + integration confirmed; production excellent.**
+  Improvements are RIGHT and SAFE; this run's shape (1 pass, no MR) did not trigger
+  the two biggest savers (see "P1/P2 not exercised live" below — an honesty note, not
+  a regression).
+- Versions: bot branch-improve-loop @ `b7ea4bd78` (P1 forge_auth_probe + P4
+  tool_max_steps 40→20 in `db812f0dc`; P2 verify_probe + P3 verify_build effort in
+  `b7ea4bd78`) · iterion static binary `v0.31.0+b7ea4bd78` (built CGO_ENABLED=0,
+  invoked directly so `os.Executable()` bind-mounts the fresh binary into the sandbox).
+- Method: **apples-to-apples with the pilot below.** Same target: independent clone
+  `/tmp/iterion-pr72-clone` **reset to the RAW PR #72 tip** `4b2394b94` (the pilot's
+  added test removed, so Billy re-finds the gap). `sandbox` inline
+  (iterion-sandbox-full:edge), `worktree: auto` bases on the clone's HEAD (CWD =
+  clone), `--store-dir <main>/.iterion` so the run is **visible in the operator's
+  studio** while operating on the clone (setupWorktree bases on CWD's git root but
+  writes the worktree under `--store-dir`). `base_ref=main`, **`open_mr=false`**,
+  `--merge-into none`, `--max-cost-usd 12`.
+- Result: **converged in ONE pass, 8.5 min, $1.80 (31.8k tok).** Billy reviewed
+  `main…4b2394b94` (the per-node `timeout:` feature) across all layers and re-found the
+  exact same gap the pilot did — the parser/AST/IR/C199 were tested but the RUNTIME
+  enforcement path was not — and added `pkg/backend/model/executor_timeout_test.go`
+  (+115: a `blockingBackend` that blocks on the ctx deadline + `immediateBackend`
+  happy path, asserting the bounded context cuts the node off AND that a
+  context-deadline error is **not** retried). Commit `f5f55d5` on storage branch
+  `iterion/run/ash-pulse-starforge-1c89`. `verify_run` re-ran `go build ./... && go
+  test ./pkg/dsl/… ./pkg/backend/model/…` → **green** (so the added test compiles and
+  passes). Graph flow: campaign → verify_probe → verify_build → verify_run → gate
+  (converged) → mr_gate (open_mr=false) → done.
+- Cost story vs the pilot's $2.26 (honest breakdown): campaign ~$1.17 (18.9k tok, was
+  $1.31/21.2k — run variance on a slightly different pass) + verify_build ~$0.68 (12.9k
+  tok, P3 effort now `medium`) + verify_run (deterministic tool, 9.8s) + **no
+  finalize_mr** (open_mr=false avoided the pilot's $0.26). Net −$0.46 (~20%), of which
+  ~$0.26 is the avoided MR finalize and ~$0.20 is campaign variance; **P3's verify_build
+  delta was only ~$0.01** — verify.sh authoring uses little thinking, so `high→medium`
+  barely moves it here (it will matter more on repos with a heavier build-capture step).
+- **P1/P2 not exercised live (by design of this run's shape) — structurally proven:**
+  - P2 (verify_probe skips verify_build) only fires on **pass 2+**; this run converged
+    in 1 pass, so verify_probe correctly ran at `iteration=0` → `fresh=false` → routed
+    to verify_build (the new node integrates without breaking the happy path). The
+    **skip** path rests on `TestVerifyProbeLoopIterationWiring` (proves the loop
+    iteration reaches the tool via the campaign→verify_probe edge with-mapping into node
+    input — {{loop.*}} does NOT resolve inside a tool command) + the python-logic cases
+    (fresh=true only when iteration>0 AND verify.sh valid) + `iterion validate`.
+  - P1 (forge_auth_probe short-circuits finalize_mr when no push credential) only fires
+    when `open_mr=true`; this run used `open_mr=false` (mr_gate → done), so the probe
+    wasn't reached. Its logic is deterministic + unit-covered.
+- Reliability: **HIGH.** Same target → same high-value conclusion (add the runtime
+  enforcement test), reproduced independently. The two new deterministic nodes
+  (verify_probe, forge_auth_probe) slotted into the graph with zero runtime surprise.
+- Engine hardening: none needed. The e2e scenario sweeps gained stubs for the two new
+  nodes (`aad7bddce`, `test(e2e): stub verify_probe + forge_auth_probe`) so
+  `go test ./e2e/` stays green.
+- Lessons for next run: to **measure P2's $0.69/pass saving live**, point Billy at a
+  ≥2-pass target (a branch with 2+ real issues, or a synthetic branch with a planted
+  build-affecting change so pass 2 re-runs). To **measure P1's skip live**, run
+  `open_mr=true` with no forge_token and no host `gh` auth → forge_auth_probe → done.
+  For a pure production/cost demonstration this 1-pass/no-MR run is the right shape and
+  $1.80/8.5min is a good point; the structural savers show on longer/MR runs.
+
+## 2026-07-08 — pilot on a real contributor PR (#72), converged in 1 pass (run 019f415c)
+
+- Status: **validated — high-quality single-commit improvement.**
+- Versions: bot branch-improve-loop (feat/agent-node-timeout tree) · iterion 1f5082f (static, F7 skills fix in the engine)
+- Method: local run, `sandbox: auto` (iterion-sandbox-full:edge, devbox toolchain
+  so the build/test gate has Go — the cloud runner does NOT, cf. F6). Independent
+  clone checked out on the PR branch `feat/agent-node-timeout` so `worktree: auto`
+  bases on the PR (NOT main — a linked git worktree bases on the shared repo HEAD,
+  which is main; an independent clone was required). `base_ref=main`,
+  `max_passes=2`, `open_mr=true`, `mr_branch=iterion/billy/pr-72-pilot`.
+- Result: **converged in ONE pass.** Billy reviewed `main...feat/agent-node-timeout`
+  (the per-node `timeout:` feature), found the parser + C199 validation were tested
+  but the RUNTIME enforcement path (`executeBackend` deriving the bounded context —
+  the feature's behavioral heart) was not, and added
+  `pkg/backend/model/executor_timeout_test.go` (+108: `TestNodeTimeout_Enforced` with
+  a ctx-blocking backend + 20ms timeout, plus a happy-path immediate backend). The
+  deterministic build/test gate (`verify_run`) passed green. Exactly the test a good
+  human reviewer would add. Pushed by hand to `iterion/billy/pr-72-pilot` → draft PR
+  #82 (base = the PR branch, so the diff is just Billy's addition).
+- Cost: campaign $1.31 (21.2k tok) · verify_build $0.69 (13.1k tok) · verify_run
+  (deterministic tool, 9.7s) · finalize_mr $0.26 (6.8k tok) = **~$2.26, ~9 min**.
+- F7 (engine) re-validated here too: `finalize_mr` successfully `Launching skill:
+  forge-mr-create` — the directory-form skills fix works on the local sandboxed path,
+  not just cloud.
+- Efficiency/reliability misses to fix (operator asked to bring Billy to a Willy-grade
+  production/cost ratio):
+  - **finalize_mr burns budget discovering there are no credentials**: with no
+    forge_token mounted and no `gh auth`, the agent ran 4 probe commands before
+    abandoning the push. A deterministic pre-check should skip finalize_mr (or
+    short-circuit it) when no push credential is present.
+  - **verify_build ($0.69)** re-authors the build/test script each run — candidate for
+    caching / lower effort.
+- Lessons for next run: base the worktree on the PR via an INDEPENDENT clone (a linked
+  worktree bases on main). Provide a `forge_token` (or run in a `gh`-authed shell) if
+  you want Billy to self-push; otherwise recover the commit from the `iterion/run/<name>`
+  storage branch the engine always creates and push by hand.
+
 ## 2026-06-14 — re-validation on a clean clone + good dead-code judgment (run 019ec5bc)
 
 - Status: **validated.** Re-ran in the C082 worktree studio (non-watchexec) on a

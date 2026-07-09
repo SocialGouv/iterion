@@ -428,6 +428,15 @@ type Config struct {
 	// value the way pkg/cli/run.go does for `iterion run`.
 	SandboxDefault   string
 	SandboxHostState string
+
+	// SandboxOverride carries ITERION_SANDBOX_OVERRIDE (cfg.Sandbox.Override)
+	// into the engine at CLI-override strength, where "none" beats a
+	// workflow's inline `sandbox:` block. Set to "none" on runners that are
+	// themselves the isolation boundary (a k8s runner pod shipping its own
+	// toolchain): a bot's sandbox block — written for local runs — must not
+	// spawn a sibling sandbox pod there. SandboxDefault cannot express this
+	// (a workflow block outranks the default tier).
+	SandboxOverride string
 }
 
 // Runner is the long-running consumer loop.
@@ -1105,6 +1114,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// driver (host_state=auto has no host filesystem to bind).
 		runtime.WithSandboxDefault(r.cfg.SandboxDefault),
 		runtime.WithSandboxHostStateDefault(r.cfg.SandboxHostState),
+		// CLI-strength override (ITERION_SANDBOX_OVERRIDE): "none" on a
+		// runner that is itself the isolation boundary beats a bot's inline
+		// sandbox block, so the run executes directly in the runner pod.
+		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
 	}
 	// Bundle skills: a bot-qualified run mirrors its bundle's skills/ into
 	// <workspace>/.claude/skills exactly like a local `iterion run
@@ -1244,13 +1257,24 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		}
 	}
 	// Cloud sandboxes have no ~/.gitconfig (the host bind-mount is dropped on
-	// kubernetes and the runner pod has none of its own), so seed a default
+	// kubernetes and the runner pod has none of its own), so seed an
 	// author/committer in the clone's LOCAL config. It travels into the sandbox
 	// with .git, so commit-producing bots (feature-dev's commit_changes, willy,
-	// billy, docs-refresh, …) don't fail "Author identity unknown". Overridable
-	// via ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
-	_ = r.runGit(ctx, dir, "", "config", "user.name", gitAuthorName())
-	_ = r.runGit(ctx, dir, "", "config", "user.email", gitAuthorEmail())
+	// billy, docs-refresh, …) don't fail "Author identity unknown".
+	//
+	// Prefer the identity that OWNS the push token (resolved from the forge) so
+	// a pushed commit is attributed to the real pusher, not a stray account
+	// sharing the fallback email. Falls back to a neutral bot identity (never a
+	// real person's) when there's no token or resolution fails. Overridable via
+	// ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
+	authorName, authorEmail := gitAuthorName(), gitAuthorEmail()
+	if tok != "" {
+		if n, e, ok := resolveForgeCommitterIdentity(ctx, msg.RepoURL, tok); ok {
+			authorName, authorEmail = n, e
+		}
+	}
+	_ = r.runGit(ctx, dir, "", "config", "user.name", authorName)
+	_ = r.runGit(ctx, dir, "", "config", "user.email", authorEmail)
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
 	return dir, nil
@@ -1263,14 +1287,20 @@ func gitAuthorName() string {
 	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_NAME")); v != "" {
 		return v
 	}
-	return "iterion"
+	return "iterion-runner[bot]"
 }
 
 func gitAuthorEmail() string {
 	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_EMAIL")); v != "" {
 		return v
 	}
-	return "iterion@users.noreply.github.com"
+	// A `.invalid` domain (RFC 2606, reserved, never resolvable) guarantees this
+	// fallback maps to NO GitHub account — the commit shows the bot name as
+	// plain text, never a stray individual. The default was
+	// `iterion@users.noreply.github.com`, which GitHub silently attributed to an
+	// unrelated real user "iterion". The push-token identity above is the
+	// preferred, attributed path; this only fires token-less.
+	return "iterion-runner@bot.iterion.invalid"
 }
 
 // seedRunScratchIgnore locally excludes iterion's per-run scratch — the
@@ -1409,10 +1439,15 @@ func injectGitToken(rawURL, token string) string {
 // sandbox (a sandboxed run mounts them into the container instead). Returns a
 // cleanup that removes the written files, or nil when nothing was written.
 func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (func(), error) {
-	if wf == nil || len(wf.Secrets) == 0 || wf.Sandbox != nil {
-		// No secrets, or the workflow opts into a sandbox (which mounts file
-		// secrets into the container). review-pr et al. have no sandbox block
-		// → wf.Sandbox is nil and we materialize below.
+	if wf == nil || len(wf.Secrets) == 0 ||
+		runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault) {
+		// No secrets, or the run RESOLVES to an active sandbox (which mounts
+		// file secrets into the container). The resolved decision — not
+		// wf.Sandbox — is what matters: under ITERION_SANDBOX_OVERRIDE=none a
+		// bot's sandbox block is neutralized and the run executes in this pod,
+		// so its file secrets must be materialized here (run 019f4551's
+		// push_auth_probe found no forge_token exactly because this gate used
+		// to test the static declaration).
 		return nil, nil
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)

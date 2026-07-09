@@ -228,13 +228,10 @@ func (s *MongoMemoryStore) ReadDocument(ctx context.Context, ref knowledge.Space
 	if err := knowledge.ValidateDocPath(path); err != nil {
 		return knowledge.Document{}, err
 	}
-	var d memDoc
-	err := s.docs.FindOne(ctx, docFilter(ref.ID(), path)).Decode(&d)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return knowledge.Document{}, fmt.Errorf("%w: %q", knowledge.ErrDocNotFound, path)
-	}
+	d, err := mongoutil.FindOne[memDoc](ctx, s.docs, docFilter(ref.ID(), path),
+		fmt.Errorf("%w: %q", knowledge.ErrDocNotFound, path), "memory: read doc")
 	if err != nil {
-		return knowledge.Document{}, fmt.Errorf("memory: read doc: %w", err)
+		return knowledge.Document{}, err
 	}
 	return knowledge.Document{Meta: metaOf(d), Content: d.Content}, nil
 }

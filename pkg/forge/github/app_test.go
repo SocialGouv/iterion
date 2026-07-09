@@ -106,6 +106,30 @@ func TestMintInstallationToken_NarrowsScope(t *testing.T) {
 	}
 }
 
+// A 422 (the observed prod failure) must surface GitHub's own explanation, not
+// a bare "HTTP 422" — the mint call scopes to specific repos/permissions and
+// GitHub says exactly which one is wrong.
+func TestMintInstallationToken_422SurfacesGitHubMessage(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": "There is at least one repository that does not exist or is not accessible to the owner.",
+			"errors":  []map[string]any{{"code": "invalid", "field": "repositories"}},
+		})
+	}))
+	defer srv.Close()
+	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr}
+	_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Unix(1700000000, 0),
+		&InstallationTokenOptions{Repositories: []string{"gone"}, Permissions: RuntimeInstallationPermissions()})
+	if err == nil {
+		t.Fatal("expected error on 422")
+	}
+	if !strings.Contains(err.Error(), "does not exist or is not accessible") {
+		t.Errorf("error must surface GitHub's message, got: %v", err)
+	}
+}
+
 func TestAppClient_CreateHookUsesInstallationToken(t *testing.T) {
 	pemStr, _ := testKeyPEM(t)
 	var hookAuth string

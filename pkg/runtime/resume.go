@@ -366,6 +366,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// paused run that resumes keeps running as the selected sous-bot.
+	e.applyLibrarySkills()
 	e.applyPresetFocus()
 
 	// Re-bootstrap the sandbox container (see resumeFromFailure for the
@@ -496,6 +497,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	}
 	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
 	// failed-then-resumed run keeps running as the selected sous-bot.
+	e.applyLibrarySkills()
 	e.applyPresetFocus()
 
 	// Re-bootstrap the sandbox container. The original Run() process

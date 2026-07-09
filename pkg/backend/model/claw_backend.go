@@ -526,6 +526,7 @@ func askUserResult(err error) (delegate.Result, bool) {
 	questions := map[string]interface{}{
 		delegate.AskUserQuestionKey: ask.Question,
 	}
+	delegate.AddAskUserOptionKeys(questions, ask.Options, ask.AllowFreeText)
 	if ask.PermissionMarker != nil {
 		questions[permission.InteractionMarkerKey] = ask.PermissionMarker
 	}
@@ -630,12 +631,12 @@ func toolUseReminder() api.Message {
 		Role: "user",
 		Content: []api.ContentBlock{{
 			Type: "text",
-			Text: "You ended without using any of your available tools. If your task " +
+			Text: systemReminder("You ended without using any of your available tools. If your task " +
 				"requires inspecting files, running commands, or reading a diff that is " +
 				"not already present in this conversation, you MUST use your tools now to " +
 				"gather that evidence before producing your final answer. If everything " +
 				"you need is already in the conversation above, output your final " +
-				"structured result now.",
+				"structured result now."),
 		}},
 	}
 }
@@ -655,13 +656,13 @@ func finalizeReminder() api.Message {
 		Role: "user",
 		Content: []api.ContentBlock{{
 			Type: "text",
-			Text: "This is your FINAL turn — you cannot run any more tools. Output " +
+			Text: systemReminder("This is your FINAL turn — you cannot run any more tools. Output " +
 				"your structured result now, reflecting the state you have ACTUALLY " +
 				"reached. Do NOT return a provisional 'work in progress', 'still " +
 				"validating', or 'will continue' placeholder. Fill every required " +
 				"field with your real current result: if you applied changes, say so " +
 				"and summarise exactly what you did and what (if anything) remains; if " +
-				"you only inspected, report your actual findings.",
+				"you only inspected, report your actual findings."),
 		}},
 	}
 }

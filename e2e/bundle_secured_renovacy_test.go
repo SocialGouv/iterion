@@ -18,8 +18,8 @@ import (
 //     bucket_patches, select_candidate, security_audit, changelog_review,
 //     upgrade, install, align_code, validate_upgrade, fix_after_upgrade,
 //     prepare_commit, commit_changes
-//   - Phase 2 (alternating review): alt_review, reviewer_claude,
-//     reviewer_gpt, streak_check, emit_sbom
+//   - Phase 2 (v2 review campaign): p2_campaign, p2_verify_build,
+//     p2_verify_run, p2_gate, emit_sbom
 //
 // Tests assert these IDs are present rather than the exact node count
 // because the bundle is allowed to grow incrementally without breaking
@@ -39,10 +39,10 @@ var expectedSecuredRenovacyNodes = []string{
 	"fix_after_upgrade",
 	"prepare_commit",
 	"commit_changes",
-	"alt_review",
-	"reviewer_claude",
-	"reviewer_gpt",
-	"streak_check",
+	"p2_campaign",
+	"p2_verify_build",
+	"p2_verify_run",
+	"p2_gate",
 	"emit_sbom",
 }
 

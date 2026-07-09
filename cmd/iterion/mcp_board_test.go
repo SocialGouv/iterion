@@ -121,7 +121,7 @@ func TestMCPBoard_ToolsCall_CreateAndTransition(t *testing.T) {
 		},
 	}
 	raw, _ := json.Marshal(call)
-	resps = drive(t, s, caps, []string{string(raw)})
+	drive(t, s, caps, []string{string(raw)})
 	got, _ := s.Get(iss.ID)
 	if got.State != "ready" {
 		t.Fatalf("state=%s", got.State)

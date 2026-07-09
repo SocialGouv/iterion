@@ -3,6 +3,11 @@ import { useEffect, useMemo, useState } from "react";
 
 import { resumeRun } from "@/api/runs";
 import { Button, Textarea } from "@/components/ui";
+import {
+  askUserAllowsFreeText,
+  askUserOptions,
+  isReservedQuestionKey,
+} from "@/lib/askUserOptions";
 import { useDocumentStore } from "@/store/document";
 
 interface Props {
@@ -51,7 +56,14 @@ function briefInput(input?: Record<string, unknown>): string {
 
 export default function PauseForm({ runId, questions, message, onSubmitted }: Props) {
   const marker = useMemo(() => permissionMarker(questions ?? {}), [questions]);
-  const fieldNames = useMemo(() => Object.keys(questions ?? {}), [questions]);
+  const options = useMemo(() => askUserOptions(questions ?? {}), [questions]);
+  // Reserved (underscore) keys are runtime plumbing (options payload,
+  // permission marker, queued-messages stash) — never render them as
+  // answerable fields.
+  const fieldNames = useMemo(
+    () => Object.keys(questions ?? {}).filter((k) => !isReservedQuestionKey(k)),
+    [questions],
+  );
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(fieldNames.map((k) => [k, ""])),
   );
@@ -89,10 +101,11 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
     }
   };
 
-  // Permission approval: submit the operator's decision under the
-  // ask_user key; the runtime turns "allow"/"allow always" into a grant
-  // rule and "deny" into a refusal.
-  const decide = async (decision: "allow" | "allow always" | "deny") => {
+  // Single-string answer under the ask_user key. Used by the permission
+  // approval buttons ("allow"/"allow always"/"deny" become a grant rule
+  // or refusal) and by the structured-options buttons (the picked
+  // option's id, or typed free text).
+  const decide = async (decision: string) => {
     setBusy(true);
     setError(null);
     try {
@@ -142,6 +155,63 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
           <Button variant="danger" size="sm" disabled={busy} onClick={() => void decide("deny")}>
             Deny
           </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Structured ask_user options: clickable choices (click = submit), plus
+  // an optional free-text path when the tool call allowed it.
+  if (options.length > 0) {
+    const prompt = String(questions[ASK_USER_KEY] ?? "");
+    const allowFree = askUserAllowsFreeText(questions);
+    const freeDraft = values[ASK_USER_KEY] ?? "";
+    return (
+      <div className="space-y-3">
+        {message && <p className="text-fg-muted text-micro">{message}</p>}
+        {prompt && (
+          <div className="text-caption text-fg-default whitespace-pre-wrap">{prompt}</div>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {options.map((o) => (
+            <Button
+              key={o.id}
+              variant="secondary"
+              size="sm"
+              disabled={busy}
+              onClick={() => void decide(o.id)}
+            >
+              {o.label}
+            </Button>
+          ))}
+        </div>
+        {allowFree && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (freeDraft.trim()) void decide(freeDraft);
+            }}
+            className="space-y-2"
+          >
+            <Textarea
+              value={freeDraft}
+              onChange={(e) => onChange(ASK_USER_KEY, e.target.value)}
+              rows={2}
+              spellCheck={false}
+              className="text-micro"
+              placeholder="Or type a custom answer…"
+            />
+            <Button type="submit" variant="primary" size="sm" loading={busy} disabled={!freeDraft.trim()}>
+              Send
+            </Button>
+          </form>
+        )}
+        <div role="status" aria-live="polite">
+          {error && (
+            <p className="text-danger-fg text-micro" role="alert">
+              {error}
+            </p>
+          )}
         </div>
       </div>
     );

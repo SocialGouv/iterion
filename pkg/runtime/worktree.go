@@ -21,11 +21,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// gitCmdTimeout bounds every git invocation made through gitCmd. Without
+// it, a wedged git process (stale index.lock, a hung smudge/clean filter)
+// blocks the engine goroutine running worktree setup/finalize forever —
+// the run would never surface a timeout error, just hang.
+const gitCmdTimeout = 60 * time.Second
 
 // gitCmd wraps exec.Command("git", args...) with LC_ALL=C / LANG=C so
 // callers can branch on stderr substrings ("already exists",
@@ -37,11 +44,17 @@ import (
 // rebuilds the dev-mode backend during an in-flight squash merge —
 // doesn't propagate and kill `git commit` mid-write with the
 // "signal: terminated" failure mode observed in run_1778021294883.
-func gitCmd(args ...string) *exec.Cmd {
-	cmd := exec.Command("git", args...)
+//
+// Returns the CancelFunc alongside the command; callers must `defer
+// cancel()` immediately (releases the timeout timer once the command
+// completes — the process itself is killed by the context on timeout
+// regardless of whether cancel is ever called).
+func gitCmd(args ...string) (*exec.Cmd, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitCmdTimeout)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	detachGitProcessGroup(cmd)
-	return cmd
+	return cmd, cancel
 }
 
 // worktreeContext is the state captured at setupWorktree time and
@@ -86,20 +99,26 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 	// `symbolic-ref --quiet HEAD` returns "" + non-zero on detached HEAD —
 	// that's intentional: we treat detached as "no branch to FF".
 	originalBranch := ""
-	if out, brErr := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); brErr == nil {
+	brCmd, brCancel := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if out, brErr := brCmd.Output(); brErr == nil {
 		originalBranch = strings.TrimSpace(string(out))
 	}
+	brCancel()
 	originalTip := ""
-	if out, tipErr := gitCmd("-C", repoRoot, "rev-parse", "HEAD").Output(); tipErr == nil {
+	tipCmd, tipCancel := gitCmd("-C", repoRoot, "rev-parse", "HEAD")
+	if out, tipErr := tipCmd.Output(); tipErr == nil {
 		originalTip = strings.TrimSpace(string(out))
 	}
+	tipCancel()
 
 	// `git worktree add <path> HEAD` creates the worktree at the current
 	// HEAD commit. Any working-tree state (staged, unstaged, untracked)
 	// in the main checkout is intentionally NOT copied — that is the whole
 	// point of isolation.
-	cmd := gitCmd("-C", repoRoot, "worktree", "add", wtPath, "HEAD")
-	if out, addErr := cmd.CombinedOutput(); addErr != nil {
+	cmd, cancel := gitCmd("-C", repoRoot, "worktree", "add", wtPath, "HEAD")
+	out, addErr := cmd.CombinedOutput()
+	cancel()
+	if addErr != nil {
 		return worktreeContext{}, nil, fmt.Errorf("git worktree add %s: %w\noutput: %s", wtPath, addErr, string(out))
 	}
 
@@ -114,7 +133,9 @@ func setupWorktree(storeRoot, runID, repoHint string, logger *iterlog.Logger) (w
 		// logged but do not fail the run. When no logger is configured
 		// the failure goes to stderr so it isn't completely silent —
 		// otherwise the worktree directory leaks on disk with no trace.
-		out, rmErr := gitCmd("-C", repoRoot, "worktree", "remove", "--force", wtPath).CombinedOutput()
+		rmCmd, rmCancel := gitCmd("-C", repoRoot, "worktree", "remove", "--force", wtPath)
+		out, rmErr := rmCmd.CombinedOutput()
+		rmCancel()
 		if rmErr != nil {
 			if logger != nil {
 				logger.Warn("runtime: git worktree remove %s failed: %v\noutput: %s", wtPath, rmErr, string(out))
@@ -243,6 +264,23 @@ type finalizeResult struct {
 // Always best-effort: any failure is logged but does not fail the run.
 func finalizeWorktree(wc worktreeContext, opts finalizeOptions, logger *iterlog.Logger) finalizeResult {
 	res := finalizeResult{}
+
+	// 0. Safety invariant: the worktree MUST be a dedicated tree, never
+	// the operator's live checkout. If it collapsed to the repo root — a
+	// phantom-worktree run whose WorkDir resolved to repoRoot (seen via
+	// RecoverFinalize on a run persisted with WorkDir==RepoRoot) — then
+	// the wip-bank `git commit` below runs IN the main checkout and lands
+	// on the operator's CURRENT branch, silently committing unrelated
+	// uncommitted work. The "never merge a wip-banked HEAD" guard in
+	// step 5 can't save this: the commit is already on their branch.
+	// Refuse outright — no commit, preserve as-is, warn.
+	if samePath(wc.wtPath, wc.repoRoot) {
+		if logger != nil {
+			logger.Warn("runtime: finalize: worktree path %s is the repo root — refusing to bank/promote (would commit on the operator's branch); preserving, recover any run output by hand", wc.wtPath)
+		}
+		res.PreserveWorktree = true
+		return res
+	}
 
 	// 1. Read the worktree's current HEAD.
 	finalSHA := readHEAD(wc.wtPath)
@@ -458,7 +496,9 @@ func createBranchSafely(repoRoot, name, sha string, logger *iterlog.Logger) (boo
 		// `--` separates options from positional arguments so a
 		// candidate that begins with `-` (or any future ValidateBranchName
 		// regression) can never be parsed as a flag by git.
-		out, err := gitCmd("-C", repoRoot, "branch", "--", candidate, sha).CombinedOutput()
+		brCmd, brCancel := gitCmd("-C", repoRoot, "branch", "--", candidate, sha)
+		out, err := brCmd.CombinedOutput()
+		brCancel()
 		if err == nil {
 			return true, candidate
 		}
@@ -483,11 +523,16 @@ func tryFastForward(repoRoot, target, branchToMerge, finalSHA, originalBranch st
 	}
 
 	// FF must actually be possible (target is ancestor of finalSHA).
-	if err := gitCmd("-C", repoRoot, "merge-base", "--is-ancestor", "refs/heads/"+target, finalSHA).Run(); err != nil {
+	ancCmd, ancCancel := gitCmd("-C", repoRoot, "merge-base", "--is-ancestor", "refs/heads/"+target, finalSHA)
+	ancErr := ancCmd.Run()
+	ancCancel()
+	if ancErr != nil {
 		return fmt.Errorf("non-fast-forward (%q has commits not in run output)", target)
 	}
 
-	out, err := gitCmd("-C", repoRoot, "merge", "--ff-only", branchToMerge).CombinedOutput()
+	ffCmd, ffCancel := gitCmd("-C", repoRoot, "merge", "--ff-only", branchToMerge)
+	out, err := ffCmd.CombinedOutput()
+	ffCancel()
 	if err != nil {
 		return fmt.Errorf("git merge --ff-only failed: %v\noutput: %s", err, string(out))
 	}
@@ -501,9 +546,11 @@ func tryFastForward(repoRoot, target, branchToMerge, finalSHA, originalBranch st
 // messages so callers can distinguish FF / squash failures in logs.
 func guardMergeTarget(repoRoot, target, originalBranch, opName string) error {
 	currentBranch := ""
-	if out, err := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
+	brCmd, brCancel := gitCmd("-C", repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if out, err := brCmd.Output(); err == nil {
 		currentBranch = strings.TrimSpace(string(out))
 	}
+	brCancel()
 	if originalBranch != "" && currentBranch != originalBranch {
 		return fmt.Errorf("checked-out branch changed from %q to %q since start", originalBranch, currentBranch)
 	}
@@ -515,7 +562,9 @@ func guardMergeTarget(repoRoot, target, originalBranch, opName string) error {
 	// (file lock, repo corruption, missing index) bypass the safety
 	// check and merge over potentially-dirty state. Treat any error as
 	// dirty / unknown.
-	out, err := gitCmd("-C", repoRoot, "status", "--porcelain").Output()
+	stCmd, stCancel := gitCmd("-C", repoRoot, "status", "--porcelain")
+	out, err := stCmd.Output()
+	stCancel()
 	if err != nil {
 		return fmt.Errorf("git status check failed before %s: %w", opName, err)
 	}
@@ -554,7 +603,10 @@ func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message str
 	// Step 1: stage the squashed diff via `git merge --squash`. This
 	// updates the index + working tree to match branchToMerge but does
 	// NOT create a commit on its own; we follow up with `git commit`.
-	if out, err := gitCmd("-C", repoRoot, "merge", "--squash", branchToMerge).CombinedOutput(); err != nil {
+	sqCmd, sqCancel := gitCmd("-C", repoRoot, "merge", "--squash", branchToMerge)
+	out, sqErr := sqCmd.CombinedOutput()
+	sqCancel()
+	if sqErr != nil {
 		// Distinguish "merge conflict" (UU paths in index) from any
 		// other failure mode. Conflicts must NOT be rolled back —
 		// the operator (or the conflict-resolver UI) needs the
@@ -563,8 +615,10 @@ func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message str
 		if conflicts, lsErr := unmergedPaths(repoRoot); lsErr == nil && len(conflicts) > 0 {
 			return "", &MergeConflictError{Files: conflicts, Output: string(out)}
 		}
-		_ = gitCmd("-C", repoRoot, "reset", "--merge").Run()
-		return "", fmt.Errorf("git merge --squash failed: %v\noutput: %s", err, string(out))
+		rsCmd, rsCancel := gitCmd("-C", repoRoot, "reset", "--merge")
+		_ = rsCmd.Run()
+		rsCancel()
+		return "", fmt.Errorf("git merge --squash failed: %v\noutput: %s", sqErr, string(out))
 	}
 
 	// Step 2: commit the squashed index. --no-edit prevents the studio
@@ -572,7 +626,10 @@ func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message str
 	// supplies our aggregated message regardless. `-m` consumes the
 	// very next argv element as the value, so a leading "-" in the
 	// message is fine here — exec.Command bypasses the shell.
-	if out, err := gitCmd("-C", repoRoot, "commit", "-m", message).CombinedOutput(); err != nil {
+	coCmd, coCancel := gitCmd("-C", repoRoot, "commit", "-m", message)
+	out, coErr := coCmd.CombinedOutput()
+	coCancel()
+	if coErr != nil {
 		// `git commit` exits non-zero with "nothing to commit" if the
 		// squash diff was empty (e.g. branch already merged). Treat
 		// that as a soft success: nothing changed, target stays put.
@@ -580,8 +637,10 @@ func trySquashMerge(repoRoot, target, branchToMerge, originalBranch, message str
 		if strings.Contains(string(out), "nothing to commit") || strings.Contains(string(out), "no changes added to commit") {
 			return baseHead, nil
 		}
-		_ = gitCmd("-C", repoRoot, "reset", "--merge").Run()
-		return "", fmt.Errorf("git commit (squash) failed: %v\noutput: %s", err, string(out))
+		rsCmd, rsCancel := gitCmd("-C", repoRoot, "reset", "--merge")
+		_ = rsCmd.Run()
+		rsCancel()
+		return "", fmt.Errorf("git commit (squash) failed: %v\noutput: %s", coErr, string(out))
 	}
 
 	// Read the new HEAD SHA — that's the squash commit on target.
@@ -692,7 +751,9 @@ func assembleSquashMessage(commits []gitlib.CommitInfo, runName string) string {
 // safe to feed into `git commit -m`. Returns "" on any git failure;
 // callers degrade to the subject-only fallback chain.
 func readFullCommitMessage(repoRoot, ref string) string {
-	out, err := gitCmd("-C", repoRoot, "log", "-1", "--pretty=format:%B", ref).Output()
+	cmd, cancel := gitCmd("-C", repoRoot, "log", "-1", "--pretty=format:%B", ref)
+	out, err := cmd.Output()
+	cancel()
 	if err != nil {
 		return ""
 	}
@@ -759,9 +820,11 @@ func PerformDeferredMerge(req DeferredMergeRequest, logger *iterlog.Logger) (Def
 	}
 
 	currentBranch := ""
-	if out, err := gitCmd("-C", req.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); err == nil {
+	brCmd, brCancel := gitCmd("-C", req.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if out, err := brCmd.Output(); err == nil {
 		currentBranch = strings.TrimSpace(string(out))
 	}
+	brCancel()
 	target := resolveMergeTarget(req.Target, currentBranch)
 	if target == "" {
 		return DeferredMergeResult{}, fmt.Errorf("merge target empty (detached HEAD?)")
@@ -799,7 +862,9 @@ func PerformDeferredMerge(req DeferredMergeRequest, logger *iterlog.Logger) (Def
 
 // readHEAD returns the SHA of HEAD in the given worktree, or "" on error.
 func readHEAD(wtPath string) string {
-	out, err := gitCmd("-C", wtPath, "rev-parse", "HEAD").Output()
+	cmd, cancel := gitCmd("-C", wtPath, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	cancel()
 	if err != nil {
 		return ""
 	}
@@ -845,6 +910,18 @@ func RecoverFinalize(ctx context.Context, st store.RunStore, r *store.Run, logge
 	}
 	if !r.Worktree || r.WorkDir == "" || r.RepoRoot == "" {
 		return nil // not a worktree run — nothing to recover
+	}
+	// Phantom-worktree guard: a run whose WorkDir collapsed to the repo
+	// root has no dedicated worktree to finalize — its WorkDir IS the
+	// operator's live checkout. Recovering it would bank uncommitted
+	// changes (possibly unrelated operator WIP) onto their current
+	// branch. Skip. finalizeWorktree enforces the same invariant as a
+	// backstop, but returning here avoids the misleading recovery logs.
+	if samePath(r.WorkDir, r.RepoRoot) {
+		if logger != nil {
+			logger.Warn("runtime: RecoverFinalize: run %s WorkDir %s == repo root — not a dedicated worktree; skipping recovery so uncommitted work is not banked onto the operator's branch", r.ID, r.WorkDir)
+		}
+		return nil
 	}
 	if r.FinalBranch != "" || r.FinalCommit != "" {
 		return nil // already finalized

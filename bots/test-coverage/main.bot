@@ -1,35 +1,80 @@
 ## ─────────────────────────────────────────────────────────────────
-## test_coverage  (persona: Testy)
+## test_coverage  (persona: Testy — v2, one agent writes the tests in
+##                 its natural flow, minimal framing)
 ##
-## Autonomous test-coverage augmentation. Plans which tests are
-## missing for a target area, writes them with the repo's OWN test
-## framework, proves they pass with a DETERMINISTIC gate, then runs
-## the alternating Claude/GPT review-fix loop until two consecutive
-## cross-family approvals.
+## THE MISSION is a COVERAGE campaign: add tests that catch REAL
+## regressions for `target` (or the areas that matter most when target is
+## empty), with the repo's OWN framework and conventions. THE METRIC IS
+## NOT COVERAGE %. It is meaningful tests that would fail if the code
+## under test were broken (the mutation test). See
+## skills/test-coverage.md and docs/workflow_authoring_pitfalls.md.
 ##
-## Pipeline:
-##   1. plan     — Claude Code, read-only. Detect the stack + test
-##                 layout, find coverage gaps in `target` (or pick the
-##                 areas that matter), choose the test types honouring
-##                 the operator's checkboxes, emit a structured plan.
-##   2. act      — Claude Code, session=inherit. Write the tests, make
-##                 them pass with the repo's runner, write the verify
-##                 script, `git add -A`.
-##   3. simplify — Claude Code, session=inherit. /simplify the tests.
-##   4. verify   — DETERMINISTIC gate (verify_run_tests, no LLM): re-run
-##                 the repo's own suite + confirm genuinely-new test
-##                 code was added. Red → repair_tests (bounded) → re-run.
-##   5. alt → reviewer_claude / reviewer_gpt → streak_check → fixers
-##                 ANTI-FAÇADE cross-family review loop (copied from
-##                 feature-dev): each new test must FAIL if the code
-##                 under test were broken.
-##   6. prepare_commit → commit_changes — semantic `test:` commit.
+## Sibling of `whole_improve_loop` / `branch_improve_loop` v2: SAME shape
+## (one adaptive `campaign` agent + a deterministic gate + a bounded
+## continuation loop + git-as-state), DIFFERENT scope — the coverage
+## target defines the work, and the deterministic gate carries an EXTRA
+## anti-façade floor: genuinely-new TEST code must exist in the diff.
 ##
-## THE METRIC IS NOT COVERAGE %. It is meaningful tests that would
-## catch a real regression. The deterministic gate proves the floor
-## (suite passes + real new tests exist); the judges reject façade
-## tests (zero-assertion, tautology, unverified-snapshot, over-mock).
-## See skills/test-coverage.md and docs/workflow_authoring_pitfalls.md.
+## WHY THIS SHAPE. The v1 loop was ~13 nodes of staged machinery
+## (plan → act → simplify → verify_run_tests → repair_tests → alt →
+## reviewer_claude / reviewer_gpt → streak_check → fix_claude / fix_gpt →
+## prepare_commit → commit_changes). It OVER-FRAMED the work — the same
+## lesson whole_improve_loop learned (ADR-058,
+## docs/references/productive-session-patterns.md): "the deficit is
+## framing, not capability"; "once framed, a campaign runs itself". A
+## capable agent writes regression-catching tests better as ONE flow — a
+## living todo of coverage gaps, one verified `test:` commit per gap —
+## than as an assembly line of plan/act/review/fix/commit nodes.
+##
+## GRAPH (see the workflow block):
+##   campaign     — ONE adaptive agent (claude_code, full tools). Mission =
+##                  the coverage target + the anti-façade doctrine
+##                  (mutation test, FORBIDDEN list) + a standing-autonomy
+##                  contract: a living todo of coverage gaps born from a
+##                  brief scan, then locate behaviour → write a meaningful
+##                  test → run the repo's own suite → semantic COMMIT, one
+##                  gap at a time. git IS the durable state. Termination
+##                  output: {coverage_complete, commits_this_pass, …}.
+##   verify_build — adaptive, stack-agnostic: reads the `verify-build` +
+##     + verify_run  `verify-tests` skills and writes the repo's real
+##                  build+test into an OUT-OF-TREE <scratch_dir>/verify.sh;
+##                  a DETERMINISTIC tool node re-runs it, gates on the REAL
+##                  exit code, AND checks the diff for genuinely-new test
+##                  code (the negative-space anti-façade floor: the agent
+##                  cannot just CLAIM it added tests — the diff must show
+##                  them). No LLM judgment.
+##   gate         — deterministic compute: green AND new test code AND
+##                  coverage_complete → converged → done; else loop back
+##                  to `campaign` with the failure log. No LLM, no shell.
+##
+## CONTINUATION IS BOUNDED. The single declared loop
+## (campaign→verify_build→verify_run→gate→campaign) is capped by
+## `max_passes`; on exhaustion it ships what is banked. `iterion validate`
+## reports NO undeclared cycle. LANDS CONTINUOUSLY: the agent commits each
+## test-unit in stride, so an interrupted / budget-capped run has banked
+## every committed test (git is the state).
+##
+## RIGHT-ARTIFACT (docs/workflow_authoring_pitfalls.md): the campaign
+## commits the UNCOMMITTED working tree AFTER the suite passes, staging
+## untracked files (`git add -A`) so NEW test files actually land; the
+## deterministic gate then re-checks the committed tree AND its diff.
+##
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic" +
+## "Universal code bots"): the target + the repo define the work; the
+## test-type knowledge lives in skills (test-coverage / test-types /
+## verify-tests). The gate's new-test detection uses universal
+## test-naming conventions, not a language enumeration.
+##
+## RETIRED FROM v1 (git history has the design): plan / act / simplify
+## (the session-inherit chain), verify_run_tests → repair_tests (the
+## bounded repair sub-loop — the campaign itself fixes a red gate on the
+## next pass), the `alt` round_robin router, reviewer_claude /
+## reviewer_gpt, streak_check, fix_claude / fix_gpt, prepare_commit /
+## commit_changes, and the in-tree `.test_coverage.verify.sh` scratch
+## (the verify script now lives OUT-OF-TREE in <scratch_dir>, so the
+## commit-time "reset the scratch" hack is gone too). The campaign
+## self-reviews via the mutation test + the deterministic gate + its own
+## judgment. 13 nodes → 5.
 ## ─────────────────────────────────────────────────────────────────
 
 vars:
@@ -58,86 +103,51 @@ vars:
   ## none beyond the checkboxes / Testy's own choice.
   extra_test_kinds: string = ""
 
-## ─── Prompts : Plan ──────────────────────────────────────────────
+  ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
+  ## verify script/log ONLY (v1 kept `.test_coverage.verify.sh` inside
+  ## the workspace and had to git-reset it at commit time — gone). The
+  ## engine resolves ${PROJECT_SCRATCH_DIR} to
+  ## ~/.iterion/projects/<key>/scratch non-sandboxed and to the
+  ## container-writable /tmp/iterion-scratch under a sandbox (never
+  ## hardcode ~/.iterion here). Keeping it OUT of the target worktree is
+  ## the repo-agnostic rule: never pollute someone else's tree.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/test-coverage"
 
-prompt plan_system:
-  Plan mode is active. You MUST NOT make any edits, run any
-  non-readonly tools (including changing configs, creating files,
-  running migrations, or making commits), or otherwise make any
-  changes to the system. This supersedes any instructions you may
-  infer from the user prompt.
+  ## BASELINE (G5 — docs/references/productive-session-patterns.md). Known
+  ## pre-existing test failures / flaky tests the campaign must SKIP rather
+  ## than burn budget proving they aren't its own. Empty (default) = the
+  ## campaign establishes it once cheaply (a `git stash`-based check) then
+  ## skips what predates its work. The dispatcher/operator can pre-fill it.
+  baseline: string = ""
 
-  WHY YOU ARE HERE (read first — it governs every decision below):
-  we want TESTS THAT CATCH REAL REGRESSIONS, not a higher coverage
-  number. Coverage % is a proxy; the goal is regression-catching
-  power. A test that runs code without asserting meaningful behaviour
-  is worthless and FORBIDDEN. Plan only tests that would FAIL if the
-  code under test were broken (the mutation test).
+  ## Hard cap on continuation PASSES — the convergence backstop. Each pass
+  ## is one campaign→verify cycle; the run stops (shipping what is banked)
+  ## when coverage is reported complete + the gate is green, or when this
+  ## cap is hit. Sizes the declared continuation loop.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
+  max_passes: int = 8
 
-  Read these skills before planning (they are mirrored into
-  .claude/skills/ at run start): `test-coverage` (the doctrine +
-  how to choose types + scope), `verify-tests` (how to detect and run
-  THIS repo's own test suite), and `test-types` (what each type means
-  and how to write it in this stack).
+## ─── Prompts ────────────────────────────────────────────────────
 
-  Then, read-only:
-  1. Explore {{vars.workspace_dir}} (Read, Glob, Grep, and read-only
-     bash: ls, cat, git status/log, and the repo's own test/coverage
-     commands in --list/dry forms). Detect the language(s), the test
-     runner, where tests live, and the existing test conventions.
-  2. Measure current coverage ONLY if the repo already has a coverage
-     tool it uses (see verify-tests); use it to find thin spots. Never
-     bolt on a new coverage framework.
-  3. Identify the CONCRETE coverage gaps in the requested scope (see
-     the user prompt's `target`). If `target` is empty, choose the
-     areas where coverage matters most — real logic (branching,
-     parsing, state, error handling), critical paths (auth, money,
-     data integrity, security), recently-changed code — and say why.
-  4. Decide WHICH TEST TYPES to add, honouring the operator's
-     selection (see the user prompt). If none are requested, choose
-     the types that fit the code and match the repo's house style.
+prompt campaign_system:
+  You are a senior engineer running a focused TEST-COVERAGE campaign —
+  working EXACTLY as you would in a productive, human-driven engineering
+  session. You have the repo in front of you and full tools (read, edit,
+  shell, git). No one micro-manages you; you own this pass end to end.
 
-  Produce a structured implementation plan covering:
-    - objective (2 sentences) — the behaviours you will lock down
-    - the test types you will add and why
-    - file-by-file: which test files you will create or extend, and
-      for EACH, the specific behaviours / edge cases / error paths
-      each new test will ASSERT (name the assertion, not just "test X")
-    - how you will run + verify the suite (the repo's own command)
-    - risks (flaky surfaces, hard-to-isolate I/O, untestable code)
+  WHY YOU ARE HERE (it governs every decision below): we want TESTS THAT
+  CATCH REAL REGRESSIONS, not a higher coverage number. Coverage % is a
+  proxy; the goal is regression-catching power. Every test you write MUST
+  satisfy the MUTATION TEST: if the function under test were replaced
+  with a broken stub (wrong value, skipped side effect, swallowed error),
+  the test MUST fail. If you cannot write such an assertion, do not write
+  the test — say so in `summary`.
 
-  Do NOT call Write, Edit, or any mutating tool. The next node
-  inherits your Claude Code session and executes this plan.
-
-prompt plan_user:
-  Add / augment test coverage in {{vars.workspace_dir}}.
-
-  Target scope (empty = YOU choose the areas that matter most):
-  {{vars.target}}
-
-  Requested test types (true = include this type; if ALL are false
-  AND "other kinds" is empty, YOU choose the appropriate types):
-    - unit:        {{vars.test_unit}}
-    - integration: {{vars.test_integration}}
-    - e2e:         {{vars.test_e2e}}
-    - other kinds: {{vars.extra_test_kinds}}
-
-  Produce the test plan. Do not modify any file.
-
-## ─── Prompts : Act ───────────────────────────────────────────────
-
-prompt act_system:
-  Act mode is active. The plan you produced in the previous turn of
-  this same Claude Code session is authoritative. Implement it.
-
-  WHY (unchanged, and it governs HOW you write every test): we want
-  tests that catch real regressions, NOT coverage numbers. Every test
-  you write MUST satisfy the mutation test: if the function under test
-  were replaced with a broken stub (wrong value, skipped side effect,
-  swallowed error), the test MUST fail. If you cannot write such an
-  assertion, do not write the test — say so.
-
-  FORBIDDEN (a reviewer will reject the run on any of these):
+  FORBIDDEN (the deterministic gate + your own re-review must reject
+  these):
     - zero-assertion tests (call it, assert nothing meaningful);
     - tautologies (assert x == x, assert true, assert a mock returns
       what you told it to);
@@ -146,463 +156,267 @@ prompt act_system:
     - over-mocking (mocking the unit under test, or mocking so much
       that only mocks are exercised);
     - happy-path-only (skipping the error paths + edge cases the code
-      explicitly handles).
-
-  You should:
-  1. Write the tests next to the repo's existing tests, in its style,
-     using its runner + assertion library (see the `test-types`
-     skill). Cover the behaviours/edge-cases/error-paths from the plan.
-  2. Make them pass with the repo's OWN test command. Do NOT change
-     the code under test to make a test pass (that inverts the
-     dependency). The only exception is a genuine, separately-flagged
-     testability seam — call it out explicitly.
-  3. Write an executable POSIX-sh verify script at
-     `{{vars.workspace_dir}}/.test_coverage.verify.sh` that builds +
-     runs the relevant tests and exits non-zero on failure (see the
-     `verify-tests` skill). A DETERMINISTIC gate re-runs THIS script,
-     so it must genuinely pass.
-  4. Iterate until the build is green and the new tests pass.
-  5. Pre-existing failures in OTHER tests (they also fail without
-     your changes) are out of scope: attribute cheaply once
-     (stash + re-run that one test + unstash), note them in your
-     summary, scope `.test_coverage.verify.sh` to the targets your
-     tests touch, and move on — never let a red base tree absorb
-     the run. "Green" = build + YOUR new tests.
-
-  Finally, STAGE YOUR WORK so review can see it: run
-  `git -C {{vars.workspace_dir}} add -A`. REQUIRED — the reviewers and
-  the gate anchor on `git diff HEAD`, which IGNORES untracked files. A
-  NEW test file you never `git add`ed is invisible, so the gate reports
-  "no new test code" and the review loop can never converge. Safe: the
-  commit step re-stages a curated list later.
-
-prompt act_user:
-  Implement the test plan you just produced, in this same session.
-  The plan + the target scope are already in your conversation
-  history.
-
-  Write the tests, write `.test_coverage.verify.sh`, run the suite,
-  and iterate until the build is green and the new tests pass. Then
-  `git -C {{vars.workspace_dir}} add -A`.
-
-prompt simplify_user:
-  /simplify
-
-  Apply it to the TEST code you just wrote: dedupe setup, table-drive
-  repetitive cases, remove redundancy — WITHOUT weakening any
-  assertion or dropping any edge case. After simplifying, ensure the
-  suite still passes and re-run
-  `git -C {{vars.workspace_dir}} add -A`.
-
-## ─── Prompts : Repair (deterministic-gate failures) ──────────────
-
-prompt repair_system:
-  You are fixing the test suite in {{vars.workspace_dir}} after the
-  DETERMINISTIC verify gate failed. The gate fails for exactly two
-  reasons, and you fix whichever applies:
-
-  1. The suite did NOT pass (a new test has a wrong expectation, a
-     missing import, a setup gap, or a compile error). Read the failure
-     log and fix the TEST at the source with the smallest change. Do
-     NOT edit the code under test to force a pass (the only exception
-     is a genuine, separately-flagged testability seam). Do NOT delete
-     a failing test to make the suite green unless it is genuinely
-     wrong — a test that fails because it found a real bug is a SUCCESS;
-     in that case keep it, mark it as expected-fail / skip with a clear
-     reason, and report the bug in your summary.
-  2. No genuinely-new TEST code is present in the diff (you must
-     actually ADD meaningful tests — see the mutation test in the
-     `test-coverage` skill — not just touch non-test files).
-
-  Also ensure `{{vars.workspace_dir}}/.test_coverage.verify.sh` exists
-  and reflects the repo's real build+test (see the `verify-tests`
-  skill). When done, run `git -C {{vars.workspace_dir}} add -A` so new
-  files are visible to the gate's `git diff HEAD`.
-
-prompt repair_user:
-  The deterministic verify gate failed. Fix exactly what it reports,
-  in {{vars.workspace_dir}}.
-
-  Gate output (the real build/test failure, or "no new test code"):
-  {{input.fail_log}}
-
-  Fix the tests (or add the missing meaningful tests), make the suite
-  pass with the repo's own runner, ensure `.test_coverage.verify.sh`
-  is correct, then `git -C {{vars.workspace_dir}} add -A`.
-
-## ─── Prompts : Review / Fix (anti-façade) ────────────────────────
-
-prompt review_system:
-  You are a meticulous, demanding reviewer of the TESTS that were just
-  added in this workflow run. You are NOT auditing the whole repo and
-  NOT reviewing product code except to judge whether the tests
-  exercise it meaningfully.
-
-  MANDATORY FIRST ACTION — before any judgment, run `git status` +
-  `git diff HEAD` yourself (read-only; prepend `-c safe.directory='*'`
-  if git reports "dubious ownership") to obtain the new/changed tests.
-  The tests are in the WORKING TREE, UNCOMMITTED (the commit runs only
-  AFTER review passes), so diff against HEAD — NOT `HEAD^...HEAD` (that
-  shows the base and makes you wrongly conclude "no tests were added",
-  which loops review forever). You may NOT emit a verdict until you
-  have read that diff in THIS session.
-
-  THE ONE RULE THAT MATTERS — the mutation test. For EVERY new test
-  ask: "If the function under test were replaced with a broken stub
-  (returns the zero/wrong value, skips its side effect, swallows its
-  error), would this test FAIL?" If the answer is no, the test is a
-  FAÇADE — set approved=false with confidence=high and name it. The
-  goal is regression-catching power, NOT coverage percentage; do not
-  approve tests just because they raise the number.
-
-  REJECT (these are real blockers — confidence high):
-    - zero-assertion tests (run code, assert nothing meaningful);
-    - tautologies (assert x == x / true; assert a mock returns its
-      own configured value);
-    - snapshot/characterization tests asserting CURRENT output that
-      was never confirmed correct (they freeze bugs);
-    - over-mocking — the unit under test is mocked, or only mocks are
-      exercised;
-    - happy-path-only where the code has error paths / edge cases the
-      tests skip;
-    - a test that "passes" by weakening an assertion or by editing the
-      code under test rather than verifying it;
+      explicitly handles);
     - flaky constructs (real time, unseeded randomness, network, order
       dependence) instead of proper isolation.
 
-  ALSO EVALUATE (lower-stakes, blocker only if it defeats the test's
-  purpose): does it follow the repo's test conventions/layout; are the
-  assertions on observable behaviour (not private internals a refactor
-  would break); are edge cases + boundaries covered; is the test
-  readable enough that a failure names the broken behaviour.
+  Read these skills FIRST (mirrored into .claude/skills/ at run start):
+  `test-coverage` (the doctrine + how to choose scope), `verify-tests`
+  (how to detect and run THIS repo's own suite), and `test-types` (what
+  each type means and how to write it in this stack).
 
-  ITERATIONS — use the history. On iteration 1 audit every new test
-  against the mutation test. On later iterations focus on tests/areas
-  `previous_scanned_areas` did not cover, OR re-check where a fixer
-  just changed something. Populate `scanned_areas` with the concrete
-  test files / behaviours you actually audited this iteration.
+  HOW TO WORK — reproduce the shape of a productive session, agent-side:
 
-  ANTI-FALSE-POSITIVE RULES:
-  1. Mark approved=false only for genuinely worthless or wrong tests
-     (façade, flaky, asserts nothing real). Style/naming nits are NOT
-     blockers.
-  2. Self-critique each blocker: "is this test really worthless, or do
-     I just dislike its style?" If you hesitate, it is NOT a blocker.
-  3. Confidence: "high" = you can point to the exact test and explain
-     the mutation it would not catch. "medium" = probable. "low" =
-     intuition without concrete evidence.
-  4. If the other family already approved a specific test, be EXTRA
-     strict before adding a new blocker on it — cite concrete evidence.
-  5. Items already pushed back by the fixer: do NOT re-raise without
-     new evidence.
+  1. LIVING TODO LIST, not frozen phases. Start with a BRIEF scan: detect
+     the language(s), the test runner, where tests live and the house
+     conventions; measure coverage ONLY with a tool the repo already uses
+     (never bolt one on). Build a todo of the CONCRETE coverage gaps in
+     the requested scope — if `target` is empty, choose the areas where
+     coverage matters most (real logic: branching, parsing, state, error
+     handling; critical paths: auth, money, data integrity, security;
+     recently-changed code) and say why in `summary`. Honour the
+     operator's test-type selection (see the user prompt). Keep the list
+     DENSE and MOVING — re-prioritize, append, and defer as you learn.
 
-  HUMAN ESCALATION: when you hit ambiguity no code reading can resolve
-  ("is this behaviour intentional / the spec?"), call `ask_user` with a
-  precise question. Use sparingly; for ordinary judgments decide and
-  lower confidence if uncertain.
+  2. THE REPEATED UNIT, one gap at a time: pick the behaviour → write the
+     test next to the repo's existing tests, in its style, using its
+     runner + assertion library, asserting the specific behaviours / edge
+     cases / error paths (name the assertion, not just "test X") → run
+     the relevant tests with the repo's OWN command → COMMIT with a
+     semantic message (`test(<scope>): <behaviour locked down>`). A few
+     tests per commit, validation BEFORE the commit — never commit a test
+     you have not seen pass.
 
-prompt review_user_claude:
-  Review the TESTS just added in {{vars.workspace_dir}}.
+  3. COMMIT EACH GAP AS YOU CLOSE IT — never batch. Stage everything
+     including new files (`git add -A`, so NEW test files actually land)
+     and commit before moving on. git IS your durable state: an
+     interrupted run keeps every test you committed, and a fresh pass
+     just reads `git log` and continues where you left off. Do NOT keep a
+     separate worklist / cursor file.
 
-  Scope of the work (what the tests were meant to cover):
-  target = {{vars.target}}
-  requested types — unit:{{vars.test_unit}} integration:{{vars.test_integration}} e2e:{{vars.test_e2e}} other:{{vars.extra_test_kinds}}
+  4. DO NOT CHANGE THE CODE UNDER TEST to make a test pass — that inverts
+     the dependency. The ONLY exception is a genuine, separately-flagged
+     testability seam (a constructor parameter, an injectable clock);
+     call it out explicitly in the commit message and in `summary`. If a
+     new test fails because it found a REAL BUG, that test is a SUCCESS:
+     keep it, mark it expected-fail / skip with a clear reason in the
+     code, and report the bug in `summary` — never delete it or weaken it
+     to force green.
 
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  5. BASELINE — don't chase failures you didn't cause. Pre-existing test
+     failures / known-flaky tests are in your user prompt (`baseline`).
+     Do NOT try to fix or investigate those; if a test was already red
+     before your change, SKIP it and note it. If the baseline is empty,
+     do ONE cheap `git stash`-based check to establish which failures
+     pre-date your work, then stop investigating them.
 
-  Previous reviewer's verdict (other family, immediately before —
-  empty on first iteration):
-  {{loop.review_loop.previous_output}}
+  6. ASK ONLY ON A REAL DECISION. You MAY pause for the operator (the
+     ask-user tool) when a behaviour is genuinely ambiguous ("is this
+     intentional or a bug?" and the answer changes the assertion you
+     write). Keep it RARE: most of the time you decide, lower-stakes
+     doubts go in `summary`.
 
-  Tests/areas already audited earlier (both families — direct your
-  coverage to fresh ground, do NOT shrink rigor):
-  {{input.previous_scanned_areas}}
+  KEEP GOING, one gap at a time, until this pass has locked down every
+  significant behaviour you can within your budget and scope. Then STOP
+  and report.
 
-  Items already pushed back by the fixer (DO NOT RE-RAISE without new
-  evidence):
-  {{input.prior_pushback}}
+  TERMINATION CONTRACT (required structured output — this is how the
+  engine detects completion; an under-specified end just gets re-poked):
+    - coverage_complete: true ONLY when a fresh re-scan of the scope
+      finds NO remaining significant gap (a behaviour a regression could
+      silently break). false if gaps remain (a later pass continues from
+      your commits).
+    - commits_this_pass: how many commits you landed this pass.
+    - coverage_gaps_remaining: a concise note of what still needs tests
+      (empty when coverage_complete).
+    - needs_human / human_note: set if you paused or need an operator
+      decision.
+    - summary: the behaviours you locked down, any real bugs your tests
+      surfaced, any testability seams you introduced.
 
-  Pushback justification:
-  {{input.prior_pushback_justification}}
+  Be honest. A DETERMINISTIC gate re-checks the tree after you — it
+  re-runs the repo's build+test AND verifies genuinely-new TEST code
+  exists in the diff — and the run loops you back for another pass until
+  you report coverage_complete AND the gate is green. Under-reporting
+  only costs a pass; over-reporting (or façade tests) lands you right
+  back here.
 
-  Produce a structured verdict:
-    - approved: true ONLY if every new test passes the mutation test
-      and you audited them all (not a spot-check)
-    - family: "claude"
-    - blockers: real blockers ON THE TESTS only (façade / flaky /
-      worthless — after self-critique)
-    - fix_plan: concrete plan to fix the blockers
-    - confidence: "low" / "medium" / "high"
-    - scanned_areas: test files / behaviours you actually audited this
-      iteration (concise, e.g. "pkg/log/format_test.go — error paths +
-      UTF-8 edges; mutation-checked"). Relayed to the next reviewer.
+prompt campaign_user:
+  Repository: {{vars.workspace_dir}}
 
-prompt review_user_gpt:
-  Review the TESTS just added in {{vars.workspace_dir}}.
+  Target scope (empty = YOU choose the areas that matter most and say
+  why in summary):
+  {{vars.target}}
 
-  Scope of the work:
-  target = {{vars.target}}
-  requested types — unit:{{vars.test_unit}} integration:{{vars.test_integration}} e2e:{{vars.test_e2e}} other:{{vars.extra_test_kinds}}
+  Requested test types (true = include this type; if ALL are false AND
+  "other kinds" is empty, YOU choose the appropriate types):
+    - unit:        {{vars.test_unit}}
+    - integration: {{vars.test_integration}}
+    - e2e:         {{vars.test_e2e}}
+    - other kinds: {{vars.extra_test_kinds}}
 
-  Current iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
+  BASELINE — pre-existing failures / known-flaky tests to SKIP (empty =
+  establish it once cheaply, then skip what predates your work):
+  {{vars.baseline}}
 
-  ## TOOL BUDGET — READ FIRST (tight — only 12 tool calls total).
-  ## Anchor protocol — do EXACTLY this, then commit to a verdict. The
-  ## tests are UNCOMMITTED in the working tree, so diff HEAD — NOT
-  ## `HEAD^...HEAD` (that shows the base and loops review forever):
-  ##   1. `bash: git -C {{vars.workspace_dir}} diff HEAD --shortstat`
-  ##   2. `bash: git -C {{vars.workspace_dir}} diff HEAD --name-only`
-  ##   3. Pick 2-3 new/changed TEST files. `read_file` each ONCE.
-  ##   4. Optional: 1 targeted grep per concern, max 2-3.
-  ##   5. Emit verdict.
-  ## ~8 calls, under the 12 cap. Do NOT re-enumerate the diff with
-  ## many greps — trust steps 1+2.
+  Deterministic gate feedback from the PREVIOUS pass (empty on the first
+  pass; when present, the gate was RED after your last pass — a build/
+  test failure to FIX at the test level, or "no genuinely-new test code"
+  meaning your work never landed in the diff):
+  {{input.fail_log}}
 
-  Previous reviewer's verdict (other family, immediately before —
-  empty on first iteration):
-  {{loop.review_loop.previous_output}}
+  Work the coverage gaps one at a time — pick the behaviour → write a
+  mutation-proof test → run the repo's suite → commit — until a fresh
+  re-scan finds no significant gap in scope. Read `git log` first to see
+  what earlier passes already landed. Then report the termination
+  contract (coverage_complete, commits_this_pass,
+  coverage_gaps_remaining).
 
-  Tests/areas already audited earlier:
-  {{input.previous_scanned_areas}}
+## ─── verify (deterministic gate: suite green + real new tests) ──────
+## An ADAPTIVE agent (verify_build) reads the verify-build + verify-tests
+## skills and writes the repo's real build+test into an OUT-OF-TREE
+## <scratch_dir>/verify.sh; a DETERMINISTIC tool node (verify_run) re-runs
+## it, gates on the REAL exit code, AND checks the diff for genuinely-new
+## test code. No language / package manager is named here — the gate stays
+## universal while the verdict stays deterministic. verify_build does NOT
+## fix code: a RED gate routes back to `campaign`.
 
-  Items already pushed back by the fixer (DO NOT RE-RAISE without new
-  evidence):
-  {{input.prior_pushback}}
+prompt verify_system:
+  You are a release engineer. A coverage pass just added tests to this
+  repository and committed them. Your single job: capture how THIS repo
+  builds and tests itself into a re-runnable script the deterministic
+  gate will execute. You do NOT change code and you do NOT write tests.
 
-  Pushback justification:
-  {{input.prior_pushback_justification}}
+  STEPS:
+  1. Detect how THIS repo builds and tests itself — read the
+     `verify-build` and `verify-tests` skills. Use the repo's OWN
+     toolchain (a task runner / Makefile target, a package-manager test
+     script, or a language build+test command), HONOURING any pinned
+     toolchain (version managers, lockfiles, devbox, GOTOOLCHAIN). Do NOT
+     assume a language.
+  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
+     (an OUT-OF-TREE scratch path, NOT inside the repo — create it first
+     with `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build AND
+     the test targets the campaign's new tests touch (package/module
+     level), and exits non-zero on any failure.
+  3. PRE-EXISTING failures: scope `verify.sh` so a red base tree can't
+     absorb the run — the gate measures THIS run's tests. List any
+     excluded pre-existing failures in your summary.
+  4. Run it ONCE to confirm the script itself is valid (the commands
+     resolve). You do NOT fix tests here: if the suite is RED, the
+     deterministic gate reports it and the campaign fixes it next pass.
+  5. If the repo genuinely has no build/test system, write a script that
+     echoes that and exits 0, and say so.
 
-  Produce a structured verdict:
-    - approved: true ONLY if every new test passes the mutation test
-      and you audited them all
-    - family: "gpt"
-    - blockers: real blockers ON THE TESTS only
-    - fix_plan: concrete plan to fix the blockers
-    - confidence: "low" / "medium" / "high"
-    - scanned_areas: test files / behaviours you actually audited this
-      iteration (concise). Relayed to the next reviewer.
+  A deterministic tool node RE-RUNS your script and gates the run on its
+  real exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh`
+  exists and reflects the repo's real build+test; summary = the command
+  you settled on and any pre-existing failures you scoped out.
 
-prompt fix_system:
-  You are an expert developer fixing blockers a reviewer raised on the
-  TESTS added in this workflow run.
+prompt verify_user:
+  Repository to verify: {{vars.workspace_dir}}
 
-  WHY: the goal is tests that catch real regressions. When you fix a
-  blocker, the fix must make the test MORE able to catch a bug — add
-  the missing assertion, cover the skipped edge case, de-mock the unit
-  under test, replace a frozen snapshot with a verified expectation,
-  remove the flaky construct. NEVER fix a blocker by weakening a test
-  or by editing the code under test to match a wrong expectation.
-
-  SCOPE:
-  1. Apply concrete edits to the TEST code to fix the reported
-     blockers. Stay within the tests added this run; do NOT refactor
-     unrelated code.
-  2. After each fix, run the relevant tests with the repo's own runner
-     to confirm they still pass (and still fail when they should —
-     sanity-check at least one mutation if cheap). Keep
-     `.test_coverage.verify.sh` accurate.
-
-  PUSHBACK: you MAY refuse a blocker via `pushback` +
-  `pushback_justification` when it is a style/naming nit, targets
-  code outside the tests added this run, or contradicts the plan. Use
-  sparingly — pushing back on everything wastes iterations.
-
-  HUMAN ESCALATION: if a blocker is genuinely ambiguous (which
-  behaviour is correct? is this the intended contract?), call
-  `ask_user`. Not for technical decisions you can make alone.
-
-  After applying fixes, STAGE everything: run
-  `git -C {{vars.workspace_dir}} add -A` so new files are visible to
-  the next reviewer's `git diff HEAD`.
-
-prompt fix_user:
-  Apply concrete fixes to the blockers below, in
-  {{vars.workspace_dir}}. Stay within the tests added this run.
-
-  Reported blockers:
-  {{input.blockers}}
-
-  Proposed fix plan:
-  {{input.fix_plan}}
-
-  For EACH blocker: if it is a real problem with a test (façade,
-  flaky, missing assertion/edge), fix the TEST to make it stronger and
-  re-run. If it is NOT a real blocker (style nit) or targets code
-  outside the tests added this run, add it to `pushback` with a clear
-  rationale in `pushback_justification`.
-
-  After fixing, run `git -C {{vars.workspace_dir}} add -A`.
-
-  Output:
-    - applied: true if at least one fix was applied
-    - summary: summary of fixes applied
-    - pushback: refused items (empty if all fixed)
-    - pushback_justification: rationale for the pushback
-
-## ─── Prompts : Commit ────────────────────────────────────────────
-
-prompt prepare_commit_system:
-  Pick the EXACT set of files to commit to capture the tests added in
-  this workflow run, and produce a semantic commit message. You do NOT
-  run `git commit` — a deterministic shell tool downstream stages your
-  file list and applies your message.
-
-  This session forks from the implementation session, so the plan, the
-  tests, and the simplification are in your history. Use that, plus a
-  fresh `git status` / `git diff HEAD`, to decide.
-
-  Procedure (in order):
-    1. Run `git status` and `git diff HEAD` (read-only).
-    2. Keep only the files that materialise the tests you added (test
-       files; and product files ONLY if you made a genuine,
-       reviewer-approved testability seam — note it).
-    3. EXCLUDE anything not part of this test work: pre-existing WIP,
-       build artifacts, coverage reports, the bot's own scratch
-       (`.test_coverage.verify.sh`, `.test_coverage.verify.log`),
-       editor/LLM scratch files. When in doubt, EXCLUDE.
-    4. Build the structured output:
-         - type = "test" (these are tests); scope, subject,
-           full_message; files (exact repo-relative paths to stage);
-           committed: false.
-
-  Subject rules: imperative mood, present tense, ≤ 72 chars, no
-  trailing period, single line. Prefer `test(<scope>): …`.
-
-prompt prepare_commit_user:
-  Pick the files and produce the semantic commit name for the tests
-  you just added. Do not run `git commit` — only output the structured
-  object.
-
-  Workspace: {{vars.workspace_dir}}
+  Capture the repo's real build + test into `{{vars.scratch_dir}}/verify.sh`
+  (an out-of-tree scratch path — see the system prompt + the
+  `verify-build` / `verify-tests` skills). Do NOT change code; the
+  deterministic gate runs your script and the campaign fixes any red on
+  the next pass.
 
 ## ─── Schemas ─────────────────────────────────────────────────────
 
+## campaign's input: the deterministic gate's failure log from the
+## PREVIOUS pass (empty on the first pass and on a green-but-more-work
+## continuation).
+schema campaign_input:
+  fail_log: string
+
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the
+## engine keys convergence on. coverage_complete is the done-oracle (a
+## fresh re-scan finds no remaining significant gap in scope); the rest
+## is observability.
+schema campaign_output:
+  coverage_complete: bool
+  commits_this_pass: int
+  coverage_gaps_remaining: string
+  needs_human: bool
+  human_note: string
+  summary: string
+
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
+
 ## verify_result is the DETERMINISTIC gate's contract. `passed` is the
-## real process exit code of re-running .test_coverage.verify.sh — NOT
-## an LLM judgment. `new_test_code` is true only when `git diff HEAD`
-## (plus untracked files) shows genuinely-new test code added — the
-## negative-space anti-façade check (the agent cannot just CLAIM it
-## added tests; the diff must show it).
+## real process exit code of re-running <scratch_dir>/verify.sh — NOT an
+## LLM judgment. `new_test_code` is true only when `git diff HEAD` (plus
+## untracked files) shows genuinely-new test code — the negative-space
+## anti-façade floor (the agent cannot just CLAIM it added tests; the
+## diff must show them). `skipped` is true only when no verify script was
+## produced (treated as pass but surfaced loudly, never a silent façade).
 schema verify_result:
   passed: bool
+  skipped: bool
   new_test_code: bool
   exit_code: int
   log_tail: string
 
-schema repair_input:
+## gate is the deterministic continuation decision. converged = the suite
+## is green AND real new test code landed AND the campaign reported the
+## coverage complete. fail_log relays the gate's real failure to the
+## campaign on a RED pass (the tool composes the "no new test code"
+## explanation into log_tail itself, so this stays a simple if()).
+schema gate_state:
+  converged: bool
   fail_log: string
 
-schema review_input:
-  prior_pushback: string[]
-  prior_pushback_justification: string
-  ## previous_scanned_areas accumulates the audit surfaces from ALL
-  ## prior reviewer iterations (both families). Empty on iteration 1.
-  previous_scanned_areas: string[]
+## ─── Nodes ───────────────────────────────────────────────────────
 
-schema verdict_output:
-  approved: bool
-  ## family enum-constrained so a hallucinated third value is rejected
-  ## by structured-output validation instead of bypassing the fix
-  ## routes and falling through to `done`.
-  family: string [enum: "claude", "gpt"]
-  blockers: string[]
-  fix_plan: string
-  confidence: string [enum: "low", "medium", "high"]
-  scanned_areas: string[]
-
-## streak_check relays the verdict + computes a deterministic stop
-## signal. Soft-approval: a low-confidence rejection counts as approved
-## for streak/fix routing (the reviewer's own uncertainty isn't a
-## strong enough signal to trigger a fix cycle). cumulative_scanned_areas
-## grows each iteration (outputs.streak_check resolves to the PREVIOUS
-## iteration's value during this evaluation), tail-capped to the last 40
-## so a reviewer's input stays bounded (avoids context_length_exceeded).
-schema streak_state:
-  stop: bool
-  approved: bool
-  family: string
-  blockers: string[]
-  fix_plan: string
-  cumulative_scanned_areas: string[]
-
-schema fix_input:
-  blockers: string[]
-  fix_plan: string
-
-schema fix_output:
-  applied: bool
-  summary: string
-  pushback: string[]
-  pushback_justification: string
-
-schema commit_output:
-  type: string [enum: "feat", "fix", "refactor", "test", "docs", "chore"]
-  scope: string
-  subject: string
-  full_message: string
-  files: string[]
-  committed: bool
-
-schema commit_tool_input:
-  full_message: string
-  files: string[]
-  workspace_dir: string
-
-schema commit_result:
-  success: bool
-  output: string
-
-## ─── Nodes : Plan → Act → Simplify ───────────────────────────────
-
-agent plan:
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset so it works exactly like a native Claude Code session: a brief
+## coverage scan, a living todo of gaps, one verified `test:` commit per
+## gap, in stride. session: fresh — a fresh pass re-derives its todo from
+## the repo + `git log` (git is the durable state). reasoning_effort
+## high, not max: the working SHAPE, not the model tier, is the lever.
+## interaction: human — kept rare by the contract.
+agent campaign:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  ## Bounded session — read-only exploration, a tighter cap is fine.
-  tool_max_steps: 60
-  system: plan_system
-  user: plan_user
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
   session: fresh
-  ## Persist the plan as a versioned artifact (studio Artifact tab +
-  ## `iterion report`); `act` still inherits it via the session.
-  publish: plan_artifact
+  interaction: human
 
-agent act:
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a
+## per-gap session.
+agent verify_build:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  ## Bound the agentic session (maps to claude --max-turns). Unbounded,
-  ## a high-effort implementer accretes tool-result context until the
-  ## CLI dies; error_max_turns is a graceful partial stop.
-  tool_max_steps: 120
-  system: act_system
-  user: act_user
-  session: inherit
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  session: fresh
+  interaction: human
 
-agent simplify:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  tool_max_steps: 50
-  user: simplify_user
-  session: inherit
-
-## ─── Nodes : Deterministic verify gate ───────────────────────────
-
-## verify_run_tests is the FLOOR (no LLM). It re-runs the
-## agent-prepared .test_coverage.verify.sh and reports the REAL exit
-## code, AND checks `git diff HEAD` + untracked files for genuinely-new
-## TEST code (universal test-naming conventions — NOT a language
-## enumeration). No language or package manager appears here; it just
-## executes whatever the adaptive act/repair agent wrote, so the gate
-## stays universal while the verdict stays deterministic. python3 is
-## used for safe JSON + subprocess capture; the body avoids double
-## quotes (and avoids backslashes — uses [.] not \. and chr() for
-## special chars) so it survives the .bot string + sh -c layers.
-tool verify_run_tests:
-  command: `WS={{vars.workspace_dir}} python3 -c "
+## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
+## <scratch_dir>/verify.sh, reports the REAL exit code, AND performs the
+## negative-space new-test-code check on the git diff (universal
+## test-naming conventions — NOT a language enumeration; it just executes
+## whatever verify_build wrote). When no new test code is detected the
+## explanation is appended to log_tail so the gate's fail_log carries it
+## back to the campaign. python3 for safe JSON + subprocess capture;
+## double-quote-free body, no backslashes (uses [.] and chr()) so it
+## survives the .bot string + sh -c layers (E012).
+tool verify_run:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
 import os, re, json, subprocess
 ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
 
 def git(args):
     try:
@@ -611,12 +425,19 @@ def git(args):
     except Exception:
         return ''
 
-# 1) Run the agent-written verify script (the real test suite).
-script = os.path.join(ws, '.test_coverage.verify.sh')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+
+# 1) Re-run the agent-written verify script (the repo's real build+test).
+script = os.path.join(scratch, 'verify.sh')
+skipped = False
 if not os.path.exists(script):
-    passed = False
-    rc = 1
-    out = 'no .test_coverage.verify.sh found; act/repair must write the build+test verify script (see the verify-tests skill)'
+    skipped = True
+    passed = True
+    rc = 0
+    out = 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'
 else:
     rc = 0
     out = ''
@@ -628,20 +449,28 @@ else:
         out = (e.output or '') + chr(10) + '[verify timed out after 1800s]'
         rc = 124
     except Exception as e:
-        out = 'verify_run_tests could not execute the script: ' + str(e)
+        out = 'verify_run could not execute the script: ' + str(e)
         rc = 1
     passed = rc == 0
     try:
-        with open(os.path.join(ws, '.test_coverage.verify.log'), 'w', encoding='utf-8') as lf:
+        with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
             lf.write(out)
     except OSError:
         pass
 
-# 2) Negative-space anti-façade check: did real NEW test code land?
+# 2) Negative-space anti-facade floor: did real NEW test code land?
 # Universal test-naming conventions (case-insensitive), no language enum.
+# The campaign commits in stride, so diff against the RUN BASE, not HEAD:
+# under worktree: auto the per-run worktree is created fresh, so the
+# OLDEST reflog entry for HEAD is exactly the checkout the run started
+# from -- diffing base vs the working tree covers both the commits landed
+# in stride and any uncommitted work in ONE diff. Fallback (no reflog):
+# diff HEAD, which still catches uncommitted work.
 rx = re.compile('(_test[.]|_tests[.]|[.]test[.]|[.]spec[.]|/test/|/tests/|/__tests__/|/spec/|(^|/)test_|_spec[.]|Test[.]|Tests[.]|Spec[.])', re.I)
+reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
+diff_base = reflog[-1] if reflog else 'HEAD'
 added = 0
-for line in git(['diff', 'HEAD', '--numstat']).splitlines():
+for line in git(['diff', diff_base, '--numstat']).splitlines():
     parts = line.split(chr(9))
     if len(parts) >= 3 and rx.search(parts[2]):
         try:
@@ -654,153 +483,45 @@ for line in git(['status', '--porcelain']).splitlines():
         untracked_test = True
         break
 new_test_code = added > 0 or untracked_test
+if not new_test_code:
+    out = out + chr(10) + '[gate] no genuinely-new test code detected in this run (neither committed nor in the working tree) -- write real tests and git add -A; see the test-coverage skill mutation rule.'
 
-print(json.dumps({'passed': passed, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
+print(json.dumps({'passed': passed, 'skipped': skipped, 'new_test_code': new_test_code, 'exit_code': rc, 'log_tail': out[-4000:]}))
 "`
   output: verify_result
 
-agent repair_tests:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  tool_max_steps: 80
-  input: repair_input
-  output: verify_result
-  system: repair_system
-  user: repair_user
-  session: inherit
-  interaction: human
-
-## ─── Nodes : Review / Fix Loop ───────────────────────────────────
-
-router alt:
-  mode: round_robin
-
-judge reviewer_claude:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  ## Reviewer effort DECOUPLED from the implementer (defaults MEDIUM).
-  ## A max-effort reviewer is pathologically thorough — it always
-  ## re-raises some nit, so the "two consecutive cross-family
-  ## approvals" gate never closes and the loop oscillates. Medium keeps
-  ## it honest about REAL façade/worthless tests without false-positive
-  ## churn. This is the convergence dial.
-  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-medium}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_claude
-  session: fresh
-  interaction: human
-
-judge reviewer_gpt:
-  ## Explicit backend pin: openai/* models only work via claw. Without
-  ## this the resolver routes through claude_code and the verdict fails
-  ## schema validation.
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-medium}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_gpt
-  session: fresh
-  ## claw backend uses snake_case tool names; without these the
-  ## reviewer can't read the workspace.
-  tools: [bash, read_file, glob, grep]
-  ## Tight cap forces a verdict instead of re-enumerating the diff via
-  ## grep (the loop that hit context_length_exceeded on the forfait).
-  tool_max_steps: 12
-  interaction: human
-
-## Deterministic streak detector. stop=true iff current AND previous
-## reviewers (opposite families) both APPROVED, high-confidence-gated:
-## a rejection still counts as approval unless it carries confidence
-## high. Only high-confidence façade/worthless-test blockers hold up
-## the commit; medium/low concerns are recorded but don't gate (two
-## reviewers almost always surface SOME nit each round, so gating on
-## medium makes the double-approval statistically unreachable).
-compute streak_check:
-  output: streak_state
+## gate — the deterministic continuation decision. Reads the real gate
+## result (suite green + new test code) AND the campaign's termination
+## output, both fresh in the loop BODY. converged = green AND real new
+## tests AND coverage reported complete. On a RED pass fail_log carries
+## the tool-composed failure log to the campaign; empty when green. No
+## LLM, no shell.
+compute gate:
+  output: gate_state
   expr:
-    stop: "(input.approved || input.confidence != 'high') && loop.review_loop.previous_output.approved && input.family != loop.review_loop.previous_output.family"
-    approved: "input.approved || input.confidence != 'high'"
-    family: "input.family"
-    blockers: "input.blockers"
-    fix_plan: "input.fix_plan"
-    cumulative_scanned_areas: "tail(unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas)), 40)"
-
-## Per-family fixers. Each inherits the SAME-family reviewer's session
-## (_session_id on the edge) so it reuses the prompt cache + loaded
-## workspace + reasoning chain — one session per iteration per family.
-agent fix_claude:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  tool_max_steps: 80
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  interaction: human
-
-agent fix_gpt:
-  backend: "claw"
-  model: "${ITERION_VIBE_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_GPT:-high}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 30
-  interaction: human
-
-## ─── Nodes : Commit ──────────────────────────────────────────────
-
-## prepare_commit forks the simplify session so it inherits the full
-## context. Read-only: it runs git status / git diff HEAD, then emits a
-## structured commit plan. It never stages or commits.
-agent prepare_commit:
-  backend: "claude_code"
-  model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
-  output: commit_output
-  system: prepare_commit_system
-  user: prepare_commit_user
-  session: fork
-  readonly: true
-
-## commit_changes is a deterministic shell tool — no LLM. It stages the
-## exact file list from prepare_commit and commits with the semantic
-## message, EXCLUDING the bot's own verify scratch (committing it would
-## pollute the target repo). add the listed files, reset the scratch,
-## then commit only if something is staged.
-tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -- {{input.files}} && { git -C {{input.workspace_dir}} reset -q -- .test_coverage.verify.sh .test_coverage.verify.log >/dev/null 2>&1 || true; git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}}; }"
-  input: commit_tool_input
-  output: commit_result
+    converged: "outputs.verify_run.passed && outputs.verify_run.new_test_code && outputs.campaign.coverage_complete"
+    fail_log: "if(outputs.verify_run.passed && outputs.verify_run.new_test_code, '', outputs.verify_run.log_tail)"
 
 ## ─── Workflow ────────────────────────────────────────────────────
 
 workflow test_coverage:
-  entry: plan
+  ## Entry is the campaign itself — the mission starts working
+  ## IMMEDIATELY (the coverage scan is the campaign's own first move). A
+  ## re-dispatch's campaign reads `git log` and continues from the tests
+  ## earlier passes banked.
+  entry: campaign
 
   ## Isolated git worktree at .iterion/worktrees/<run-id>/ — shields the
-  ## user's main tree from mutations, makes prepare_commit structurally
-  ## correct (no unrelated WIP to misclassify), and makes cleanup a
-  ## one-line worktree remove.
+  ## user's main tree from mutations; on convergence the commits land on
+  ## a persistent branch and best-effort fast-forward the operator's
+  ## checked-out branch.
   worktree: auto
 
-  ## Container isolation on top of the worktree. The act/simplify/repair
-  ## phases run the repo's build+test (go test / pnpm test / pytest / …)
-  ## inferred from the project — the worktree alone doesn't sandbox
-  ## those. Inline mode (not `mode: auto`) so we can pin the image AND
-  ## install claude into it (the sandbox images don't ship the CLI; auto
-  ## fallback drops post_create/mounts/env). Operators wanting a
-  ## different toolchain edit this block — the single override point.
+  ## Container isolation on top of the worktree. The campaign runs the
+  ## repo's build+test inferred from the project — the worktree alone
+  ## doesn't sandbox those. Inline mode (not `mode: auto`) so we can pin
+  ## the image AND install claude into it (the sandbox images don't ship
+  ## the CLI; auto fallback drops post_create/mounts/env).
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-full:edge"
     user: "1000:1000"
@@ -810,142 +531,39 @@ workflow test_coverage:
     ## Gate on `claude --version` (runs the binary), NOT `command -v`
     ## (a broken/partial npm -g install exits 0 leaving a non-runnable
     ## binary). VERIFY after install + exit 1 on failure so a broken
-    ## claude fails post_create (a clean sandbox-setup error the
-    ## dispatcher retries) instead of failing cryptically mid-run.
+    ## claude fails post_create cleanly instead of cryptically mid-run.
     post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
 
   budget:
     max_parallel_branches: 1
-    max_duration: "4h"
-    max_cost_usd: 120
+    max_duration: "2h"
+    max_cost_usd: 60
 
   compaction:
     threshold: 0.9
     preserve_recent: 8
 
-  ## ═══ Phase 1 : Plan → Act → Simplify ══════════════════════════
-  ## One Claude Code session via session: inherit on act/simplify.
-  plan -> act with {
-    _session_id: "{{outputs.plan._session_id}}"
-  }
-  act -> simplify with {
-    _session_id: "{{outputs.act._session_id}}"
-  }
+  ## Each pass: the campaign closes coverage gaps (committing each in
+  ## stride), then the deterministic gate re-checks the tree + the diff.
+  campaign -> verify_build
+  verify_build -> verify_run
+  verify_run -> gate
 
-  ## ═══ Phase 2 : Deterministic verify floor ═════════════════════
-  ## The suite must pass AND real new test code must exist before the
-  ## quality review begins. Red → repair (bounded) → re-run; the pass
-  ## edge always wins when its condition is met (first-match-wins, so
-  ## it is listed before the loop-bearing back edge + the fail
-  ## fallthrough). Mirrors whole-improve-loop's verify_build/verify_run
-  ## pair, placed as the floor.
-  simplify -> verify_run_tests
-
-  verify_run_tests -> alt when "passed && new_test_code"
-
-  ## Not green (or no new tests) and the loop isn't exhausted → repair.
-  ## repair_tests inherits simplify's session (resumed each iteration,
-  ## so repairs chain) and receives the gate's real failure log.
-  verify_run_tests -> repair_tests as verify_loop(3) with {
-    fail_log: "{{outputs.verify_run_tests.log_tail}}",
-    _session_id: "{{outputs.simplify._session_id}}"
+  ## Converged (suite green AND real new tests AND coverage reported
+  ## complete) → done.
+  gate -> done when converged
+  ## Not converged → another campaign pass. RED carries the failure log
+  ## (a build/test failure, or the "no new test code" explanation the
+  ## tool composed) so the agent fixes exactly that; green-but-more-work
+  ## carries an empty log so the agent simply continues. This closes the
+  ## single declared loop; the loop-back reads outputs.gate.fail_log (a
+  ## BODY node — never the loop-head campaign's own output on its
+  ## back-edge, which would read a loop-entry-frozen value).
+  gate -> campaign as continuation_loop("{{vars.max_passes}}") with {
+    fail_log: "{{outputs.gate.fail_log}}"
   }
-  repair_tests -> verify_run_tests
-
-  ## verify_loop exhausted without green real tests → fail (no commit).
-  ## Routed to fail (not done): a non-converging deterministic gate is
-  ## not a silent success.
-  verify_run_tests -> fail
-
-  ## ═══ Phase 3 : Anti-façade review / fix loop ══════════════════
-  ## Round-robin alternates claude / gpt. Each reviewer receives the
-  ## OTHER family's most recent fixer pushback + the accumulated
-  ## scanned areas. Empty on the first iteration.
-  alt -> reviewer_claude with {
-    prior_pushback: "{{outputs.fix_gpt.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
-  }
-  alt -> reviewer_gpt with {
-    prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}"
-  }
-
-  ## Both reviewers feed streak_check. The loop is attached here so the
-  ## runtime snapshots the verdict as loop.review_loop.previous_output
-  ## for the NEXT iteration.
-  reviewer_claude -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_claude.approved}}",
-    family: "{{outputs.reviewer_claude.family}}",
-    blockers: "{{outputs.reviewer_claude.blockers}}",
-    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}",
-    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}"
-  }
-  reviewer_gpt -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_gpt.approved}}",
-    family: "{{outputs.reviewer_gpt.family}}",
-    blockers: "{{outputs.reviewer_gpt.blockers}}",
-    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}",
-    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
-  }
-
-  ## ═══ Phase 4 : Commit on streak success ═══════════════════════
-  ## Cross-family double-approval reached. prepare_commit (forked from
-  ## simplify) emits the structured commit intent; commit_changes
-  ## deterministically applies it.
-  streak_check -> prepare_commit when stop with {
-    _session_id: "{{outputs.simplify._session_id}}"
-  }
-  prepare_commit -> commit_changes with {
-    full_message: "{{outputs.prepare_commit.full_message}}",
-    files: "{{outputs.prepare_commit.files}}",
-    workspace_dir: "{{vars.workspace_dir}}"
-  }
-  commit_changes -> done
-
-  ## Otherwise approved (no streak yet, OR a non-high-confidence
-  ## rejection treated as soft-approved): keep alternating without
-  ## fixing. This edge does NOT carry review_loop (the counter
-  ## increments once per cycle on the reviewer→streak_check edge).
-  streak_check -> alt when "approved"
-
-  ## High-confidence rejection WITH concrete blockers: route to the
-  ## SAME-family fixer so it inherits the reviewer's session.
-  ## _session_id reads directly from the most recent reviewer output
-  ## (compute passthrough strips underscore-prefixed metadata). The
-  ## length(blockers) > 0 guard avoids a wasted fixer round-trip on a
-  ## coverage-only rejection with no concrete blocker.
-  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_claude._session_id}}"
-  }
-  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_gpt._session_id}}"
-  }
-
-  ## Recovery cycle uses a separate loop name so its counter doesn't
-  ## interfere with the review_loop snapshot semantics. Both fixers
-  ## share the counter — total fix attempts capped at 20.
-  fix_claude -> alt as recovery_loop(20)
-  fix_gpt    -> alt as recovery_loop(20)
-
-  ## Loop-exhaustion fallbacks → fail (NOT done): exhausting the loops
-  ## without streak_check firing `stop` means no convergence + no
-  ## commit; reporting `finished` there is a silent empty success. Legit
-  ## success is streak_check (stop) → prepare_commit → commit_changes →
-  ## done.
-  reviewer_claude -> fail
-  reviewer_gpt    -> fail
-  fix_claude      -> fail
-  fix_gpt         -> fail
-  ## streak_check catch-all routes back to alt so an unmatched state
-  ## keeps cycling rather than silently terminating; the bounded
-  ## review_loop still guarantees exit via the reviewer→fail
-  ## fallthrough.
-  streak_check    -> alt
+  ## continuation_loop exhausted (max_passes hit while gaps remain) →
+  ## finish anyway, shipping what is banked (every committed test is
+  ## real, landed work; the last campaign_output's
+  ## coverage_gaps_remaining tells the operator what is left).
+  gate -> done

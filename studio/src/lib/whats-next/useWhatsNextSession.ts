@@ -386,6 +386,9 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
       try {
         const res = await createRun({
           file_path: bot.workflowPath,
+          // Cloud: the server resolves the bundle (source + skills) off the
+          // pod FS by id, so Nexie launches without uploading bytes.
+          bot_id: bot.id,
           vars,
         });
         rememberSessionRunId(bot.id, projectId, res.run_id);

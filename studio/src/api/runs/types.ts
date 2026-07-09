@@ -155,6 +155,50 @@ export interface ExecutionState {
 }
 
 // Mirror of runview.RunHeader.
+// One launch-time model/backend override rule captured on the run: the
+// node selector (id / glob / kind / "*") plus whatever it pins. Mirrors
+// pkg/store.RunModelOverride.
+export interface RunModelOverride {
+  selector: string;
+  backend?: string;
+  model?: string;
+  provider?: string;
+}
+
+// Effective budget cap set captured at launch — the workflow's `budget:`
+// block after recipe/preset/CLI overrides and, in cloud, the platform
+// ceiling clamp. Mirrors pkg/store.RunBudget. A zero/absent field means
+// "no cap on that dimension"; the whole object is absent when the
+// workflow declared no budget. `max_duration` is a Go duration string
+// ("30m", "1h30m") — parse with parseGoDuration from lib/duration.
+export interface RunBudget {
+  max_cost_usd?: number;
+  max_tokens?: number;
+  max_iterations?: number;
+  max_duration?: string;
+  max_parallel_branches?: number;
+}
+
+// The persisted budget-consumption fields carried on the run checkpoint —
+// authoritative across resume segments, unlike the event-derived live
+// totals which reset per segment. Mirror of the store.Checkpoint budget_*
+// fields; the rest of the checkpoint stays opaque.
+export interface CheckpointBudget {
+  budget_tokens_used?: number;
+  budget_cost_usd?: number;
+  budget_iterations_used?: number;
+  budget_elapsed_ns?: number;
+  cost_usd_total?: number;
+}
+
+// Run checkpoint as far as the UI reads it: typed budget-consumption +
+// paused-node fields, remainder left opaque via the index signature.
+export type RunCheckpoint = CheckpointBudget & {
+  node_id?: string;
+  interaction_id?: string;
+  [key: string]: unknown;
+};
+
 export interface RunHeader {
   id: string;
   // Deterministic, human-friendly run label. Empty for legacy runs
@@ -176,12 +220,22 @@ export interface RunHeader {
   // Workflow-declared tool-permission gate mode ("off" | "ask" | "deny").
   // Empty/off = no gate. The header badges ask/deny. See docs/permissions.md.
   permission_mode?: string;
+  // Launch-time per-node/-group model/backend pins captured on the run
+  // (studio dropdowns / CLI --model/--backend / HTTP model_overrides).
+  // Display-only, surfaced in the Overview's "Launched with". Empty when
+  // none were set.
+  model_overrides?: RunModelOverride[];
+  // Effective budget caps captured at launch, surfaced so the Overview
+  // draws budget meters with a denominator. Absent when the workflow
+  // declared no budget: block; meters then degrade to bare stats.
+  budget?: RunBudget;
   created_at: string;
   updated_at: string;
   finished_at?: string;
   error?: string;
-  // Checkpoint shape varies; opaque is fine for the UI.
-  checkpoint?: unknown;
+  // Typed for the budget-consumption + paused-node fields the UI reads;
+  // the rest of the checkpoint stays opaque. See RunCheckpoint.
+  checkpoint?: RunCheckpoint;
   // Filesystem path the run executed in (worktree or cwd). Empty for
   // pre-feature runs; the modified-files panel keys off this to decide
   // whether to render at all.
@@ -397,6 +451,30 @@ export interface ArtifactFile {
   modified_at: string;
 }
 
+// PlanTodo is one entry in a persisted plan snapshot — the normalized
+// TodoWrite/todo_write item shape emitted by the Go store. Status is
+// canonicalised server-side to the claude_code vocabulary
+// (pending | in_progress | completed).
+export interface PlanTodo {
+  content: string;
+  status: string;
+  active_form?: string;
+  priority?: string;
+  id?: string;
+}
+
+// PlanSnapshot is one chronological snapshot of an agent's living TODO
+// plan (captured when a TodoWrite/todo_write tool fired), served by
+// GET /api/runs/:id/plans in ascending seq order.
+export interface PlanSnapshot {
+  seq: number;
+  node_id: string;
+  iteration: number;
+  tool?: string;
+  ts: string;
+  todos: PlanTodo[];
+}
+
 // DownloadOutcome describes what happened on the save side. `cancelled`
 // is desktop-only — it fires when the user dismisses the native save
 // dialog. In browser mode the SPA can't observe the user's choice
@@ -416,6 +494,11 @@ export interface CreateRunRequest {
   // Inline workflow source — required in cloud mode (no shared FS),
   // ignored in local mode where file_path resolves on disk.
   source?: string;
+  // Catalog bundle id (e.g. "whats-next"). In cloud mode the server
+  // resolves the bot's source + skills off the pod's own bots/ tree, so a
+  // catalog bot launches without uploading its bytes. A catalog-shaped
+  // file_path is inferred to the same id when this is omitted.
+  bot_id?: string;
   run_id?: string;
   vars?: Record<string, string>;
   // Name of an in-source preset (presets: block) to apply before vars.

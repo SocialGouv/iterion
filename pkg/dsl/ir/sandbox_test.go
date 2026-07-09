@@ -189,14 +189,7 @@ workflow bad:
   start -> done
 `
 	r := compileFile(t, src)
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagInvalidSandboxMode {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagInvalidSandboxMode) {
 		t.Fatalf("expected DiagInvalidSandboxMode for inline-without-image, got %+v", r.Diagnostics)
 	}
 }
@@ -227,14 +220,7 @@ workflow bad:
   start -> done
 `
 	r := compileFile(t, src)
-	found := false
-	for _, d := range r.Diagnostics {
-		if d.Code == DiagInvalidSandboxMode {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasDiag(r.Diagnostics, DiagInvalidSandboxMode) {
 		t.Fatalf("expected DiagInvalidSandboxMode (C044), got %+v", r.Diagnostics)
 	}
 }

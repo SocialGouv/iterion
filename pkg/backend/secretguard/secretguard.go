@@ -512,17 +512,3 @@ func (g *Guard) SecretFileHints() []FileSecretHint {
 	copy(out, g.fileHints)
 	return out
 }
-
-// ContainsPlaceholder reports whether s carries any placeholder (i.e.
-// Materialize would change it).
-func (g *Guard) ContainsPlaceholder(s string) bool {
-	if g == nil || s == "" {
-		return false
-	}
-	for ph := range g.placeholderValue {
-		if strings.Contains(s, ph) {
-			return true
-		}
-	}
-	return false
-}

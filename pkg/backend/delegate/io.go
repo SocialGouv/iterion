@@ -67,6 +67,7 @@ type IOTask struct {
 	SecretsHygiene         bool                  `json:"secrets_hygiene,omitempty"`
 	SecretFiles            []SecretFileHint      `json:"secret_files,omitempty"`
 	CursorFragments        []string              `json:"cursor_fragments,omitempty"`
+	SkillHints             []SkillHint           `json:"skill_hints,omitempty"`
 	PresetFragment         string                `json:"preset_fragment,omitempty"`
 	CompactThresholdRatio  float64               `json:"compact_threshold_ratio,omitempty"`
 	CompactPreserveRecent  int                   `json:"compact_preserve_recent,omitempty"`
@@ -156,6 +157,7 @@ func ToIOTask(t Task) IOTask {
 		SecretsHygiene:         t.SecretsHygiene,
 		SecretFiles:            t.SecretFiles,
 		CursorFragments:        t.CursorFragments,
+		SkillHints:             t.SkillHints,
 		PresetFragment:         t.PresetFragment,
 		CompactThresholdRatio:  t.CompactThresholdRatio,
 		CompactPreserveRecent:  t.CompactPreserveRecent,
@@ -204,6 +206,7 @@ func FromIOTask(t IOTask) Task {
 		SecretsHygiene:         t.SecretsHygiene,
 		SecretFiles:            t.SecretFiles,
 		CursorFragments:        t.CursorFragments,
+		SkillHints:             t.SkillHints,
 		PresetFragment:         t.PresetFragment,
 		CompactThresholdRatio:  t.CompactThresholdRatio,
 		CompactPreserveRecent:  t.CompactPreserveRecent,

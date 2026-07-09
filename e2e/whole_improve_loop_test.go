@@ -27,9 +27,10 @@ type campaignState struct {
 }
 
 // stubCampaignSweep registers the baseline stubs for a green continuation:
-// campaign (the adaptive agent), the verify_build→verify_run gate (green), and
-// finalize_mr. Individual tests override a node afterward (later .on wins) to
-// exercise a red verify pass or the MR path.
+// campaign (the adaptive agent), the verify gate (verify_probe regenerate →
+// verify_build → verify_run green), and the MR tail (forge_auth_probe
+// credential-present → finalize_mr). Individual tests override a node
+// afterward (later .on wins) to exercise a red verify pass or the MR path.
 func stubCampaignSweep(exec *scenarioExecutor, st *campaignState) {
 	exec.on("campaign", func(in map[string]interface{}) (map[string]interface{}, error) {
 		st.pass++
@@ -55,11 +56,21 @@ func stubCampaignSweep(exec *scenarioExecutor, st *campaignState) {
 			"_tokens":           10,
 		}, nil
 	})
+	// fresh=false routes every pass through verify_build → verify_run, the
+	// flow the per-test call-count assertions are written against.
+	exec.on("verify_probe", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"fresh": false, "reason": "no verify.sh yet", "_tokens": 1}, nil
+	})
 	exec.on("verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
 	})
 	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+	})
+	// available=true keeps the opt-in MR path reachable (finalize_mr fires
+	// when open_mr=true); the probe only runs behind the open_mr gate.
+	exec.on("forge_auth_probe", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		return map[string]interface{}{"available": true, "reason": "env:GH_TOKEN", "_tokens": 1}, nil
 	})
 	exec.on("finalize_mr", func(_ map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{

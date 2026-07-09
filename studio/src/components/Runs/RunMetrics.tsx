@@ -1,8 +1,6 @@
-import { useEffect, useState } from "react";
-
+import { Stat } from "@/components/ui";
+import { useNow } from "@/hooks/useNow";
 import { useRunMetrics } from "@/hooks/useRunMetrics";
-import { useRunStore } from "@/store/run";
-import { LiveDot } from "@/components/ui/LiveDot";
 import { formatCost, formatMs, formatTokens } from "@/lib/format";
 
 interface Props {
@@ -28,17 +26,14 @@ interface Props {
 export const STALL_WARN_SECONDS = 120;
 export const STALL_DANGER_SECONDS = 300;
 
-// RunMetrics renders the second line of the run header: live duration,
-// cost, tokens, branch counts, jump-to-failed shortcut. Stays compact
-// in a horizontal strip; collapses to "+N more" via flex-wrap on
-// narrow viewports.
+// RunMetrics renders the header's live-vitals ribbon: duration, stall
+// badge, cost (+ budget tint/chip), tokens, and the jump-to-failed
+// shortcut. The structural counts (nodes / loops / active / paused / llm
+// steps) live in the Overview's Progress section. Stays compact in a
+// horizontal strip; wraps via flex-wrap on narrow viewports.
 export default function RunMetrics({ active, onJumpToFailed, bare = false }: Props) {
   const nowMs = useNow(active ? 1000 : null);
   const m = useRunMetrics(nowMs);
-  // Run-level "real loops" indicator: the SEMANTIC per-named-loop
-  // iteration counter (matching the `node#N` log label), distinct from
-  // the per-node execution count. Absent for runs with no named loops.
-  const loops = useRunStore((s) => s.snapshot?.run.loops);
 
   // Staleness — surface the silent-stuck case the 2026-05-21 internet
   // outage exposed. When a run is `running` but the backend has stopped
@@ -67,7 +62,7 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
     : "px-4 py-1.5 border-b border-border-default flex flex-wrap items-center gap-x-4 gap-y-1 text-micro bg-surface-1";
   return (
     <div className={outerClass}>
-      <Metric label="duration" value={formatMs(m.durationMs)} live={active} />
+      <Stat label="duration" value={formatMs(m.durationMs)} live={active} />
       {stalenessTone && (
         <span
           className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-caption border ${
@@ -81,7 +76,7 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
         </span>
       )}
       {m.costUsd > 0 && (
-        <Metric
+        <Stat
           label="cost"
           value={formatCost(m.costUsd)}
           tone={
@@ -91,7 +86,7 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
               ? "warning"
               : undefined
           }
-          tooltip={
+          hint={
             m.budgetWarning?.dimension === "cost_usd"
               ? `Budget warning: ${Math.round(m.budgetWarning.ratio * 100)}% of $${m.budgetWarning.limit.toFixed(2)} consumed.`
               : undefined
@@ -111,7 +106,7 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
         </span>
       )}
       {m.totalTokens > 0 && (
-        <Metric
+        <Stat
           label="tokens"
           // claude_code reports an aggregate without an in/out split;
           // claw fills both. Show the split when we have it, fall back
@@ -121,50 +116,17 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
               ? `${formatTokens(m.inputTokens)} / ${formatTokens(m.outputTokens)}`
               : formatTokens(m.totalTokens)
           }
-          tooltip={
+          hint={
             m.inputTokens > 0 || m.outputTokens > 0
               ? `input ${m.inputTokens.toLocaleString()} · output ${m.outputTokens.toLocaleString()} · total ${m.totalTokens.toLocaleString()}`
               : `${m.totalTokens.toLocaleString()} tokens (aggregate; backend did not split input/output)`
           }
         />
       )}
-      {m.llmStepCount > 0 && (
-        <Metric label="llm steps" value={String(m.llmStepCount)} />
-      )}
-      {loops &&
-        Object.entries(loops)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([name, p]) => (
-            <span
-              key={name}
-              className="inline-flex items-center gap-1"
-              title={`Named loop "${name}" is on iteration ${p.current}${
-                p.max ? ` of a ${p.max}-iteration cap` : " (unbounded)"
-              }. This is the semantic loop counter (matches the run's node#N log label), not the per-node execution count.`}
-              aria-label={`loop ${name}: ${p.current}${p.max ? ` of ${p.max}` : ""}`}
-            >
-              <span className="text-fg-subtle">⟳ {name}</span>
-              <span className="font-mono font-semibold text-fg-default">
-                {p.current}
-                {p.max ? `/${p.max}` : ""}
-              </span>
-            </span>
-          ))}
-      <Metric label="nodes" value={String(m.nodeCount)} />
-      {m.branchCountActive > 0 && (
-        <Metric
-          label="active"
-          value={String(m.branchCountActive)}
-          tone="info"
-        />
-      )}
-      {m.pausedCount > 0 && (
-        <Metric
-          label="paused"
-          value={String(m.pausedCount)}
-          tone="warning"
-        />
-      )}
+      {/* Structural counts (llm steps, named loops, nodes, active,
+          paused) moved to the Overview's Progress section so this
+          always-visible strip stays a lean live-vitals ribbon. Only the
+          critical "failed → jump" affordance stays here. */}
       {m.failedCount > 0 && (
         <button
           type="button"
@@ -190,42 +152,6 @@ export default function RunMetrics({ active, onJumpToFailed, bare = false }: Pro
   );
 }
 
-function Metric({
-  label,
-  value,
-  live,
-  tone,
-  tooltip,
-}: {
-  label: string;
-  value: string;
-  live?: boolean;
-  tone?: "info" | "warning" | "danger";
-  tooltip?: string;
-}) {
-  const valueColor =
-    tone === "info"
-      ? "text-info-fg"
-      : tone === "warning"
-      ? "text-warning-fg"
-      : tone === "danger"
-      ? "text-danger-fg"
-      : "text-fg-default";
-  return (
-    <span
-      className="inline-flex items-center gap-1"
-      title={tooltip}
-      aria-label={`${label}: ${value}`}
-    >
-      <span className="text-fg-subtle">{label}</span>
-      <span className={`font-mono font-semibold ${valueColor}`}>
-        {value}
-        {live && <LiveDot tone="info" size="xs" className="ml-1 align-middle" />}
-      </span>
-    </span>
-  );
-}
-
 // budgetPillTooltip composes the two-sentence hover hint for the budget
 // warning chip. Sentence 1 names the dimension and pressure; sentence 2
 // explains the consequence (hard cap reached vs. soft threshold).
@@ -241,19 +167,4 @@ export function budgetPillTooltip(
     ? "Hard cap reached."
     : "Run will stop when the hard cap is hit.";
   return `${head} ${tail}`;
-}
-
-function useNow(intervalMs: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (intervalMs === null) {
-      // Snap once when the run goes inactive so the final duration is
-      // captured, then stop ticking.
-      setNow(Date.now());
-      return;
-    }
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
 }

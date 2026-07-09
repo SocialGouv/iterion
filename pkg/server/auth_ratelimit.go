@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -164,28 +165,5 @@ func retrySeconds(d time.Duration) string {
 	if secs < 1 {
 		secs = 1
 	}
-	return itoa(secs)
-}
-
-// itoa avoids importing strconv just for one call.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [12]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return strconv.Itoa(secs)
 }

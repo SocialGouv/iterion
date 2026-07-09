@@ -64,6 +64,39 @@ const RunFormatVersion = 1
 // queue_msg_id, version) live on Run when they appear; pure
 // filesystem callers leave them zero and they round-trip as `null`
 // in BSON without breaking the JSON shape.
+// RunModelOverride is one persisted launch-time model/backend override
+// rule: the node selector (id / glob / kind / "*") plus whatever it
+// pins. Mirror of the launch request's override entries, kept on the
+// run so the studio can show "launched with model X on backend Y"
+// after the fact — the overrides otherwise ride only the transient
+// launch request, not the persisted record.
+type RunModelOverride struct {
+	Selector string `json:"selector" bson:"selector"`
+	Backend  string `json:"backend,omitempty" bson:"backend,omitempty"`
+	Model    string `json:"model,omitempty" bson:"model,omitempty"`
+	Provider string `json:"provider,omitempty" bson:"provider,omitempty"`
+}
+
+// RunBudget is the EFFECTIVE budget cap set captured at launch — the
+// workflow's `budget:` block after recipe/preset/CLI overrides AND (in
+// cloud) the platform ceiling clamp, snapshotted onto the run so the
+// studio Overview can draw budget meters with a stable denominator
+// instead of re-deriving caps from budget_warning events. A zero field
+// means "no cap on this dimension" (per the runtime's SharedBudget
+// convention); nil (the whole pointer) means the workflow declared no
+// budget and no overrides were applied. Display-only, like
+// RunModelOverride — the live enforcement reads the runtime's
+// SharedBudget, never this record. MaxDuration is kept as a Go duration
+// string ("30m") — the source of truth — so the frontend parses it and
+// no lossy ms conversion happens at the wire boundary.
+type RunBudget struct {
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty" bson:"max_cost_usd,omitempty"`
+	MaxTokens           int     `json:"max_tokens,omitempty" bson:"max_tokens,omitempty"`
+	MaxIterations       int     `json:"max_iterations,omitempty" bson:"max_iterations,omitempty"`
+	MaxDuration         string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
+	MaxParallelBranches int     `json:"max_parallel_branches,omitempty" bson:"max_parallel_branches,omitempty"`
+}
+
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
 	ID            string `json:"id" bson:"_id"`
@@ -96,6 +129,18 @@ type Run struct {
 	// studio RunHeader so a gated run reads at a glance. See
 	// docs/permissions.md.
 	PermissionMode string `json:"permission_mode,omitempty" bson:"permission_mode,omitempty"`
+	// ModelOverrides captures launch-time per-node/-group backend+model+
+	// provider pins (studio dropdowns / CLI --model/--backend / HTTP
+	// model_overrides) so the run's Overview can show what it was
+	// launched with. Display-only: the overrides are applied to the
+	// executor at launch, never re-read from here. Empty when none, and
+	// left untouched on resume (resume doesn't re-supply them).
+	ModelOverrides []RunModelOverride `json:"model_overrides,omitempty" bson:"model_overrides,omitempty"`
+	// Budget is the effective budget cap set captured at launch (after
+	// overrides + cloud ceiling clamp), so the studio Overview draws
+	// budget meters with a denominator. Nil when the workflow declares
+	// no budget: block and no overrides applied. See RunBudget.
+	Budget *RunBudget `json:"budget,omitempty" bson:"budget,omitempty"`
 	// BundleHash is the SHA-256 of the logical content (sorted
 	// (relative-path, file-bytes) sequence) of the `.botz` archive
 	// backing this run. Format-independent, so it is stable whether the

@@ -1,14 +1,25 @@
 name: test-coverage
 display_name: Testy
-version: 0.1.0
+version: 2.0.0
+## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
+## v1 staged pipeline (plan → act → simplify → verify_run_tests →
+## repair_tests → alternating Claude/GPT review-fix loop →
+## prepare_commit → commit_changes, 13 nodes) with ONE adaptive
+## `campaign` agent carrying the anti-façade doctrine in its contract
+## (mutation test, FORBIDDEN list, one verified `test:` commit per gap in
+## stride), a deterministic gate that re-runs the repo's own suite AND
+## verifies genuinely-new test code in the diff, and a bounded
+## continuation loop. The verify script moved out-of-tree
+## (<scratch>/verify.sh) — no more in-tree .test_coverage.verify.sh +
+## commit-time reset hack. git is the durable state. See
+## docs/references/productive-session-patterns.md.
 description: |
-  Autonomous test-coverage augmentation. Points at a target area (a
-  path, package, or free description — or nothing, in which case Testy
-  picks the lowest-coverage / most-critical / most-recently-changed
-  code itself), plans which tests are missing, writes them with the
-  repo's OWN test framework, proves they pass with a deterministic
-  gate, then runs the alternating Claude/GPT review-fix loop until two
-  consecutive cross-family approvals.
+  Autonomous test-coverage augmentation — one capable agent, its natural
+  flow, minimal framing. Points at a target area (a path, package, or
+  free description — or nothing, in which case Testy picks the
+  lowest-coverage / most-critical / most-recently-changed code itself),
+  builds a living todo of coverage gaps, and closes them one verified
+  `test:` commit at a time with the repo's OWN test framework.
 
   The operator chooses which test types to add via checkboxes (unit /
   integration / e2e) plus a free-text field for any other kind
@@ -17,13 +28,12 @@ description: |
   repo's conventions.
 
   Anti-façade by design: the success metric is NOT coverage percentage
-  — it is meaningful tests that would CATCH A REAL REGRESSION. A
-  deterministic gate proves the repo's own suite still passes and that
-  genuinely-new test code was added; the cross-family reviewers reject
-  any test that would still pass if the code under test were stubbed or
-  returned wrong values (zero-assertion tests, tautologies,
-  characterization snapshots that lock in unverified output,
-  over-mocking).
+  — it is meaningful tests that would CATCH A REAL REGRESSION. The
+  campaign's contract enforces the mutation test (a test must fail if
+  the code under test were stubbed broken) and forbids zero-assertion
+  tests, tautologies, unverified snapshots and over-mocking; a
+  deterministic gate proves the repo's own suite still passes AND that
+  genuinely-new test code actually landed in the diff.
 
   Stack-agnostic: how to detect the test runner, where tests live, and
   how to write each test type idiomatically lives in the bot's skills,

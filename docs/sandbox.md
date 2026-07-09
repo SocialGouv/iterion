@@ -315,6 +315,15 @@ iterion sandbox doctor                 # report driver + capabilities
   `~/.iterion` + `~/.claude` auto-mount (`""`, `auto`, or `none`).
   Defaults to `auto`. Set to `none` on multi-tenant / cloud runners
   to avoid leaking host OAuth credentials.
+- `ITERION_SANDBOX_OVERRIDE` — CLI-strength mode override (`""`,
+  `none`, or `auto`), same precedence tier as `iterion run --sandbox`:
+  `none` beats even a workflow's inline `sandbox:` block. Honoured by
+  the cloud runner (`iterion runner`): set `none` on a runner that is
+  itself the isolation boundary and ships the toolchain (e.g. the
+  `iterion-runner-devbox` image), so a bot's sandbox block — written
+  for local runs — executes directly in the runner pod instead of
+  spawning a sibling sandbox pod. The Helm chart sets this
+  automatically whenever `runner.sandbox.enabled` is false.
 
 ### Precedence (highest → lowest)
 

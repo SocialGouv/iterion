@@ -16,6 +16,7 @@ export const BOTTOM_TABS = [
   "report",
   "browser",
   "artifacts",
+  "plans",
 ] as const;
 export type BottomTab = (typeof BOTTOM_TABS)[number];
 export const CHAT_DOCK_KEY = "run-console-v2.chat-dock";
@@ -27,6 +28,7 @@ export const BOTTOM_TAB_LABELS: Record<BottomTab, string> = {
   report: "Report",
   browser: "Browser",
   artifacts: "Artifacts",
+  plans: "Plans",
 };
 export const BROWSER_DOCK_KEY = "run-console-v2.browser-dock";
 

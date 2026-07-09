@@ -800,6 +800,11 @@ func callWithContextRetry(ctx context.Context, client api.APIClient, opts Genera
 			return agg, e // can't shrink further → surface the original error
 		}
 		*messages = compacted
+		// Same reseed as the threshold path: after a forced squeeze the
+		// model must re-read its todo list before continuing.
+		if hasTodoTool(opts.Tools) {
+			*messages = append(*messages, todoReseedMessage())
+		}
 		if opts.OnContextCompactRetry != nil {
 			opts.OnContextCompactRetry(attempt+1, e, len(compacted), target)
 		}
@@ -1028,6 +1033,11 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 			if opts.OnCompact != nil {
 				opts.OnCompact(info)
 			}
+			// Re-anchor the task list after the squeeze (Grok-style reseed):
+			// the todo file survived on disk, the model's view of it did not.
+			if hasTodoTool(opts.Tools) {
+				messages = append(messages, todoReseedMessage())
+			}
 		}
 
 		// Drain operator-queued chatbox messages AFTER compaction so
@@ -1054,12 +1064,14 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 
 // buildOperatorMessage wraps any operator-queued chat messages into a
 // single synthetic user turn the LLM observes between tool iterations.
-// The "[OPERATOR MESSAGE]" prefix is conventional rather than
-// load-bearing: the agent can see them, react if relevant, or
-// continue its plan otherwise.
+// A <system-reminder> header marks the harness provenance while stating
+// explicitly that the content below carries user authority — the agent
+// applies it, adjusting its current plan if relevant.
 func buildOperatorMessage(texts []string) api.Message {
 	var sb strings.Builder
-	sb.WriteString("[OPERATOR MESSAGE]\n")
+	sb.WriteString(systemReminder("The operator queued the message(s) below mid-run. " +
+		"They are user instructions: apply them from now on, adjusting your current plan if needed."))
+	sb.WriteString("\n\n")
 	for i, t := range texts {
 		if i > 0 {
 			sb.WriteString("\n---\n")

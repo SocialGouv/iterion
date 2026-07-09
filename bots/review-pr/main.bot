@@ -594,7 +594,7 @@ judge reviewer_gpt:
   tools: [bash, read_file, glob, grep]
   tool_max_steps: 30
 
-agent emit:
+agent converge:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_EMIT:-medium}"
@@ -690,16 +690,16 @@ workflow review_pr:
   ## Converge on emit (await: wait_all). emit reads
   ## outputs.reviewer_claude / outputs.reviewer_gpt directly, so the
   ## edges carry no data mapping.
-  reviewer_claude -> emit
-  reviewer_gpt -> emit
+  reviewer_claude -> converge
+  reviewer_gpt -> converge
 
   ## emit always runs (board + markdown report). Then pr_gate decides
   ## whether to ALSO publish to a forge PR — only when pr_url is set —
   ## feeding emit's merged findings forward to the publish step.
-  emit -> pr_gate with {
+  converge -> pr_gate with {
     pr_url: "{{vars.pr_url}}",
-    findings: "{{outputs.emit.findings}}",
-    total_findings: "{{outputs.emit.total_findings}}"
+    findings: "{{outputs.converge.findings}}",
+    total_findings: "{{outputs.converge.total_findings}}"
   }
   ## No PR target → finish after the board + report (the default,
   ## zero extra LLM cost). PR target → skill-guided forge publish.

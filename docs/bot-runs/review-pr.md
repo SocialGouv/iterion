@@ -6,6 +6,37 @@ finding is published to the native board (label `source:revi`); with `--var
 pr_url` it also posts an inline forge review. Never edits or commits. See
 [bots/review-pr/](../../bots/review-pr/).
 
+## 2026-07-08 — GitHub PR webhook e2e on iterion cloud prod
+
+- Status: **validated — full end-to-end via the inbound webhook.**
+- Versions: bot review-pr 0.2.0 (post the `emit`→`converge` rename below) · iterion cloud prod `:edge` @ 93bc604+
+- Method: cloud prod (ovh-prod). Connected a GitHub forge (PAT) on a fresh team,
+  enabled Revi on a test repo (`SocialGouv/iterion-e2e-mathkit`), opened a PR
+  with an intentional defect (`subtract` skipping the module's `assertFinite`
+  input-validation invariant). The `pull_request` webhook launched Revi on a
+  cloud runner (no sandbox).
+- Result: both reviewer families ran (reviewer_claude/claude-code +
+  reviewer_gpt/gpt-5.5), `converge` merged them, `publish_review` posted a GitHub
+  review (COMMENTED) — "2 findings (1 medium, 1 low; 1 cross-confirmed)" + 2
+  inline comments (src/calc.mjs:26 medium correctness, test/subtract.test.mjs:8
+  low tests). Both families independently caught the planted defect;
+  cross-confirmation worked.
+- Engine hardening surfaced by this run:
+  - **The bot didn't parse in prod** (`agent emit:` shadowed the reserved `emit`
+    node keyword, ADR-051 → E002 → webhook 502). Fixed by renaming the node to
+    `converge`; added a CI guard (`TestCatalogBotsParseAndCompileClean`) that
+    fails on any catalog bot that doesn't parse+compile — the gap that let it
+    ship (both catalog-loading tests skipped on parse failure).
+  - **Webhook idempotency poisoned by a failed launch**: the initial `opened`
+    delivery 502'd but still consumed the idempotency key, so redeliveries
+    returned `duplicate` (empty run_id) forever. Fixed: a StatusLaunchError row
+    is now retryable. Only a NEW head sha (close/reopen after a push) unblocked
+    the validation.
+- Lessons for next run: `synchronize` does NOT re-trigger Revi by design
+  (opened/reopened only) — to re-review, close/reopen or push a new head sha.
+  Revi posts as the PAT's account (`devthejo` here); a dedicated bot account
+  would read cleaner.
+
 ## 2026-06-13 — review the campaign diff (run 019ec0e8)
 
 - Status: **validated — high value.**

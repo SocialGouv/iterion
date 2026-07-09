@@ -108,6 +108,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C119** | error | subbot without source | A `subbot` node has no `source:` child `.bot` | Add `source: <path>.bot` to the subbot |
 | **C120** | warning | Index on scalar | A subscript `[...]` is applied to a statically-scalar value (string/bool/int/float), which is not indexable | Index an array/map, or drop the subscript |
 | **C121** | error | Enum literal never matches | A `when "field == 'literal'"` / `!=` comparison (or a `compute` expression) compares an enum-typed field against a literal that is not one of its `enum:` values — the comparison can never match, so it is almost always a typo | Use a declared enum value, or fix the field's `enum:` set. `json` fields and unresolved refs are never flagged |
+| **C122** | error | Invalid node timeout | An agent/judge `timeout:` is not a positive Go duration (after `${VAR:-default}` expansion) | Use a positive Go duration string, e.g. `timeout: "20m"` or `"1200s"` |
 | **C170** | error | Invalid memory visibility | `memory: visibility:` has an unknown value | Use a known visibility (`bot`/`project`/`cross_project`/`user`/`org`/`global`) |
 | **C171** | error | Memory visibility conflict | `memory: visibility:` is combined with the legacy `project_root:` | Use `visibility:` alone — drop the legacy `project_root:` |
 | **C172** | warning | Malformed provider step | A `provider:` chain element of the `provider:model` form has an empty provider or model part | Provide both parts, e.g. `anthropic:claude-sonnet-4-6` |
@@ -120,7 +121,7 @@ All diagnostic codes emitted during compilation (`ir.Compile`) and validation (`
 | **C196** | error | Event node without name | An `emit`/`wait` node has no `event:` name (ADR-051) | Add `event: "<name>"` |
 | **C197** | error | Wait without timeout | A `wait` node has no (or an invalid/non-positive) `timeout:` — the mandatory bound, the "no silent infinity" invariant for events | Add `timeout: "30s"` (a positive Go duration) |
 | **C198** | warning | Dangling event | A `wait` awaits an event no `emit` produces (it can only ever time out), or an `emit` produces an event no `wait` consumes (dead event) | Pair each `wait` with an `emit` of the same event name (a `wait` on an externally-sourced event is expected to warn until external-event support lands) |
-| **C199** | error | Invalid node timeout | An agent/judge `timeout:` is not a positive Go duration (after `${VAR:-default}` expansion) | Use a positive Go duration string, e.g. `timeout: "20m"` or `"1200s"` |
+| **C199** | warning | Invalid skill reference | A `skills:` entry (on a node or the workflow) is not a valid skill name — a single path segment of letters/digits/`.`/`-`/`_`, not starting with a dot (ADR-059). Existence in the library is resolved at run time, not here, so an unknown-but-well-formed name does not warn | Fix the name; quote kebab-case names (`skills: ["changelog-writer"]`) |
 
 > **Note on `C103`–`C106` (Verified Actions, ADR-044):** these four codes are
 > the adaptive-recovery firewall on deterministic ACTION tool nodes. The

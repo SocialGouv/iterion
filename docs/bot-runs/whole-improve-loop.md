@@ -10,6 +10,49 @@ cross-family approvals. See [bots/whole-improve-loop/](../../bots/whole-improve-
 > [branch-improve-loop.md](branch-improve-loop.md). This page covers Willy's
 > whole-repo specifics.
 
+## 2026-07-07 — v2 on a RELIABILITY axis: converges (not capped) on 9 hang/leak fixes at the I/O boundary (run 019f3afc)
+
+- Status: **validated** — v2 proven on a third axis (reliability), and this run
+  **converged naturally** (`finished`, two consecutive same-family clean
+  approvals) rather than being forfait-capped — the asymptote (ADR-057) working.
+- Versions: bot v2.0.0 · iterion `c3131a58b` (launch) → rapatriated to
+  `a872b6cdd`. Method: mono claude sonnet-5 (`--model agent=claude-sonnet-5`),
+  sandbox `iterion-sandbox-full:edge`, `--merge-into none`, `--auto-resume 20`,
+  `--max-duration 24h`, forfait cap 90. **Axis**: reliability. Scope: `pkg,cmd`.
+- Result: **finished (converged, NOT capped)** — **9 commits** on
+  `iterion/run/laser-twist-plasmasong-e022`, cherry-picked clean onto main
+  (`3ebc708d7..a872b6cdd`). Footprint 14 files, **+176/−41**. Build+vet+gofmt +
+  101-pkg `go test ./...` green; adversarial review **9/9 SOLID, SAFE-TO-MERGE**.
+- Value: hardened the engine's **I/O boundary against hangs + leaks** — bounded
+  every previously-unbounded external subprocess with a `context.WithTimeout`
+  (all correctly plumbed into `exec.CommandContext` + `defer cancel()`): git
+  (`pkg/git` 30s), worktree git ops (`pkg/runtime` 60s, signature `gitCmd →
+  (*Cmd, CancelFunc)` propagated across 25 callers), fork `git worktree add`
+  (`pkg/runview` 60s), `docker rm`/`git status` (`pkg/dispatcher` 15s), crontab
+  read/write (`pkg/cli` 10s), keychain probe (`pkg/backend/detect` 5s). Plus a
+  real **CDP session + read-pump goroutine leak** on WS proxy teardown
+  (`runs_browser.go` — `Detach` idempotent, mutex-protected, deferred before
+  `conn.Close`), and **surfacing previously-swallowed deferred flush errors** on
+  upload staging (`runs_uploads.go` — correct close-err precedence, the Copy err
+  still wins). Every fix makes a hung/failed external op a *visible error* rather
+  than an indefinite wedge — squarely the "erreurs-explicites, no silent
+  fallback" rule.
+- Findings / misses: the one soft commit is `3122c1062` (fan_out_each "re-check
+  item type") — the adversarial review confirmed it is **defensive but
+  unreachable in practice** (the first loop at `fan_out_each.go:322` already
+  errors on a non-map item), so the message slightly over-claims a bug fix;
+  harmless, no new panic, kept. No façade elsewhere.
+- Engine hardening: the run's *output* IS the hardening (9 reliability fixes to
+  iterion itself, the self-host target).
+- Lessons: a reliability axis **converges far faster than a quality axis** — 9
+  commits then asymptote (`finished`) here vs the quality tour's 100 commits
+  forfait-capped (run 019f2962) — because reliability defects at the I/O boundary
+  are sparse and enumerable, whereas dedup/quality opportunities are near-endless.
+  Reliability is an excellent **bounded, high-signal** axis for a single
+  cost-capped window. Next reliability targets the sweep did *not* reach (scope
+  was `pkg,cmd`): the studio/cloud packages, and concurrency-boundary review
+  (channel/goroutine lifetimes) rather than just subprocess timeouts.
+
 ## 2026-07-03 — v2 on an AMBITIOUS axis: agent self-plans a 7-commit dedup refactor, build+test green, converges (run 019f28ae)
 
 - Status: **validated** (ambitious) — v2 proven on non-trivial, judgment-heavy

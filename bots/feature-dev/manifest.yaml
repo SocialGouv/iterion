@@ -1,11 +1,26 @@
 name: feature-dev
 display_name: Featurly
-version: 0.1.0
+version: 2.0.0
+## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
+## v1 staged pipeline (plan → act → simplify session chain → alt condition
+## router → reviewer_claude/reviewer_gpt → streak_check → fix_claude/
+## fix_gpt → prepare_commit → commit_changes, 13 nodes) with ONE adaptive
+## `campaign` agent given the feature prompt + a standing-autonomy
+## contract (living todo of slices, one verified commit per slice in
+## stride, ADR-authoring obligation, G5 baseline, findings→board
+## handoff), a deterministic build/test gate, a bounded continuation
+## loop, and the opt-in MR tail. The review_mode/mono_family topology
+## vars are retired (ADR-052 no longer applies — no reviewer nodes). git
+## is the durable state. See docs/references/productive-session-patterns.md.
 description: |
-  Autonomous end-to-end feature development. Takes a `feature_prompt`
-  input, plans (Claude Code, read-only), implements (session-inherit),
-  invokes /simplify, then runs the alternating Claude/GPT review-fix
-  loop until two consecutive cross-family approvals.
+  Autonomous end-to-end feature development — one capable agent, its
+  natural flow, minimal framing. Takes a `feature_prompt` input; the
+  campaign explores, builds a living todo of slices, and ships the
+  feature one verified semantic commit at a time (tests included, ADRs
+  authored for non-trivial decisions). A deterministic build/test gate +
+  bounded continuation loop re-poke it until the feature is complete and
+  the tree is green; an opt-in MR tail pushes the series and opens the
+  merge/pull request.
 when_to_use: |
   Use when an item can be phrased as one feature with a clear,
   externally-visible "done" state (new endpoint, UI affordance, CLI

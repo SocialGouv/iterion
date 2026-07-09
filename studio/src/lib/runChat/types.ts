@@ -177,10 +177,23 @@ export interface UserMessage {
   status: UserMessageStatus;
 }
 
+// AssistantTextMessage is one chunk of the agent's mid-turn narration
+// (the assistant's prose between tool calls), folded from
+// `assistant_text` events. Rendered as the agent's speech bubble so a
+// long working step reads as the agent talking, not a frozen banner.
+export interface AssistantTextMessage {
+  kind: "assistant-text";
+  id: string; // "<nodeId>:<iteration>:txt:<seq>"
+  nodeId: string;
+  iteration: number;
+  text: string;
+}
+
 export type RunChatMessage =
   | BannerMessage
   | HumanQuestionMessage
   | NodeOutputMessage
   | SessionClosedMessage
   | ExtensionMessage
-  | UserMessage;
+  | UserMessage
+  | AssistantTextMessage;

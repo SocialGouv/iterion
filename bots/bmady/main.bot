@@ -122,6 +122,13 @@ prompt dev_system:
   to be unrealistic, implement what you can and record the deviation
   in `pushback`.
 
+  PRE-EXISTING FAILURES (don't chase failures you didn't cause): a
+  test that also fails WITHOUT your changes is out of scope.
+  Attribute it cheaply once (stash your changes + re-run that one
+  test + unstash), note it in your summary, and move on — do not fix
+  it or keep investigating to prove your innocence. "Tested" = the
+  build compiles and the tests affected by YOUR stories pass.
+
 prompt dev_user:
   Implement the SELECTED stories in {{vars.workspace_dir}}.
 

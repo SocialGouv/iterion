@@ -131,7 +131,10 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// already limited via MaxBytesReader, but ParseMultipartForm may
 	// have spilled to a temp file we don't directly observe).
 	written, err := io.Copy(dst, io.LimitReader(file, s.cfg.MaxUploadSize+1))
-	dst.Close()
+	closeErr := dst.Close()
+	if err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		os.RemoveAll(dir)
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "write staging file: %v", err)

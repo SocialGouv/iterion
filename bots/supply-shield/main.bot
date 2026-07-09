@@ -329,6 +329,11 @@ prompt review_system:
      A `vuln-db-known` signal is a PUBLISHED advisory — treat as
      HIGH-confidence unless the package is dev/test-only or the version
      is genuinely outside the affected range.
+     ASYMMETRY when the evidence stays ambiguous after reading it: an
+     over-confident `false_positive` on real malware ships a compromise;
+     an over-cautious `valid` costs one operator triage. When you cannot
+     resolve the doubt from the source, keep the signal `valid` and say
+     in `summary` what you could not verify — never dismiss on a hunch.
   3. Compute risk_score:
      - Start from heuristic_score in the input.
      - Subtract the weight of each false_positive signal.

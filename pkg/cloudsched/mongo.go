@@ -2,7 +2,6 @@ package cloudsched
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -52,15 +51,7 @@ func (s *MongoStore) Create(ctx context.Context, sb ScheduledBot) error {
 }
 
 func (s *MongoStore) Get(ctx context.Context, id string) (ScheduledBot, error) {
-	var sb ScheduledBot
-	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&sb)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return ScheduledBot{}, ErrNotFound
-	}
-	if err != nil {
-		return ScheduledBot{}, fmt.Errorf("cloudsched: get: %w", err)
-	}
-	return sb, nil
+	return mongoutil.FindOne[ScheduledBot](ctx, s.coll, bson.M{"_id": id}, ErrNotFound, "cloudsched: get")
 }
 
 func (s *MongoStore) ListByIntegration(ctx context.Context, tenantID, integrationID string) ([]ScheduledBot, error) {
@@ -109,14 +100,7 @@ func (s *MongoStore) ClaimTick(ctx context.Context, id string, expectedNext, new
 }
 
 func (s *MongoStore) Delete(ctx context.Context, id string) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("cloudsched: delete: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrNotFound, "cloudsched: delete")
 }
 
 func (s *MongoStore) DeleteByIntegration(ctx context.Context, tenantID, integrationID string) error {

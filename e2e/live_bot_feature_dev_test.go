@@ -17,13 +17,13 @@ import (
 )
 
 // TestLive_FeatureDev runs the feature_dev bot against a real LLM.
-// The bot orchestrates plan → act → simplify → alternating review/fix
-// → commit, so success means: at least one new commit landed in the
-// workspace's git history beyond the seed commit.
+// v2 (ADR-058 minimal-framing): ONE campaign agent ships the feature
+// slice by slice committing in stride, then the deterministic verify
+// gate re-checks the tree — so success means: at least one new commit
+// landed in the workspace's git history beyond the seed commit.
 //
 // Requires:
 //   - `claude` CLI installed (and OAuth-authenticated OR ZAI_API_KEY in env).
-//   - OPENAI_API_KEY for the GPT reviewer/fixer branches (claw backend).
 //
 // The workspace dir is NOT removed after the test so the user can
 // inspect the resulting code + report.md + metrics.json. The
@@ -35,7 +35,6 @@ func TestLive_FeatureDev(t *testing.T) {
 	loadDotEnv(t)
 	requireCLI(t, "claude")
 	requireBinaryInPath(t, "docker")
-	requireOpenAI(t)
 
 	wf := compileFixture(t, "feature-dev/main.bot")
 
@@ -99,9 +98,9 @@ func TestLive_FeatureDev(t *testing.T) {
 	for _, id := range finished {
 		finishedSet[id] = true
 	}
-	for _, phase := range []string{"plan", "act", "simplify"} {
+	for _, phase := range []string{"campaign", "verify_build", "verify_run", "gate"} {
 		if !finishedSet[phase] {
-			t.Errorf("dev phase %q never finished — bot may have failed before review loop", phase)
+			t.Errorf("v2 node %q never finished — the campaign→verify→gate pass did not complete", phase)
 		}
 	}
 
@@ -145,7 +144,6 @@ func TestLive_FeatureDev_Real(t *testing.T) {
 	loadDotEnv(t)
 	requireCLI(t, "claude")
 	requireBinaryInPath(t, "docker")
-	requireOpenAI(t)
 
 	wf := compileFixture(t, "feature-dev/main.bot")
 	workspaceDir := seedFromFixture(t, "feature-dev-go-service")

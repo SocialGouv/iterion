@@ -1,17 +1,23 @@
 name: rgaa-audit
 display_name: Acci
-version: 0.1.0
+version: 2.0.0
+## 2.0.0 — ADR-058 light pass: the v1 detect_ui (claw) → rgaa_review
+## (claude_code) split collapses into ONE campaign auditor that
+## classifies the UI surface as its opening move and audits in the same
+## session (shared prompt cache, DSFR MCP reachable from turn one).
+## 6 nodes → 5; the deterministic anti-façade machinery (inventory,
+## scan_health hard-fail, cap_findings, report_card) is unchanged.
 description: |
-  Universal RGAA 4.1.2 accessibility auditor (read-only). Statically
-  reviews a project's UI source (HTML, JSX/TSX, Vue, Twig, CSS) against
-  the 106 RGAA criteria across 13 themes (WCAG 2.1 AA basis), guided by
-  the bundled rgaa-criteria-* skills and — when the target uses the
-  Système de Design de l'État — the DSFR MCP tools. Scores each
-  applicable criterion C / NC / NA, classifies non-conformities by
-  priority (🔴 Bloquant / 🟠 Majeur / 🟡 Mineur), exports a dated
-  Markdown conformance report under `audits/` and (optionally) posts one
-  board issue per non-conformity, labelled by severity + theme +
-  criterion.
+  Universal RGAA 4.1.2 accessibility auditor (read-only) — one audit
+  agent over deterministic gates. Statically reviews a project's UI
+  source (HTML, JSX/TSX, Vue, Twig, CSS) against the 106 RGAA criteria
+  across 13 themes (WCAG 2.1 AA basis), guided by the bundled
+  rgaa-criteria-* skills and — when the target uses the Système de
+  Design de l'État — the DSFR MCP tools. Scores each applicable
+  criterion C / NC / NA, classifies non-conformities by priority
+  (🔴 Bloquant / 🟠 Majeur / 🟡 Mineur), exports a dated Markdown
+  conformance report under `audits/` and (optionally) posts one board
+  issue per non-conformity, labelled by severity + theme + criterion.
 
   Static analysis only: it reads source code, it does not launch a
   browser or run a DOM scanner. A deterministic scan_health gate

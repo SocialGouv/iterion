@@ -308,6 +308,11 @@ prompt review_system:
      means the vulnerable symbol is reachable (more urgent than imported).
      Read the cited lockfile / manifest with read_file when the
      applicability is in doubt.
+     ASYMMETRY when applicability stays ambiguous after reading: an
+     over-confident not-applicable on a real advisory ships a known
+     vulnerability; an over-cautious `valid` costs one operator triage.
+     When you cannot resolve the doubt from the manifests, keep the
+     advisory `valid` and say in `summary` what you could not verify.
   2. De-duplicate advisories that the same CVE produced across scanners
      (trivy + osv often both report it) — one flag per advisory id.
   3. Compute risk_score:

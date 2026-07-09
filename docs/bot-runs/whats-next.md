@@ -1,8 +1,65 @@
 # Nexie — `whats-next` run bilans
 
-Orchestrator / board-triage bot. Surveys the repo, elicits priorities, proposes
-a roadmap, materialises it as kanban issues, and triages the board. See
-[bots/whats-next/](../../bots/whats-next/).
+Conversational co-CTO (v2: ONE agent in a chat loop — board intelligence,
+ticket curation against code reality, dispatch). See
+[bots/whats-next/](../../bots/whats-next/). Bilans before 2026-07-07 cover
+the v1 form state machine (survey → priorities form → roadmap → review form
+→ emit → dispatch pickers).
+
+## 2026-07-08 — first cloud-prod session + skills-format engine fix (run 019f412x)
+
+- Status: **validated after two engine fixes** — Nexie ran conversationally in
+  cloud prod for the first time; two blockers found + fixed on the way.
+- Versions: bot whats-next 0.2.0 · iterion cloud prod `:edge` (fixes deployed mid-session up to 6a03866)
+- Method: cloud prod (ovh-prod), studio → What's Next → "What's next?". No repo
+  connected (empty workspace), so board+survey only.
+- Result: after the fixes, Nexie loaded the board (empty), surveyed the
+  workspace, wrote a CONTEXT_BRIEF to workspace memory, and returned a precise
+  "J0 — board+repo empty, tell me the project" recommendation. Board MCP tools
+  (list_issues/list_labels/set_bot/transition_issue) all wired.
+- Engine hardening surfaced by this run:
+  - **Nexie couldn't launch in cloud at all**: the What's Next SessionLauncher
+    posts `createRun({file_path})` with no source, and handleLaunchRun rejects a
+    bare file_path in cloud; whats-next is a non-embedded bundle. Fixed:
+    handleLaunchRun/handleResumeRun now resolve a catalog `bots/<name>` path (or
+    `bot_id`) off the pod FS and carry BotID so the runner mirrors the bundle's
+    skills — the same gesture the webhook/scheduler/board launchers use. SPA
+    passes `bot_id`.
+  - **`Skill(whats-next)` → "Unknown skill"** even though the mirror reported
+    `skills mirrored=11`: iterion mirrored flat `<name>.md` files, but Claude
+    Code's Skill tool only discovers the directory form `<name>/SKILL.md` (Agent
+    Skills spec). Fixed: mirror always writes the directory form (satisfies both
+    claude_code and claw). Nexie ran WITHOUT its playbook skill until this
+    landed — it still functioned via board tools + bash, just degraded.
+- Lessons for next run: launching a catalog bundle by `bot_id` is the clean cloud
+  path (no source upload). A repo-connected session (forge-synced board) is the
+  next thing to exercise — this one had an empty workspace.
+
+## 2026-07-07 — v2 conversational rewrite, first live session (run 019f3beb)
+
+- Status: **validated (high value)** — replayed the exact scenario that killed v1 the same morning (run 019f3afc-era session 019f3b6b: operator asked for quick wins, got raw checkbox forms, gave up) and delivered everything v1 couldn't, in 2 turns.
+- Versions: bot whats-next **0.2.0** (v2 single-agent rewrite) · iterion c5960220e (worktree branch `worktree-nexie-v2-conversational`)
+- Method: CLI `iterion run` from the feature worktree, `--store-dir /home/jo/lab/ai/iterion/.iterion` (operator-visible store + REAL board, 13 backlog items), claude_code + claude-opus-4-8 forfait. Turn 2 via `iterion resume --answer message=…`. Containment: no dispatch instructed; one explicitly-instructed close of a verified-obsolete ticket.
+- Result: **2 turns, ~1m40 each** (turn 1: 09:31:33→09:33:15; turn 2: +99s LLM, 6007 tok, $0.40). Session left in standby (paused at `chat`) — the living co-CTO surface, reachable from the studio.
+- Value:
+  - Turn 1 ("quels quick wins ?"): analysed all 13 items, correctly split the 10 `source:evolve` epics from real candidates, flagged `0bc0c9ab` (Revi pass) as **blocked** (reviews branches that never ran) and `2304ee89` (Willy gap) as **probably obsolete — citing the commits that obsoleted it** (dc22b626 explore-mode, fb60b075 v2 rewrite, ADR-057) *unprompted*, recommended `2047e34d` (deadline robustness) with a sharp rationale, and offered next steps as quick-reply chips. Recommendation-first, French-mirrored — the exact contract.
+  - Turn 2 ("vérifie en détail, si confirmé ferme-le, ne touche à rien d'autre"): re-verified against git history (timeline v0.5.0 explore-mode → v2 rewrite 2026-07-03, prescribed mechanism gone, intent covered by v2), closed `2304ee89` → `done` **with a trace comment** (`comment_issue` + `close_issue`), touched nothing else. Guarded-curation behavior exactly as designed.
+  - Session continuity confirmed: turn 2 reused turn 1's claude session (`_session_id` loop-edge mapping) — zero re-analysis.
+  - 3 `assistant_text` narration events landed in the transcript (B2 works live); `quick_replies`/`dispatched_ids` emitted as real arrays after the prompt-contract fix.
+- Findings / engine hardening (both fixed in-branch):
+  1. **json-typed schema fields can arrive stringified** (`"[\"…\"]"`) from claude_code's formatting pass — first golden recording caught it. Hardened the studio quick_replies reader (server-side `extractStringIDs` already tolerated it) + pinned "real arrays" in the prompt. (`c5960220e`)
+  2. **Linked-worktree promotion claimed foreign workspaces** (HIGH): this run, launched from the Claude Code session worktree with `worktree: none`, got stamped `Worktree=true` with the session worktree as work_dir — close-time finalization would have created an `iterion/run/*` branch there and best-effort **FF'd the operator's checked-out `main` onto the feature branch's HEAD**. Root cause: `runPersistWorkspace`'s promotion matched ANY linked worktree, not just delegated ones. Fixed: promotion now requires explicit `WithWorkDir` delegation (dispatcher/studio paths keep it); pinned by `TestRunPersistWorkspace_WorkspaceAuthority`. (`c01f96fd5`; this run's run.json neutralized by hand.)
+- Lessons for next run: keep dogfooding from the operator store — the real board is what makes the curation behaviors measurable. The studio process must run the new build to render narration + chips.
+
+### Round 2 (same session, turns 3–5): bulk confirmation + real dispatch
+
+- **Turn 3** (explicit bulk: "ajoute `epic:evolve-2026h2` aux 10 source:evolve, c'est moi qui définis cet epic, vas-y"): `list_labels` FIRST (vocabulary ritual), then 10× `set_labels`, existing labels preserved — and the confirmation ritual **adaptively skipped** because the instruction itself was the confirmation ("vas-y" + enumerated scope). Defensible reading of the contract; noted, not fixed.
+- **Turn 4** (ambiguous destructive bulk: "fais le ménage dans le backlog"): full narrated triage (the 10 epics = "tes épics définis il y a 2 min — je n'y touche pas"; duration-deadline = keep; Revi 0bc0c9ab = genuinely non-actionable, correct reasoning), then **`ask_user` with 3 structured options** (`close`/`downgrade`/`keep`, free-text off) — the B1 envelope persisted on the pause and the CLI answer (`--answer ask_user_response=close`) resumed the SAME turn, which commented + closed the ticket. 30 s for the answer→close round-trip. The guarded-bulk ritual works end-to-end live.
+- **Turn 5** ("dispatche le 2047e34d"): transitioned to `ready` (bot `whole-improve-loop` + bot_args intact — parked for the next dispatcher session; none was running, by design of this dogfood), `dispatched_ids` emitted, and Nexie **spontaneously warned about Willy's watchexec footgun** (live-tree edits under `task studio:dev` drain the run) — catalog knowledge surfacing exactly when relevant. 25 s turn.
+- Turn latencies round 2: 24–40 s per turn (vs ~1 m 40 for the analysis-heavy round 1 turns).
+- Note: `watched_issue_ids` stays null on CLI-driven runs — the dispatched_ids→watch stamp is a runview-service hook; studio-launched sessions get the WatchPanel wiring.
+- Session left in **standby** again; backlog now: 10 epic'd evolve tickets + `2047e34d` in ready. Both cleanup closes (`2304ee89`, `0bc0c9ab`) carry trace comments.
+- ADR: the pattern is recorded as [ADR-060 — conversational single-agent bots](../adr/060-conversational-single-agent-bots.md).
 
 ## 2026-06-22 — z.ai/GLM-5.2 dogfood + mid-run anthropic failover (run 019ef04f-a5ff)
 

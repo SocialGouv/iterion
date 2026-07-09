@@ -2,7 +2,9 @@
 // ~/.iterion/plugins) surfaced for the studio Plugins view. Mirrors
 // pkg/plugin.View and the GET/POST /api/v1/plugins endpoints.
 
-const BASE = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
+import { apiBase } from "@/lib/scope";
+
+const BASE = apiBase().replace(/\/$/, "");
 
 // PluginConfigField mirrors pkg/plugin.ConfigField — one declared, user-settable
 // setting (like a Firefox add-on preference).

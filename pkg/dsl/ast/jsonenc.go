@@ -293,6 +293,7 @@ type jsonAgentDecl struct {
 	Tools             []string             `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
+	Skills            []string             `json:"skills,omitempty"`
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
@@ -327,6 +328,7 @@ type jsonJudgeDecl struct {
 	Tools             []string             `json:"tools,omitempty"`
 	ToolPolicy        []string             `json:"tool_policy,omitempty"`
 	Capabilities      []string             `json:"capabilities,omitempty"`
+	Skills            []string             `json:"skills,omitempty"`
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
@@ -583,6 +585,7 @@ type jsonWorkflowDecl struct {
 	DefaultBackend string                `json:"default_backend,omitempty"`
 	ToolPolicy     []string              `json:"tool_policy,omitempty"`
 	Capabilities   []string              `json:"capabilities,omitempty"`
+	Skills         []string              `json:"skills,omitempty"`
 	MCP            *jsonMCPConfigDecl    `json:"mcp,omitempty"`
 	Budget         *jsonBudgetBlock      `json:"budget,omitempty"`
 	Resources      map[string]int        `json:"resources,omitempty"`
@@ -1021,6 +1024,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Tools:             a.Tools,
 		ToolPolicy:        a.ToolPolicy,
 		Capabilities:      a.Capabilities,
+		Skills:            a.Skills,
 		ToolMaxSteps:      a.ToolMaxSteps,
 		MaxTokens:         a.MaxTokens,
 		ReasoningEffort:   a.ReasoningEffort,
@@ -1057,6 +1061,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Tools:             j.Tools,
 		ToolPolicy:        j.ToolPolicy,
 		Capabilities:      j.Capabilities,
+		Skills:            j.Skills,
 		ToolMaxSteps:      j.ToolMaxSteps,
 		MaxTokens:         j.MaxTokens,
 		ReasoningEffort:   j.ReasoningEffort,
@@ -1106,6 +1111,7 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 		DefaultBackend: w.DefaultBackend,
 		ToolPolicy:     w.ToolPolicy,
 		Capabilities:   w.Capabilities,
+		Skills:         w.Skills,
 		MCP:            mcpConfigToJSON(w.MCP),
 		Compaction:     compactionToJSON(w.Compaction),
 		Worktree:       w.Worktree,
@@ -1520,6 +1526,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Tools:             ja.Tools,
 			ToolPolicy:        ja.ToolPolicy,
 			Capabilities:      ja.Capabilities,
+			Skills:            ja.Skills,
 			ToolMaxSteps:      ja.ToolMaxSteps,
 			MaxTokens:         ja.MaxTokens,
 			ReasoningEffort:   ja.ReasoningEffort,
@@ -1570,6 +1577,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Tools:             jj.Tools,
 			ToolPolicy:        jj.ToolPolicy,
 			Capabilities:      jj.Capabilities,
+			Skills:            jj.Skills,
 			ToolMaxSteps:      jj.ToolMaxSteps,
 			MaxTokens:         jj.MaxTokens,
 			ReasoningEffort:   jj.ReasoningEffort,
@@ -1636,6 +1644,7 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 		DefaultBackend: jw.DefaultBackend,
 		ToolPolicy:     jw.ToolPolicy,
 		Capabilities:   jw.Capabilities,
+		Skills:         jw.Skills,
 		MCP:            mcpConfigFromJSON(jw.MCP),
 		Compaction:     compactionFromJSON(jw.Compaction),
 		Worktree:       jw.Worktree,

@@ -112,6 +112,55 @@ func TestApplyHostStateMounts_WarmGoCaches(t *testing.T) {
 	}
 }
 
+// TestApplyHostStateMounts_ClaudeConfigFile guards native:221edac8's root
+// cause: `~/.claude.json` (Claude Code's top-level config, a SIBLING of the
+// ~/.claude directory) must ride along with the ~/.claude mount. Without it
+// the in-container CLI sees the host's config backups (inside the mounted
+// ~/.claude/backups/) but no config, demands a manual restore, and in
+// --print stream-json mode hangs with zero stdout — every sandboxed
+// claude_code attempt then dies on the 90s cold-phase timeout.
+func TestApplyHostStateMounts_ClaudeConfigFile(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("host_state mounts are Linux + docker only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	t.Run("mounted when present", func(t *testing.T) {
+		cfg := filepath.Join(home, ".claude.json")
+		if err := os.WriteFile(cfg, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		spec := &sandbox.Spec{}
+		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
+			func(store.EventType, map[string]interface{}) error { return nil }, iterlog.Nop())
+		found := false
+		for _, m := range spec.Mounts {
+			if strings.Contains(m, "source="+cfg+",") && strings.Contains(m, "target="+cfg) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected a bind mount for %q (claude CLI top-level config); spec.Mounts=%v", cfg, spec.Mounts)
+		}
+		if err := os.Remove(cfg); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("absent host file skipped silently", func(t *testing.T) {
+		spec := &sandbox.Spec{}
+		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
+			func(store.EventType, map[string]interface{}) error { return nil }, iterlog.Nop())
+		for _, m := range spec.Mounts {
+			if strings.Contains(m, ".claude.json") {
+				t.Errorf("no host ~/.claude.json exists, yet a mount references it: %q", m)
+			}
+		}
+	})
+}
+
 // TestApplyHostStateMounts_HomeNestedBindParentsWritable guards the
 // devbox-first-class fix: the Go-cache binds nest under HOME
 // ($HOME/.cache/go-build, $HOME/go/pkg/mod), and docker creates their

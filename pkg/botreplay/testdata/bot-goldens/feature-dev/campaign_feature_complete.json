@@ -1,0 +1,23 @@
+{
+  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, interaction: human, forfait cost). Shape derived from bots/feature-dev/main.bot schema campaign_output (ADR-058 v2 termination contract). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "bot": "feature-dev",
+  "scenario": "campaign_feature_complete",
+  "node": "campaign",
+  "backend": "claude_code",
+  "model": "claude-opus-4-8",
+  "recorded_at": "2026-07-07T00:00:00Z",
+  "vars": {
+    "feature_prompt": "add Answer() int returning 42 in answer.go"
+  },
+  "input": {
+    "fail_log": ""
+  },
+  "output": {
+    "feature_complete": true,
+    "commits_this_pass": 2,
+    "work_remaining": "",
+    "needs_human": false,
+    "human_note": "",
+    "summary": "Shipped Answer() int returning 42 in answer.go (feat(answer): add Answer helper) and its table test in answer_test.go (test(answer): assert Answer returns 42); build and tests green before each commit."
+  }
+}

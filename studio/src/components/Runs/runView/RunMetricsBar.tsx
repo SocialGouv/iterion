@@ -18,6 +18,7 @@ export function RunMetricsBar({
   scrubSeq,
   onScrubChange,
   onJumpToFailed,
+  bare = false,
 }: {
   active: boolean;
   events: RunEvent[];
@@ -25,9 +26,17 @@ export function RunMetricsBar({
   scrubSeq: number | null;
   onScrubChange: (next: number | null) => void;
   onJumpToFailed: (nodeId: string) => void;
+  // When true, drop the strip's own bottom border so a parent can fuse it
+  // into a single bordered header block with RunHeader. The subtle
+  // surface-1 band (the "raised vitals ribbon" look) is kept.
+  bare?: boolean;
 }) {
   return (
-    <div className="border-b border-border-default bg-surface-1 flex items-stretch">
+    <div
+      className={`bg-surface-1 flex items-stretch ${
+        bare ? "" : "border-b border-border-default"
+      }`}
+    >
       <div className="flex-shrink-0">
         <RunMetrics active={active} onJumpToFailed={onJumpToFailed} bare />
       </div>

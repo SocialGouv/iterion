@@ -118,6 +118,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 - `pkg/pat/` — Personal access tokens (`iap_` bearers for programmatic API access)
 - `pkg/mail/` — Stdlib SMTP mailer (invitations + password reset) with a log fallback when unconfigured
 - `pkg/bundle/` — `.botz` bundle loader (workflow + skills + recipes packaged together)
+- `pkg/skilllib/` — **skill library** (ADR-059): a standalone, operator-curated store of `SKILL.md` skills, global `~/.iterion/skills/` + per-project override, referenced from workflows by the DSL `skills:` field. Distinct from bundle/plugin skills (both artifact-coupled); the three share the run-time `.claude/skills/` mirror (bundle > plugin > library precedence). Ships the shared frontmatter parser reused by `runview`. See [docs/skills-library.md](docs/skills-library.md)
 - `pkg/cloud/` — Cloud-mode runtime wiring (queue dispatch, runner orchestration, multitenancy)
 - `pkg/config/` — Config-file loader (`iterion dispatch` YAML + cloud config)
 - `pkg/git/` — Git helpers (worktree create/finalize, branch detection, fast-forward checks)
@@ -578,10 +579,17 @@ default mental model won't surface:
   root); the Taskfile's `desktop:*` targets set `dir: cmd/iterion-desktop`
   accordingly. `cmd/iterion-desktop/build/` is a symlink to `../../build/`
   so packaging configs stay in one place.
-- Linux builds need apt headers (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
-  `libsoup-3.0-dev`, plus `dpkg-dev`/`patchelf`/`libfuse2t64`/`fuse` for
-  AppImage). Devbox/Nix doesn't expose `.pc` files — use the host
-  package manager. Devcontainers wire this into `postCreateCommand`.
+- Linux builds need the gtk3/webkitgtk dev headers. The default path is
+  apt (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, plus
+  `dpkg-dev`/`patchelf`/`libfuse2t64`/`fuse` for AppImage); devcontainers
+  wire this into `postCreateCommand`. `devbox install` only links the
+  *runtime* outputs, so `.pc` files are missing by default — **but nix can
+  still provide them without apt/sudo**: `scripts/desktop/nix-pkgconfig-env.sh
+  <cmd>` realises gtk3/webkitgtk `-dev` from the pinned nixpkgs and sets the
+  target-specific `PKG_CONFIG_PATH_<arch>_unknown_linux_gnu` (the nix
+  pkg-config wrapper ignores a bare `PKG_CONFIG_PATH`). That's enough to
+  `go build`/`vet`/`test -tags desktop,webkit2_41`; `.deb`/AppImage packaging
+  still wants the apt tooling. See [docs/desktop-build.md](docs/desktop-build.md#alternative-nix-provided-headers-no-apt--no-sudo).
 - The Linux build tag is `desktop,webkit2_41` (already wired in the
   Taskfile) so Wails uses the modern WebKit ABI shipped by current distros.
 - `-skipbindings -s` flags are intentional: the SPA reads runtime-injected
@@ -667,74 +675,68 @@ the measured shape of productive operator sessions (commit cadence,
 work-list discipline, termination contracts) distilled into authoring
 rules; ADR-055/ADR-057 encode its core finding.
 
-### Review loops must converge to an asymptote
+### Improvement loops must converge to an asymptote
 
-Every review/judge loop (feature_dev, branch_improve_loop,
-whole_improve_loop, docs-refresh, secured-renovacy) must **converge to an
-asymptote** — settle into a stable approved state and stop — not
-oscillate. A slight, very occasional oscillation is acceptable; it must
-be the rare exception. **The rule is the asymptote.** (`iterion bench
-asymptote` measures exactly this — see [docs/asymptote-bench.md](docs/asymptote-bench.md).)
+Every improvement/review loop must **converge to an asymptote** — settle
+into a stable approved state and stop — not oscillate. A slight, very
+occasional oscillation is acceptable; it must be the rare exception.
+**The rule is the asymptote.** (`iterion bench asymptote` measures
+exactly this — see [docs/asymptote-bench.md](docs/asymptote-bench.md).)
 
-The mechanisms that produce convergence, all already wired into the
-loop bots — preserve them when authoring/editing:
-- **`streak_check`** gates exit on **N consecutive cross-family
-  approvals** (claude + gpt both approve), not a single pass — and
-  treats a low-confidence rejection as non-blocking so noise doesn't
-  reset the streak.
-- **`prior_pushback` / `previous_scanned_areas`** are fed back to
-  reviewers with "do NOT re-raise without new evidence" — re-litigating
-  resolved items is the classic oscillation driver.
-- **`loop.<name>.previous_output`** shows each reviewer the prior
-  verdict so verdicts trend monotonically, not randomly.
-- **Bounded `max_iterations`** is the backstop, not the design goal.
+**The default mechanism (ADR-058 v2, the whole shipped fleet).** The
+flagship loop bots (whole-improve-loop, branch-improve-loop,
+feature-dev, feature-gap-fill, test-coverage, docs-refresh,
+adr-cartograph, secured-renovacy Phase 2) converge through ONE
+`campaign` agent + a deterministic gate + a bounded continuation loop:
+- the **deterministic verify gate** (`verify_build` writes the repo's
+  real build+test into an out-of-tree `verify.sh`; the `verify_run`
+  tool re-runs it on the REAL exit code — never an LLM judgment,
+  ADR-044) is the truth oracle;
+- the **termination contract** (a machine-checkable flag —
+  `axis_complete` / `feature_complete` / `docs_aligned` / … — plus
+  `commits_this_pass` and a remaining-work note) is the done-oracle,
+  with the honesty clause "under-reporting only costs a pass,
+  over-reporting lands you right back here";
+- **`gate.converged = <flag> ∧ gates green`** closes the single
+  declared `continuation_loop(max_passes)`; exhaustion ships what is
+  banked (the campaign commits each unit in stride — git is the state);
+- oscillation is structurally absent: one context, fresh each pass,
+  re-reads `git log` — there is no reviewer/fixer relay left to
+  re-litigate.
 
-**Mono/dual review topology (ADR-052).** These five bots run their
-reviewer alternation through a **`condition` router** (never
-`round_robin` — it ignores `when` guards), driven by two injected vars
-`review_mode` (`auto|mono|dual`) + `mono_family`. DUAL alternates
-claude↔gpt by `loop.review_loop.iteration` parity (the historical
-behaviour); MONO routes to a single family (~half the LLM calls). The
-topology is resolved at LAUNCH from detected providers by
-[pkg/reviewtopology](pkg/reviewtopology/resolve.go) (a bot can't probe
-credentials) and injected on every surface — CLI `iterion run
---review-mode`, studio/API `review_mode`, dispatcher `review_mode`
-bot_arg. Because 4 of the 5 bots encode the cross-family requirement in
-`streak_check.stop` (`input.family != …previous.family`), those `stop`
-expressions OR-in `vars.review_mode == 'mono'` so MONO converges on two
-consecutive same-family clean approvals instead of never satisfying the
-clause (whole_improve_loop's `stop` is count-based, already
-family-agnostic, so it is unchanged). Unresolved `auto` behaves as DUAL —
-a non-regression. When editing one of these bots, preserve the condition
-router + the guarded gpt edge + the topology vars
-(`bots/review_topology_test.go` enforces this).
+**If you author a NEW cross-family reviewer loop** (an optional
+amplification per ADR-058 — no catalog bot ships one any more),
+preserve the historical convergence mechanisms: a `streak_check` gating
+exit on N consecutive cross-family approvals with low-confidence
+rejections non-blocking; `prior_pushback` / `previous_scanned_areas`
+fed back with "do NOT re-raise without new evidence";
+`loop.<name>.previous_output` for monotonic verdicts; bounded
+`max_iterations` as the backstop, not the design goal.
 
-The fastest way to **break** convergence is to make a reviewer judge
-the **wrong artifact**. The implementer's work lives in the
-**uncommitted working tree** — the commit step runs only *after* review
-passes. So reviewers MUST diff `git diff HEAD` (working tree vs HEAD),
-**never `git diff HEAD^...HEAD`** (the last *commit*, i.e. the base):
-the latter makes a reviewer conclude "the feature isn't implemented" and
-loop forever. This exact bug lived in feature_dev's reviewer_gpt anchor
-protocol (fixed: it now uses `git diff HEAD`, matching review_system,
-reviewer_claude, and every other loop bot). When a review loop
-oscillates, first verify **both** reviewers are diffing the same,
-correct (uncommitted) artifact.
+**Mono/dual review topology (ADR-052) — now a generic opt-in surface.**
+[pkg/reviewtopology](pkg/reviewtopology/resolve.go) still resolves
+`review_mode` (`auto|mono|dual`) + `mono_family` at LAUNCH and injects
+them on every surface (CLI `iterion run --review-mode`, studio/API,
+dispatcher bot_arg) — but ONLY into bots that declare a `review_mode`
+var (`InjectIfDeclared`). The five bots ADR-052 was built for have all
+migrated to the v2 shape and no longer declare it, so the resolver
+no-ops on the shipped catalog; a future or third-party reviewer-loop
+bot re-adopts the topology just by declaring the vars and using a
+`condition` router (never `round_robin` — it ignores `when` guards).
+The machinery stays guarded non-vacuously by
+`e2e/review_topology_test.go` + `e2e/testdata/review_topology_mini.bot`.
 
-There is a second, subtler way to judge the wrong artifact: **`git diff
-HEAD` omits *untracked* files.** A feature that ADDS files (the common
-case) leaves them `??` untracked unless the implementer `git add`s them,
-so the reviewers' `git diff HEAD --name-only` shows the *modified* files
-referencing new symbols but not the new files that define them — and a
-diligent reviewer correctly rejects the "incomplete committable diff"
-**forever** (observed in a feature-dev dogfood: a 26-line feature looped
-to `review_loop(15)` because its new helper + test were untracked — see
-[docs/bot-runs/feature-dev.md](docs/bot-runs/feature-dev.md)). So the
-review anchor must make untracked files visible before diffing — `git
-add -N .` (intent-to-add) then `git diff HEAD`, or have `act`/`fix_*`
-`git add` new files as they create them. When a review loop won't
-converge on a feature that adds files, check the worktree's `git status`
-for `??` entries first.
+**Right-artifact discipline** (now encoded in the campaign contracts,
+still binding for anything that diffs code): judge the WORKING TREE
+(`git diff HEAD`, or `git diff <base>` for branch/run scopes), never
+`HEAD^...HEAD`; and make untracked files visible before diffing (`git
+add -N .`, or `git add -A` before each in-stride commit — a change that
+ADDS files is otherwise invisible to the diff). Both failure modes were
+observed live in the v1 reviewer loops (a reviewer concluding "the
+feature isn't implemented" and looping forever — see
+[docs/bot-runs/feature-dev.md](docs/bot-runs/feature-dev.md)); the v2
+contracts bake the `git add -A`-then-commit unit in, and any new
+reviewer you author must anchor the same way.
 
 ## Catalog bots are repo-agnostic
 
@@ -943,6 +945,7 @@ iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → 
 iterion schedule add|list|remove|run|install|uninstall  # Cron recurring bots via the host crontab — no daemon (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board  # Native kanban tracker
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
+iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
 iterion marketplace list|submit|install  # Hosted bot registry CLI (same <store-dir>/marketplace the studio reads)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
 iterion bundle init|pack                # Scaffold or pack a .botz bundle (see docs/bundles.md)
@@ -965,7 +968,7 @@ Global flags: `--json` (machine output), `--help`
 - **Scenario executor** (`e2e/e2e_test.go`) — configurable stub with `.on(nodeID, handler)` for per-node behavior
 - Table-driven subtests with standard `testing` package
 - `task test:live` — runs E2E with real Claude/Codex CLIs (requires API keys)
-- **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures. Wired bots: feature_dev, whats-next, docs-refresh. See [docs/adr/008-bot-golden-replay-framework.md](docs/adr/008-bot-golden-replay-framework.md).
+- **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures — impractical for the v2 `campaign` nodes (whole-session claude_code agents), whose fixtures are hand-authored seeds frozen on the termination-contract schema. Wired scenarios: feature-dev `campaign_feature_complete`, docs-refresh `campaign_docs_aligned`, whats-next `nexie_turn_basic`. See [docs/adr/008-bot-golden-replay-framework.md](docs/adr/008-bot-golden-replay-framework.md).
 
 ### Live dogfood runs MUST be visible in the operator's studio
 
@@ -993,6 +996,16 @@ separate store:
   files → git there reports a phantom "all files deleted". The engine now
   auto-remaps a repo-root override back to the worktree (with a warning), but
   omitting it is cleaner.
+- **Sandboxed dogfood fixtures must NOT live under `/tmp/claude-<uid>/`**
+  (the Claude Code scratchpad, e.g. `/tmp/claude-1000/...`). Docker creates
+  the bind target's missing parent dirs root-owned inside the container,
+  which shadows the in-container Claude CLI's own temp root
+  (`/tmp/claude-$UID`) — claude then hangs silently before its first stdout
+  byte, so every claude_code attempt dies on the 90s cold-phase timeout
+  (surgically isolated 2026-07-07 while validating native:221edac8: the
+  same fixture at `/tmp/probe-fixture` boots in 3s, at
+  `/tmp/claude-1000/<x>` it hangs). Clone fixtures to a neutral path
+  (e.g. `/tmp/iterion-probe-<x>/`) before a sandboxed run.
 
 The same applies to a dedicated server instance you spin up from a worktree to
 exercise modified engine code: bind it to the operator's store dir (or tell

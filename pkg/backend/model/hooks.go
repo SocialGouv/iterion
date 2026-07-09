@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -110,6 +111,17 @@ type TurnWriter interface {
 	WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error
 }
 
+// PlanWriter is the optional capability filesystem stores satisfy for
+// persisting the chronological plan snapshots agents produce via their
+// TodoWrite (claude_code) / todo_write (claw) tool. When present, the
+// tool-started hook captures each snapshot to runs/<id>/plans/. Mongo
+// (cloud) stores don't satisfy it today; the hook skips the capture when
+// the capability is missing rather than failing the LLM call. See
+// store.PlanStore for the on-disk format + dedup semantics.
+type PlanWriter interface {
+	AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error)
+}
+
 // persistToolPayload writes the given content into the event `data` map
 // under the given key (`input` or `output`):
 //   - if content fits inline (≤ toolInlineThreshold), `data[key]` carries
@@ -171,6 +183,7 @@ type storeHooks struct {
 	attachmentSink AttachmentWriter
 	toolBlobSink   ToolBlobWriter
 	turnSink       TurnWriter
+	planSink       PlanWriter
 }
 
 // emit is the closure-local shorthand for AppendEvent calls that share
@@ -298,6 +311,14 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 
 	h.emit(nodeID, store.EventLLMStepFinished, data)
 
+	// Mid-loop narration for the conversation views. Only tool-bearing
+	// steps qualify: in claw's agent loop the final (no-tools) step is
+	// the node's answer — often raw structured JSON — which the output
+	// card already renders; re-bubbling it as chat is noise.
+	if step.Text != "" && len(step.ToolCalls) > 0 {
+		h.onAssistantText(nodeID, AssistantTextInfo{Text: step.Text, Iteration: step.Iteration})
+	}
+
 	if step.Text != "" {
 		// Full response, no preview cap — the studio folds the
 		// body under the header so length doesn't crowd the log.
@@ -350,6 +371,35 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		h.logger.Logf(iterlog.LevelInfo, "🧠", "[%s#%d/claw] step %d thinking: ~%d tok, %dms",
 			nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs)
 	}
+}
+
+// onAssistantText implements the OnAssistantText hook. It persists the
+// agent's mid-turn narration as an assistant_text event, skipping
+// payloads that are just the node's structured JSON answer (the output
+// card renders those; a raw-JSON chat bubble is noise). Redaction is
+// handled by the redactingEmitter wrapper like every other event.
+func (h *storeHooks) onAssistantText(nodeID string, info AssistantTextInfo) {
+	text := strings.TrimSpace(info.Text)
+	if text == "" || isLikelyStructuredPayload(text) {
+		return
+	}
+	h.emit(nodeID, store.EventAssistantText, map[string]interface{}{
+		"text":      iterlog.Truncate(text, maxFieldSize),
+		"iteration": info.Iteration,
+	})
+}
+
+// isLikelyStructuredPayload reports whether text is a bare JSON object
+// or array — the shape of a structured-output answer rather than
+// human-facing narration.
+func isLikelyStructuredPayload(text string) bool {
+	if text == "" {
+		return false
+	}
+	if c := text[0]; c != '{' && c != '[' {
+		return false
+	}
+	return json.Valid([]byte(text))
 }
 
 // onLLMTurnCapture implements the OnLLMTurnCapture hook.
@@ -440,11 +490,113 @@ func (h *storeHooks) onToolStarted(nodeID string, info LLMToolStartedInfo) {
 	// paginated.
 	persistToolPayload(h.ctx, h.guard, h.toolBlobSink, h.runID, info.ToolUseID, "input", info.Input, data)
 	h.emit(nodeID, store.EventToolStarted, data)
+	// ADDITIONAL, best-effort: when the tool is a plan write (claude_code
+	// TodoWrite / claw todo_write), also snapshot the plan to the per-run
+	// plan store. This is purely additive — the tool_started event above
+	// (which the studio's live todoChecklist renders) is untouched.
+	h.capturePlan(nodeID, info)
 	// No console echo here: the claude_code delegate already
 	// emits its own `[node#iter/claude-code] 🔧 <Tool> <detail>`
 	// line as the SDK stream is decoded, and the claw path logs
 	// its step's tool calls from OnLLMStepFinish below — adding
 	// a third line here would double-up every entry.
+}
+
+// capturePlan persists a TodoWrite/todo_write plan snapshot to the run's
+// plan store (runs/<id>/plans/). Best-effort: any error is logged and
+// swallowed — a plan-write failure must never fail the in-flight LLM call,
+// exactly like the artifact/attachment sinks. No-ops when the store lacks
+// the PlanWriter capability (cloud/Mongo today), when the tool isn't a
+// plan write, or when the input carries no todos (e.g. a claw
+// `todo_write` read). Todos are secret-redacted before landing on disk.
+func (h *storeHooks) capturePlan(nodeID string, info LLMToolStartedInfo) {
+	if h.planSink == nil || !isPlanTool(info.ToolName) {
+		return
+	}
+	todos := parsePlanTodos(info.Input, h.red)
+	if len(todos) == 0 {
+		return
+	}
+	snap := store.PlanSnapshot{
+		NodeID:    nodeID,
+		Iteration: info.Iteration,
+		Tool:      info.ToolName,
+		Timestamp: time.Now().UTC(),
+		Todos:     todos,
+	}
+	written, wrote, err := h.planSink.AppendPlanSnapshot(h.ctx, h.runID, snap)
+	if err != nil {
+		h.logger.Warn("plan capture [%s]: %v", nodeID, err)
+		return
+	}
+	if !wrote {
+		// Byte-identical to the previous snapshot — TodoWrite fired with no
+		// change. Nothing persisted, no event: the studio already shows it.
+		return
+	}
+	h.emit(nodeID, store.EventPlanWritten, map[string]interface{}{
+		"seq":       written.Seq,
+		"node_id":   nodeID,
+		"iteration": info.Iteration,
+		"count":     len(todos),
+	})
+}
+
+// isPlanTool reports whether a tool name is a plan-writing tool —
+// claude_code's `TodoWrite` or claw's `todo_write`.
+func isPlanTool(name string) bool {
+	return name == "TodoWrite" || name == "todo_write"
+}
+
+// parsePlanTodos defensively extracts the normalized todo list from a raw
+// TodoWrite/todo_write input. Both backends nest their items under a
+// top-level `todos` array; the item fields differ (claude_code carries
+// `activeForm`, claw carries `id`+`priority`), so the decode is a union.
+// Status is canonicalised to the claude_code vocabulary (`done` →
+// `completed`) so the studio renders both backends' plans identically.
+// Returns nil on any parse failure or when there are no items (e.g. a
+// claw `todo_write` read call). redact scrubs secret values from the
+// free-text fields (nil-safe).
+func parsePlanTodos(input json.RawMessage, redact func(string) string) []store.PlanTodo {
+	if len(input) == 0 {
+		return nil
+	}
+	var wire struct {
+		Todos []struct {
+			Content    string `json:"content"`
+			Status     string `json:"status"`
+			ActiveForm string `json:"activeForm"`
+			Priority   string `json:"priority"`
+			ID         string `json:"id"`
+		} `json:"todos"`
+	}
+	if err := json.Unmarshal(input, &wire); err != nil {
+		return nil
+	}
+	if len(wire.Todos) == 0 {
+		return nil
+	}
+	scrub := func(s string) string {
+		if redact == nil {
+			return s
+		}
+		return redact(s)
+	}
+	out := make([]store.PlanTodo, 0, len(wire.Todos))
+	for _, t := range wire.Todos {
+		status := t.Status
+		if status == "done" { // claw vocabulary → claude_code canonical
+			status = "completed"
+		}
+		out = append(out, store.PlanTodo{
+			Content:    scrub(t.Content),
+			Status:     status,
+			ActiveForm: scrub(t.ActiveForm),
+			Priority:   t.Priority,
+			ID:         t.ID,
+		})
+	}
+	return out
 }
 
 // onToolCall implements the OnToolCall hook.
@@ -627,6 +779,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 	attachmentSink, _ := emitter.(AttachmentWriter)
 	toolBlobSink, _ := emitter.(ToolBlobWriter)
 	turnSink, _ := emitter.(TurnWriter)
+	planSink, _ := emitter.(PlanWriter)
 	// All event payloads go through the redacting wrapper (Layer 0).
 	emitter = redactingEmitter{inner: emitter, guard: guard}
 	h := &storeHooks{
@@ -641,6 +794,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		attachmentSink: attachmentSink,
 		toolBlobSink:   toolBlobSink,
 		turnSink:       turnSink,
+		planSink:       planSink,
 	}
 	return EventHooks{
 		OnLLMPrompt:  h.onLLMPrompt,
@@ -649,6 +803,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 		// llm_step_finished events with richer per-step detail.
 		OnLLMRetry:         h.onLLMRetry,
 		OnLLMStepFinish:    h.onLLMStepFinish,
+		OnAssistantText:    h.onAssistantText,
 		OnLLMTurnCapture:   h.onLLMTurnCapture,
 		OnLLMCompacted:     h.onLLMCompacted,
 		OnToolStarted:      h.onToolStarted,

@@ -79,36 +79,38 @@ type Engine struct {
 	executor                 NodeExecutor
 	logger                   *iterlog.Logger
 	onNodeFinished           func(runID, nodeID string, output map[string]interface{})
-	onEvent                  func(evt store.Event) // optional observer fired after every successful append
-	recoveryDispatch         RecoveryDispatch      // optional; consulted on node execution failure
-	workflowHash             string                // SHA-256 of the .bot source, set via WithWorkflowHash
-	filePath                 string                // absolute .bot source path, set via WithFilePath
-	preset                   string                // in-source preset name selected at launch, set via WithPreset
-	runName                  string                // deterministic human-friendly run label, set via WithRunName
-	source                   *store.RunSource      // originating action metadata (dispatcher → issue ref), set via WithSource
-	mergeInto                string                // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
-	branchName               string                // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
-	mergeStrategy            string                // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
-	autoMerge                bool                  // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
-	validateOutputs          bool                  // when true, validate node outputs against declared schemas
-	forceResume              bool                  // when true, skip workflow hash check on resume
-	workDir                  string                // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
-	repoRoot                 string                // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
-	containerWorkspace       string                // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
-	sandboxOverride          string                // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
-	sandboxDefault           string                // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
-	sandboxDefaultImage      string                // image ref used as fallback when sandbox: auto and no .devcontainer/devcontainer.json is found; "" lets the runtime pick the built-in pinned to the iterion version; set via WithSandboxDefaultImage
-	sandboxHostStateOverride string                // CLI/Launch-level override for sandbox.host_state ("auto"|"none"|""); set via WithSandboxHostStateOverride
-	sandboxHostStateDefault  string                // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
-	attachmentPromote        AttachmentPromoteFunc // optional: invoked after CreateRun to materialise attachments
-	bundle                   *bundle.Bundle        // optional: bundle backing this run; nil for plain .bot runs
-	pauseSignal              <-chan struct{}       // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
-	dailyCap                 *DailyCapGuard        // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
-	callbackURL              string                // optional: run-completion webhook target persisted on the run; set via WithCallback
-	callbackToken            string                // optional: opaque correlation token echoed in the completion payload; set via WithCallback
-	callbackAnswerNode       string                // optional: node whose latest artifact holds the run's final answer; set via WithCallback
-	boardMCPHandler          http.Handler          // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
-	subbotRunner             SubbotRunner          // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
+	onEvent                  func(evt store.Event)    // optional observer fired after every successful append
+	recoveryDispatch         RecoveryDispatch         // optional; consulted on node execution failure
+	workflowHash             string                   // SHA-256 of the .bot source, set via WithWorkflowHash
+	filePath                 string                   // absolute .bot source path, set via WithFilePath
+	preset                   string                   // in-source preset name selected at launch, set via WithPreset
+	runName                  string                   // deterministic human-friendly run label, set via WithRunName
+	source                   *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource
+	mergeInto                string                   // worktree finalization: FF target ("" = current branch, "none" = skip, or branch name); set via WithMergeInto
+	branchName               string                   // worktree finalization: storage branch override ("" = iterion/run/<runName>); set via WithBranchName
+	mergeStrategy            string                   // worktree finalization: "squash" (default) or "merge" (FF); set via WithMergeStrategy
+	autoMerge                bool                     // worktree finalization: when true, apply mergeStrategy at end of run; otherwise leave merge_status=pending for UI; set via WithAutoMerge
+	modelOverrides           []store.RunModelOverride // launch-time per-node/-group model/backend pins, persisted display-only on the run so the studio Overview shows what it launched with; set via WithModelOverrides
+	validateOutputs          bool                     // when true, validate node outputs against declared schemas
+	forceResume              bool                     // when true, skip workflow hash check on resume
+	workDir                  string                   // working directory for subprocesses + PROJECT_DIR expansion; defaults to os.Getwd() at Run() time
+	workDirDelegated         bool                     // true when workDir was handed to the engine explicitly (WithWorkDir) — the gate for adopting a linked-worktree workspace as a managed baseline; a defaulted CWD never grants finalization authority
+	repoRoot                 string                   // source-of-truth repo root (project_root memory + ${PROJECT_MEMORY_DIR} expansion); empty until runRun resolves it
+	containerWorkspace       string                   // when sandbox is active, the in-container path the host workDir is bind-mounted to (e.g. "/workspace"); used to remap ${PROJECT_DIR} so prompts and tool nodes see paths the in-container processes can actually open
+	sandboxOverride          string                   // CLI/Launch-level sandbox mode override; "" means "no override" (workflow + global default win); set via WithSandboxOverride
+	sandboxDefault           string                   // global ITERION_SANDBOX_DEFAULT value snapshot; set via WithSandboxDefault
+	sandboxDefaultImage      string                   // image ref used as fallback when sandbox: auto and no .devcontainer/devcontainer.json is found; "" lets the runtime pick the built-in pinned to the iterion version; set via WithSandboxDefaultImage
+	sandboxHostStateOverride string                   // CLI/Launch-level override for sandbox.host_state ("auto"|"none"|""); set via WithSandboxHostStateOverride
+	sandboxHostStateDefault  string                   // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
+	attachmentPromote        AttachmentPromoteFunc    // optional: invoked after CreateRun to materialise attachments
+	bundle                   *bundle.Bundle           // optional: bundle backing this run; nil for plain .bot runs
+	pauseSignal              <-chan struct{}          // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
+	dailyCap                 *DailyCapGuard           // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
+	callbackURL              string                   // optional: run-completion webhook target persisted on the run; set via WithCallback
+	callbackToken            string                   // optional: opaque correlation token echoed in the completion payload; set via WithCallback
+	callbackAnswerNode       string                   // optional: node whose latest artifact holds the run's final answer; set via WithCallback
+	boardMCPHandler          http.Handler             // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
+	subbotRunner             SubbotRunner             // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
 
 	// activeBudget points at the SharedBudget of the run currently
 	// executing in this engine, published atomically by newRunState so an

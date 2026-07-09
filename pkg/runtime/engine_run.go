@@ -173,7 +173,7 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" {
+	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
@@ -195,6 +195,21 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		// declared posture; a run-level --permission override refines it per
 		// node but isn't reflected here.
 		run.PermissionMode = e.workflow.Permission
+		// Guard on len>0 so a resume (which never re-supplies overrides)
+		// preserves the value persisted at the original launch instead of
+		// clobbering it with nil.
+		if len(e.modelOverrides) > 0 {
+			run.ModelOverrides = e.modelOverrides
+		}
+		// Persist the EFFECTIVE budget caps (after CLI/recipe overrides and,
+		// in cloud, the platform ceiling clamp — both mutate wf.Budget
+		// before the engine runs) so the studio Overview draws budget meters
+		// with a denominator. A resume that raises a cap re-parses the
+		// budget, so overwriting is correct; the non-nil guard preserves a
+		// prior snapshot if a --force resume dropped the budget: block.
+		if b := snapshotBudgetForPersist(e.workflow.Budget); b != nil {
+			run.Budget = b
+		}
 		if e.bundle != nil {
 			run.BundleHash = e.bundle.Hash
 			run.BundlePath = e.bundle.SourcePath
@@ -260,15 +275,24 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 		if worktreeActive {
 			run.RepoRoot = wtCtx.repoRoot
 			run.BaseCommit = wtCtx.originalTip
-		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" {
+		} else if worktreeRoot := gitlib.FindRepoRoot(e.workDir); worktreeRoot != "" && e.workDirDelegated {
 			// workDir is a git working tree that the runtime didn't set
 			// up itself. Only promote this to a managed-worktree baseline
-			// when the workspace is already isolated from the operator's main
-			// checkout (for example, a dispatcher-seeded linked worktree). An
-			// explicit `worktree: none` run launched from the main checkout is
-			// intentionally in-place: stamping Worktree=true there would make
-			// resume/review-gate finalization reconstruct a worktree context
-			// against the user's checkout and potentially branch/merge/clean it.
+			// when the workspace was DELEGATED to the engine (WithWorkDir —
+			// dispatcher-seeded per-issue worktrees, studio-bound dirs) AND
+			// is already isolated from the operator's main checkout. Both
+			// gates matter:
+			//   - An explicit `worktree: none` run launched from the main
+			//     checkout is intentionally in-place — stamping Worktree=true
+			//     would make resume/review-gate finalization reconstruct a
+			//     worktree context against the user's checkout and
+			//     potentially branch/merge/clean it.
+			//   - A defaulted-CWD run from inside a FOREIGN linked worktree
+			//     (a Claude Code session worktree, an operator's manual
+			//     `git worktree add`) is equally the operator's own place:
+			//     without the workDirDelegated gate, closing such a run
+			//     would create an iterion/run/* branch there and best-effort
+			//     FF the operator's checked-out branch onto its HEAD.
 			mainRepoRoot := gitlib.FindMainRepoRoot(e.workDir)
 			if mainRepoRoot != "" && mainRepoRoot != worktreeRoot {
 				if head, herr := gitlib.RevParseHead(e.workDir); herr == nil && head != "" {
@@ -326,8 +350,35 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin hooks: %v", err)
 	}
+	// Skill-library skills referenced by the workflow (DSL `skills:`), mirrored
+	// LAST so a same-named bundle/plugin/workspace file wins on collision
+	// (precedence: bundle > plugin > library > hand-authored — ADR-059). The
+	// returned name→description map feeds every LLM node's "## Skills" hint.
+	e.applyLibrarySkills()
 	e.applyPresetFocus()
 	return nil
+}
+
+// applyLibrarySkills resolves and mirrors the workflow's skill-library
+// references, then pushes the resolved name→description hints into the executor
+// so each LLM node renders its "## Skills" section. Best-effort: a mirror
+// failure is logged but never fails the run (the DSL reference is soft). Only
+// ClawExecutor implements SetSkillHints.
+func (e *Engine) applyLibrarySkills() {
+	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.logger)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("runtime: library skills: %v", err)
+		}
+		return
+	}
+	if len(hints) == 0 {
+		return
+	}
+	type skillHintSetter interface{ SetSkillHints(map[string]string) }
+	if s, ok := e.executor.(skillHintSetter); ok {
+		s.SetSkillHints(hints)
+	}
 }
 
 // applyPresetFocus wires the selected preset's launch-time bias into the
@@ -487,9 +538,11 @@ func (e *Engine) reconstructWorktreeContext(r *store.Run) *worktreeContext {
 		return nil
 	}
 	originalBranch := ""
-	if out, brErr := gitCmd("-C", r.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD").Output(); brErr == nil {
+	brCmd, brCancel := gitCmd("-C", r.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if out, brErr := brCmd.Output(); brErr == nil {
 		originalBranch = strings.TrimSpace(string(out))
 	}
+	brCancel()
 	return &worktreeContext{
 		repoRoot:       r.RepoRoot,
 		wtPath:         r.WorkDir,

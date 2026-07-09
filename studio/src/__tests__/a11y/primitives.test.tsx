@@ -9,6 +9,8 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { DesktopOnlyNotice } from "@/components/ui/DesktopOnlyNotice";
 import { Spinner } from "@/components/ui/Spinner";
 import { LiveDot } from "@/components/ui/LiveDot";
+import { Stat } from "@/components/ui/Stat";
+import { Meter } from "@/components/ui/Meter";
 import { Badge } from "@/components/ui/Badge";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -95,6 +97,34 @@ describe("a11y / primitives", () => {
       </div>,
     );
     await expectNoViolations(root, "LiveDot");
+  });
+
+  it("Stat — every tone, sizes, live, stack, button", async () => {
+    const root = mount(
+      <div>
+        <Stat label="cost" value="$1.20" />
+        <Stat label="tokens" value="42k" tone="info" size="md" />
+        <Stat label="paused" value="2" tone="warning" />
+        <Stat label="failed" value="1" tone="danger" onClick={() => {}} />
+        <Stat label="nodes" value="12" tone="success" size="lg" align="stack" />
+        <Stat label="duration" value="1m 03s" tone="live" live hint="active" />
+      </div>,
+    );
+    await expectNoViolations(root, "Stat");
+  });
+
+  it("Meter — sizes, tones, no-cap, compact, full", async () => {
+    const root = mount(
+      <div>
+        <Meter label="Cost" value={1.2} max={5} formatValue={(v) => `$${v}`} />
+        <Meter label="Tokens" value={180000} max={200000} size="md" />
+        <Meter label="Duration" value={9} max={10} fixedTone="danger" />
+        <Meter label="Iterations" value={3} hint="no cap set" />
+        <Meter value={40} max={100} compact size="xs" hint="context window" />
+        <Meter label="Review loop" value={3} max={5} compact fixedTone="live" />
+      </div>,
+    );
+    await expectNoViolations(root, "Meter");
   });
 
   it("Badge variants", async () => {

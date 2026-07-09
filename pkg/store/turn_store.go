@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -335,35 +334,4 @@ func (s *FilesystemRunStore) LoadTurnMessages(_ context.Context, runID, nodeID s
 		return nil, fmt.Errorf("store: read turn messages: %w", err)
 	}
 	return data, nil
-}
-
-// walkTurnDirs is a small helper used by `iterion fork --strict-hash`
-// audits and by per-run GC (Phase 2). Walks the runs/<id>/turns tree
-// and emits one path per turn directory. Caller filters.
-func (s *FilesystemRunStore) walkTurnDirs(runID string, visit func(nodeID string, loopIter int) error) error {
-	root := s.turnsDir(runID)
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return filepath.SkipAll
-			}
-			return err
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil || rel == "." {
-			return nil
-		}
-		parts := strings.Split(filepath.ToSlash(rel), "/")
-		if len(parts) != 2 {
-			return nil
-		}
-		iter, parseErr := strconv.Atoi(parts[1])
-		if parseErr != nil {
-			return nil
-		}
-		return visit(parts[0], iter)
-	})
 }

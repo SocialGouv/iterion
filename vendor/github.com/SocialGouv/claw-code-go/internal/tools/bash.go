@@ -31,8 +31,11 @@ func bashStderr() io.Writer {
 // BashTool returns the tool definition for the bash tool.
 func BashTool() api.Tool {
 	return api.Tool{
-		Name:        "bash",
-		Description: "Execute a bash command and return the output. Use this for running shell commands, scripts, and system operations.",
+		Name: "bash",
+		Description: "Execute a bash command and return its combined output. Use it to run builds, tests, git, and other programs.\n\n" +
+			"Do NOT use bash to read or edit files when a dedicated tool fits: use read_file instead of cat/head/tail, the grep tool instead of shell grep, glob instead of find, and file_edit/write_file instead of sed/awk/echo redirection — shell text-mangling is error-prone and harder to review. " +
+			"Chain dependent commands with && so a failure stops the sequence, and quote paths containing spaces. " +
+			"Never run destructive operations (rm -rf, force-push, hard reset, history rewrites) unless the user explicitly asked for that exact operation.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

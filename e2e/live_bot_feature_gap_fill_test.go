@@ -10,23 +10,23 @@ import (
 
 // TestLive_Bot_FeatureGapFill runs the feature-gap-fill bot (Fini) against
 // a partial implementation plus a gap_spec naming exactly what's missing.
-// Fini surveys the existing state, plans, implements the gap, and converges
-// via a cross-family review loop inside a worktree (worktree: auto +
-// sandbox-full), committing the completion.
+// v2 (ADR-058 minimal-framing): ONE campaign agent surveys the seams,
+// closes the missing items committing each in stride, then the
+// deterministic verify gate re-checks the tree inside a worktree
+// (worktree: auto + sandbox-full).
 //
-// Reliability invariants: survey_existing/plan/act fire and the review loop
-// runs (a reviewer + streak_check); commits are logged. The quality panel
-// grades the completion + value.
+// Reliability invariants: campaign + verify_build + verify_run + gate
+// fire; commits are logged. The quality panel grades the completion +
+// value.
 //
-// Requires: claude CLI + OpenAI + docker w/ iterion-sandbox-full:edge.
-// Expected: ~40-70 min.
+// Requires: claude CLI + docker w/ iterion-sandbox-full:edge.
+// Expected: ~20-50 min.
 func TestLive_Bot_FeatureGapFill(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
 	loadDotEnv(t)
 	requireCLI(t, "claude")
-	requireOpenAI(t)
 	requireDockerImage(t, "ghcr.io/socialgouv/iterion-sandbox-full:edge")
 
 	workspaceDir, err := os.MkdirTemp("", "iterion-feature-gap-fill-*")
@@ -76,9 +76,9 @@ var _ = errors.New // keep errors imported for the implementation
 		withWorkDir:  true,
 	})
 
-	assertNodesFinished(t, res.events, "survey_existing", "plan", "act")
-	if countFinished(res.events, "reviewer_claude")+countFinished(res.events, "reviewer_gpt") == 0 {
-		t.Errorf("expected at least one reviewer to fire")
+	assertNodesFinished(t, res.events, "campaign", "verify_build", "verify_run", "gate")
+	if got := workspaceCommitCount(t, workspaceDir); got <= seedCommits {
+		t.Errorf("expected the campaign to land at least one commit in stride (seed %d, after %d)", seedCommits, got)
 	}
 	t.Logf("commits after run: %d (seed %d)", workspaceCommitCount(t, workspaceDir), seedCommits)
 

@@ -24,9 +24,6 @@ type FSStore struct {
 
 var _ knowledge.MemoryStore = (*FSStore)(nil)
 
-// NewFSStore returns an FSStore rooted at the given base data dir.
-func NewFSStore(root string) *FSStore { return &FSStore{root: root} }
-
 // DefaultFSStore returns an FSStore rooted at the global iterion data
 // dir, resolved lazily on each use so a test's ITERION_HOME override
 // (or any runtime change) is honoured.

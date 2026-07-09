@@ -12,14 +12,6 @@ import (
 	"time"
 )
 
-// epochZero is the canonical timestamp written into every archive
-// header so the output is reproducible. We use the IEEE 1003.1-1988
-// "no timestamp" sentinel (Unix epoch 0). For ZIP, archive/zip stores
-// the local date/time in MS-DOS format with a 1980 epoch floor, so we
-// normalise to a fixed 1980-01-01 timestamp on every entry instead (see
-// writeZipEntry) — the goal is determinism, not a meaningful mtime.
-var epochZero = time.Unix(0, 0).UTC()
-
 // zipEpoch is the fixed modification time stamped on every ZIP entry so
 // the archive bytes are reproducible across machines and runs. The ZIP
 // MS-DOS time field cannot represent dates before 1980-01-01, so that is

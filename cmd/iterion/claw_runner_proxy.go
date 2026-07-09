@@ -125,8 +125,8 @@ func (d *proxyDispatcher) failAllPending(err error) {
 	for id, ch := range d.pending {
 		// Synthetic tool_result with the error; the proxy closure
 		// translates it into a Go error inside the LLM loop.
-		data, _ := json.Marshal(delegate.ToolResultData{Error: err.Error()})
-		ch <- delegate.Envelope{Type: delegate.EnvelopeToolResult, ID: id, Data: data}
+		env, _ := delegate.NewToolResultEnvelope(id, "", err.Error())
+		ch <- env
 		delete(d.pending, id)
 	}
 }
@@ -199,6 +199,8 @@ func (d *proxyDispatcher) callTool(ctx context.Context, name string, input json.
 			Question:         data.AskUser.Question,
 			PendingToolUseID: data.AskUser.PendingToolUseID,
 			Conversation:     data.AskUser.Conversation,
+			Options:          data.AskUser.Options,
+			AllowFreeText:    data.AskUser.AllowFreeText,
 		}
 	}
 	if data.Error != "" {

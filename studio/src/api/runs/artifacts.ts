@@ -11,6 +11,7 @@ import type {
   ArtifactFile,
   ArtifactSummary,
   DownloadOutcome,
+  PlanSnapshot,
   RunArtifactSummary,
   WireWorkflow,
 } from "./types";
@@ -54,6 +55,21 @@ export async function getArtifact(
   return request(
     `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(nodeId)}/${version}`,
   );
+}
+
+// listPlans returns the chronological plan snapshots captured for a run —
+// the agents' TodoWrite/todo_write living TODO lists. Ascending seq order
+// (how the plan evolved). Empty for older runs / cloud stores that predate
+// or don't back the feature.
+export async function listPlans(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<PlanSnapshot[]> {
+  const res = await request<{ plans: PlanSnapshot[] }>(
+    `/runs/${encodeURIComponent(runId)}/plans`,
+    { signal: opts?.signal },
+  );
+  return res.plans ?? [];
 }
 
 export async function listArtifactFiles(runId: string): Promise<ArtifactFile[]> {

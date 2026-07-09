@@ -147,15 +147,33 @@ func collectStreamText(ch <-chan api.StreamEvent) (string, error) {
 	return sb.String(), nil
 }
 
+// compactInstruction is the authored summarization prompt sent with the
+// transcript. Its fixed nine-section shape is what makes a compacted session
+// resumable without drift: the summary must carry every user message, every
+// security-relevant constraint verbatim, the precise current work, and a
+// next step anchored by a verbatim quote of the latest exchange. Structure
+// informed by how Claude Code compacts; original text.
+const compactInstruction = `You are compacting this conversation: produce a handoff summary that will replace the older history, so a continuation of this session can pick up exactly where it left off. Respond with plain text only — first an <analysis> block, then a <summary> block.
+
+In the <analysis> block, walk the conversation chronologically and check, for each stretch: the user's explicit asks, what you did and why, key decisions and code patterns, the exact file paths/snippets/commands involved, errors hit and how they were resolved, and any user feedback — especially corrections and "do it differently" guidance. Note every security-relevant constraint the user stated (files or data to avoid, secret-handling rules, operations that must not be performed): these must be carried into the summary verbatim so they keep applying after compaction.
+
+Then write the <summary> block with exactly these numbered sections:
+1. Primary request and intent: every explicit ask, in detail.
+2. Key technical concepts: the technologies, frameworks, and conventions in play.
+3. Files and code sections: each file read, modified, or created; why it matters; the important snippets (favor the most recent states).
+4. Errors and fixes: each error, how it was fixed, and any user feedback about it.
+5. Problem solving: problems solved and any ongoing troubleshooting.
+6. All user messages: every non-tool-result user message, in order — security-relevant instructions verbatim.
+7. Pending tasks: work explicitly requested and not yet done.
+8. Current work: precisely what was in progress immediately before this summary, with file names and code.
+9. Optional next step: the single next action, ONLY if it directly continues the work in section 8 and the user's most recent explicit request; include a verbatim quote from the latest exchange showing where you left off, so there is no drift in what the task is. If the last task was concluded, leave this section empty rather than inventing follow-on work.`
+
 // buildTranscript constructs a plain-text transcript of the messages suitable
-// for submission to the summarization model.
+// for submission to the summarization model, prefixed with compactInstruction.
 func buildTranscript(messages []api.Message) string {
 	var sb strings.Builder
-	sb.WriteString("Please provide a concise but thorough summary of the following conversation. ")
-	sb.WriteString("Preserve all important technical details: file paths modified, commands run, ")
-	sb.WriteString("decisions made, errors encountered, and the current state of any ongoing work. ")
-	sb.WriteString("The summary will replace the conversation history and must be self-contained.\n\n")
-	sb.WriteString("---CONVERSATION---\n")
+	sb.WriteString(compactInstruction)
+	sb.WriteString("\n\n---CONVERSATION---\n")
 
 	for _, msg := range messages {
 		fmt.Fprintf(&sb, "\n[%s]:\n", strings.ToUpper(msg.Role))
@@ -197,8 +215,10 @@ func CompactSession(ctx context.Context, client api.APIClient, cfg *Config, sess
 	transcript := buildTranscript(session.Messages)
 
 	req := api.CreateMessageRequest{
-		Model:     cfg.Model,
-		MaxTokens: 2048,
+		Model: cfg.Model,
+		// The nine-section summary needs headroom: 2048 tokens truncated
+		// long-session summaries mid-section.
+		MaxTokens: 4096,
 		Messages: []api.Message{
 			{
 				Role: "user",
@@ -301,8 +321,15 @@ func GetContinuationMessage(summary string, suppressFollowUp, recentPreserved bo
 		sb.WriteString(compactDirectResumeInstruction)
 	}
 
+	// Role "user" + IsInjected, NOT role "system": the Anthropic Messages API
+	// rejects system-role entries inside messages[] (the summary additionally
+	// reaches the top-level system field via Session.CompactionSummary), and
+	// a user-role continuation matches how Claude Code resumes a compacted
+	// session. IsInjected keeps it out of CountRealUserTurns and is stripped
+	// from the wire by stripInternalFields.
 	return api.Message{
-		Role: "system",
+		Role:       "user",
+		IsInjected: true,
 		Content: []api.ContentBlock{
 			{Type: "text", Text: sb.String()},
 		},
@@ -790,10 +817,12 @@ func truncateSummary(content string, maxChars int) string {
 	return string(runes[:maxChars]) + "…"
 }
 
-// extractExistingCompactedSummary checks if the message is a system-role message
-// with the continuation preamble, and extracts the embedded summary.
+// extractExistingCompactedSummary checks if the message is a continuation
+// message carrying the compaction preamble, and extracts the embedded summary.
+// Continuations are injected user-role messages; system-role is still accepted
+// for sessions persisted before the wire-safety fix.
 func extractExistingCompactedSummary(msg api.Message) string {
-	if msg.Role != "system" {
+	if msg.Role != "system" && !(msg.Role == "user" && msg.IsInjected) {
 		return ""
 	}
 	text := firstTextBlock(msg)

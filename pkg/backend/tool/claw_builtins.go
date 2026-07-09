@@ -190,8 +190,11 @@ func RegisterClawSimple(reg *Registry) error {
 	})
 }
 
-// RegisterClawTodo registers the `todo_write` tool for read/write of
-// the project todo list at .claude/todos.json. No dependency.
+// RegisterClawTodo registers the `todo_write` tool for read/write of the
+// session todo list. Since claw 21c4b7d the list lives OUT of the workspace
+// (~/.claw-code/todos/<workspace-fingerprint>.json, CLAW_TODOS_DIR override)
+// so agent runs never dirty git status/diff — each iterion worktree run gets
+// its own file via its worktree path's fingerprint. No dependency.
 func RegisterClawTodo(reg *Registry) error {
 	return RegisterClawTool(reg, clawtools.TodoWriteTool(), clawtools.ExecuteTodoWrite)
 }
@@ -216,7 +219,11 @@ type AskUserHandler func(ctx context.Context, q clawtools.Question) (clawtools.A
 func RegisterAskUser(reg *Registry, handler AskUserHandler) error {
 	if handler == nil {
 		handler = func(_ context.Context, q clawtools.Question) (clawtools.Answer, error) {
-			return clawtools.Answer{}, &delegate.ErrAskUser{Question: q.Prompt}
+			ask := &delegate.ErrAskUser{Question: q.Prompt, AllowFreeText: q.AllowFreeText}
+			for _, o := range q.Options {
+				ask.Options = append(ask.Options, delegate.AskUserOption{ID: o.ID, Label: o.Label})
+			}
+			return clawtools.Answer{}, ask
 		}
 	}
 	asker := clawtools.NewProgrammaticAsker(handler)

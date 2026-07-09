@@ -37,7 +37,6 @@ const INSPECTOR_WIDTH_MAX = 600;
 const INSPECTOR_COLLAPSED_KEY = "iterion.inspectorCollapsed";
 const SIDEBAR_COLLAPSED_KEY = "iterion.sidebarCollapsed";
 const CHAT_ENTER_SUBMITS_KEY = "iterion.chatEnterSubmits";
-const WHATS_NEXT_QUICK_MODE_KEY = "iterion.whatsNextQuickMode";
 
 function readInspectorWidth(): number {
   return readNumberFlag(INSPECTOR_WIDTH_KEY, INSPECTOR_WIDTH_DEFAULT, {
@@ -139,12 +138,6 @@ interface UIState {
   // submits and Enter inserts a newline (legacy behavior).
   chatEnterSubmits: boolean;
   setChatEnterSubmits: (value: boolean) => void;
-  // WhatsNext "Quick mode": when true, the ask_continue turn renders
-  // a single free-text box instead of the action radio + detail form;
-  // a heuristic classifies the text into {action, detail} and a
-  // dry-run banner lets the operator confirm or edit before it runs.
-  whatsNextQuickMode: boolean;
-  setWhatsNextQuickMode: (value: boolean) => void;
   // File picker
   setFilePickerOpen: (open: boolean) => void;
   notifyFilesChanged: () => void;
@@ -173,7 +166,6 @@ export const useUIStore = create<UIState>((set) => ({
   inspectorWidth: readInspectorWidth(),
   inspectorCollapsed: readBooleanFlag(INSPECTOR_COLLAPSED_KEY),
   chatEnterSubmits: readBooleanFlag(CHAT_ENTER_SUBMITS_KEY, true),
-  whatsNextQuickMode: readBooleanFlag(WHATS_NEXT_QUICK_MODE_KEY, false),
   filePickerOpen: false,
   filesChangedAt: 0,
   pendingFitNodeId: null,
@@ -272,10 +264,6 @@ export const useUIStore = create<UIState>((set) => ({
   setChatEnterSubmits: (value) => set(() => {
     writeBooleanFlag(CHAT_ENTER_SUBMITS_KEY, value);
     return { chatEnterSubmits: value };
-  }),
-  setWhatsNextQuickMode: (value) => set(() => {
-    writeBooleanFlag(WHATS_NEXT_QUICK_MODE_KEY, value);
-    return { whatsNextQuickMode: value };
   }),
   // File picker
   setFilePickerOpen: (filePickerOpen) => set({ filePickerOpen }),

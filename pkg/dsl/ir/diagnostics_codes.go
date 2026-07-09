@@ -108,9 +108,11 @@ const (
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
 	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
+	DiagInvalidNodeTimeout      DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
 	// Event-driven primitives (ADR-051): emit/wait nodes.
-	DiagEventNoName        DiagCode = "C196" // emit/wait node with no `event:` name (error)
-	DiagWaitNoTimeout      DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)
-	DiagEventNoListener    DiagCode = "C198" // wait on an event no emit produces, or emit no wait consumes (warning — dangling event)
-	DiagInvalidNodeTimeout DiagCode = "C199" // LLM node `timeout:` is not a valid Go duration (error)
+	DiagEventNoName     DiagCode = "C196" // emit/wait node with no `event:` name (error)
+	DiagWaitNoTimeout   DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)
+	DiagEventNoListener DiagCode = "C198" // wait on an event no emit produces, or emit no wait consumes (warning — dangling event)
+	// Skill library (ADR-059): `skills:` references on nodes / workflow.
+	DiagInvalidSkillRef DiagCode = "C199" // malformed skill-library reference name (warning; existence is resolved at run time)
 )

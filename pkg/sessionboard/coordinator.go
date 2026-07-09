@@ -134,9 +134,6 @@ func (c *Coordinator) Close() {
 	<-c.done
 }
 
-// Done returns a channel closed when the worker exits.
-func (c *Coordinator) Done() <-chan struct{} { return c.done }
-
 func (c *Coordinator) run() {
 	defer close(c.done)
 

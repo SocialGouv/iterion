@@ -66,7 +66,7 @@ func RunSandboxDoctor(ctx context.Context, p *Printer, opts SandboxDoctorOptions
 // 1+ may extend the JSON shape — keys present today will not change.
 func runSandboxDoctorBasic(p *Printer) error {
 	factory := sandbox.NewFactory(sandbox.FactoryOptions{
-		AvailableDrivers: defaultDriverRegistry(),
+		AvailableDrivers: registry.Default(),
 	})
 
 	driver, driverErr := factory.Driver()
@@ -153,12 +153,6 @@ func runSandboxDoctorBasic(p *Printer) error {
 		fmt.Fprintln(p.W, "isolation, or run iterion in cloud mode for k8s-native isolation.")
 	}
 	return nil
-}
-
-// defaultDriverRegistry forwards to [registry.Default] so the CLI
-// and the runtime engine share a single source of truth.
-func defaultDriverRegistry() map[string]sandbox.DriverConstructor {
-	return registry.Default()
 }
 
 // binaryLinkage classifies how the host iterion binary is linked. It

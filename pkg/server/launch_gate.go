@@ -71,7 +71,7 @@ func orValue[T int | float64](team, def T) T {
 // (the last one is also the metering increment). Called by
 // handleLaunchRun, handleResumeRun and the inbound webhook handlers.
 //
-// Fail-open on store errors, mirroring orgCanLaunch: quotas are an
+// Fail-open on store errors, mirroring the suspend check: quotas are an
 // operator policy, not a hard security boundary — a transient Mongo
 // blip must not wedge every launch. Super-admins bypass entirely.
 // The run-quota increment is the one exception to fail-open being

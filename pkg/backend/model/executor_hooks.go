@@ -74,6 +74,12 @@ type EventHooks struct {
 	OnLLMResponse   func(nodeID string, info LLMResponseInfo)
 	OnLLMRetry      func(nodeID string, info RetryInfo)
 	OnLLMStepFinish func(nodeID string, step LLMStepInfo)
+	// OnAssistantText fires with each chunk of assistant narration —
+	// mid-turn prose the conversation views render as the agent
+	// "talking" while it works. claude_code fires it per streamed
+	// assistant text block; claw derives it from tool-bearing steps in
+	// the store hooks layer.
+	OnAssistantText func(nodeID string, info AssistantTextInfo)
 	// OnLLMTurnCapture fires once per claw tool-loop iteration after
 	// the conversation has been augmented with this step's
 	// assistant + tool_results blocks. The runtime persists the

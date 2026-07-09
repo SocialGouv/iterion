@@ -51,7 +51,29 @@ const ultracodeOrchestrationInstruction = "\n\n## Workflow Orchestration\n\n" +
 	"everything in one thread, and lean toward verifying findings adversarially " +
 	"before acting on them. Work solo only on trivial or inherently sequential " +
 	"steps. This consent stands for the whole task; you need not ask before " +
-	"spawning a subagent."
+	"spawning a subagent.\n\n" +
+	"Orchestration mechanics:\n" +
+	"- Prefer pipelines to barriers: let each item flow through its stages " +
+	"independently; synchronize all branches only when a stage genuinely needs " +
+	"every prior result at once (dedup/merge across the set, early-exit on zero " +
+	"findings, cross-item comparison).\n" +
+	"- Subagents are stateless context-compressors: give each ONE self-contained " +
+	"brief (goal, exact scope and paths, expected report shape) and work from its " +
+	"summary instead of pulling raw exploration into your own context.\n\n" +
+	"Quality patterns (pick per task, compose freely):\n" +
+	"- Adversarial verify: for each finding, spawn independent skeptics prompted " +
+	"to REFUTE it; keep only what survives a majority.\n" +
+	"- Perspective-diverse verify: when something can fail in several ways, give " +
+	"each verifier a distinct lens (correctness, security, performance, " +
+	"does-it-reproduce) instead of N identical passes.\n" +
+	"- Judge panel: generate N independent attempts from different angles, score " +
+	"them, and synthesize from the winner while grafting the runners-up's best ideas.\n" +
+	"- Loop-until-dry: for unknown-size discovery, keep spawning finders until " +
+	"consecutive rounds surface nothing new — fixed counts miss the tail.\n" +
+	"- Completeness critic: finish with one agent asking what is missing (scope " +
+	"not swept, claim unverified, source unread); its findings seed the next round.\n" +
+	"- No silent caps: if you bound coverage (top-N, sampling, no-retry), state " +
+	"what was dropped rather than letting the result read as exhaustive."
 
 // secretsHygieneInstruction is appended to the system prompt when
 // Task.SecretsHygiene is true (a secret guard is active). It is the
@@ -78,6 +100,15 @@ type SecretFileHint struct {
 	Name string
 	Path string
 	Env  string
+}
+
+// SkillHint names one skill-library skill available to a node, rendered in the
+// "## Skills" system-prompt section. Description is the SKILL.md frontmatter
+// summary (may be empty). The skill's full body is NOT inlined — it lives in
+// the workspace's .claude/skills/<Name>/ for the agent to load on demand.
+type SkillHint struct {
+	Name        string
+	Description string
 }
 
 // agenticOperatingPosture is the iterion-authored base prompt prepended to
@@ -115,6 +146,18 @@ const agenticOperatingPosture = "You are an autonomous software engineering agen
 	"- If you are unsure, find out: read the source or run a check. Do not invent " +
 	"file paths, symbols, APIs, or results. When you verify something, actually " +
 	"run the verification and report what happened — including failures, plainly.\n\n" +
+	"Autonomy and delivery:\n" +
+	"- You operate autonomously inside a workflow: the operator is not watching in " +
+	"real time. For reversible steps that clearly serve the task, act — do not stop " +
+	"to ask \"Shall I…?\"; reserve interaction requests for genuine forks the work " +
+	"cannot resolve alone.\n" +
+	"- Tool call first, narration second: never describe an action as done or in " +
+	"progress unless the corresponding tool call happens in the same turn. Before " +
+	"ending, reread your final words — if they promise work not yet done " +
+	"(\"I'll…\", \"next I would…\"), do that work now instead of ending.\n" +
+	"- Your final output is the deliverable consumed downstream: lead with the " +
+	"outcome and make it self-contained — anything narrated only mid-run may " +
+	"never be read.\n\n" +
 	"Converge and stop:\n" +
 	"- Drive the task to a stable, finished state, then stop. When you are given " +
 	"prior context — earlier outputs, a previous reviewer's verdict, points already " +
@@ -417,6 +460,16 @@ type Task struct {
 	// the calibration section entirely. See docs/cursors.md.
 	CursorFragments []string
 
+	// SkillHints are the skill-library skills this node references (DSL
+	// `skills:`), resolved to name+description, that were mirrored into the
+	// workspace's .claude/skills/ at run start. They render as a "## Skills"
+	// section listing each available skill so the agent knows to load it
+	// on demand (the SKILL.md body lives in .claude/skills/, not the prompt).
+	// Only skills referenced by THIS node (node list ∪ workflow default,
+	// resolved against the library) appear. Empty = skip the section. See
+	// ADR-059 and docs/skills-library.md.
+	SkillHints []SkillHint
+
 	// PresetFragment is the resolved launch-time preset bias appended to the
 	// system prompt under a "## Focus" section. It carries the selected
 	// file-based preset's prompt body (template-expanded) plus an optional
@@ -572,6 +625,14 @@ type TaskHooks struct {
 	// runtime tolerates an empty SessionID (logs a warning, skips the
 	// fork-readiness side of the turn).
 	OnTurnFinished func(info TurnFinishedInfo)
+
+	// OnAssistantText fires with each non-empty assistant text block
+	// streamed mid-session (claude_code) — the agent's narration
+	// between tool calls. The executor bridges it to an assistant_text
+	// store event so conversation views can render the agent "talking"
+	// while it works. Runs on the stream-handling goroutine: must not
+	// block.
+	OnAssistantText func(text string)
 }
 
 // TurnFinishedInfo is the payload of the TaskHooks.OnTurnFinished
@@ -648,6 +709,22 @@ func (t Task) BuildSystemPrompt() string {
 		}
 		b.WriteByte('\n')
 	}
+	// Skill-library skills referenced by this node. Emitted after calibration,
+	// before the preset focus. Only names + descriptions — the agent loads a
+	// skill's body on demand from .claude/skills/. Byte-stable (caller sorts).
+	if len(t.SkillHints) > 0 {
+		b.WriteString("\n\n## Skills\n\n")
+		b.WriteString("The following skills are available in this workspace's .claude/skills/. Load one when its description matches the task at hand:\n")
+		for _, h := range t.SkillHints {
+			b.WriteString("- ")
+			b.WriteString(h.Name)
+			if h.Description != "" {
+				b.WriteString(": ")
+				b.WriteString(h.Description)
+			}
+			b.WriteByte('\n')
+		}
+	}
 	// The preset focus is the operator-selected "sous-bot" bias for this run,
 	// emitted last so it frames the task after the author's prompt and any
 	// calibration. Kept byte-stable across nodes for prompt-cache stability.
@@ -705,12 +782,27 @@ type ErrAskUser struct {
 	PendingToolUseID string
 	Conversation     json.RawMessage
 
+	// Options carries the structured selectable answers when the LLM
+	// called ask_user with an options list. The studio renders them as
+	// clickable choices; the answer wire shape stays a plain string
+	// (the picked option's id, or free text when AllowFreeText).
+	Options       []AskUserOption
+	AllowFreeText bool
+
 	// PermissionMarker is set (non-nil) when this suspension is a
 	// tool-permission gate pause rather than an LLM ask_user call. It
 	// carries the structured request (tool, input, rule) so the pause
 	// surfaces as an approval card and the runtime can compute the grant
 	// on resume. See pkg/backend/permission.Marker.
 	PermissionMarker map[string]any
+}
+
+// AskUserOption is one selectable answer of a structured ask_user call.
+// Mirrors claw-code-go's tools.Option so the delegate package stays
+// SDK-agnostic while both backends share one wire shape.
+type AskUserOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 func (e *ErrAskUser) Error() string {
@@ -763,6 +855,76 @@ func (e *ErrTransient) Error() string {
 // {{input.ask_user_response}} in their prompts if they want explicit
 // handling beyond the auto-prepended context block.
 const AskUserQuestionKey = "ask_user_response"
+
+// Presentation keys stamped alongside AskUserQuestionKey when the LLM
+// called ask_user with structured options. Reserved (underscore) keys:
+// the studio detects AskUserOptionsKey to render clickable choices
+// instead of a bare textarea; the runtime treats them as opaque
+// passthrough (ValidateOutput ignores extra keys, doPause persists the
+// questions map raw). The recorded answer stays a plain string — the
+// picked option's id, or typed text when AskUserAllowFreeTextKey.
+const (
+	AskUserOptionsKey       = "_ask_user_options"
+	AskUserAllowFreeTextKey = "_ask_user_allow_free_text"
+)
+
+// AddAskUserOptionKeys stamps the structured-options presentation keys
+// onto an _interaction_questions map. No-op without options so plain
+// free-text ask_user pauses keep their historical single-key shape.
+// Options serialize as []map so the checkpoint's JSON round-trip is
+// loss-free.
+func AddAskUserOptionKeys(questions map[string]interface{}, options []AskUserOption, allowFreeText bool) {
+	if len(options) == 0 {
+		return
+	}
+	list := make([]interface{}, 0, len(options))
+	for _, o := range options {
+		list = append(list, map[string]interface{}{"id": o.ID, "label": o.Label})
+	}
+	questions[AskUserOptionsKey] = list
+	questions[AskUserAllowFreeTextKey] = allowFreeText
+}
+
+// ParseAskUserToolInput extracts the structured option fields from a raw
+// ask_user tool-input map (the claude_code PreToolUse hook's view of the
+// call). Mirrors claw-code-go's ParseAskUserInput semantics: malformed
+// entries are skipped rather than erroring (the hook must never fail the
+// interception), labels are capped, and free text defaults to allowed
+// when no options are given.
+func ParseAskUserToolInput(in map[string]any) (options []AskUserOption, allowFreeText bool) {
+	const (
+		maxOptions   = 32
+		maxOptionLen = 200
+	)
+	if raw, ok := in["options"].([]any); ok {
+		for _, item := range raw {
+			if len(options) == maxOptions {
+				break
+			}
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			label, _ := m["label"].(string)
+			id = strings.TrimSpace(id)
+			label = strings.TrimSpace(label)
+			if id == "" || label == "" {
+				continue
+			}
+			if len(label) > maxOptionLen {
+				label = label[:maxOptionLen]
+			}
+			options = append(options, AskUserOption{ID: id, Label: label})
+		}
+	}
+	if v, ok := in["allow_free_text"].(bool); ok {
+		allowFreeText = v
+	} else if len(options) == 0 {
+		allowFreeText = true
+	}
+	return options, allowFreeText
+}
 
 // Reserved input keys used to relay ask_user pause/resume state across
 // runtime → executor → backend. Owned by the delegate package because

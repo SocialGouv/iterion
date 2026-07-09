@@ -45,6 +45,11 @@ interface Props {
     formAnswer?: FormAnswer;
   }) => void;
   busy?: boolean;
+  // When true, this pending turn's input is owned by the page's
+  // unified composer: render the assistant bubble (the agent's
+  // message must stay in the transcript flow) but no inline
+  // textarea/buttons.
+  inputHidden?: boolean;
 }
 
 export default function HumanChatTurn({
@@ -52,6 +57,7 @@ export default function HumanChatTurn({
   form,
   onSubmit,
   busy = false,
+  inputHidden = false,
 }: Props) {
   const [draft, setDraft] = useState("");
   const [reviseOpen, setReviseOpen] = useState(false);
@@ -155,6 +161,14 @@ export default function HumanChatTurn({
         onEnter();
       }
     };
+
+  if (inputHidden) {
+    return (
+      <div className="space-y-2">
+        <AssistantBubble text={message.prompt} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-2">

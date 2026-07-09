@@ -16,6 +16,16 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// hasEventType reports whether events contains at least one event of typ.
+func hasEventType(events []*store.Event, typ store.EventType) bool {
+	for _, e := range events {
+		if e.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // stubExecutor — configurable per-node executor for tests
 // ---------------------------------------------------------------------------
@@ -927,14 +937,7 @@ func TestHumanPause_DrainsOperatorMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadEvents: %v", err)
 	}
-	found := false
-	for _, e := range events {
-		if e.Type == store.EventUserMessageDelivered {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasEventType(events, store.EventUserMessageDelivered) {
 		t.Fatal("user_message_delivered event missing from run")
 	}
 }

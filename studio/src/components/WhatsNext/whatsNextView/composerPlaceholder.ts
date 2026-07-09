@@ -1,10 +1,16 @@
 import type { RunStatus } from "@/api/runs";
 
 // composerPlaceholder picks the prompt copy for the always-on
-// composer based on the run state it's rendered over: a closed run
-// re-seeds a fresh session, a live one folds the message into the
-// running step.
-export function composerPlaceholder(runStatus: RunStatus | null): string {
+// composer based on the state it's rendered over: answering Nexie's
+// pending question, folding into a live step, or re-seeding a fresh
+// session after a close.
+export function composerPlaceholder(
+  runStatus: RunStatus | null,
+  hasPendingTurn = false,
+): string {
+  if (hasPendingTurn) {
+    return "Reply to Nexie…";
+  }
   if (
     runStatus === "finished" ||
     runStatus === "failed" ||

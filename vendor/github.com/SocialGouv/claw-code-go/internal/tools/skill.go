@@ -61,8 +61,10 @@ type SkillInvocation struct {
 // SkillTool returns the api.Tool registration for the "skill" tool.
 func SkillTool() api.Tool {
 	return api.Tool{
-		Name:        "skill",
-		Description: "Execute a skill by name. Skills are specialized prompt files that provide domain knowledge. Names may be plain ('my-skill') or plugin-namespaced ('plugin:skill').",
+		Name: "skill",
+		Description: "Execute a skill by name — plain ('my-skill') or plugin-namespaced ('plugin:skill') — with optional args. " +
+			"Skills are curated prompt files encoding a workflow or domain knowledge; when an available skill matches the user's request, invoke it BEFORE answering instead of improvising the procedure it encodes. " +
+			"The skill body is returned to you to follow.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{

@@ -149,27 +149,6 @@ func NewPolicy(mode Mode, allow, ask, deny []string) (*Policy, error) {
 // Enabled reports whether the gate is active (mode != off).
 func (p *Policy) Enabled() bool { return p != nil && p.Mode != ModeOff }
 
-// AllowRuleStrings returns the raw allow-rule strings (used to forward
-// the policy to a sandboxed runner / subprocess unchanged).
-func (p *Policy) AllowRuleStrings() []string { return ruleStrings(p.allow) }
-
-// AskRuleStrings returns the raw ask-rule strings.
-func (p *Policy) AskRuleStrings() []string { return ruleStrings(p.ask) }
-
-// DenyRuleStrings returns the raw deny-rule strings.
-func (p *Policy) DenyRuleStrings() []string { return ruleStrings(p.deny) }
-
-func ruleStrings(rs []rule) []string {
-	if len(rs) == 0 {
-		return nil
-	}
-	out := make([]string, len(rs))
-	for i, r := range rs {
-		out[i] = r.raw
-	}
-	return out
-}
-
 // AddAllowRule appends an allow rule (used by "allow always" on
 // resume — the operator's grant persists for the rest of the run).
 // A malformed rule is ignored (it came from a structured decision, not

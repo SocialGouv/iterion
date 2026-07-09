@@ -103,3 +103,53 @@ contracts, not a cage.
   gated. The v1 sweep already proved the *mechanics* of verified incremental
   commits (run 019f27d4, 4 WriteFileAtomic commits); v2 removes the framing that
   made whole-repo runs stall.
+
+## Rollout addendum (2026-07-07) — fleet-wide application
+
+The pattern shipped across the catalog, one commit per bot, each
+`task check`-green; the git log of 2026-07-07 is the rollout record.
+
+**Full v2 conversions** (campaign + deterministic verify gate + bounded
+continuation loop + git-as-state; `review_mode`/`mono_family` retired
+where present): feature-gap-fill (`gap_closed`), test-coverage
+(`coverage_complete`, keeping the negative-space new-test-code floor in
+the deterministic gate, now measured against the run base), feature-dev
+(`feature_complete`, MR tail kept; the DOGFOOD PILOT — run 019f3bb4
+shipped `iterion validate --strict` in one pass, 11m33s, 2 in-stride
+commits, gate converged), docs-refresh (`docs_aligned`; the
+deterministic scan/manifest machinery kept in full, enforce_fix_scope
+reborn as a detect-only scope gate, the inter-run cache now fed by the
+manifest's mechanical verified_pairs), adr-cartograph (`adrs_aligned`;
+scan/survey/manifest kept, handoffs moved into the campaign contract),
+rgaa-audit (light: detect_ui absorbed as the campaign's phase 0;
+single-pass, deterministic scan_health/cap_findings unchanged).
+
+**Calibrated (structure kept where it is a PROPERTY, the fakeable part
+hardened):** dep-update-guard — the read-only security_audit stays
+separate from the mutating align (anti-prompt-injection separation
+behind a deterministic verdict gate) and commit-after-green stays
+(shared PR branch); the LLM `validate` self-report was replaced by the
+deterministic verify_build/verify_run gate, fail-closed.
+secured-renovacy — Phase 1's per-package pipeline untouched (ADR-055
+unit-convergence with reified security/revert/SBOM gates); only the
+Phase-2 cross-family relay became a campaign + deterministic gate.
+
+**Audited, deliberately NOT converted:** sec-audit-source's remediation
+ladder — `project_review_input` statically projects a 4-field input so
+`reviewer_isolation` is un-influencable by tainted upstream text (an
+isolation a prompt contract cannot replicate), `reattack` is a
+fresh-session adversarial lens, and the three rungs are already
+deterministic with a fail-closed aggregate. That is diverse-lens
+security verification (the same doctrine as its multi-voter triage
+core), not over-framing. Also not converted (shape is the product):
+review-pr, bmady, adr-rechallenge, evolve, whats-next,
+supply-shield(-cve), sec-audit-deps, revi-converse — these received
+only calibrated contract clauses (G5, sub-agent fan-out, security
+dismissal asymmetry) where a real gap existed.
+
+Doctrine updates in the same rollout: CLAUDE.md + workflow_authoring_
+pitfalls.md asymptote sections rewritten around the v2 mechanism (the
+streak/pushback machinery is preserved as the mandatory recipe for any
+NEW reviewer loop); ADR-052 addendum marks the topology a generic
+opt-in; `bots/review_topology_test.go` deleted with the machinery guard
+living in `e2e/review_topology_test.go`.

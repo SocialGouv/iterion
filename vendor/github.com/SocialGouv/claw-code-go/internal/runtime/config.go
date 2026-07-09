@@ -27,12 +27,22 @@ type MCPServerConfig struct {
 
 // Config holds runtime configuration for the CLI.
 type Config struct {
-	Model        string
-	MaxTokens    int
+	Model string
+	// OracleModel is the model the oracle tool consults (must live on the
+	// session client's provider). Empty = the session model.
+	OracleModel string
+	MaxTokens   int
+	// SystemPrompt, when set, REPLACES the authored base (identity sentence,
+	// posture and behavioral sections). Context sections (environment, git,
+	// CLAUDE.md, memory, compaction, MCP) still follow their toggles —
+	// combine with the minimal-prompt mode to send the custom prompt alone.
 	SystemPrompt string
-	SessionDir   string
-	APIKey       string
-	BaseURL      string
+	// AppendSystemPrompt is appended verbatim at the end of the assembled
+	// system prompt (the claude CLI's --append-system-prompt semantics).
+	AppendSystemPrompt string
+	SessionDir         string
+	APIKey             string
+	BaseURL            string
 
 	// Provider and auth fields (Phase 3).
 	// ProviderName is one of: "anthropic", "bedrock", "vertex", "foundry".
@@ -114,6 +124,12 @@ type PromptConfig struct {
 	MemoryImports       bool
 	AutoMemory          bool
 	Posture             bool
+	Communication       bool
+	TaskManagement      bool
+	DoingTasks          bool
+	ToolPolicy          bool
+	GitSafety           bool
+	ContextManagement   bool
 	// MemoryMaxBytes caps the combined injected memory content (0 = default).
 	MemoryMaxBytes int
 }
@@ -130,6 +146,12 @@ func DefaultPromptConfig() PromptConfig {
 		MemoryImports:       true,
 		AutoMemory:          true,
 		Posture:             true,
+		Communication:       true,
+		TaskManagement:      true,
+		DoingTasks:          true,
+		ToolPolicy:          true,
+		GitSafety:           true,
+		ContextManagement:   true,
 	}
 }
 
@@ -179,6 +201,12 @@ func ResolvePromptConfig(p *config.RuntimePromptConfig) PromptConfig {
 		MemoryImports:       pick(p.MemoryImports),
 		AutoMemory:          pick(p.AutoMemory),
 		Posture:             pick(p.Posture),
+		Communication:       pick(p.Communication),
+		TaskManagement:      pick(p.TaskManagement),
+		DoingTasks:          pick(p.DoingTasks),
+		ToolPolicy:          pick(p.ToolPolicy),
+		GitSafety:           pick(p.GitSafety),
+		ContextManagement:   pick(p.ContextManagement),
 		MemoryMaxBytes:      p.MemoryMaxBytes,
 	}
 }
@@ -199,6 +227,12 @@ var promptSections = []struct {
 	{"memory-imports", func(p *PromptConfig) *bool { return &p.MemoryImports }},
 	{"auto-memory", func(p *PromptConfig) *bool { return &p.AutoMemory }},
 	{"posture", func(p *PromptConfig) *bool { return &p.Posture }},
+	{"communication", func(p *PromptConfig) *bool { return &p.Communication }},
+	{"task-management", func(p *PromptConfig) *bool { return &p.TaskManagement }},
+	{"doing-tasks", func(p *PromptConfig) *bool { return &p.DoingTasks }},
+	{"tool-policy", func(p *PromptConfig) *bool { return &p.ToolPolicy }},
+	{"git-safety", func(p *PromptConfig) *bool { return &p.GitSafety }},
+	{"context-management", func(p *PromptConfig) *bool { return &p.ContextManagement }},
 }
 
 func normalizePromptSection(name string) string {
@@ -275,6 +309,22 @@ func (c *Config) PromptOrDefault() PromptConfig {
 	return DefaultPromptConfig()
 }
 
+// CustomSystemPrompt returns the replacement base prompt, if any (nil-safe).
+func (c *Config) CustomSystemPrompt() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.SystemPrompt)
+}
+
+// AppendedSystemPrompt returns the appended prompt suffix, if any (nil-safe).
+func (c *Config) AppendedSystemPrompt() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.AppendSystemPrompt)
+}
+
 // LoadConfig reads configuration from layered settings files and environment
 // variables and applies defaults. Load order (later overrides earlier):
 //  1. Defaults
@@ -296,6 +346,9 @@ func LoadConfig() *Config {
 	s := config.Load()
 	if s.Model != "" {
 		cfg.Model = s.Model
+	}
+	if s.OracleModel != "" {
+		cfg.OracleModel = s.OracleModel
 	}
 	if s.MaxTokens != 0 {
 		cfg.MaxTokens = s.MaxTokens
@@ -335,6 +388,9 @@ func LoadConfig() *Config {
 	}
 	if model := os.Getenv("ANTHROPIC_MODEL"); model != "" {
 		cfg.Model = model
+	}
+	if model := os.Getenv("CLAW_ORACLE_MODEL"); model != "" {
+		cfg.OracleModel = model
 	}
 	if baseURL := os.Getenv("ANTHROPIC_BASE_URL"); baseURL != "" {
 		cfg.BaseURL = baseURL

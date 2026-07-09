@@ -18,6 +18,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { Select } from "@/components/ui/Select";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 
 // Secrets manages the local (non-cloud) sealed secret store: machine-global
@@ -267,14 +268,14 @@ function UpsertSecretDialog({
             </label>
             <label className="block">
               <div className="text-xs text-fg-muted mb-1">Scope</div>
-              <select
-                className="w-full rounded border border-border bg-surface-1 px-2 py-1.5 text-sm"
+              <Select
+                size="md"
                 value={scope}
                 onChange={(e) => setScope(e.target.value as "global" | "project")}
               >
                 <option value="global">Global (all projects on this machine)</option>
                 <option value="project">Project (this workspace only, overrides global)</option>
-              </select>
+              </Select>
             </label>
           </>
         )}

@@ -66,6 +66,19 @@ func decodeJSON[T any](w http.ResponseWriter, r *http.Request, dst *T) bool {
 	return true
 }
 
+// decodeJSONCapped reads+unmarshals the request body into *dst, bounding
+// it to capBytes and writing a tenant-aware 400 "invalid body: %v" on
+// failure. Returns true on success, false if it already wrote an error
+// response.
+func decodeJSONCapped[T any](s *Server, w http.ResponseWriter, r *http.Request, dst *T, capBytes int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, capBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "invalid body: %v", err)
+		return false
+	}
+	return true
+}
+
 // IsAllowedOrigin reports whether the given Origin header value matches the
 // loopback set the studio server accepts. It is exposed as a method so test
 // code (and a future config flag) can extend the allowlist without rewriting

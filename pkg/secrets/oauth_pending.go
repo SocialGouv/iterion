@@ -167,13 +167,9 @@ func (s *MongoOAuthPendingStore) Put(ctx context.Context, rec OAuthPending) erro
 }
 
 func (s *MongoOAuthPendingStore) Take(ctx context.Context, ownerKey string, kind OAuthKind) (OAuthPending, error) {
-	var rec OAuthPending
-	err := s.coll.FindOneAndDelete(ctx, bson.M{"owner_key": ownerKey, "kind": kind}).Decode(&rec)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return OAuthPending{}, ErrOAuthPendingNotFound
-	}
+	rec, err := mongoutil.FindOneAndDeleteChecked[OAuthPending](ctx, s.coll, bson.M{"owner_key": ownerKey, "kind": kind}, ErrOAuthPendingNotFound, "secrets: take oauth pending")
 	if err != nil {
-		return OAuthPending{}, fmt.Errorf("secrets: take oauth pending: %w", err)
+		return OAuthPending{}, err
 	}
 	// The TTL monitor can lag up to ~60s, so reject an expired record
 	// even if Mongo hasn't swept it yet.

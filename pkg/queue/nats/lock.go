@@ -25,6 +25,17 @@ type LeaseInfo struct {
 	Status    string    `json:"run_status"`
 }
 
+// newLeaseBody marshals a fresh "running" lease for runnerID, stamped
+// with the current time. Shared by AcquireLock and Refresh so both
+// write the same lease shape.
+func newLeaseBody(runnerID string) ([]byte, error) {
+	return json.Marshal(LeaseInfo{
+		RunnerID:  runnerID,
+		StartedAt: time.Now().UTC(),
+		Status:    "running",
+	})
+}
+
 // Lock represents an acquired run lease. The runner refreshes it
 // periodically (via Refresh) while it owns the run, and releases it
 // on completion (via Release). The TTL on the bucket means an
@@ -48,11 +59,7 @@ func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, 
 	if c.kv == nil {
 		return nil, fmt.Errorf("queue/nats: KV bucket not initialised")
 	}
-	body, err := json.Marshal(LeaseInfo{
-		RunnerID:  runnerID,
-		StartedAt: time.Now().UTC(),
-		Status:    "running",
-	})
+	body, err := newLeaseBody(runnerID)
 	if err != nil {
 		return nil, fmt.Errorf("queue/nats: marshal lease: %w", err)
 	}
@@ -76,11 +83,7 @@ func (c *Conn) AcquireLock(ctx context.Context, runID, runnerID string) (*Lock, 
 // bumped the revision and our Update would fail, signalling the
 // caller to abort the run.
 func (l *Lock) Refresh(ctx context.Context) error {
-	body, err := json.Marshal(LeaseInfo{
-		RunnerID:  l.runnerID,
-		StartedAt: time.Now().UTC(),
-		Status:    "running",
-	})
+	body, err := newLeaseBody(l.runnerID)
 	if err != nil {
 		return err
 	}

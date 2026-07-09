@@ -15,6 +15,22 @@ Three tools, scoped to this bot's memory tree:
 - **memory_write(path, content)** — write/replace a file in the scope.
 - **memory_list(path)** — list files in a scope subdirectory.
 
+> **claude_code backend note.** The `memory_*` tools (and the
+> auto-index/autoload described below) are claw-only. On claude_code
+> you reach the SAME tree directly with bash/read/write — resolve the
+> directory exactly like iterion's store encoding:
+>
+> ```sh
+> base="${ITERION_HOME:-$HOME/.iterion}"
+> key=$(printf '%s' "$WORKSPACE_DIR" | sed -e 's#[/:\\]#-#g')
+> case "$key" in -*) ;; *) key="-$key";; esac
+> dir="$base/projects/$key/memory/<scope>"   # e.g. …/memory/whats-next
+> ```
+>
+> Read `CONTEXT_BRIEF.md` yourself at session start; `mkdir -p "$dir"`
+> before the first write. Everything else in this skill (file format,
+> frontmatter, brief discipline) applies unchanged.
+
 The scope lives **outside the repo**, under
 `~/.iterion/projects/<encoded-workspace>/memory/<scope>/`. Iterion
 **auto-generates an index** of every `.md` file in the scope at

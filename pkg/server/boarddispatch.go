@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -137,30 +138,54 @@ func (d *boardDispatcher) warn(format string, args ...any) {
 // the run record until it terminates. Returns nil on a clean finish, an error
 // on failure or pause (the dispatcher then moves the card to blocked). The
 // tenant identity is stamped on ctx so the publisher seals credentials.
-// Reserved BotArgs keys carrying the repo a webhook-launched card targets.
-// ensureBoardCard stamps them; liftBoardRepo extracts them so they reach the
-// LaunchSpec (and not the bot as vars).
+// Reserved BotArgs keys carrying the launch context a webhook-launched card
+// targets — the repo to clone AND the webhook's BYOK key / secret overrides.
+// The board coordinator launches from the card and otherwise has NONE of this
+// (the webhook's own SecretOverrides/KeyOverrides never reach it). ensureBoardCard
+// stamps them; liftBoardLaunchContext extracts them into the LaunchSpec so they
+// don't leak to the bot as vars. Secret resolution ALSO works via a (tenant,bot)
+// binding — the override is the belt to that braces, and the only route for a
+// per-webhook KeyOverride (BYOK billing), which has no binding equivalent.
 const (
-	boardRepoURLKey = "__iterion_repo_url"
-	boardRepoRefKey = "__iterion_repo_ref"
+	boardRepoURLKey         = "__iterion_repo_url"
+	boardRepoRefKey         = "__iterion_repo_ref"
+	boardKeyOverridesKey    = "__iterion_key_overrides"
+	boardSecretOverridesKey = "__iterion_secret_overrides"
 )
 
-// liftBoardRepo splits a card's BotArgs into (bot vars, repoURL, repoRef),
-// removing the reserved repo keys from the vars so they don't leak to the bot.
-func liftBoardRepo(botArgs map[string]string) (map[string]string, string, string) {
-	repoURL := botArgs[boardRepoURLKey]
-	if repoURL == "" {
-		return botArgs, "", ""
+// boardLaunchContext is the non-var launch state lifted off a card's BotArgs.
+type boardLaunchContext struct {
+	Vars            map[string]string
+	RepoURL         string
+	RepoRef         string
+	KeyOverrides    map[string]string
+	SecretOverrides map[string]string
+}
+
+// liftBoardLaunchContext splits a card's BotArgs into the bot's vars and the
+// reserved launch context (repo + overrides), removing the reserved keys from
+// the vars so they never leak to the bot. A malformed override blob is dropped
+// (best-effort — never fail a launch on it).
+func liftBoardLaunchContext(botArgs map[string]string) boardLaunchContext {
+	lc := boardLaunchContext{
+		RepoURL: botArgs[boardRepoURLKey],
+		RepoRef: botArgs[boardRepoRefKey],
 	}
-	repoRef := botArgs[boardRepoRefKey]
-	vars := make(map[string]string, len(botArgs))
+	if blob := botArgs[boardKeyOverridesKey]; blob != "" {
+		_ = json.Unmarshal([]byte(blob), &lc.KeyOverrides)
+	}
+	if blob := botArgs[boardSecretOverridesKey]; blob != "" {
+		_ = json.Unmarshal([]byte(blob), &lc.SecretOverrides)
+	}
+	lc.Vars = make(map[string]string, len(botArgs))
 	for k, v := range botArgs {
-		if k == boardRepoURLKey || k == boardRepoRefKey {
+		switch k {
+		case boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey:
 			continue
 		}
-		vars[k] = v
+		lc.Vars[k] = v
 	}
-	return vars, repoURL, repoRef
+	return lc
 }
 
 func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
@@ -175,17 +200,21 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	if err != nil {
 		return err
 	}
-	// A webhook-launched card carries its target repo in reserved BotArgs keys
-	// (ensureBoardCard) — the coordinator otherwise has no repo. Lift them into
-	// the LaunchSpec so the runner clones, and strip them from the bot's vars.
-	vars, repoURL, repoRef := liftBoardRepo(iss.BotArgs)
+	// A webhook-launched card carries its launch context (repo + the webhook's
+	// BYOK key / secret overrides) in reserved BotArgs keys (ensureBoardCard) —
+	// the coordinator otherwise has none of it. Lift it into the LaunchSpec so
+	// the runner clones + the publisher applies the overrides, and strip the
+	// reserved keys from the bot's vars.
+	lc := liftBoardLaunchContext(iss.BotArgs)
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath: path,
-		Source:   source,
-		BotID:    iss.Bot,
-		Vars:     vars,
-		RepoURL:  repoURL,
-		RepoRef:  repoRef,
+		FilePath:        path,
+		Source:          source,
+		BotID:           iss.Bot,
+		Vars:            lc.Vars,
+		RepoURL:         lc.RepoURL,
+		RepoRef:         lc.RepoRef,
+		KeyOverrides:    lc.KeyOverrides,
+		SecretOverrides: lc.SecretOverrides,
 	})
 	if err != nil {
 		return err

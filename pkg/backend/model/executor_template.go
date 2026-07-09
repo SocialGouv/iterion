@@ -545,13 +545,16 @@ func prependPriorAskUser(userText string, input map[string]interface{}) string {
 	// model tried a tool, the gate suspended it, and the operator
 	// authorized (GrantInputKey set) or denied it. Frame the resume so the
 	// model re-issues the now-authorized call (or adapts on denial).
+	// The harness context is wrapped in <system-reminder> so the model reads
+	// it as injected state, cleanly separated from the user text it precedes;
+	// the bracket labels stay as stable transcript markers.
 	if grant, ok := input[permission.GrantInputKey].(string); ok && grant != "" {
-		return fmt.Sprintf("[PERMISSION GRANTED]\nThe operator approved your previous tool call (%s). It is now authorized — re-issue the exact same tool call now to perform it.\n\n%s", q, userText)
+		return systemReminder(fmt.Sprintf("[PERMISSION GRANTED]\nThe operator approved your previous tool call (%s). It is now authorized — re-issue the exact same tool call now to perform it.", q)) + "\n\n" + userText
 	}
 	if isPermissionPrompt(q) {
-		return fmt.Sprintf("[PERMISSION DENIED]\nThe operator denied your previous tool call (%s). Do not retry it; take a different approach or explain why it is needed.\n\n%s", q, userText)
+		return systemReminder(fmt.Sprintf("[PERMISSION DENIED]\nThe operator denied your previous tool call (%s). Do not retry it; take a different approach or explain why it is needed.", q)) + "\n\n" + userText
 	}
-	return fmt.Sprintf("[PRIOR INTERACTION]\nYou previously called ask_user with question: %q\nThe user answered: %q\nUse this answer to complete your task. Do NOT call ask_user with the same question again.\n\n%s", q, a, userText)
+	return systemReminder(fmt.Sprintf("[PRIOR INTERACTION]\nYou previously called ask_user with question: %q\nThe user answered: %q\nUse this answer to complete your task. Do NOT call ask_user with the same question again.", q, a)) + "\n\n" + userText
 }
 
 // isPermissionPrompt reports whether a relayed prior question is a

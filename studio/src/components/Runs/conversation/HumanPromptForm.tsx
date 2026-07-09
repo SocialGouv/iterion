@@ -5,6 +5,7 @@ import { getRun, resumeRun } from "@/api/runs";
 import { Button } from "@/components/ui/Button";
 import { WizardForm } from "@/components/ui/WizardForm";
 import { useHumanNodeSchema } from "@/hooks/useHumanNodeSchema";
+import { ASK_USER_RESPONSE_KEY } from "@/lib/askUserOptions";
 import type { FormAnswer } from "@/lib/whats-next/questionForm";
 import {
   coerceFormAnswerToSchema,
@@ -150,7 +151,15 @@ export default function HumanPromptForm({
     }
   };
 
-  const useFallback = !loading && (fields === null || fields.length === 0);
+  // An ask_user pause (agent node calling the ask_user tool, possibly
+  // with structured options) answers with a single string under
+  // `ask_user_response` — the paused node's output_schema describes its
+  // eventual structured output, NOT this answer, so schema-driven
+  // rendering would show the wrong form. Route straight to the
+  // questions-driven PauseForm.
+  const isAskUserPause = ASK_USER_RESPONSE_KEY in (questions ?? {});
+  const useFallback =
+    isAskUserPause || (!loading && (fields === null || fields.length === 0));
   const approveField = fields?.find(
     (f) => f.type === "bool" && f.name === "approved",
   );
@@ -215,7 +224,7 @@ export default function HumanPromptForm({
           try — pass <code>--force</code> later if it rejects.
         </div>
       )}
-      {loading ? (
+      {loading && !isAskUserPause ? (
         <p className="text-micro text-fg-subtle">Loading question form…</p>
       ) : useFallback ? (
         <PauseForm

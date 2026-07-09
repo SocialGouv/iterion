@@ -1,8 +1,8 @@
 package server
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -34,25 +34,13 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "webhook context missing")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBodyBytes))
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "read body: %v", err)
-		return
-	}
-
 	// Signature gate FIRST — never write an audit row or call gateLaunch
 	// for an unauthenticated request (would leak quota signal to a
 	// random poker on the open route).
-	if !webhooks.VerifyHMACSignature(s.sealer, cfg.ID, cfg.HMACSecretSealed, body, r.Header.Get("X-Hub-Signature-256")) {
-		if s.logger != nil {
-			s.logger.Warn("webhooks: github bad HMAC for %s from %s", cfg.ID, s.clientIP(r))
-		}
-		httpError(w, http.StatusUnauthorized, "invalid signature")
+	body, payloadHash, srcIP, ok := s.verifyWebhookHMACBody(w, r, cfg, "github", r.Header.Get("X-Hub-Signature-256"))
+	if !ok {
 		return
 	}
-
-	payloadHash := knowledge.ChecksumHex(body)
-	srcIP := s.clientIP(r)
 
 	event := r.Header.Get("X-GitHub-Event")
 	switch event {
@@ -62,10 +50,11 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		s.handlePRForgeComment(ctx, w, r, cfg, webhooks.ProviderGitHub, body, payloadHash, srcIP)
 		return
 	case prforge.EventHeaderIssues:
-		// Issue lifecycle path: labeling an issue (e.g. "implement") launches
-		// an implementer bot (featurly) that opens a PR back-linked to the
-		// issue. Distinct from the PR auto-review and slash-command paths.
-		s.handleGitHubIssueLabeled(w, r, cfg, body, payloadHash, srcIP)
+		// Issue lifecycle path: labeling an issue (e.g. "implement") — or, with
+		// AutoImplementOnOpen, opening one — launches an implementer bot
+		// (featurly) that opens a PR back-linked to the issue. Distinct from the
+		// PR auto-review and slash-command paths.
+		s.handleGitHubIssues(w, r, cfg, body, payloadHash, srcIP)
 		return
 	case prforge.EventHeaderPullRequest:
 		// fall through to the PR auto-review path below.
@@ -78,6 +67,16 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// "gh|" prefix keeps the idempotency key space disjoint from any other
+	// provider for the same tenant in case ids get reused.
+	s.handlePRForgeReview(ctx, w, r, cfg, body, payloadHash, srcIP, "gh|")
+}
+
+// handlePRForgeReview handles the shared PR auto-review path for GitHub
+// and Forgejo/Gitea (identical prforge.Parsed wire shape): parse → filter
+// → bot select → idempotent launch. idemPrefix keeps each provider's
+// idempotency-key space disjoint for the same tenant.
+func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter, r *http.Request, cfg webhooks.Config, body []byte, payloadHash, srcIP, idemPrefix string) {
 	p, err := prforge.ParsePullRequest(body)
 	if err != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, webhookEventMeta{Kind: "pull_request"}, webhooks.StatusInvalid, payloadHash, srcIP, err.Error())
@@ -85,6 +84,16 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta := prforgePRMeta(p)
+
+	// Fork guard (opt-in): a fork PR (head repo != base repo) is untrusted, so
+	// when the webhook enables block_fork_prs it never auto-launches ANY bot —
+	// the operator validates it first (anti budget-exhaustion). Filtered as a
+	// clean 200 so the forge keeps the hook enabled.
+	if cfg.BlockForkPRs && p.IsCrossRepo() {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "fork PR blocked by block_fork_prs (operator validation required)")
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+		return
+	}
 
 	if !p.IsReviewable() ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
@@ -95,28 +104,42 @@ func (s *Server) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
-	if !ok {
-		return
+	// PR-open bot selection: a same-repo PR that implements a tracked issue
+	// routes to the branch-improvement bot (Billy) to harden it — and dedup the
+	// ticket lane; standalone PRs and every fork PR keep the default reviewer
+	// (Revi). selectForgePRBot has already validated AllowsBot for a non-empty
+	// return, so only the fall-through path needs resolveReviewBot's gate.
+	botID := selectForgePRBot(cfg, p)
+	if botID == "" {
+		var ok bool
+		if botID, ok = s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP); !ok {
+			return
+		}
 	}
 
 	// Idempotency: one launch per (tenant, webhook, repo, PR#, head sha).
-	// "gh|" prefix keeps the key space disjoint from any other provider
-	// for the same tenant in case ids get reused.
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gh|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("%s%s|%s|%s|%d|%s", idemPrefix, cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
 
-	vars := reviewPRVars(p.PRURL, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description), cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
+	scopeNotes := strings.TrimSpace(p.Title + "\n\n" + p.Description)
+	var vars map[string]string
+	if botID == branchImproveBotID {
+		vars = branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, scopeNotes, cfg.BranchImproveAsPR, cfg.LaunchVars)
+	} else {
+		vars = reviewPRVars(p.PRURL, p.TargetBranch, scopeNotes, cfg.LaunchVars, map[string]string{"pr_author": p.SenderLogin})
+	}
 
 	s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, idemKey, botID, vars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
 }
 
-// handleGitHubIssueLabeled handles a verified inbound GitHub `issues`
-// delivery. Only the "labeled" action with a label that passes the
-// webhook's LabelAllowlist launches a bot; everything else is filtered
-// (200) so GitHub keeps the hook enabled. The launched bot (configured on
-// the webhook, e.g. featurly) gets feature_prompt/open_mr/source_issue_ref
-// so it implements the issue and opens a PR back-linked to it.
-func (s *Server) handleGitHubIssueLabeled(w http.ResponseWriter, r *http.Request, cfg webhooks.Config, body []byte, payloadHash, srcIP string) {
+// handleGitHubIssues handles a verified inbound GitHub `issues` delivery. Two
+// triggers launch the implementer bot: a "labeled" action whose label passes
+// the webhook's LabelAllowlist (the deliberate opt-in), and — when the webhook
+// enables AutoImplementOnOpen — an "opened" action (the zero-touch lane that
+// turns every new issue into a PR). Everything else is filtered (200) so GitHub
+// keeps the hook enabled. The launched bot (e.g. featurly) gets
+// feature_prompt/open_mr/source_issue_ref so it implements the issue and opens
+// a PR back-linked to it.
+func (s *Server) handleGitHubIssues(w http.ResponseWriter, r *http.Request, cfg webhooks.Config, body []byte, payloadHash, srcIP string) {
 	ctx := r.Context()
 	p, err := prforge.ParseIssues(body)
 	if err != nil {
@@ -126,27 +149,32 @@ func (s *Server) handleGitHubIssueLabeled(w http.ResponseWriter, r *http.Request
 	}
 	meta := prforgeIssueMeta(p)
 
-	// Only a labeled action whose label passes the allowlist auto-triggers.
-	// Project + event allowlists mirror the PR path; the label allowlist is
-	// the per-webhook gate that scopes to e.g. "implement".
-	if !p.IsLabeled() ||
+	// Common gates (event + project) mirror the PR path.
+	labeled := p.IsLabeled() && webhooks.MatchLabel(cfg.LabelAllowlist, p.LabelName)
+	openedZeroTouch := p.IsOpened() && cfg.AutoImplementOnOpen
+	if (!labeled && !openedZeroTouch) ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "issues", "issues") ||
-		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
-		!webhooks.MatchLabel(cfg.LabelAllowlist, p.LabelName) {
+		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
+	botID, ok := s.selectIssueLabeledBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
 	}
 
-	// Idempotency: one launch per (tenant, webhook, repo, issue#, label).
-	// Including the label means re-applying a DIFFERENT trigger label still
-	// launches, while re-applying the SAME label is a no-op replay.
-	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gh|issue|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.IssueNumber, p.LabelName)))
+	// Idempotency: one launch per (tenant, webhook, repo, issue#, trigger).
+	// The trigger is the label for the labeled path (re-applying a DIFFERENT
+	// label still launches; the SAME label replays no-op) and a stable "opened"
+	// marker for the zero-touch path (so a later label on the same issue is a
+	// distinct trigger, not a replay of the open).
+	trigger := p.LabelName
+	if !labeled {
+		trigger = "opened"
+	}
+	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("gh|issue|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.IssueNumber, trigger)))
 
 	// Route through dispatchInvocation so a one-way tracking card is
 	// materialised on the tenant's board (idempotent, linked to the issue via
@@ -173,9 +201,7 @@ func issueLabeledVars(p prforge.ParsedIssue, launchVars map[string]string, argsV
 		"open_mr":          "true",
 		"source_issue_ref": p.IssueURL,
 	}
-	for k, v := range launchVars {
-		vars[k] = v
-	}
+	mergeVarsInto(vars, launchVars)
 	return vars
 }
 

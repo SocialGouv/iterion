@@ -224,9 +224,6 @@ func (r *Registry) resolveEnabled() {
 	})
 }
 
-// List returns all loaded plugins sorted by name.
-func (r *Registry) List() []*Plugin { return r.plugins }
-
 // Get returns the plugin with the given name.
 func (r *Registry) Get(name string) (*Plugin, bool) {
 	for _, p := range r.plugins {

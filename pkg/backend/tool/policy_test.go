@@ -2,6 +2,7 @@ package tool
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -139,7 +140,7 @@ func TestCheckErrorContainsToolName(t *testing.T) {
 		t.Errorf("expected ErrToolDenied, got %v", err)
 	}
 	// Error message should mention the tool name.
-	if got := err.Error(); !contains(got, "run_command") {
+	if got := err.Error(); !strings.Contains(got, "run_command") {
 		t.Errorf("error should mention tool name, got: %s", got)
 	}
 }
@@ -178,17 +179,4 @@ func TestNilPolicyCheckContext(t *testing.T) {
 	if err != nil {
 		t.Errorf("nil policy CheckContext should allow everything, got: %v", err)
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

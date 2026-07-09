@@ -39,6 +39,7 @@ type Workflow struct {
 	DefaultBackend  string                 // workflow-level default backend (empty = not set)
 	ToolPolicy      []string               // workflow-level tool policy patterns (nil = open)
 	Capabilities    []string               // workflow-level default host capabilities (nil = inherit none)
+	Skills          []string               // workflow-level default skill-library references (nil = none)
 	Interaction     *InteractionMode       // workflow-level default interaction mode (nil = not set)
 	Worktree        string                 // "auto" runs in a per-run git worktree; "" or "none" runs in-place
 	Compress        string                 // compress output-compression mode: on|ultra|off ("" = unset)
@@ -196,6 +197,7 @@ type AgentNode struct {
 	Tools            []string // tool capability names
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	Capabilities     []string // host-side capabilities (e.g. board.create); nil = inherit workflow
+	Skills           []string // skill-library references; resolved names mirrored into .claude/skills/ (nil = inherit workflow)
 	ToolMaxSteps     int      // max tool-use iterations (0 = not set)
 	AwaitMode        AwaitMode
 	Compaction       *Compaction  // per-node compaction overrides (nil = inherit workflow)
@@ -223,6 +225,7 @@ type JudgeNode struct {
 	Tools            []string
 	ToolPolicy       []string // per-node tool policy patterns (nil = inherit workflow)
 	Capabilities     []string // host-side capabilities (e.g. board.read); nil = inherit workflow
+	Skills           []string // skill-library references; resolved names mirrored into .claude/skills/ (nil = inherit workflow)
 	ToolMaxSteps     int
 	AwaitMode        AwaitMode
 	Compaction       *Compaction  // per-node compaction overrides (nil = inherit workflow)
@@ -467,6 +470,7 @@ type LLMNode interface {
 	GetTools() []string
 	GetToolMaxSteps() int
 	GetCapabilities() []string
+	GetSkills() []string
 	GetActiveMCPServers() []string
 	GetCompaction() *Compaction
 	GetMemory() *Memory
@@ -490,6 +494,7 @@ func (n *AgentNode) GetPublish() string                       { return n.Publish
 func (n *AgentNode) GetTools() []string                       { return n.Tools }
 func (n *AgentNode) GetToolMaxSteps() int                     { return n.ToolMaxSteps }
 func (n *AgentNode) GetCapabilities() []string                { return n.Capabilities }
+func (n *AgentNode) GetSkills() []string                      { return n.Skills }
 func (n *AgentNode) GetActiveMCPServers() []string            { return n.ActiveMCPServers }
 func (n *AgentNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *AgentNode) GetMemory() *Memory                       { return n.Memory }
@@ -507,6 +512,7 @@ func (n *JudgeNode) GetPublish() string                       { return n.Publish
 func (n *JudgeNode) GetTools() []string                       { return n.Tools }
 func (n *JudgeNode) GetToolMaxSteps() int                     { return n.ToolMaxSteps }
 func (n *JudgeNode) GetCapabilities() []string                { return n.Capabilities }
+func (n *JudgeNode) GetSkills() []string                      { return n.Skills }
 func (n *JudgeNode) GetActiveMCPServers() []string            { return n.ActiveMCPServers }
 func (n *JudgeNode) GetCompaction() *Compaction               { return n.Compaction }
 func (n *JudgeNode) GetMemory() *Memory                       { return n.Memory }

@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"os/exec"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -23,9 +22,6 @@ import (
 // Pre-fix this test would hang up to the runtime's outer timeout because
 // the cat-like child reads stdin forever and never writes stdout.
 func TestStream_HonorsCtxCancel(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix-only: relies on cat + POSIX process groups")
-	}
 	t.Setenv("ITERION_CLAUDE_CODE_CLOSE_GRACE", "100ms")
 	t.Setenv("ITERION_CLAUDE_CODE_CLOSE_TERM", "100ms")
 

@@ -278,7 +278,7 @@ func buildResolution(k ApiKey, sealer Sealer, currentUserID string) (Resolution,
 // record so it cannot be moved.
 func SealAPIKey(sealer Sealer, keyID string, plaintext []byte) ([]byte, error) {
 	if sealer == nil {
-		return nil, errors.New("secrets: nil sealer")
+		return nil, errNilSealer
 	}
 	return sealer.Seal(plaintext, []byte("api_key:"+keyID))
 }
@@ -439,15 +439,7 @@ func (s *MongoApiKeyStore) Get(ctx context.Context, id string) (ApiKey, error) {
 	if err != nil {
 		return ApiKey{}, err
 	}
-	var k ApiKey
-	err = s.coll.FindOne(ctx, filter).Decode(&k)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return ApiKey{}, ErrApiKeyNotFound
-	}
-	if err != nil {
-		return ApiKey{}, fmt.Errorf("secrets: get api key: %w", err)
-	}
-	return k, nil
+	return mongoutil.FindOne[ApiKey](ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: get api key")
 }
 
 func (s *MongoApiKeyStore) Update(ctx context.Context, k ApiKey) error {
@@ -458,14 +450,7 @@ func (s *MongoApiKeyStore) Update(ctx context.Context, k ApiKey) error {
 	// Match by both _id AND tenant_id so a tenant can never overwrite
 	// another tenant's row by guessing an id.
 	k.TenantID = tenantID
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": k.ID, "tenant_id": tenantID}, k)
-	if err != nil {
-		return fmt.Errorf("secrets: update api key: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrApiKeyNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": k.ID, "tenant_id": tenantID}, k, nil, ErrApiKeyNotFound, "secrets: update api key")
 }
 
 func (s *MongoApiKeyStore) Delete(ctx context.Context, id string) error {
@@ -473,14 +458,7 @@ func (s *MongoApiKeyStore) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	res, err := s.coll.DeleteOne(ctx, filter)
-	if err != nil {
-		return fmt.Errorf("secrets: delete api key: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrApiKeyNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, filter, ErrApiKeyNotFound, "secrets: delete api key")
 }
 
 func (s *MongoApiKeyStore) ListByTeam(ctx context.Context, teamID, userID string) ([]ApiKey, error) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -220,6 +221,22 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 		botArgs[boardRepoURLKey] = repoURL
 		if repoRef != "" {
 			botArgs[boardRepoRefKey] = repoRef
+		}
+	}
+	// Carry the webhook's BYOK key / secret overrides onto the card so the
+	// board coordinator's launch applies them (it resolves nothing from the
+	// webhook itself). forge_token also resolves via a (tenant,bot) binding —
+	// this is the belt to that braces and the only route for a per-webhook
+	// KeyOverride, which has no binding equivalent. JSON so a map survives the
+	// string→string BotArgs.
+	if len(cfg.KeyOverrides) > 0 {
+		if raw, err := json.Marshal(cfg.KeyOverrides); err == nil {
+			botArgs[boardKeyOverridesKey] = string(raw)
+		}
+	}
+	if len(cfg.SecretOverrides) > 0 {
+		if raw, err := json.Marshal(cfg.SecretOverrides); err == nil {
+			botArgs[boardSecretOverridesKey] = string(raw)
 		}
 	}
 	body := fmt.Sprintf("Triggered by a /%s-style command on %s/%s.\n\n%s",

@@ -337,6 +337,20 @@ func (c *Dispatcher) hasSlot(state string, cfg *Config) bool {
 func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	cfg := c.cfg.Load()
 
+	// Deterministic ticket router (opt-in): route an UNASSIGNED new issue by
+	// whether a PR already links it — a linked PR means the inbound PR-webhook
+	// owns the work (branch-improve on the PR branch), so the dispatcher steps
+	// aside to avoid a second, branch-less (empty-diff) run (the ticket<->PR
+	// dedup); no linked PR routes to the implement bot (Featurly). An explicit
+	// bot/assignee always wins — the router only touches fully-unassigned issues.
+	if cfg.TicketRouter.Enabled && iss.Bot == "" && iss.Assignee == "" {
+		bot, ok := c.routeUnassignedIssue(ctx, cfg, iss)
+		if !ok {
+			return // a PR owns this issue; skip recorded, PR-webhook runs Billy
+		}
+		iss.Bot = bot
+	}
+
 	if !c.resolveExplicitBot(cfg, iss) {
 		return
 	}
@@ -432,6 +446,64 @@ func (c *Dispatcher) resolveExplicitBot(cfg *Config, iss tracker.Issue) bool {
 		return false
 	}
 	return true
+}
+
+// linkedPRProbe is an OPTIONAL tracker capability: report whether an issue is
+// already linked by an open pull/merge request. A tracker that can't answer
+// (native, forgejo today) is treated as "no PR", so the router never blocks an
+// issue — it just can't dedup against a PR-webhook it cannot observe.
+type linkedPRProbe interface {
+	HasLinkedPR(ctx context.Context, id string) (bool, error)
+}
+
+// labelApplier is an OPTIONAL tracker capability: add a visible label. The
+// router uses it best-effort for the bot:featurly / bot:billy association; a
+// tracker without it just skips the label (routing is unaffected).
+type labelApplier interface {
+	ApplyLabel(ctx context.Context, id, label string) error
+}
+
+// routeUnassignedIssue is the deterministic ticket router. It returns
+// (implementBot, true) for an issue with NO linked PR — Featurly implements it —
+// or ("", false) to STEP ASIDE because a PR already owns the issue: the inbound
+// PR-webhook runs the branch-improve bot on the PR branch, and dispatching it
+// here would double-run on an empty diff (an issue carries no PR branch). A
+// best-effort visible label records the bot:featurly / bot:billy association.
+// A tracker that can't answer "linked PR?" degrades to the implement bot (never
+// blocks, never dedups against a PR-webhook it can't see). Runs on the actor
+// goroutine; the probe blocks it briefly (acceptable for the MVP — a follow-up
+// can offload it like launchDiscovery).
+func (c *Dispatcher) routeUnassignedIssue(ctx context.Context, cfg *Config, iss tracker.Issue) (string, bool) {
+	implementBot := cfg.TicketRouter.ImplementBotOrDefault()
+	probe, ok := c.tracker.(linkedPRProbe)
+	if !ok {
+		return implementBot, true // can't check PRs → implement (safe default)
+	}
+	hasPR, err := probe.HasLinkedPR(ctx, iss.ID)
+	if err != nil {
+		c.logger.Warn("dispatcher: PR-link probe for %s failed: %v — routing to %s", iss.Identifier, err, implementBot)
+		return implementBot, true
+	}
+	if hasPR {
+		c.applyBotLabelBestEffort(ctx, iss.ID, "bot:billy")
+		c.recordDispatchSkip(iss, "a linked PR owns this issue — the PR-webhook runs the branch-improve bot on the PR branch; the dispatcher steps aside to avoid a double run")
+		c.logger.Info("dispatcher: %s has a linked PR — stepping aside to the PR-webhook (branch-improve on the PR)", iss.Identifier)
+		return "", false
+	}
+	c.applyBotLabelBestEffort(ctx, iss.ID, "bot:featurly")
+	return implementBot, true
+}
+
+// applyBotLabelBestEffort stamps a visible bot:* label when the tracker supports
+// it. Non-fatal: a label failure never blocks the routing decision.
+func (c *Dispatcher) applyBotLabelBestEffort(ctx context.Context, id, label string) {
+	la, ok := c.tracker.(labelApplier)
+	if !ok {
+		return
+	}
+	if err := la.ApplyLabel(ctx, id, label); err != nil {
+		c.logger.Warn("dispatcher: apply label %q to %s: %v (non-fatal)", label, id, err)
+	}
 }
 
 // resolveRunID picks the runID (resumed vs freshly minted) and the

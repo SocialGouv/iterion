@@ -38,9 +38,12 @@ interface Props {
   wsState: WsState;
   // Restores the run-console panels to their default layout.
   onResetLayout?: () => void;
+  // When true, drop the component's own bottom border so the parent can
+  // fuse the header rows with the metrics ribbon into one bordered block.
+  bare?: boolean;
 }
 
-export default function RunHeader({ run, active, wsState, onResetLayout }: Props) {
+export default function RunHeader({ run, active, wsState, onResetLayout, bare = false }: Props) {
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
   const applySnapshot = useRunStore((s) => s.applySnapshot);
   const { busy, error, run: runAction, setError } = useAsyncAction();
@@ -82,8 +85,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout }: Props
   // — paused, finished, failed, cancelled. We don't gate by status
   // because "fork from a finished run" is a perfectly valid use case
   // (re-run the last LLM turn with different inputs).
-  const checkpointNode =
-    (run.checkpoint as { node_id?: string } | undefined)?.node_id ?? null;
+  const checkpointNode = run.checkpoint?.node_id ?? null;
   const canFork = Boolean(checkpointNode);
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel
@@ -185,7 +187,11 @@ export default function RunHeader({ run, active, wsState, onResetLayout }: Props
 
   return (
     <>
-      <div className="shrink-0 border-b border-border-default px-3 sm:px-4 py-2 flex flex-col gap-1.5 text-sm">
+      <div
+        className={`shrink-0 px-3 sm:px-4 py-2 flex flex-col gap-1.5 text-sm ${
+          bare ? "" : "border-b border-border-default"
+        }`}
+      >
         {/* Row 1: friendly name + status + actions */}
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           {editingName ? (
@@ -349,9 +355,8 @@ export default function RunHeader({ run, active, wsState, onResetLayout }: Props
               {finishedRel && <span>· finished {finishedRel}</span>}
             </span>
           </Tooltip>
-          <span className="ml-auto text-caption font-mono opacity-70">
-            {run.id}
-          </span>
+          {/* run id lives on the copy-id button (row 1) + the Overview's
+              Advanced details — no need to repeat the raw string here. */}
         </div>
       </div>
       {error && (

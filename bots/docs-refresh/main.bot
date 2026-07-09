@@ -1,135 +1,101 @@
 ## ─────────────────────────────────────────────────────────────────
-## docs-refresh v0.17.0
+## docs-refresh  (v2 — one agent aligns the docs in its natural
+##                flow, minimal framing)
 ##
-## v0.17.0 — CONVERGENCE HARDENING (asymptote enforcement). The
-## 2026-06-23 dogfood (run on a scoped doc diff, diff_since=origin/main)
-## looped ~16 review iterations to its `review_loop(15)` ceiling
-## without converging, never reaching prepare_commit. Root causes
-## (per CLAUDE.md "Review loops must converge to an asymptote"):
+## THE MISSION is a DOC-ALIGNMENT campaign: re-read the repo's
+## documentation against the actual current state of the code, fix the
+## DOCUMENTATION (never the code), and land each aligned doc as a
+## semantic `docs(scope):` commit in stride. When a repo has NO docs in
+## scope yet, an authoring pass bootstraps an initial set first
+## (DEFAULT-CREATE, unchanged from v0.3.0).
 ##
-##  1. STREAK ASYMMETRY (LOW-CONFIDENCE). The `stop` formula
-##     compared `input.approved` (raw) on the current side against
-##     `loop.review_loop.previous_output.approved` (the previous
-##     streak_check's LAUNDERED `approved`, which folded in
-##     `confidence == 'low'`). So a CURRENT low-confidence rejection
-##     with non-zero blockers reset the streak, while a PREVIOUS
-##     low-confidence rejection didn't — pure noise oscillated the
-##     gate. Fixed by also laundering the current side of `stop`:
-##     `(input.approved || input.confidence == 'low' || input.blocker_count == 0)`.
+## Sibling of `whole_improve_loop` / `branch_improve_loop` v2: SAME core
+## (one adaptive `campaign` agent + deterministic gates + a bounded
+## continuation loop + git-as-state), with Doki's DETERMINISTIC AUDIT
+## MACHINERY kept fully in front of it — the machinery IS the value the
+## engine uniquely adds here:
+##   scan_docs         — immutable doc-footprint enumeration + inter-run
+##                       cache pre-verification (unchanged).
+##   scan_code_surface — opt-in CLI/diagnostic surface inventory
+##                       (unchanged; empty globs = disabled).
+##   build_manifest    — deterministic anchor extraction + mechanical
+##                       verification; emits the bounded drift_candidates
+##                       working set (severity-sorted, doc-chunked — the
+##                       v0.15/0.16 context-bounding lessons live here),
+##                       the anchor-level coverage_pct, and (v2) the
+##                       mechanically VERIFIED `doc::anchor` pairs that
+##                       feed the inter-run cache.
+##   campaign          — ONE adaptive agent (claude_code, full tools).
+##                       Mission = adjudicate + fix the manifest's drift
+##                       candidates, one doc at a time, committing each
+##                       aligned doc in stride. Docs follow code; the
+##                       writeable set is `.md` (+ Go comments when
+##                       opted in); is_code_bug is the escape valve.
+##                       git IS the durable state — a re-dispatch re-runs
+##                       the manifest and the campaign continues from the
+##                       commits earlier passes banked.
+##   scope_check       — deterministic detector (v2 rewrite of v1's
+##                       enforce_fix_scope): diffs the RUN BASE against
+##                       the tree and fails the gate when anything
+##                       outside the doc writeable-set changed. With
+##                       git-as-state the campaign commits in stride, so
+##                       out-of-scope edits are DETECTED and bounced back
+##                       (the campaign must revert them) instead of
+##                       silently checkout-reverted from a dirty tree.
+##   verify_build      — the stack-agnostic build/test gate shared with
+##     + verify_run      the other v2 bots: docs-only changes should
+##                       never break a build, and when go_comment_globs
+##                       opts Go comments in, the gate proves the tree
+##                       still compiles. Deterministic exit code.
+##   gate              — deterministic compute: converged = tree green
+##                       AND scope clean AND campaign reports docs
+##                       aligned AND manifest coverage ≥ target. The
+##                       loop re-runs build_manifest each pass so the
+##                       drift set always reflects the live tree.
+##   mark_issue_for_review / update_audit_cache — dispatcher issue
+##                       transition + inter-run cache write (unchanged;
+##                       the cache now records the manifest's mechanical
+##                       verified_pairs instead of reviewer claims).
 ##
-##  2. NO RE-LITIGATION GUARD. Reviewers received the previous
-##     verdict via `loop.review_loop.previous_output` but had no
-##     instruction to refrain from re-raising items the previous
-##     reviewer already adjudicated (dismissed or that the fixer
-##     pushed back). With unverifiable `symbol_ref` candidates that
-##     stay in the manifest every iter (CamelCase prose, archived
-##     refs), each new reviewer wasted tool calls re-checking
-##     items that were already settled. Fixed by:
-##       a. Accumulating `cumulative_dismissed_pairs` (the union of
-##          every reviewer's `audited_pairs` when they raised zero
-##          blockers — i.e. confirmed-not-drift items) into
-##          `streak_state`, then feeding it into both reviewers via
-##          the alt→reviewer edges.
-##       b. Accumulating `cumulative_pushback` (union of every
-##          fixer pushback across families) into `streak_state`,
-##          then feeding it into both reviewers alongside the
-##          last-iter `prior_pushback`.
-##       c. Adding an explicit "DO NOT re-raise without NEW
-##          evidence" clause to `review_system` and to both
-##          `review_user_*` prompts.
+## WHY THIS SHAPE. The v1 loop was ~16 nodes: the audit machinery above
+## PLUS an alternating cross-family review/fix assembly line
+## (alt condition router → reviewer_claude / reviewer_gpt → streak_check
+## → fix_claude / fix_gpt → prepare_commit → commit_changes →
+## detect_doc_changes) with streak/coverage/chronic-path/dismissed-pairs
+## accumulators to keep it from oscillating. ADR-058
+## (docs/references/productive-session-patterns.md): "the deficit is
+## framing, not capability" — a capable agent adjudicates a bounded,
+## pre-verified drift manifest and fixes the real drifts better as ONE
+## flow than as a reviewer/fixer relay, and the accumulator machinery
+## existed only to police the relay's oscillation. The deterministic
+## manifest + scope + build gates keep every anti-Goodhart guarantee.
 ##
-##  3. PREVIOUS VERDICT CONFIDENCE INVISIBLE. `streak_state` did
-##     not carry `confidence`, so `loop.review_loop.previous_output`
-##     showed reviewers a verdict shape without confidence. They
-##     could not tell whether the previous family's rejection was
-##     intuition-level (low) or evidence-backed (high), defeating
-##     the monotonic-trend signal. Fixed by adding `confidence` to
-##     `streak_state` and surfacing it in the prior-verdict prompt
-##     stanza.
+## CONTINUATION IS BOUNDED. The single declared loop
+## (build_manifest→campaign→scope_check→verify_build→verify_run→gate→
+## build_manifest) is capped by `max_passes`; on exhaustion it ships
+## what is banked (every committed doc alignment is real, landed work).
+## `iterion validate` reports NO undeclared cycle (author_rescan(1) is
+## the one other declared loop, unchanged from v1).
 ##
-## v0.3.0 — DEFAULT-CREATE (operator-directed): when scan_docs finds
-## ZERO documentation files in scope, the `author_docs` node creates
-## the docs directory (`docs_dir` var, DEFAULT "docs") and authors an
-## initial documentation set from the code; the run then loops back
-## through scan_docs (author_rescan) and the normal review/refresh loop
-## polishes + commits it. So docs-refresh refreshes from zero, not only
-## edits pre-existing files. (The earlier doc-align → docs-refresh
-## rename — operator-directed alongside this — is also complete.)
+## STACK/REPO-AGNOSTIC (CLAUDE.md "Catalog bots are repo-agnostic"):
+## universal doc_globs defaults, empty code scope = whole workspace,
+## the CLI/diagnostic surface scan stays opt-in (Cobra-shaped repos),
+## and the cache is a repo-root dotfile. Unchanged from v1.
 ##
-## Refreshes a repo's documentation against the actual current state of
-## the code: detects mismatches between docs (README, docs/*.md,
-## CLAUDE.md, bundled skills, optionally Go code comments) and the code,
-## fixes the DOCUMENTATION (never the code), and auto-commits on
-## convergence. When a repo has NO docs yet, it bootstraps an initial
-## set first (see DEFAULT-CREATE above).
-##
-## v0.2.0 fixes 7 issues uncovered by the v0.1.0 dogfood run on
-## this repo:
-##  1. Template substitution bug: prior fix iteration's
-##     `code_files_touched` was passed via {{outputs.fix_*.X}}
-##     in the user prompt, which iterion does NOT auto-substitute
-##     (only edge `with {}` triggers substitution). The G4 gate
-##     therefore never fired in reviewers. Fixed by routing
-##     prior_code_files_touched_{claude,gpt} through the edge.
-##  2. Coverage threshold is now MECHANICAL: streak_check
-##     computes the cumulative file-level coverage (distinct
-##     doc_paths in cumulative_audited_docs over doc_count) and
-##     bakes a coverage gate into the `stop` formula. Claude's
-##     iter 2 in v0.1.0 approved with only 13/51 audited and the
-##     streak was nearly armed — the mechanical gate prevents
-##     that drift.
-##  3. reviewer_gpt now uses `session: inherit` after the first
-##     iteration so subsequent reviews ride on top of fix_gpt's
-##     session (large prompt-cache benefit). v0.1.0 burned $7.49
-##     on a single fresh-session GPT review of the workspace.
-##  4. scan_docs auto-excludes the bot's own bundle via
-##     `bundle_self_path` var — when docs-refresh is run on a repo
-##     that contains its own source, the bot won't try to
-##     "align" its own skills/main.bot to itself.
-##  5. Incremental mode: when `diff_since` is set, scan_docs
-##     emits `recently_changed_code_files[]` (from
-##     `git diff <ref>...HEAD --name-only`) as a HINT to reviewers
-##     so they can prioritise docs that reference recent code
-##     churn. The full doc footprint is still audited — the
-##     hint is non-authoritative.
-##  6. `anchor_kind` enum (symbol | line_range | removed |
-##     external) added to mismatch shape per
-##     doc-mismatch-taxonomy.md. Discipline gain: reviewers must
-##     classify the citation precision, which makes the G3
-##     round-trip auditable.
-##  7. Final-report hint: the v0.1.0 commit message embedded the
-##     report inline. v0.2.0 points users at `iterion report
-##     --run-id <id>` (already exists) instead — see README.md.
-##
-## Workflow shape mirrors branch_improve_loop: alternating
-## claude_code (opus) and claw (gpt-5.5) reviewers, deterministic
-## streak_check requiring two consecutive cross-family approvals
-## AND coverage ≥ coverage_target_pct, prepare_commit +
-## commit_changes finalize on convergence.
-##
-## Inviolable rules (enforced by skills + prompts):
-##   1. Docs follow code; code does NOT follow docs.
-##   2. Fixer writeable set: `.md` files in scope + Go code
-##      comments when `go_comment_globs` is non-empty.
-##   3. The audit footprint is determined by the scanner tool,
-##      not by agents.
-##   4. Escape valve: when the doc is correct and the code is
-##      wrong, set `is_code_bug=true` and call `ask_user`.
+## RETIRED FROM v1 (git history has the design): the `alt` condition
+## router, reviewer_claude / reviewer_gpt, streak_check (+ its
+## cumulative_dismissed_pairs / cumulative_pushback / chronic-path
+## accumulators — nothing left to oscillate), fix_claude / fix_gpt,
+## prepare_commit / commit_changes (the campaign commits in stride),
+## detect_doc_changes (both remaining terminal tools are ~ms and
+## unconditional), enforce_fix_scope (reborn as the detect-only
+## scope_check), and the review_mode / mono_family topology vars —
+## the ADR-052 mono/dual review topology no longer applies to this bot
+## (no reviewer nodes). 16 nodes → 11.
 ## ─────────────────────────────────────────────────────────────────
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
-  ## ─── Review topology (mono/dual) — see branch-improve-loop ─────
-  ## dual = alternate claude ↔ gpt (robust, two families); mono = one
-  ## family (mono_family), ~half the LLM calls; auto = resolved at
-  ## LAUNCH (dual if two provider families detected, else mono).
-  ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
-  ## dispatcher) when left "auto"; without that resolution "auto"
-  ## behaves as dual (a pure non-regression). mono_family is filled by
-  ## the resolver in mono mode.
-  review_mode: string = "auto"
-  mono_family: string = ""
 
   ## Doc footprint scope (comma-separated globs). The scan_docs
   ## tool node enumerates files matching these globs once, at run
@@ -140,690 +106,307 @@ vars:
   ## UNIVERSAL DEFAULT: docs-refresh documents ANY repo, so the default
   ## footprint is the conventions common to most projects (root +
   ## nested READMEs, a docs/ tree, CLAUDE.md). Repo-specific doc
-  ## locations (e.g. iterion's `examples/*/skills/*.md` bundle docs)
-  ## are added per-repo via --var, never baked into the catalog
-  ## default. See "Catalog bots are repo-agnostic" in CLAUDE.md.
+  ## locations are added per-repo via --var, never baked into the
+  ## catalog default. See "Catalog bots are repo-agnostic" in CLAUDE.md.
   doc_globs: string = "README.md,docs/**/*.md,**/README.md,CLAUDE.md,**/CLAUDE.md"
 
   ## Go code comment scope (comma-separated globs). Empty (default)
   ## means: do NOT audit Go function/package comments — speeds up
-  ## first runs.
+  ## first runs. Non-empty also widens the campaign's writeable set
+  ## (and scope_check's allow-list) to comment-only edits in those
+  ## files.
   go_comment_globs: string = ""
 
   ## Code scope reviewers may grep / read to verify doc claims.
-  ## UNIVERSAL DEFAULT: empty = reviewers may grep the whole
-  ## workspace (minus `excluded_dirs`). A language/layout-specific
-  ## scope (e.g. iterion's `pkg/**/*.go,cmd/**/*.go`) is a per-repo
-  ## --var override, never the catalog default — docs-refresh must run
-  ## on Python / Rust / TS / Go repos identically out of the box.
+  ## UNIVERSAL DEFAULT: empty = the campaign may grep the whole
+  ## workspace (minus `excluded_dirs`).
   code_scope_globs: string = ""
 
-  ## Optional free-text notes pinning the reviewers' attention.
+  ## Optional free-text notes pinning the campaign's attention.
   scope_notes: string = ""
 
-  ## Loop bounds.
-  max_review_iterations: int = 15
-  max_recovery_iterations: int = 20
-
-  ## Coverage threshold (percentage of `doc_files` that must
-  ## appear in `cumulative_audited_docs` before stop=true can
-  ## fire). Default 80 — high enough to defeat the "rubber-stamp
-  ## after a partial audit" failure mode seen in v0.1.0, low
-  ## enough to allow approval when a small tail of files is
-  ## genuinely irrelevant for this iteration's diff.
+  ## Coverage threshold (percentage of mechanically-checkable anchors
+  ## the manifest must have VERIFIED before the gate can converge).
+  ## Default 80 — high enough to defeat "declare aligned after a
+  ## partial pass", low enough to tolerate a genuinely-unverifiable
+  ## tail. The gate compares build_manifest.coverage_pct against it
+  ## every pass; the campaign raises it by fixing drifted anchors.
   coverage_target_pct: int = 80
 
-  ## Auto-exclusion (fix 4). When non-empty, scan_docs excludes
-  ## any file whose path starts with this prefix from the doc
-  ## footprint. Set to `bots/docs-refresh` when running docs-refresh
-  ## on the iterion repo itself; otherwise leave empty.
+  ## Auto-exclusion. When non-empty, scan_docs excludes any file whose
+  ## path starts with this prefix from the doc footprint. Set to the
+  ## bot's own bundle dir when running docs-refresh on a repo that
+  ## contains its source; otherwise leave empty.
   bundle_self_path: string = ""
 
-  ## Incremental mode (fix 5). When non-empty, scan_docs computes
-  ## `git diff <diff_since>...HEAD --name-only` and surfaces the
-  ## result as `recently_changed_code_files`. Reviewers receive
-  ## this as a HINT to prioritise docs that reference those files
-  ## — the full doc footprint is still mandatory coverage. Useful
-  ## for nightly / per-PR runs (`--var diff_since=main`).
+  ## Incremental mode. When non-empty, scan_docs computes
+  ## `git diff <diff_since>...HEAD --name-only` and surfaces the result
+  ## as `recently_changed_code_files` — a prioritisation HINT for the
+  ## campaign, never a scope reduction. Useful for nightly / per-PR
+  ## runs (`--var diff_since=main`).
   diff_since: string = ""
 
-  ## Hard-excluded directories (v0.8.0). Comma-separated list of
-  ## directory names whose presence anywhere in a path
-  ## disqualifies it from `doc_files` (regardless of `doc_globs`).
-  ## Defaults exclude runtime / scratch / vendor / artifact dirs
-  ## that should never be audited. Override to enable multi-repo
-  ## audit — e.g. drop `.works` to include sibling repos checked
-  ## out under `.works/<repo>/`. Setting to empty disables all
-  ## exclusion (NOT recommended — picks up `.git/`).
+  ## Hard-excluded directories. Comma-separated list of directory names
+  ## whose presence anywhere in a path disqualifies it from `doc_files`
+  ## (regardless of `doc_globs`). Defaults exclude runtime / scratch /
+  ## vendor / artifact dirs that should never be audited. Setting to
+  ## empty disables all exclusion (NOT recommended — picks up `.git/`).
   excluded_dirs: string = ".iterion,.works,.claude,vendor,node_modules,.git,dist,build,out"
 
-  ## Code-surface scan scope (v0.6.0). Globs for the
-  ## `scan_code_surface` tool — a counter-omission audit that greps
-  ## the code for "publicly-exposed identifiers" docs ought to
-  ## mention (CLI commands, flags, diagnostic codes) and checks each
-  ## appears in at least one doc.
-  ##
-  ## OPT-IN / NON-UNIVERSAL: the scanner's extraction patterns are
-  ## currently specialised for a Cobra-CLI + custom-diagnostic-code
-  ## repo (it greps cobra `Use:` literals and `Cxxx`-style codes —
-  ## see scan_code_surface below). That heuristic only produces
-  ## meaningful output on repos shaped like that (e.g. iterion). So
-  ## the catalog DEFAULT is empty = surface scan DISABLED, and
-  ## docs-refresh does a universal doc↔code drift audit. A CLI/DSL repo
-  ## opts in per-run, e.g.
-  ##   --var cli_surface_globs="cmd/myapp/*.go" \
-  ##   --var diagnostic_surface_globs="internal/diag/*.go"
-  ## Generalising the scanner's patterns to other stacks is tracked
-  ## as a follow-up; until then, leave empty for non-Cobra repos.
+  ## Code-surface scan scope. Globs for the `scan_code_surface` tool —
+  ## a counter-omission audit that greps the code for publicly-exposed
+  ## identifiers docs ought to mention (CLI commands, flags, diagnostic
+  ## codes) and checks each appears in at least one doc.
+  ## OPT-IN / NON-UNIVERSAL: the extraction patterns are specialised
+  ## for a Cobra-CLI + diagnostic-code repo shape; the catalog DEFAULT
+  ## is empty = surface scan DISABLED. A CLI/DSL repo opts in per-run,
+  ## e.g. --var cli_surface_globs="cmd/myapp/*.go".
   cli_surface_globs: string = ""
   diagnostic_surface_globs: string = ""
 
-  ## v0.15.0: cap on the reviewer's per-iteration working set —
-  ## build_manifest sorts candidates by severity (drifted CLI
-  ## surface > diagnostic > file_ref > symbol_ref > unverifiable)
-  ## then takes the top N. Tuning history:
-  ##   - 150 (initial): reviewer hit error_max_turns at iter 0 —
-  ##     thorough spot-checks across 13 turns blew the budget.
-  ##   - 40 (v0.15.1): smaller per-iter slice, reviewer fits in
-  ##     tool_max_steps:15 with room for structured output. The
-  ##     bot ITERATES — iter 1 fixes ~30, iter 2 sees ~30 more
-  ##     (or coverage rises if the iter 1 fix dropped drifts
-  ##     across families). Convergence over fewer-larger iters.
+  ## Cap on the campaign's per-pass working set — build_manifest sorts
+  ## candidates by severity (drifted CLI surface > diagnostic >
+  ## file_ref > symbol_ref > unverifiable) then takes the top N. The
+  ## v0.15 lesson: an unbounded candidate list blows the context
+  ## window; the campaign ITERATES — pass 1 fixes ~a chunk, pass 2
+  ## sees the next tier (or coverage rises).
   max_drift_candidates: int = 40
 
-  ## v0.16.0 (doc-count chunking): cap on the number of DISTINCT
-  ## docs whose candidates may land in any single reviewer iteration.
-  ## Applied AFTER the severity-priority sort and BEFORE the
-  ## max_drift_candidates cap, so the slice keeps the most severe
-  ## candidates AND fits inside the per-iter doc budget.
-  ##
-  ## Why this exists: with the v0.15.0 manifest pattern the candidate
-  ## count was already bounded (40), but the reviewer still spot-
-  ## checks high-severity drifts via read_file / grep. On large doc
-  ## footprints (89 docs / 175+ drifts on this repo) the spot-check
-  ## tool calls accumulate in the conversation and blow the gpt-5.5
-  ## ChatGPT-forfait context window after 4-5 turns
-  ## (context_length_exceeded; finding
-  ## `2026-05-24-docs-refresh-reviewer-gpt-context-exhaustion.md`).
-  ## Bounding the chunk by DOC count caps the file surface area the
-  ## reviewer is tempted to spot-check, even when the candidate
-  ## count is well under max_drift_candidates.
-  ##
-  ## Convergence is unchanged: streak_check still gates on the
-  ## anchor-level coverage_pct (verified / total across ALL docs).
-  ## The chunk only narrows what the reviewer SEES per iter; as the
-  ## fixer resolves drifts in chunk N, chunk N+1 surfaces the next
-  ## tier of severity (which naturally covers different docs).
-  ##
-  ## Default 30 matches the issue acceptance criterion. Setting to
-  ## 0 disables doc-chunking (legacy candidate-count bound only).
+  ## Cap on the number of DISTINCT docs whose candidates may land in a
+  ## single pass (applied after the severity sort, before the
+  ## candidate cap). Bounds the file surface the campaign is tempted
+  ## to spot-check per pass (the v0.16 context lesson). Convergence is
+  ## unchanged: the gate uses the anchor-level coverage_pct across ALL
+  ## docs. 0 disables doc-chunking.
   max_review_chunk_docs: int = 30
 
-  ## v0.15.4: identifier of the tracker issue this run was dispatched
-  ## from. Used by mark_issue_for_review at the end of the workflow
-  ## to transition the issue out of `ready` so the dispatcher doesn't
+  ## Identifier of the tracker issue this run was dispatched from.
+  ## Used by mark_issue_for_review at the end of the workflow to
+  ## transition the issue out of `ready` so the dispatcher doesn't
   ## re-pick it on the next poll. Filled by the dispatcher via
-  ## `vars.issue_id: "{{issue.identifier}}"` in dispatch_defaults.
-  ## Empty string when run outside the dispatcher (manual CLI run);
-  ## mark_issue_for_review is then a no-op.
+  ## `vars.issue_id: "{{issue.identifier}}"`. Empty when run outside
+  ## the dispatcher — mark_issue_for_review is then a no-op.
   issue_id: string = ""
 
-  ## Inter-run audit cache (v0.5.0). Path to the JSON cache file
-  ## that stores `{doc_path: {sha, refs: [{path, sha}]}}` from the
-  ## previous successful run. scan_docs reads this and emits
-  ## `pre_verified_docs` for entries whose doc content AND all
-  ## cited code-file SHAs are unchanged. update_audit_cache (the
-  ## terminal tool node) writes the merged state after commit.
-  ## Empty string disables both reads and writes — useful for
-  ## the first run on a workspace or when you want a guaranteed
-  ## fresh audit.
-  ##
-  ## UNIVERSAL DEFAULT: a repo-root dotfile, NOT iterion's `.iterion/`
-  ## store dir — docs-refresh running on someone else's repo must not
-  ## scatter `.iterion/` paths into their tree. Add the cache file to
-  ## the target repo's .gitignore (or leave empty to disable).
+  ## Inter-run audit cache. Path to the JSON cache file that stores
+  ## `{doc_path: {sha, refs: [{path, sha}]}}` from the previous
+  ## successful run. scan_docs reads this and emits `pre_verified_docs`
+  ## for entries whose doc content AND all cited code-file SHAs are
+  ## unchanged; update_audit_cache (the terminal tool) writes the
+  ## merged state from the manifest's mechanically VERIFIED pairs.
+  ## Empty string disables both reads and writes.
+  ## UNIVERSAL DEFAULT: a repo-root dotfile — add it to the target
+  ## repo's .gitignore (or leave empty to disable).
   audit_cache_path: string = ".docs-refresh-cache.json"
 
-  ## DEFAULT-CREATE (v0.3.0): when scan_docs finds ZERO documentation
-  ## files in scope (a repo with no docs yet), the `author_docs` node
-  ## creates this directory and authors an initial documentation set
-  ## there from the code; the run then re-scans and the normal review/
-  ## refresh loop polishes + commits it. Repo-relative; DEFAULT "docs"
-  ## (the universal convention, already covered by the default doc_globs
-  ## entry "docs/**/*.md"). Override per-run with `--var docs_dir=<dir>`;
-  ## if you point it OUTSIDE the default doc_globs, widen doc_globs too
-  ## so the post-authoring re-scan picks the new docs up.
+  ## DEFAULT-CREATE: when scan_docs finds ZERO documentation files in
+  ## scope, the `author_docs` node creates this directory and authors
+  ## an initial documentation set there from the code; the run then
+  ## re-scans (author_rescan) and the normal campaign polishes +
+  ## commits it. Repo-relative; DEFAULT "docs" (covered by the default
+  ## doc_globs). If you point it OUTSIDE the default doc_globs, widen
+  ## doc_globs too so the post-authoring re-scan picks the new docs up.
   docs_dir: string = "docs"
 
+  ## Out-of-tree, sandbox-writable scratch for the deterministic gate's
+  ## verify script/log ONLY. The engine resolves ${PROJECT_SCRATCH_DIR}
+  ## to ~/.iterion/projects/<key>/scratch non-sandboxed and to the
+  ## container-writable /tmp/iterion-scratch under a sandbox. Keeping it
+  ## OUT of the target worktree is the repo-agnostic rule.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/docs-refresh"
+
+  ## BASELINE (G5). Known pre-existing build/test failures the campaign
+  ## must SKIP rather than burn budget proving they aren't its own —
+  ## docs-refresh rarely trips this (docs-only edits), but when
+  ## go_comment_globs opts comment edits in, the build gate runs and a
+  ## red base tree must not absorb the run. Empty = establish once
+  ## cheaply, then skip what predates the run.
+  baseline: string = ""
+
+  ## Hard cap on continuation PASSES — the convergence backstop. Each
+  ## pass is one manifest→campaign→verify cycle; the run stops
+  ## (shipping what is banked) when the docs are reported aligned +
+  ## the gates are green, or when this cap is hit.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
+  max_passes: int = 8
 
 ## ─── Prompts ────────────────────────────────────────────────────
 
-prompt review_system:
-  You are a rigorous documentation reviewer for the `docs-refresh`
-  workflow. Your job is to detect mismatches between project
-  documentation and the actual current state of the code, and to
-  produce a structured verdict.
+prompt campaign_system:
+  You are a senior technical writer-engineer running a DOC-ALIGNMENT
+  campaign — working EXACTLY as you would in a productive, human-driven
+  session. You have the repo in front of you and full tools (read, edit,
+  shell, git). No one micro-manages you; you own this pass end to end.
 
-  LOAD YOUR SKILLS FIRST. The workflow ships five skills under
+  THE MISSION: make the documentation match the actual current state of
+  the code. DOCS FOLLOW CODE; code does NOT follow docs — you correct
+  documentation, never the other way around.
+
+  LOAD YOUR SKILLS FIRST. The bundle ships five skills under
   `.claude/skills/` describing the discipline you MUST follow:
     - `docs-refresh.md` — operating playbook, the why and the
       inviolable rules
-    - `doc-mismatch-taxonomy.md` — the 11 mismatch_kind enum
-      values AND the `anchor_kind` enum you must use to tag
-      every blocker
-    - `doc-scope-enumeration.md` — the immutable scan_docs
-      footprint contract
-    - `doc-verification-checklist.md` — the STEP-0 preamble you
-      MUST run before voting approved=true (now includes the
-      mechanical coverage gate semantics)
+    - `doc-mismatch-taxonomy.md` — the mismatch kinds and anchor kinds
+      that tell you what a real drift looks like
+    - `doc-scope-enumeration.md` — the immutable scan_docs footprint
+      contract
+    - `doc-verification-checklist.md` — the verification preamble to
+      run before declaring anything aligned
     - `anti-facade-fix-rules.md` — what a façade fix looks like
 
-  Read them before reasoning. Then run STEP 0 through STEP 6 of
-  `doc-verification-checklist.md` literally.
+  YOUR WORKING SET is deterministic. Upstream, `build_manifest` has
+  already enumerated every code anchor in every doc in scope and
+  verified each against the live tree. Your user prompt carries the
+  bounded `drift_candidates` slice (severity-sorted, doc-chunked):
+    - status `drifted`      — the anchor is NOT in the live code (file
+      missing, flag absent, code renamed). Highest signal: verify, then
+      FIX the doc.
+    - status `unverifiable` — the heuristic couldn't resolve it (prose
+      that looks like CamelCase, archived refs, external links). Judge
+      from the doc context; most are false positives to LEAVE ALONE.
+  The mechanical coverage_pct in your prompt is the gate's coverage
+  oracle — it rises as you fix drifted anchors; docs the manifest
+  chunk deferred will surface on a later pass.
 
-  THE INVIOLABLE RULES (restated for emphasis):
-   1. Docs follow code; code does NOT follow docs. You correct
-      documentation to match the code, not the other way around.
-   2. The audit footprint is `input.doc_files[]` from `scan_docs`.
-      It is immutable. You cannot drop files; if you cannot verify
-      a file, raise a coverage gap, do not silently skip.
-   3. If a doc is correct and the code is wrong, set
-      `is_code_bug=true` on the blocker and call `ask_user`.
-   4. **G4 GATE (now wired correctly in v0.2.0)** — examine
-      `input.prior_code_files_touched_claude` and
-      `input.prior_code_files_touched_gpt`. Both MUST be `[]`.
-      If either is non-empty, raise an automatic blocker
-      (`severity: high`, `confidence: high`,
-      `mismatch_kind: stale_behavior_description`) describing
-      the contract violation. v0.1.0 routed these via the
-      outputs-of-fixer template form which iterion does NOT
-      substitute in prompts — the gate never fired. v0.2.0
-      passes them via the edge `with {}` block.
-   5. **COVERAGE GATE (new in v0.2.0)** — `input.coverage_pct`
-      shows the current cumulative coverage (% of `doc_files`
-      present as `doc_path` in `cumulative_audited_docs`). The
-      compute node `streak_check` mechanically blocks
-      convergence (`stop=false`) when `coverage_pct <
-      input.coverage_target_pct`. You may still vote
-      `approved=true` on a partial audit when you're confident in
-      what you have, but the workflow won't terminate until
-      coverage meets the threshold across both families.
-   6. **SCOPE-HONESTY GATE (v0.13.0 — threshold gated in the
-      tool, not the prompt)** — `input.cumulative_chronic_paths`
-      is a (possibly empty) DEDUPLICATED list of doc paths the
-      deterministic `enforce_fix_scope` tool has had to revert
-      ≥ 3 times across the run so far. The threshold is computed
-      inside the tool; you receive ONLY the thresholded result.
+  HOW TO WORK — reproduce the shape of a productive session:
 
-      Rules:
-       a. If `cumulative_chronic_paths` is non-empty, raise ONE
-          blocker per element with:
-            mismatch_kind:   `stale_behavior_description`
-            severity:        high
-            confidence:      high
-            doc_path:        the chronic path
-            code_anchor:     "fixer scope contract"
-            anchor_kind:     "filesystem_path"
-            code_state:      "fixer has modified this path on
-                             ≥3 iters without declaring it in
-                             modified_doc_files; enforce_fix_scope
-                             reverted each time. The fix
-                             declaration is the writeable-set
-                             contract."
-            suggested_fix:   "Next fix iteration MUST either
-                             include this path in
-                             modified_doc_files (if it legitimately
-                             needs the edit) OR leave it untouched.
-                             Silent edits are mechanically
-                             reverted."
-       b. If `cumulative_chronic_paths` is EMPTY, say absolutely
-          NOTHING about scope, reverts, modified_doc_files, or
-          fixer discipline. Do NOT embed scope hints in other
-          blockers' `suggested_fix` or `code_state`. Do NOT
-          mention enforce_fix_scope. The information you would
-          need to talk about scope is not present in your
-          inputs — TREAT IT AS IF IT DOESN'T EXIST.
+  1. LIVING TODO LIST, not frozen phases. Read the manifest summary +
+     candidates and build a todo grouped BY DOC (all of one doc's
+     drifts together beat scattered single-anchor edits). Use
+     `recently_changed_code_files` (when present) to prioritise; keep
+     the list DENSE and MOVING as you learn.
 
-          (Why this rule is strict: v0.12 exposed raw revert
-          counts to the reviewer. The reviewer used them
-          adaptively, hinting at threshold=1-2 inline inside
-          unrelated blockers. The fixer ignored the hints. The
-          net effect was Goodhart-prone reviewer side-talk
-          with zero behavioural change. v0.13 fixes this by
-          construction — the raw counts are no longer in
-          your inputs.)
-       c. A scope-honesty blocker is in ADDITION to your normal
-          audit findings, never in place of them.
+  2. THE REPEATED UNIT, one doc at a time: for each candidate in that
+     doc, READ the code at the cited anchor to verify the current
+     state (the tool invocation — read_file / grep — is your evidence;
+     a fix whose rationale cannot cite it is a façade) → apply the
+     smallest doc correction that makes the claim true → run the
+     negative-space check (`git grep` for stale cross-references to
+     whatever you renamed/removed, fix those too) → COMMIT the aligned
+     doc with a semantic message (`docs(<area>): <what was aligned>`),
+     body ending with the trailer line `Bot: docs-refresh`. Use
+     `fix(<area>):` ONLY when you fixed a demonstrably misleading code
+     COMMENT (go_comment_globs opt-in).
 
-  HOW TO USE `input.recently_changed_code_files` (fix 5):
-   This list contains the code files modified since
-   `vars.diff_since` (empty when diff_since is unset). When
-   non-empty, prioritise docs that reference any of those files
-   — those are the most likely sites of drift. The full
-   `input.doc_files[]` footprint is still your audit ceiling;
-   recently-changed is a HINT, not a scope reduction.
+  3. COMMIT EACH DOC AS YOU ALIGN IT — never batch. Stage everything
+     including new files (`git add -A`) and commit before moving on.
+     git IS your durable state: an interrupted run keeps every doc you
+     committed, and a fresh pass just reads `git log` + the fresh
+     manifest and continues. Do NOT keep a separate worklist file.
 
-  CONVERGENCE — DO NOT RE-LITIGATE (v0.17.0):
-   This is a review LOOP that must converge to an asymptote
-   (settle into a stable approved state and stop). Re-raising an
-   item the loop has already adjudicated is the classic
-   oscillation driver — it resets the streak gate and wastes the
-   iteration budget.
+  4. WRITEABLE SET — `.md` files in the doc footprint, plus (ONLY when
+     `go_comment_globs` is non-empty) comment-only edits in Go files
+     matching those globs. NEVER touch code statements, configs, or
+     build files. A deterministic scope gate diffs the whole run
+     against its base after every pass: any out-of-scope file FAILS
+     the gate and bounces back to you — you would then have to revert
+     those commits (`git revert` or checkout from the run base) before
+     continuing. Don't make it fire.
 
-   Three signals tell you what has already been settled:
+  5. ESCAPE VALVE — is_code_bug. When a doc is CORRECT and the CODE is
+     wrong, do NOT "align" the doc to broken behaviour. Set
+     is_code_bug=true in your termination output, name the case in
+     human_note, and (for a genuinely blocking ambiguity) pause via
+     the ask-user tool. Filing it as a board finding (see below) is
+     the default; pausing is for when you cannot proceed without the
+     answer.
 
-   a. `input.cumulative_dismissed_pairs` — the union of every
-      `doc::value` pair that a prior reviewer (any family) put
-      into `audited_pairs` WHILE raising zero blockers on that
-      iteration. I.e. items the cross-family review already
-      decided are NOT drift. Do NOT re-raise any pair in this
-      list as a blocker UNLESS you have NEW EVIDENCE the prior
-      adjudication missed (e.g. you ran `grep` on the live tree
-      and found a genuine drift the previous reviewer overlooked).
-      If you must re-raise, state the new evidence in the
-      blocker's `code_state` / `suggested_fix` explicitly so the
-      cross-family reviewer can spot-check.
+  6. BASELINE — don't chase failures you didn't cause. A build/test
+     failure that predates this run (see `baseline`, or establish it
+     once cheaply with a `git stash`-based check) is out of scope:
+     note it and move on. Docs-only passes rarely trip the build gate;
+     comment edits can.
 
-   b. `input.cumulative_pushback` — the union of every blocker
-      the FIXER pushed back (across both families) with its
-      justification. The fixer has already declined these items
-      as false-positives or `is_code_bug`. Do NOT re-raise the
-      same blocker unless you can rebut the fixer's
-      justification with NEW evidence.
+  7. ASK ONLY ON A REAL DECISION. Keep operator pauses RARE — most
+     drift adjudications are yours to make; lower-stakes doubts go in
+     `summary`.
 
-   c. `loop.review_loop.previous_output.blockers` +
-      `previous_output.confidence` — the previous reviewer's
-      verdict (other family, last iter — visible to you below
-      the gates section). Verdicts must trend monotonically: if
-      the previous reviewer raised N blockers with high
-      confidence and the fixer applied a fix, you should expect
-      ≤N residual blockers (commonly 0). If you raise MORE
-      blockers, justify what changed (the fix introduced
-      regression, the fixer pushed back a real drift, etc.).
+  FINDINGS HANDOFF — after your last commit, capture anything OUT OF
+  SCOPE but worth tracking (a code bug found while verifying an
+  anchor, an undocumented capability worth its own ticket, an
+  infrastructure issue): call `mcp__iterion_board__list_issues` with
+  `{ "state": "inbox" }` first to avoid duplicates, then
+  `mcp__iterion_board__create_issue` per NEW finding with state
+  "inbox" and labels ["findings", "kind:<bug|drift|improvement|
+  question>", "source:docs_refresh", "area:<subsystem>",
+  "severity:<low|medium|high>"]. Zero findings is a fine outcome. If
+  the board tools are unavailable, list the findings in `summary`.
 
-   Default posture: when an item appears in (a) or (b), DISMISS
-   it (do not add to blockers, do not re-add to `audited_pairs`
-   unless you re-investigated) and spend the tool-call budget on
-   genuinely NEW drift surfaces. The manifest is deterministic —
-   it re-extracts the same unverifiable `symbol_ref` candidates
-   every iter; the do-not-relitigate rule is what stops the
-   reviewer from re-judging them every iter.
+  KEEP GOING, one doc at a time, until this pass has adjudicated every
+  candidate in its working set. Then STOP and report.
 
-  HOW TO USE THE CHUNK FIELDS (v0.16.0):
-   `input.chunked`, `input.chunk_doc_count`, and
-   `input.docs_with_drift_count` describe this iter's slice of
-   the global drift set. When `chunked=true`, you are seeing
-   candidates from at most `max_review_chunk_docs` distinct docs;
-   the remainder are deferred to subsequent iters as the fixer
-   clears earlier severity tiers. This is deterministic, not a
-   coverage gap — your job is unchanged: adjudicate the
-   candidates you DO see. The streak gate uses
-   `manifest_coverage_pct` (anchor-level, across ALL docs), so a
-   chunked iter cannot terminate the workflow prematurely.
+  TERMINATION CONTRACT (required structured output — this is how the
+  engine detects completion; an under-specified end just gets
+  re-poked):
+    - docs_aligned: true ONLY when every candidate this pass surfaced
+      is either fixed (committed) or adjudicated a false positive —
+      i.e. you expect a fresh manifest re-scan to find no remaining
+      REAL drift. false if real drift remains (a later pass continues
+      from your commits, with a fresh manifest).
+    - commits_this_pass: how many commits you landed this pass.
+    - drift_remaining: a concise note of what still drifts (empty when
+      docs_aligned).
+    - is_code_bug: true when you found ≥1 place where the doc is right
+      and the code is wrong (detail in human_note / the board finding).
+    - needs_human / human_note: set if you paused or need an operator
+      decision.
+    - summary: which docs you aligned (with the verification evidence
+      pattern you used), which candidates you dismissed as false
+      positives and why.
 
-  PATH-OF-LEAST-RESISTANCE WARNING:
-   You will be tempted to focus on docs colocated with code that
-   has been recently changed. Resist. Audit every file in
-   `input.doc_files[]` over the course of the loop.
+  Be honest. A deterministic manifest re-scan, a scope gate and a
+  build gate re-check the tree after you, and the run loops you back
+  until you report docs_aligned AND the gates are green AND the
+  mechanical coverage meets its target — so under-reporting only costs
+  a pass, and over-reporting lands you right back here.
 
-  HUMAN ESCALATION:
-   When you hit genuine ambiguity, call `ask_user` with a precise
-   question. Use this sparingly — for ordinary judgment calls,
-   decide yourself and lower `confidence` if uncertain.
+prompt campaign_user:
+  Repository: {{vars.workspace_dir}}
 
-prompt review_user_claude:
-  Adjudicate the drift candidates in {{vars.workspace_dir}}'s
-  documentation. The deterministic `build_manifest` tool has
-  already enumerated every doc anchor (file refs, CLI commands,
-  CLI flags, diagnostic codes, exported symbols) and verified
-  each against the live code state. Your job is the SEMANTIC
-  pass over the candidates it could not auto-resolve.
-
-  Iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
-  Family: claude
-  Workspace: {{vars.workspace_dir}}
-  Scope notes (operator's attention pin):
+  Scope notes (operator's attention pin, may be empty):
   {{vars.scope_notes}}
 
-  ## Manifest summary (deterministic, v0.15.0)
+  ## Deterministic manifest summary (this pass)
   Total docs scanned:       {{input.total_docs}}
   Total anchors enumerated: {{input.total_anchors}}
   Verified:                 {{input.verified_anchors}}
   Drifted:                  {{input.drifted_anchors}}
   Unverifiable:             {{input.unverifiable_anchors}}
-  Mechanical coverage:      {{input.manifest_coverage_pct}}%
-  Coverage threshold:       {{input.coverage_target_pct}}%
+  Mechanical coverage:      {{input.manifest_coverage_pct}}% (gate target: {{input.coverage_target_pct}}%)
 
-  ## This iteration's chunk (v0.16.0 doc-count chunking)
+  ## This pass's chunk
   Docs with remaining drift: {{input.docs_with_drift_count}}
   Docs in this chunk:        {{input.chunk_doc_count}} (cap: {{input.max_review_chunk_docs}})
-  Chunked this iter:         {{input.chunked}}
-  When `Chunked this iter: true`, drifts in the deferred docs will
-  surface in a later iter as the fixer clears this chunk. Do NOT
-  vote `approved=true` based on the chunk alone — the streak gate
-  uses anchor-level mechanical coverage across ALL docs.
+  Chunked this pass:         {{input.chunked}}
+  When chunked=true, drifts in the deferred docs surface on a later
+  pass as you clear this chunk — do NOT report docs_aligned=true
+  while docs_with_drift_count exceeds what this chunk shows fixed.
 
-  ## Drift candidates (the working set — bounded to top
-  ## {{vars.max_drift_candidates}} by severity, then to candidates
-  ## from at most {{vars.max_review_chunk_docs}} distinct docs)
-  Each candidate carries `{doc, line, kind, value, status,
-  evidence, excerpt}`. `status` is one of:
-   - drifted     — anchor extracted from the doc, NOT found in
-                   the live code (file missing, CLI flag absent
-                   from scan_code_surface, diagnostic code not
-                   in the parser, …). Highest signal.
-   - unverifiable — symbol_ref the heuristic couldn't resolve.
-                   Often prose words that look like CamelCase,
-                   archived examples, or external refs. Treat
-                   with care; downgrade to false-positive when
-                   the doc context makes it clear.
-
-  Candidates:
+  ## Drift candidates (the working set — severity-sorted, bounded)
+  Each entry: {doc, line, kind, value, status, evidence, excerpt}.
   {{input.drift_candidates}}
 
-  ## Cross-family context
+  Recently changed code files (prioritisation hint, may be empty):
+  {{input.recently_changed_code_files}}
 
-  Previous reviewer's verdict (other family, last iteration —
-  empty on iter 0). Note the prior `confidence` — verdicts MUST
-  trend monotonically (see review_system "DO NOT RE-LITIGATE"):
-  {{loop.review_loop.previous_output}}
+  BASELINE — pre-existing failures to SKIP (empty = establish once
+  cheaply if the build gate goes red):
+  {{vars.baseline}}
 
-  Items the fixer pushed back as is_code_bug / false-positive
-  ON THE LAST ITERATION:
-  {{input.prior_pushback}}
-  Justification:
-  {{input.prior_pushback_justification}}
+  Deterministic gate feedback from the PREVIOUS pass (empty on the
+  first pass; when present it is EITHER a scope violation — files
+  outside the doc writeable-set changed; revert those commits before
+  continuing — OR a real build/test failure to fix):
+  {{input.fail_log}}
 
-  ## Already-adjudicated (do NOT re-raise without NEW evidence)
-
-  Pairs that prior reviewers (any family) marked as not-drift
-  across the ENTIRE run (cumulative). Each entry is a
-  `doc::value` string. Per review_system, dismiss these on
-  sight unless you have new evidence:
-  {{input.cumulative_dismissed_pairs}}
-
-  Every blocker the fixer has pushed back across the run
-  (cumulative). Per review_system, do NOT re-raise unless you
-  can rebut the fixer's justification with new evidence:
-  {{input.cumulative_pushback}}
-
-  ## Gates
-
-  G4 — fixers must NEVER touch code. Both fields below MUST be
-  empty arrays; non-empty = automatic contract-violation blocker
-  with severity:high:
-   - claude fixer: {{input.prior_code_files_touched_claude}}
-   - gpt fixer:    {{input.prior_code_files_touched_gpt}}
-
-  SCOPE-HONESTY (v0.13.0) — `cumulative_chronic_paths` lists
-  paths the fixer has tried to silently edit ≥3 times. If
-  non-empty, raise one scope-honesty blocker per element per
-  review_system rule 6a. If empty: stay silent on the topic
-  per rule 6b.
-   - chronic paths: {{input.cumulative_chronic_paths}}
-
-  ## Your verdict — emit ONLY structured output
-
-  For each candidate in `input.drift_candidates`, decide:
-    A. confirm  — real drift, raise as a blocker pointed at the
-                  doc::value pair, suggested_fix explains the
-                  doc edit (NOT a code edit)
-    B. dismiss  — false positive (prose, archived example,
-                  external reference, etc.). Do NOT raise a
-                  blocker; the manifest will keep listing it
-                  but the bot won't act.
-    C. code_bug — doc is correct, code is wrong / removed in
-                  error. Raise a blocker with `is_code_bug:true`;
-                  the fixer will escalate via ask_user.
-
-  Spot-check budget: you have `tool_max_steps: 25`. **Trust the
-  manifest by default.** The deterministic verifier already ran
-  every anchor against the live code; its `status` field is
-  authoritative for ~95% of candidates. Spend tool calls ONLY on
-  the top 2-3 highest-severity drifts when you suspect the
-  verifier missed semantic context (e.g. a "drifted" cli_command
-  that's actually a stdlib name). Aim for ≤10 tool calls per
-  iter so you have headroom to emit structured output. Bulk-
-  `confirm` the rest based on the manifest's evidence alone —
-  that's the whole point of the manifest pattern.
-
-  CRITICAL — re-litigation costs the streak. If a candidate
-  appears in `input.cumulative_dismissed_pairs` or
-  `input.cumulative_pushback`, the default is DISMISS without
-  spending a tool call. Spending tool calls on already-settled
-  items is the exact oscillation pattern that blew past the
-  iteration ceiling in the 2026-06-23 dogfood.
-
-  Output schema (verdict_output):
-   - approved: bool — true ONLY when blockers == [] AND
-     manifest_coverage_pct >= coverage_target_pct
-   - family: "claude"
-   - blockers: structured mismatch objects (see
-     `doc-mismatch-taxonomy.md`)
-   - blocker_count: int == len(blockers)
-   - fix_plan: concrete instruction set for the fixer (short)
-   - confidence: "low" / "medium" / "high"
-   - audited_pairs: list of "doc_path::value" strings — one per
-     candidate you reviewed (whether you confirmed, dismissed,
-     or flagged code_bug). Lets the cross-family reviewer
-     spot-check your work.
-   - audited_docs: distinct doc_path values you touched
-     (subset of input.all_audited_docs; manifest already
-     covers all docs mechanically — this list is for the
-     spot-check audit trail)
-   - escalate_to_human: true if ANY blocker has is_code_bug=true
-
-prompt review_user_gpt:
-  Adjudicate the drift candidates in {{vars.workspace_dir}}'s
-  documentation. The deterministic `build_manifest` tool has
-  already enumerated every doc anchor and verified each against
-  the live code state. Your job is the SEMANTIC pass over the
-  candidates it could not auto-resolve.
-
-  Iteration: {{loop.review_loop.iteration}}/{{loop.review_loop.max}}
-  Family: gpt
-  Workspace: {{vars.workspace_dir}}
-  Scope notes (operator's attention pin):
-  {{vars.scope_notes}}
-
-  ## Manifest summary (deterministic, v0.15.0)
-  Total docs scanned:       {{input.total_docs}}
-  Total anchors enumerated: {{input.total_anchors}}
-  Verified:                 {{input.verified_anchors}}
-  Drifted:                  {{input.drifted_anchors}}
-  Unverifiable:             {{input.unverifiable_anchors}}
-  Mechanical coverage:      {{input.manifest_coverage_pct}}%
-  Coverage threshold:       {{input.coverage_target_pct}}%
-
-  ## This iteration's chunk (v0.16.0 doc-count chunking)
-  Docs with remaining drift: {{input.docs_with_drift_count}}
-  Docs in this chunk:        {{input.chunk_doc_count}} (cap: {{input.max_review_chunk_docs}})
-  Chunked this iter:         {{input.chunked}}
-  When `Chunked this iter: true`, drifts in the deferred docs will
-  surface in a later iter as the fixer clears this chunk. Do NOT
-  vote `approved=true` based on the chunk alone — the streak gate
-  uses anchor-level mechanical coverage across ALL docs.
-
-  ## Drift candidates (bounded by severity to top
-  ## {{vars.max_drift_candidates}}, then to candidates from at most
-  ## {{vars.max_review_chunk_docs}} distinct docs)
-  Each candidate carries `{doc, line, kind, value, status,
-  evidence, excerpt}`. `status` is one of:
-   - drifted     — anchor extracted from the doc, NOT found in
-                   the live code (file missing, CLI flag absent
-                   from scan_code_surface, diagnostic code not
-                   in the parser, …). Highest signal.
-   - unverifiable — symbol_ref the heuristic couldn't resolve.
-                   Often prose words that look like CamelCase,
-                   archived examples, or external refs.
-
-  Candidates:
-  {{input.drift_candidates}}
-
-  ## Cross-family context
-
-  Previous reviewer's verdict (other family, last iteration —
-  empty on iter 0). Note the prior `confidence` — verdicts MUST
-  trend monotonically (see review_system "DO NOT RE-LITIGATE"):
-  {{loop.review_loop.previous_output}}
-
-  Items the fixer pushed back as is_code_bug / false-positive
-  ON THE LAST ITERATION:
-  {{input.prior_pushback}}
-  Justification:
-  {{input.prior_pushback_justification}}
-
-  ## Already-adjudicated (do NOT re-raise without NEW evidence)
-
-  Pairs that prior reviewers (any family) marked as not-drift
-  across the ENTIRE run (cumulative). Each entry is a
-  `doc::value` string. Per review_system, dismiss these on
-  sight unless you have new evidence:
-  {{input.cumulative_dismissed_pairs}}
-
-  Every blocker the fixer has pushed back across the run
-  (cumulative). Per review_system, do NOT re-raise unless you
-  can rebut the fixer's justification with new evidence:
-  {{input.cumulative_pushback}}
-
-  ## Gates
-
-  G4 — fixers must NEVER touch code. Both fields below MUST be
-  empty arrays; non-empty = automatic contract-violation blocker
-  with severity:high:
-   - claude fixer: {{input.prior_code_files_touched_claude}}
-   - gpt fixer:    {{input.prior_code_files_touched_gpt}}
-
-  SCOPE-HONESTY (v0.13.0) — `cumulative_chronic_paths` lists
-  paths the fixer has tried to silently edit ≥3 times. If
-  non-empty, raise one scope-honesty blocker per element per
-  review_system rule 6a. If empty: stay silent on the topic
-  per rule 6b.
-   - chronic paths: {{input.cumulative_chronic_paths}}
-
-  ## Your verdict — emit ONLY structured output
-
-  For each candidate in `input.drift_candidates`, decide:
-    A. confirm  — real drift; raise a blocker pointed at the
-                  doc::value pair with suggested_fix on the doc
-    B. dismiss  — false positive (prose, archived, external)
-    C. code_bug — doc correct, code wrong/removed in error;
-                  raise blocker with `is_code_bug:true`
-
-  Spot-check budget: `tool_max_steps: 25`. **Trust the manifest
-  by default.** The deterministic verifier already ran every
-  anchor against the live code. Spend tool calls ONLY on the
-  top 2-3 highest-severity drifts you suspect the verifier
-  missed semantically. Aim for ≤10 tool calls; bulk-confirm
-  the rest.
-
-  CRITICAL — re-litigation costs the streak. If a candidate
-  appears in `input.cumulative_dismissed_pairs` or
-  `input.cumulative_pushback`, the default is DISMISS without
-  spending a tool call. Spending tool calls on already-settled
-  items is the exact oscillation pattern that blew past the
-  iteration ceiling in the 2026-06-23 dogfood.
-
-  Output schema (verdict_output):
-   - approved: bool — true ONLY when blockers == [] AND
-     manifest_coverage_pct >= coverage_target_pct
-   - family: "gpt"
-   - blockers: structured mismatch objects (see
-     `doc-mismatch-taxonomy.md`)
-   - blocker_count: int == len(blockers)
-   - fix_plan: concrete instruction set for the fixer (short)
-   - confidence: "low" / "medium" / "high"
-   - audited_pairs: list of "doc_path::value" strings — one per
-     candidate you reviewed (whether confirmed, dismissed, or
-     flagged code_bug)
-   - audited_docs: distinct doc_path values you touched
-     (subset of input.all_audited_docs)
-   - escalate_to_human: true if ANY blocker has is_code_bug=true
-
-prompt fix_system:
-  You are the fixer for the `docs-refresh` workflow. You apply
-  corrections to DOCUMENTATION files based on blockers a reviewer
-  has identified.
-
-  LOAD YOUR SKILLS FIRST. Especially:
-    - `anti-facade-fix-rules.md` — the discipline rules. A fix
-      where your `summary` does not cite the tool invocation
-      (read_file / grep) that verified the cited `code_anchor`
-      is a façade.
-    - `doc-mismatch-taxonomy.md` — the kind / severity meanings
-      plus the `anchor_kind` enum (symbol | line_range | removed
-      | external).
-    - `doc-scope-enumeration.md` — what you may and may not
-      write to.
-
-  HARD CONSTRAINTS:
-   1. Writeable extensions: `.md` only, AND (when go_comment_globs
-      is non-empty) Go code comments inside files matching that
-      scope. You may NEVER write to a `.go` statement, expression,
-      or declaration body.
-   2. `fix_output.code_files_touched[]` MUST be empty in your
-      output. The next reviewer will flag non-empty as a workflow
-      contract violation (now enforced via input.prior_code_files_touched_*
-      thanks to the v0.2.0 edge routing fix).
-   3. `fix_output.modified_doc_files[]` MUST be a subset of
-      `input.doc_files` (the scanner footprint). You cannot
-      introduce new doc files; you cannot edit docs outside scope.
-   4. For each fix you apply, your `summary` MUST contain the
-      tool invocation (`read_file` or `grep`) you used to verify
-      the current code state at the cited `code_anchor`. Without
-      that evidence the fix is a façade.
-
-  ESCAPE VALVE:
-   If a blocker has `is_code_bug=true`, do NOT attempt to fix it.
-   Add it to `pushback` with a justification explaining that the
-   doc appears correct and the code is the problem. Call
-   `ask_user` to surface the question to the operator if you
-   need confirmation.
-
-  PUSHBACK:
-   You may refuse a blocker by adding its exact description to
-   `pushback[]` with a clear justification in
-   `pushback_justification`.
-
-prompt fix_user:
-  Apply doc-only fixes for these blockers in
-  {{vars.workspace_dir}}.
-
-  Doc footprint (your writeable set, plus Go code comments inside
-  go_comment_globs when non-empty):
-  {{vars.doc_globs}}
-
-  Go comment scope (empty = no Go comments may be edited):
-  {{vars.go_comment_globs}}
-
-  Blockers to address:
-  {{input.blockers}}
-
-  Fix plan from the reviewer:
-  {{input.fix_plan}}
-
-  For EACH blocker:
-   1. Read the code at the cited `code_anchor` to verify the
-      current state. Paste the tool invocation and an excerpt
-      into your `summary`.
-   2. If the blocker is genuine and is_code_bug is false: apply
-      the fix to the doc. Run the negative-space check
-      (`git grep` for stale cross-references to whatever you
-      removed) and fix those too in the same pass.
-   3. If `is_code_bug=true`: do NOT fix. Push back with a
-      justification.
-   4. If the blocker is a false positive: push back with
-      justification.
-
-  Output fields:
-   - applied: true if at least one fix landed
-   - summary: list of fixes with their tool-invocation evidence
-   - modified_doc_files: exact list of repo-relative paths you
-     wrote to (must be subset of scan_docs.doc_files)
-   - code_files_touched: MUST be []
-   - pushback: items refused
-   - pushback_justification: explanation
-
+  Work the candidates one doc at a time — verify at the anchor →
+  smallest doc fix → negative-space check → commit (`docs(<area>): …`
+  + `Bot: docs-refresh` trailer) — then report the termination
+  contract (docs_aligned, commits_this_pass, drift_remaining).
+  Read `git log` first to see what earlier passes already aligned.
 
 ## ─── Prompts : Default-create (author docs from zero) ──────────────
 
@@ -882,101 +465,125 @@ prompt author_docs_user:
    - summary: what you authored, and the evidence (files you read)
      behind the key claims
 
+## ─── verify (deterministic build/test gate, stack-agnostic) ─────────
+## An ADAPTIVE agent (verify_build) reads the verify-build skill and writes
+## the repo's real build+test into an OUT-OF-TREE <scratch_dir>/verify.sh; a
+## DETERMINISTIC tool node (verify_run) re-runs it and gates on the REAL exit
+## code. Docs-only passes should always be green here; the gate earns its
+## keep when go_comment_globs opts comment edits in (the tree must still
+## compile) and as the universal engine-side floor shared with the other v2
+## bots. verify_build does NOT fix anything: a RED gate routes back to
+## `campaign`.
 
-## ─── Prompts : Commit ──────────────────────────────────────────
+prompt verify_system:
+  You are a release engineer. A doc-alignment pass just committed changes
+  to this repository (documentation, possibly code COMMENTS). Your single
+  job: capture how THIS repo builds and tests itself into a re-runnable
+  script the deterministic gate will execute. You do NOT change anything.
 
-prompt prepare_commit_system:
-  Your job is to pick the EXACT set of doc files that should be
-  committed to capture the alignment fixes applied during this
-  run, and produce a semantic commit message. You do NOT run
-  `git commit` yourself — a deterministic shell tool downstream
-  stages your file list and applies your message.
+  STEPS:
+  1. Detect how THIS repo builds and tests itself — read the `verify-build`
+     skill. Use the repo's OWN toolchain, HONOURING any pinned toolchain
+     (version managers, lockfiles, devbox, GOTOOLCHAIN). Do NOT assume a
+     language.
+  2. Write an executable POSIX-sh script to `{{vars.scratch_dir}}/verify.sh`
+     (an OUT-OF-TREE scratch path — create it first with
+     `mkdir -p {{vars.scratch_dir}}`) that runs the repo's build (and the
+     fast test targets a comment-only change could plausibly affect) and
+     exits non-zero on any failure. For a docs-only repo or a pass that
+     touched only `.md` files, a build-only script (or the closest cheap
+     sanity command) is appropriate — keep it FAST.
+  3. PRE-EXISTING failures: scope `verify.sh` so a red base tree can't
+     absorb the run; list any excluded pre-existing failures in your
+     summary.
+  4. Run it ONCE to confirm the script itself is valid. You do NOT fix
+     anything here.
+  5. If the repo genuinely has no build/test system (pure docs/config),
+     write a script that echoes that and exits 0, and say so.
 
-  Procedure (in order):
-   1. Run `git status` and `git diff HEAD` (read-only) to
-      enumerate working-tree changes. `git status` ALSO lists NEW,
-      untracked doc files (shown as `??`) — e.g. the initial set
-      authored on a from-zero refresh of a repo that had no docs.
-      INCLUDE those new `.md` files in the commit set. A brand-new
-      file shows nothing under `git diff HEAD -- <file>` (it is not in
-      HEAD yet), so confirm a new file by READING it, not by diffing —
-      do not drop a new doc just because its diff is empty.
-   2. Cross-reference with the scanner footprint (visible in your
-      conversation history). The commit set must be a subset of
-      that footprint, plus any Go file whose comments were edited
-      (no Go file should be on the list with code changes —
-      verify by running `git diff HEAD -- <file>` and confirming
-      only comment lines changed).
-   3. EXCLUDE any non-doc file. EXCLUDE any LLM scratch
-      (`notes.md`, `plan.txt`, etc.). EXCLUDE editor scratch and
-      build artefacts.
-   4. Build the structured output:
-       - type: "docs" (default) or "fix" (only when you fixed a
-         demonstrably misleading code COMMENT that would have led
-         readers astray)
-       - scope: typical package/area name, lowercase
-       - subject: imperative present, ≤ 72 chars, no trailing
-         period (e.g. "align CLI examples with current flags")
-       - full_message: type(scope): subject — plus an optional
-         body summarising what was aligned. The body MUST end
-         with the trailer line `Bot: docs-refresh` on its own line
-         (after a blank line). This makes auto-commits
-         identifiable via `git log --grep "^Bot: docs-refresh"` for
-         post-run analysis (cost telemetry, revert tracking) —
-         the v0.10 telemetry hook.
-       - files: exact list of repo-relative paths to stage
-       - committed: false (the tool will set this on its own
-         output)
+  A deterministic tool node RE-RUNS your script and gates the run on its
+  real exit code. Output prepared=true once `{{vars.scratch_dir}}/verify.sh`
+  exists; summary = the command you settled on.
 
-  ─── Findings handoff ─────────────────────────────────────
+prompt verify_user:
+  Repository to verify: {{vars.workspace_dir}}
 
-  After the structured commit output, you have ONE more job:
-  capture anything you noticed during this run that is OUT OF
-  SCOPE for doc alignment but worth surfacing to the next
-  Nexie session.
+  Capture the repo's real build (+ fast tests where comment edits could
+  plausibly matter) into `{{vars.scratch_dir}}/verify.sh` (out-of-tree —
+  see the system prompt + the `verify-build` skill). Do NOT change
+  anything; the deterministic gate runs your script and the campaign
+  fixes any red on the next pass.
 
-  Examples to capture:
-    - A code-level bug spotted while reading source for a
-      doc-vs-code reconciliation.
-    - An undocumented feature that needs its own ticket.
-    - An infrastructure / sandbox issue you ran into.
-    - A bot-prompt or workflow design improvement opportunity.
+## ─── Schemas (v2 campaign / gates) ─────────────────────────────────
 
-  What NOT to capture:
-    - Doc drifts you just fixed (your commit covers them).
-    - Style nits without an actionable next step.
-    - Findings already on the board's `inbox` state — list
-      them first (see step 1 below) to avoid duplicates.
+## campaign's input: the bounded manifest working set for this pass +
+## the deterministic gate feedback from the previous pass (empty on the
+## first pass and on a green-but-more-drift continuation).
+schema campaign_input:
+  total_docs: int
+  total_anchors: int
+  verified_anchors: int
+  drifted_anchors: int
+  unverifiable_anchors: int
+  manifest_coverage_pct: int
+  coverage_target_pct: int
+  drift_candidates: json
+  docs_with_drift_count: int
+  chunked: bool
+  chunk_doc_count: int
+  max_review_chunk_docs: int
+  recently_changed_code_files: string[]
+  fail_log: string
 
-  How:
-    1. Call `mcp__iterion_board__list_issues` with
-       `{ "state": "inbox" }` to see pending findings.
-    2. For each NEW finding, call
-       `mcp__iterion_board__create_issue` with:
+## campaign's TERMINATION CONTRACT (G2): a machine-checkable output the
+## engine keys convergence on. docs_aligned is the done-oracle (this
+## pass's candidates are all fixed-or-dismissed and no real drift is
+## expected on a fresh re-scan); the gate ANDs it with the mechanical
+## coverage, the scope check and the build gate.
+schema campaign_output:
+  docs_aligned: bool
+  commits_this_pass: int
+  drift_remaining: string
+  is_code_bug: bool
+  needs_human: bool
+  human_note: string
+  summary: string
 
-           {
-             "title": "One-line operator-facing summary",
-             "body":  "Full context (file paths + suggested next step). 5-30 lines.",
-             "state": "inbox",
-             "labels": [
-               "findings",
-               "kind:bug",            // or drift | improvement | question
-               "source:docs_refresh",
-               "area:<subsystem>",
-               "severity:<low|medium|high>"
-             ]
-           }
+## verify_plan is verify_build's contract: it has WRITTEN <scratch_dir>/verify.sh.
+schema verify_plan:
+  prepared: bool
+  summary: string
 
-       Operators triage on /board: drag `inbox` → `backlog` to
-       promote, delete the card to dismiss.
+## verify_result is the DETERMINISTIC build gate's contract. `passed` is
+## the real process exit code of re-running <scratch_dir>/verify.sh — NOT
+## an LLM judgment. `skipped` is true only when no verify script was
+## produced (treated as pass but surfaced loudly, never a silent façade).
+schema verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
 
-  Be conservative. Zero findings is fine.
+## scope_check is the DETERMINISTIC writeable-set gate (v2 rewrite of
+## v1's enforce_fix_scope): every path changed since the RUN BASE must
+## be a doc (`.md`), the audit cache file, or (when go_comment_globs is
+## non-empty) a file inside those globs. Out-of-scope changes fail the
+## gate and bounce back to the campaign, which must revert them — with
+## git-as-state the tree is committed, so detection+bounce replaces
+## v1's silent working-tree checkout-revert.
+schema scope_check_output:
+  scope_ok: bool
+  out_of_scope: string[]
+  log: string
 
-prompt prepare_commit_user:
-  Pick the files and produce the semantic commit name for the
-  doc alignment fixes applied during this docs-refresh run.
-
-  Workspace: {{vars.workspace_dir}}
+## gate is the deterministic continuation decision. converged = build
+## green AND scope clean AND the campaign reports the docs aligned AND
+## the manifest's mechanical coverage meets the target. fail_log relays
+## the scope violation (priority) or the real build failure to the
+## campaign on a red pass; empty when green.
+schema gate_state:
+  converged: bool
+  fail_log: string
 
 
 ## ─── Schemas ────────────────────────────────────────────────────
@@ -1022,170 +629,6 @@ schema scan_output:
   cache_hits: int
   cache_misses: int
 
-## review_input v0.15.0: manifest-driven shape. Replaces the
-## v0.2.0 doc_files / pre_verified_docs / cli_commands / ... bulk
-## with the bounded drift_candidates set from build_manifest plus
-## the summary stats the gates need. Cross-family pushback +
-## chronic-path signals carry through unchanged.
-schema review_input:
-  ## Deterministic manifest summary (build_manifest outputs)
-  total_docs: int
-  total_anchors: int
-  verified_anchors: int
-  drifted_anchors: int
-  unverifiable_anchors: int
-  manifest_coverage_pct: int
-  ## Working set for this iteration (bounded by vars.max_drift_candidates).
-  ## Each entry: {doc, line, kind, value, status, evidence, excerpt}.
-  drift_candidates: json
-  ## Full per-doc breakdown — telemetry / reports surface (NOT
-  ## sized-bounded; ~doc_count entries with 3 ints each).
-  per_doc_anchor_counts: json
-  ## Mechanical coverage trail: every doc the manifest scanned.
-  ## Supersedes the v0.14.0 previous_audited_docs[] pattern — the
-  ## manifest IS coverage; reviewers no longer claim it.
-  all_audited_docs: string[]
-
-  ## v0.16.0 chunking visibility. Reviewers see the chunk dimension
-  ## so they understand why some drifts may not be in this slice —
-  ## they will surface in a later iter as the fixer clears earlier
-  ## chunks. Coverage gate is still anchor-level across ALL docs,
-  ## so chunking does not let the workflow terminate early.
-  docs_with_drift_count: int
-  chunked: bool
-  chunk_doc_count: int
-  max_review_chunk_docs: int
-
-  ## Convergence threshold (vars.coverage_target_pct passthrough)
-  coverage_target_pct: int
-
-  ## Cross-family iteration context
-  prior_pushback: string[]
-  prior_pushback_justification: string
-  prior_code_files_touched_claude: string[]
-  prior_code_files_touched_gpt: string[]
-
-  ## v0.13.0 scope-honesty gate input.
-  ## cumulative_chronic_paths: the deduplicated list of paths the
-  ## enforce_fix_scope tool has had to revert ≥3 times across the
-  ## run so far. EMPTY by default — the threshold is computed
-  ## inside enforce_fix_scope from the cumulative history, and
-  ## streak_check accumulates only paths that have crossed the
-  ## threshold. The raw revert history is INTENTIONALLY hidden
-  ## from the reviewer: v0.12 exposed it and the reviewer over-
-  ## reacted at threshold=1-2 via inline hints, defeating the
-  ## strict-threshold design.
-  cumulative_chronic_paths: string[]
-
-  ## v0.17.0 do-not-relitigate inputs. The deduplicated unions of
-  ## (a) every `audited_pairs` element from a prior reviewer that
-  ## raised ZERO blockers on its iteration (i.e. the
-  ## cross-family-confirmed not-drift items), and (b) every blocker
-  ## the fixer pushed back across both families. Reviewers must
-  ## dismiss items in these lists on sight unless they have NEW
-  ## evidence — re-judging settled items is the oscillation
-  ## driver that drove the 2026-06-23 dogfood past its iteration
-  ## ceiling. Empty on iter 0.
-  cumulative_dismissed_pairs: string[]
-  cumulative_pushback: string[]
-
-## verdict_output: the blockers field stays JSON (DSL schema
-## parser doesn't support nested object arrays). The per-blocker
-## fields incl. the `anchor_kind` enum are documented in
-## skills/doc-mismatch-taxonomy.md and enforced at the prompt
-## level.
-##
-## blocker_count (v0.3.0): the explicit count of items the agent
-## put into `blockers`. Necessary because iterion's expr
-## `length()` on a json field returns the JSON-encoded string's
-## char count, not the array's item count, so the streak gate
-## couldn't reliably distinguish "0 blockers" from "10 blockers".
-## With this explicit field the streak gate can fire when both
-## reviewers report blocker_count=0 even when one of them only
-## soft-rejected (confidence: low) — the v0.2.0 dogfood deadlocked
-## in exactly that state after GPT had exhausted productive
-## audit surfaces but kept voting `approved: false` with
-## `confidence: low`.
-schema verdict_output:
-  approved: bool
-  family: string [enum: "claude", "gpt"]
-  blockers: json
-  blocker_count: int
-  fix_plan: string
-  confidence: string [enum: "low", "medium", "high"]
-  audited_pairs: string[]
-  audited_docs: string[]
-  escalate_to_human: bool
-
-## streak_state: now includes the file-level cumulative coverage
-## tracker (cumulative_audited_docs) and the mechanically
-## computed coverage_pct. The `stop` field embeds the coverage
-## gate.
-schema streak_state:
-  stop: bool
-  approved: bool
-  family: string
-  blockers: json
-  blocker_count: int
-  fix_plan: string
-  ## v0.17.0: surface the current reviewer's `confidence` so the
-  ## NEXT iteration's reviewer (cross-family) sees it via
-  ## `loop.review_loop.previous_output.confidence` and can
-  ## calibrate "verdicts must trend monotonically" (high-conf
-  ## rejection followed by a fix should expect ≤N residual
-  ## blockers; intuition-level low-conf is non-blocking).
-  confidence: string
-  cumulative_audited_pairs: string[]
-  cumulative_audited_docs: string[]
-  coverage_pct: int
-  ## v0.17.0 do-not-relitigate accumulators.
-  ## cumulative_dismissed_pairs: union of `audited_pairs` from
-  ## every reviewer iteration whose `blocker_count == 0` — the
-  ## set of doc::value pairs cross-family confirmed not-drift.
-  ## cumulative_pushback: union of every fixer pushback string
-  ## across both families. Both feed the next reviewer's
-  ## "do NOT re-raise without new evidence" gate.
-  cumulative_dismissed_pairs: string[]
-  cumulative_pushback: string[]
-  ## v0.12.0: every path the enforce_fix_scope tool had to revert
-  ## this run (with duplicates). Kept for telemetry — feeds
-  ## enforce_fix_scope's own threshold computation on each iter
-  ## via the fix→enforce edge, and exposed in events/reports
-  ## for post-run debugging. NOT passed to the reviewer (v0.13).
-  cumulative_reverted_paths: string[]
-  ## v0.13.0: deduplicated list of paths that have crossed the
-  ## ≥3-revert chronic threshold. Computed inside enforce_fix_scope
-  ## each iter, accumulated here, and exposed to the reviewer as
-  ## the SOLE scope-honesty signal. Empty until any path has been
-  ## reverted 3+ times.
-  cumulative_chronic_paths: string[]
-  ## v0.14.0: deduplicated union of every per-iter `declared_paths`
-  ## fed into enforce_fix_scope across the run. Wired back into
-  ## enforce_fix_scope as `cumulative_so_far_declared` so prior
-  ## iters' kept files survive subsequent iters whose declared set
-  ## understandably narrows to the new fix blockers. Without this,
-  ## iter 2's git-diff baseline includes iter 1's keepers and they
-  ## all get reverted as "undeclared" — observed during the
-  ## 2026-05-21 dogfood (issue e79d91c7).
-  cumulative_declared_paths: string[]
-
-schema fix_input:
-  blockers: json
-  fix_plan: string
-
-schema fix_output:
-  applied: bool
-  summary: string
-  modified_doc_files: string[]
-  code_files_touched: string[]
-  pushback: string[]
-  pushback_justification: string
-
-## DEFAULT-CREATE (v0.3.0) schemas. author_docs bootstraps an initial
-## documentation set when a repo has none. Its OUTPUT is observational
-## only: the run re-scans the filesystem afterward (scan_docs re-globs),
-## so nothing downstream consumes these fields — the schema exists to
-## make the node DSL-valid and to surface what was authored in reports.
 schema author_input:
   workspace_dir: string
   docs_dir: string
@@ -1195,24 +638,6 @@ schema author_output:
   docs_created: bool
   created_doc_files: string[]
   summary: string
-
-## Commit-phase schemas.
-schema commit_output:
-  type: string [enum: "docs", "fix"]
-  scope: string
-  subject: string
-  full_message: string
-  files: string[]
-  committed: bool
-
-schema commit_tool_input:
-  full_message: string
-  files: string[]
-  workspace_dir: string
-
-schema commit_result:
-  success: bool
-  output: string
 
 ## v0.15.4: schema for mark_issue_for_review's free-form output.
 ## The tool returns JSON-as-string on success ({"id":...,"state":...})
@@ -1238,30 +663,6 @@ schema update_audit_cache_output:
   entries_written: int
   skipped: string
 
-schema detect_changes_output:
-  has_changes: bool
-
-## enforce_fix_scope I/O (v0.11.0). The fixer DECLARES the files
-## it modified via `fix_output.modified_doc_files`; this tool
-## walks `git diff --name-only` against that declaration and
-## reverts any out-of-declaration change so the fixer can't
-## silently edit files outside its writeable set. Catches the
-## v0.10 dogfood gap where fix_gpt edited the bot's own skill
-## despite scan_docs excluding it via bundle_self_path.
-schema enforce_fix_scope_input:
-  workspace_dir: string
-  declared_paths: string[]
-  ## v0.13.0: the full revert history from streak_check so the
-  ## tool can compute per-path counts AT THIS ITERATION and emit
-  ## `chronic_paths` itself — keeps the threshold logic in
-  ## deterministic-tool land rather than in expression DSL.
-  cumulative_so_far: string[]
-  ## v0.14.0: deduplicated union of every prior iter's declared
-  ## paths. The tool keeps any file in this set even when the
-  ## current iter doesn't redeclare it, so iter N can declare just
-  ## the new blockers it fixed without sacrificing iter N-1's
-  ## kept work to the baseline-relative `git diff --name-only`.
-  cumulative_so_far_declared: string[]
 
 ## build_manifest I/O (v0.15.0 — manifest-driven reviewers).
 ##
@@ -1345,23 +746,10 @@ schema build_manifest_output:
   chunked: bool
   chunk_doc_count: int
   max_review_chunk_docs: int
-
-schema enforce_fix_scope_output:
-  reverted_paths: string[]
-  kept_paths: int
-  declared_count: int
-  changed_count: int
-  ## v0.13.0: paths that, after folding THIS iter's reverts into
-  ## the prior cumulative_so_far history, have been reverted ≥3
-  ## times. Deduplicated. Empty until any path crosses the
-  ## threshold. Routed through streak_check.cumulative_chronic_paths
-  ## to the next reviewer's input.
-  chronic_paths: string[]
-  ## v0.14.0: echo of the CURRENT iter's declared_paths. Routed
-  ## through streak_check.cumulative_declared_paths so the next
-  ## iter's enforce_fix_scope can union it into the keep-set.
-  declared_iter: string[]
-
+  ## v2: the mechanically VERIFIED doc::anchor pairs — feeds the
+  ## inter-run audit cache (update_audit_cache) so pre-verification no
+  ## longer depends on retired reviewer claims.
+  verified_pairs: string[]
 
 ## ─── Nodes ──────────────────────────────────────────────────────
 
@@ -1927,220 +1315,12 @@ print(json.dumps({
     'chunked': chunked,
     'chunk_doc_count': chunk_doc_count,
     'max_review_chunk_docs': max_chunk_docs,
+    'verified_pairs': sorted({a['doc'] + '::' + str(a.get('value','')) for a in verified}),
 }))
 "`
   input: build_manifest_input
   output: build_manifest_output
 
-## Family selector (see branch-improve-loop for the full rationale):
-## round_robin → condition so a MONO run routes to a single family
-## (round_robin ignores `when` guards). The GPT edge is guarded; the
-## CLAUDE edge is the unconditional default (C012). Parity rides
-## loop.review_loop.iteration (this router is not a review_loop entry,
-## so plan-loop-backs never reset it — lockstep with the old counter).
-router alt:
-  mode: condition
-
-judge reviewer_claude:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-max}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_claude
-  ## session: fresh for claude — the prompt cache hit comes from
-  ## claude_code's automatic context reuse, not from explicit
-  ## session inheritance, and a fresh session keeps each review
-  ## an independent look (mirrors branch_improve_loop).
-  session: fresh
-  ## v0.15.0: tool_max_steps cap aligns reviewer_claude with the
-  ## manifest pattern — the bounded drift_candidates list is in
-  ## the prompt; spot-checks only.
-  tool_max_steps: 25
-  interaction: human
-
-judge reviewer_gpt:
-  ## Explicit backend pin: openai/gpt-5.5 only runs on claw.
-  backend: "claw"
-  model: "${ITERION_DOC_ALIGN_MODEL_GPT:-openai/gpt-5.5}"
-  ## Dropped from "high" to "medium" 2026-05-24: with the v0.15.0
-  ## manifest pattern + the 80%-coverage doc set (89 docs / 175
-  ## drift candidates), the gpt-5.5 reviewer running via the
-  ## ChatGPT-forfait codex endpoint started hitting
-  ## context_length_exceeded — the high-effort reasoning budget
-  ## reserved enough tokens to blow the forfait's per-call cap
-  ## (under the cap on the raw OpenAI API). Medium keeps the
-  ## verdict quality while leaving headroom. Override with the
-  ## env var when the input is small (e.g. branch-scoped audits).
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_GPT:-medium}"
-  input: review_input
-  output: verdict_output
-  system: review_system
-  user: review_user_gpt
-  ## v0.7.0: session: inherit_if_available finally lands the cost
-  ## optimisation that v0.2.0 attempted and had to revert. Plain
-  ## `inherit` requires a non-empty `_session_id` from the edge —
-  ## on iter 1 fix_gpt hasn't run, the template resolves to "",
-  ## and the original v0.2.0 reading of the symptom blamed claw's
-  ## OpenAI provider (it turned out to be insufficient_quota
-  ## v0.15.0: with the manifest pattern, reviewer_gpt no longer
-  ## enumerates anchors via tool calls — the bounded
-  ## drift_candidates list is in the prompt. Spot-checks only.
-  session: fresh
-  ## claw builtin tools — read-only set, the reviewer NEVER writes.
-  ## tool_max_steps dropped 20 → 10 (v0.15.0). Enumeration moved
-  ## to the manifest tool; the budget covers spot-checks of the
-  ## highest-stakes drifted CLI surface / diagnostic codes plus
-  ## the final structured-output turn. 5 was too tight — the
-  ## CLI counts each tool call as a turn and exhausted the budget
-  ## before claude could emit JSON (error_max_turns observed).
-  tools: [bash, read_file, glob, grep]
-  tool_max_steps: 25
-  interaction: human
-
-## Deterministic streak detector + coverage gate.
-##
-## stop=true iff (cross-family double approval) AND (cumulative
-## file-level coverage ≥ coverage_target_pct). The coverage_pct
-## is `length(unique(prior + current audited_docs)) * 100 /
-## doc_count`, guarded against doc_count=0 via `if(...)`. v0.1.0
-## had no coverage gate; reviewer_claude iter 2 approved with
-## ~13/51 audited and would have armed the streak.
-##
-## Soft-approval (low-confidence rejection) is passed through as
-## approved for routing only — alternation continues without
-## invoking the fixer, but stop still requires hard approvals.
-## v0.3.0 streak_check changes vs v0.2.0:
-##
-## - `stop` now treats `blocker_count == 0` as effective approval
-##   (regardless of `approved` / `confidence`). v0.2.0 deadlocked
-##   when GPT consistently returned 0 blockers + confidence: low
-##   after exhausting productive audit — `approved: false` blocked
-##   the streak indefinitely even though both families agreed
-##   nothing needed fixing.
-##
-## - `coverage_pct` is clamped to ≤ 100 via an inner `if()`.
-##   Reviewers sometimes put paths into `audited_docs` that are
-##   technically outside the original `doc_files` (e.g. a freshly
-##   discovered doc, or an off-by-one path). Without clamping
-##   that pushed coverage to 101+%, harmless for the gate
-##   (>= 80%) but confusing in reports.
-compute streak_check:
-  output: streak_state
-  expr:
-    ## v0.15.0: coverage is now ANCHOR-level (manifest's
-    ## verified/total ratio), not file-level (reviewer-claimed
-    ## audited_docs union). The manifest scans every doc every
-    ## iter, so coverage moves only when the fixer actually
-    ## resolves drifts. No more reviewer-claimed coverage padding.
-    ##
-    ## v0.17.0 streak symmetry: the CURRENT side of `stop` now
-    ## also launders low-confidence rejections, matching the
-    ## previous side's laundering through `streak_state.approved`
-    ## (which already folded in `input.confidence == 'low'` since
-    ## v0.3.0). Pre-fix asymmetry — current side used raw
-    ## `input.approved` while previous side used the laundered
-    ## `previous_output.approved` — meant a CURRENT low-confidence
-    ## rejection with non-zero blockers reset the streak that a
-    ## PREVIOUS low-confidence rejection did not. Pure noise
-    ## oscillated the gate. The asymptote requirement (CLAUDE.md
-    ## "Review loops must converge to an asymptote") demands
-    ## both sides treat low-conf identically.
-    stop: "(input.approved || input.confidence == 'low' || input.blocker_count == 0) && (loop.review_loop.previous_output.approved || loop.review_loop.previous_output.blocker_count == 0) && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family) && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
-    approved: "input.approved || input.confidence == 'low' || input.blocker_count == 0"
-    family: "input.family"
-    blockers: "input.blockers"
-    blocker_count: "input.blocker_count"
-    ## v0.17.0: carry the current reviewer's `confidence` into
-    ## streak_state so the cross-family next iter sees it via
-    ## `loop.review_loop.previous_output.confidence` and can
-    ## reason about monotonic-trend (high-conf rejection then
-    ## fix should expect ≤N residual blockers, etc.).
-    confidence: "input.confidence"
-    fix_plan: "input.fix_plan"
-    cumulative_audited_pairs: "unique(concat(outputs.streak_check.cumulative_audited_pairs, input.audited_pairs))"
-    ## v0.17.0 do-not-relitigate accumulator: when the current
-    ## reviewer raised ZERO blockers, EVERY pair in its
-    ## audited_pairs is a cross-family-adjudicated not-drift item.
-    ## Union it into the cumulative dismissed set so subsequent
-    ## reviewers can dismiss those pairs on sight (the manifest
-    ## re-emits the same candidates every iter; this is what
-    ## stops re-judging them). When blockers > 0, no contribution
-    ## (the reviewer DID raise issues on this iter; its
-    ## audited_pairs contains both confirmed-drift and dismissed
-    ## items intermixed and we cannot separate them in the DSL).
-    cumulative_dismissed_pairs: "if(input.blocker_count == 0, unique(concat(outputs.streak_check.cumulative_dismissed_pairs, input.audited_pairs)), outputs.streak_check.cumulative_dismissed_pairs)"
-    ## v0.17.0 do-not-relitigate accumulator (fixer-side):
-    ## union every fixer pushback across both families into the
-    ## cumulative pushback set. Routed forward to both reviewers
-    ## as `cumulative_pushback`. The reviewer rule: do NOT
-    ## re-raise a previously-pushed-back blocker without new
-    ## evidence rebutting the fixer's justification. The current
-    ## iter's fixer pushback is the union of fix_claude.pushback
-    ## + fix_gpt.pushback (whichever family fired most recently
-    ## upstream of this reviewer; the union is idempotent under
-    ## `unique`).
-    cumulative_pushback: "unique(concat(outputs.streak_check.cumulative_pushback, outputs.fix_claude.pushback, outputs.fix_gpt.pushback))"
-    ## v0.15.0: file-level coverage is now the manifest's static
-    ## all_audited_docs (every doc is mechanically scanned every
-    ## iter). Kept on the schema for backward-compat in reports;
-    ## the gate uses coverage_pct below instead.
-    cumulative_audited_docs: "outputs.build_manifest.all_audited_docs"
-    coverage_pct: "outputs.build_manifest.coverage_pct"
-    ## v0.12.0: accumulate every enforce_fix_scope revert across
-    ## the run, WITH duplicates. Kept for telemetry / events,
-    ## and re-fed to enforce_fix_scope each iter so it can
-    ## compute the per-path count and emit `chronic_paths`
-    ## without re-counting in expr DSL. NOT exposed to reviewer
-    ## in v0.13 — the reviewer only sees cumulative_chronic_paths.
-    cumulative_reverted_paths: "concat(outputs.streak_check.cumulative_reverted_paths, input.enforce_reverted_paths)"
-    ## v0.13.0: deduplicated accumulation of paths that have
-    ## crossed the chronic threshold (≥3 reverts). Source of
-    ## truth for the reviewer's SCOPE-HONESTY blocker. Once a
-    ## path lands here it stays — the reviewer keeps surfacing
-    ## the blocker until convergence.
-    cumulative_chronic_paths: "unique(concat(outputs.streak_check.cumulative_chronic_paths, input.enforce_chronic_paths))"
-    ## v0.14.0: deduplicated union of every prior iter's
-    ## declared_paths. Fed back into enforce_fix_scope so the
-    ## keep-set widens across iterations instead of resetting to
-    ## the new iter's narrow declaration. Without this, baseline-
-    ## relative `git diff --name-only` flagged iter N-1's keepers
-    ## as "undeclared" in iter N and reverted real work.
-    cumulative_declared_paths: "unique(concat(outputs.streak_check.cumulative_declared_paths, input.enforce_declared_iter))"
-
-agent fix_claude:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-max}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  interaction: human
-
-agent fix_gpt:
-  backend: "claw"
-  model: "${ITERION_DOC_ALIGN_MODEL_GPT:-openai/gpt-5.5}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_GPT:-high}"
-  input: fix_input
-  output: fix_output
-  system: fix_system
-  user: fix_user
-  session: inherit
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 40
-  interaction: human
-
-
-## ─── Nodes : Default-create (author docs from zero) ─────────────
-
-## DEFAULT-CREATE (v0.3.0): when scan_docs reports no_docs, this node
-## bootstraps an initial documentation set from the code, then the run
-## re-scans (author_rescan loop) so the normal review/refresh loop
-## polishes + commits it. claude_code so it has the full native toolset
-## to read the repo and write files; one-shot fresh session.
 agent author_docs:
   backend: "claude_code"
   model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
@@ -2151,25 +1331,6 @@ agent author_docs:
   user: author_docs_user
   session: fresh
   interaction: human
-
-
-## ─── Nodes : Commit ─────────────────────────────────────────────
-
-agent prepare_commit:
-  backend: "claude_code"
-  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-max}"
-  output: commit_output
-  system: prepare_commit_system
-  user: prepare_commit_user
-  session: fresh
-  readonly: true
-  capabilities: [board.read, board.create]
-
-tool commit_changes:
-  command: "git -C {{input.workspace_dir}} add -- {{input.files}} && (git -C {{input.workspace_dir}} diff --cached --quiet || git -C {{input.workspace_dir}} commit -m {{input.full_message}})"
-  input: commit_tool_input
-  output: commit_result
 
 ## mark_issue_for_review (v0.15.4): after the run reaches a clean
 ## terminal state, transition the tracker issue out of `ready` so
@@ -2217,123 +1378,12 @@ tool mark_issue_for_review:
   command: `if [ -n {{vars.issue_id}} ]; then ID={{vars.issue_id}}; ID_SHORT=${ID#native:}; PORT=${ITERION_DISPATCHER_PORT:-4891}; curl -sS -X POST -H "Content-Type: application/json" -d '{"to":"review"}' "http://localhost:${PORT}/api/v1/native/issues/${ID_SHORT}/transition" 2>&1 | head -c 1000 || true; else echo '{"skipped":"no issue_id"}'; fi`
   output: mark_issue_output
 
-## enforce_fix_scope (v0.11.0): mechanical revert of any fix-stage
-## edit outside the fixer's declared `modified_doc_files` set.
-##
-## Discovered during the v0.10 dogfood: fix_gpt edited
-## `bots/docs-refresh/skills/doc-verification-checklist.md` —
-## docs-refresh's own skill — despite scan_docs excluding it via
-## `bundle_self_path`. The fixer's tool access (write_file,
-## file_edit) is filesystem-wide; the skill-level constraint
-## "you may not write outside doc_files" was unenforced.
-##
-## This node closes the gap mechanically: after every fix
-## iteration, walk `git diff --name-only` and `git checkout --`
-## anything that isn't in `input.declared_paths`. The fixer's
-## own declaration is the contract — out-of-declaration edits
-## are reverted before they reach the next reviewer.
-##
-## Emits `reverted_paths[]` for visibility; non-empty in events
-## stream is the signal that the fixer needs prompt-side
-## reinforcement (or the agent occasionally over-reaches).
-tool enforce_fix_scope:
-  ## v0.13.0: positional argv with a `--` sentinel between
-  ## declared_paths and cumulative_so_far. iterion shell-tokenises
-  ## string[] inputs into space-separated quoted tokens
-  ## (`'a.md' 'b.md'`) so they land as separate argv entries —
-  ## env-var passing collided (first token wins, rest become argv).
-  ## v0.14.0: extended with a second sentinel `---` for the
-  ## prior-iters' cumulative_so_far_declared union (so iter N-1's
-  ## keepers don't get reverted in iter N's narrower scope).
-  ## Layout: <ws> <declared...> -- <cumul_reverted...> --- <cumul_declared...>
-  command: `python3 -c "
-import os, json, subprocess, sys
-from collections import Counter
-args = sys.argv[1:]
-ws = args[0] if args else ''
-rest = args[1:]
-try:
-    i = rest.index('--')
-    declared = set(rest[:i])
-    after = rest[i+1:]
-    try:
-        j = after.index('---')
-        cumulative_so_far = after[:j]
-        cumulative_declared = set(after[j+1:])
-    except ValueError:
-        cumulative_so_far = after
-        cumulative_declared = set()
-except ValueError:
-    declared = set(rest)
-    cumulative_so_far = []
-    cumulative_declared = set()
-effective_declared = declared | cumulative_declared
-os.chdir(ws)
-try:
-    proc = subprocess.run(['git', 'diff', '--name-only'], capture_output=True, text=True, check=True)
-    changed = set(l for l in proc.stdout.splitlines() if l)
-except Exception:
-    changed = set()
-out_of_scope = sorted(changed - effective_declared)
-reverted = []
-for path in out_of_scope:
-    try:
-        subprocess.run(['git', 'checkout', '--', path], check=True, capture_output=True)
-        reverted.append(path)
-    except subprocess.CalledProcessError:
-        pass
-counts = Counter(cumulative_so_far) + Counter(reverted)
-chronic = sorted([p for p, c in counts.items() if c >= 3])
-print(json.dumps({
-    'reverted_paths': reverted,
-    'kept_paths': len(changed) - len(reverted),
-    'declared_count': len(declared),
-    'changed_count': len(changed),
-    'chronic_paths': chronic,
-    'declared_iter': sorted(declared),
-}))
-" {{input.workspace_dir}} {{input.declared_paths}} -- {{input.cumulative_so_far}} --- {{input.cumulative_so_far_declared}}`
-  input: enforce_fix_scope_input
-  output: enforce_fix_scope_output
-
-## update_audit_cache (v0.5.0): rewrites
-## `<workspace_dir>/<audit_cache_path>` from the run's cumulative
-## audited_pairs. Each pair `"<doc>::<anchor>"` contributes a
-## reference entry; the anchor's path component is extracted with
-## a permissive regex (everything up to the first `:`, space, or
-## `(`). The current sha1 of each referenced path is captured so
-## the NEXT run can pre-verify untouched (doc, refs) tuples.
-##
-## Empty cache_path disables the write — useful for one-shot CI
-## runs that don't want to persist state.
-##
-## Runs after commit_changes so a failed commit doesn't poison
-## the cache with audit data that wasn't actually shipped. The no-change
-## path reaches it directly via detect_doc_changes (skipping the commit).
-
-## EFFICIENCY guard (deterministic, no LLM). After the review streak
-## converges, only spend the LLM prepare_commit + commit_changes when the
-## fixers actually changed the working tree. A review-only convergence
-## (no drift / nothing to fix) skips straight to the audit-cache refresh +
-## done — so docs-refresh only pays the commit-prep turn when there is
-## something to commit. Both unstaged and staged diffs are checked.
-tool detect_doc_changes:
-  command: `WS={{vars.workspace_dir}} CACHE={{vars.audit_cache_path}} python3 -c "
-import os, subprocess, json
-os.chdir(os.environ['WS'])
-cache = os.environ.get('CACHE', '').strip()
-# git status --porcelain reports BOTH tracked modifications AND untracked
-# files (?? lines). Plain 'git diff' misses untracked — which is exactly
-# the DEFAULT-CREATE case (author_docs writes brand-new, never-added .md
-# files), so the commit step must still fire. Exclude the audit cache
-# (written later / not a doc) so a stale cache file is not mistaken for
-# doc work on a re-run.
-lines = subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout.splitlines()
-sig = [l for l in lines if l.strip() and not (cache and l[3:].strip() == cache)]
-print(json.dumps({'has_changes': len(sig) > 0}))
-"`
-  output: detect_changes_output
-
+## update_audit_cache: rewrites <workspace_dir>/<audit_cache_path>
+## from the manifest's mechanically VERIFIED doc::anchor pairs (v2 —
+## the cache no longer records reviewer claims). Each pair
+## contributes a reference entry; the current sha1 of doc + refs is
+## captured so the NEXT run's scan_docs can pre-verify untouched
+## tuples. Empty cache_path disables the write.
 tool update_audit_cache:
   command: `python3 -c "
 import os, json, hashlib, re, sys, pathlib
@@ -2380,28 +1430,165 @@ print(json.dumps({'cache_path': str(out_path), 'entries_written': len(doc_entrie
   input: update_audit_cache_input
   output: update_audit_cache_output
 
+## ─── Nodes : v2 campaign + gates ────────────────────────────────
+
+## campaign — the one adaptive agent. claude_code with the full native
+## toolset so it works exactly like a native session: adjudicate the
+## manifest's bounded drift set, verify at the anchor, fix the doc,
+## commit each aligned doc in stride. session: fresh — a fresh pass
+## re-derives its todo from the fresh manifest + `git log` (git is the
+## durable state). Board capabilities power the findings handoff (code
+## bugs found while verifying anchors → inbox), replacing v1's
+## prepare_commit handoff.
+agent campaign:
+  backend: "claude_code"
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-high}"
+  input: campaign_input
+  output: campaign_output
+  system: campaign_system
+  user: campaign_user
+  session: fresh
+  interaction: human
+  capabilities: [board.read, board.create]
+
+## verify_build — adaptive, stack-agnostic gate authoring (writes
+## <scratch_dir>/verify.sh). Kept FAST for docs-only passes.
+agent verify_build:
+  backend: "claude_code"
+  model: "${ITERION_DOC_ALIGN_MODEL_CLAUDE:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_DOC_ALIGN_EFFORT_CLAUDE:-medium}"
+  output: verify_plan
+  system: verify_system
+  user: verify_user
+  session: fresh
+  interaction: human
+
+## verify_run — the DETERMINISTIC half: re-runs the agent-prepared
+## <scratch_dir>/verify.sh and reports the REAL exit code. python3 for
+## safe JSON + subprocess capture; double-quote-free body, no backticks
+## (E012).
+tool verify_run:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+import os, subprocess, json
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+script = os.path.join(scratch, 'verify.sh')
+if not os.path.exists(script):
+    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
+    raise SystemExit(0)
+rc = 0
+out = ''
+try:
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1500)
+    out = p.stdout or ''
+    rc = p.returncode
+except subprocess.TimeoutExpired as e:
+    out = (e.output or '') + chr(10) + '[verify timed out after 1500s]'
+    rc = 124
+except Exception as e:
+    out = 'verify_run could not execute the script: ' + str(e)
+    rc = 1
+try:
+    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
+        lf.write(out)
+except OSError:
+    pass
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: verify_result
+
+## scope_check — the DETERMINISTIC writeable-set gate. Diffs the RUN
+## BASE (oldest reflog entry of the fresh per-run worktree — exact
+## under worktree: auto) against the working tree and flags any changed
+## path that is not a doc: `.md` anywhere, the audit cache file, or
+## (when GO_GLOBS is non-empty) a file matching those globs (the
+## comment-only discipline stays contract-level, as in v1 — this gate
+## is path-level containment). Untracked files are held to the same
+## rule. No LLM; the campaign must revert whatever this flags.
+tool scope_check:
+  command: `WS={{vars.workspace_dir}} GO_GLOBS={{vars.go_comment_globs}} CACHE={{vars.audit_cache_path}} python3 -c "
+import os, json, subprocess, fnmatch
+ws = os.environ.get('WS', '.')
+go_globs = [g.strip() for g in os.environ.get('GO_GLOBS', '').split(',') if g.strip()]
+cache = os.environ.get('CACHE', '').strip()
+
+def git(args):
+    try:
+        p = subprocess.run(['git', '-C', ws] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
+        return p.stdout or ''
+    except Exception:
+        return ''
+
+reflog = [l for l in git(['reflog', '--format=%H']).splitlines() if l.strip()]
+base = reflog[-1] if reflog else 'HEAD'
+changed = set(l for l in git(['diff', base, '--name-only']).splitlines() if l.strip())
+for line in git(['status', '--porcelain']).splitlines():
+    if line[:2].strip() == '??':
+        changed.add(line[3:].strip())
+
+def allowed(p):
+    if p.endswith('.md'):
+        return True
+    if cache and p == cache:
+        return True
+    for g in go_globs:
+        if fnmatch.fnmatch(p, g):
+            return True
+    return False
+
+out_of_scope = sorted(p for p in changed if not allowed(p))
+log = ''
+if out_of_scope:
+    log = 'SCOPE VIOLATION: this run changed files outside the doc writeable-set (.md' + (' + go_comment_globs' if go_globs else '') + '). Revert these before continuing (git revert the offending commits, or git checkout ' + base[:12] + ' -- <path>): ' + ', '.join(out_of_scope[:40])
+print(json.dumps({'scope_ok': not out_of_scope, 'out_of_scope': out_of_scope[:100], 'log': log}))
+"`
+  output: scope_check_output
+
+## gate — the deterministic continuation decision. converged = build
+## green AND scope clean AND campaign reports docs aligned AND the
+## manifest's mechanical anchor coverage meets the target. fail_log
+## priority: scope violation (the campaign must revert) > build
+## failure > empty (green-but-more-drift → the fresh manifest is the
+## guidance). No LLM, no shell.
+compute gate:
+  output: gate_state
+  expr:
+    converged: "outputs.verify_run.passed && outputs.scope_check.scope_ok && outputs.campaign.docs_aligned && outputs.build_manifest.coverage_pct >= vars.coverage_target_pct"
+    fail_log: "if(!outputs.scope_check.scope_ok, outputs.scope_check.log, if(outputs.verify_run.passed, '', outputs.verify_run.log_tail))"
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
 workflow docs_refresh:
   entry: scan_docs
 
+  ## Run in an isolated git worktree at .iterion/worktrees/<run-id>/ —
+  ## the campaign commits doc alignments in stride; the worktree +
+  ## finalize FF keeps the operator's checkout untouched during the run
+  ## and lands the series on a persistent branch on convergence. (v1 ran
+  ## on the live tree with a terminal commit; in-stride commits make the
+  ## worktree the safe default, aligned with the other v2 bots.)
+  worktree: auto
+
   budget:
     max_parallel_branches: 1
-    max_duration: "4h"
-    max_cost_usd: 120
+    max_duration: "2h"
+    max_cost_usd: 60
 
   compaction:
     threshold: 0.9
     preserve_recent: 8
 
-  ## DEFAULT-CREATE (v0.3.0): if the repo has ZERO docs in scope,
-  ## bootstrap an initial set first (author_docs), then loop back to
-  ## scan_docs (author_rescan) so the re-scan picks the new docs up and
-  ## the normal review/refresh loop polishes + commits them. Otherwise
-  ## go straight to the review path. author_rescan(1) = exactly one
+  ## DEFAULT-CREATE: if the repo has ZERO docs in scope, bootstrap an
+  ## initial set first (author_docs), then loop back to scan_docs
+  ## (author_rescan) so the re-scan picks the new docs up and the normal
+  ## campaign polishes + commits them. author_rescan(1) = exactly one
   ## authoring pass; if it still produces nothing in scope the bounded
-  ## loop fails loudly (resumable) rather than spinning.
+  ## loop fails loudly rather than spinning.
   scan_docs -> author_docs when no_docs with {
     workspace_dir: "{{vars.workspace_dir}}",
     docs_dir: "{{vars.docs_dir}}",
@@ -2410,12 +1597,10 @@ workflow docs_refresh:
   scan_docs -> scan_code_surface when not no_docs
   author_docs -> scan_docs as author_rescan(1)
 
-  ## v0.15.0: build_manifest runs after scan_code_surface (initial)
-  ## AND after every enforce_fix_scope (loop re-entry), so the
-  ## drift_candidates set the reviewers see always reflects the
-  ## live worktree state. Both inbound edges supply identical
-  ## with{} fields — the tool's input shape is the same regardless
-  ## of which stage triggered it.
+  ## build_manifest runs after scan_code_surface (initial) AND as the
+  ## continuation-loop head (gate re-entry), so the drift_candidates set
+  ## the campaign sees always reflects the live worktree state. Both
+  ## inbound edges supply identical with{} fields.
   scan_code_surface -> build_manifest with {
     workspace_dir: "{{vars.workspace_dir}}",
     doc_files: "{{outputs.scan_docs.doc_files}}",
@@ -2426,179 +1611,44 @@ workflow docs_refresh:
     max_drift_candidates: "{{vars.max_drift_candidates}}",
     max_review_chunk_docs: "{{vars.max_review_chunk_docs}}"
   }
-  build_manifest -> alt
 
-  ## Round-robin alternates: 1st pass → claude, 2nd → gpt, repeat.
-  ## v0.15.0: reviewers consume the BOUNDED manifest output
-  ## (drift_candidates + summary stats) instead of the v0.14.0
-  ## bulk shape (doc_files / pre_verified_docs / cli_commands / …
-  ## that grew with the doc footprint). Cross-family pushback +
-  ## chronic-path signals carry through unchanged.
-  alt -> reviewer_claude with {
+  ## Each pass: the fresh manifest hands the campaign its bounded
+  ## working set (+ the previous gate's feedback — empty on pass 1,
+  ## outputs.gate resolves nil-safe before the gate has run).
+  build_manifest -> campaign with {
     total_docs: "{{outputs.build_manifest.total_docs}}",
     total_anchors: "{{outputs.build_manifest.total_anchors}}",
     verified_anchors: "{{outputs.build_manifest.verified_anchors}}",
     drifted_anchors: "{{outputs.build_manifest.drifted_anchors}}",
     unverifiable_anchors: "{{outputs.build_manifest.unverifiable_anchors}}",
     manifest_coverage_pct: "{{outputs.build_manifest.coverage_pct}}",
+    coverage_target_pct: "{{vars.coverage_target_pct}}",
     drift_candidates: "{{outputs.build_manifest.drift_candidates}}",
-    per_doc_anchor_counts: "{{outputs.build_manifest.per_doc_anchor_counts}}",
-    all_audited_docs: "{{outputs.build_manifest.all_audited_docs}}",
     docs_with_drift_count: "{{outputs.build_manifest.docs_with_drift_count}}",
     chunked: "{{outputs.build_manifest.chunked}}",
     chunk_doc_count: "{{outputs.build_manifest.chunk_doc_count}}",
     max_review_chunk_docs: "{{outputs.build_manifest.max_review_chunk_docs}}",
-    coverage_target_pct: "{{vars.coverage_target_pct}}",
-    prior_pushback: "{{outputs.fix_gpt.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
-    prior_code_files_touched_claude: "{{outputs.fix_claude.code_files_touched}}",
-    prior_code_files_touched_gpt: "{{outputs.fix_gpt.code_files_touched}}",
-    cumulative_chronic_paths: "{{outputs.streak_check.cumulative_chronic_paths}}",
-    ## v0.17.0 do-not-relitigate inputs (cumulative across the
-    ## entire run, not just the last iter).
-    cumulative_dismissed_pairs: "{{outputs.streak_check.cumulative_dismissed_pairs}}",
-    cumulative_pushback: "{{outputs.streak_check.cumulative_pushback}}"
-  }
-  alt -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
-    total_docs: "{{outputs.build_manifest.total_docs}}",
-    total_anchors: "{{outputs.build_manifest.total_anchors}}",
-    verified_anchors: "{{outputs.build_manifest.verified_anchors}}",
-    drifted_anchors: "{{outputs.build_manifest.drifted_anchors}}",
-    unverifiable_anchors: "{{outputs.build_manifest.unverifiable_anchors}}",
-    manifest_coverage_pct: "{{outputs.build_manifest.coverage_pct}}",
-    drift_candidates: "{{outputs.build_manifest.drift_candidates}}",
-    per_doc_anchor_counts: "{{outputs.build_manifest.per_doc_anchor_counts}}",
-    all_audited_docs: "{{outputs.build_manifest.all_audited_docs}}",
-    docs_with_drift_count: "{{outputs.build_manifest.docs_with_drift_count}}",
-    chunked: "{{outputs.build_manifest.chunked}}",
-    chunk_doc_count: "{{outputs.build_manifest.chunk_doc_count}}",
-    max_review_chunk_docs: "{{outputs.build_manifest.max_review_chunk_docs}}",
-    coverage_target_pct: "{{vars.coverage_target_pct}}",
-    prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
-    prior_code_files_touched_claude: "{{outputs.fix_claude.code_files_touched}}",
-    prior_code_files_touched_gpt: "{{outputs.fix_gpt.code_files_touched}}",
-    cumulative_chronic_paths: "{{outputs.streak_check.cumulative_chronic_paths}}",
-    ## v0.17.0 do-not-relitigate inputs (cumulative across the
-    ## entire run, not just the last iter).
-    cumulative_dismissed_pairs: "{{outputs.streak_check.cumulative_dismissed_pairs}}",
-    cumulative_pushback: "{{outputs.streak_check.cumulative_pushback}}"
-    ## v0.7.0 cost optimisation moot under the manifest shape —
-    ## input is now bounded, no more cumulative context bloat to
-    ## fight. Keeping session: fresh on reviewer_gpt for the
-    ## fixed-size guarantee. (_session_id intentionally absent.)
+    recently_changed_code_files: "{{outputs.scan_docs.recently_changed_code_files}}",
+    fail_log: "{{outputs.gate.fail_log}}"
   }
 
-  reviewer_claude -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_claude.approved}}",
-    family: "{{outputs.reviewer_claude.family}}",
-    blockers: "{{outputs.reviewer_claude.blockers}}",
-    blocker_count: "{{outputs.reviewer_claude.blocker_count}}",
-    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}",
-    audited_pairs: "{{outputs.reviewer_claude.audited_pairs}}",
-    audited_docs: "{{outputs.reviewer_claude.audited_docs}}",
-    ## v0.12.0+v0.13.0: carry the last enforce_fix_scope reverts
-    ## (raw history, kept for telemetry) AND its chronic_paths
-    ## (thresholded, fed forward to next reviewer).
-    ## v0.14.0: also carry the per-iter declared echo so streak_check
-    ## can union it into cumulative_declared_paths and keep iter N's
-    ## newly-declared files alive across the next iter's revert pass.
-    enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
-    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}",
-    enforce_declared_iter: "{{outputs.enforce_fix_scope.declared_iter}}"
-  }
-  reviewer_gpt -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_gpt.approved}}",
-    family: "{{outputs.reviewer_gpt.family}}",
-    blockers: "{{outputs.reviewer_gpt.blockers}}",
-    blocker_count: "{{outputs.reviewer_gpt.blocker_count}}",
-    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}",
-    audited_pairs: "{{outputs.reviewer_gpt.audited_pairs}}",
-    audited_docs: "{{outputs.reviewer_gpt.audited_docs}}",
-    enforce_reverted_paths: "{{outputs.enforce_fix_scope.reverted_paths}}",
-    enforce_chronic_paths: "{{outputs.enforce_fix_scope.chronic_paths}}",
-    enforce_declared_iter: "{{outputs.enforce_fix_scope.declared_iter}}"
-  }
+  ## Deterministic gates after every campaign pass: writeable-set
+  ## containment, then the build gate, then the continuation decision.
+  campaign -> scope_check
+  scope_check -> verify_build
+  verify_build -> verify_run
+  verify_run -> gate
 
-  ## Stop on (cross-family double approval) AND (coverage gate met).
-  ## EFFICIENCY: route the converged streak through a deterministic
-  ## has-changes guard — run the LLM prepare_commit only when the fixers
-  ## actually changed the tree; a review-only (no-fix) convergence skips to
-  ## the audit-cache refresh + done.
-  streak_check -> detect_doc_changes when stop
-
-  detect_doc_changes -> prepare_commit when has_changes
-  detect_doc_changes -> update_audit_cache when not has_changes with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    cache_path: "{{vars.audit_cache_path}}",
-    audited_pairs: "{{outputs.streak_check.cumulative_audited_pairs}}"
-  }
-
-  prepare_commit -> commit_changes with {
-    full_message: "{{outputs.prepare_commit.full_message}}",
-    files: "{{outputs.prepare_commit.files}}",
-    workspace_dir: "{{vars.workspace_dir}}"
-  }
-
-  ## v0.5.0: inter-run cache is updated AFTER a successful commit
-  ## so a failed commit doesn't poison the cache with un-shipped
-  ## audit state. update_audit_cache is a deterministic tool
-  ## (no LLM cost) so this adds ~ms to the run.
-  commit_changes -> mark_issue_for_review
-  mark_issue_for_review -> update_audit_cache with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    cache_path: "{{vars.audit_cache_path}}",
-    audited_pairs: "{{outputs.streak_check.cumulative_audited_pairs}}"
-  }
-
-  update_audit_cache -> done
-
-  ## Soft-approval (no streak yet, or low-confidence rejection):
-  ## keep alternating without invoking the fixer.
-  streak_check -> alt when "approved"
-
-  ## Medium/high-confidence rejection with concrete blockers:
-  ## route to the SAME-family fixer (inherit reviewer's session
-  ## via _session_id). v0.3.0: blocker_count > 0 replaces
-  ## length(blockers) > 0 — the latter measures the JSON-encoded
-  ## string length (always > 0 for any output, even "[]"),
-  ## so the previous guard was effectively no-op when approved=false.
-  streak_check -> fix_claude when "!approved && family == 'claude' && blocker_count > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_claude._session_id}}"
-  }
-  streak_check -> fix_gpt when "!approved && family == 'gpt' && blocker_count > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_gpt._session_id}}"
-  }
-
-  ## v0.11.0: interpose enforce_fix_scope between fix_* and alt
-  ## so out-of-declaration edits are reverted before the next
-  ## reviewer sees them. The loop counter follows the inbound
-  ## edge — recovery_loop still bounds total fix attempts at 20.
-  ## v0.13.0: also feed the cumulative revert history forward so
-  ## the tool can compute chronic_paths itself.
-  fix_claude -> enforce_fix_scope as recovery_loop(20) with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    declared_paths: "{{outputs.fix_claude.modified_doc_files}}",
-    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}",
-    cumulative_so_far_declared: "{{outputs.streak_check.cumulative_declared_paths}}"
-  }
-  fix_gpt -> enforce_fix_scope as recovery_loop(20) with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    declared_paths: "{{outputs.fix_gpt.modified_doc_files}}",
-    cumulative_so_far: "{{outputs.streak_check.cumulative_reverted_paths}}",
-    cumulative_so_far_declared: "{{outputs.streak_check.cumulative_declared_paths}}"
-  }
-  ## v0.15.0: re-run build_manifest after each fix iter so the
-  ## reviewer's drift_candidates set reflects the fresh worktree
-  ## state. The with{} mirrors the initial-flow edge — same
-  ## input shape, same target node.
-  enforce_fix_scope -> build_manifest with {
+  ## Converged → transition the dispatcher issue (no-op without
+  ## issue_id) and refresh the inter-run cache from the manifest's
+  ## MECHANICALLY verified pairs, then finish.
+  gate -> mark_issue_for_review when converged
+  ## Not converged → another pass through the loop head: re-manifest
+  ## (fresh drift set from the live tree) → campaign. A scope violation
+  ## or build failure rides outputs.gate.fail_log on the
+  ## build_manifest→campaign edge; green-but-more-drift rides an empty
+  ## log — the fresh manifest is the guidance.
+  gate -> build_manifest as continuation_loop("{{vars.max_passes}}") with {
     workspace_dir: "{{vars.workspace_dir}}",
     doc_files: "{{outputs.scan_docs.doc_files}}",
     cli_commands: "{{outputs.scan_code_surface.cli_commands}}",
@@ -2608,21 +1658,15 @@ workflow docs_refresh:
     max_drift_candidates: "{{vars.max_drift_candidates}}",
     max_review_chunk_docs: "{{vars.max_review_chunk_docs}}"
   }
+  ## continuation_loop exhausted (max_passes hit while drift remains) →
+  ## finish anyway, shipping what is banked (every committed alignment
+  ## is real, landed work; the last campaign_output's drift_remaining
+  ## tells the operator what is left).
+  gate -> mark_issue_for_review
 
-  ## Loop-exhaustion fallthroughs: the bounded review_loop /
-  ## recovery_loop was used up WITHOUT streak_check ever firing `stop`
-  ## — i.e. no convergence and no commit. Route to `fail`, NOT `done`,
-  ## so the run reports `failed` instead of a silent empty success.
-  ## Otherwise the dispatcher's completed_state marks the ticket
-  ## `review` as if doc work landed, and a coverage-gate deadlock
-  ## (reviewers approve while coverage < target, so the fixer never
-  ## fires to raise it) is indistinguishable from a clean convergence.
-  ## The legitimate success path is streak_check → prepare_commit →
-  ## commit_changes → mark_issue_for_review → update_audit_cache → done
-  ## (declared above); `fail` is non-resumable so the dispatcher won't
-  ## re-dispatch a deterministic non-convergence in a loop.
-  reviewer_claude -> fail
-  reviewer_gpt    -> fail
-  fix_claude      -> fail
-  fix_gpt         -> fail
-  streak_check    -> alt
+  mark_issue_for_review -> update_audit_cache with {
+    workspace_dir: "{{vars.workspace_dir}}",
+    cache_path: "{{vars.audit_cache_path}}",
+    audited_pairs: "{{outputs.build_manifest.verified_pairs}}"
+  }
+  update_audit_cache -> done

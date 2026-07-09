@@ -194,7 +194,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	}
 
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
-		spec.AttachmentPromote, spec.Preset,
+		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -304,7 +304,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// engine defaults. If we ever surface "edit finalization on
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
-		nil, r.Preset,
+		nil, r.Preset, nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -353,6 +353,7 @@ func (s *Service) spawnRun(
 	force bool,
 	promote runtime.AttachmentPromoteFunc,
 	preset string,
+	modelOverrides []store.RunModelOverride,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
 	lock, err := s.store.LockRun(context.Background(), runID)
@@ -382,6 +383,12 @@ func (s *Service) spawnRun(
 	}
 	if preset != "" {
 		opts = append(opts, runtime.WithPreset(preset))
+	}
+	// Persist launch-time model/backend overrides on the run record
+	// (display-only) so the studio Overview shows what it launched with.
+	// Empty on resume, leaving the original launch's value intact.
+	if len(modelOverrides) > 0 {
+		opts = append(opts, runtime.WithModelOverrides(modelOverrides))
 	}
 	if cb.url != "" {
 		opts = append(opts, runtime.WithCallback(cb.url, cb.token, cb.answerNode))

@@ -16,8 +16,11 @@
 ##                             AND get the build/tests green. Flags a
 ##                             structuring architectural choice for a
 ##                             human instead of guessing.
-##   validate       (agent)    independently re-run the build/tests to
-##                             VERIFY green before anything is committed.
+##   verify_build   (agent)    capture the repo's real build+tests into an
+##     + verify_run (tool)     out-of-tree verify.sh; a DETERMINISTIC tool
+##                             re-runs it — the REAL exit code (not an LLM
+##                             self-report) is the only path to commit
+##                             (ADR-058: gates deterministic, v2).
 ##   commit         (agent)    commit the alignment onto the PR branch
 ##                             and push it back via forge_token.
 ##   post_feedback  (agent)    post ONE complete review comment on the
@@ -28,9 +31,16 @@
 ##
 ## Vetty NEVER merges — the merge stays a human call. The deterministic
 ## gates (audit_gate / validate_gate) are the truth oracles: code is
-## committed ONLY when the audit verdict is `safe` AND an independent
-## validate pass is green. A not-safe bump or an unstable build short-
-## circuits to a HOLD comment, never a commit.
+## committed ONLY when the audit verdict is `safe` AND the deterministic
+## verify gate is green (v2 — the v1 `validate` agent's self-reported
+## stability was fakeable; the exit code is not). A not-safe bump or an
+## unstable build short-circuits to a HOLD comment, never a commit.
+##
+## v2 note (ADR-058, deliberately calibrated): the read-only
+## security_audit stays a SEPARATE stage from the mutating align — that
+## separation is a security property (the only agent exposed to hostile
+## package content before mutation is authorized has no write tools, and
+## a deterministic verdict gate sits between them), not over-framing.
 ##
 ## Stack-agnostic (universal-bots doctrine): no ecosystem/ package
 ## manager is enumerated in this DSL. The per-stack knowledge lives in
@@ -68,9 +78,6 @@ vars:
   ## PR title + body (webhook-stamped) — extra context for the audit.
   scope_notes: string = ""
 
-  ## Comment style: "summary" (default — one rolled-up review comment).
-  pr_review_mode: string = "summary"
-
   ## Soft budget hint passed into align/validate prompts (number of
   ## self-fix attempts the align agent should spend before flagging
   ## unstable). Not a hard loop bound — convergence is by construction.
@@ -79,6 +86,11 @@ vars:
   ## When true, also mirror the verdict to the native board. Off by
   ## default — Vetty's primary sink is the PR comment.
   post_to_board: bool = false
+
+  ## Out-of-tree scratch for the deterministic gate’s verify script/log
+  ## (${PROJECT_SCRATCH_DIR} resolves outside the PR checkout — never
+  ## pollute the PR branch).
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/dep-update-guard"
 
 ## ─── Prompts ────────────────────────────────────────────────────
 
@@ -179,10 +191,13 @@ prompt align_system:
        edited file (per the skill's per-language probes).
     3. Build + run the repo's tests (the skill says how to detect the
        commands). Fix what the bump broke — and ONLY what the bump broke;
-       no drive-by refactors, no pre-existing-debt cleanup. Spend about
+       no drive-by refactors, no pre-existing-debt cleanup. A failure
+       that also occurs WITHOUT the bump (attribute cheaply ONCE — e.g.
+       stash / check out the base for that one test — then move on) is
+       out of scope: note it, never chase it. Spend about
        {{vars.max_fix_iterations}} focused fix attempts; if the build is
        still red after that and it is the bump's fault, stop and report
-       it (validate will confirm).
+       it (the deterministic verify gate will confirm).
     4. ESCALATION — set `needs_human: true` with a precise
        `human_question` ONLY when a STRUCTURING ARCHITECTURAL decision is
        required that you must not make unilaterally: a major bump removes
@@ -211,40 +226,39 @@ prompt align_user:
   Apply the minimal alignment, keep the build green, and emit
   `align_output`. If nothing needs aligning, say so with applied=false.
 
-prompt validate_system:
-  You INDEPENDENTLY verify that the repository — with the dependency bump
-  AND any code alignment applied — builds and passes its tests. You are
-  the deterministic truth oracle before anything is committed: do not
-  trust the previous step's self-report, run the checks yourself.
+prompt verify_system:
+  You are a release engineer. A dependency bump + its code alignment sit
+  on this PR branch. Your single job: capture how THIS repo builds and
+  tests itself into a re-runnable script the deterministic gate will
+  execute. You do NOT change code and you do NOT judge stability — the
+  gate's REAL exit code does.
 
-  Read `.claude/skills/dependency-pr-guard.md` for how to detect the
-  build + test commands for this stack. Budget discipline: a fast smoke
-  first (typecheck / compile / build), then the test subset that touches
-  the bumped surface, then — only if those pass — a fuller test run.
-  Capture EXACT commands + exit codes.
+  STEPS:
+  1. Detect the build + test commands — read the `verify-build` and
+     `dependency-pr-guard` skills. Use the repo's OWN toolchain,
+     honouring any pinned toolchain. Do NOT assume a language.
+  2. Write an executable POSIX-sh script to
+     `{{vars.scratch_dir}}/verify.sh` (out-of-tree — `mkdir -p` it
+     first; NEVER write into the PR checkout) that runs the build plus
+     the test subset touching the bumped surface first, then the fuller
+     fast suite, exiting non-zero on any failure.
+  3. PRE-EXISTING failures: scope the script so a red BASE tree cannot
+     absorb the verdict — the gate must measure the bump + alignment,
+     not historic debt. List anything you scoped out in your summary.
+  4. Run it ONCE to confirm the commands resolve. You do NOT fix code.
+  5. If the repo genuinely has no build/test system, write a script
+     that echoes that and exits 0, and say so.
 
-  Emit `validate_output`:
-    stable        — true IFF the checks you ran passed (a known-flaky,
-                    bump-unrelated failure may be excused — say so).
-    blockers       — concrete failures with file paths + error tails.
-    fix_plan       — short ordered plan a follow-up could apply. Empty
-                    when stable.
-    commands_run   — the EXACT shell commands you executed (evidence).
-    confidence     — low/medium/high vs how much of the bumped surface
-                    your checks actually exercised.
-    summary        — one paragraph: what you ran and the outcome.
+  Output prepared=true once the script exists; summary = the commands
+  you settled on and anything you scoped out.
 
-  ANTI-FAÇADE: `stable: true` MUST be backed by real commands in
-  `commands_run` with passing exit codes. If you could not run a
-  meaningful check, set stable=false and explain — never a hollow pass.
+prompt verify_user:
+  Repository to verify: {{vars.workspace_dir}}
 
-prompt validate_user:
-  Verify the build + tests in {{vars.workspace_dir}} after the bump +
-  alignment.
-
-  Alignment summary: {{input.breaking_summary}}
-
-  Run your checks and emit `validate_output`.
+  Capture the repo's real build + bump-relevant tests into
+  `{{vars.scratch_dir}}/verify.sh` (out-of-tree — see the
+  `verify-build` + `dependency-pr-guard` skills). The deterministic
+  gate re-runs it; its exit code is the only path to commit.
 
 prompt commit_system:
   You commit the code ALIGNMENT produced for this dependency bump onto
@@ -419,19 +433,19 @@ schema escalate_output:
   decision: string
   guidance: string
 
-schema validate_input:
-  breaking_summary: string
-
-schema validate_output:
-  stable: bool
-  blockers: string[]
-  fix_plan: string
-  commands_run: string[]
-  confidence: string
+schema verify_plan:
+  prepared: bool
   summary: string
 
-schema validate_gate_input:
-  stable: bool
+## verify_result: the DETERMINISTIC gate's contract — `passed` is the
+## real exit code of re-running <scratch_dir>/verify.sh, NOT an LLM
+## judgment. skipped=true only when no script was produced (pass, but
+## surfaced loudly).
+schema verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
 
 schema validate_gate_output:
   stable: bool
@@ -565,24 +579,62 @@ human escalate:
   ## architectural choice still pauses for a human.
   model: "${VETTY_MODEL_ESCALATE:-claude-opus-4-8}"
 
-## Independent build/test verification — the truth oracle before commit.
-agent validate:
+## verify_build — adaptive capture of the repo's build+tests into the
+## out-of-tree verify.sh (it does NOT judge; the tool's exit code does).
+agent verify_build:
   backend: "claude_code"
   model: "${VETTY_MODEL_VALIDATE:-claude-opus-4-8}"
-  reasoning_effort: "${VETTY_EFFORT_VALIDATE:-high}"
-  input: validate_input
-  output: validate_output
-  system: validate_system
-  user: validate_user
+  reasoning_effort: "${VETTY_EFFORT_VALIDATE:-medium}"
+  output: verify_plan
+  system: verify_system
+  user: verify_user
   session: fresh
-  tool_max_steps: 50
+  readonly: true
+  tool_max_steps: 30
 
-## Deterministic gate: a green validate is the ONLY path to commit.
+## verify_run — the DETERMINISTIC truth oracle before commit: re-runs
+## the agent-prepared verify.sh and reports the REAL exit code (v2 —
+## replaces the v1 `validate` agent whose stable:true was self-reported).
+tool verify_run:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+import os, subprocess, json
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+script = os.path.join(scratch, 'verify.sh')
+if not os.path.exists(script):
+    print(json.dumps({'passed': False, 'skipped': True, 'exit_code': 1, 'log_tail': 'verify_build produced no verify.sh -- refusing to commit an unverified alignment (fail-closed: this gate is the only path to commit).'}))
+    raise SystemExit(0)
+rc = 0
+out = ''
+try:
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1200)
+    out = p.stdout or ''
+    rc = p.returncode
+except subprocess.TimeoutExpired as e:
+    out = (e.output or '') + chr(10) + '[verify timed out after 1200s]'
+    rc = 124
+except Exception as e:
+    out = 'verify_run could not execute the script: ' + str(e)
+    rc = 1
+try:
+    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
+        lf.write(out)
+except OSError:
+    pass
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: verify_result
+
+## Deterministic gate: a green DETERMINISTIC verify is the ONLY path to
+## commit (fail-closed: a missing verify.sh reports passed=false).
 compute validate_gate:
-  input: validate_gate_input
   output: validate_gate_output
   expr:
-    stable: "input.stable"
+    stable: "outputs.verify_run.passed"
 
 ## Commit the alignment onto the PR branch + push it back (token auth).
 agent commit:
@@ -671,9 +723,7 @@ workflow dep_update_guard:
     human_question: "{{outputs.align.human_question}}",
     breaking_summary: "{{outputs.align.breaking_summary}}"
   }
-  align_gate -> validate when not needs_human with {
-    breaking_summary: "{{outputs.align.breaking_summary}}"
-  }
+  align_gate -> verify_build when not needs_human
 
   ## Escalation → comment with the open decision (no commit).
   escalate -> post_feedback with {
@@ -684,7 +734,8 @@ workflow dep_update_guard:
     escalation: "{{outputs.escalate.guidance}}"
   }
 
-  validate -> validate_gate with { stable: "{{outputs.validate.stable}}" }
+  verify_build -> verify_run
+  verify_run -> validate_gate
 
   ## Green → commit the alignment onto the PR branch.
   validate_gate -> commit when stable with {
@@ -697,7 +748,7 @@ workflow dep_update_guard:
     verdict: "hold_unstable",
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
-    validate_summary: "{{outputs.validate.summary}}"
+    validate_summary: "{{outputs.verify_run.log_tail}}"
   }
 
   ## Committed → final comment with the full verdict.
@@ -706,7 +757,7 @@ workflow dep_update_guard:
     verdict: "committed",
     audit_summary: "{{outputs.security_audit.summary}}",
     align_summary: "{{outputs.align.breaking_summary}}",
-    validate_summary: "{{outputs.validate.summary}}",
+    validate_summary: "deterministic verify green (exit 0); log tail: {{outputs.verify_run.log_tail}}",
     commit_summary: "{{outputs.commit.summary}}"
   }
 

@@ -9,13 +9,23 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// gitCommandTimeout bounds every `git` subprocess spawned by this
+// package. Without it, a wedged git process (stale index.lock, a hung
+// smudge/clean filter, an interactive credential prompt on a
+// misconfigured remote) blocks the calling goroutine forever — these
+// helpers are called directly from studio HTTP handlers, so a hang here
+// pins a request goroutine indefinitely instead of surfacing an error.
+const gitCommandTimeout = 30 * time.Second
 
 // ErrNotGitRepo is returned by Status/Diff when the target directory is
 // not inside a git working tree (no .git, or `git` reports "not a git
@@ -91,13 +101,18 @@ func gitEnv() []string {
 // wrapped errors. Any error mentioning "not a git repository" is mapped
 // to ErrNotGitRepo so the caller can branch on it cleanly.
 func run(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = gitEnv()
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("git %s: timed out after %s", strings.Join(args, " "), gitCommandTimeout)
+		}
 		msg := stderr.String()
 		if strings.Contains(msg, "not a git repository") {
 			return nil, ErrNotGitRepo

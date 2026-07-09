@@ -340,7 +340,7 @@ func TestFullWorkflowCoverage(t *testing.T) {
 		hasTerminal bool
 	)
 	for _, e := range wf.Edges {
-		if e.With != nil && len(e.With) > 0 {
+		if len(e.With) > 0 {
 			hasWith = true
 		}
 		if e.When != nil {

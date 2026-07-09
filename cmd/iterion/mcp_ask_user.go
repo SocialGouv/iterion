@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -36,12 +35,31 @@ func init() {
 const askUserToolName = "ask_user"
 
 // askUserInputSchema is the JSON Schema for the ask_user tool input.
+// Mirrors claw-code-go's native ask_user tool shape (options + free
+// text) so both backends offer the LLM the same structured contract.
 var askUserInputSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "question": {
       "type": "string",
       "description": "The clarifying question to ask the human user."
+    },
+    "options": {
+      "type": "array",
+      "description": "Optional list of selectable answers rendered as clickable choices. Each option must have an id and a label.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "description": "Stable identifier returned to the model."},
+          "label": {"type": "string", "description": "Human-readable text shown to the user."}
+        },
+        "required": ["id", "label"],
+        "additionalProperties": false
+      }
+    },
+    "allow_free_text": {
+      "type": "boolean",
+      "description": "When true (default if no options are provided), the user may type a free-text response instead of selecting an option."
     }
   },
   "required": ["question"],
@@ -60,22 +78,13 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 
 	switch req.Method {
 	case "initialize":
-		resp.Result = map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-			},
-			"serverInfo": map[string]any{
-				"name":    "iterion-ask-user",
-				"version": cli.Version(),
-			},
-		}
+		resp.Result = mcpInitializeResult("iterion-ask-user")
 	case "tools/list":
 		resp.Result = map[string]any{
 			"tools": []map[string]any{
 				{
 					"name":        askUserToolName,
-					"description": "Pause execution and ask the human running this workflow a clarifying question. Use this when you need information, approval, or guidance you cannot derive yourself.",
+					"description": "Pause execution and ask the human running this workflow a clarifying question. Use this when you need information, approval, or guidance you cannot derive yourself. Optional `options` present the user with clickable choices; when `allow_free_text` is true the user may also type a free response.",
 					"inputSchema": askUserInputSchema,
 				},
 			},
@@ -86,7 +95,7 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			resp.Error = &mcpError{Code: -32602, Message: fmt.Sprintf("invalid params: %s", err)}
+			resp.Error = mcpInvalidParamsError(err)
 			return resp
 		}
 		// Defensive fallback: this handler should not be reached in practice because
@@ -104,7 +113,7 @@ func dispatchMCPAskUser(req mcpRequest) mcpResponse {
 			"isError": true,
 		}
 	default:
-		resp.Error = &mcpError{Code: -32601, Message: fmt.Sprintf("method not found: %s", req.Method)}
+		resp.Error = mcpMethodNotFoundError(req.Method)
 	}
 	return resp
 }

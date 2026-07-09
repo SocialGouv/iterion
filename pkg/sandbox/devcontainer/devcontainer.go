@@ -33,7 +33,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,16 +191,6 @@ func Parse(data []byte) (*File, error) {
 		return nil, err
 	}
 	return &f, nil
-}
-
-// ParseReader is a convenience for callers holding an io.Reader (e.g.
-// HTTP response, embedded fs).
-func ParseReader(r io.Reader) (*File, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
-	}
-	return Parse(data)
 }
 
 // Validate enforces the spec invariants we depend on. Called by

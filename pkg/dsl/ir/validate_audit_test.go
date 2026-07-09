@@ -189,14 +189,7 @@ workflow w:
 func TestBudget_NegativeCostInvalid(t *testing.T) {
 	c := &compiler{}
 	_ = c.compileBudget(&ast.BudgetBlock{MaxCostUSD: -5.0})
-	found := false
-	for _, d := range c.diags {
-		if d.Code == DiagBudgetCostInvalid {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasDiag(c.diags, DiagBudgetCostInvalid) {
 		t.Errorf("expected DiagBudgetCostInvalid, got diagnostics: %v", c.diags)
 	}
 }

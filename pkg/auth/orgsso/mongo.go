@@ -2,7 +2,6 @@ package orgsso
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -75,41 +74,16 @@ func (s *MongoStore) Create(ctx context.Context, p OrgSSOProvider) error {
 }
 
 func (s *MongoStore) Get(ctx context.Context, id string) (OrgSSOProvider, error) {
-	var p OrgSSOProvider
-	err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&p)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return OrgSSOProvider{}, ErrNotFound
-	}
-	if err != nil {
-		return OrgSSOProvider{}, fmt.Errorf("orgsso: get provider: %w", err)
-	}
-	return p, nil
+	return mongoutil.FindOne[OrgSSOProvider](ctx, s.coll, bson.M{"_id": id}, ErrNotFound, "orgsso: get provider")
 }
 
 func (s *MongoStore) Update(ctx context.Context, p OrgSSOProvider) error {
 	p.Normalize()
-	res, err := s.coll.ReplaceOne(ctx, bson.M{"_id": p.ID}, p)
-	if err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return ErrExists
-		}
-		return fmt.Errorf("orgsso: update provider: %w", err)
-	}
-	if res.MatchedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.ReplaceOneChecked(ctx, s.coll, bson.M{"_id": p.ID}, p, ErrExists, ErrNotFound, "orgsso: update provider")
 }
 
 func (s *MongoStore) Delete(ctx context.Context, id string) error {
-	res, err := s.coll.DeleteOne(ctx, bson.M{"_id": id})
-	if err != nil {
-		return fmt.Errorf("orgsso: delete provider: %w", err)
-	}
-	if res.DeletedCount == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return mongoutil.DeleteOneChecked(ctx, s.coll, bson.M{"_id": id}, ErrNotFound, "orgsso: delete provider")
 }
 
 func (s *MongoStore) ListByTenant(ctx context.Context, tenantID string) ([]OrgSSOProvider, error) {
@@ -140,14 +114,6 @@ func (s *MongoStore) FindGitHubGrantingOrgs(ctx context.Context, keys []string) 
 }
 
 func (s *MongoStore) find(ctx context.Context, filter bson.M) ([]OrgSSOProvider, error) {
-	cur, err := s.coll.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": 1}))
-	if err != nil {
-		return nil, fmt.Errorf("orgsso: find providers: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []OrgSSOProvider
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("orgsso: decode providers: %w", err)
-	}
-	return out, nil
+	return mongoutil.FindAllSorted[OrgSSOProvider](ctx, s.coll, filter, "created_at",
+		"orgsso: find providers", "orgsso: decode providers")
 }

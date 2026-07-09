@@ -15,13 +15,15 @@
 ##       → validate_upgrade → fix_after_upgrade (fix_loop)
 ##       → prepare_commit → commit_changes → loop back
 ##     (revert + mark_failed_and_continue on hard failures)
-##   Phase 2: alternating Claude/GPT review/fix on cumulative diff
-##            (whole_improve_loop pattern, with per-fix commits)
+##   Phase 2 (v2, ADR-058): ONE review campaign over the cumulative
+##            diff (git diff start_sha, commits fixes in stride) +
+##            the deterministic verify_build/verify_run build gate;
+##            replaces the retired alternating Claude/GPT relay.
 ##
 ## Stops when
 ##   - all candidates exhausted in scope, OR
-##   - cross-family double-approval in Phase 2 (streak), OR
-##   - review_loop / recovery_loop exhausted, OR
+##   - Phase-2 gate converged (review_clean AND build green), OR
+##   - review_pass_loop exhausted (ships what is banked), OR
 ##   - budget exceeded (resumable via `iterion resume`).
 ##
 ## Token economy
@@ -40,11 +42,9 @@
 ##     getting it right once, not getting it cheap — bias to the
 ##     stronger combo for production runs and use the env-var
 ##     escape hatches for iteration speed.
-##   - claw + GPT-5.5 (override via ITERION_RENOVACY_MODEL_GPT —
-##     fall back to gpt-5.4 if 5.5 is not enabled in your account)
-##     at max reasoning_effort for the cross-family review/fix.
-##   - Soft-approve on low confidence to avoid false-positive fix
-##     cycles (whole_improve_loop pattern).
+##   - Phase 2 rides the same claude family (ADR-058 v2: the
+##     deterministic build gate is the truth oracle; the retired
+##     cross-family relay and its soft-approve machinery are gone).
 ##
 ## Human-in-the-loop
 ##   `interaction: llm_or_human` at workflow scope — every agent /
@@ -56,18 +56,6 @@
 
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
-
-  ## ─── Review topology (mono/dual) — see branch-improve-loop ─────
-  ## dual = alternate claude ↔ gpt (robust, two families); mono = one
-  ## family (mono_family), ~half the LLM calls; auto = resolved at
-  ## LAUNCH (dual if two provider families detected, else mono).
-  ## Injected by pkg/reviewtopology (CLI --review-mode / studio /
-  ## dispatcher) when left "auto"; without that resolution "auto"
-  ## behaves as dual (a pure non-regression). Applies to the Phase-2
-  ## review/fix loop (alt_review); mono_family is filled by the
-  ## resolver in mono mode.
-  review_mode: string = "auto"
-  mono_family: string = ""
 
   ## Free-form context the operator can pass at run time. Empty
   ## by default — when empty, the prompt blocks render an empty
@@ -119,6 +107,17 @@ vars:
   ##
   ## Empty = no filter; the entire dep graph is in scope.
   update_scope: string = ""
+
+  ## Out-of-tree scratch for Phase 2's deterministic verify script/log.
+  scratch_dir: string = "${PROJECT_SCRATCH_DIR}/secured-renovacy"
+
+  ## Phase 2 (v2, ADR-058): hard cap on review-campaign PASSES — each
+  ## pass is one campaign→verify cycle over the run's cumulative diff.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
+  max_review_passes: int = 5
 
 ## ─── Prompts : workflow-level escalation policy ────────────────────
 
@@ -207,7 +206,7 @@ prompt detect_stack_system:
   potentially 50+ dependency upgrades. Every per-package agent
   (changelog_review, security_audit, upgrade, install,
   align_code, validate_upgrade, fix_after_upgrade, prepare_commit,
-  revert_changes, reviewer_claude, fix_claude) FORKS your session
+  revert_changes) FORKS your session
   via `session: fork` + `_session_id: outputs.detect_stack._session_id`.
   They inherit your conversational context — what you've read,
   what you've reasoned about — and don't re-pay that cost. A
@@ -1426,170 +1425,106 @@ prompt prepare_commit_user:
 
 ## ─── Prompts : Phase 2 — review (cumulative) ───────────────────────
 
-prompt review_system:
-  You are a meticulous reviewer running a PRODUCTION-READY review
-  of the FULL set of dependency upgrades produced in this
-  workflow run. The diff to review is everything since
-  {{input.start_sha}} — i.e. the cumulative effect of every
-  package upgrade and alignment commit so far.
+prompt p2_campaign_system:
+  You are a senior engineer running the Phase-2 REVIEW-AND-IMPROVE
+  campaign over everything this run's upgrades changed — working
+  EXACTLY as you would in a productive, human-driven session. You have
+  the repo and full tools (read, edit, shell, git); you own this pass
+  end to end. (ADR-058: this campaign replaces the retired
+  cross-family reviewer/fixer relay; the deterministic build gate
+  after you is the truth oracle.)
 
-  Scope:
-    - In-scope: regressions introduced by the upgrades, missing
-      alignment for breaking changes, security implications of
-      the new versions, lockfile / resolution coherence,
-      coverage gaps that hide a real risk.
-    - Out-of-scope: stylistic preferences, refactor opportunities,
-      pre-existing issues unrelated to the upgrades.
+  THE SCOPE is THE RUN'S CUMULATIVE DIFF: `base_sha` (in your user
+  prompt) is the commit this run started from; review
+  `git diff <base_sha>` (base vs the WORKING TREE, so your own
+  uncommitted fixes stay visible) and enumerate the footprint with
+  `git diff <base_sha> --name-only`. That diff — the dependency bumps
+  Phase 1 landed plus their code alignments — is your scope. Do NOT
+  re-litigate code the run did not touch (you MAY read around it to
+  judge integration).
 
-  Use bash, read_file, glob, grep, git_diff, git_log to inspect.
+  HOW TO WORK:
+  1. LIVING TODO of the CONCRETE, REAL issues the upgrade series
+     introduces or leaves: a mis-aligned call site, a missed breaking
+     change, a lockfile/manifest inconsistency, a broken or weakened
+     test, an upgrade-note TODO left behind. Real blockers only —
+     style preferences are not findings.
+  2. THE REPEATED UNIT, one issue at a time: locate → smallest fix →
+     build → run the affected tests → COMMIT with a semantic message
+     (`fix(review): <precise issue>` or the `type(scope):` that
+     fits). Validation BEFORE each commit.
+  3. COMMIT EACH FIX AS YOU FINISH IT (`git add -A` so new files
+     land) — git is the durable state; a later pass reads `git log`
+     and continues.
+  4. BASELINE — a failure that also occurs at `base_sha` (attribute
+     cheaply once, then move on) predates this run: note it, never
+     chase it. Fix only what the RUN's changes broke or left.
+  5. ASK ONLY ON A REAL DECISION (the workflow-level escalation
+     policy applies); keep it rare.
 
-  EFFICIENCY: prefer diff / code-analysis first. Run lint /
-  typecheck / tests ONLY as a TARGETED probe when a specific
-  blocker hypothesis warrants it (e.g. "this changelog says X removed
-  → grep the codebase for X → if found, run the relevant test
-  file"). Do NOT run the full suite exhaustively across packages —
-  that is the fixer's responsibility, and a 14-commit cumulative
-  review at exhaustive-tests granularity will hit tool_max_steps
-  before producing a verdict. A "medium" confidence verdict on
-  diff+changelog evidence is preferable to a max_turns timeout.
+  TERMINATION CONTRACT (structured output — the engine keys
+  convergence on it):
+    - review_clean: true ONLY when a fresh re-review of
+      `git diff <base_sha>` finds NO remaining real issue.
+    - commits_this_pass / issues_remaining / needs_human /
+      human_note / summary: as named.
 
-  Confidence:
-    high  — direct evidence (failed test, broken type, removed API
-            still referenced).
-    medium — strong inference from changelog + code, no executed
-            evidence.
-    low   — gut feeling without backing.
+  Be honest. The deterministic build/test gate re-checks the tree
+  after you and loops you back until review_clean AND green — so
+  under-reporting only costs a pass, and over-reporting lands you
+  right back here.
 
-  Pushback: a fixer in the OPPOSITE family may have refused some
-  items in the previous round. Their refusals are in
-  {{input.prior_pushback}} with rationale
-  {{input.prior_pushback_justification}}. Do NOT re-flag them
-  unless new evidence has emerged.
+prompt p2_campaign_user:
+  Repository: {{vars.workspace_dir}}
 
-  REQUIRED JSON OUTPUT SCHEMA (use these EXACT field names — no
-  aliases, no nested objects). Your final message MUST be a single
-  fenced ```json block containing one object with all 6 fields:
-    approved       bool      — true iff the diff is shippable as-is.
-                               When the diff is empty (no upgrades
-                               this iteration), still return true
-                               with `blockers: []` and `fix_plan: ""`.
-    family         string    — one of: "claude", "gpt". Set this to
-                               match your assigned family (the user
-                               prompt will tell you which).
-    blockers       string[]  — short bullet-style descriptions of
-                               each blocking issue. Empty array when
-                               approved=true.
-    fix_plan       string    — short free-form text describing what
-                               the fixer should change to address the
-                               blockers. Empty string when
-                               approved=true.
-    confidence     string    — one of: "low", "medium", "high".
-                               See definitions above.
-    scanned_areas  string[]  — short labels of the surfaces you
-                               actually inspected (e.g. "lockfile
-                               coherence", "yarn.lock", "tsconfig",
-                               "ci workflows"). Empty array on a
-                               no-diff iteration.
+  RUN BASE (review the cumulative diff this run produced on top of it):
+  {{input.base_sha}}
 
-  Do NOT use field aliases like `verdict`, `notes`, `recommendation`,
-  `issues`, or `summary` — those will be REJECTED by schema
-  validation. Stick to the 6 field names listed above.
+  Read the diff first: `git diff {{input.base_sha}}` (base vs WORKING
+  TREE) and `git diff {{input.base_sha}} --name-only`. That upgrade
+  series is your scope.
 
-  ### Project context (operator)
+  Project context (may be empty):
   {{vars.user_prompt}}
 
-prompt review_user_claude:
-  Iteration {{loop.review_loop.iteration}}/{{loop.review_loop.max}}.
-  You are the CLAUDE reviewer (family: "claude").
+  Deterministic gate feedback from the PREVIOUS pass (empty on the
+  first pass; when present the build/test tree was RED — fix exactly
+  this first):
+  {{input.fail_log}}
 
-  Previous reviewer's verdict (other family, immediately before —
-  empty on first iteration):
-  {{loop.review_loop.previous_output}}
+  Review and improve the run's diff one issue at a time — locate →
+  smallest fix → build → test → commit — then report the termination
+  contract (review_clean, commits_this_pass, issues_remaining).
 
-  Cumulative scanned areas so far:
-  {{input.previous_scanned_areas}}
+prompt p2_verify_system:
+  You are a release engineer. This run upgraded dependencies and
+  aligned code; Phase 2 just reviewed and fixed the series. Your
+  single job: capture how THIS repo builds and tests itself into a
+  re-runnable script the deterministic gate will execute. You do NOT
+  change code.
 
-  Workspace: {{vars.workspace_dir}}
-  Diff base: {{input.start_sha}}
+  STEPS:
+  1. Detect the repo's OWN build + test commands — read the
+     `verify-build` skill; honour any pinned toolchain. Do NOT assume
+     a language.
+  2. Write an executable POSIX-sh script to
+     `{{vars.scratch_dir}}/verify.sh` (out-of-tree — `mkdir -p` it
+     first) running the build AND the test surface the upgrades
+     touch, exiting non-zero on any failure.
+  3. PRE-EXISTING failures (red at the run base): scope them OUT so
+     the gate measures this run's work; list what you excluded.
+  4. Run it ONCE to confirm the commands resolve. You do NOT fix code.
+  5. A repo with genuinely no build/test system → a script that says
+     so and exits 0.
 
-  Produce the structured verdict. Set `family: "claude"`.
+prompt p2_verify_user:
+  Repository to verify: {{vars.workspace_dir}}
 
-prompt review_user_gpt:
-  Iteration {{loop.review_loop.iteration}}/{{loop.review_loop.max}}.
-  You are the GPT reviewer (family: "gpt").
+  Capture the repo's real build + tests into
+  `{{vars.scratch_dir}}/verify.sh` (out-of-tree — see the
+  `verify-build` skill). The deterministic gate re-runs it; the
+  campaign fixes any red on the next pass.
 
-  Previous reviewer's verdict (other family, immediately before —
-  empty on first iteration):
-  {{loop.review_loop.previous_output}}
-
-  Cumulative scanned areas so far:
-  {{input.previous_scanned_areas}}
-
-  Workspace: {{vars.workspace_dir}}
-  Diff base: {{input.start_sha}}
-
-  Produce the structured verdict. Set `family: "gpt"`.
-
-## ─── Prompts : Phase 2 — fix (cumulative) ──────────────────────────
-
-prompt fix_system:
-  You apply concrete fixes to the blockers raised by the cumulative
-  review. Operate on {{vars.workspace_dir}}. Stay within the
-  upgrade scope of this run; do NOT refactor pre-existing code.
-
-  For each blocker:
-    - Real production-blocking issue → apply the smallest correct
-      fix, run a targeted check.
-    - Non-blocking (style, micro-optimisation) OR pre-existing
-      outside the upgrade scope → add to `pushback` with a clear
-      justification.
-
-  Output:
-    applied: true if at least one fix was applied
-    summary: short summary
-    pushback: list of refused blocker descriptions
-    pushback_justification: rationale
-
-  ### Project context (operator)
-  {{vars.user_prompt}}
-
-prompt fix_user:
-  Apply fixes to the blockers below.
-
-  Blockers:
-  {{input.blockers}}
-
-  Fix plan:
-  {{input.fix_plan}}
-
-## ─── Prompts : Phase 2 — review_commit ─────────────────────────────
-
-prompt prepare_review_commit_system:
-  You produce a commit message for ONE round of review-driven
-  fixes. The diff is the working tree's current dirty state.
-
-  Procedure:
-    1. `git status --porcelain` to enumerate dirty files.
-    2. Match the project's commit-message convention (read recent
-       `git log`).
-    3. Use type "fix" or "refactor" with scope "review" by default
-       (override if project convention differs). Subject ≤ 72
-       chars, imperative.
-    4. files: ALL dirty paths (review fixes typically touch
-       multiple files; over-scoping is acceptable here).
-
-prompt prepare_review_commit_user:
-  Workspace: {{vars.workspace_dir}}
-  Round: review fix iteration.
-
-  Produce the structured commit object. Do not commit yourself.
-
-## ─── Schemas ───────────────────────────────────────────────────────
-
-## Per-ecosystem block. A monorepo can declare several of these
-## (e.g. yarn + cargo + pip in the same tree). All downstream
-## per-package agents key off one entry of `ecosystems[]` via the
-## `ecosystem` field carried on each `candidate`.
 schema ecosystem_profile:
   ## Stable short ID — used as the cross-reference key from
   ## outdated_list.packages[i].ecosystem onwards. Operator-readable
@@ -1951,49 +1886,31 @@ schema sbom_output:
   package_count: int
   end_sha: string
 
-schema review_input:
-  start_sha: string
-  prior_pushback: string[]
-  prior_pushback_justification: string
-  previous_scanned_areas: string[]
-  workspace_dir: string
+schema p2_campaign_input:
+  base_sha: string
+  fail_log: string
 
-schema review_verdict:
-  approved: bool
-  family: string [enum: "claude", "gpt"]
-  blockers: string[]
-  fix_plan: string
-  confidence: string [enum: "low", "medium", "high"]
-  scanned_areas: string[]
-
-schema streak_state:
-  stop: bool
-  approved: bool
-  family: string
-  blockers: string[]
-  fix_plan: string
-  cumulative_scanned_areas: string[]
-
-schema review_fix_input:
-  blockers: string[]
-  fix_plan: string
-
-schema review_fix_result:
-  applied: bool
+schema p2_campaign_output:
+  review_clean: bool
+  commits_this_pass: int
+  issues_remaining: string
+  needs_human: bool
+  human_note: string
   summary: string
-  pushback: string[]
-  pushback_justification: string
 
-## review_commit_input carries everything review_commit_auto needs to
-## build a meaningful commit subject + body. `family` and `iteration`
-## are tags for traceability; `summary` is the fixer's free-form
-## description that becomes the commit subject (first line, 72ch cap)
-## and body.
-schema review_commit_input:
-  workspace_dir: string
-  family: string
-  iteration: int
+schema p2_verify_plan:
+  prepared: bool
   summary: string
+
+schema p2_verify_result:
+  passed: bool
+  skipped: bool
+  exit_code: int
+  log_tail: string
+
+schema p2_gate_state:
+  converged: bool
+  fail_log: string
 
 ## ─── Schemas : audit-trail + patch-batching paths ────────────────────
 
@@ -2249,14 +2166,6 @@ schema batch_commit_result:
   committed: bool
   output: string
   sha: string
-
-schema review_commit_intent:
-  type: string
-  scope: string
-  subject: string
-  full_message: string
-  files: string[]
-  committed: bool
 
 ## ─── Nodes : Phase 0 ───────────────────────────────────────────────
 
@@ -3030,154 +2939,80 @@ compute mark_failed_and_continue:
   expr:
     package: "input.selected_package"
     reason: "input.reason"
+## ─── Nodes : Phase 2 (v2 — one review campaign + deterministic gate) ──
 
-## ─── Nodes : Phase 2 — review/fix loop ─────────────────────────────
-
-## alt_review is a ROUTER, not a fan-out. Each invocation routes to
-## exactly ONE successor in round-robin order; the next invocation
-## alternates to the other reviewer (DUAL). A full Phase-2 cross-family
-## approval streak (streak_check.stop) therefore needs at least TWO
-## alt_review rounds — one per reviewer — so the runtime never starts
-## reviewer_claude and reviewer_gpt in parallel. In MONO only one family
-## runs and the streak is two consecutive same-family clean approvals.
-##
-## Family selector (see branch-improve-loop for the full rationale):
-## round_robin → condition so a MONO run routes to a single family
-## (round_robin ignores `when` guards). The GPT edge is guarded; the
-## CLAUDE edge is the unconditional default (C012). Parity rides
-## loop.review_loop.iteration (this router is not a review_loop entry,
-## so loop-backs never reset it — lockstep with the old counter).
-router alt_review:
-  mode: condition
-
-judge reviewer_claude:
+## p2_campaign — ONE adaptive agent reviewing + improving the run's
+## cumulative diff, committing each fix in stride (replaces the retired
+## alt_review/reviewer_claude/reviewer_gpt/streak_check/fix_claude/
+## fix_gpt/review_commit_auto relay). Inherits the workflow-level
+## llm_or_human escalation policy.
+agent p2_campaign:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
-  ## Phase 2 cross-family review — verdict quality directly gates ship.
-  ## `max` is the right default; cost is bounded by the recovery_loop
-  ## cap (20). Operators iterating on the recipe itself can drop to
-  ## `high` via ITERION_RENOVACY_EFFORT_REVIEW for cheap rounds.
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_REVIEW:-${ITERION_RENOVACY_EFFORT_CLAUDE:-max}}"
-  input: review_input
-  output: review_verdict
-  system: review_system
-  user: review_user_claude
-  session: fork
-  tools: [bash, read_file, glob, grep, git_diff, git_log, git_status]
-  ## Bumped from 40 → 80 after a Phase-2 observation run hit
-  ## error_max_turns mid-review of a 14-commit cumulative diff. The
-  ## reviewer was exhaustively running `node --test` per workspace
-  ## package, which eats steps quickly. 80 fits a cumulative diff of
-  ## ~25 commits before becoming the new bottleneck.
-  tool_max_steps: 80
-
-judge reviewer_gpt:
-  backend: "claw"
-  model: "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}"
-  ## Mirror of reviewer_claude on the GPT family — same `max` default,
-  ## same override pattern. Override per ITERION_RENOVACY_EFFORT_REVIEW_GPT
-  ## or globally via ITERION_RENOVACY_EFFORT_GPT.
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_REVIEW_GPT:-${ITERION_RENOVACY_EFFORT_GPT:-max}}"
-  input: review_input
-  output: review_verdict
-  system: review_system
-  user: review_user_gpt
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_REVIEW:-high}"
+  input: p2_campaign_input
+  output: p2_campaign_output
+  system: p2_campaign_system
+  user: p2_campaign_user
   session: fresh
-  ## claw backend has no first-class git_diff/git_log/git_status tools
-  ## (those are claude_code-only — see pkg/backend/tool/claw_builtins.go).
-  ## bash + standard git invocations cover the same reviewer needs.
-  tools: [bash, read_file, glob, grep]
-  ## Same rationale as reviewer_claude — see tool_max_steps comment there.
-  tool_max_steps: 80
 
-compute streak_check:
-  output: streak_state
-  expr:
-    stop: "input.approved && loop.review_loop.previous_output.approved && (vars.review_mode == 'mono' || input.family != loop.review_loop.previous_output.family)"
-    approved: "input.approved || input.confidence == 'low'"
-    family: "input.family"
-    blockers: "input.blockers"
-    fix_plan: "input.fix_plan"
-    cumulative_scanned_areas: "tail(unique(concat(outputs.streak_check.cumulative_scanned_areas, input.scanned_areas)), 40)"
-
-agent fix_claude:
+## p2_verify_build — adaptive, stack-agnostic capture of the repo's
+## build+tests into the out-of-tree verify.sh (reads the verify-build
+## skill; does NOT fix code).
+agent p2_verify_build:
   backend: "claude_code"
   provider: "${RESCUE_PROVIDER:-zai}"
   model: "${ITERION_RENOVACY_MODEL_CLAUDE:-claude-opus-4-8}"
-  ## Phase 2 fixer — applies blockers raised by the cross-family reviewer.
-  ## Defaulted to `max`: each fix lands a commit that the next reviewer
-  ## scrutinises, so getting it right once is cheaper than a re-roll.
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_FIX_REVIEW:-${ITERION_RENOVACY_EFFORT_CLAUDE:-max}}"
-  input: review_fix_input
-  output: review_fix_result
-  system: fix_system
-  user: fix_user
-  session: fork
-  tools: [bash, read_file, write_file, file_edit, glob, grep, git_diff, git_status]
-  tool_max_steps: 50
+  reasoning_effort: "${ITERION_RENOVACY_EFFORT_VALIDATE:-medium}"
+  output: p2_verify_plan
+  system: p2_verify_system
+  user: p2_verify_user
+  session: fresh
 
-agent fix_gpt:
-  backend: "claw"
-  model: "openai/${ITERION_RENOVACY_MODEL_GPT:-gpt-5.5}"
-  ## Mirror of fix_claude on the GPT family — `max` default; override via
-  ## ITERION_RENOVACY_EFFORT_FIX_REVIEW_GPT.
-  reasoning_effort: "${ITERION_RENOVACY_EFFORT_FIX_REVIEW_GPT:-${ITERION_RENOVACY_EFFORT_GPT:-max}}"
-  input: review_fix_input
-  output: review_fix_result
-  system: fix_system
-  user: fix_user
-  session: inherit
-  ## claw backend: bash subsumes git_diff/git_status (see reviewer_gpt note).
-  tools: [bash, read_file, write_file, file_edit, glob, grep]
-  tool_max_steps: 50
+## p2_verify_run — the DETERMINISTIC half: re-runs verify.sh, reports
+## the REAL exit code (no LLM judgment; no backticks — E012).
+tool p2_verify_run:
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+import os, subprocess, json
+ws = os.environ.get('WS', '.')
+scratch = os.environ.get('SCRATCH', '.')
+try:
+    os.makedirs(scratch, exist_ok=True)
+except OSError:
+    pass
+script = os.path.join(scratch, 'verify.sh')
+if not os.path.exists(script):
+    print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'p2_verify_build produced no verify.sh; build gate SKIPPED (counted as pass, but surfaced)'}))
+    raise SystemExit(0)
+rc = 0
+out = ''
+try:
+    p = subprocess.run(['sh', script], cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=1800)
+    out = p.stdout or ''
+    rc = p.returncode
+except subprocess.TimeoutExpired as e:
+    out = (e.output or '') + chr(10) + '[verify timed out after 1800s]'
+    rc = 124
+except Exception as e:
+    out = 'p2_verify_run could not execute the script: ' + str(e)
+    rc = 1
+try:
+    with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
+        lf.write(out)
+except OSError:
+    pass
+print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tail': out[-4000:]}))
+"`
+  output: p2_verify_result
 
-## Deterministic auto-commit for review fixes. We don't fork an LLM
-## session here — fix_X may converge from either family (claude or
-## gpt) into this single tool, and `session: fork` would be forbidden
-## on a convergence point. The commit subject is built from the fixer's
-## summary (first line, capped at 72 chars to satisfy conventional
-## commit / git log readability) and tagged with family + recovery_loop
-## iteration so the git log makes the alternation visible. Body carries
-## the full summary for any LLM/operator running `git log -1`.
-## set -euo pipefail + exit on git commit failure — same hardening as
-## commit_changes. A nothing-to-commit case is legitimate success
-## (review pass produced no actionable diff); a real git error must
-## fail the node, not silently report committed.
-tool review_commit_auto:
-  command: `set -euo pipefail
-cd {{input.workspace_dir}} >&2
-# Cache-exclusion pathspecs (see commit_changes for rationale).
-git add -A >&2
-# Belt-and-suspenders (Revi review finding): git add -A respects .gitignore, so
-# ignored caches at ANY depth (node_modules, go/, target/, …) are already skipped
-# — that's the primary guard and why the brittle :(exclude) pathspec form was
-# dropped. This unstages any NON-gitignored stray cache dir that still slipped in
-# (top-level + nested). git reset is lenient (no error on absent paths) and the
-# single-quoted :(glob) pathspecs keep '(' out of sh.
-git reset -q -- 'go' 'target' '.cargo' 'node_modules' '.yarn' '.cache' '.iterion' '__pycache__' '.venv' 'venv' ':(glob)**/node_modules' ':(glob)**/__pycache__' ':(glob)**/.venv' 2>/dev/null || true
-if git diff --cached --quiet; then
-  printf '{"success":true,"output":"no review fix changes"}\n'
-else
-  SUMMARY={{input.summary}}
-  FAMILY={{input.family}}
-  ITER={{input.iteration}}
-  # Subject: first line of summary, truncated to 72 chars; fall back
-  # to a generic message if the fixer didn't produce one.
-  SUBJECT=$(printf '%s' "$SUMMARY" | head -n1 | cut -c1-72)
-  [ -n "$SUBJECT" ] || SUBJECT="cumulative review fix"
-  [ -n "$FAMILY" ] || FAMILY="unknown"
-  [ -n "$ITER" ] || ITER="0"
-  if ! git commit -m "fix(review/${FAMILY}#${ITER}): ${SUBJECT}" -m "${SUMMARY}" >&2; then
-    printf '{"success":false,"output":"git commit failed"}\n'
-    exit 1
-  fi
-  SHA=$(git rev-parse HEAD)
-  printf '{"success":true,"output":"committed %s"}\n' "$SHA"
-fi
-`
-  input: review_commit_input
-  output: commit_result
+## p2_gate — deterministic continuation decision for Phase 2.
+compute p2_gate:
+  output: p2_gate_state
+  expr:
+    converged: "outputs.p2_verify_run.passed && outputs.p2_campaign.review_clean"
+    fail_log: "if(outputs.p2_verify_run.passed, '', outputs.p2_verify_run.log_tail)"
+
 
 ## ─── Nodes : audit-trail (markdown materialisation) ────────────────
 
@@ -4789,7 +4624,10 @@ workflow secured_renovacy:
     attempted: "{{outputs.select_candidate.cumulative_attempted}}",
     iterion_version_hint: ""
   }
-  phase2_decider -> alt_review when not go_done
+  phase2_decider -> p2_campaign when not go_done with {
+    base_sha: "{{outputs.capture_start_sha.sha}}",
+    fail_log: ""
+  }
 
   ## More candidates → resolve which ecosystem owns this candidate
   ## BEFORE the intel fan-out so security_audit/upgrade/install/revert
@@ -5041,42 +4879,30 @@ workflow secured_renovacy:
 
   ## ═══ Phase 2 : Alternating review/fix on cumulative diff ═════════
 
-  alt_review -> reviewer_claude with {
-    start_sha: "{{outputs.capture_start_sha.sha}}",
-    prior_pushback: "{{outputs.fix_gpt.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_gpt.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
+  ## ═══ Phase 2 (v2) : review campaign → deterministic gate ═══════
+  ## Each pass: the campaign reviews + fixes the run's cumulative diff
+  ## (committing in stride), then the deterministic build/test gate
+  ## re-checks the tree.
+  p2_campaign -> p2_verify_build
+  p2_verify_build -> p2_verify_run
+  p2_verify_run -> p2_gate
+
+  ## Converged (green AND review_clean) → SBOM + done.
+  p2_gate -> emit_sbom when converged with {
     workspace_dir: "{{vars.workspace_dir}}",
-    _session_id: "{{outputs.detect_stack._session_id}}",
-    _session_fingerprint: "{{outputs.detect_stack._session_fingerprint}}"
-  }
-
-  alt_review -> reviewer_gpt when "if(vars.review_mode == 'mono', vars.mono_family == 'gpt', loop.review_loop.iteration % 2 == 1)" with {
     start_sha: "{{outputs.capture_start_sha.sha}}",
-    prior_pushback: "{{outputs.fix_claude.pushback}}",
-    prior_pushback_justification: "{{outputs.fix_claude.pushback_justification}}",
-    previous_scanned_areas: "{{outputs.streak_check.cumulative_scanned_areas}}",
-    workspace_dir: "{{vars.workspace_dir}}"
+    attempted: "{{outputs.select_candidate.cumulative_attempted}}",
+    iterion_version_hint: ""
   }
-
-  reviewer_claude -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_claude.approved}}",
-    family: "{{outputs.reviewer_claude.family}}",
-    blockers: "{{outputs.reviewer_claude.blockers}}",
-    fix_plan: "{{outputs.reviewer_claude.fix_plan}}",
-    confidence: "{{outputs.reviewer_claude.confidence}}",
-    scanned_areas: "{{outputs.reviewer_claude.scanned_areas}}"
+  ## Not converged → another campaign pass. RED carries the failure log
+  ## (loop-back reads the BODY node p2_gate, never the loop head).
+  p2_gate -> p2_campaign as review_pass_loop("{{vars.max_review_passes}}") with {
+    base_sha: "{{outputs.capture_start_sha.sha}}",
+    fail_log: "{{outputs.p2_gate.fail_log}}"
   }
-  reviewer_gpt -> streak_check as review_loop(15) with {
-    approved: "{{outputs.reviewer_gpt.approved}}",
-    family: "{{outputs.reviewer_gpt.family}}",
-    blockers: "{{outputs.reviewer_gpt.blockers}}",
-    fix_plan: "{{outputs.reviewer_gpt.fix_plan}}",
-    confidence: "{{outputs.reviewer_gpt.confidence}}",
-    scanned_areas: "{{outputs.reviewer_gpt.scanned_areas}}"
-  }
-
-  streak_check -> emit_sbom when stop with {
+  ## Loop exhausted → ship what is banked (every committed fix is real
+  ## landed work; issues_remaining names the tail).
+  p2_gate -> emit_sbom with {
     workspace_dir: "{{vars.workspace_dir}}",
     start_sha: "{{outputs.capture_start_sha.sha}}",
     attempted: "{{outputs.select_candidate.cumulative_attempted}}",
@@ -5085,61 +4911,3 @@ workflow secured_renovacy:
 
   ## Both terminal-approach paths converge on emit_sbom → done.
   emit_sbom -> done
-
-  streak_check -> alt_review when "approved"
-
-  streak_check -> fix_claude when "!approved && family == 'claude' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.detect_stack._session_id}}",
-    _session_fingerprint: "{{outputs.detect_stack._session_fingerprint}}"
-  }
-  streak_check -> fix_gpt when "!approved && family == 'gpt' && length(blockers) > 0" with {
-    blockers: "{{outputs.streak_check.blockers}}",
-    fix_plan: "{{outputs.streak_check.fix_plan}}",
-    _session_id: "{{outputs.reviewer_gpt._session_id}}",
-    _session_fingerprint: "{{outputs.reviewer_gpt._session_fingerprint}}"
-  }
-
-  ## After each fix round, commit (deterministic) then resume
-  ## alternation. fix_claude and fix_gpt both feed into the same
-  ## tool — that's a convergence point, but tool nodes have no
-  ## session inheritance so C009 does not apply.
-  ##
-  ## `when applied`: the fixer changed the working tree. Route through
-  ## review_commit_auto so the commit lands with a meaningful subject.
-  ## `when not applied`: the fixer pushed back on every blocker (no
-  ## working-tree changes). review_commit_auto would `git commit` an
-  ## empty tree and fail — wasted recovery_loop budget and a noisy
-  ## audit trail. Skip straight to alt_review so the next reviewer
-  ## (with the pushback already wired into its `prior_pushback` input
-  ## at the alt_review→reviewer_X edges above) gets to weigh in.
-  ## Both edges land on the same recovery_loop back-edge target so
-  ## the counter ticks identically regardless of which path was taken.
-  fix_claude -> review_commit_auto when applied with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    family: "claude",
-    iteration: "{{loop.recovery_loop.iteration}}",
-    summary: "{{outputs.fix_claude.summary}}"
-  }
-  fix_gpt -> review_commit_auto when applied with {
-    workspace_dir: "{{vars.workspace_dir}}",
-    family: "gpt",
-    iteration: "{{loop.recovery_loop.iteration}}",
-    summary: "{{outputs.fix_gpt.summary}}"
-  }
-  fix_claude -> alt_review when not applied as recovery_loop(20)
-  fix_gpt    -> alt_review when not applied as recovery_loop(20)
-
-  review_commit_auto -> alt_review as recovery_loop(20)
-
-  ## Loop-exhaustion fallthroughs (when bounded loops hit max).
-  ## review_loop / recovery_loop running out means we never converged
-  ## on cross-family approval and the cumulative diff still carries
-  ## blockers. Route to `fail` so the run terminates with a non-success
-  ## status — the operator sees unresolved blockers in
-  ## outputs.streak_check.blockers rather than a silent "done".
-  reviewer_claude    -> fail
-  reviewer_gpt       -> fail
-  review_commit_auto -> fail
-  streak_check       -> alt_review

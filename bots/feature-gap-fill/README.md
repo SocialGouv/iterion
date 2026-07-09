@@ -1,11 +1,14 @@
 # feature_gap_fill
 
-Gap-driven feature completer. Specialisation of `feature_dev` (Featurly):
-the input is a STRUCTURED gap spec ("here is what's implemented, here is
-what's missing") rather than a feature description from zero. Fini reads
-the partial implementation, completes the missing parts, runs the
-alternating Claude/GPT review-fix loop until two consecutive cross-family
-approvals, then commits.
+Gap-driven feature completer — **v2 minimal-framing** (ADR-058). The input
+is a STRUCTURED gap spec ("here is what's implemented, here is what's
+missing") rather than a feature description from zero. ONE adaptive
+`campaign` agent surveys the seams the spec references, builds a living
+todo from the `missing` items, and closes them one at a time — smallest
+change, build, test, semantic commit in stride — preserving what already
+works. A deterministic build/test gate re-checks the tree after each pass;
+a bounded continuation loop re-pokes the campaign until the gap is closed
+and the tree is green. git is the durable state.
 
 ## When to use
 
@@ -22,28 +25,40 @@ approvals, then commits.
 |---|---|---|
 | `gap_spec` | yes | Structured gap spec describing what's implemented vs what's missing |
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` (the run's worktree) |
+| `scope_notes` | no | Free-form extra context (constraints, priorities) |
+| `baseline` | no | Known pre-existing failures to SKIP (empty = cheap stash-check once) |
+| `max_passes` | no | Continuation-loop cap (default 8) |
 
 A gap spec typically lists:
 - `implemented[]` — files / abstractions already in place (preserve)
 - `missing[]` — the concrete deliverables Fini must add
 - `evidence[]` — references (paths, line numbers) that anchor the survey
 
-## Pipeline
+## Shape (v2 — one agent, minimal framing)
 
-1. `survey_existing` — Claude Code, read-only survey of the partial
-   implementation referenced by the gap spec → `existing_state`.
-2. `plan` — Claude Code, read-only, gap-aware planning that layers the
-   missing parts on top of `existing_state.abstractions_in_place`.
-3. `act` — Claude Code, session-inherit, implements ONLY the missing
-   parts. Preservation discipline: do not touch files in
-   `existing_state.what_works` unless required to wire up the missing
-   parts.
-4. `simplify` — Claude Code, native `/simplify` skill on the new code.
-5. `alt → reviewer_claude / reviewer_gpt → streak_check → fixers` —
-   verbatim alternating review/fix loop, stops on cross-family double
-   approval.
-6. `prepare_commit` → `commit_changes` — semantic commit, trailer
-   `Bot: feature-gap-fill`.
+```
+campaign → verify_build → verify_run → gate
+gate → done            when converged (tree green AND gap_closed)
+gate → campaign        as continuation_loop(max_passes), carrying fail_log
+gate → done            (loop exhausted — ship what is banked)
+```
+
+- `campaign` — one adaptive claude_code agent: brief read-only survey of
+  the implemented surfaces, living todo of missing items, then locate seam
+  → smallest change → build → test → commit (`Bot: feature-gap-fill`
+  trailer), one item at a time. Preservation discipline and the Adry
+  ADR-ownership rule live in its contract; out-of-scope observations go to
+  the board `inbox` as findings.
+- `verify_build` + `verify_run` — the stack-agnostic deterministic gate:
+  an agent writes `<scratch>/verify.sh` from the repo's own toolchain (see
+  `skills/verify-build.md`), a tool node re-runs it and gates on the real
+  exit code.
+- `gate` — deterministic compute: `converged = passed && gap_closed`.
+
+The v1 staged pipeline (survey_existing → plan → act → simplify →
+alternating cross-family review/fix loop → prepare_commit →
+commit_changes) is retired — see the header comment in `main.bot` and git
+history for the design.
 
 ## Run
 

@@ -101,14 +101,10 @@ func (m *MemoryStore) UpdateUser(_ context.Context, u User) error {
 	return nil
 }
 
-func (m *MemoryStore) ListUsers(_ context.Context, page Page) ([]User, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	users := make([]User, 0, len(m.users))
-	for _, u := range m.users {
-		users = append(users, u)
-	}
-	sort.Slice(users, func(i, j int) bool { return users[i].CreatedAt.Before(users[j].CreatedAt) })
+// paginate applies a Page's offset/limit to items, clamping limit to a
+// default of 50 and offset to a non-negative in-range value. Shared by
+// every MemoryStore List* method.
+func paginate[T any](items []T, page Page) []T {
 	limit := page.Limit
 	if limit <= 0 {
 		limit = 50
@@ -117,14 +113,25 @@ func (m *MemoryStore) ListUsers(_ context.Context, page Page) ([]User, error) {
 	if offset < 0 {
 		offset = 0
 	}
-	if offset >= len(users) {
-		return nil, nil
+	if offset >= len(items) {
+		return nil
 	}
 	end := offset + limit
-	if end < offset || end > len(users) {
-		end = len(users)
+	if end < offset || end > len(items) {
+		end = len(items)
 	}
-	return users[offset:end], nil
+	return items[offset:end]
+}
+
+func (m *MemoryStore) ListUsers(_ context.Context, page Page) ([]User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	users := make([]User, 0, len(m.users))
+	for _, u := range m.users {
+		users = append(users, u)
+	}
+	sort.Slice(users, func(i, j int) bool { return users[i].CreatedAt.Before(users[j].CreatedAt) })
+	return paginate(users, page), nil
 }
 
 func (m *MemoryStore) UserCount(_ context.Context) (int64, error) {
@@ -202,22 +209,7 @@ func (m *MemoryStore) ListTeams(_ context.Context, page Page) ([]Team, error) {
 		teams = append(teams, t)
 	}
 	sort.Slice(teams, func(i, j int) bool { return teams[i].CreatedAt.Before(teams[j].CreatedAt) })
-	limit := page.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := page.Offset
-	if offset < 0 {
-		offset = 0
-	}
-	if offset >= len(teams) {
-		return nil, nil
-	}
-	end := offset + limit
-	if end < offset || end > len(teams) {
-		end = len(teams)
-	}
-	return teams[offset:end], nil
+	return paginate(teams, page), nil
 }
 
 func (m *MemoryStore) ListTeamsByOrg(_ context.Context, orgID string) ([]Team, error) {
@@ -314,22 +306,7 @@ func (m *MemoryStore) ListOrgs(_ context.Context, page Page) ([]Org, error) {
 		orgs = append(orgs, o)
 	}
 	sort.Slice(orgs, func(i, j int) bool { return orgs[i].CreatedAt.Before(orgs[j].CreatedAt) })
-	limit := page.Limit
-	if limit <= 0 {
-		limit = 50
-	}
-	offset := page.Offset
-	if offset < 0 {
-		offset = 0
-	}
-	if offset >= len(orgs) {
-		return nil, nil
-	}
-	end := offset + limit
-	if end < offset || end > len(orgs) {
-		end = len(orgs)
-	}
-	return orgs[offset:end], nil
+	return paginate(orgs, page), nil
 }
 
 func (m *MemoryStore) UpsertOrgMembership(_ context.Context, om OrgMembership) error {

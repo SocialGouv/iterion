@@ -156,6 +156,8 @@ func (m *Multiplexer) handleToolCall(ctx context.Context, env Envelope) error {
 				Question:         askErr.Question,
 				PendingToolUseID: askErr.PendingToolUseID,
 				Conversation:     askErr.Conversation,
+				Options:          askErr.Options,
+				AllowFreeText:    askErr.AllowFreeText,
 			}
 		} else {
 			data.Error = callErr.Error()

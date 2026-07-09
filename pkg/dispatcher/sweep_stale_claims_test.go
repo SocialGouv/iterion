@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"os"
+	"strconv"
 	"testing"
 )
 
@@ -17,13 +18,13 @@ func TestIsStaleLocalMarker(t *testing.T) {
 		host   string
 		want   bool
 	}{
-		{"live host PID stays", "rog-" + itoa(livePid), "rog", false},
-		{"dead host PID swept", "rog-" + itoa(deadPid), "rog", true},
-		{"other-host PID stays", "rog-" + itoa(deadPid), "other", false},
+		{"live host PID stays", "rog-" + strconv.Itoa(livePid), "rog", false},
+		{"dead host PID swept", "rog-" + strconv.Itoa(deadPid), "rog", true},
+		{"other-host PID stays", "rog-" + strconv.Itoa(deadPid), "other", false},
 		{"missing PID stays", "rog-", "rog", false},
 		{"non-numeric PID stays", "rog-abc", "rog", false},
 		{"no dash stays", "rog", "rog", false},
-		{"hostname with dashes stays", "rog-dev-" + itoa(deadPid), "rog-dev", true},
+		{"hostname with dashes stays", "rog-dev-" + strconv.Itoa(deadPid), "rog-dev", true},
 		{"pid=1 init stays", "rog-1", "rog", false},
 	}
 	for _, tc := range cases {
@@ -32,25 +33,4 @@ func TestIsStaleLocalMarker(t *testing.T) {
 			t.Errorf("%s: isStaleLocalMarker(%q, %q) = %v, want %v", tc.name, tc.marker, tc.host, got, tc.want)
 		}
 	}
-}
-
-// itoa is the tiny strconv.Itoa stand-in that keeps imports flat in
-// this leaf test.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var digits []byte
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	if neg {
-		digits = append([]byte{'-'}, digits...)
-	}
-	return string(digits)
 }

@@ -453,6 +453,7 @@ type LLMDecl struct {
 	Tools             []string         // tool capability names
 	ToolPolicy        []string         // per-node tool policy patterns (nil = inherit workflow)
 	Capabilities      []string         // host-side capabilities granted to the node (e.g. board.create)
+	Skills            []string         // skill-library skills referenced by the node (nil = inherit workflow default)
 	ToolMaxSteps      int              // max tool-use iterations (0 = not set)
 	MaxTokens         int              // max output tokens per LLM call (0 = inherit backend default)
 	ReasoningEffort   string           // reasoning effort level: "low", "medium", "high", "xhigh", "max"
@@ -681,6 +682,7 @@ type WorkflowDecl struct {
 	DefaultBackend string            // workflow-level default backend (empty = not set)
 	ToolPolicy     []string          // workflow-level tool policy patterns (nil = open)
 	Capabilities   []string          // workflow-level default host capabilities (nil = inherit none)
+	Skills         []string          // workflow-level default skill-library references (nil = none)
 	MCP            *MCPConfigDecl    // workflow-level MCP activation/filtering
 	Budget         *BudgetBlock      // execution limits (optional)
 	Resources      *ResourcesBlock   // named counting semaphores (optional)

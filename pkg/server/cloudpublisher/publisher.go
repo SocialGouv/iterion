@@ -452,6 +452,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 //
 // Idempotent: running CancelRun on an already-terminal run is a no-op.
 func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
+	// Cancel descends here with a NON-request context (runview.Service.Cancel
+	// takes no ctx), so the mongo tenant filter has no tenant and its
+	// tenant-scoped queries panic. The caller (handleCancelRun / the WS
+	// handleCancel) has ALREADY gated access with a tenant-scoped LoadRunCtx,
+	// so bypass the filter explicitly here rather than crashing — exactly the
+	// seam store.WithoutTenantFilter exists for. Without this, cancelling any
+	// cloud run 502s (panic: "tenant-scoped query without tenant in ctx").
+	ctx = store.WithoutTenantFilter(ctx)
 	r, err := p.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: load run %s: %w", runID, err)

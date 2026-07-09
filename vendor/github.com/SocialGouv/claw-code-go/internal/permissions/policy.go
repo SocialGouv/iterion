@@ -231,14 +231,18 @@ func promptOrDeny(toolName, input string, currentMode, requiredMode PermissionMo
 }
 
 // parseToolArgs decodes a tool input string as a JSON object so the result can
-// be handed to a Classifier. If the input is not valid JSON, an empty map is
-// returned (the classifier still receives the toolName).
+// be handed to a Classifier. Callers usually pass the raw permission subject
+// (e.g. the bash command) rather than JSON; that case is surfaced to the
+// classifier under the synthetic "__subject" key so rules keyed on the
+// subject (read-only bash, https-only web_fetch) still see it.
 func parseToolArgs(input string) map[string]any {
 	args := map[string]any{}
 	if input == "" {
 		return args
 	}
-	_ = json.Unmarshal([]byte(input), &args)
+	if err := json.Unmarshal([]byte(input), &args); err != nil || len(args) == 0 {
+		return map[string]any{"__subject": input}
+	}
 	return args
 }
 

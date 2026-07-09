@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
-	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/pat"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -44,6 +43,21 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 				IsSuperAdmin: true,
 			})
 			ctx = store.WithIdentity(ctx, "dev", "dev")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		// Single-use WS ticket path (?ticket= on /api/ws[/*]): the ticket
+		// resolves DIRECTLY to an identity, so it runs before the JWT/PAT
+		// verification. ok=true with an empty UserID means a ticket was
+		// presented but was invalid/expired/used — reject rather than falling
+		// through to the (absent) bearer.
+		if id, ok := s.wsTicketIdentity(r); ok {
+			if id.UserID == "" {
+				httpError(w, http.StatusUnauthorized, "invalid or expired ws ticket")
+				return
+			}
+			ctx := auth.WithIdentity(r.Context(), id)
+			ctx = store.WithIdentity(ctx, id.TeamID, id.UserID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -89,19 +103,6 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		ctx = store.WithIdentity(ctx, id.TeamID, id.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-}
-
-// requireRole wraps next, ensuring the principal has at least the
-// given role *in their active team*. Super-admins always pass.
-func (s *Server) requireRole(want identity.Role, next http.Handler) http.Handler {
-	return s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := auth.FromContext(r.Context())
-		if !id.HasRole(want) {
-			httpError(w, http.StatusForbidden, "insufficient permissions")
-			return
-		}
-		next.ServeHTTP(w, r)
-	}))
 }
 
 // requireSuperAdmin wraps next, allowing only platform super-admins.
@@ -166,6 +167,7 @@ func isPublicPath(path string) bool {
 		"/api/auth/refresh",
 		"/api/auth/logout",
 		"/api/auth/providers",
+		"/api/auth/desktop/exchange",
 		"/api/auth/invitations/lookup",
 		"/api/auth/invitations/accept",
 		// /api/server/info carries the AuthRequired flag the SPA
@@ -222,10 +224,7 @@ func isPublicMarketplaceRead(method, path string) bool {
 		return true
 	}
 	if strings.HasPrefix(path, "/api/v1/marketplace/bots/") {
-		if strings.HasSuffix(path, "/install") {
-			return false
-		}
-		return true
+		return !strings.HasSuffix(path, "/install")
 	}
 	return false
 }

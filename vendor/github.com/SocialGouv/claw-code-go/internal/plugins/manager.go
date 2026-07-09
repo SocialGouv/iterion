@@ -35,8 +35,8 @@ type InstalledPlugin struct {
 }
 
 type stateFile struct {
-	Version  int                `json:"version"`
-	Plugins  []InstalledPlugin  `json:"plugins"`
+	Version int               `json:"version"`
+	Plugins []InstalledPlugin `json:"plugins"`
 }
 
 const stateVersion = 1

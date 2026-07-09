@@ -81,12 +81,21 @@ type RunHeader struct {
 	// PermissionMode is the workflow-declared tool-permission gate mode
 	// ("off"|"ask"|"deny"); empty when the gate is off/unset. The studio
 	// badges ask/deny. See docs/permissions.md.
-	PermissionMode string            `json:"permission_mode,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
-	FinishedAt     *time.Time        `json:"finished_at,omitempty"`
-	Error          string            `json:"error,omitempty"`
-	Checkpoint     *store.Checkpoint `json:"checkpoint,omitempty"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	// ModelOverrides are the launch-time per-node/-group model/backend
+	// pins captured on the run, surfaced so the studio Overview can show
+	// what the run was launched with. Empty when none were set.
+	ModelOverrides []store.RunModelOverride `json:"model_overrides,omitempty"`
+	// Budget is the effective budget cap set captured at launch (after
+	// overrides + cloud ceiling clamp), surfaced so the studio Overview
+	// draws budget meters with a denominator. Nil when the workflow
+	// declared no budget: block. See store.RunBudget.
+	Budget     *store.RunBudget  `json:"budget,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+	UpdatedAt  time.Time         `json:"updated_at"`
+	FinishedAt *time.Time        `json:"finished_at,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	Checkpoint *store.Checkpoint `json:"checkpoint,omitempty"`
 	// WorkDir is the absolute filesystem path the run executed in
 	// (per-run worktree when Worktree is true, otherwise inherited cwd).
 	// Empty for runs created before this field was persisted; the studio
@@ -380,10 +389,6 @@ func (b *SnapshotBuilder) buildLoopProgress() map[string]RunLoopProgress {
 	}
 	return out
 }
-
-// LastSeq exposes the highest seq applied so far so live subscribers
-// can resume cleanly via WS subscribe{from_seq}.
-func (b *SnapshotBuilder) LastSeq() int64 { return b.lastSeq }
 
 // ---------------------------------------------------------------------------
 // Per-event handlers
@@ -910,6 +915,8 @@ func headerFromRun(r *store.Run) RunHeader {
 		Status:            r.Status,
 		Inputs:            r.Inputs,
 		PermissionMode:    r.PermissionMode,
+		ModelOverrides:    r.ModelOverrides,
+		Budget:            r.Budget,
 		CreatedAt:         r.CreatedAt,
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,

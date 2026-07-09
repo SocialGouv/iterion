@@ -66,7 +66,7 @@ github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/shared
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/internal/version
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/managedidentity
 github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
-# github.com/SocialGouv/claw-code-go v0.1.1-0.20260702094037-dad0827ec028
+# github.com/SocialGouv/claw-code-go v0.1.1-0.20260707151623-21c4b7d4356e
 ## explicit; go 1.25.0
 github.com/SocialGouv/claw-code-go/hooks
 github.com/SocialGouv/claw-code-go/internal/api
@@ -284,11 +284,27 @@ github.com/creativeprojects/go-selfupdate/update
 # github.com/danieljoos/wincred v1.2.3
 ## explicit; go 1.18
 github.com/danieljoos/wincred
-# github.com/dlclark/regexp2/v2 v2.1.0
-## explicit; go 1.26
+# github.com/dlclark/regexp2/v2 v2.2.1
+## explicit; go 1.25
 github.com/dlclark/regexp2/v2
 github.com/dlclark/regexp2/v2/helpers
 github.com/dlclark/regexp2/v2/syntax
+# github.com/dop251/goja v0.0.0-20260701091749-b07b74453ea9
+## explicit; go 1.25
+github.com/dop251/goja
+github.com/dop251/goja/ast
+github.com/dop251/goja/file
+github.com/dop251/goja/ftoa
+github.com/dop251/goja/ftoa/internal/fast
+github.com/dop251/goja/parser
+github.com/dop251/goja/token
+github.com/dop251/goja/unistring
+# github.com/dop251/goja_nodejs v0.0.0-20260212111938-1f56ff5bcf14
+## explicit; go 1.20
+github.com/dop251/goja_nodejs/console
+github.com/dop251/goja_nodejs/eventloop
+github.com/dop251/goja_nodejs/require
+github.com/dop251/goja_nodejs/util
 # github.com/dustin/go-humanize v1.0.1
 ## explicit; go 1.16
 github.com/dustin/go-humanize
@@ -337,6 +353,10 @@ github.com/go-logr/stdr
 # github.com/go-ole/go-ole v1.3.0
 ## explicit; go 1.12
 github.com/go-ole/go-ole
+# github.com/go-sourcemap/sourcemap v2.1.4+incompatible
+## explicit
+github.com/go-sourcemap/sourcemap
+github.com/go-sourcemap/sourcemap/internal/base64vlq
 # github.com/godbus/dbus/v5 v5.2.2
 ## explicit; go 1.20
 github.com/godbus/dbus/v5
@@ -349,6 +369,9 @@ github.com/golang-jwt/jwt/v5
 # github.com/google/jsonschema-go v0.4.2
 ## explicit; go 1.23.0
 github.com/google/jsonschema-go/jsonschema
+# github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e
+## explicit; go 1.23
+github.com/google/pprof/profile
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
@@ -837,7 +860,9 @@ golang.org/x/term
 # golang.org/x/text v0.36.0
 ## explicit; go 1.25.0
 golang.org/x/text/cases
+golang.org/x/text/collate
 golang.org/x/text/internal
+golang.org/x/text/internal/colltab
 golang.org/x/text/internal/language
 golang.org/x/text/internal/language/compact
 golang.org/x/text/internal/tag
@@ -846,6 +871,7 @@ golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
+golang.org/x/text/unicode/rangetable
 # google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9
 ## explicit; go 1.25.0
 google.golang.org/genproto/googleapis/api/httpbody

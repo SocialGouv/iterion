@@ -65,10 +65,10 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// allTools is the sorted-by-name singleton consulted by every Tools(),
-// ToolsFor(), and Call() invocation. Building it once eliminates the
-// per-call slice allocation that ToolsFor used to pay and the linear
-// scan Call used to perform.
+// allTools is the sorted-by-name singleton consulted by every ToolsFor()
+// and Call() invocation. Building it once eliminates the per-call slice
+// allocation that ToolsFor used to pay and the linear scan Call used to
+// perform.
 var allTools = []Tool{
 	{
 		Name:        "assign_issue",
@@ -237,16 +237,8 @@ var dispatchByName = map[string]func(native.BoardStore, json.RawMessage) (json.R
 	"get_issue":        doGet,
 }
 
-// Tools returns the board tools, sorted by name. The slice is a
-// defensive copy so callers can sort/filter without mutating package state.
-func Tools() []Tool {
-	out := make([]Tool, len(allTools))
-	copy(out, allTools)
-	return out
-}
-
-// ToolsFor returns the subset of Tools() the granted capability set unlocks.
-// Order matches Tools() (sorted by name) so output is deterministic.
+// ToolsFor returns the subset of allTools the granted capability set unlocks,
+// sorted by name (allTools' own order) so output is deterministic.
 func ToolsFor(caps Capabilities) []Tool {
 	out := make([]Tool, 0, len(allTools))
 	for i := range allTools {
