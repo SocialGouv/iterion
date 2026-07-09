@@ -742,6 +742,19 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 	return "", "default (no sandbox)"
 }
 
+// WorkflowSandboxActive reports whether a run of wf under the given
+// CLI-strength override + global default resolves to an ACTIVE sandbox —
+// the same pickMode precedence the engine itself applies. Callers that
+// deliver run inputs differently for sandboxed vs in-pod execution (e.g.
+// the cloud runner's file-secret materialization) must consult THIS,
+// never wf.Sandbox directly: under ITERION_SANDBOX_OVERRIDE=none a
+// workflow's static sandbox block is present but neutralized, and the
+// run executes directly in the pod.
+func WorkflowSandboxActive(wf *ir.Workflow, cliOverride, globalDefault string) bool {
+	mode, _ := pickMode(wf, cliOverride, globalDefault)
+	return sandbox.Mode(mode).IsActive()
+}
+
 // workflowHostState returns the workflow-scope host_state declaration
 // (wf.Sandbox.HostState), or "" when the workflow declares none. Shared
 // by applyHostStateMounts (engine) and ResolveSandboxSpecForDoctor

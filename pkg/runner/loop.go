@@ -1422,10 +1422,15 @@ func injectGitToken(rawURL, token string) string {
 // sandbox (a sandboxed run mounts them into the container instead). Returns a
 // cleanup that removes the written files, or nil when nothing was written.
 func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (func(), error) {
-	if wf == nil || len(wf.Secrets) == 0 || wf.Sandbox != nil {
-		// No secrets, or the workflow opts into a sandbox (which mounts file
-		// secrets into the container). review-pr et al. have no sandbox block
-		// → wf.Sandbox is nil and we materialize below.
+	if wf == nil || len(wf.Secrets) == 0 ||
+		runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault) {
+		// No secrets, or the run RESOLVES to an active sandbox (which mounts
+		// file secrets into the container). The resolved decision — not
+		// wf.Sandbox — is what matters: under ITERION_SANDBOX_OVERRIDE=none a
+		// bot's sandbox block is neutralized and the run executes in this pod,
+		// so its file secrets must be materialized here (run 019f4551's
+		// push_auth_probe found no forge_token exactly because this gate used
+		// to test the static declaration).
 		return nil, nil
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
