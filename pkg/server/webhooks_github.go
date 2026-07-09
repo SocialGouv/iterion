@@ -158,7 +158,7 @@ func (s *Server) handleGitHubIssueLabeled(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
+	botID, ok := s.selectIssueLabeledBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
 	}

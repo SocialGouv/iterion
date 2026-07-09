@@ -1,5 +1,61 @@
 # Billy — branch-improvement validation
 
+## 2026-07-09 — first CLOUD runs: PR-webhook → Billy on the devbox runner (runs 019f43a3 / 019f43c7 / 019f4551)
+
+- Status: **validated (cloud E2E) — 3 engine/bot gaps found live, all fixed in-session.**
+  The full production trigger chain ran for the first time: real GitHub PR
+  ([#84](https://github.com/SocialGouv/iterion/pull/84), `Fixes #83`) → forge
+  webhook (`selectForgePRBot` routes Billy, not Revi) → NATS queue → devbox
+  runner pod (uid 1000) → campaign/verify/gate.
+- Versions: bot @ `1d076a618` (adds the push-back tail) · iterion `:edge`
+  36fb786b5→56a5680f1 · runner image `iterion-runner-devbox:edge` ·
+  webhook `d291059c` (bots review-pr + branch-improve-loop + feature-dev,
+  block_fork_prs, author allowlist Viczei+devthejo).
+- Method: PR-open/reopen events on SocialGouv/iterion#84 (a real fix: the
+  vv0.32.0/vmain version-injection bug). Re-triggers need a NEW head sha +
+  close/reopen — the delivery idem key is (PR#, head sha) and launch-success
+  rows are terminal; `/billy` comments from the connection identity are
+  loop-guard-filtered (self).
+- Result per run:
+  - `019f43a3` **failed in 17s**: Billy's inline `sandbox:` block → kubernetes
+    driver → `ITERION_POD_IP env var is empty` (the chart deliberately doesn't
+    provision sibling-pod sandboxing). → **Fix 1** `36fb786b5`:
+    `ITERION_SANDBOX_OVERRIDE=none` (CLI-strength, beats the workflow block;
+    chart auto-sets it when `runner.sandbox.enabled=false`) — the runner pod IS
+    the isolation boundary.
+  - `019f43c7` **finished, 1-pass converged (~7 min)**: verify.sh settled on
+    `devbox run -- go build ./...` + targeted tests — the repo's devbox-pinned
+    Go toolchain, i.e. the devbox-first-class runner goal proven live. campaign
+    caught a REAL defect (the PR's new test file wasn't gofmt-clean — CI lint
+    would have rejected it) and committed the fix (`ef540115`)… which **died
+    with the pod-ephemeral worktree**: `mr_gate` open_mr=false went straight to
+    done. → **Fix 2** `1d076a618`: deterministic push-back — webhook passes
+    `push_branch` (PR source branch); `mr_gate → push_auth_probe →
+    push_back_tool` (no-LLM python3 push, rev-list oracle so a
+    converged-no-commits pass no-ops, token redacted from failures).
+  - `019f4551` **finished; new path routed** (`…gate>mr_gate>push_auth_probe>done`)
+    but the probe found NO credential: `materializeFileSecretsNoSandbox` gated
+    on the STATIC `wf.Sandbox != nil` — under the override the run executes
+    in-pod and nobody materialized `forge_token` (the launch HAD sealed it into
+    the bundle: the stored secret's last_used_at == launch instant). → **Fix 3**
+    `56a5680f1`: gate on the RESOLVED decision via new
+    `runtime.WorkflowSandboxActive(wf, override, default)`.
+- Value: the run 019f43c7 catch (gofmt) was real and manually reapplied as
+  `a2cf464a9`; the three fixes harden the entire cloud-runner class of bots
+  (any bot with a sandbox block + file secrets), not just Billy.
+- Findings / misses: secret-resolution failures are SILENT at several layers
+  (`buildGenericResolution` ok=false without a log; publisher skips empty
+  plaintexts) — an erreurs-explicites hardening candidate. CI race job flake:
+  `TestReconcileStalled_ForceReapsCtxIgnoringWorker` (pkg/dispatcher) failed on
+  56a5680f1, 5× green locally with -race — known concurrency-flake family.
+- Engine hardening: `36fb786b5` (+ chart 0.33.0, umbrella `3a20e24`),
+  `1d076a618`, `56a5680f1`; stale factory comment `afbdd6be3`.
+- Lessons for next run: consult the RESOLVED sandbox mode everywhere run
+  inputs depend on it; self-triggering a webhook from the connection identity
+  hits the loop-guard (use a fresh head sha + close/reopen, or another actor);
+  first devbox run per pod re-downloads the Nix toolchain (~2-4 min — the PVC
+  warm-store follow-on).
+
 ## 2026-07-08 — re-dogfood post-improvement (P1-P4), same PR #72 target, $1.80 (run 019f41af)
 
 - Status: **validated — reliability + integration confirmed; production excellent.**

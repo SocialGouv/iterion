@@ -77,6 +77,11 @@ const defaultWebhookBotReviConverse = "revi-converse"
 // a tracked issue. See selectForgePRBot.
 const branchImproveBotID = "branch-improve-loop"
 
+// featureDevBotID is the implementer bot (Featurly) the issue-labeled path
+// routes to — a freshly-labeled issue has no diff to review, it needs to be
+// TURNED INTO one. See selectIssueLabeledBot.
+const featureDevBotID = "feature-dev"
+
 // webhookEventMeta is the provider-agnostic carrier of "what happened
 // upstream" the common helpers consume. Every field is optional: a
 // provider that doesn't have e.g. a project path leaves it empty and
@@ -190,6 +195,44 @@ func (s *Server) resolveReviewBot(
 	if botID == "" {
 		botID = defaultWebhookBotReviewPR
 	}
+	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
+}
+
+// selectIssueLabeledBot picks the bot for a freshly-labeled issue. Unlike a
+// PR (which carries a diff to REVIEW), an issue must be TURNED INTO one, so
+// the reviewer default is wrong here. Precedence: an operator-pinned
+// DefaultBotID wins (explicit intent); else the canonical implementer
+// (Featurly) when the webhook permits it; else fall back to SelectBot /
+// review-pr so a reviewer-only webhook keeps its prior behaviour. The
+// deterministic counterpart to selectForgePRBot on the issue path.
+func (s *Server) selectIssueLabeledBot(
+	ctx context.Context,
+	w http.ResponseWriter,
+	cfg webhooks.Config,
+	meta webhookEventMeta,
+	payloadHash, srcIP string,
+) (string, bool) {
+	botID := cfg.DefaultBotID
+	if botID == "" && cfg.AllowsBot(featureDevBotID) {
+		botID = featureDevBotID
+	}
+	if botID == "" {
+		if botID = cfg.SelectBot(); botID == "" {
+			botID = defaultWebhookBotReviewPR
+		}
+	}
+	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
+}
+
+// checkBotPermitted enforces the webhook's bot allowlist, recording an
+// Invalid delivery + writing a 403 (ok=false) when botID is out of scope.
+func (s *Server) checkBotPermitted(
+	ctx context.Context,
+	w http.ResponseWriter,
+	cfg webhooks.Config,
+	meta webhookEventMeta,
+	botID, payloadHash, srcIP string,
+) (string, bool) {
 	if !cfg.AllowsBot(botID) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusInvalid, payloadHash, srcIP, "bot not permitted by webhook scope")
 		httpError(w, http.StatusForbidden, "bot %q not permitted by this webhook", botID)

@@ -1,11 +1,48 @@
 package server
 
 import (
+	"context"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
+
+// TestSelectIssueLabeledBot pins the issue-labeled routing: a freshly-labeled
+// issue has no diff to review, so it must route to the implementer (Featurly),
+// NOT the reviewer default — the live bug where a 3-bot webhook sent issue:85
+// to review-pr, which stopped at diff_precheck. Precedence: pinned DefaultBotID
+// wins; else Featurly when permitted; else the SelectBot/review-pr fallback for
+// reviewer-only webhooks. The permitted path never touches Server state.
+func TestSelectIssueLabeledBot(t *testing.T) {
+	s := &Server{}
+	meta := webhookEventMeta{Kind: "issues"}
+	pick := func(cfg webhooks.Config) (string, bool) {
+		return s.selectIssueLabeledBot(context.Background(), httptest.NewRecorder(), cfg, meta, "hash", "1.2.3.4")
+	}
+	cases := []struct {
+		name string
+		cfg  webhooks.Config
+		want string
+	}{
+		{"3-bot webhook routes to implementer", webhooks.Config{BotIDs: []string{"review-pr", branchImproveBotID, featureDevBotID}}, featureDevBotID},
+		{"pinned default wins", webhooks.Config{BotIDs: []string{"review-pr", featureDevBotID}, DefaultBotID: "review-pr"}, "review-pr"},
+		{"reviewer-only webhook falls back", webhooks.Config{BotIDs: []string{"review-pr"}}, "review-pr"},
+		{"featurly-only", webhooks.Config{BotIDs: []string{featureDevBotID}}, featureDevBotID},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := pick(c.cfg)
+			if !ok {
+				t.Fatalf("selectIssueLabeledBot returned ok=false for %+v", c.cfg.BotIDs)
+			}
+			if got != c.want {
+				t.Errorf("selectIssueLabeledBot = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
 
 // TestSelectForgePRBot pins the deterministic PR-open routing: a same-repo PR
 // that implements a tracked issue routes to the branch-improvement bot (Billy);

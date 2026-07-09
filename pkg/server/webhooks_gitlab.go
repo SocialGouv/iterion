@@ -132,7 +132,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
+	botID, ok := s.selectIssueLabeledBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
 	}
