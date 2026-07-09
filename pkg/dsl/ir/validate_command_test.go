@@ -52,6 +52,47 @@ func TestCommand_EnvRefBackendSkips(t *testing.T) {
 	expectNoDiag(t, r, DiagCommandIgnored)
 }
 
+// commandSrcDefaultBackend builds a one-agent workflow whose node leaves
+// `backend:` unset, so the effective backend is the workflow-level
+// `default_backend:` — the compile-time-knowable fallback the validator
+// must honor.
+func commandSrcDefaultBackend(defaultBackend, command string) string {
+	return `
+schema empty:
+  ok: bool
+
+prompt sys:
+  body
+  hello
+
+agent writer:
+  model: "gpt-4"
+  command: "` + command + `"
+  system: sys
+  output: empty
+
+workflow w:
+  default_backend: "` + defaultBackend + `"
+  entry: writer
+  writer -> done
+`
+}
+
+// A node with no explicit backend inherits the workflow `default_backend:`;
+// when that resolves to claw the command is inert, so C174 must fire even
+// though the node itself names no backend.
+func TestCommand_InheritsDefaultBackendClawWarns(t *testing.T) {
+	r := compileFile(t, commandSrcDefaultBackend("claw", "claude-canary"))
+	expectDiag(t, r, DiagCommandIgnored)
+}
+
+// Same inheritance, but default_backend is claude_code, which honors the
+// override — no warning.
+func TestCommand_InheritsDefaultBackendClaudeCodeNoWarning(t *testing.T) {
+	r := compileFile(t, commandSrcDefaultBackend("claude_code", "claude-canary"))
+	expectNoDiag(t, r, DiagCommandIgnored)
+}
+
 // `command:` also works on judge nodes and warns on a hint-ignoring backend.
 func TestCommand_JudgeIgnoredOnClawWarns(t *testing.T) {
 	src := `
