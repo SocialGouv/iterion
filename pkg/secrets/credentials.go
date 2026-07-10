@@ -33,6 +33,11 @@ type Credentials struct {
 	// this directory via CLAUDE_CONFIG_DIR / CODEX_HOME to the
 	// CLI subprocess. Empty when no OAuth-forfait is in play.
 	OAuthCredentialFiles map[string]string
+	// ForgeAppBotLogin, when set, is the GitHub-App bot login whose
+	// installation token pushes this run's commits (see RunBundle). The
+	// runner uses it to seed the App-bot git committer identity, which a
+	// bare installation token can't self-resolve. Empty for PAT/OAuth runs.
+	ForgeAppBotLogin string
 }
 
 // APIKey returns the plaintext API key for the requested provider

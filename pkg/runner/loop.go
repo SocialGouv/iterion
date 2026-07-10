@@ -1234,9 +1234,10 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		return "", fmt.Errorf("mkdir repo parent: %w", err)
 	}
 
-	cloneURL, tok := msg.RepoURL, ""
+	cloneURL, tok, appBotLogin := msg.RepoURL, "", ""
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
+		appBotLogin = creds.ForgeAppBotLogin
 		if tok != "" {
 			cloneURL = injectGitToken(msg.RepoURL, tok)
 		}
@@ -1269,7 +1270,14 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
 	authorName, authorEmail := gitAuthorName(), gitAuthorEmail()
 	if tok != "" {
-		if n, e, ok := resolveForgeCommitterIdentity(ctx, msg.RepoURL, tok); ok {
+		// A github_app connection's forge_token is an installation token that
+		// can't `GET /user`; the publisher threads the App bot login so we
+		// resolve its canonical committer via `GET /users/<login>` instead.
+		if appBotLogin != "" {
+			if n, e, ok := resolveAppBotCommitterIdentity(ctx, msg.RepoURL, appBotLogin, tok); ok {
+				authorName, authorEmail = n, e
+			}
+		} else if n, e, ok := resolveForgeCommitterIdentity(ctx, msg.RepoURL, tok); ok {
 			authorName, authorEmail = n, e
 		}
 	}
@@ -1530,6 +1538,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		// are not secret, so cleanup below leaves them untouched.
 		GenericHosts:         bundle.GenericSecretHosts,
 		OAuthCredentialFiles: map[string]string{},
+		ForgeAppBotLogin:     bundle.ForgeAppBotLogin,
 	}
 	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))
 	// cancelRefresh stops the per-run OAuth-forfait token refreshers (set

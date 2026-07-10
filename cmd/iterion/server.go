@@ -255,17 +255,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
-		NATS:           natsConn,
-		Store:          st,
-		MongoColl:      st.RunsCollection(),
-		Logger:         logger,
-		Metrics:        mreg,
-		ApiKeys:        stores.apiKeys,
-		GenericSecrets: stores.genericSecrets,
-		BotBindings:    stores.botBindings,
-		RunSecrets:     stores.runSecrets,
-		Sealer:         sealer,
-		OAuthForfait:   stores.oauth,
+		NATS:             natsConn,
+		Store:            st,
+		MongoColl:        st.RunsCollection(),
+		Logger:           logger,
+		Metrics:          mreg,
+		ApiKeys:          stores.apiKeys,
+		GenericSecrets:   stores.genericSecrets,
+		BotBindings:      stores.botBindings,
+		RunSecrets:       stores.runSecrets,
+		Sealer:           sealer,
+		OAuthForfait:     stores.oauth,
+		ForgeConnections: stores.forgeConn,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
