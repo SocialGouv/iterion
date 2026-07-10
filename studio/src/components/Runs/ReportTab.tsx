@@ -26,7 +26,7 @@ export default function ReportTab({ onSelectNode }: Props) {
     );
   }
   return (
-    <div className="h-full overflow-auto px-4 py-3 space-y-4 text-xs">
+    <div className="h-full overflow-auto [scrollbar-gutter:stable] pl-4 pr-5 py-3 space-y-4 text-xs">
       <SummaryStrip report={report} />
       <BreakdownSection
         title="By provider"
@@ -207,8 +207,7 @@ function BucketRow({
         }`}
       >
         <span
-          className="font-mono text-fg-default truncate min-w-0 flex-shrink"
-          style={{ flexBasis: "10rem" }}
+          className="font-mono text-fg-default truncate min-w-0 flex-shrink basis-40"
           title={bucket.label}
         >
           {bucket.label}
@@ -220,21 +219,16 @@ function BucketRow({
           />
         </div>
         <span
-          className="font-mono text-fg-default text-right"
-          style={{ flexBasis: "5rem" }}
+          className="font-mono text-fg-default text-right basis-20"
           title={`$${bucket.costUsd.toFixed(6)}`}
         >
           {formatCost(bucket.costUsd)}
         </span>
-        <span
-          className="text-fg-subtle text-right text-caption"
-          style={{ flexBasis: "3rem" }}
-        >
+        <span className="text-fg-subtle text-right text-caption basis-12">
           {pct.toFixed(0)}%
         </span>
         <span
-          className="text-fg-subtle text-right text-caption hidden sm:inline-block"
-          style={{ flexBasis: "5rem" }}
+          className="text-fg-subtle text-right text-caption hidden sm:inline-block basis-20"
           title={`${bucket.tokens.toLocaleString()} tokens · ${bucket.count} ${
             bucket.count === 1 ? "exec" : "execs"
           }`}
