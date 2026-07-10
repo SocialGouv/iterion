@@ -182,6 +182,29 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 }
 
 // runState holds the mutable runtime state passed through the execution loop.
+//
+// CONCURRENCY CONTRACT (no mutex by design — ownership, not exclusion):
+// the main execution-loop goroutine is the SINGLE WRITER of every
+// unsynchronized field (outputs, artifacts, loopCounters, vars,
+// costUSDTotal, ...). Parallel fan-out branches never touch them:
+//   - branches receive deep COPIES of outputs/artifacts
+//     (fanOutPlan.parentOutputs via copyOutputs) and write only into
+//     their own branchResult; the merge back into rs happens
+//     mono-thread in processConvergence after collection;
+//   - the explicitly synchronized exceptions are branchLedgerSeq
+//     (atomic), budget (SharedBudget, internal mutex), events
+//     (runEvents, internal mutex) and resourceSemaphores (channels).
+//
+// Two rules keep this sound — breaking either introduces a silent data
+// race the compiler cannot catch:
+//  1. never write an unsynchronized rs field from a branch goroutine;
+//  2. fields branches READ through the resolution scope (loopCounters,
+//     vars, runInputs) must not be mutated by the main loop while a
+//     fan-out is in flight — INCLUDING an abandoned branch that
+//     outlives its fan-out (collectBranches' grace-period escape), so
+//     the constraint extends until the run ends, not just until the
+//     collector returns. TestFanOutAbandonedBranchDoesNotRaceRunState
+//     exercises that window under -race.
 type runState struct {
 	// ctx is the per-run context. Stored on runState (despite the
 	// usual "no context in struct" rule) because helpers.go threads
