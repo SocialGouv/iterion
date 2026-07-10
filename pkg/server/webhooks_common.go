@@ -160,6 +160,31 @@ func branchImproveVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR boo
 	return vars
 }
 
+// stampBranchImprovePushBack gives a branch-improvement command launch
+// (/billy on a PR/MR comment) the same push-back semantics as the
+// pull_request-event path above: without open_mr/push_branch the bot's
+// mr_gate takes neither tail and its commits strand on the cloud runner's
+// storage branch — the PR never receives them. Vars already present
+// (operator LaunchVars / route ContextVars) win.
+func stampBranchImprovePushBack(vars map[string]string, botID, sourceBranch string, asPR bool) {
+	if botID != branchImproveBotID || sourceBranch == "" {
+		return
+	}
+	if _, ok := vars["open_mr"]; ok {
+		return
+	}
+	if _, ok := vars["push_branch"]; ok {
+		return
+	}
+	if asPR {
+		vars["open_mr"] = "true"
+		vars["mr_base"] = sourceBranch
+	} else {
+		vars["open_mr"] = "false"
+		vars["push_branch"] = sourceBranch
+	}
+}
+
 // selectForgePRBot deterministically routes a PR-open delivery to the
 // branch-improvement bot (Billy) instead of the default reviewer (Revi) when
 // ALL of:

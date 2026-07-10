@@ -166,6 +166,81 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 	}
 }
 
+// TestGitHubIssueComment_BillyPushBackStamped: /billy on a PR comment must
+// get the SAME push-back semantics as the pull_request-event path — without
+// open_mr/push_branch the bot banks its commits on the storage branch and
+// the PR never receives them.
+func TestGitHubIssueComment_BillyPushBackStamped(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main"}, nil
+	}
+	var gotVars map[string]string
+	var gotRef string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, repoRef, _ string, _, _ map[string]string) (string, error) {
+		gotVars, gotRef = vars, repoRef
+		return "run-billy-1", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"bump deps","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":556,"body":"/billy fix the drift"},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotRef != "dependabot/go_modules/bump" {
+		t.Fatalf("repoRef=%q want the PR head branch", gotRef)
+	}
+	if gotVars["open_mr"] != "false" || gotVars["push_branch"] != "dependabot/go_modules/bump" {
+		t.Fatalf("push-back vars not stamped: open_mr=%q push_branch=%q", gotVars["open_mr"], gotVars["push_branch"])
+	}
+	if gotVars["scope_notes"] != "fix the drift" {
+		t.Fatalf("args should land in scope_notes: %q", gotVars["scope_notes"])
+	}
+}
+
+// TestGitHubIssueComment_BillyPushBackAsPR: with BranchImproveAsPR the same
+// command opens a separate hardening PR instead of pushing in-place.
+func TestGitHubIssueComment_BillyPushBackAsPR(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.BranchImproveAsPR = true
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil
+	}
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotVars = vars
+		return "run-billy-2", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":557,"body":"/billy"},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotVars["open_mr"] != "true" || gotVars["mr_base"] != "feat/x" {
+		t.Fatalf("as-PR vars not stamped: open_mr=%q mr_base=%q", gotVars["open_mr"], gotVars["mr_base"])
+	}
+	if _, ok := gotVars["push_branch"]; ok {
+		t.Fatalf("push_branch must not be set in as-PR mode")
+	}
+}
+
 // TestGitHubIssueComment_PRResolutionFailureIsVisible: when the PR head
 // cannot be resolved, the command must NOT silently launch on the default
 // branch (the run would diff nothing and no-op) — it fails loudly as a

@@ -111,6 +111,9 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 		repoRef = resolved.SourceBranch
 	}
 	vars := buildPRForgeCommandVars(p, pr, route, cmdArgs, cfg.LaunchVars)
+	if pr != nil {
+		stampBranchImprovePushBack(vars, route.BotID, pr.SourceBranch, cfg.BranchImproveAsPR)
+	}
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%s|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.SubjectID())))
 	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP)
 }
