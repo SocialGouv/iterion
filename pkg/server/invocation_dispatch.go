@@ -201,6 +201,18 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 			botArgs[route.ArgsVar] = v
 		}
 	}
+	// PR/MR-context vars stamped by the command handlers (resolved PR head/
+	// base, push-back routing, the PR to comment the verdict on). They must
+	// ride BotArgs for the same reason as the opens_mr stamp below: cloud's
+	// processBoardCard launches with iss.BotArgs ONLY, so a var left in the
+	// webhook launch vars never reaches a board-mode run — the bot then works
+	// off its DSL defaults (e.g. mr_gate.push_back=false strands the campaign
+	// commits on the runner's storage branch instead of the PR).
+	for _, k := range []string{"pr_url", "base_ref", "target_branch", "source_branch", "pr_author", "push_branch", "open_mr", "mr_base"} {
+		if v, ok := vars[k]; ok && v != "" {
+			botArgs[k] = v
+		}
+	}
 	// opens_mr stamp: a command whose bot opens an MR + back-links the issue
 	// the human commented on. Stamped into BotArgs (NOT just launch vars) so it
 	// survives BOTH board-mode backends: the local dispatcher's buildSpec

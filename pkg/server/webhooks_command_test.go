@@ -241,6 +241,59 @@ func TestGitHubIssueComment_BillyPushBackAsPR(t *testing.T) {
 	}
 }
 
+// TestGitHubIssueComment_BillyBoardCardCarriesPRContext: a board-mode /billy
+// launches from the card's BotArgs ONLY (cloud coordinator), so the resolved
+// PR context — push_branch, pr_url, base_ref — must ride BotArgs or the run
+// falls back to DSL defaults and strands its commits off-PR.
+func TestGitHubIssueComment_BillyBoardCardCarriesPRContext(t *testing.T) {
+	s := newWebhookTestServer(t)
+	boardStore, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", Mode: "board", ArgsVar: "scope_notes", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main", Author: "dependabot[bot]"}, nil
+	}
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		return "run-board-billy", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"bump deps","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":558,"body":"/billy fix it"},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	cards, err := boardStore.List(native.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 1 {
+		t.Fatalf("want 1 card, got %d", len(cards))
+	}
+	got := cards[0].BotArgs
+	for k, want := range map[string]string{
+		"push_branch": "dependabot/go_modules/bump",
+		"open_mr":     "false",
+		"base_ref":    "main",
+		"pr_url":      "https://github.com/acme/widgets/pull/7",
+		"pr_author":   "dependabot[bot]",
+		"scope_notes": "fix it",
+	} {
+		if got[k] != want {
+			t.Fatalf("card BotArgs[%s]=%q want %q (all: %v)", k, got[k], want, got)
+		}
+	}
+}
+
 // TestGitHubIssueComment_PRResolutionFailureIsVisible: when the PR head
 // cannot be resolved, the command must NOT silently launch on the default
 // branch (the run would diff nothing and no-op) — it fails loudly as a
