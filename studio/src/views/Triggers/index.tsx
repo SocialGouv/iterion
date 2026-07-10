@@ -7,6 +7,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Spinner } from "@/components/ui/Spinner";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { errorMessage } from "@/lib/errorHints";
@@ -29,10 +30,90 @@ function sourceLabel(sub: TriggerSubscription): string {
   return sub.invocation === "schedule" ? "schedule" : sub.invocation === "board" ? "board" : "—";
 }
 
+const DAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+// humanizeCron renders the common 5-field cron shapes as a short English
+// hint ("0 3 * * 1" → "every Monday at 03:00"). Deliberately conservative:
+// anything outside the fixed-minute/hour + every-N + single day-of-week/
+// day-of-month forms returns null and the caller shows the raw expression
+// alone — a missing hint beats a wrong translation.
+export function humanizeCron(expr: string): string | null {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) return null;
+  // Length checked above — safe to narrow the destructuring.
+  const [min, hour, dom, mon, dow] = fields as [string, string, string, string, string];
+  if (mon !== "*") return null;
+
+  const num = (s: string): number | null => (/^\d+$/.test(s) ? Number(s) : null);
+  const everyN = (s: string): number | null => {
+    const m = /^\*\/(\d+)$/.exec(s);
+    return m ? Number(m[1]) : null;
+  };
+  const dayName = (s: string): string | null => {
+    const n = num(s);
+    // Both 0 and 7 mean Sunday in the 5-field vocabulary.
+    if (n !== null) return n >= 0 && n <= 7 ? (DAY_NAMES[n % 7] ?? null) : null;
+    const idx = DAY_NAMES.findIndex(
+      (d) => d.slice(0, 3).toLowerCase() === s.toLowerCase(),
+    );
+    return idx >= 0 ? (DAY_NAMES[idx] ?? null) : null;
+  };
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  const m = num(min);
+  const h = num(hour);
+
+  // Minute-cadence forms: "* * * * *" / "*/N * * * *".
+  if (hour === "*" && dom === "*" && dow === "*") {
+    if (min === "*") return "every minute";
+    const n = everyN(min);
+    if (n !== null) return n === 1 ? "every minute" : `every ${n} minutes`;
+    if (m !== null) return `hourly at :${pad(m)}`;
+    return null;
+  }
+  if (m === null) return null;
+
+  // Hour-cadence forms: "M */N * * *".
+  if (dom === "*" && dow === "*") {
+    const n = everyN(hour);
+    if (n !== null) {
+      return n === 1 ? `hourly at :${pad(m)}` : `every ${n} hours at :${pad(m)}`;
+    }
+  }
+  if (h === null) return null;
+  const at = `${pad(h)}:${pad(m)}`;
+
+  if (dom === "*" && dow === "*") return `daily at ${at}`;
+  // Weekly: single day or a comma list of days.
+  if (dom === "*") {
+    const days = dow.split(",").map(dayName);
+    if (days.some((d) => d === null)) return null;
+    return `every ${days.join(", ")} at ${at}`;
+  }
+  // Monthly on a fixed day.
+  if (dow === "*") {
+    const d = num(dom);
+    if (d === null || d < 1 || d > 31) return null;
+    return `monthly on day ${d} at ${at}`;
+  }
+  return null;
+}
+
 function matchSummary(sub: TriggerSubscription): string {
   const m = sub.match ?? {};
   const parts: string[] = [];
-  if (sub.cron) parts.push(`cron ${sub.cron}`);
+  if (sub.cron) {
+    const human = humanizeCron(sub.cron);
+    parts.push(`cron ${sub.cron}${human ? ` (${human})` : ""}`);
+  }
   if (m.kinds?.length) parts.push(m.kinds.join("/"));
   if (m.subject_states?.length) parts.push(`state ∈ {${m.subject_states.join(",")}}`);
   if (m.labels?.length) parts.push(`labels ⊇ {${m.labels.join(",")}}`);
@@ -145,48 +226,50 @@ export default function TriggersView() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)]">
-          <table className="w-full text-sm">
-            <thead className="bg-surface-2 text-left text-xs text-fg-muted">
-              <tr>
-                <th className="px-3 py-2 font-medium">On</th>
-                <th className="px-3 py-2 font-medium">Source</th>
-                <th className="px-3 py-2 font-medium">Bot</th>
-                <th className="px-3 py-2 font-medium">When</th>
-                <th className="px-3 py-2 font-medium">Mode</th>
-                <th className="px-3 py-2 font-medium">Origin</th>
-                <th className="px-3 py-2" />
+        <div className="rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] overflow-hidden">
+          <Table caption="Event-driven trigger subscriptions">
+            <THead>
+              <tr className="bg-surface-2">
+                <Th>On</Th>
+                <Th>Source</Th>
+                <Th>Bot</Th>
+                <Th>When</Th>
+                <Th>Mode</Th>
+                <Th>Origin</Th>
+                <Th>
+                  <span className="sr-only">Actions</span>
+                </Th>
               </tr>
-            </thead>
-            <tbody>
+            </THead>
+            <TBody>
               {rows.map((sub) => (
-                <tr key={sub.id} className="border-t border-border-subtle">
-                  <td className="px-3 py-2">
+                <Tr key={sub.id}>
+                  <Td>
                     <Checkbox
                       checked={sub.enabled}
                       onChange={(e) => void onToggle(sub, e.target.checked)}
                       aria-label={sub.enabled ? "Disable trigger" : "Enable trigger"}
                     />
-                  </td>
-                  <td className="px-3 py-2">
+                  </Td>
+                  <Td>
                     <Badge>{sourceLabel(sub)}</Badge>
-                  </td>
-                  <td className="px-3 py-2 font-medium text-fg-default">
+                  </Td>
+                  <Td className="font-medium text-fg-default">
                     {sub.bot_id}
                     {sub.repo ? <span className="text-fg-muted"> · {sub.repo}</span> : null}
-                  </td>
-                  <td className="px-3 py-2 text-fg-muted">{matchSummary(sub)}</td>
-                  <td className="px-3 py-2 text-fg-muted">{sub.mode || "direct"}</td>
-                  <td className="px-3 py-2 text-fg-muted">{sub.origin || "operator"}</td>
-                  <td className="px-3 py-2 text-right">
+                  </Td>
+                  <Td className="text-fg-muted">{matchSummary(sub)}</Td>
+                  <Td className="text-fg-muted">{sub.mode || "direct"}</Td>
+                  <Td className="text-fg-muted">{sub.origin || "operator"}</Td>
+                  <Td align="right">
                     <Button variant="ghost" size="sm" onClick={() => void onDelete(sub)}>
                       Delete
                     </Button>
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         </div>
       )}
 

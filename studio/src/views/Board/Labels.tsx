@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -186,11 +187,14 @@ function LabelsViewInner() {
       {!labels && <EmptyState message="Loading…" />}
 
       {grouped && grouped.length === 0 && (
-        <p className="text-fg-muted text-micro italic">
-          {searchQuery
-            ? "No labels match that filter."
-            : "No labels on the board yet."}
-        </p>
+        searchQuery ? (
+          <EmptyState message="No labels match that filter." />
+        ) : (
+          <EmptyState
+            title="No labels yet"
+            message="Labels appear here once issues on the board carry them — bots and operators add them as they triage. Namespaced labels (source:, horizon:, …) group automatically."
+          />
+        )
       )}
 
       {grouped &&
@@ -202,87 +206,85 @@ function LabelsViewInner() {
                 · {rows.length} label{rows.length === 1 ? "" : "s"}
               </span>
             </h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-body border border-border-subtle">
-                <thead>
-                  <tr className="bg-surface-1 text-fg-muted text-left">
-                    <th className="px-2 py-1 font-medium">Label</th>
-                    <th className="px-2 py-1 font-medium w-16 text-right">
-                      Count
-                    </th>
-                    <th className="px-2 py-1 font-medium w-36">Last used</th>
-                    <th className="px-2 py-1 font-medium w-64">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr
-                      key={row.label}
-                      className="border-t border-border-subtle hover:bg-surface-1/40"
-                    >
-                      <td className="px-2 py-1 font-mono text-fg-default">
-                        <button
-                          type="button"
+            <Table
+              caption={`Labels in the ${ns} namespace`}
+              className="border border-border-subtle"
+            >
+              <THead>
+                <tr className="bg-surface-1">
+                  <Th>Label</Th>
+                  <Th align="right" className="w-16">
+                    Count
+                  </Th>
+                  <Th className="w-36">Last used</Th>
+                  <Th className="w-64">Actions</Th>
+                </tr>
+              </THead>
+              <TBody>
+                {rows.map((row) => (
+                  <Tr key={row.label}>
+                    <Td className="font-mono text-fg-default">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLocation(
+                            `/board?label=${encodeURIComponent(row.label)}`,
+                          )
+                        }
+                        className="underline-offset-2 hover:underline text-left rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+                        title="Filter the board by this label"
+                      >
+                        {row.label}
+                      </button>
+                    </Td>
+                    <Td align="right" className="tabular-nums text-fg-default">
+                      {row.count}
+                    </Td>
+                    <Td className="text-fg-muted">
+                      {row.last_used_at ? formatRelative(row.last_used_at) : "—"}
+                    </Td>
+                    <Td>
+                      <div className="flex gap-1.5">
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() =>
-                            setLocation(
-                              `/board?label=${encodeURIComponent(row.label)}`,
-                            )
+                            setDialog({
+                              kind: "rename",
+                              label: row,
+                              nextValue: row.label,
+                            })
                           }
-                          className="underline-offset-2 hover:underline text-left rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                          title="Filter the board by this label"
                         >
-                          {row.label}
-                        </button>
-                      </td>
-                      <td className="px-2 py-1 text-right tabular-nums text-fg-default">
-                        {row.count}
-                      </td>
-                      <td className="px-2 py-1 text-fg-muted">
-                        {row.last_used_at ? formatRelative(row.last_used_at) : "—"}
-                      </td>
-                      <td className="px-2 py-1">
-                        <div className="flex gap-1.5">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              setDialog({
-                                kind: "rename",
-                                label: row,
-                                nextValue: row.label,
-                              })
-                            }
-                          >
-                            rename
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() =>
-                              setDialog({
-                                kind: "merge",
-                                label: row,
-                                nextValue: "",
-                              })
-                            }
-                          >
-                            merge
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-danger-fg hover:text-danger"
-                            onClick={() => void onDelete(row)}
-                          >
-                            delete
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                          rename
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            setDialog({
+                              kind: "merge",
+                              label: row,
+                              nextValue: "",
+                            })
+                          }
+                        >
+                          merge
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-danger-fg hover:text-danger"
+                          onClick={() => void onDelete(row)}
+                        >
+                          delete
+                        </Button>
+                      </div>
+                    </Td>
+                  </Tr>
+                ))}
+              </TBody>
+            </Table>
           </section>
         ))}
 
