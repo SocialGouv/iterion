@@ -19,7 +19,7 @@ interface Props {
   desktopFeatures: boolean;
 }
 
-export default function Settings({
+export default function SettingsDialog({
   open,
   onClose,
   tab,

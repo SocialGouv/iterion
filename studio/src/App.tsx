@@ -26,10 +26,10 @@ const SkillsView = lazy(() => import("@/views/Skills"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
-const Settings = lazy(() => import("@/views/Settings"));
+const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
 const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginModal"));
-const SettingsPage = lazy(() => import("@/views/settings/SettingsPage"));
+const SettingsPage = lazy(() => import("@/views/account/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
 const OrgPage = lazy(() => import("@/views/orgs/OrgPage"));
@@ -440,7 +440,7 @@ function AuthedApp() {
       {/* Settings + ProjectSwitcher are also lazy and need their own
           Suspense boundary because they unmount/remount on open/close. */}
       <Suspense fallback={null}>
-        <Settings
+        <SettingsDialog
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
           tab={settingsTab}

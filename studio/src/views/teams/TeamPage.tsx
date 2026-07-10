@@ -20,7 +20,7 @@ import {
   removeMember,
   updateMemberRole,
 } from "@/api/byok";
-import ApiKeysPanel from "@/views/settings/ApiKeys";
+import ApiKeysPanel from "@/views/account/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 import AuditTab from "./tabs/AuditTab";

@@ -70,7 +70,7 @@ export default function WorkspaceShell() {
       setActiveId((a) => {
         if (a !== id) return a;
         const rest = openIds.filter((x) => x !== id);
-        return rest.length ? rest[rest.length - 1] : null;
+        return rest[rest.length - 1] ?? null;
       });
     },
     [openIds],
@@ -99,9 +99,9 @@ export default function WorkspaceShell() {
         open = [];
       }
       if (open.length === 0) {
-        const conns = await desktop.listConnections().catch(() => [] as Project[]);
-        if (conns.length > 0) {
-          await openPane(conns[0].id);
+        const first = (await desktop.listConnections().catch(() => [] as Project[]))[0];
+        if (first) {
+          await openPane(first.id);
           return;
         }
       }
@@ -185,8 +185,8 @@ export default function WorkspaceShell() {
             setFirstRunPending(false);
             void (async () => {
               await loadConnections();
-              const conns = await desktop.listConnections().catch(() => [] as Project[]);
-              if (conns.length > 0) await openPane(conns[0].id);
+              const first = (await desktop.listConnections().catch(() => [] as Project[]))[0];
+              if (first) await openPane(first.id);
             })();
           }}
         />

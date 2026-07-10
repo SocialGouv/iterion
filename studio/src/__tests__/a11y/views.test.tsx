@@ -10,8 +10,8 @@ import { cleanup, render } from "@testing-library/react";
 // stores have defaults; no network). Canvas (xyflow) + WS-driven views
 // stay manual / Playwright.
 
-import AppearanceTab from "@/views/Settings/AppearanceTab";
-import AboutTab from "@/views/Settings/AboutTab";
+import AppearanceTab from "@/views/SettingsDialog/AppearanceTab";
+import AboutTab from "@/views/SettingsDialog/AboutTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
 import { RunViewSkeleton, RunViewLoadError } from "@/components/Runs/runView/RunViewLoadStates";
 import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
