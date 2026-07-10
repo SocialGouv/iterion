@@ -255,13 +255,13 @@ const (
 // time field) + run_id partition key. The Mongo backend assigns _id
 // itself (ObjectId), so we don't expose one here.
 type Event struct {
-	Seq       int64                  `json:"seq" bson:"seq"`      // monotonic sequence within the run
-	Timestamp time.Time              `json:"timestamp" bson:"ts"` // wall-clock time
-	Type      EventType              `json:"type" bson:"type"`
-	RunID     string                 `json:"run_id" bson:"run_id"`
-	BranchID  string                 `json:"branch_id,omitempty" bson:"branch_id,omitempty"`
-	NodeID    string                 `json:"node_id,omitempty" bson:"node_id,omitempty"`
-	Data      map[string]interface{} `json:"data,omitempty" bson:"data,omitempty"`
+	Seq       int64          `json:"seq" bson:"seq"`      // monotonic sequence within the run
+	Timestamp time.Time      `json:"timestamp" bson:"ts"` // wall-clock time
+	Type      EventType      `json:"type" bson:"type"`
+	RunID     string         `json:"run_id" bson:"run_id"`
+	BranchID  string         `json:"branch_id,omitempty" bson:"branch_id,omitempty"`
+	NodeID    string         `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Data      map[string]any `json:"data,omitempty" bson:"data,omitempty"`
 	// TenantID partitions events for change-stream + RBAC filtering.
 	// Stamped from ctx at write time in cloud mode; empty for local
 	// runs and legacy filesystem events.
