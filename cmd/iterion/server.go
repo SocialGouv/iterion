@@ -254,6 +254,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// The auth stack is built before the publisher so the publisher can
+	// resolve team → org for spend attribution (RunMessage.OrgID).
+	authStack, err := buildAuthStack(rootCtx, cfg, st, stores, logger)
+	if err != nil {
+		return err
+	}
+
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
 		NATS:             natsConn,
 		Store:            st,
@@ -267,6 +274,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		Sealer:           sealer,
 		OAuthForfait:     stores.oauth,
 		ForgeConnections: stores.forgeConn,
+		Identity:         authStack.identityStore,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -278,11 +286,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	streamSrc := runstream.NewMongo(st.EventsCollection(), st.RunLogsCollection(), st.RunsCollection(), logger).WithMetrics(mreg)
 
 	disableAuth, _ := strconv.ParseBool(os.Getenv("ITERION_DISABLE_AUTH"))
-
-	authStack, err := buildAuthStack(rootCtx, cfg, st, stores, logger)
-	if err != nil {
-		return err
-	}
 
 	if err := bootstrapAdmin(rootCtx, cfg, authStack.identityStore, authStack.authSvc, disableAuth, logger); err != nil {
 		return err

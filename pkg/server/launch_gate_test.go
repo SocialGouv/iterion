@@ -334,3 +334,32 @@ func TestWriteLaunchDenial_Shape(t *testing.T) {
 		}
 	}
 }
+
+// TestGateLaunch_CostCapAcrossTeams is the end-to-end regression for the
+// multi-team cost-cap bug: spend recorded on the ORG key (as the runner
+// now does via RunMessage.OrgID) must trip the cap for a launch from any
+// team of that org.
+func TestGateLaunch_CostCapAcrossTeams(t *testing.T) {
+	s := newOrgTestServer(t)
+	counter := orgusage.NewMemoryCounter()
+	s.orgUsage = counter
+	ctx := context.Background()
+	if _, err := s.authStore().CreateOrg(ctx, identity.Org{ID: "o1", Name: "o1", Slug: "o1", MonthlyCostCapUSD: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.authStore().CreateTeam(ctx, identity.Team{ID: "ta", OrgID: "o1", Name: "ta", Slug: "ta"}); err != nil {
+		t.Fatal(err)
+	}
+	ctxA := auth.WithIdentity(ctx, auth.Identity{UserID: "u1", TeamID: "ta", OrgID: "o1"})
+	if _, d := s.gateLaunch(ctxA); d != nil {
+		t.Fatalf("under-cap launch denied: %+v", d)
+	}
+	// Runner-side spend lands on the ORG key (RunMessage.OrgID).
+	if err := counter.AddSpend(ctx, "o1", time.Now().UTC(), 6.0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, d := s.gateLaunch(ctxA)
+	if d == nil || d.reason != denyMonthlyCostCap {
+		t.Fatalf("denial = %+v, want %s (org-keyed spend must trip the org cap)", d, denyMonthlyCostCap)
+	}
+}

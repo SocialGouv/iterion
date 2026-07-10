@@ -1940,10 +1940,20 @@ func (r *Runner) recordOrgSpend(msg *queue.RunMessage, usage *metricsEmitter) {
 	if costUSD <= 0 && in <= 0 && out <= 0 {
 		return
 	}
+	// Charge the same usage key the launch gate metered the run on:
+	// the parent org (caps sum across the org's teams — charging the
+	// team key instead leaves the org's cost-cap document at zero, so
+	// the cap never trips in a multi-team org). OrgID is empty on
+	// pre-orgid messages and org-less pre-backfill teams — both were
+	// metered on the team key, so fall back to it.
+	key := msg.OrgID
+	if key == "" {
+		key = msg.TenantID
+	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := r.cfg.OrgUsage.AddSpend(bg, msg.TenantID, time.Now().UTC(), costUSD, in, out); err != nil {
-		r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", msg.TenantID, msg.RunID, err)
+	if err := r.cfg.OrgUsage.AddSpend(bg, key, time.Now().UTC(), costUSD, in, out); err != nil {
+		r.cfg.Logger.Warn("runner: org spend record for %s (run %s): %v", key, msg.RunID, err)
 	}
 }
 

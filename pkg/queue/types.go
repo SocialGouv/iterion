@@ -54,6 +54,14 @@ type RunMessage struct {
 	// before claiming the lock; a mismatch is treated as a corrupted
 	// queue entry and the run is naked.
 	TenantID string `json:"tenant_id"`
+	// OrgID is the parent-org id the run's monthly LLM spend is
+	// charged to — the same usage key the launch gate metered the
+	// launch on (gateMonthlyCaps keys the counter by org so caps sum
+	// across the org's teams). Optional: empty (message published
+	// before this field existed, or a pre-backfill team with no org)
+	// makes the runner fall back to TenantID, matching the gate's own
+	// fallback for org-less teams.
+	OrgID string `json:"org_id,omitempty"`
 	// OwnerID is the user_id of the principal who initiated the run.
 	// Used for audit logging; runners do NOT gate execution on it.
 	OwnerID string `json:"owner_id,omitempty"`
