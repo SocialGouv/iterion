@@ -223,6 +223,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		APIKeys:            map[secrets.Provider]string{},
 		GenericSecrets:     map[string]string{},
 		GenericSecretHosts: map[string][]string{},
+		GenericSecretRefs:  map[string]string{},
 		OAuthCredentials:   map[string][]byte{},
 	}
 
@@ -290,6 +291,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 			// hosts in the secret guard. Empty = no binding restriction.
 			if len(r.AllowedHosts) > 0 {
 				bundle.GenericSecretHosts[name] = r.AllowedHosts
+			}
+			if r.SecretID != "" {
+				// ID only (never the value): lets the runner re-read the
+				// worker-refreshed store record mid-run — the snapshot above
+				// outlives short-TTL credentials (App tokens live 1h).
+				bundle.GenericSecretRefs[name] = r.SecretID
 			}
 			usedIDs = append(usedIDs, r.SecretID)
 		}

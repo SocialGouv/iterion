@@ -405,6 +405,15 @@ type Config struct {
 	RunSecrets secrets.RunSecretsStore
 	Sealer     secrets.Sealer
 
+	// GenericSecrets, when non-nil, is the tenant generic-secret store
+	// (same Mongo DB, same Sealer). It powers the mid-run refresh of
+	// materialised file secrets: the bundle's value is a launch-time
+	// snapshot, so a short-TTL credential (1h GitHub App installation
+	// token) dies under a long run — the server-side refresh worker
+	// keeps the STORE record fresh, and the runner re-reads it via
+	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
+	GenericSecrets secrets.GenericSecretStore
+
 	// OrgUsage, when non-nil, receives each run's accumulated LLM
 	// cost/tokens into the org's monthly bucket at the end of every
 	// execution attempt (the billing source of truth — Prometheus
@@ -1030,7 +1039,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	// sandbox (the noop driver can't mount) needs them materialized as 0600
 	// files at their mount paths in the runner pod so the in-pod agent can
 	// read them — e.g. review-pr's forge_token for glab. Removed on return.
-	rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf)
+	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf)
 	if rm != nil {
 		// Always schedule cleanup, even on error: materialize returns a
 		// non-nil remover covering the files it wrote BEFORE failing, so
@@ -1039,6 +1048,18 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	}
 	if ferr != nil {
 		r.cfg.Logger.Warn("runner: materialize file secrets %s: %v", msg.RunID, ferr)
+	}
+	// Mid-run refresh of materialised file secrets: the bundle value is a
+	// launch-time snapshot and a GitHub App installation token lives 1h, so
+	// a long (or redelivered) run would push/comment with a dead credential.
+	// The server-side refresh worker keeps the STORE record fresh; re-read
+	// it and rewrite the file so `cat` at use time gets a live token.
+	if len(fileSecrets) > 0 && r.cfg.GenericSecrets != nil {
+		if creds, ok := secrets.CredentialsFromContext(ctx); ok && len(creds.GenericRefs) > 0 {
+			refreshCtx, stopRefresh := context.WithCancel(ctx)
+			defer stopRefresh()
+			go r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+		}
 	}
 
 	// Isolate the forge CLI (glab/gh) auth config to a PER-RUN directory so a
@@ -1447,9 +1468,10 @@ func injectGitToken(rawURL, token string) string {
 
 // materializeFileSecretsNoSandbox writes the workflow's `as: file` secrets to
 // 0600 files at their mount paths in the runner pod when the run has no
-// sandbox (a sandboxed run mounts them into the container instead). Returns a
-// cleanup that removes the written files, or nil when nothing was written.
-func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (func(), error) {
+// sandbox (a sandboxed run mounts them into the container instead). Returns
+// the written files keyed by secret name (for the mid-run refresher) and a
+// cleanup that removes them; both nil when nothing was written.
+func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (map[string]string, func(), error) {
 	if wf == nil || len(wf.Secrets) == 0 ||
 		runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault) {
 		// No secrets, or the run RESOLVES to an active sandbox (which mounts
@@ -1459,10 +1481,17 @@ func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Wor
 		// so its file secrets must be materialized here (run 019f4551's
 		// push_auth_probe found no forge_token exactly because this gate used
 		// to test the static declaration).
-		return nil, nil
+		return nil, nil, nil
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
-	var written []string
+	written := map[string]string{}
+	paths := func() []string {
+		out := make([]string, 0, len(written))
+		for _, p := range written {
+			out = append(out, p)
+		}
+		return out
+	}
 	for name, s := range wf.Secrets {
 		if !s.IsFile() {
 			continue
@@ -1485,17 +1514,83 @@ func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Wor
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(mp), 0o700); err != nil {
-			return removeFilesFunc(written), err
+			return written, removeFilesFunc(paths()), err
 		}
 		if err := os.WriteFile(mp, []byte(val), 0o600); err != nil {
-			return removeFilesFunc(written), err
+			return written, removeFilesFunc(paths()), err
 		}
-		written = append(written, mp)
+		written[name] = mp
 	}
 	if len(written) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return removeFilesFunc(written), nil
+	return written, removeFilesFunc(paths()), nil
+}
+
+// fileSecretRefreshInterval paces the mid-run re-read of materialised file
+// secrets from the generic-secret store. Well under the 10-minute cadence of
+// the server-side refresh worker, so a rotated credential reaches the file
+// within minutes of the store update.
+const fileSecretRefreshInterval = 5 * time.Minute
+
+// refreshFileSecretsLoop re-reads each materialised file secret's store
+// record on a fixed cadence and rewrites the file when the value changed.
+// Tools re-read the file per invocation (`cat /run/iterion/secrets/<name>`),
+// so a rotation propagates to every subsequent forge push/comment without
+// touching the process environment. Failures are logged and retried next
+// tick — the file keeps its last good value; nothing is ever truncated.
+func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, refs, files map[string]string) {
+	tick := time.NewTicker(fileSecretRefreshInterval)
+	defer tick.Stop()
+	last := map[string]string{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		r.refreshFileSecretsOnce(ctx, tenantID, refs, files, last)
+	}
+}
+
+// refreshFileSecretsOnce is one tick of refreshFileSecretsLoop: re-read every
+// ref'd file secret and atomically rewrite the ones whose store value moved.
+func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, refs, files, last map[string]string) {
+	for name, path := range files {
+		id := refs[name]
+		if id == "" {
+			continue // snapshot-only secret (no store ref) — nothing to refresh
+		}
+		// Bounded, tenant-scoped read; the loop ctx dies with the run.
+		rctx, cancel := context.WithTimeout(store.WithTenant(ctx, tenantID), 15*time.Second)
+		rec, err := r.cfg.GenericSecrets.Get(rctx, id)
+		cancel()
+		if err != nil {
+			r.cfg.Logger.Warn("runner: refresh file secret %q (ref %s): %v", name, id, err)
+			continue
+		}
+		val, err := secrets.OpenGenericSecret(r.cfg.Sealer, rec.ID, rec.SealedSecret)
+		if err != nil {
+			r.cfg.Logger.Warn("runner: refresh file secret %q: unseal: %v", name, err)
+			continue
+		}
+		if len(val) == 0 || string(val) == last[name] {
+			continue
+		}
+		// Atomic replace so a concurrent `cat` never sees a torn write.
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, val, 0o600); err != nil {
+			r.cfg.Logger.Warn("runner: refresh file secret %q: write: %v", name, err)
+			continue
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			_ = os.Remove(tmp)
+			r.cfg.Logger.Warn("runner: refresh file secret %q: rename: %v", name, err)
+			continue
+		}
+		last[name] = string(val)
+		r.cfg.Logger.Info("runner: refreshed file secret %q from store (rotation picked up)", name)
+	}
 }
 
 func removeFilesFunc(paths []string) func() {
@@ -1540,6 +1635,7 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		// intersects these with the workflow's declared hosts. Hostnames
 		// are not secret, so cleanup below leaves them untouched.
 		GenericHosts:         bundle.GenericSecretHosts,
+		GenericRefs:          bundle.GenericSecretRefs,
 		OAuthCredentialFiles: map[string]string{},
 		ForgeAppBotLogin:     bundle.ForgeAppBotLogin,
 	}

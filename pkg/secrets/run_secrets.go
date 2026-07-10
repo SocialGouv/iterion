@@ -36,6 +36,14 @@ type RunBundle struct {
 	// only NARROW egress, never broaden it. This is what makes a
 	// binding's AllowedHosts an enforced control rather than metadata.
 	GenericSecretHosts map[string][]string `json:"generic_secret_hosts,omitempty"`
+	// GenericSecretRefs maps a workflow secret name to the ID of the
+	// generic-secret store record it was resolved from (IDs only, never
+	// values). A short-lived credential (a GitHub App installation token
+	// lives 1h) can expire while the run executes; the server-side
+	// refresh worker keeps the STORE record fresh, so these refs let the
+	// runner re-read the current value mid-run and rewrite the secret's
+	// materialised file — the bundle snapshot alone would go stale.
+	GenericSecretRefs map[string]string `json:"generic_secret_refs,omitempty"`
 	// OAuthCredentials maps "claude_code" / "codex" → opaque blob
 	// that the runner materialises as a credentials.json /
 	// auth.json before spawning the CLI subprocess.

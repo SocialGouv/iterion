@@ -192,6 +192,7 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		Metrics:           mreg,
 		RunSecrets:        runSecretsStore,
 		Sealer:            sealer,
+		GenericSecrets:    secrets.NewMongoGenericSecretStore(st.DB()),
 		MemoryStore:       memStore,
 		OrgUsage:          orgUsageCounter,
 		BotsPaths:         botsPaths,

@@ -27,6 +27,12 @@ type Credentials struct {
 	// workflow's declared `secrets.<name>.hosts` so a binding can only
 	// narrow, never broaden, where the credential may egress.
 	GenericHosts map[string][]string
+	// GenericRefs maps a generic secret name to its generic-secret store
+	// record ID (IDs only, never values). It lets the runner re-read the
+	// server-refreshed record mid-run and rewrite the secret's
+	// materialised file before a short-TTL credential (e.g. a 1h GitHub
+	// App installation token) expires under a long run.
+	GenericRefs map[string]string
 	// OAuthCredentialFiles maps "claude_code" / "codex" → the
 	// absolute path of a temp directory holding the materialised
 	// credentials.json or auth.json. The delegate backends pass
