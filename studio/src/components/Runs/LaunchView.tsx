@@ -10,6 +10,7 @@ import type { AttachmentField, IterDocument, ServerInfo } from "@/api/types";
 
 import { Button } from "@/components/ui/Button";
 import { DesktopOnlyNotice } from "@/components/ui/DesktopOnlyNotice";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
@@ -58,6 +59,18 @@ export default function LaunchView() {
   // off Source). Also lets a fresh local buffer launch before its first
   // save.
   const storeDocument = useDocumentStore((s) => s.document);
+  // Pristine-buffer detection: the document store initializes with a
+  // default scaffold document (createEmptyDocument), so `storeDocument`
+  // is never null — a bare deep-link to /runs/new would otherwise
+  // silently offer launching that implicit scaffold as an "Unsaved
+  // workflow". A buffer only counts as a real launch candidate once the
+  // user opened a file (currentFilePath set) or edited the scaffold
+  // (generation moved past the last-saved mark).
+  const editorFilePath = useDocumentStore((s) => s.currentFilePath);
+  const editorDirty = useDocumentStore(
+    (s) => s._generation !== s._savedGeneration,
+  );
+  const noSource = !filePath && editorFilePath === null && !editorDirty;
   const [values, setValues] = useState<Record<string, string>>({});
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [attachments, setAttachments] = useState<Record<string, AttachmentValue | null>>({});
@@ -128,6 +141,11 @@ export default function LaunchView() {
       // The live edit buffer is the document store's AST (currentSource is
       // only the last opened/saved file's text, stale after edits), so we
       // derive the source from it via /api/unparse before launching.
+      //
+      // A pristine store buffer (never opened, never edited) is NOT a
+      // launchable workflow — the render below shows a picker empty
+      // state instead, so don't unparse the scaffold here.
+      if (noSource) return;
       if (!storeDocument) {
         setError("No workflow to launch — open or write one in the editor first.");
         return;
@@ -169,7 +187,7 @@ export default function LaunchView() {
     return () => {
       cancelled = true;
     };
-  }, [filePath, setCurrentSource, storeDocument]);
+  }, [filePath, noSource, setCurrentSource, storeDocument]);
 
   const fields = pickVars(doc);
 
@@ -440,6 +458,38 @@ export default function LaunchView() {
       </Button>
     ),
   });
+
+  // Deep-link with nothing to launch (no ?file= and a pristine editor
+  // buffer): never offer the implicit empty scaffold — route the user
+  // to a real workflow instead.
+  if (noSource) {
+    return (
+      <div className="h-full flex flex-col bg-surface-1 text-fg-default">
+        <EmptyState
+          title="No workflow to launch"
+          message="This page launches a specific workflow, but none is selected. Open a .bot file in the Editor, or pick a bot or recent workflow from Home, then launch from there."
+          action={
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => setLocation("/editor")}
+            >
+              Open the Editor
+            </Button>
+          }
+          secondaryAction={
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setLocation("/")}
+            >
+              Browse workflows
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="h-full flex flex-col bg-surface-1 text-fg-default">

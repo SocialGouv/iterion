@@ -18,6 +18,9 @@ import { useToolCalls, ToolCallList } from "./detail/ToolCalls";
 
 interface Props {
   runId: string;
+  // The run's current status. Drives the no-selection empty state: a
+  // terminal run must not claim to be "live" / waiting for the engine.
+  runStatus?: string;
   // The workflow source path for this run; used to wire "Open in editor".
   filePath?: string;
   // All executions of the selected IR node, ordered by start time.
@@ -50,6 +53,7 @@ interface Props {
 
 export default function NodeDetailPanel({
   runId,
+  runStatus,
   filePath,
   executions,
   selectedIteration,
@@ -144,16 +148,29 @@ export default function NodeDetailPanel({
   }, [nodeId, execKind, isPausedExec]);
 
   if (!exec) {
+    // Terminal runs (finished / failed / cancelled) will never start
+    // another node, so the "following the running node" promise — and
+    // its live badge — would be a lie. Swap in a plain retrospective
+    // prompt instead; running/paused runs keep the live-follow copy.
+    const isTerminal =
+      runStatus === "finished" ||
+      runStatus === "failed" ||
+      runStatus === "cancelled";
     return (
       <div className="relative h-full p-4 text-xs text-fg-subtle">
         <CollapseButton onCollapse={onCollapse} />
-        {onToggleFollowLive && (
+        {!isTerminal && onToggleFollowLive && (
           <FollowLivePill
             followLive={!!followLive}
             onToggle={onToggleFollowLive}
           />
         )}
-        {followLive ? (
+        {isTerminal ? (
+          <p className="mt-8">
+            Run {runStatus === "cancelled" ? "was cancelled" : runStatus} —
+            select a node to inspect its output, events, and trace.
+          </p>
+        ) : followLive ? (
           <p className="mt-8">
             Following the running node. Nothing is executing right now —
             this panel will jump in as soon as the engine starts a node.

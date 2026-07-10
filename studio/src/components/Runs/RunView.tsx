@@ -432,6 +432,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                   <div className="h-full border-l border-border-default min-h-0 overflow-hidden animate-fade-in-opacity">
                     <NodeDetailPanel
                       runId={runId}
+                      runStatus={snapshot.run.status}
                       filePath={snapshot.run.file_path}
                       executions={selectedNodeExecutions}
                       selectedIteration={selectedNodeIteration}

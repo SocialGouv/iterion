@@ -1,7 +1,7 @@
 import { CopyButton } from "@/components/ui";
 import type { RunHeader } from "@/api/runs";
 
-import { Row, Section } from "../InfoPrimitives";
+import { Section } from "../InfoPrimitives";
 
 interface BriefingSectionProps {
   run: RunHeader;
@@ -104,16 +104,21 @@ function InputRow({ label, value }: InputRowProps) {
 
   if (isEmpty) {
     return (
-      <Row label={label}>
+      <div className="grid grid-cols-[80px_1fr] gap-2 text-micro items-start">
+        <span className="text-fg-subtle break-all" title={label}>
+          {label}
+        </span>
         <span className="text-fg-subtle italic">(empty)</span>
-      </Row>
+      </div>
     );
   }
 
   if (!isLong) {
     return (
       <div className="grid grid-cols-[80px_1fr_auto] gap-2 text-micro items-start">
-        <span className="text-fg-subtle truncate">{label}</span>
+        <span className="text-fg-subtle break-all" title={label}>
+          {label}
+        </span>
         <code
           className="font-mono text-caption text-fg-default break-all min-w-0"
           title={asString}
@@ -132,8 +137,10 @@ function InputRow({ label, value }: InputRowProps) {
 
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <span className="text-micro text-fg-subtle">{label}</span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 break-all text-micro text-fg-subtle" title={label}>
+          {label}
+        </span>
         <CopyButton
           value={asString}
           variant="icon"
