@@ -1344,6 +1344,80 @@
         ]
       }
     },
+    "/api/local/skills": {
+      "get": {
+        "operationId": "getLocalSkills",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/local/skills",
+        "tags": [
+          "local"
+        ]
+      },
+      "post": {
+        "operationId": "postLocalSkills",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/local/skills",
+        "tags": [
+          "local"
+        ]
+      }
+    },
+    "/api/local/skills/{name}": {
+      "delete": {
+        "operationId": "deleteLocalSkillsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/local/skills/{name}",
+        "tags": [
+          "local"
+        ]
+      },
+      "get": {
+        "operationId": "getLocalSkillsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/local/skills/{name}",
+        "tags": [
+          "local"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putLocalSkillsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/local/skills/{name}",
+        "tags": [
+          "local"
+        ]
+      }
+    },
     "/api/me/api-keys": {
       "get": {
         "operationId": "getMeApiKeys",
@@ -3298,6 +3372,30 @@
           "runs"
         ]
       }
+    },
+    "/api/runs/{id}/plans": {
+      "get": {
+        "operationId": "getRunsByIdPlans",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/plans",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
     },
     "/api/runs/{id}/preview": {
       "get": {
