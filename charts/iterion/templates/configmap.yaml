@@ -118,3 +118,6 @@ data:
   ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID: {{ . | quote }}
   {{- end }}
   {{- end }}
+  {{- range $key, $value := .Values.config.extraEnv }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

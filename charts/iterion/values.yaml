@@ -161,6 +161,11 @@ ingress:
 mode: cloud   # "local" or "cloud"; "local" pins replicas=1 + PVC
 
 config:
+  # Arbitrary extra environment variables rendered into the shared
+  # ConfigMap (both the server and runner deployments envFrom it).
+  # e.g. TZ: Europe/Paris — the binary embeds the IANA tz database
+  # (time/tzdata), so TZ works even in tzdata-less images.
+  extraEnv: {}
   log:
     format: json
     level: info
