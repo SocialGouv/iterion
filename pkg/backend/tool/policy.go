@@ -27,8 +27,8 @@ type PolicyContext struct {
 	NodeID   string
 	NodeKind string // "agent", "judge", "tool", etc.
 	ToolName string
-	Input    json.RawMessage        // nil when unavailable
-	Vars     map[string]interface{} // workflow vars, read-only
+	Input    json.RawMessage // nil when unavailable
+	Vars     map[string]any  // workflow vars, read-only
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +110,8 @@ func (p *Policy) CheckContext(ctx PolicyContext) error {
 // VarRule maps a set of var conditions to tool patterns. When all vars match,
 // the listed patterns are allowed.
 type VarRule struct {
-	VarMatch map[string]interface{} // vars that must match
-	Allow    []string               // tool patterns to allow when matched
+	VarMatch map[string]any // vars that must match
+	Allow    []string       // tool patterns to allow when matched
 }
 
 // ---------------------------------------------------------------------------

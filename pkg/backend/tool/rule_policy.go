@@ -12,11 +12,11 @@ import (
 
 // Rule is a single conditional rule in a RulePolicy.
 type Rule struct {
-	NodeIDs  []string               // nil = any node
-	NodeKind string                 // "" = any kind
-	VarMatch map[string]interface{} // nil = any vars
-	Allow    []string               // patterns to allow if this rule matches
-	Deny     bool                   // if true, deny matched tools instead
+	NodeIDs  []string       // nil = any node
+	NodeKind string         // "" = any kind
+	VarMatch map[string]any // nil = any vars
+	Allow    []string       // patterns to allow if this rule matches
+	Deny     bool           // if true, deny matched tools instead
 }
 
 // RulePolicy evaluates an ordered list of conditional rules using
@@ -83,7 +83,7 @@ func ruleMatches(r Rule, ctx PolicyContext) bool {
 // valuesEqual compares two values for policy matching. It handles
 // numeric type mismatches (int vs float64 from JSON unmarshalling)
 // and falls back to string comparison for other types.
-func valuesEqual(a, b interface{}) bool {
+func valuesEqual(a, b any) bool {
 	if a == b {
 		return true
 	}
@@ -96,7 +96,7 @@ func valuesEqual(a, b interface{}) bool {
 }
 
 // toFloat64 converts numeric types to float64 for comparison.
-func toFloat64(v interface{}) (float64, bool) {
+func toFloat64(v any) (float64, bool) {
 	switch n := v.(type) {
 	case int:
 		return float64(n), true

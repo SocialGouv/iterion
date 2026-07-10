@@ -156,7 +156,7 @@ func TestPolicyCheckContext(t *testing.T) {
 		NodeID:   "agent1",
 		NodeKind: "agent",
 		ToolName: "git_diff",
-		Vars:     map[string]interface{}{"env": "test"},
+		Vars:     map[string]any{"env": "test"},
 	}
 	if err := p.CheckContext(ctx); err != nil {
 		t.Errorf("CheckContext should allow git_diff, got: %v", err)

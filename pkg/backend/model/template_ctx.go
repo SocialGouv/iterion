@@ -12,7 +12,7 @@ import "context"
 // All fields are read-only views — callers must not mutate them.
 type TemplateData struct {
 	// Outputs is the per-node output map. Keys are node IDs.
-	Outputs map[string]map[string]interface{}
+	Outputs map[string]map[string]any
 
 	// LoopCounters is the current iteration count per loop name
 	// (1-indexed once incremented by the engine).
@@ -25,11 +25,11 @@ type TemplateData struct {
 	// LoopPreviousOutput is the snapshot of the source node's output
 	// at the previous traversal of each loop's edge — i.e. one
 	// iteration behind the current one. Nil on the first iteration.
-	LoopPreviousOutput map[string]map[string]interface{}
+	LoopPreviousOutput map[string]map[string]any
 
 	// Artifacts is the publish-name → output map for artifacts that
 	// have been produced so far in this run.
-	Artifacts map[string]map[string]interface{}
+	Artifacts map[string]map[string]any
 
 	// RunID is the current run identifier, exposed to prompts as
 	// `{{run.id}}`.

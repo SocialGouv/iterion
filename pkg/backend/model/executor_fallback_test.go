@@ -31,7 +31,7 @@ func (b *providerScriptedBackend) Execute(_ context.Context, task delegate.Task)
 		return delegate.Result{}, err
 	}
 	return delegate.Result{
-		Output:      map[string]interface{}{"ok": true, "served_by": task.ProviderHint, "model": task.Model},
+		Output:      map[string]any{"ok": true, "served_by": task.ProviderHint, "model": task.Model},
 		BackendName: delegate.BackendClaudeCode,
 	}, nil
 }
@@ -87,7 +87,7 @@ func TestProviderFallback_FallsThroughThenSucceeds(t *testing.T) {
 	e := newFallbackExecutor(reg, rec.hook())
 	node := fallbackAgentNode("review", delegate.BackendClaudeCode, "zai,anthropic")
 
-	out, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := e.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("expected success after fall-through, got error: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestProviderFallback_PerElementModelSwap(t *testing.T) {
 	e := newFallbackExecutor(reg, rec.hook())
 	node := fallbackAgentNode("review", delegate.BackendClaudeCode, "zai:glm-5.2,anthropic:claude-opus-4-8")
 
-	out, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := e.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("expected success after model-swapping fall-through, got error: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestProviderFallback_ModelElementInheritsBaseline(t *testing.T) {
 	// zai pins glm-5.2; anthropic inherits the node baseline model.
 	node := fallbackAgentNodeModel("review", delegate.BackendClaudeCode, "zai:glm-5.2,anthropic", "claude-sonnet-4-6")
 
-	out, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := e.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("expected success after fall-through, got: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestProviderFallback_WholeChainFails(t *testing.T) {
 	e := newFallbackExecutor(reg, rec.hook())
 	node := fallbackAgentNode("review", delegate.BackendClaudeCode, "zai,anthropic")
 
-	_, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := e.Execute(context.Background(), node, map[string]any{})
 	if err == nil {
 		t.Fatal("expected error when all providers fail")
 	}
@@ -227,7 +227,7 @@ func TestProviderFallback_SingleValueNeverFallsThrough(t *testing.T) {
 	e := newFallbackExecutor(reg, rec.hook())
 	node := fallbackAgentNode("review", delegate.BackendClaudeCode, "anthropic")
 
-	out, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := e.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestProviderFallback_NonRetryableStillFallsThrough(t *testing.T) {
 	e := newFallbackExecutor(reg, rec.hook())
 	node := fallbackAgentNode("review", delegate.BackendClaudeCode, "zai,anthropic")
 
-	out, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := e.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("expected success after fall-through, got: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestProviderFallback_NonRetryableWithNilLoggerStillFallsThrough(t *testing.
 	}
 	node := fallbackAgentNode("review", delegate.BackendClaudeCode, "zai,anthropic")
 
-	out, err := e.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := e.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("expected success after fall-through with nil logger, got: %v", err)
 	}

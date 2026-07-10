@@ -44,7 +44,7 @@ func TestEstimateUSD(t *testing.T) {
 
 func TestAnnotate(t *testing.T) {
 	t.Run("known model writes _cost_usd", func(t *testing.T) {
-		out := map[string]interface{}{}
+		out := map[string]any{}
 		total := Annotate(out, "claude-haiku-4-5", 1000, 500)
 		if total != 1500 {
 			t.Fatalf("total = %d, want 1500", total)
@@ -61,7 +61,7 @@ func TestAnnotate(t *testing.T) {
 	})
 
 	t.Run("unknown model omits _cost_usd", func(t *testing.T) {
-		out := map[string]interface{}{}
+		out := map[string]any{}
 		Annotate(out, "made-up-model", 1000, 500)
 		if _, ok := out["_cost_usd"]; ok {
 			t.Fatalf("_cost_usd should be absent for unknown model")

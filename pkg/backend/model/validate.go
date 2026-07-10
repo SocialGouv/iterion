@@ -22,7 +22,7 @@ func isMissingFieldError(err error) bool {
 // ValidateOutput checks that output contains all required fields from the
 // schema with compatible types. It does NOT attempt to repair or coerce
 // invalid values — the node must fail explicitly on schema mismatch.
-func ValidateOutput(output map[string]interface{}, schema *ir.Schema) error {
+func ValidateOutput(output map[string]any, schema *ir.Schema) error {
 	var errs []string
 
 	for _, f := range schema.Fields {
@@ -44,7 +44,7 @@ func ValidateOutput(output map[string]interface{}, schema *ir.Schema) error {
 }
 
 // checkFieldType validates that val is compatible with the expected field type.
-func checkFieldType(f *ir.SchemaField, val interface{}) error {
+func checkFieldType(f *ir.SchemaField, val any) error {
 	if val == nil {
 		return fmt.Errorf("field %q is null", f.Name)
 	}
@@ -84,7 +84,7 @@ func checkFieldType(f *ir.SchemaField, val interface{}) error {
 		// Any non-nil value is acceptable for JSON fields.
 
 	case ir.FieldTypeStringArray:
-		arr, ok := val.([]interface{})
+		arr, ok := val.([]any)
 		if !ok {
 			return fmt.Errorf("field %q: expected string array, got %T", f.Name, val)
 		}

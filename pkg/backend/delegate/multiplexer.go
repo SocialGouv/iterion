@@ -39,7 +39,7 @@ type MultiplexerHandler struct {
 
 	// OnEvent forwards a runner-emitted observability event to the
 	// engine's events.jsonl pipeline. Fire-and-forget.
-	OnEvent func(eventType string, payload map[string]interface{})
+	OnEvent func(eventType string, payload map[string]any)
 }
 
 // Multiplexer drives the launcher-side NDJSON loop: it reads

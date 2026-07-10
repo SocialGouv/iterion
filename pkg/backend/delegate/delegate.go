@@ -880,13 +880,13 @@ const (
 // free-text ask_user pauses keep their historical single-key shape.
 // Options serialize as []map so the checkpoint's JSON round-trip is
 // loss-free.
-func AddAskUserOptionKeys(questions map[string]interface{}, options []AskUserOption, allowFreeText bool) {
+func AddAskUserOptionKeys(questions map[string]any, options []AskUserOption, allowFreeText bool) {
 	if len(options) == 0 {
 		return
 	}
-	list := make([]interface{}, 0, len(options))
+	list := make([]any, 0, len(options))
 	for _, o := range options {
-		list = append(list, map[string]interface{}{"id": o.ID, "label": o.Label})
+		list = append(list, map[string]any{"id": o.ID, "label": o.Label})
 	}
 	questions[AskUserOptionsKey] = list
 	questions[AskUserAllowFreeTextKey] = allowFreeText
@@ -967,7 +967,7 @@ const QueuedOperatorMessagesKey = "_queued_operator_messages"
 // Result contains the output from a delegation backend.
 type Result struct {
 	// Output is the parsed structured output from the CLI agent.
-	Output map[string]interface{}
+	Output map[string]any
 
 	// Tokens is an estimate of total tokens consumed (if available from CLI metadata).
 	Tokens int

@@ -164,9 +164,9 @@ func (rp RetryPolicy) backoff(attempt int) time.Duration {
 // or deciding (interaction: llm_or_human) based on the node's InteractionMode.
 type ErrNeedsInteraction struct {
 	NodeID    string
-	Questions map[string]interface{} // question_key → question text
-	SessionID string                 // delegate session ID for re-invocation
-	Backend   string                 // delegate backend name (empty for claw direct)
+	Questions map[string]any // question_key → question text
+	SessionID string         // delegate session ID for re-invocation
+	Backend   string         // delegate backend name (empty for claw direct)
 
 	// Conversation is the persisted backend-specific conversation history
 	// captured at the pause point (claw: marshalled []api.Message). The

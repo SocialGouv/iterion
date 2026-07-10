@@ -43,7 +43,7 @@ func sampleWorkflow() *ir.Workflow {
 	}
 }
 
-func writeJSON(t *testing.T, dir, name string, v interface{}) string {
+func writeJSON(t *testing.T, dir, name string, v any) string {
 	t.Helper()
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

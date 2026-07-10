@@ -114,7 +114,7 @@ type EventHooks struct {
 	// `_cost_usd`, `_model`) so observers (e.g. the Prometheus exporter)
 	// can attribute cost and tokens per-node without re-parsing the event
 	// log.
-	OnNodeFinished func(nodeID string, output map[string]interface{})
+	OnNodeFinished func(nodeID string, output map[string]any)
 }
 
 // chainCb2 composes two 2-argument callbacks: if either is nil, returns

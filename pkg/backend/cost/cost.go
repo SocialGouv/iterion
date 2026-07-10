@@ -109,7 +109,7 @@ func EstimateUSD(model string, inputTokens, outputTokens int) float64 {
 // keys onto a generation output. Cost is omitted when the model is
 // unknown to the price table, so observers can distinguish "no cost
 // data" from "$0". A nil output map is a no-op (returns 0).
-func Annotate(output map[string]interface{}, model string, inputTokens, outputTokens int) (totalTokens int) {
+func Annotate(output map[string]any, model string, inputTokens, outputTokens int) (totalTokens int) {
 	totalTokens = inputTokens + outputTokens
 	if output == nil {
 		return totalTokens

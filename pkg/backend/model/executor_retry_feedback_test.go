@@ -39,9 +39,9 @@ func TestValidateAndRetry_InjectsSchemaFeedback(t *testing.T) {
 	backend := &capturingBackend{
 		results: []delegate.Result{
 			// 1st call: valid JSON but missing the required "answer" field.
-			{Output: map[string]interface{}{"other": "x"}, BackendName: "test_backend"},
+			{Output: map[string]any{"other": "x"}, BackendName: "test_backend"},
 			// 2nd call: corrected, schema-valid output.
-			{Output: map[string]interface{}{"answer": "blue"}, BackendName: "test_backend"},
+			{Output: map[string]any{"answer": "blue"}, BackendName: "test_backend"},
 		},
 	}
 
@@ -67,7 +67,7 @@ func TestValidateAndRetry_InjectsSchemaFeedback(t *testing.T) {
 		SchemaFields: ir.SchemaFields{OutputSchema: "out_schema"},
 	}
 
-	output, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
+	output, err := exec.executeBackend(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

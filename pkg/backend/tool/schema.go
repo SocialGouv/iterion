@@ -13,7 +13,7 @@ func SchemaFingerprint(schema json.RawMessage) string {
 	if len(schema) == 0 {
 		return ""
 	}
-	var v interface{}
+	var v any
 	if err := json.Unmarshal(schema, &v); err != nil {
 		h := sha256.Sum256(schema)
 		return fmt.Sprintf("%x", h)

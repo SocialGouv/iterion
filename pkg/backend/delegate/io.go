@@ -100,19 +100,19 @@ type IOToolDef struct {
 // but the structured Error lets the launcher surface a typed
 // message without re-parsing stderr).
 type IOResult struct {
-	Output              map[string]interface{} `json:"output,omitempty"`
-	Tokens              int                    `json:"tokens,omitempty"`
-	DurationMS          int64                  `json:"duration_ms,omitempty"`
-	ExitCode            int                    `json:"exit_code,omitempty"`
-	Stderr              string                 `json:"stderr,omitempty"`
-	BackendName         string                 `json:"backend_name,omitempty"`
-	RawOutputLen        int                    `json:"raw_output_len,omitempty"`
-	ParseFallback       bool                   `json:"parse_fallback,omitempty"`
-	FormattingPassUsed  bool                   `json:"formatting_pass_used,omitempty"`
-	SessionID           string                 `json:"session_id,omitempty"`
-	PendingConversation json.RawMessage        `json:"pending_conversation,omitempty"`
-	PendingToolUseID    string                 `json:"pending_tool_use_id,omitempty"`
-	Error               string                 `json:"error,omitempty"`
+	Output              map[string]any  `json:"output,omitempty"`
+	Tokens              int             `json:"tokens,omitempty"`
+	DurationMS          int64           `json:"duration_ms,omitempty"`
+	ExitCode            int             `json:"exit_code,omitempty"`
+	Stderr              string          `json:"stderr,omitempty"`
+	BackendName         string          `json:"backend_name,omitempty"`
+	RawOutputLen        int             `json:"raw_output_len,omitempty"`
+	ParseFallback       bool            `json:"parse_fallback,omitempty"`
+	FormattingPassUsed  bool            `json:"formatting_pass_used,omitempty"`
+	SessionID           string          `json:"session_id,omitempty"`
+	PendingConversation json.RawMessage `json:"pending_conversation,omitempty"`
+	PendingToolUseID    string          `json:"pending_tool_use_id,omitempty"`
+	Error               string          `json:"error,omitempty"`
 }
 
 // ToIOTask converts a [Task] to its wire form. The Sandbox handle and

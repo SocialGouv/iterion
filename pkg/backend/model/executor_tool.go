@@ -29,7 +29,7 @@ import (
 // executeToolNode runs a tool node (direct command, no LLM).
 // The tool policy is checked before execution; denied tools produce an
 // explicit error with the tool_called hook fired (Error != nil).
-func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeToolNode(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
 	// Verified Action (ADR-044): a node with a postcondition runs through
 	// the escalation ladder (idempotent-skip → recipe → self-repair →
 	// agent recovery → policy), keying success on the postcondition rather
@@ -71,7 +71,7 @@ func recipeKindOf(node *ir.ToolNode) recipeKind {
 // executeToolNodeRecipe runs a tool node's recipe with exit-code = success
 // (the pre-ADR-044 behaviour). It is the rung-2 primitive of the Verified
 // Action ladder and the whole of the non-verified path.
-func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeToolNodeRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
 	switch recipeKindOf(node) {
 	case recipeScript:
 		return e.executeToolNodeScript(ctx, node, input)
@@ -193,10 +193,10 @@ func (e *ClawExecutor) emitToolNodeFinish(nodeID, toolName, resolved, stdout, st
 // The unmarshal target itself is whitespace-tolerant (Go's json package
 // skips leading/trailing whitespace), so the raw stdout is always
 // acceptable for the parse attempt.
-func parseToolNodeOutput(stdout, fallback string) map[string]interface{} {
-	var output map[string]interface{}
+func parseToolNodeOutput(stdout, fallback string) map[string]any {
+	var output map[string]any
 	if json.Unmarshal([]byte(stdout), &output) != nil {
-		return map[string]interface{}{"result": fallback}
+		return map[string]any{"result": fallback}
 	}
 	return output
 }
@@ -226,7 +226,7 @@ func (e *ClawExecutor) executeToolNodeCommon(
 	toolName, failVerb string,
 	resolve func() string,
 	buildCmd func(resolved string) (cmd *exec.Cmd, cleanup func(), err error),
-) (map[string]interface{}, error) {
+) (map[string]any, error) {
 	res, setupErr := e.runToolNodeCore(ctx, node, toolName, resolve, buildCmd)
 	if setupErr != nil {
 		return nil, setupErr
@@ -244,7 +244,7 @@ func (e *ClawExecutor) executeToolNodeCommon(
 // consumes the streams + resolved command to drive self-repair, where
 // executeToolNodeCommon only needs output + runErr.
 type recipeResult struct {
-	output   map[string]interface{}
+	output   map[string]any
 	stdout   string
 	stderr   string
 	resolved string
@@ -307,7 +307,7 @@ func (e *ClawExecutor) runToolNodeCore(
 // executeToolNodeShell handles tool nodes whose command contains {{...}}
 // template references. Templates are resolved from the node's input map,
 // and the resulting string is executed as a shell command via sh -c.
-func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
 	resolve, buildCmd := e.shellRecipe(ctx, node, input)
 	return e.executeToolNodeCommon(ctx, node, shellToolNodeToolName(node), "shell command failed", resolve, buildCmd)
 }
@@ -316,7 +316,7 @@ func (e *ClawExecutor) executeToolNodeShell(ctx context.Context, node *ir.ToolNo
 // node, factored out of executeToolNodeShell so both the standard path
 // and the Verified Action ladder share one source of truth for how a
 // shell recipe is resolved and built.
-func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (func() string, func(resolved string) (*exec.Cmd, func(), error)) {
+func (e *ClawExecutor) shellRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (*exec.Cmd, func(), error)) {
 	return func() string {
 			// Expand environment variables FIRST, on the author-controlled
 			// command template only. Doing this AFTER resolveCommandTemplate
@@ -453,7 +453,7 @@ func combineStreamsForLog(stdout, stderr string) string {
 // when empty). The temp file lives in the workspace so it is visible
 // from inside the sandbox bind-mount, and is removed on success or
 // failure.
-func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
 	resolve, buildCmd := e.scriptRecipe(ctx, node, input)
 	return e.executeToolNodeCommon(ctx, node, scriptToolNodeToolName(node), "script failed", resolve, buildCmd)
 }
@@ -461,7 +461,7 @@ func (e *ClawExecutor) executeToolNodeScript(ctx context.Context, node *ir.ToolN
 // scriptRecipe returns the resolve + buildCmd closures for a script tool
 // node, factored out of executeToolNodeScript so the standard path and
 // the Verified Action ladder share one source of truth.
-func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (func() string, func(resolved string) (*exec.Cmd, func(), error)) {
+func (e *ClawExecutor) scriptRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (func() string, func(resolved string) (*exec.Cmd, func(), error)) {
 	return func() string {
 			// Same env-then-substitution ordering as executeToolNodeShell:
 			// only the author-controlled `${NAME}` braces are env-expanded so
@@ -635,7 +635,7 @@ func looksLikeShellCommand(cmd string) bool {
 // command line that the wrapping tool needs to RE-INTERPRET as shell, not
 // pass as a single quoted token). Untrusted external inputs MUST keep the
 // default escaping.
-func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}, guards ...*secretguard.Guard) string {
+func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]any, vars map[string]any, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -660,7 +660,7 @@ func resolveCommandTemplate(command string, refs []*ir.Ref, input map[string]int
 // The bang form `{{!input.X}}` keeps the legacy raw-passthrough
 // behaviour (strings inserted unquoted) for authors who need to drop
 // a snippet of source directly into the script body.
-func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}, guards ...*secretguard.Guard) string {
+func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]any, vars map[string]any, guards ...*secretguard.Guard) string {
 	var guard *secretguard.Guard
 	if len(guards) > 0 {
 		guard = guards[0]
@@ -687,12 +687,12 @@ func resolveScriptTemplate(script string, refs []*ir.Ref, input map[string]inter
 // raw passthrough. Only run.id is defined today. A run id is a stable
 // UUID-shaped token (no `{{` of its own), so the literal ReplaceAll
 // cannot re-trigger on a substituted value.
-func resolveRunRefs(template, runID string, refs []*ir.Ref, render func(interface{}) string) string {
+func resolveRunRefs(template, runID string, refs []*ir.Ref, render func(any) string) string {
 	for _, r := range refs {
 		if r == nil || r.Kind != ir.RefRun {
 			continue
 		}
-		var val interface{}
+		var val any
 		if len(r.Path) > 0 && r.Path[0] == "id" {
 			val = runID
 		}
@@ -718,13 +718,13 @@ func resolveRunRefs(template, runID string, refs []*ir.Ref, render func(interfac
 // {{...}} literal matching a later ref would be silently rewritten
 // (the "cascade" bug). The single-pass walk only touches positions
 // that were in the source template.
-func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]interface{}, vars map[string]interface{}, guard *secretguard.Guard, defaultRender func(interface{}) string, substituteNil bool) string {
+func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]any, vars map[string]any, guard *secretguard.Guard, defaultRender func(any) string, substituteNil bool) string {
 	if len(refs) == 0 {
 		return template
 	}
 	subs := make(map[string]string, len(refs))
 	for _, ref := range refs {
-		var val interface{}
+		var val any
 		var handled bool
 		switch {
 		case ref.Kind == ir.RefInput && len(ref.Path) > 0:
@@ -800,7 +800,7 @@ func resolveTemplateWith(template string, refs []*ir.Ref, input map[string]inter
 // rendered as JSON's natural form. The result is a valid expression
 // in JavaScript, Python, Ruby, and any modern language that accepts
 // JSON-superset literal syntax — no further wrapping needed.
-func jsonLiteralValue(val interface{}) string {
+func jsonLiteralValue(val any) string {
 	b, err := json.Marshal(val)
 	if err != nil {
 		// json.Marshal effectively never fails on values we accept
@@ -816,7 +816,7 @@ func jsonLiteralValue(val interface{}) string {
 // the {{!ref}} raw substitution mode. Strings pass through; complex types
 // are JSON-encoded (matches formatValue's prompt-rendering convention so
 // authors can reason about both contexts uniformly).
-func rawTemplateValue(val interface{}) string {
+func rawTemplateValue(val any) string {
 	if val == nil {
 		return "null"
 	}
@@ -985,7 +985,7 @@ func resolveBracedEnvBody(body string) string {
 //
 // Scalars fall back to fmt.Sprint + shellEscape, preserving the prior
 // single-value behaviour for strings, numbers, and booleans.
-func shellEscapeValue(val interface{}) string {
+func shellEscapeValue(val any) string {
 	if val == nil {
 		return ""
 	}
@@ -999,7 +999,7 @@ func shellEscapeValue(val interface{}) string {
 			parts[i] = shellEscape(s)
 		}
 		return strings.Join(parts, " ")
-	case []interface{}:
+	case []any:
 		if len(v) == 0 {
 			return ""
 		}
@@ -1030,7 +1030,7 @@ func shellEscapeValue(val interface{}) string {
 			parts[i] = shellEscape(fmt.Sprint(e))
 		}
 		return strings.Join(parts, " ")
-	case map[string]interface{}:
+	case map[string]any:
 		// Maps don't have a sensible space-separated representation;
 		// JSON is the only round-trippable shape.
 		b, err := json.Marshal(v)
@@ -1047,10 +1047,10 @@ func shellEscapeValue(val interface{}) string {
 // non-scalar element (map or nested slice). Used to decide between
 // space-separated shell tokens (scalar-only slices) and a single
 // JSON-encoded token (anything else).
-func sliceHasComplexElement(s []interface{}) bool {
+func sliceHasComplexElement(s []any) bool {
 	for _, e := range s {
 		switch e.(type) {
-		case map[string]interface{}, []interface{}, []string, []map[string]interface{}:
+		case map[string]any, []any, []string, []map[string]any:
 			return true
 		}
 	}

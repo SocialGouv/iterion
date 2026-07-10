@@ -56,7 +56,7 @@ func TestActToolNodeAllowed(t *testing.T) {
 
 	// run_command allowed
 	node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "act_cmd"}, Command: "run_command"}
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{"cmd": "go test ./..."})
+	output, err := exec.Execute(context.Background(), node, map[string]any{"cmd": "go test ./..."})
 	if err != nil {
 		t.Fatalf("expected run_command to be allowed, got: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestActArtifactsProduced(t *testing.T) {
 		nodeID  string
 		command string
 		key     string
-		want    interface{}
+		want    any
 	}{
 		{"cmd", "run_command", "exit_code", float64(0)},
 		{"tests", "run_tests", "passed", true},

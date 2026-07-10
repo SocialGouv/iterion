@@ -127,7 +127,7 @@ func (e *ClawExecutor) resolvePermissionPolicy(nodeMode string) (*permission.Pol
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
-func stampDelegateOutputMeta(output map[string]interface{}, result delegate.Result, backendName string) {
+func stampDelegateOutputMeta(output map[string]any, result delegate.Result, backendName string) {
 	if output == nil {
 		return
 	}
@@ -202,7 +202,7 @@ func (e *ClawExecutor) dispatchWithObservability(
 
 // executeBackend is the unified execution path for agent and judge nodes.
 // It resolves the backend, builds a Task, and dispatches to the backend.
-func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	f, err := extractBackendFields(node)
 	if err != nil {
 		return nil, err
@@ -285,12 +285,12 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// its own reason to pause. Recognise it by the permission marker so
 	// such a pause converts cleanly here too.
 	needsInteraction, _ := result.Output["_needs_interaction"].(bool)
-	questions, _ := result.Output["_interaction_questions"].(map[string]interface{})
+	questions, _ := result.Output["_interaction_questions"].(map[string]any)
 	_, isPermissionPause := questions[permission.InteractionMarkerKey]
 	if needsInteraction && (f.interaction != ir.InteractionNone || isPermissionPause) {
 		{
 			if questions == nil {
-				questions = map[string]interface{}{"input": "The backend needs your input to continue."}
+				questions = map[string]any{"input": "The backend needs your input to continue."}
 			}
 			delete(result.Output, "_needs_interaction")
 			delete(result.Output, "_interaction_questions")
@@ -457,7 +457,7 @@ func appendSchemaRetryFeedback(prompt, feedback string) string {
 // node's resolved fields, prompts, schema, reasoning effort, capabilities,
 // tool set, and session/resume continuity. Split out of executeBackend to
 // keep that method focused on dispatch + validation.
-func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFields, input map[string]interface{}, backendName string) (delegate.Task, error) {
+func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFields, input map[string]any, backendName string) (delegate.Task, error) {
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
@@ -609,7 +609,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 // resolveSystemPrompt returns the {{vars}}-resolved body of the named
 // prompt block, or "" when the name is empty or unknown. Kept as a
 // helper so buildTask's top reads as a flat assembly.
-func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]interface{}, td *TemplateData) string {
+func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]any, td *TemplateData) string {
 	if promptName == "" {
 		return ""
 	}
@@ -633,7 +633,7 @@ func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]i
 // the (stateless) LLM doesn't lose the thread — without this, claw
 // would re-ask the same question because its conversation history isn't
 // persisted.
-func (e *ClawExecutor) buildUserPromptParts(f backendFields, input map[string]interface{}, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
+func (e *ClawExecutor) buildUserPromptParts(f backendFields, input map[string]any, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
 	userText := e.buildUserMessage(f.userPrompt, input, td)
 	// And the multimodal variant when this backend supports it AND the
 	// resolved prompt references at least one image attachment.
@@ -693,7 +693,7 @@ func (e *ClawExecutor) applyMemorySpec(task *delegate.Task, m *ir.Memory) {
 // Applies run-wide to every LLM node, so a "sous-bot" focus (e.g.
 // Willy as improve-quality SRE) shapes the reviewer and fixer alike
 // without the author wiring it into each prompt.
-func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string]interface{}, td *TemplateData) {
+func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string]any, td *TemplateData) {
 	if e.presetPrompt == "" && len(e.presetSkills) == 0 {
 		return
 	}
@@ -813,7 +813,7 @@ func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []s
 // behaviour instead of routing into the backend with an empty session
 // id (which has produced silent 0-token failures on at least the
 // OpenAI provider).
-func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFields, input map[string]interface{}) {
+func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFields, input map[string]any) {
 	if f.session != ir.SessionInherit && f.session != ir.SessionInheritIfAvailable && f.session != ir.SessionFork {
 		return
 	}
@@ -844,7 +844,7 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 // pause) onto the task. The backend uses these fields to rehydrate
 // the LLM's exact pre-pause state instead of restarting from the
 // rendered system+user prompts.
-func applyResumeContinuity(task *delegate.Task, input map[string]interface{}) {
+func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 	conv, ok := input[delegate.ResumeConversationKey].(json.RawMessage)
 	if !ok || len(conv) == 0 {
 		return
