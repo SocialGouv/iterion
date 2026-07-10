@@ -1,5 +1,46 @@
 # Billy — branch-improvement validation
 
+## 2026-07-10 — /billy command on a Dependabot PR: 4 engine gaps peeled live, then a clean push-back under the App identity (runs 019f4bd4 / 019f4c46 / 019f4c86 / 019f4ccb)
+
+- Status: **validated (cloud E2E, command path) — 5 engine fixes found live, all landed in-session.**
+  Mission: make Dependabot PR [#80](https://github.com/SocialGouv/iterion/pull/80)
+  mergeable (bump `x/crypto` to 0.52.0 past a CRITICAL advisory cluster Vetty
+  flagged + fix the failing CI OpenAPI drift). Final run 019f4ccb: 22 min,
+  `push_back: true`, **2 commits pushed onto the PR** as
+  `iterion-forge-83fde406[bot]` (`52a4072d9` crypto bump + tidy/vendor,
+  `d766e1d03` openapi regen) + verdict comment posted under the App.
+- Versions: bot v2 · iterion `499957c31`→`6dd452c2a` · chart 0.37.2→0.37.4.
+- Method: `/billy <mission>` PR comment (args → `scope_notes`) → board-mode
+  card → dispatcher → cloud runner. ~$4/run. The mission text included the
+  memory guidance (skip the vite build, `go test -p 2`) after an OOM.
+- The onion, one layer per run (each failure = a real engine fix):
+  1. run 019f4bd4: campaign did PERFECT work (crypto bump + openapi regen,
+     verified) but `mr_gate.push_back: false` → commits stranded on the
+     runner's ephemeral storage branch. Fix `642b1ba0d`: the command path now
+     stamps `push_branch`/`open_mr` (parity with the pull_request-event path).
+  2. Same run also exposed that `ensureBoardCard` rebuilt BotArgs from scratch
+     — cloud launches use card BotArgs ONLY, so `pr_url`/branch vars never
+     reached the run (also why Billy never commented). Fix `bc2918024`.
+  3. run 019f4c46: **OOMKilled at 4Gi** during the verify suite (exit 137, pod
+     restart, banked commits lost with the pod FS). Infra fix: runner limit
+     8Gi (infra-apps `44b7fb4`). JetStream redelivered the run — recovery
+     worked — but the re-attempt then pushed with a DEAD App token.
+  4. runs 019f4c46/019f4c86: `Invalid username or token` on push + gh 401 on
+     comment — the sealed bundle snapshots the 1h installation token at
+     LAUNCH; long/redelivered runs outlive it. Fix `6dd452c2a` (#99): the
+     publisher records generic-secret store IDs on the bundle and the runner
+     re-reads them every 5 min, atomically rewriting
+     `/run/iterion/secrets/<name>`; tools `cat` the file per use.
+- Engine hardening (this session, all deployed): `499957c31` PR head/base
+  resolution for PR-surface commands · `642b1ba0d` push-back vars ·
+  `bc2918024` board-card PR context · `6031a357e` executor agent-stream lines
+  now persist to the run log (the studio per-node Logs tab was empty on every
+  cloud run) · `6dd452c2a` mid-run file-secret refresh (#99).
+- Lessons for next run: a dep-bump branch is typically BEHIND main — the CI
+  drift gate runs on the merge-ref, so regen-style fixes must happen on an
+  updated branch (`gh pr update-branch` first, or Billy should update it);
+  keep verify memory-aware on 8Gi pods (skip frontend builds, cap `-p`).
+
 ## 2026-07-09 — first CLOUD runs: PR-webhook → Billy on the devbox runner (runs 019f43a3 / 019f43c7 / 019f4551)
 
 - Status: **validated (cloud E2E) — 3 engine/bot gaps found live, all fixed in-session.**
