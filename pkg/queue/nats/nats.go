@@ -84,8 +84,8 @@ type Config struct {
 	ConsumerName string        // default ConsumerRunners
 	MaxAge       time.Duration // default 24h
 	DLQMaxAge    time.Duration // default 7d
-	MaxDeliver   int           // default 3
-	AckWait      time.Duration // default 5min
+	MaxDeliver   int           // default DefaultStreamMaxRetry (8)
+	AckWait      time.Duration // default DefaultAckWait (10m)
 	LockTTL      time.Duration // default 60s
 	MaxPayload   int           // default 0 → use server's negotiated MaxPayload
 	Logger       *iterlog.Logger
@@ -100,6 +100,14 @@ type Conn struct {
 	kv     jetstream.KeyValue
 	cfg    Config
 	logger *iterlog.Logger
+}
+
+// RedeliveryWindow is the worst-case time a healthy queued message can
+// spend bouncing through redeliveries before parking in the DLQ
+// (MaxDeliver × AckWait). The server's orphan sweeper derives its
+// queued-staleness cutoff from it so the two never drift apart.
+func (c *Conn) RedeliveryWindow() time.Duration {
+	return time.Duration(c.cfg.MaxDeliver) * c.cfg.AckWait
 }
 
 // Connect opens the NATS connection, pins the stream + DLQ + KV
