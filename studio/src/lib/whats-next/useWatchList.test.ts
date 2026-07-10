@@ -24,6 +24,15 @@ describe("deriveWatchedIds", () => {
     expect(deriveWatchedIds(["native:x", ""], [])).toEqual(["native:x"]);
   });
 
+  it("drops JSON-array strings that leaked in as ids", () => {
+    // An empty dispatch answer once produced a literal "[]" watch
+    // entry (bilan finding #5) that 404-polled forever.
+    expect(deriveWatchedIds(["[]", "native:x"], [])).toEqual(["native:x"]);
+    expect(
+      deriveWatchedIds(['["native:a","native:b"]', "native:x"], []),
+    ).toEqual(["native:x"]);
+  });
+
   it("returns empty when the server list is absent or empty", () => {
     expect(deriveWatchedIds(undefined, [])).toEqual([]);
     expect(deriveWatchedIds([], [])).toEqual([]);

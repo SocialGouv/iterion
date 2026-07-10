@@ -16,7 +16,9 @@ import { errorMessage as toMessage } from "@/lib/errorHints";
 import {
   createRun,
   getRun,
+  getRunWithRetry,
   listRuns,
+  loadEvents,
   resumeRun,
   type RunStatus,
   type RunSummary,
@@ -120,7 +122,12 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     let cancelled = false;
 
     const attachTo = async (runIdToAttach: string) => {
-      const snap = await getRun(runIdToAttach, { signal: controller.signal });
+      // Retry-on-404: a run surfaced by findLiveRunForBot (or another
+      // tab's launch) may still be mid-flush — run.json can lag the
+      // listing by a beat. See getRunWithRetry for the race rationale.
+      const snap = await getRunWithRetry(runIdToAttach, {
+        signal: controller.signal,
+      });
       if (cancelled) return;
       // Continuity is the central whats-next promise: when the user
       // returns to /whats-next after a previous session ended, they
@@ -373,6 +380,49 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     }
   }, [pendingHuman, messages]);
 
+  // Human-gate lag mitigation. The pending question FORM is derived
+  // from the `human_input_requested` EVENT via the transcript fold —
+  // but the run's paused status can reach us through a snapshot alone
+  // (REST getRun refresh, or the WS "snapshot" envelope): the broker
+  // drops a run's subscribers on every pause, so the WS can miss the
+  // human_input_requested event entirely. rehydratePendingHumanInput
+  // then fills the store's pendingHumanInput from the checkpoint, but
+  // the fold has no event → no question message → the form lags until
+  // a reload refetches history. When we observe that inconsistent
+  // state, pull the event tail once per pause transition (the ref
+  // resets whenever the run leaves paused_waiting_human, and stays set
+  // otherwise, so a late backend flush can't trigger a refetch loop).
+  // We can't route through loadEventHistoryIfMissing here: it dedupes
+  // via historyFetchedForRun, which is already stamped for this run.
+  const pauseRefetchedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (runStatus !== "paused_waiting_human") {
+      pauseRefetchedForRef.current = null;
+      return;
+    }
+    if (!runId) return;
+    const hasPendingQuestion = messages.some(
+      (m) => m.kind === "human-question" && m.status === "pending",
+    );
+    if (hasPendingQuestion) return;
+    if (pauseRefetchedForRef.current === runId) return;
+    pauseRefetchedForRef.current = runId;
+    const stored = runStore.getState().events;
+    const tail = stored[stored.length - 1];
+    const fromSeq = tail ? tail.seq + 1 : 0;
+    loadEvents(runId, fromSeq)
+      .then((evts) => {
+        if (runStore.getState().runId !== runId) return;
+        if (evts.length > 0) runStore.getState().applyEventsBatch(evts);
+      })
+      .catch((err) => {
+        // One shot per pause by design (loop guard); on failure the
+        // WS/resume resync paths remain the fallback. Surface it in
+        // devtools so silent 401/5xx don't go unnoticed.
+        console.warn("[whats-next] pause-gate event refetch failed", err);
+      });
+  }, [runId, runStatus, messages]);
+
   const launch = useCallback(
     async (vars: Record<string, string>) => {
       setErrorMessage(null);
@@ -404,7 +454,10 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         // run_started + the first node_started, which leaves the
         // transcript blank until propose_roadmap fires.
         try {
-          const snap = await getRun(res.run_id);
+          // Retry-on-404: the launch API returns before the engine
+          // goroutine flushed run.json, so an immediate getRun can 404
+          // into this ignore-catch and skip the seeding entirely.
+          const snap = await getRunWithRetry(res.run_id);
           applySnapshot(snap);
           await loadEventHistoryIfMissing(res.run_id);
         } catch {

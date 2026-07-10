@@ -36,6 +36,78 @@ export async function getRun(
   );
 }
 
+// getRunWithRetry wraps getRun in a short backoff loop. The launch API
+// returns the run_id as soon as the engine goroutine is scheduled, but
+// the goroutine still needs a beat to call store.CreateRun before
+// run.json exists on disk — fetching too early therefore 404s. run.json
+// typically lands within ~50–200ms, so a few 250ms retries close the
+// race without papering over a genuinely missing run (the 404 budget is
+// deliberately small); transient non-404 failures get a longer budget.
+//
+// Cancellation: pass an AbortSignal. Aborting cancels both the
+// in-flight request and any pending retry delay; the promise then
+// rejects with an "AbortError"-named error, which callers should treat
+// as "stop silently" (the same contract as a plain aborted getRun).
+// On retry exhaustion the LAST error is rethrown unchanged, so callers
+// keep the "API error 404" message idiom for status detection.
+export async function getRunWithRetry(
+  runId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<RunSnapshot> {
+  const signal = opts?.signal;
+  const RETRY_DELAY_MS = 250;
+  const MAX_ATTEMPTS_404 = 3;
+  const MAX_ATTEMPTS_OTHER = 20;
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await getRun(runId, { signal });
+    } catch (err) {
+      if (signal?.aborted || (err as Error)?.name === "AbortError") {
+        throw err;
+      }
+      attempt += 1;
+      const msg = (err as Error)?.message ?? "";
+      const is404 = msg.includes("API error 404");
+      const cap = is404 ? MAX_ATTEMPTS_404 : MAX_ATTEMPTS_OTHER;
+      if (attempt >= cap) throw err;
+      await abortableDelay(RETRY_DELAY_MS, signal);
+    }
+  }
+}
+
+// abortableDelay resolves after ms, or rejects with an AbortError as
+// soon as the signal fires — so an aborted retry loop stops immediately
+// instead of ticking against the network for its whole budget.
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(makeAbortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(makeAbortError());
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function makeAbortError(): Error {
+  // DOMException matches what fetch itself throws on abort, keeping a
+  // single detection idiom (`err.name === "AbortError"`) for callers.
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("The operation was aborted.", "AbortError");
+  }
+  const err = new Error("The operation was aborted.");
+  err.name = "AbortError";
+  return err;
+}
+
 export async function loadEvents(
   runId: string,
   from = 0,

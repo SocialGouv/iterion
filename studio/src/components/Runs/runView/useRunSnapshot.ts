@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getRun } from "@/api/runs";
+import { getRun, getRunWithRetry } from "@/api/runs";
 import { errorMessage } from "@/lib/errorHints";
 import { useRunStore } from "@/store/run";
 import { useUIStore } from "@/store/ui";
@@ -10,17 +10,11 @@ import { useUIStore } from "@/store/ui";
 // semantics that the host file should not have to carry inline.
 //
 // Snapshot fetch (with retry on 404):
-//   The launch API returns the run_id as soon as the engine goroutine
-//   is scheduled, but the goroutine still needs a beat to call
-//   store.CreateRun before run.json exists on disk. Fetching too early
-//   therefore 404s, and without a retry the page gets stuck in the
-//   skeleton until the user reloads — the WS path was supposed to fill
-//   the gap but doesn't always push the initial snapshot eagerly. A
-//   short backoff loop closes the race for the common case (run.json
-//   typically lands within ~50–200ms) without papering over a genuinely
-//   missing run.
+//   The retry loop itself lives in getRunWithRetry (@/api/runs) — see
+//   its doc comment for the run.json flush-race rationale and the
+//   404-vs-transient retry budgets.
 //
-//   The fetch loop is exposed via a callback so both the initial mount
+//   The fetch is exposed via a callback so both the initial mount
 //   effect AND the user-facing Retry button on RunViewLoadError can
 //   re-trigger it in place — no window.location.reload() (which would
 //   destroy tabs, scroll position, and chat dock state). The
@@ -84,45 +78,23 @@ export function useRunSnapshot(runId: string | null): RunSnapshotHandle {
     if (!runId) return;
     // Cancel any in-flight retry loop before kicking off a new one so
     // a Retry click (or a runId change) can't leave the previous loop
-    // ticking against the network in the background.
+    // ticking against the network in the background. Aborting the
+    // controller cancels both the in-flight request and any pending
+    // retry delay inside getRunWithRetry.
     loadAbortRef.current?.();
-    let cancelled = false;
-    let attempt = 0;
-    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
+    loadAbortRef.current = () => controller.abort();
     setLoadFailed(null);
-    const fetchWithRetry = () => {
-      getRun(runId)
-        .then((snap) => {
-          if (!cancelled) applySnapshot(snap);
-        })
-        .catch((err: Error) => {
-          if (cancelled) return;
-          attempt += 1;
-          const msg = err?.message ?? "";
-          const is404 = msg.includes("API error 404");
-          const cap = is404 ? 3 : 20;
-          if (attempt < cap) {
-            // Track the timer so the cleanup can cancel it. The
-            // prior implementation only flipped `cancelled` for the
-            // setState path; the timer kept firing for the full
-            // retry budget after navigation, hammering the network.
-            timerId = setTimeout(() => {
-              timerId = null;
-              if (!cancelled) fetchWithRetry();
-            }, 250);
-          } else if (!cancelled) {
-            setLoadFailed({ status: is404 ? 404 : 0, message: msg });
-          }
-        });
-    };
-    loadAbortRef.current = () => {
-      cancelled = true;
-      if (timerId != null) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
-    };
-    fetchWithRetry();
+    getRunWithRetry(runId, { signal: controller.signal })
+      .then((snap) => {
+        if (!controller.signal.aborted) applySnapshot(snap);
+      })
+      .catch((err: Error) => {
+        if (controller.signal.aborted || err?.name === "AbortError") return;
+        const msg = err?.message ?? "";
+        const is404 = msg.includes("API error 404");
+        setLoadFailed({ status: is404 ? 404 : 0, message: msg });
+      });
   }, [runId, applySnapshot]);
   useEffect(() => {
     fetchSnapshot();

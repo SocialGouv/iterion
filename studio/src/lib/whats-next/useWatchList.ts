@@ -49,6 +49,10 @@ function dedupeNonEmpty(ids: ReadonlyArray<string>): string[] {
   const out: string[] = [];
   for (const id of ids) {
     if (typeof id !== "string" || id.length === 0) continue;
+    // Reject JSON-array strings that leaked in as ids (an empty
+    // dispatch answer once produced a literal "[]" watch entry that
+    // 404-polled forever). No real tracker id starts with "[".
+    if (id.startsWith("[")) continue;
     if (seen.has(id)) continue;
     seen.add(id);
     out.push(id);
@@ -95,6 +99,7 @@ export function useWatchList(runId: string | null): UseWatchListResult {
     const pollers = pollersRef.current;
     for (const timer of pollers.values()) clearInterval(timer);
     pollers.clear();
+    stoppedIdsRef.current.clear();
     if (!runId) return;
     lastObservedRef.current = loadObservedMap(runId);
     setPendingUpdates(loadJSON(STORAGE_PREFIX_PENDING + runId, validateUpdates, []));
@@ -115,13 +120,18 @@ export function useWatchList(runId: string | null): UseWatchListResult {
   const pollersRef = useRef<Map<string, ReturnType<typeof setInterval>>>(
     new Map(),
   );
+  // Ids whose polling was permanently stopped after a 404: an issue
+  // that doesn't exist will never start existing by re-fetching it
+  // every 15s. The byId entry (with lastFetchError) is kept so the
+  // UI still shows the failure. Cleared on runId change.
+  const stoppedIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!runId) return;
     const pollers = pollersRef.current;
 
     for (const id of watchedIds) {
-      if (pollers.has(id)) continue;
+      if (pollers.has(id) || stoppedIdsRef.current.has(id)) continue;
       setById((prev) =>
         prev[id] ? prev : { ...prev, [id]: { issueId: id, issue: null } },
       );
@@ -164,6 +174,18 @@ export function useWatchList(runId: string | null): UseWatchListResult {
           });
         } catch (e) {
           const msg = errorMessage(e) ?? String(e);
+          // A 404 means the issue doesn't exist on this tracker (a
+          // deleted card, or a malformed id from an older run). Stop
+          // polling it — same detection idiom as useRunSnapshot — but
+          // keep the byId entry so the failure stays visible.
+          if (msg.includes("API error 404")) {
+            stoppedIdsRef.current.add(id);
+            const timer = pollers.get(id);
+            if (timer !== undefined) {
+              clearInterval(timer);
+              pollers.delete(id);
+            }
+          }
           setById((prev) => {
             const existing = prev[id];
             if (existing?.lastFetchError === msg) return prev;
