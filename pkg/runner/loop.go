@@ -1075,20 +1075,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		r.cfg.Logger.Warn("runner: isolate forge CLI config %s: %v", msg.RunID, derr)
 	}
 
-	executor, usage, err := r.buildExecutor(ctx, msg, wf)
-	if err != nil {
-		return err
-	}
-	// Charge the org's monthly usage whatever the outcome — paused,
-	// cancelled and failed attempts incurred real LLM spend.
-	defer r.recordOrgSpend(msg, usage)
-
 	// Per-run log persistence (ADR-053): tee the engine logger into the
 	// store's RunLogStore so the server pod can live-stream and replay
 	// the run's log without a shared filesystem. The offset seed makes a
 	// resumed/redelivered run append after the persisted tail. Flushes
 	// ride a background ctx carrying the run's tenant identity — NOT the
-	// run ctx — so a cancelled run still flushes its final lines.
+	// run ctx — so a cancelled run still flushes its final lines. Built
+	// BEFORE the executor so the executor's agent-stream lines (the
+	// `[node#iter/backend]` tool/LLM tags the studio's per-node Logs tab
+	// filters on) persist too — not only the engine's node-level lines.
 	runLogger := r.cfg.Logger
 	if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
 		idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
@@ -1102,6 +1097,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		defer r.unregisterLogWriter(msg.RunID)
 		runLogger = iterlog.New(r.cfg.Logger.Level(), io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
+
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)
+	if err != nil {
+		return err
+	}
+	// Charge the org's monthly usage whatever the outcome — paused,
+	// cancelled and failed attempts incurred real LLM spend.
+	defer r.recordOrgSpend(msg, usage)
 
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
@@ -1737,7 +1740,7 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow) (runtime.NodeExecutor, *metricsEmitter, error) {
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger) (runtime.NodeExecutor, *metricsEmitter, error) {
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
 		return nil, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
@@ -1750,12 +1753,16 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
 	vars := stringifyVars(msg.Vars)
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
-		Ctx:         ctx,
-		Workflow:    wf,
-		Vars:        vars,
-		Store:       usage,
-		RunID:       msg.RunID,
-		Logger:      r.cfg.Logger,
+		Ctx:      ctx,
+		Workflow: wf,
+		Vars:     vars,
+		Store:    usage,
+		RunID:    msg.RunID,
+		// The run-scoped logger (teed into the RunLogStore) — the executor
+		// emits the `[node#iter/backend]` agent-stream lines the studio's
+		// per-node Logs tab filters on; on the raw pod logger they would
+		// reach stdout but never the persisted run.log.
+		Logger:      logger,
 		StoreDir:    r.cfg.WorkDir,
 		BotID:       msg.BotID,
 		MemoryStore: r.cfg.MemoryStore,
