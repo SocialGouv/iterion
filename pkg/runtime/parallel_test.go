@@ -748,6 +748,28 @@ func TestFanOutCancelAbandonsWedgedBranch(t *testing.T) {
 	// t.TempDir cleanup runs, otherwise RemoveAll races the late write and
 	// fails with "directory not empty" (or trips -race).
 	waitBranchFinished(t, s, "run-wedged", "branch_router_b")
+
+	// The abandonment must be persisted in the run record — a
+	// branch_abandoned event naming the wedged branch — not just logged.
+	events, err := s.LoadEvents(context.Background(), "run-wedged")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	found := false
+	for _, evt := range events {
+		if evt.Type == store.EventBranchAbandoned {
+			if evt.NodeID != "branch_router_b" {
+				t.Fatalf("branch_abandoned names %q, want branch_router_b", evt.NodeID)
+			}
+			if evt.Data["router"] != "router" || evt.Data["mode"] != "fan_out" {
+				t.Fatalf("branch_abandoned data = %+v, want router/fan_out", evt.Data)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no branch_abandoned event persisted for the wedged branch")
+	}
 }
 
 // ---------------------------------------------------------------------------
