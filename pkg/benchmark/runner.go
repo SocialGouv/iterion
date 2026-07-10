@@ -23,7 +23,7 @@ type RunnerConfig struct {
 	Recipes []*recipe.RecipeSpec
 
 	// Inputs are the common run-time inputs passed to every recipe.
-	Inputs map[string]interface{}
+	Inputs map[string]any
 
 	// ExecutorFactory creates a fresh NodeExecutor for each recipe run,
 	// ensuring complete isolation (no shared caches, sessions, etc.).

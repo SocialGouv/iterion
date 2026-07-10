@@ -45,10 +45,10 @@ func TestOTLPGRPCExporter_ObserverFiresEvents(t *testing.T) {
 	observe := exp.EventObserver()
 	events := []store.Event{
 		{Type: store.EventRunStarted, RunID: "run_test", Seq: 1},
-		{Type: store.EventNodeStarted, RunID: "run_test", NodeID: "ingest", Seq: 2, Data: map[string]interface{}{"backend": "claw"}},
-		{Type: store.EventLLMRequest, RunID: "run_test", NodeID: "ingest", Seq: 3, Data: map[string]interface{}{"model": "anthropic/claude-haiku-4-5", "tool_count": 3}},
-		{Type: store.EventToolCalled, RunID: "run_test", NodeID: "ingest", Seq: 4, Data: map[string]interface{}{"tool": "bash", "duration_ms": 42}},
-		{Type: store.EventLLMCompacted, RunID: "run_test", NodeID: "ingest", Seq: 5, Data: map[string]interface{}{"before_messages": 12, "after_messages": 5}},
+		{Type: store.EventNodeStarted, RunID: "run_test", NodeID: "ingest", Seq: 2, Data: map[string]any{"backend": "claw"}},
+		{Type: store.EventLLMRequest, RunID: "run_test", NodeID: "ingest", Seq: 3, Data: map[string]any{"model": "anthropic/claude-haiku-4-5", "tool_count": 3}},
+		{Type: store.EventToolCalled, RunID: "run_test", NodeID: "ingest", Seq: 4, Data: map[string]any{"tool": "bash", "duration_ms": 42}},
+		{Type: store.EventLLMCompacted, RunID: "run_test", NodeID: "ingest", Seq: 5, Data: map[string]any{"before_messages": 12, "after_messages": 5}},
 		{Type: store.EventRunFinished, RunID: "run_test", Seq: 6},
 	}
 	done := make(chan struct{})

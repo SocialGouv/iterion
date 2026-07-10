@@ -120,7 +120,7 @@ func (p *PrometheusExporter) EventHooks() model.EventHooks {
 		OnToolCall: func(nodeID string, info model.LLMToolCallInfo) {
 			p.toolCalls.WithLabelValues(nodeID, info.ToolName).Inc()
 		},
-		OnNodeFinished: func(nodeID string, output map[string]interface{}) {
+		OnNodeFinished: func(nodeID string, output map[string]any) {
 			model := stringField(output, "_model")
 			if t, ok := numericField(output, "_tokens"); ok && t > 0 {
 				p.nodeTokens.WithLabelValues(nodeID, p.runID, model).Add(t)
@@ -166,7 +166,7 @@ func (p *PrometheusExporter) EventObserver() func(store.Event) {
 
 // stringField extracts a string-typed value from a map, returning "" on
 // absence or type mismatch.
-func stringField(m map[string]interface{}, key string) string {
+func stringField(m map[string]any, key string) string {
 	if m == nil {
 		return ""
 	}
@@ -179,7 +179,7 @@ func stringField(m map[string]interface{}, key string) string {
 // numericField extracts a numeric value (int or float64) and reports
 // whether the conversion succeeded. The bool is false when the key is
 // missing or carries an unsupported type.
-func numericField(m map[string]interface{}, key string) (float64, bool) {
+func numericField(m map[string]any, key string) (float64, bool) {
 	if m == nil {
 		return 0, false
 	}

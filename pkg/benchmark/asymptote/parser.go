@@ -99,7 +99,7 @@ func ParseRun(ctx context.Context, s store.RunStore, runID string, opts ParseOpt
 
 // readIntField pulls an int value out of an event's Data map, tolerating
 // the float64 form JSON unmarshal produces.
-func readIntField(data map[string]interface{}, key string) int {
+func readIntField(data map[string]any, key string) int {
 	v, ok := data[key]
 	if !ok {
 		return 0
@@ -125,11 +125,11 @@ func readIntField(data map[string]interface{}, key string) int {
 // "true"/"false"/numeric values, and missing values produce 0.0.
 //
 // Returns (score, raw-string-for-debug).
-func extractScore(data map[string]interface{}, field string) (float64, string) {
+func extractScore(data map[string]any, field string) (float64, string) {
 	if data == nil {
 		return 0, ""
 	}
-	output, ok := data["output"].(map[string]interface{})
+	output, ok := data["output"].(map[string]any)
 	if !ok {
 		return 0, ""
 	}

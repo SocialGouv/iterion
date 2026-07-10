@@ -36,7 +36,7 @@ func tmpStore(t *testing.T) store.RunStore {
 // scores is an ordered list of judge-output values to inject. If the value
 // is a bool, it's stored under field "approved". If it's a float64, it's
 // stored under field "score". This lets a single helper drive both forms.
-func seedRun(t *testing.T, s store.RunStore, judgeNode, loopName string, scores []interface{}) string {
+func seedRun(t *testing.T, s store.RunStore, judgeNode, loopName string, scores []any) string {
 	t.Helper()
 	ctx := context.Background()
 	run, err := s.CreateRun(ctx, nextRunID(judgeNode), "wf", nil)
@@ -61,7 +61,7 @@ func seedRun(t *testing.T, s store.RunStore, judgeNode, loopName string, scores 
 			Type:      store.EventEdgeSelected,
 			RunID:     run.ID,
 			Timestamp: time.Now(),
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"loop":      loopName,
 				"iteration": i,
 			},
@@ -88,77 +88,77 @@ func seedRun(t *testing.T, s store.RunStore, judgeNode, loopName string, scores 
 }
 
 // judgeData builds the EventNodeFinished.Data payload for a value.
-func judgeData(v interface{}) map[string]interface{} {
+func judgeData(v any) map[string]any {
 	switch t := v.(type) {
 	case bool:
-		return map[string]interface{}{"output": map[string]interface{}{"approved": t}}
+		return map[string]any{"output": map[string]any{"approved": t}}
 	case float64:
-		return map[string]interface{}{"output": map[string]interface{}{"score": t}}
+		return map[string]any{"output": map[string]any{"score": t}}
 	case string:
-		return map[string]interface{}{"output": map[string]interface{}{"approved": t}}
+		return map[string]any{"output": map[string]any{"approved": t}}
 	default:
-		return map[string]interface{}{"output": map[string]interface{}{}}
+		return map[string]any{"output": map[string]any{}}
 	}
 }
 
 func TestExtractScore(t *testing.T) {
 	cases := []struct {
 		name  string
-		data  map[string]interface{}
+		data  map[string]any
 		field string
 		want  float64
 	}{
 		{
 			name:  "bool true",
-			data:  map[string]interface{}{"output": map[string]interface{}{"approved": true}},
+			data:  map[string]any{"output": map[string]any{"approved": true}},
 			field: "approved",
 			want:  1.0,
 		},
 		{
 			name:  "bool false",
-			data:  map[string]interface{}{"output": map[string]interface{}{"approved": false}},
+			data:  map[string]any{"output": map[string]any{"approved": false}},
 			field: "approved",
 			want:  0.0,
 		},
 		{
 			name:  "float passthrough",
-			data:  map[string]interface{}{"output": map[string]interface{}{"score": 0.7}},
+			data:  map[string]any{"output": map[string]any{"score": 0.7}},
 			field: "score",
 			want:  0.7,
 		},
 		{
 			name:  "float clamp high",
-			data:  map[string]interface{}{"output": map[string]interface{}{"score": 1.5}},
+			data:  map[string]any{"output": map[string]any{"score": 1.5}},
 			field: "score",
 			want:  1.0,
 		},
 		{
 			name:  "float clamp low",
-			data:  map[string]interface{}{"output": map[string]interface{}{"score": -0.2}},
+			data:  map[string]any{"output": map[string]any{"score": -0.2}},
 			field: "score",
 			want:  0.0,
 		},
 		{
 			name:  "string true",
-			data:  map[string]interface{}{"output": map[string]interface{}{"approved": "true"}},
+			data:  map[string]any{"output": map[string]any{"approved": "true"}},
 			field: "approved",
 			want:  1.0,
 		},
 		{
 			name:  "string numeric",
-			data:  map[string]interface{}{"output": map[string]interface{}{"score": "0.42"}},
+			data:  map[string]any{"output": map[string]any{"score": "0.42"}},
 			field: "score",
 			want:  0.42,
 		},
 		{
 			name:  "missing field",
-			data:  map[string]interface{}{"output": map[string]interface{}{"other": true}},
+			data:  map[string]any{"output": map[string]any{"other": true}},
 			field: "approved",
 			want:  0.0,
 		},
 		{
 			name:  "missing output",
-			data:  map[string]interface{}{},
+			data:  map[string]any{},
 			field: "approved",
 			want:  0.0,
 		},
@@ -175,7 +175,7 @@ func TestExtractScore(t *testing.T) {
 
 func TestParseRunBoolApprovals(t *testing.T) {
 	s := tmpStore(t)
-	scores := []interface{}{false, false, true, true} // 4 iterations, asymptote-style
+	scores := []any{false, false, true, true} // 4 iterations, asymptote-style
 	runID := seedRun(t, s, "judge", "review", scores)
 
 	got, err := ParseRun(context.Background(), s, runID, ParseOptions{
@@ -203,7 +203,7 @@ func TestParseRunBoolApprovals(t *testing.T) {
 
 func TestParseRunNumericScore(t *testing.T) {
 	s := tmpStore(t)
-	scores := []interface{}{0.3, 0.55, 0.8, 0.95}
+	scores := []any{0.3, 0.55, 0.8, 0.95}
 	runID := seedRun(t, s, "judge", "review", scores)
 
 	got, err := ParseRun(context.Background(), s, runID, ParseOptions{
@@ -224,9 +224,9 @@ func TestParseRunNumericScore(t *testing.T) {
 
 func TestAggregateGroup(t *testing.T) {
 	// Two runs converge at iter 2; one run hits asymptote at iter 1.
-	scoresA := []interface{}{false, true, true}
-	scoresB := []interface{}{false, false, true}
-	scoresC := []interface{}{false, false, false}
+	scoresA := []any{false, true, true}
+	scoresB := []any{false, false, true}
+	scoresC := []any{false, false, false}
 
 	s := tmpStore(t)
 	runA := seedRun(t, s, "judge", "review", scoresA)
@@ -263,7 +263,7 @@ func TestAggregateGroup(t *testing.T) {
 
 func TestRenderMarkdownContainsKeySections(t *testing.T) {
 	s := tmpStore(t)
-	runID := seedRun(t, s, "judge", "review", []interface{}{false, true})
+	runID := seedRun(t, s, "judge", "review", []any{false, true})
 	rs, _ := ParseRun(context.Background(), s, runID, ParseOptions{JudgeNodeID: "judge"})
 
 	cmp := Compare(
