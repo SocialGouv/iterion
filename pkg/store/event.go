@@ -18,8 +18,8 @@ import "time"
 type EventType string
 
 const (
-	EventRunStarted    EventType = "run_started"
-	EventBranchStarted EventType = "branch_started"
+	EventRunStarted     EventType = "run_started"
+	EventBranchStarted  EventType = "branch_started"
 	EventBranchFinished EventType = "branch_finished"
 	// EventBranchAbandoned marks a fan-out branch still running when the
 	// collector stopped waiting for it (cancelled fan-out + grace period
@@ -27,7 +27,7 @@ const (
 	// branch has no branch_finished; consumers use this to close the
 	// in-flight gauge and surface the potential resource leak.
 	// Data: {router, mode, grace_period, reason}
-	EventBranchAbandoned EventType = "branch_abandoned"
+	EventBranchAbandoned    EventType = "branch_abandoned"
 	EventNodeStarted        EventType = "node_started"
 	EventLLMRequest         EventType = "llm_request"
 	EventLLMPrompt          EventType = "llm_prompt"
