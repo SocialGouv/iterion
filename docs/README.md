@@ -68,6 +68,7 @@ per-org quotas, audit log, PATs, SMTP onboarding. We call it
 | [baas-admin-guide.md](baas-admin-guide.md) | Platform operator + org admin runbook (UI paths + curl), DLQ triage, audit, PATs. |
 | [secrets-reference.md](secrets-reference.md) | The single map of every secret kind (BYOK, generic, bindings, file, OAuth-forfait, tokens) and the sealing model. |
 | [cloud-rest-api.md](cloud-rest-api.md) | Every REST endpoint grouped by domain, auth class, purpose. |
+| [cloud-cli.md](cloud-cli.md) | `iterion remote` — drive the whole cloud instance from the CLI (login, env-var CI mode, typed subcommands per domain). |
 | [memory-and-knowledge.md](memory-and-knowledge.md) | Memory visibilities, per-org + per-space quotas, REST surface. |
 | [cloud-architecture.md](cloud-architecture.md) | Control plane vs data plane, run lifecycle + sealed bundle, queue internals, multitenancy enforcement layers. |
 | [outbound-callbacks.md](outbound-callbacks.md) | The mirror direction — runs POSTing their result back to the launcher. |

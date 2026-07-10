@@ -21,11 +21,19 @@ import (
 )
 
 // remote groups the commands that authenticate to and drive a REMOTE iterion
-// instance over its HTTP API — turning the local CLI into a thin client (and
-// the mechanism a future OpenAPI-generated command set would build on).
+// instance over its HTTP API — turning the local CLI into a full client for
+// the cloud surface (typed subcommands per domain in the remote_*.go files;
+// `remote api` stays as the raw escape hatch).
 var remoteCmd = &cobra.Command{
 	Use:   "remote",
 	Short: "Authenticate to and drive a remote iterion instance over its API",
+	Long: "Authenticate to and drive a remote iterion instance over its HTTP API.\n\n" +
+		"The full cloud surface is available as typed subcommands (runs, bots,\n" +
+		"issues, teams, secrets, webhooks, admin, …); `remote api` is the raw\n" +
+		"escape hatch and `remote routes`/`openapi` enumerate the live surface.\n\n" +
+		"CI mode: set ITERION_REMOTE_URL + ITERION_REMOTE_TOKEN (and optionally\n" +
+		"ITERION_REMOTE_TEAM / ITERION_REMOTE_ORG) to drive an instance with no\n" +
+		"stored config. See docs/cloud-cli.md.",
 }
 
 var (

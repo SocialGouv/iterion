@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +21,15 @@ type RemoteConfig struct {
 	BaseURL string `json:"base_url"`
 	Token   string `json:"token"`
 	Email   string `json:"email,omitempty"`
+	// TeamID / OrgID are the default tenant scope for team-/org-scoped
+	// commands. Persisted by `iterion remote teams|orgs switch`; a
+	// per-command --team/--org flag or ITERION_REMOTE_TEAM/_ORG wins.
+	TeamID string `json:"team_id,omitempty"`
+	OrgID  string `json:"org_id,omitempty"`
 }
+
+// ErrNotLoggedIn reports that no remote credential is stored.
+var ErrNotLoggedIn = errors.New("not logged in — run `iterion remote login <url>` first")
 
 // RemoteConfigPath is where the CLI stores the remote credential.
 func RemoteConfigPath() (string, error) {
@@ -54,7 +63,7 @@ func LoadRemoteConfig() (RemoteConfig, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return RemoteConfig{}, fmt.Errorf("not logged in — run `iterion remote login <url>` first")
+			return RemoteConfig{}, ErrNotLoggedIn
 		}
 		return RemoteConfig{}, err
 	}
@@ -84,11 +93,45 @@ type RemoteClient struct {
 }
 
 func NewRemoteClient() (*RemoteClient, error) {
-	cfg, err := LoadRemoteConfig()
+	cfg, err := ResolveRemoteConfig()
 	if err != nil {
 		return nil, err
 	}
 	return NewRemoteClientFor(cfg), nil
+}
+
+// ResolveRemoteConfig resolves the remote credential for a command.
+// ITERION_REMOTE_URL switches to a pure-environment config (token from
+// ITERION_REMOTE_TOKEN, falling back to ITERION_TOKEN) so CI can drive
+// an instance with zero config file — and so a stored token is never
+// sent to a different host than the one it was minted for. Without the
+// env URL the stored ~/.iterion/cli-auth.json is used. ITERION_REMOTE_TEAM
+// / ITERION_REMOTE_ORG override the persisted default scope either way.
+func ResolveRemoteConfig() (RemoteConfig, error) {
+	var cfg RemoteConfig
+	if envURL := os.Getenv("ITERION_REMOTE_URL"); envURL != "" {
+		tok := os.Getenv("ITERION_REMOTE_TOKEN")
+		if tok == "" {
+			tok = os.Getenv("ITERION_TOKEN")
+		}
+		cfg = RemoteConfig{BaseURL: strings.TrimRight(envURL, "/"), Token: tok}
+	} else {
+		loaded, err := LoadRemoteConfig()
+		if err != nil {
+			if errors.Is(err, ErrNotLoggedIn) {
+				return RemoteConfig{}, fmt.Errorf("no remote configured: run `iterion remote login <url>`, or set ITERION_REMOTE_URL (+ ITERION_REMOTE_TOKEN)")
+			}
+			return RemoteConfig{}, err
+		}
+		cfg = loaded
+	}
+	if t := os.Getenv("ITERION_REMOTE_TEAM"); t != "" {
+		cfg.TeamID = t
+	}
+	if o := os.Getenv("ITERION_REMOTE_ORG"); o != "" {
+		cfg.OrgID = o
+	}
+	return cfg, nil
 }
 
 func NewRemoteClientFor(cfg RemoteConfig) *RemoteClient {
@@ -101,6 +144,19 @@ func (c *RemoteClient) BaseURL() string { return c.cfg.BaseURL }
 // Deliberately sends no Origin/Sec-Fetch headers so the server treats the CLI as
 // a non-browser client (login then returns the access_token in the body).
 func (c *RemoteClient) do(ctx context.Context, method, path string, body []byte, bearer string) (int, []byte, error) {
+	contentType := ""
+	if body != nil {
+		contentType = "application/json"
+	}
+	return c.doRequest(ctx, method, path, body, bearer, contentType)
+}
+
+// doWithContentType is do with an explicit Content-Type (multipart uploads).
+func (c *RemoteClient) doWithContentType(ctx context.Context, method, path string, body []byte, contentType string) (int, []byte, error) {
+	return c.doRequest(ctx, method, path, body, "", contentType)
+}
+
+func (c *RemoteClient) doRequest(ctx context.Context, method, path string, body []byte, bearer, contentType string) (int, []byte, error) {
 	u := strings.TrimRight(c.cfg.BaseURL, "/")
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -122,8 +178,8 @@ func (c *RemoteClient) do(ctx context.Context, method, path string, body []byte,
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
