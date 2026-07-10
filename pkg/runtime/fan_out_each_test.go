@@ -17,12 +17,12 @@ import (
 // ===========================================================================
 
 // item builds a per-element map: {id, deps}.
-func item(id string, deps ...string) map[string]interface{} {
-	d := make([]interface{}, len(deps))
+func item(id string, deps ...string) map[string]any {
+	d := make([]any, len(deps))
 	for i, x := range deps {
 		d[i] = x
 	}
-	return map[string]interface{}{"id": id, "deps": d}
+	return map[string]any{"id": id, "deps": d}
 }
 
 // fanOutEachWorkflow builds:
@@ -78,7 +78,7 @@ func fanOutEachWorkflow(dag bool, await ir.AwaitMode, maxParallel int) *ir.Workf
 // ---------------------------------------------------------------------------
 
 func TestBuildFanOutDAG_ValidDiamond(t *testing.T) {
-	items := []interface{}{item("A"), item("B", "A"), item("C", "A"), item("D", "B", "C")}
+	items := []any{item("A"), item("B", "A"), item("C", "A"), item("D", "B", "C")}
 	deps, err := buildFanOutDAG(items, "id", "deps")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -102,7 +102,7 @@ func TestBuildFanOutDAG_ValidDiamond(t *testing.T) {
 }
 
 func TestBuildFanOutDAG_EmptyDepsAllParallel(t *testing.T) {
-	items := []interface{}{item("A"), item("B"), item("C")}
+	items := []any{item("A"), item("B"), item("C")}
 	deps, err := buildFanOutDAG(items, "id", "deps")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -115,7 +115,7 @@ func TestBuildFanOutDAG_EmptyDepsAllParallel(t *testing.T) {
 }
 
 func TestBuildFanOutDAG_Cycle(t *testing.T) {
-	items := []interface{}{item("A", "B"), item("B", "A")}
+	items := []any{item("A", "B"), item("B", "A")}
 	_, err := buildFanOutDAG(items, "id", "deps")
 	if err == nil || !contains(err.Error(), "cycle") {
 		t.Fatalf("expected cycle error, got %v", err)
@@ -123,7 +123,7 @@ func TestBuildFanOutDAG_Cycle(t *testing.T) {
 }
 
 func TestBuildFanOutDAG_SelfCycle(t *testing.T) {
-	items := []interface{}{item("A", "A")}
+	items := []any{item("A", "A")}
 	_, err := buildFanOutDAG(items, "id", "deps")
 	if err == nil || !contains(err.Error(), "itself") {
 		t.Fatalf("expected self-dependency error, got %v", err)
@@ -131,7 +131,7 @@ func TestBuildFanOutDAG_SelfCycle(t *testing.T) {
 }
 
 func TestBuildFanOutDAG_UnknownDep(t *testing.T) {
-	items := []interface{}{item("A", "Z")}
+	items := []any{item("A", "Z")}
 	_, err := buildFanOutDAG(items, "id", "deps")
 	if err == nil || !contains(err.Error(), "unknown id") {
 		t.Fatalf("expected unknown-id error, got %v", err)
@@ -139,7 +139,7 @@ func TestBuildFanOutDAG_UnknownDep(t *testing.T) {
 }
 
 func TestBuildFanOutDAG_DuplicateKey(t *testing.T) {
-	items := []interface{}{item("A"), item("A")}
+	items := []any{item("A"), item("A")}
 	_, err := buildFanOutDAG(items, "id", "deps")
 	if err == nil || !contains(err.Error(), "duplicate key") {
 		t.Fatalf("expected duplicate-key error, got %v", err)
@@ -147,7 +147,7 @@ func TestBuildFanOutDAG_DuplicateKey(t *testing.T) {
 }
 
 func TestBuildFanOutDAG_MissingKey(t *testing.T) {
-	items := []interface{}{map[string]interface{}{"deps": []interface{}{}}}
+	items := []any{map[string]any{"deps": []any{}}}
 	_, err := buildFanOutDAG(items, "id", "deps")
 	if err == nil || !contains(err.Error(), "missing key") {
 		t.Fatalf("expected missing-key error, got %v", err)
@@ -155,7 +155,7 @@ func TestBuildFanOutDAG_MissingKey(t *testing.T) {
 }
 
 func TestBuildFanOutDAG_NonObjectItem(t *testing.T) {
-	items := []interface{}{"not-an-object"}
+	items := []any{"not-an-object"}
 	_, err := buildFanOutDAG(items, "id", "deps")
 	if err == nil || !contains(err.Error(), "not an object") {
 		t.Fatalf("expected non-object error, got %v", err)
@@ -168,7 +168,7 @@ func TestBuildFanOutDAG_NonObjectItem(t *testing.T) {
 
 func TestCoerceToArray(t *testing.T) {
 	// native array
-	if a, err := coerceToArray([]interface{}{1, 2}, "r", "o"); err != nil || len(a) != 2 {
+	if a, err := coerceToArray([]any{1, 2}, "r", "o"); err != nil || len(a) != 2 {
 		t.Errorf("native array: got %v, %v", a, err)
 	}
 	// JSON string holding an array (the DSL json-field path)
@@ -205,17 +205,17 @@ func TestFanOutEach_AllParallel(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]bool{}
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B"), item("C")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B"), item("C")}}, nil
 	})
-	exec.on("handle", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(input map[string]any) (map[string]any, error) {
 		mu.Lock()
 		seen[input["id"].(string)] = true
 		mu.Unlock()
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"done": true}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -241,15 +241,15 @@ func TestFanOutEach_EmptyArray(t *testing.T) {
 	wf := fanOutEachWorkflow(false, ir.AwaitWaitAll, 0)
 	var handleCalls int64
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{}}, nil
 	})
-	exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(_ map[string]any) (map[string]any, error) {
 		atomic.AddInt64(&handleCalls, 1)
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
@@ -276,7 +276,7 @@ func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
 		wf.Resources = map[string]int{"slot": capacity}
 		wf.Nodes["handle"].(*ir.AgentNode).Needs = []string{"slot"}
 
-		items := make([]interface{}, nItems)
+		items := make([]any, nItems)
 		for i := range items {
 			items[i] = item(string(rune('A' + i)))
 		}
@@ -293,10 +293,10 @@ func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
 		barrier := make(chan struct{})
 		var once sync.Once
 		exec := newStubExecutor()
-		exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{"items": items}, nil
+		exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"items": items}, nil
 		})
-		exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+		exec.on("handle", func(_ map[string]any) (map[string]any, error) {
 			n := atomic.AddInt32(&active, 1)
 			for { // lock-free max
 				p := atomic.LoadInt32(&peak)
@@ -309,10 +309,10 @@ func TestResourceSemaphore_BoundsConcurrency(t *testing.T) {
 			}
 			<-barrier // block until expectedPeak holders are concurrently inside
 			atomic.AddInt32(&active, -1)
-			return map[string]interface{}{"ok": true}, nil
+			return map[string]any{"ok": true}, nil
 		})
-		exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{}, nil
+		exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{}, nil
 		})
 
 		s := tmpStore(t)
@@ -350,7 +350,7 @@ func TestResourceLease_DistinctInstances(t *testing.T) {
 	wf.Nodes["handle"].(*ir.AgentNode).Needs = []string{"godot"}
 
 	const nItems = 8
-	items := make([]interface{}, nItems)
+	items := make([]any, nItems)
 	for i := range items {
 		items[i] = item(string(rune('A' + i)))
 	}
@@ -362,10 +362,10 @@ func TestResourceLease_DistinctInstances(t *testing.T) {
 	var violations []string
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": items}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": items}, nil
 	})
-	exec.on("handle", func(in map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(in map[string]any) (map[string]any, error) {
 		lease, _ := in[leaseInputKey].(map[string]string)
 		id := lease["godot"]
 
@@ -389,10 +389,10 @@ func TestResourceLease_DistinctInstances(t *testing.T) {
 		mu.Lock()
 		delete(held, id)
 		mu.Unlock()
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -440,12 +440,12 @@ func TestFanOutEach_DAG_DiamondOrderingAndParallelism(t *testing.T) {
 	release := make(chan struct{})
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{
 			item("A"), item("B", "A"), item("C", "A"), item("D", "B", "C"),
 		}}, nil
 	})
-	exec.on("handle", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(input map[string]any) (map[string]any, error) {
 		id := input["id"].(string)
 		record(id + ":start")
 		if id == "B" || id == "C" {
@@ -460,10 +460,10 @@ func TestFanOutEach_DAG_DiamondOrderingAndParallelism(t *testing.T) {
 			}
 		}
 		record(id + ":end")
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -502,10 +502,10 @@ func TestFanOutEach_DAG_BoundedParallelism(t *testing.T) {
 	wf := fanOutEachWorkflow(true, ir.AwaitWaitAll, 2)
 	var maxC, curC int64
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B"), item("C"), item("D")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B"), item("C"), item("D")}}, nil
 	})
-	exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(_ map[string]any) (map[string]any, error) {
 		cur := atomic.AddInt64(&curC, 1)
 		for {
 			old := atomic.LoadInt64(&maxC)
@@ -515,10 +515,10 @@ func TestFanOutEach_DAG_BoundedParallelism(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 		atomic.AddInt64(&curC, -1)
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
@@ -536,19 +536,19 @@ func TestFanOutEach_DAG_FailedDepSkipsDependents(t *testing.T) {
 	wf := fanOutEachWorkflow(true, ir.AwaitWaitAll, 4)
 	var bRan int64
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B", "A")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B", "A")}}, nil
 	})
-	exec.on("handle", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(input map[string]any) (map[string]any, error) {
 		id := input["id"].(string)
 		if id == "A" {
 			return nil, errors.New("A boom")
 		}
 		atomic.AddInt64(&bRan, 1) // B must never get here
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
@@ -567,15 +567,15 @@ func TestFanOutEach_DAG_CycleFailsRun(t *testing.T) {
 	wf := fanOutEachWorkflow(true, ir.AwaitWaitAll, 4)
 	var handleRan int64
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A", "B"), item("B", "A")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A", "B"), item("B", "A")}}, nil
 	})
-	exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(_ map[string]any) (map[string]any, error) {
 		atomic.AddInt64(&handleRan, 1)
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
@@ -608,12 +608,12 @@ func TestFanOutEachWorkspaceSafetyRejectsConcurrentMutatingTemplate(t *testing.T
 
 	var handleCalls int64
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B")}}, nil
 	})
-	exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(_ map[string]any) (map[string]any, error) {
 		atomic.AddInt64(&handleCalls, 1)
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -637,15 +637,15 @@ func TestFanOutEachWorkspaceSafetyAllowsMutatingTemplateWhenSequential(t *testin
 
 	var handleCalls int64
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B")}}, nil
 	})
-	exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(_ map[string]any) (map[string]any, error) {
 		atomic.AddInt64(&handleCalls, 1)
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -668,15 +668,15 @@ func TestFanOutEachWorkspaceSafetyAllowsReadonlyTemplateInParallel(t *testing.T)
 
 	var handleCalls int64
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B")}}, nil
 	})
-	exec.on("handle", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(_ map[string]any) (map[string]any, error) {
 		atomic.AddInt64(&handleCalls, 1)
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -700,15 +700,15 @@ func TestFanOutEachInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 	var closeOnce sync.Once
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B")}}, nil
 	})
-	exec.on("handle", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("handle", func(input map[string]any) (map[string]any, error) {
 		id := input["id"].(string)
 		if id == "B" {
 			closeOnce.Do(func() { close(wedgedStarted) })
 			<-release // deliberately ignores ctx until the test releases it
-			return map[string]interface{}{}, nil
+			return map[string]any{}, nil
 		}
 		<-wedgedStarted // ensure the sibling is already wedged before failing
 		return nil, errors.New("A failed")

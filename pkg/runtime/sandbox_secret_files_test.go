@@ -44,7 +44,7 @@ func TestAddSecretFileMounts_ValueExpressionAndDefaultPath(t *testing.T) {
 		},
 	}}
 	var spec sandbox.Spec
-	err := addSecretFileMounts(context.Background(), &spec, wf, map[string]interface{}{"secret_payload": "payload"})
+	err := addSecretFileMounts(context.Background(), &spec, wf, map[string]any{"secret_payload": "payload"})
 	if err != nil {
 		t.Fatalf("addSecretFileMounts: %v", err)
 	}

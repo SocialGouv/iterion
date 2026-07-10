@@ -53,19 +53,19 @@ func TestSessionInherit(t *testing.T) {
 	var capturedSessionID string
 
 	exec := newStubExecutor()
-	exec.on("producer", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("producer", func(_ map[string]any) (map[string]any, error) {
 		// Simulate a delegation backend returning a session ID.
-		return map[string]interface{}{
+		return map[string]any{
 			"result":      "planned",
 			"_session_id": "sess-abc-123",
 		}, nil
 	})
-	exec.on("consumer", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("consumer", func(input map[string]any) (map[string]any, error) {
 		// Capture the session ID received via input.
 		if sid, ok := input["_session_id"].(string); ok {
 			capturedSessionID = sid
 		}
-		return map[string]interface{}{"done": true}, nil
+		return map[string]any{"done": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -133,23 +133,23 @@ func TestSessionInheritThroughBranches(t *testing.T) {
 	var capturedSessionID string
 
 	exec := newStubExecutor()
-	exec.on("branch_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("branch_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"review":      "looks good",
 			"_session_id": "sess-branch-a",
 		}, nil
 	})
-	exec.on("branch_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("branch_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"review":      "needs work",
 			"_session_id": "sess-branch-b",
 		}, nil
 	})
-	exec.on("consumer", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("consumer", func(input map[string]any) (map[string]any, error) {
 		if sid, ok := input["_session_id"].(string); ok {
 			capturedSessionID = sid
 		}
-		return map[string]interface{}{"fixed": true}, nil
+		return map[string]any{"fixed": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -219,23 +219,23 @@ func TestSessionFork(t *testing.T) {
 	var capturedA, capturedB string
 
 	exec := newStubExecutor()
-	exec.on("producer", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("producer", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"result":      "work done",
 			"_session_id": "sess-parent-000",
 		}, nil
 	})
-	exec.on("fork_a", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("fork_a", func(input map[string]any) (map[string]any, error) {
 		if sid, ok := input["_session_id"].(string); ok {
 			capturedA = sid
 		}
-		return map[string]interface{}{"commit_name": "feat: add session fork"}, nil
+		return map[string]any{"commit_name": "feat: add session fork"}, nil
 	})
-	exec.on("fork_b", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("fork_b", func(input map[string]any) (map[string]any, error) {
 		if sid, ok := input["_session_id"].(string); ok {
 			capturedB = sid
 		}
-		return map[string]interface{}{"summary": "implemented fork feature"}, nil
+		return map[string]any{"summary": "implemented fork feature"}, nil
 	})
 
 	s := tmpStore(t)
@@ -277,11 +277,11 @@ func TestSessionInheritIfAvailable_FallsBackToFreshWhenNoSession(t *testing.T) {
 		Loops:   map[string]*ir.Loop{},
 	}
 
-	var sawInput map[string]interface{}
+	var sawInput map[string]any
 	exec := newStubExecutor()
-	exec.on("consumer", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("consumer", func(input map[string]any) (map[string]any, error) {
 		sawInput = input
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	eng := New(wf, tmpStore(t), exec)
@@ -333,14 +333,14 @@ func TestSessionInheritIfAvailable_InheritsWhenSessionPresent(t *testing.T) {
 
 	var capturedSessionID string
 	exec := newStubExecutor()
-	exec.on("producer", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"_session_id": "sess-iiav-happy"}, nil
+	exec.on("producer", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"_session_id": "sess-iiav-happy"}, nil
 	})
-	exec.on("consumer", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("consumer", func(input map[string]any) (map[string]any, error) {
 		if sid, ok := input["_session_id"].(string); ok {
 			capturedSessionID = sid
 		}
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	eng := New(wf, tmpStore(t), exec)

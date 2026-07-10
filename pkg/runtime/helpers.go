@@ -55,14 +55,14 @@ func dedupeLabels(labels []string) []string {
 // ---------------------------------------------------------------------------
 
 // emit is a convenience wrapper for appending an event with no branch ID.
-func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
+func (e *Engine) emit(ctx context.Context, runID string, typ store.EventType, nodeID string, data map[string]any) error {
 	return e.emitBranch(ctx, runID, "", typ, nodeID, data)
 }
 
 // emitBranch appends an event, optionally tagged with a branch ID. A blank
 // branchID is the non-branch case (what emit forwards) and keeps the
 // branch-free error message.
-func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]interface{}) error {
+func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ store.EventType, nodeID string, data map[string]any) error {
 	evt := store.Event{
 		Type:     typ,
 		BranchID: branchID,
@@ -84,7 +84,7 @@ func (e *Engine) emitBranch(ctx context.Context, runID, branchID string, typ sto
 }
 
 // logEvent writes a human-friendly console log for a given event type.
-func (e *Engine) logEvent(typ store.EventType, nodeID, branchID string, data map[string]interface{}) {
+func (e *Engine) logEvent(typ store.EventType, nodeID, branchID string, data map[string]any) {
 	l := e.logger
 	if l == nil {
 		return
@@ -194,7 +194,7 @@ func (e *Engine) failRunErr(ctx context.Context, runID, nodeID string, origErr e
 			e.logger.Error("failed to persist run failure status: %v", storeErr)
 			return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, rtErr.Message, storeErr)
 		}
-		if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]interface{}{
+		if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]any{
 			"error": rtErr.Message,
 			"code":  string(rtErr.Code),
 		}); err != nil {
@@ -216,7 +216,7 @@ func (e *Engine) failRunWithCode(ctx context.Context, runID, nodeID, reason stri
 		e.logger.Error("failed to persist run failure status: %v", storeErr)
 		return fmt.Errorf("runtime: node %q failed (%s) and could not persist failure: %w", nodeID, reason, storeErr)
 	}
-	if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]interface{}{
+	if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]any{
 		"error": reason,
 		"code":  string(code),
 	}); err != nil {
@@ -351,7 +351,7 @@ func restoreNodeAttempts(src map[string]map[string]int) map[string]map[ErrorCode
 // aware failure path so the "what does a resumable failure look like"
 // decision lives in one place.
 func (e *Engine) emitRunFailedAndReturn(ctx context.Context, runID, nodeID, reason string, code ErrorCode) error {
-	if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]interface{}{
+	if err := e.emit(ctx, runID, store.EventRunFailed, nodeID, map[string]any{
 		"error":     reason,
 		"code":      string(code),
 		"resumable": true,
@@ -385,7 +385,7 @@ func (e *Engine) failRunErrWithCheckpoint(rs *runState, nodeID string, origErr e
 		// Preserve the original *RuntimeError identity so callers can
 		// errors.As back to the same value; the helper would otherwise
 		// allocate a fresh one.
-		if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, map[string]interface{}{
+		if err := e.emit(rs.ctx, rs.runID, store.EventRunFailed, nodeID, map[string]any{
 			"error":     rtErr.Message,
 			"code":      string(rtErr.Code),
 			"resumable": true,
@@ -422,7 +422,7 @@ func (e *Engine) handleContextDoneWithCheckpoint(rs *runState, nodeID string, ct
 		if err := e.store.UpdateRunStatus(storeCtx, rs.runID, store.RunStatusCancelled, "run cancelled"); err != nil {
 			e.logger.Error("failed to persist cancellation status: %v", err)
 		}
-		if err := e.emit(storeCtx, rs.runID, store.EventRunCancelled, nodeID, map[string]interface{}{
+		if err := e.emit(storeCtx, rs.runID, store.EventRunCancelled, nodeID, map[string]any{
 			"reason": "context cancelled",
 		}); err != nil {
 			e.logger.Warn("failed to emit run_cancelled event: %v", err)
@@ -459,7 +459,7 @@ func (e *Engine) wrapContextErr(ctxErr error) error {
 // reusing that sentinel means every resumable-pause handler (runner,
 // resume dispatch, dispatcher retry) treats both operator and cost-cap
 // pauses correctly with no extra wiring.
-func (e *Engine) pauseOperatorWithCheckpoint(rs *runState, nodeID, reason, detail string, data map[string]interface{}) error {
+func (e *Engine) pauseOperatorWithCheckpoint(rs *runState, nodeID, reason, detail string, data map[string]any) error {
 	storeCtx, cancel := context.WithTimeout(context.WithoutCancel(rs.ctx), 5*time.Second)
 	defer cancel()
 
@@ -471,7 +471,7 @@ func (e *Engine) pauseOperatorWithCheckpoint(rs *runState, nodeID, reason, detai
 		e.logger.Error("failed to persist %s pause status: %v", reason, err)
 	}
 	if data == nil {
-		data = make(map[string]interface{}, 1)
+		data = make(map[string]any, 1)
 	}
 	data["reason"] = reason
 	if err := e.emit(storeCtx, rs.runID, store.EventRunPaused, nodeID, data); err != nil {
@@ -500,7 +500,7 @@ func (e *Engine) handleCostCapPause(rs *runState, nodeID string, st CapStatus) e
 		rs.runID, st.SpentUSD, st.LimitUSD, st.Date)
 	return e.pauseOperatorWithCheckpoint(rs, nodeID, CapReasonDaily,
 		fmt.Sprintf("daily spend cap $%.2f >= $%.2f", st.SpentUSD, st.LimitUSD),
-		map[string]interface{}{
+		map[string]any{
 			"spent_usd": st.SpentUSD,
 			"limit_usd": st.LimitUSD,
 			"date":      st.Date,
@@ -538,7 +538,7 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 
 	// Hard limit (90%+) — refuse new node executions to prevent concurrent overage.
 	if hl := findHardLimited(checks); hl != nil {
-		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]any{
 			"dimension":  hl.dimension,
 			"used":       hl.used,
 			"limit":      hl.limit,
@@ -557,7 +557,7 @@ func (e *Engine) checkBudgetBeforeExec(rs *runState, nodeID string) error {
 
 // recordAndCheckBudget records usage from a node execution and emits
 // budget_warning / budget_exceeded events as needed.
-func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]interface{}) error {
+func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[string]any) error {
 	tokens, costUSD := extractUsage(output)
 
 	// Daily spend cap accounting (independent of the per-run budget so it
@@ -579,7 +579,7 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 
 	// Emit warnings.
 	for _, w := range findWarnings(checks) {
-		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, nodeID, map[string]any{
 			"dimension": w.dimension,
 			"used":      w.used,
 			"limit":     w.limit,
@@ -602,7 +602,7 @@ func (e *Engine) recordAndCheckBudget(rs *runState, nodeID string, output map[st
 // checkBudgetBeforeExec — it has a distinct message, hint, and event
 // field, and is reached from only one site.
 func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetCheckResult) error {
-	_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]interface{}{
+	_ = e.emit(rs.ctx, rs.runID, store.EventBudgetExceeded, nodeID, map[string]any{
 		"dimension": exc.dimension,
 		"used":      exc.used,
 		"limit":     exc.limit,
@@ -622,7 +622,7 @@ func (e *Engine) failBudgetExceeded(rs *runState, nodeID string, exc *budgetChec
 // validateNodeOutput checks that the node's output conforms to its declared
 // output schema. Returns nil if validation is disabled, the node has no
 // output schema, or the output is valid.
-func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[string]interface{}) error {
+func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[string]any) error {
 	if !e.validateOutputs {
 		return nil
 	}
@@ -653,7 +653,7 @@ func (e *Engine) validateNodeOutput(nodeID string, node ir.Node, output map[stri
 
 // extractUsage reads conventional _tokens and _cost_usd keys from a node
 // output. Returns zeros if absent.
-func extractUsage(output map[string]interface{}) (tokens int, costUSD float64) {
+func extractUsage(output map[string]any) (tokens int, costUSD float64) {
 	if v, ok := output["_tokens"]; ok {
 		switch t := v.(type) {
 		case int:
@@ -677,11 +677,11 @@ func extractUsage(output map[string]interface{}) (tokens int, costUSD float64) {
 
 // buildNodeFinishedData builds the data payload for a node_finished event,
 // including usage metrics (_tokens, _cost_usd) and a snapshot of the output.
-func buildNodeFinishedData(output map[string]interface{}) map[string]interface{} {
+func buildNodeFinishedData(output map[string]any) map[string]any {
 	if output == nil {
 		return nil
 	}
-	data := map[string]interface{}{
+	data := map[string]any{
 		"output": output,
 	}
 	if v, ok := output["_tokens"]; ok {
@@ -705,7 +705,7 @@ func buildNodeFinishedData(output map[string]interface{}) map[string]interface{}
 // the event path here — NOT to persisted artifacts or the checkpoint,
 // which are load-bearing for resume.
 type SecretScrubber interface {
-	ScrubOutput(map[string]interface{}) map[string]interface{}
+	ScrubOutput(map[string]any) map[string]any
 }
 
 // sanitizeOutputForEvent returns a copy of output scrubbed for the
@@ -719,7 +719,7 @@ type SecretScrubber interface {
 //     stream (replaced with privacy.EventTextMarker).
 //
 // Returns the original map only when neither layer changes anything.
-func (e *Engine) sanitizeOutputForEvent(node ir.Node, output map[string]interface{}) map[string]interface{} {
+func (e *Engine) sanitizeOutputForEvent(node ir.Node, output map[string]any) map[string]any {
 	if output == nil {
 		return nil
 	}
@@ -731,7 +731,7 @@ func (e *Engine) sanitizeOutputForEvent(node ir.Node, output map[string]interfac
 	}
 	if toolNode, ok := node.(*ir.ToolNode); ok && toolNode.Command == privacy.UnfilterToolName {
 		if _, has := out["text"]; has {
-			sanitized := make(map[string]interface{}, len(out))
+			sanitized := make(map[string]any, len(out))
 			for k, v := range out {
 				sanitized[k] = v
 			}
@@ -745,14 +745,14 @@ func (e *Engine) sanitizeOutputForEvent(node ir.Node, output map[string]interfac
 // formatOutputPreview builds a human-readable single-line summary of a
 // node_finished event's data. It returns an empty string when there is
 // nothing meaningful to display.
-func formatOutputPreview(data map[string]interface{}) string {
+func formatOutputPreview(data map[string]any) string {
 	if data == nil {
 		return ""
 	}
 
 	// Regular nodes wrap output under data["output"]; router events put
 	// fields like selected_route/reasoning directly in data.
-	output, ok := data["output"].(map[string]interface{})
+	output, ok := data["output"].(map[string]any)
 	if !ok {
 		output = data
 	}
@@ -760,7 +760,7 @@ func formatOutputPreview(data map[string]interface{}) string {
 	// Collect user-visible fields (skip internal _-prefixed keys).
 	type kv struct {
 		key string
-		val interface{}
+		val any
 	}
 
 	var fields []kv
@@ -820,7 +820,7 @@ func formatOutputPreview(data map[string]interface{}) string {
 }
 
 // formatFieldValue formats a single output field value for display.
-func formatFieldValue(v interface{}) string {
+func formatFieldValue(v any) string {
 	switch val := v.(type) {
 	case string:
 		return truncatePreview(val, 200)
@@ -829,7 +829,7 @@ func formatFieldValue(v interface{}) string {
 			return "true"
 		}
 		return "false"
-	case []interface{}:
+	case []any:
 		items := make([]string, 0, len(val))
 		for _, item := range val {
 			s := fmt.Sprintf("%v", item)
@@ -879,7 +879,7 @@ func truncatePreview(s string, maxLen int) string {
 // the MaxIterations guard), we explicitly skip edges with a LoopName here.
 // The intent matches the existing comment block on the Expression case:
 // "branches don't iterate, so loop/run namespaces have no meaning."
-func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]interface{}) *ir.Edge {
+func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]any) *ir.Edge {
 	var unconditional *ir.Edge
 
 	for _, edge := range e.workflow.Edges {
@@ -937,7 +937,7 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]i
 // has no parsed Expression. The expression evaluation context is built lazily
 // at most once per call (only if at least one outgoing edge uses an
 // expression).
-func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]interface{}, rs *runState) *ir.Edge {
+func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]any, rs *runState) *ir.Edge {
 	var unconditional *ir.Edge
 	var exprCtx *expr.Context
 
@@ -966,7 +966,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 				if loop.Unbounded && e.loopStalled(edge.LoopName, output, rs) {
 					e.logger.Warn("%s: node %q: edge to %q skipped — loop %q made no progress for %d crossings (liveness stall), falling through",
 						logPrefix, fromNodeID, edge.To, edge.LoopName, maxLoopStall)
-					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]interface{}{
+					if err := e.emit(rs.ctx, rs.runID, store.EventBudgetWarning, fromNodeID, map[string]any{
 						"loop": edge.LoopName, "reason": "liveness_stall", "crossings": maxLoopStall,
 					}); err != nil {
 						e.logger.Warn("failed to emit liveness_stall warning: %v", err)
@@ -1039,7 +1039,7 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 // type assertion in a future evalNode extension) surfaces as a
 // structured error and terminates the node cleanly, instead of
 // crashing the daemon mid-run.
-func evalComputeExpr(ast *expr.AST, exprCtx *expr.Context) (val interface{}, err error) {
+func evalComputeExpr(ast *expr.AST, exprCtx *expr.Context) (val any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("compute expression panicked: %v", r)
@@ -1056,7 +1056,7 @@ func evalComputeExpr(ast *expr.AST, exprCtx *expr.Context) (val interface{}, err
 // (rs.vars / rs.outputs / rs.artifacts). For a node running inside a fan-out
 // branch — which must see branch-local outputs not yet merged into rs — use
 // exprContextScoped with the branch's merged scope.
-func (e *Engine) exprContext(rs *runState, input map[string]interface{}) *expr.Context {
+func (e *Engine) exprContext(rs *runState, input map[string]any) *expr.Context {
 	return e.exprContextScoped(rs, rs.scope(), input)
 }
 
@@ -1064,30 +1064,30 @@ func (e *Engine) exprContext(rs *runState, input map[string]interface{}) *expr.C
 // resolveScope for vars/outputs/artifacts, while loop/run namespaces still
 // resolve against rs (read-only, parent-owned even inside a branch). The trunk
 // case (sc == rs.scope()) is behaviorally identical to the old exprContext.
-func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[string]interface{}) *expr.Context {
-	mapResolver := func(m map[string]interface{}) func([]string) interface{} {
-		return func(path []string) interface{} {
+func (e *Engine) exprContextScoped(rs *runState, sc resolveScope, input map[string]any) *expr.Context {
+	mapResolver := func(m map[string]any) func([]string) any {
+		return func(path []string) any {
 			if len(path) == 0 {
 				return m
 			}
 			return drillPath(m, path)
 		}
 	}
-	keyedMapResolver := func(byKey map[string]map[string]interface{}) func([]string) interface{} {
-		return func(path []string) interface{} {
+	keyedMapResolver := func(byKey map[string]map[string]any) func([]string) any {
+		return func(path []string) any {
 			if len(path) == 0 {
 				return byKey
 			}
 			return drillPath(byKey[path[0]], path[1:])
 		}
 	}
-	loopResolver := func(path []string) interface{} {
+	loopResolver := func(path []string) any {
 		if len(path) < 2 {
 			return nil
 		}
 		return e.resolveLoopPath(path, rs)
 	}
-	runResolver := func(path []string) interface{} {
+	runResolver := func(path []string) any {
 		if len(path) == 1 && path[0] == "id" {
 			return rs.runID
 		}

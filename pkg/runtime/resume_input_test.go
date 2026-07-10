@@ -60,18 +60,18 @@ func TestResumeFromFailed_ToolNodeVarMapping(t *testing.T) {
 	}
 
 	failOnce := true
-	observedInputs := []map[string]interface{}{}
+	observedInputs := []map[string]any{}
 	exec := newStubExecutor()
-	exec.on("upstream", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true}, nil
+	exec.on("upstream", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("downstream", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("downstream", func(input map[string]any) (map[string]any, error) {
 		observedInputs = append(observedInputs, mapCopy(input))
 		if failOnce {
 			failOnce = false
 			return nil, fmt.Errorf("simulated tool failure")
 		}
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	st := tmpStore(t)
@@ -104,8 +104,8 @@ func TestResumeFromFailed_ToolNodeVarMapping(t *testing.T) {
 	}
 }
 
-func mapCopy(m map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(m))
+func mapCopy(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
 	for k, v := range m {
 		out[k] = v
 	}
@@ -150,18 +150,18 @@ func TestResumeFromFailed_ToolNodeInputMapping(t *testing.T) {
 	}
 
 	failOnce := true
-	observedInputs := []map[string]interface{}{}
+	observedInputs := []map[string]any{}
 	exec := newStubExecutor()
-	exec.on("upstream", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"workspace_path": "/tmp/wf-test"}, nil
+	exec.on("upstream", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"workspace_path": "/tmp/wf-test"}, nil
 	})
-	exec.on("downstream", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("downstream", func(input map[string]any) (map[string]any, error) {
 		observedInputs = append(observedInputs, copyMap(input))
 		if failOnce {
 			failOnce = false
 			return nil, fmt.Errorf("simulated tool failure")
 		}
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	st := tmpStore(t)

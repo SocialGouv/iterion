@@ -21,13 +21,13 @@ import (
 // the same discipline as the rest of runState.
 type runEvents struct {
 	mu      sync.Mutex
-	fired   map[string]map[string]interface{} // event name → immutable payload
-	waiters map[string]chan struct{}          // event name → close-on-fire signal
+	fired   map[string]map[string]any // event name → immutable payload
+	waiters map[string]chan struct{}  // event name → close-on-fire signal
 }
 
 func newRunEvents() *runEvents {
 	return &runEvents{
-		fired:   make(map[string]map[string]interface{}),
+		fired:   make(map[string]map[string]any),
 		waiters: make(map[string]chan struct{}),
 	}
 }
@@ -45,7 +45,7 @@ func (re *runEvents) chanLocked(name string) chan struct{} {
 
 // signal records an event's payload and wakes every parked (and all future)
 // waiters by closing its channel. Idempotent on the close.
-func (re *runEvents) signal(name string, payload map[string]interface{}) {
+func (re *runEvents) signal(name string, payload map[string]any) {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 	re.fired[name] = payload
@@ -69,7 +69,7 @@ func (re *runEvents) waitChan(name string) <-chan struct{} {
 // never observe — or alias — the registry's live `fired` entry; the ADR-051
 // immutability boundary is guaranteed by the API, not by every caller
 // remembering to clone afterward.
-func (re *runEvents) payloadFor(name string) map[string]interface{} {
+func (re *runEvents) payloadFor(name string) map[string]any {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 	return clonePayload(re.fired[name])
@@ -83,8 +83,8 @@ func (re *runEvents) payloadFor(name string) map[string]interface{} {
 // shallow per-key copy, which would leave nested structures aliased and break
 // the ADR-051 immutability boundary. clonePayload(nil) returns an empty,
 // non-nil map (the "event not yet fired" path stays behavior-preserving).
-func clonePayload(p map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(p))
+func clonePayload(p map[string]any) map[string]any {
+	out := make(map[string]any, len(p))
 	for k, v := range p {
 		out[k] = deepCopyValue(v)
 	}
@@ -97,8 +97,8 @@ func clonePayload(p map[string]interface{}) map[string]interface{} {
 // explicit so the main loop resolves against the trunk (rs.scope()) and a
 // fan-out branch resolves against its merged parent+branch scope — letting a
 // branch-local emit reference a sibling node produced earlier in the same branch.
-func (e *Engine) emitEvent(rs *runState, en *ir.EmitNode, sc resolveScope) map[string]interface{} {
-	payload := make(map[string]interface{}, len(en.With))
+func (e *Engine) emitEvent(rs *runState, en *ir.EmitNode, sc resolveScope) map[string]any {
+	payload := make(map[string]any, len(en.With))
 	for _, dm := range en.With {
 		payload[dm.Key] = e.resolveMapping(dm, sc)
 	}
@@ -109,7 +109,7 @@ func (e *Engine) emitEvent(rs *runState, en *ir.EmitNode, sc resolveScope) map[s
 // awaitEvent blocks until a wait node's event is emitted in the same run, the
 // mandatory timeout fires, or ctx is cancelled. On success it returns a copy of
 // the event payload. Shared by the main loop (execWait) and the branch path.
-func (e *Engine) awaitEvent(ctx context.Context, rs *runState, nodeID string, wn *ir.WaitNode) (map[string]interface{}, error) {
+func (e *Engine) awaitEvent(ctx context.Context, rs *runState, nodeID string, wn *ir.WaitNode) (map[string]any, error) {
 	ch := rs.events.waitChan(wn.Event)
 	timer := time.NewTimer(wn.Timeout)
 	defer timer.Stop()
@@ -142,8 +142,8 @@ func (e *Engine) awaitEvent(ctx context.Context, rs *runState, nodeID string, wn
 // output schema, so the envelope's validateNodeOutput is a guaranteed no-op.
 func (e *Engine) execEmit(rs *runState, nodeID string, en *ir.EmitNode) (string, error) {
 	return e.execSpecialNode(rs, nodeID, "emit", en,
-		map[string]interface{}{"event": en.Event},
-		func() (map[string]interface{}, error) { return e.emitEvent(rs, en, rs.scope()), nil },
+		map[string]any{"event": en.Event},
+		func() (map[string]any, error) { return e.emitEvent(rs, en, rs.scope()), nil },
 		nil,
 	)
 }
@@ -154,8 +154,8 @@ func (e *Engine) execEmit(rs *runState, nodeID string, en *ir.EmitNode) (string,
 // can never hang the run.
 func (e *Engine) execWait(ctx context.Context, rs *runState, nodeID string, wn *ir.WaitNode) (string, error) {
 	return e.execSpecialNode(rs, nodeID, "wait", wn,
-		map[string]interface{}{"event": wn.Event},
-		func() (map[string]interface{}, error) { return e.awaitEvent(ctx, rs, nodeID, wn) },
+		map[string]any{"event": wn.Event},
+		func() (map[string]any, error) { return e.awaitEvent(ctx, rs, nodeID, wn) },
 		nil,
 	)
 }

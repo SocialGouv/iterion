@@ -49,9 +49,9 @@ func startNoopSandbox(
 	driver sandbox.Driver,
 	spec *sandbox.Spec,
 	source, runID, friendlyName, workspacePath string,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 ) (*activeSandbox, error) {
-	_ = emitEvent(store.EventSandboxSkipped, map[string]interface{}{
+	_ = emitEvent(store.EventSandboxSkipped, map[string]any{
 		"driver": "noop",
 		"mode":   string(spec.Mode),
 		"source": source,
@@ -84,7 +84,7 @@ func buildSandboxImageIfRequested(
 	prepared sandbox.PreparedSpec,
 	spec *sandbox.Spec,
 	info sandbox.RunInfo,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 ) (sandbox.PreparedSpec, error) {
 	if spec.Build == nil {
 		return prepared, nil
@@ -94,14 +94,14 @@ func buildSandboxImageIfRequested(
 		return prepared, nil
 	}
 	buildStart := time.Now()
-	_ = emitEvent(store.EventSandboxBuildStarted, map[string]interface{}{
+	_ = emitEvent(store.EventSandboxBuildStarted, map[string]any{
 		"driver":     driver.Name(),
 		"dockerfile": spec.Build.Dockerfile,
 		"context":    spec.Build.Context,
 	})
 	built, buildErr := b.Build(ctx, prepared, info)
 	if buildErr != nil {
-		_ = emitEvent(store.EventSandboxBuildFailed, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxBuildFailed, map[string]any{
 			"driver": driver.Name(),
 			"error":  buildErr.Error(),
 		})
@@ -111,7 +111,7 @@ func buildSandboxImageIfRequested(
 	if sp, ok := built.(interface{ Spec() sandbox.Spec }); ok {
 		builtImage = sp.Spec().Image
 	}
-	_ = emitEvent(store.EventSandboxBuildFinished, map[string]interface{}{
+	_ = emitEvent(store.EventSandboxBuildFinished, map[string]any{
 		"driver":      driver.Name(),
 		"target":      builtImage,
 		"duration_ms": time.Since(buildStart).Milliseconds(),
@@ -129,7 +129,7 @@ func emitSandboxStarted(
 	prepared sandbox.PreparedSpec,
 	spec *sandbox.Spec,
 	driverName, source string,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 ) {
 	resolvedImage := ""
 	if sp, ok := prepared.(interface{ Spec() sandbox.Spec }); ok {
@@ -138,7 +138,7 @@ func emitSandboxStarted(
 	if resolvedImage == "" {
 		resolvedImage = spec.Image
 	}
-	_ = emitEvent(store.EventSandboxStarted, map[string]interface{}{
+	_ = emitEvent(store.EventSandboxStarted, map[string]any{
 		"driver":          driverName,
 		"mode":            string(spec.Mode),
 		"source":          source,

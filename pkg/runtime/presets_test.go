@@ -16,7 +16,7 @@ type focusExec struct {
 	skills []string
 }
 
-func (f *focusExec) Execute(context.Context, ir.Node, map[string]interface{}) (map[string]interface{}, error) {
+func (f *focusExec) Execute(context.Context, ir.Node, map[string]any) (map[string]any, error) {
 	return nil, nil
 }
 func (f *focusExec) SetPresetFocus(p string, s []string) { f.prompt, f.skills = p, s }
@@ -45,7 +45,7 @@ func TestApplyPresetFocus_NoPresetNoPush(t *testing.T) {
 }
 
 func TestApplyPresetFocus_VarOnlyPresetNoPush(t *testing.T) {
-	wf := &ir.Workflow{Presets: map[string]ir.Preset{"q": {Name: "q", Values: map[string]interface{}{"x": 1}}}}
+	wf := &ir.Workflow{Presets: map[string]ir.Preset{"q": {Name: "q", Values: map[string]any{"x": 1}}}}
 	fe := &focusExec{prompt: "SENTINEL"}
 	New(wf, tmpStore(t), fe, WithPreset("q")).applyPresetFocus()
 	if fe.prompt != "SENTINEL" {
@@ -82,7 +82,7 @@ func TestMergeBundlePresets(t *testing.T) {
 
 	wf := &ir.Workflow{Presets: map[string]ir.Preset{
 		// An in-source, var-only preset of the same name — must be overwritten.
-		"sre": {Name: "sre", Values: map[string]interface{}{"focus": "STALE"}},
+		"sre": {Name: "sre", Values: map[string]any{"focus": "STALE"}},
 	}}
 	MergeBundlePresets(wf, b, nil)
 

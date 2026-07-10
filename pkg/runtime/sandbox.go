@@ -149,7 +149,7 @@ type SandboxParams struct {
 	FriendlyName  string
 	RepoRoot      string
 	WorkspacePath string
-	SecretVars    map[string]interface{}
+	SecretVars    map[string]any
 	CLIOverride   string // "" means no override
 	GlobalDefault string // "" means no global default
 	DefaultImage  string // "" lets the runtime pick the built-in default
@@ -161,7 +161,7 @@ type SandboxParams struct {
 	HostStateOverride string
 	HostStateDefault  string
 
-	EmitEvent func(store.EventType, map[string]interface{}) error
+	EmitEvent func(store.EventType, map[string]any) error
 	Logger    *iterlog.Logger
 	// AttachmentsHostDir, when non-empty, is bind-mounted read-only
 	// into the container at AttachmentsContainerPath so {{attachments.X}}
@@ -250,7 +250,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandbox_build_failed / sandbox_started and the operator has no
 	// signal that the run is unobservable.
 	rawEmit := p.EmitEvent
-	emitEvent := func(ev store.EventType, payload map[string]interface{}) error {
+	emitEvent := func(ev store.EventType, payload map[string]any) error {
 		err := rawEmit(ev, payload)
 		if err != nil && logger != nil {
 			logger.Warn("runtime: emit %s event for run %s: %v", ev, p.RunID, err)
@@ -324,7 +324,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// so operators can audit it and opt out by setting `backend:` on
 	// the affected nodes.
 	if p.Workflow != nil && containsClawNode(p.Workflow) {
-		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]any{
 			"reason":         "claw nodes will run via iterion-claw-runner inside the container",
 			"limitations_v1": "no MCP servers, no mid-tool-loop ask_user — see docs/sandbox.md",
 		})
@@ -457,7 +457,7 @@ func startNetworkProxy(
 	driver sandbox.Driver,
 	runID string,
 	rewriter netproxy.SecretRewriter,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) (*netproxy.Proxy, string, []byte, error) {
 	mode, rules := ResolveNetworkPolicy(spec)
@@ -500,7 +500,7 @@ func startNetworkProxy(
 		Policy: policy,
 		Token:  token,
 		OnBlocked: func(host, reason string) {
-			_ = emitEvent(store.EventNetworkBlocked, map[string]interface{}{
+			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
 				"host":   host,
 				"reason": reason,
 				"run_id": runID,
@@ -1139,9 +1139,9 @@ type boardMCPSetter interface {
 // A non-nil error means the sandbox was requested but couldn't start.
 // The caller is responsible for failing the run; the returned cleanup
 // is a noop in that case but safe to defer.
-func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string, worktreeGitDir string, inputs map[string]interface{}) (func(), error) {
+func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string, worktreeGitDir string, inputs map[string]any) (func(), error) {
 	noopCleanup := func() {}
-	emitForSandbox := func(t store.EventType, data map[string]interface{}) error {
+	emitForSandbox := func(t store.EventType, data map[string]any) error {
 		return e.emit(ctx, runID, t, "", data)
 	}
 	var attachHost string
@@ -1170,7 +1170,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if e.bundle != nil {
 		bundleHost = e.bundle.Dir
 	}
-	var secretVars map[string]interface{}
+	var secretVars map[string]any
 	if workflowHasFileSecrets(e.workflow) {
 		secretVars = e.resolveVars(inputs)
 	}

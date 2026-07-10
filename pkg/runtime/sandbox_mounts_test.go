@@ -48,7 +48,7 @@ func TestApplyHostStateMounts_HomeTmpfsIsExec(t *testing.T) {
 	// (active), which is the path that adds the HOME tmpfs.
 	wf := &ir.Workflow{}
 	p := SandboxParams{WorkspacePath: t.TempDir()}
-	noopEmit := func(store.EventType, map[string]interface{}) error { return nil }
+	noopEmit := func(store.EventType, map[string]any) error { return nil }
 
 	applyHostStateMounts(spec, wf, p, noopEmit, iterlog.Nop())
 
@@ -95,7 +95,7 @@ func TestApplyHostStateMounts_WarmGoCaches(t *testing.T) {
 
 	spec := &sandbox.Spec{}
 	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-		func(store.EventType, map[string]interface{}) error { return nil }, iterlog.Nop())
+		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 
 	for _, rel := range []string{".cache/go-build", "go/pkg/mod"} {
 		want := filepath.Join(home, rel)
@@ -133,7 +133,7 @@ func TestApplyHostStateMounts_ClaudeConfigFile(t *testing.T) {
 		}
 		spec := &sandbox.Spec{}
 		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-			func(store.EventType, map[string]interface{}) error { return nil }, iterlog.Nop())
+			func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 		found := false
 		for _, m := range spec.Mounts {
 			if strings.Contains(m, "source="+cfg+",") && strings.Contains(m, "target="+cfg) {
@@ -152,7 +152,7 @@ func TestApplyHostStateMounts_ClaudeConfigFile(t *testing.T) {
 	t.Run("absent host file skipped silently", func(t *testing.T) {
 		spec := &sandbox.Spec{}
 		applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-			func(store.EventType, map[string]interface{}) error { return nil }, iterlog.Nop())
+			func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 		for _, m := range spec.Mounts {
 			if strings.Contains(m, ".claude.json") {
 				t.Errorf("no host ~/.claude.json exists, yet a mount references it: %q", m)
@@ -186,7 +186,7 @@ func TestApplyHostStateMounts_HomeNestedBindParentsWritable(t *testing.T) {
 
 	spec := &sandbox.Spec{}
 	applyHostStateMounts(spec, &ir.Workflow{}, SandboxParams{WorkspacePath: t.TempDir()},
-		func(store.EventType, map[string]interface{}) error { return nil }, iterlog.Nop())
+		func(store.EventType, map[string]any) error { return nil }, iterlog.Nop())
 
 	for _, parent := range []string{filepath.Join(home, ".cache"), filepath.Join(home, "go")} {
 		entry, ok := tmpfsDir(spec.Tmpfs, parent)

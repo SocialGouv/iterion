@@ -19,12 +19,12 @@ type ctxBlockingExecutor struct {
 	blockNode string
 }
 
-func (e *ctxBlockingExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]interface{}) (map[string]interface{}, error) {
+func (e *ctxBlockingExecutor) Execute(ctx context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
 	if node.NodeID() == e.blockNode {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	return map[string]interface{}{"ok": true}, nil
+	return map[string]any{"ok": true}, nil
 }
 
 // TestNodeDeadlineFromDurationBudget verifies that a single node which runs

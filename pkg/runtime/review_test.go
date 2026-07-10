@@ -214,7 +214,7 @@ workflow wf:
 	if err := s.PauseRun(ctx, "run-rg", &store.Checkpoint{
 		NodeID:        "gate",
 		InteractionID: "run-rg_gate",
-		Outputs:       map[string]map[string]interface{}{},
+		Outputs:       map[string]map[string]any{},
 	}); err != nil {
 		t.Fatalf("pause run: %v", err)
 	}
@@ -222,7 +222,7 @@ workflow wf:
 	eng := New(cr.Workflow, s, newStubExecutor(),
 		WithRunName("swift-cedar-a3f2"), WithWorkDir(repo))
 
-	if err := eng.Resume(ctx, "run-rg", map[string]interface{}{
+	if err := eng.Resume(ctx, "run-rg", map[string]any{
 		reviewActionKey: "approve_merge",
 	}); err != nil {
 		t.Fatalf("Resume(approve_merge): %v", err)
@@ -286,14 +286,14 @@ workflow wf:
 	_ = s.PauseRun(ctx, "run-rc", &store.Checkpoint{
 		NodeID:        "gate",
 		InteractionID: "run-rc_gate",
-		Outputs:       map[string]map[string]interface{}{},
+		Outputs:       map[string]map[string]any{},
 	})
 
 	// The implementer stub re-pauses the dialogue indirectly; here we just
 	// assert the gate routes back to impl (the run re-pauses at the gate on
 	// the next loop or fails the loop — either way it must NOT merge).
 	eng := New(cr.Workflow, s, newStubExecutor(), WithRunName("rc-run"), WithWorkDir(repo))
-	_ = eng.Resume(ctx, "run-rc", map[string]interface{}{reviewActionKey: "request_changes"})
+	_ = eng.Resume(ctx, "run-rc", map[string]any{reviewActionKey: "request_changes"})
 
 	r2, _ := s.LoadRun(ctx, "run-rc")
 	if r2.MergeStatus == store.MergeStatusMerged {
@@ -311,7 +311,7 @@ func TestReviewGate_PerformGateMerge_MessageOverride(t *testing.T) {
 	ctx := context.Background()
 	eng, _, rs, repo, _, _ := setupReviewRun(t, true)
 	hn := &ir.HumanNode{BaseNode: ir.BaseNode{ID: "gate"}, MergeStrategy: "squash", MergeInto: "current"}
-	answers := map[string]interface{}{reviewMessageKey: "custom squash subject\n\nbody"}
+	answers := map[string]any{reviewMessageKey: "custom squash subject\n\nbody"}
 
 	if err := eng.performGateMerge(ctx, rs, hn, "gate", answers); err != nil {
 		t.Fatalf("performGateMerge: %v", err)
