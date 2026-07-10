@@ -81,6 +81,69 @@ func AsRunGitMetaStore(s RunStore) RunGitMetaStore {
 	return g
 }
 
+// BuildRunGitMeta computes a RunGitMeta snapshot from a live repo/worktree
+// at repoDir: the commit list and modified-files diffstat over
+// (base, HEAD], plus each commit's introduced file list. It is the shared
+// producer for both the cloud runner (which persists the result before its
+// pod's worktree vanishes) and any local caller that wants to freeze the
+// same view.
+//
+// base is the run's baseline SHA (the worktree/clone HEAD at start). When
+// base is empty the range is unknowable, so a metadata-only snapshot with
+// just the current HEAD is returned — the studio renders it as "no commits"
+// rather than erroring. When base == HEAD (the run made no commits) the
+// lists come back empty, which is the correct "no commits" outcome too.
+//
+// Errors from the underlying git calls are returned so the caller can log
+// and skip persistence; a partial commit-files map (one commit's ShowCommit
+// failing) is tolerated — that commit is simply omitted from CommitFiles.
+func BuildRunGitMeta(repoDir, base string) (*RunGitMeta, error) {
+	head, err := gitlib.RevParseHead(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	meta := &RunGitMeta{
+		BaseCommit: base,
+		HeadCommit: head,
+		Commits:    []gitlib.CommitInfo{},
+		Files:      []gitlib.FileStatus{},
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if base == "" || base == head {
+		// No range to diff: either no baseline recorded, or the run made
+		// no commits. Both are the empty "no commits" snapshot.
+		return meta, nil
+	}
+	commits, err := gitlib.Log(repoDir, base, head)
+	if err != nil {
+		return nil, err
+	}
+	if commits != nil {
+		meta.Commits = commits
+	}
+	files, err := gitlib.StatusBetween(repoDir, base, head)
+	if err != nil {
+		return nil, err
+	}
+	if files != nil {
+		meta.Files = files
+	}
+	if len(commits) > 0 {
+		meta.CommitFiles = make(map[string][]gitlib.FileStatus, len(commits))
+		for _, c := range commits {
+			cf, ferr := gitlib.ShowCommit(repoDir, c.SHA)
+			if ferr != nil {
+				continue // tolerate a single unreadable commit
+			}
+			if cf == nil {
+				cf = []gitlib.FileStatus{}
+			}
+			meta.CommitFiles[c.SHA] = cf
+		}
+	}
+	return meta, nil
+}
+
 // gitMetaPath validates runID and returns <root>/runs/<runID>/gitmeta.json.
 func (s *FilesystemRunStore) gitMetaPath(runID string) (string, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {

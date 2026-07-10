@@ -2,11 +2,98 @@ package store
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
 	gitlib "github.com/SocialGouv/iterion/pkg/git"
 )
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE=2024-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2024-01-01T00:00:00Z")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func TestBuildRunGitMeta(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "main")
+	gitRun(t, dir, "config", "user.email", "base@example.com")
+	gitRun(t, dir, "config", "user.name", "Baseliner")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "a.txt")
+	gitRun(t, dir, "commit", "-q", "-m", "base")
+
+	baseCmd := exec.Command("git", "rev-parse", "HEAD")
+	baseCmd.Dir = dir
+	baseOut, err := baseCmd.Output()
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	base := string(baseOut[:len(baseOut)-1])
+
+	// No commits yet beyond base → empty snapshot.
+	meta, err := BuildRunGitMeta(dir, base)
+	if err != nil {
+		t.Fatalf("BuildRunGitMeta (no commits): %v", err)
+	}
+	if len(meta.Commits) != 0 || len(meta.Files) != 0 {
+		t.Errorf("no-commit meta = %+v, want empty commits/files", meta)
+	}
+	if meta.HeadCommit != base {
+		t.Errorf("head = %q, want base %q", meta.HeadCommit, base)
+	}
+
+	// Two run commits on top of base.
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "feat: add b, edit a")
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "feat: add c")
+
+	meta, err = BuildRunGitMeta(dir, base)
+	if err != nil {
+		t.Fatalf("BuildRunGitMeta: %v", err)
+	}
+	if len(meta.Commits) != 2 {
+		t.Fatalf("commits = %d, want 2 (%+v)", len(meta.Commits), meta.Commits)
+	}
+	// git log --reverse: oldest first.
+	if meta.Commits[0].Subject != "feat: add b, edit a" || meta.Commits[1].Subject != "feat: add c" {
+		t.Errorf("commit order/subjects = %q, %q", meta.Commits[0].Subject, meta.Commits[1].Subject)
+	}
+	// Modified-files vs base: a.txt (M), b.txt (A), c.txt (A).
+	paths := map[string]string{}
+	for _, f := range meta.Files {
+		paths[f.Path] = f.Status
+	}
+	if paths["a.txt"] != "M" || paths["b.txt"] != "A" || paths["c.txt"] != "A" {
+		t.Errorf("files = %+v, want a.txt M, b.txt A, c.txt A", meta.Files)
+	}
+	// Per-commit files recorded.
+	if len(meta.CommitFiles) != 2 {
+		t.Errorf("commit_files entries = %d, want 2", len(meta.CommitFiles))
+	}
+}
 
 func TestFilesystemRunGitMeta_SaveLoadRoundTrip(t *testing.T) {
 	s := tmpStore(t)

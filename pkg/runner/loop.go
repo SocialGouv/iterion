@@ -1026,12 +1026,23 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	// private repo) and point the engine there so ${PROJECT_DIR} is the repo
 	// under review. Otherwise use the runner's base WorkDir.
 	workDir := r.cfg.WorkDir
+	// gitBase is the clone's HEAD before the workflow runs — the baseline the
+	// per-run commit/file view is measured against. Captured here (while the
+	// clone is on-disk) so recordRunGitMeta can persist the commit/file
+	// metadata into the store before the pod's ephemeral workspace is wiped;
+	// the server pod, which has no worktree, serves the panels from that.
+	gitBase := ""
 	if strings.TrimSpace(msg.RepoURL) != "" {
 		repoDir, derr := r.prepareRepoWorkspace(ctx, msg)
 		if derr != nil {
 			return fmt.Errorf("runner: prepare repo workspace for %s: %w", msg.RunID, derr)
 		}
 		workDir = repoDir
+		if head, herr := gitlib.RevParseHead(repoDir); herr == nil {
+			gitBase = head
+		} else {
+			r.cfg.Logger.Warn("runner: run %s: capture git baseline: %v", msg.RunID, herr)
+		}
 		defer func() { _ = os.RemoveAll(repoDir) }()
 	}
 
@@ -1178,6 +1189,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		runErr = engine.Run(ctx, msg.RunID, msg.Vars)
 	}
 
+	// Persist the run's git metadata (commits + modified files vs the
+	// baseline) BEFORE the deferred `os.RemoveAll(repoDir)` wipes the clone.
+	// The server pod has no worktree, so this snapshot is the only source
+	// the Commits/Files panels have for a finished cloud run. Best-effort:
+	// a recording failure must never change the run's outcome.
+	if workDir != r.cfg.WorkDir {
+		r.recordRunGitMeta(ctx, msg, workDir, gitBase)
+	}
+
 	// Delete the sealed credentials bundle only on a terminal-clean
 	// outcome (success, or paused-for-resume). On every Nak-for-
 	// redelivery path — a transient/generic engine error, or a
@@ -1196,6 +1216,36 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		r.deleteRunSecrets(msg)
 	}
 	return runErr
+}
+
+// recordRunGitMeta computes the run's commit/file metadata from the clone
+// at workDir and persists it into the store, so the server pod can render
+// the Commits/Files panels after this runner pod's workspace is gone (the
+// cloud path where the live git inspection has no worktree to read). base
+// is the clone HEAD captured before the run; workDir is the on-disk clone.
+//
+// Best-effort throughout: a non-git workDir, an empty range (no commits),
+// or a store without the RunGitMetaStore seam all no-op cleanly. Never
+// returns an error — the caller has already decided the run's outcome.
+func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, workDir, base string) {
+	gs := store.AsRunGitMetaStore(r.cfg.Store)
+	if gs == nil {
+		return
+	}
+	meta, err := store.BuildRunGitMeta(workDir, base)
+	if err != nil {
+		if !errors.Is(err, gitlib.ErrNotGitRepo) {
+			r.cfg.Logger.Warn("runner: run %s: build git meta: %v", msg.RunID, err)
+		}
+		return
+	}
+	// Flush on a background ctx carrying the run's tenant identity — NOT the
+	// run ctx — so a cancelled/timed-out run still persists its final view
+	// (mirrors the run-log writer's flush-ctx rationale).
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	if err := gs.SaveRunGitMeta(idCtx, msg.RunID, meta); err != nil {
+		r.cfg.Logger.Warn("runner: run %s: persist git meta: %v", msg.RunID, err)
+	}
 }
 
 // injectCredentials resolves the run's sealed bundle, decrypts it,
