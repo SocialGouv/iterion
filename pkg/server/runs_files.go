@@ -251,7 +251,11 @@ func (s *Server) servePersistedFiles(w http.ResponseWriter, r *http.Request, run
 		return false
 	}
 	meta, err := gs.LoadRunGitMeta(r.Context(), run.ID)
-	if err != nil || meta == nil {
+	if err != nil {
+		s.logger.Warn("run %s: load git metadata (files): %v", run.ID, err)
+		return false
+	}
+	if meta == nil {
 		return false
 	}
 	files := meta.Files

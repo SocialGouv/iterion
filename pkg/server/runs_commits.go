@@ -127,7 +127,13 @@ func (s *Server) servePersistedCommits(w http.ResponseWriter, r *http.Request, r
 		return false
 	}
 	meta, err := gs.LoadRunGitMeta(r.Context(), run.ID)
-	if err != nil || meta == nil {
+	if err != nil {
+		// A store failure must stay visible — silently rendering the
+		// "no snapshot" empty state would mask an outage as absence.
+		s.logger.Warn("run %s: load git metadata (commits): %v", run.ID, err)
+		return false
+	}
+	if meta == nil {
 		return false
 	}
 	commits := meta.Commits
@@ -298,7 +304,11 @@ func (s *Server) persistedCommitDetail(ctx context.Context, run *store.Run, rawS
 		return runCommitDetailResponse{}, false
 	}
 	meta, err := gs.LoadRunGitMeta(ctx, run.ID)
-	if err != nil || meta == nil {
+	if err != nil {
+		s.logger.Warn("run %s: load git metadata (commit detail): %v", run.ID, err)
+		return runCommitDetailResponse{}, false
+	}
+	if meta == nil {
 		return runCommitDetailResponse{}, false
 	}
 	idx := -1

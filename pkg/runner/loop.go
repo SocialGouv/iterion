@@ -1232,6 +1232,13 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	if gs == nil {
 		return
 	}
+	if base == "" {
+		// Baseline capture failed earlier (already warned). Persisting a
+		// snapshot with no range would serve a CONFIDENT "no commits" for a
+		// run that may well have committed — worse than the panel reporting
+		// the metadata unavailable. Skip.
+		return
+	}
 	meta, err := store.BuildRunGitMeta(workDir, base)
 	if err != nil {
 		if !errors.Is(err, gitlib.ErrNotGitRepo) {
