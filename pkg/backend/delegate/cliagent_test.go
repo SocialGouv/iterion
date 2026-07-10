@@ -18,14 +18,20 @@ import (
 // recordingRun is a minimal sandbox.Run that records the ExecOpts handed to
 // Command and runs a canned host command in the container's stead, so a
 // backend's sandbox wiring can be asserted without a real container.
+// allOpts keeps every call in order: the agent invocation comes first,
+// followed by lifecycle commands (the deferred pidfile-kill cleanup).
 type recordingRun struct {
-	gotOpts sandbox.ExecOpts
+	gotOpts sandbox.ExecOpts // opts of the FIRST call — the agent invocation
+	allOpts []sandbox.ExecOpts
 	script  string // sh -c body the fake "container" runs
 }
 
 func (r *recordingRun) Driver() string { return "recording" }
 func (r *recordingRun) Command(ctx context.Context, _ []string, opts sandbox.ExecOpts) *exec.Cmd {
-	r.gotOpts = opts
+	if len(r.allOpts) == 0 {
+		r.gotOpts = opts
+	}
+	r.allOpts = append(r.allOpts, opts)
 	return exec.CommandContext(ctx, "sh", "-c", r.script) // #nosec G204 — test fixture
 }
 func (r *recordingRun) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {
