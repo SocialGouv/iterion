@@ -43,7 +43,7 @@ func seedRun(t *testing.T, st *store.FilesystemRunStore, runID, callbackURL, tok
 			RunID:     runID,
 			NodeID:    answerNode,
 			Version:   0,
-			Data:      map[string]interface{}{DefaultAnswerField: answer},
+			Data:      map[string]any{DefaultAnswerField: answer},
 			WrittenAt: time.Unix(0, 0).UTC(),
 		}); err != nil {
 			t.Fatalf("WriteArtifact: %v", err)

@@ -73,7 +73,7 @@ func CollectMetrics(ctx context.Context, s store.RunStore, runID, recipeName str
 		case store.EventRunFinished, store.EventRunFailed:
 			if evt.Data != nil {
 				if v, ok := evt.Data["terminal_output"]; ok {
-					if tOut, ok := v.(map[string]interface{}); ok {
+					if tOut, ok := v.(map[string]any); ok {
 						accumulateUsage(m, tOut)
 					}
 				}
@@ -96,7 +96,7 @@ func CollectMetrics(ctx context.Context, s store.RunStore, runID, recipeName str
 }
 
 // accumulateUsage adds _tokens and _cost_usd from a data map to the metrics.
-func accumulateUsage(m *RunMetrics, data map[string]interface{}) {
+func accumulateUsage(m *RunMetrics, data map[string]any) {
 	if v, ok := data["_tokens"]; ok {
 		switch t := v.(type) {
 		case float64:
@@ -120,7 +120,7 @@ func extractVerdict(events []*store.Event, primaryMetric string) string {
 		evt := events[i]
 		if evt.Type == store.EventNodeFinished && evt.Data != nil {
 			if output, ok := evt.Data["output"]; ok {
-				if outMap, ok := output.(map[string]interface{}); ok {
+				if outMap, ok := output.(map[string]any); ok {
 					if v, ok := outMap[primaryMetric]; ok {
 						return fmt.Sprintf("%v", v)
 					}

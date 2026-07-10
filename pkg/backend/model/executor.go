@@ -40,7 +40,7 @@ type ClawExecutor struct {
 	schemas         map[string]*ir.Schema
 	cursors         map[string]*ir.CursorDef
 	imageAttachs    map[string]bool // names of image-typed attachments declared in the workflow
-	vars            map[string]interface{}
+	vars            map[string]any
 	presetPrompt    string   // selected preset's "## Focus" bias, {{vars}}-templated per node
 	presetSkills    []string // selected preset's relevant-skill hint names
 	hooks           EventHooks
@@ -296,7 +296,7 @@ func WithSecretGuard(g *secretguard.Guard) ClawExecutorOption {
 // deep copy of a node's output for the (observational) node_finished
 // event stream, never mutating the live output (which feeds downstream
 // nodes and the resume checkpoint). Nil-safe via the guard.
-func (e *ClawExecutor) ScrubOutput(output map[string]interface{}) map[string]interface{} {
+func (e *ClawExecutor) ScrubOutput(output map[string]any) map[string]any {
 	return e.secretGuard.RedactMap(output)
 }
 
@@ -438,9 +438,9 @@ func NewClawExecutor(registry *Registry, wf *ir.Workflow, opts ...ClawExecutorOp
 	// literal "{{vars.X}}" string in the LLM prompt — a silent prompt
 	// corruption observed in whole_improve_loop where scope_notes
 	// (default "") leaked the placeholder into every reviewer call.
-	var seed map[string]interface{}
+	var seed map[string]any
 	if len(wf.Vars) > 0 {
-		seed = make(map[string]interface{}, len(wf.Vars))
+		seed = make(map[string]any, len(wf.Vars))
 		for name, vr := range wf.Vars {
 			if vr.HasDefault {
 				seed[name] = vr.Default
@@ -509,9 +509,9 @@ func (e *ClawExecutor) Close() error {
 // vars map. Keys present in vars override the matching default seeded
 // from wf.Vars at construction time; keys absent from vars retain
 // their default. Must be called before Execute.
-func (e *ClawExecutor) SetVars(vars map[string]interface{}) {
+func (e *ClawExecutor) SetVars(vars map[string]any) {
 	if e.vars == nil {
-		e.vars = make(map[string]interface{}, len(vars))
+		e.vars = make(map[string]any, len(vars))
 	}
 	for k, v := range vars {
 		e.vars[k] = v
@@ -564,7 +564,7 @@ func clawToolHint(input json.RawMessage) string {
 	if len(input) == 0 {
 		return ""
 	}
-	var obj map[string]interface{}
+	var obj map[string]any
 	if err := json.Unmarshal(input, &obj); err != nil {
 		return ""
 	}
@@ -697,7 +697,7 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 }
 
 // Execute implements runtime.NodeExecutor.
-func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	// Promote the engine-supplied run ID into the richer
 	// runtimeContext that backends read for session-aware retries.
 	runID := RunIDFromContext(ctx)
@@ -721,7 +721,7 @@ func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[stri
 	return output, err
 }
 
-func (e *ClawExecutor) executeNode(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeNode(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	switch n := node.(type) {
 	case *ir.AgentNode:
 		return e.executeBackend(ctx, n, input)

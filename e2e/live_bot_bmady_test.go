@@ -39,7 +39,7 @@ func TestLive_Bot_Bmady(t *testing.T) {
 		"doc.go": "// Package fixture is a tiny string utility library.\npackage fixture\n",
 	})
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"brief": "Add a Reverse(s string) string function to the fixture package, with table-driven tests.",
 	}
 	res := runBotLive(t, liveSpec{

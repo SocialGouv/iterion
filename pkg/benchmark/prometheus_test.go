@@ -57,7 +57,7 @@ func TestExporter_NodeFinishedTokensAndCost(t *testing.T) {
 	exp := NewPrometheusExporter("run-xyz", nil)
 	hooks := exp.EventHooks()
 
-	hooks.OnNodeFinished("plan", map[string]interface{}{
+	hooks.OnNodeFinished("plan", map[string]any{
 		"_tokens":   1234,
 		"_model":    "anthropic/claude-sonnet-4-6",
 		"_cost_usd": 0.0012,
@@ -126,7 +126,7 @@ func TestChainHooksComposeEventHooks(t *testing.T) {
 	}
 	b := model.EventHooks{
 		OnLLMRequest:   func(string, model.LLMRequestInfo) { calls["b"]++ },
-		OnNodeFinished: func(string, map[string]interface{}) { calls["b_node"]++ },
+		OnNodeFinished: func(string, map[string]any) { calls["b_node"]++ },
 	}
 	merged := model.ChainHooks(a, b)
 	merged.OnLLMRequest("n", model.LLMRequestInfo{})

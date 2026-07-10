@@ -57,7 +57,7 @@ func TestLive_FeatureDev(t *testing.T) {
 	}
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir":  workspaceDir,
 		"feature_prompt": "Add a function `Answer() int` returning 42 in answer.go at the repository root, plus a Go test in answer_test.go that asserts the return value. The repo currently has no Go files; create a minimal go.mod (`module iterion-live-fixture`, go 1.25) alongside.",
 	})
@@ -65,7 +65,7 @@ func TestLive_FeatureDev(t *testing.T) {
 	eng := runtime.New(wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"feature_prompt": "Add a function `Answer() int` returning 42 in answer.go at the repository root, plus a Go test in answer_test.go that asserts the return value. The repo currently has no Go files; create a minimal go.mod (`module iterion-live-fixture`, go 1.25) alongside.",
 		"workspace_dir":  workspaceDir,
 	}
@@ -175,14 +175,14 @@ func TestLive_FeatureDev_Real(t *testing.T) {
 	// (the container bind-mount) once the sandbox is up. Overriding
 	// would replace it with the host tempdir path, which doesn't
 	// exist inside the container and every shell tool would fail.
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"feature_prompt": featurePrompt,
 	})
 
 	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir), runtime.WithLogger(teeLogger))
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"feature_prompt": featurePrompt,
 	}
 

@@ -60,7 +60,7 @@ type Store struct{ m map[string]string }
 	})
 	gitCommitAll(t, workspaceDir, "chore: seed ADR + drifted code")
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir": workspaceDir,
 		"adr_path":      adrPath,
 		"scope_notes":   "Code drifted toward needing persistence; reconsider the in-memory decision.",

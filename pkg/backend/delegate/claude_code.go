@@ -477,13 +477,13 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUse
 	if rm != nil {
 		sessID = rm.SessionID
 	}
-	questions := map[string]interface{}{AskUserQuestionKey: p.Question}
+	questions := map[string]any{AskUserQuestionKey: p.Question}
 	AddAskUserOptionKeys(questions, p.Options, p.AllowFreeText)
 	if marker != nil {
 		questions[permission.InteractionMarkerKey] = marker
 	}
 	askResult := Result{
-		Output: map[string]interface{}{
+		Output: map[string]any{
 			"_needs_interaction":     true,
 			"_interaction_questions": questions,
 		},

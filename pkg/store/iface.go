@@ -42,7 +42,7 @@ type Capabilities struct {
 type RunStore interface {
 	// Lifecycle
 	Root() string
-	CreateRun(ctx context.Context, id, workflowName string, inputs map[string]interface{}) (*Run, error)
+	CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*Run, error)
 	LoadRun(ctx context.Context, id string) (*Run, error)
 	SaveRun(ctx context.Context, r *Run) error
 	ListRuns(ctx context.Context) ([]string, error)

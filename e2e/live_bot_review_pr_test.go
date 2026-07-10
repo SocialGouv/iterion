@@ -67,7 +67,7 @@ func Pick(items []string, idx int) string {
 	}
 	seedBranchDiffFixture(t, workspaceDir, "main", base, branch, "feature")
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir":      workspaceDir,
 		"base_ref":           "main",
 		"post_to_board":      false, // contain side-effects: no board writes
@@ -111,7 +111,7 @@ func Pick(items []string, idx int) string {
 
 // reviewPRWorkProduct assembles the artifact to grade: the emitted findings
 // report (read from report_path when present) plus the reviewed diff.
-func reviewPRWorkProduct(t *testing.T, workspaceDir string, emit map[string]interface{}) string {
+func reviewPRWorkProduct(t *testing.T, workspaceDir string, emit map[string]any) string {
 	t.Helper()
 	var b []byte
 	if p, _ := emit["report_path"].(string); p != "" {
@@ -128,7 +128,7 @@ func reviewPRWorkProduct(t *testing.T, workspaceDir string, emit map[string]inte
 }
 
 // asFloat coerces a JSON number (float64) or int to float64; 0 otherwise.
-func asFloat(v interface{}) float64 {
+func asFloat(v any) float64 {
 	switch n := v.(type) {
 	case float64:
 		return n

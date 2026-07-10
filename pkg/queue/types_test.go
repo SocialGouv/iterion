@@ -13,7 +13,7 @@ func TestRunMessage_RoundTripJSON(t *testing.T) {
 		WorkflowName:   "demo",
 		WorkflowHash:   "sha256:deadbeef",
 		IRCompiled:     json.RawMessage(`{"nodes":[]}`),
-		Vars:           map[string]interface{}{"k": "v"},
+		Vars:           map[string]any{"k": "v"},
 		BotID:          "review-pr",
 		BackendConfig:  BackendConfig{Default: BackendClaw},
 		Trace:          TraceContext{TraceID: "0123456789abcdef0123456789abcdef"},

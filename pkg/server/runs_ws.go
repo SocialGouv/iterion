@@ -97,9 +97,9 @@ type wsLogChunkPayload struct {
 }
 
 type wsAnswerRequest struct {
-	FilePath string                 `json:"file_path,omitempty"` // optional; falls back to run.FilePath
-	Source   string                 `json:"source,omitempty"`    // see resumeRunRequest.Source
-	Answers  map[string]interface{} `json:"answers"`
+	FilePath string         `json:"file_path,omitempty"` // optional; falls back to run.FilePath
+	Source   string         `json:"source,omitempty"`    // see resumeRunRequest.Source
+	Answers  map[string]any `json:"answers"`
 }
 
 type wsQueueMessageRequest struct {
@@ -663,7 +663,7 @@ func (c *runConn) handleCancelQueuedMessage(env runWSEnvelope) {
 
 // sendEnvelope marshals and queues a server→client envelope. Returns
 // false if the connection is being torn down.
-func (c *runConn) sendEnvelope(t string, payload interface{}, ackID string) bool {
+func (c *runConn) sendEnvelope(t string, payload any, ackID string) bool {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		c.server.logger.Error("ws marshal payload: %v", err)

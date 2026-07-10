@@ -72,13 +72,13 @@ func applyHostStateMounts(
 	spec *sandbox.Spec,
 	wf *ir.Workflow,
 	p SandboxParams,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) {
 	resolvedHostState, hsSource := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	if !spec.HostState.Active() {
-		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
 			"enabled": false,
 			"source":  hsSource,
 		})
@@ -251,7 +251,7 @@ func applyHostStateMounts(
 
 	applyHostUIDRemap(spec, emitEvent, logger)
 
-	_ = emitEvent(store.EventSandboxHostStateMounted, map[string]interface{}{
+	_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
 		"enabled":          true,
 		"source":           hsSource,
 		"workspace_folder": spec.WorkspaceFolder,
@@ -329,7 +329,7 @@ func mountTarget(entry string) string {
 // (CI runners) is also a no-op — same UID either way.
 func applyHostUIDRemap(
 	spec *sandbox.Spec,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) {
 	if goruntime.GOOS != "linux" {
@@ -342,7 +342,7 @@ func applyHostUIDRemap(
 	}
 	if spec.User == "" {
 		spec.User = strconv.Itoa(hostUID) + ":" + strconv.Itoa(hostGID)
-		_ = emitEvent(store.EventSandboxUserRemap, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxUserRemap, map[string]any{
 			"uid":    hostUID,
 			"gid":    hostGID,
 			"reason": "host_state=auto: align container UID with host so writes to ~/.iterion + ~/.claude remain host-owned",
@@ -351,7 +351,7 @@ func applyHostUIDRemap(
 	}
 	specUID, ok := parseUserUID(spec.User)
 	if ok && specUID != hostUID {
-		_ = emitEvent(store.EventSandboxUIDMismatchWarning, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxUIDMismatchWarning, map[string]any{
 			"spec_user": spec.User,
 			"host_uid":  hostUID,
 		})

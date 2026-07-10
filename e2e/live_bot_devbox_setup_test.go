@@ -47,8 +47,8 @@ func TestLive_Bot_DevboxSetup(t *testing.T) {
 		runIDBase:    "live-devbox-setup",
 		botFile:      "devbox-setup/main.bot",
 		workspaceDir: workspaceDir,
-		vars:         map[string]interface{}{},
-		inputs:       map[string]interface{}{},
+		vars:         map[string]any{},
+		inputs:       map[string]any{},
 		timeout:      45 * time.Minute,
 		withWorkDir:  true,
 	})

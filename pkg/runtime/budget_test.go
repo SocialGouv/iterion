@@ -79,8 +79,8 @@ func TestBudgetWarningEmitted(t *testing.T) {
 
 	exec := newStubExecutor()
 	for _, id := range []string{"a", "b", "c", "d"} {
-		exec.on(id, func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{"ok": true}, nil
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
 		})
 	}
 
@@ -142,8 +142,8 @@ func TestBudgetExceededFailsRun(t *testing.T) {
 
 	exec := newStubExecutor()
 	for _, id := range []string{"a", "b", "c"} {
-		exec.on(id, func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{"ok": true}, nil
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
 		})
 	}
 
@@ -203,11 +203,11 @@ func TestBudgetTokensExceeded(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_tokens": 80}, nil
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_tokens": 80}, nil
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_tokens": 50}, nil
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_tokens": 50}, nil
 	})
 
 	s := tmpStore(t)
@@ -270,11 +270,11 @@ func TestBudgetCostExceeded(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 0.6}, nil
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 0.6}, nil
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 0.5}, nil
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 0.5}, nil
 	})
 
 	s := tmpStore(t)
@@ -327,20 +327,20 @@ func TestBudgetSharedFirstComeFirstServed(t *testing.T) {
 	var branchADone int64
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
 		atomic.AddInt64(&branchADone, 1)
-		return map[string]interface{}{"review": "A done"}, nil
+		return map[string]any{"review": "A done"}, nil
 	})
-	exec.on("b1", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("b1", func(_ map[string]any) (map[string]any, error) {
 		// Small delay so branch A has a chance to execute first.
 		time.Sleep(10 * time.Millisecond)
-		return map[string]interface{}{"step": "b1 done"}, nil
+		return map[string]any{"step": "b1 done"}, nil
 	})
-	exec.on("b2", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"step": "b2 done"}, nil
+	exec.on("b2", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"step": "b2 done"}, nil
 	})
 
 	s := tmpStore(t)
@@ -399,12 +399,12 @@ func TestBudgetDurationExceeded(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
 		time.Sleep(60 * time.Millisecond) // exceed budget
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true}, nil
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -444,11 +444,11 @@ func TestNoBudgetNoInterference(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"_tokens": 999999, "_cost_usd": 999.0}, nil
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"_tokens": 999999, "_cost_usd": 999.0}, nil
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -576,8 +576,8 @@ func TestWorkspaceSafetyRejectsDualMutation(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -628,14 +628,14 @@ func TestWorkspaceSafetyAllowsMutationPlusReadonly(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("tool_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "tool ran"}, nil
+	exec.on("tool_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "tool ran"}, nil
 	})
-	exec.on("review_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "looks good"}, nil
+	exec.on("review_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "looks good"}, nil
 	})
 
 	s := tmpStore(t)
@@ -685,12 +685,12 @@ func TestWorkspaceSafetyAllowsParallelReadonly(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 	for _, id := range []string{"a", "b", "c"} {
-		exec.on(id, func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{"ok": true}, nil
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
 		})
 	}
 
@@ -738,8 +738,8 @@ func TestWorkspaceSafetyAgentWithToolsIsMutating(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -785,14 +785,14 @@ func TestWorkspaceSafetyAllowsParallelReadonlyTools(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "A"}, nil
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "A"}, nil
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "B"}, nil
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "B"}, nil
 	})
 
 	s := tmpStore(t)
@@ -841,14 +841,14 @@ func TestWorkspaceSafetyOneMutatingOneReadonlyTools(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "wrote"}, nil
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "wrote"}, nil
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "looks good"}, nil
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "looks good"}, nil
 	})
 
 	s := tmpStore(t)
@@ -896,8 +896,8 @@ func TestWorkspaceSafetyMixedToolsIsMutating(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -923,15 +923,15 @@ func TestBudgetExceededInBranchBestEffort(t *testing.T) {
 	wf := budgetFanOutWorkflow(&ir.Budget{MaxIterations: 3})
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
 		time.Sleep(5 * time.Millisecond) // stagger slightly
-		return map[string]interface{}{"review": "A"}, nil
+		return map[string]any{"review": "A"}, nil
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "B"}, nil
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "B"}, nil
 	})
 
 	s := tmpStore(t)
@@ -976,8 +976,8 @@ func TestBudgetExceededErrorUnwrap(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -1135,8 +1135,8 @@ func TestHardBudgetOnTokens(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"_tokens": float64(95)}, nil
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"_tokens": float64(95)}, nil
 	})
 
 	s := tmpStore(t)

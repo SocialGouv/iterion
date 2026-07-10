@@ -14,7 +14,7 @@ func SchemaToJSON(schema *ir.Schema) (json.RawMessage, error) {
 		return nil, fmt.Errorf("model: nil schema")
 	}
 
-	properties := make(map[string]interface{})
+	properties := make(map[string]any)
 	required := make([]string, 0, len(schema.Fields))
 
 	for _, f := range schema.Fields {
@@ -22,7 +22,7 @@ func SchemaToJSON(schema *ir.Schema) (json.RawMessage, error) {
 		required = append(required, f.Name)
 	}
 
-	obj := map[string]interface{}{
+	obj := map[string]any{
 		"type":                 "object",
 		"properties":           properties,
 		"required":             required,
@@ -32,8 +32,8 @@ func SchemaToJSON(schema *ir.Schema) (json.RawMessage, error) {
 	return json.Marshal(obj)
 }
 
-func fieldToJSONSchema(f *ir.SchemaField) map[string]interface{} {
-	prop := make(map[string]interface{})
+func fieldToJSONSchema(f *ir.SchemaField) map[string]any {
+	prop := make(map[string]any)
 
 	switch f.Type {
 	case ir.FieldTypeString:
@@ -57,7 +57,7 @@ func fieldToJSONSchema(f *ir.SchemaField) map[string]interface{} {
 		return prop
 	case ir.FieldTypeStringArray:
 		prop["type"] = "array"
-		items := map[string]interface{}{"type": "string"}
+		items := map[string]any{"type": "string"}
 		if len(f.EnumValues) > 0 {
 			items["enum"] = f.EnumValues
 		}

@@ -54,7 +54,7 @@ const selfRepairSchema = `{
 
 // executeVerifiedToolNode runs a tool node through the Verified Action
 // escalation ladder. Only reached when node.Postcondition != "".
-func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.ToolNode, input map[string]any) (map[string]any, error) {
 	policy := node.Policy
 	if policy == "" {
 		policy = ir.PolicyRequired
@@ -149,7 +149,7 @@ func (e *ClawExecutor) executeVerifiedToolNode(ctx context.Context, node *ir.Too
 // command). Registry-tool recipes run via the standard path and are not
 // command-repairable. The returned error is a setup error (build/policy),
 // never a recipe run error (that lives in recipeResult.runErr).
-func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (recipeResult, bool, error) {
+func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode, input map[string]any) (recipeResult, bool, error) {
 	switch recipeKindOf(node) {
 	case recipeScript:
 		resolve, buildCmd := e.scriptRecipe(ctx, node, input)
@@ -172,7 +172,7 @@ func (e *ClawExecutor) runVerifiedRecipe(ctx context.Context, node *ir.ToolNode,
 // (when valid JSON) becomes the skip / success output so authors can surface
 // state (e.g. the resulting commit sha). Routed through runToolNodeCore so
 // it is sandbox-aware and visible as a tool_called event.
-func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]interface{}) (met bool, output map[string]interface{}, err error) {
+func (e *ClawExecutor) runPostcondition(ctx context.Context, node *ir.ToolNode, input map[string]any) (met bool, output map[string]any, err error) {
 	resolve := func() string {
 		expanded := expandBracedEnv(node.Postcondition)
 		expanded = resolveRunRefs(expanded, RunIDFromContext(ctx), node.PostcondRefs, shellEscapeValue)
@@ -225,7 +225,7 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 		ExplicitSchema: json.RawMessage(selfRepairSchema),
 	}
 
-	result, err := GenerateObjectDirect[map[string]interface{}](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
 		return "", recipeResult{}, fmt.Errorf("self-repair generation: %w", err)
 	}
@@ -259,7 +259,7 @@ Return only the corrected command (one shell invocation, may use && / pipes). Do
 // for the opt-in first cut but bypasses the engine's per-node accounting
 // (budget, node events, capability→tool opening). Replace with a typed
 // recovery-agent entry point on the generation/backend layer.
-func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, input map[string]interface{}, lastRung string) error {
+func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, input map[string]any, lastRung string) error {
 	recovery := node.Recovery
 	syn := &ir.AgentNode{
 		BaseNode: ir.BaseNode{ID: node.ID + "__recover"},
@@ -270,7 +270,7 @@ func (e *ClawExecutor) agentRecovery(ctx context.Context, node *ir.ToolNode, inp
 	}
 	// The goal + failure context flow as the agent's user message (no output
 	// schema → buildUserMessage serialises this input map).
-	agentInput := map[string]interface{}{
+	agentInput := map[string]any{
 		"instructions":    "Achieve the GOAL below using your tools. A prior deterministic attempt did not satisfy the postcondition.",
 		"goal":            node.Goal,
 		"last_rung":       lastRung,
@@ -308,15 +308,15 @@ func (e *ClawExecutor) recoveryModel(node *ir.ToolNode) string {
 // stdout (postcondition wins on key clash — it observed the final state) and
 // stamps the private _verified_action metadata the engine reads to emit the
 // node_verified_action event. The key is stripped before schema validation.
-func (e *ClawExecutor) verifiedOutput(primary, postcond map[string]interface{}, rung string, met bool, policy string) map[string]interface{} {
-	out := map[string]interface{}{}
+func (e *ClawExecutor) verifiedOutput(primary, postcond map[string]any, rung string, met bool, policy string) map[string]any {
+	out := map[string]any{}
 	for k, v := range primary {
 		out[k] = v
 	}
 	for k, v := range postcond {
 		out[k] = v
 	}
-	out["_verified_action"] = map[string]interface{}{
+	out["_verified_action"] = map[string]any{
 		"rung":              rung,
 		"postcondition_met": met,
 		"policy":            policy,

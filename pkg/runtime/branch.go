@@ -16,8 +16,8 @@ import (
 // branchResult holds the outcome of a single parallel branch.
 type branchResult struct {
 	branchID         string
-	outputs          map[string]map[string]interface{}
-	artifacts        map[string]map[string]interface{} // publish name → output
+	outputs          map[string]map[string]any
+	artifacts        map[string]map[string]any // publish name → output
 	artifactVersions map[string]int
 	joinNodeID       string // the join node this branch converged to (empty if terminal)
 	err              error
@@ -38,7 +38,7 @@ type branchResult struct {
 // convergence point, a terminal node, or encounters an error.
 // convergenceNodeID is the pre-computed convergence point (may be empty
 // if unknown; in that case, AwaitMode on individual nodes is checked).
-func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]interface{}, parentArtifacts map[string]map[string]interface{}, convergenceNodeID string, slot *branchSlot) *branchResult {
+func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, startEdge *ir.Edge, parentOutputs map[string]map[string]any, parentArtifacts map[string]map[string]any, convergenceNodeID string, slot *branchSlot) *branchResult {
 	result := initBranchResult(rs, branchID)
 	runID := rs.runID
 
@@ -106,7 +106,7 @@ func (e *Engine) execBranch(ctx context.Context, rs *runState, branchID string, 
 		iter := e.currentLoopIteration(currentNodeID, rs.loopCounters)
 
 		// Emit node_started.
-		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, currentNodeID, map[string]interface{}{
+		if err := e.emitBranch(ctx, runID, branchID, store.EventNodeStarted, currentNodeID, map[string]any{
 			"kind":      node.NodeKind().String(),
 			"iteration": iter,
 		}); err != nil {
@@ -157,8 +157,8 @@ func initBranchResult(rs *runState, branchID string) *branchResult {
 	}
 	return &branchResult{
 		branchID:         branchID,
-		outputs:          make(map[string]map[string]interface{}),
-		artifacts:        make(map[string]map[string]interface{}),
+		outputs:          make(map[string]map[string]any),
+		artifacts:        make(map[string]map[string]any),
 		artifactVersions: branchArtifactVersions,
 	}
 }
@@ -170,7 +170,7 @@ func initBranchResult(rs *runState, branchID string) *branchResult {
 // concurrency. result is taken by pointer so the deferred read sees the
 // branch's final state.
 func (e *Engine) emitBranchFinishedDefer(ctx context.Context, runID, branchID, startNodeID string, result *branchResult) {
-	data := map[string]interface{}{}
+	data := map[string]any{}
 	if result.err != nil {
 		data["error"] = result.err.Error()
 	}
@@ -193,7 +193,7 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 	}
 	checks := rs.budget.Check()
 	if exc := findExceeded(checks); exc != nil {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension": exc.dimension,
 			"used":      exc.used,
 			"limit":     exc.limit,
@@ -205,7 +205,7 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 		return true
 	}
 	if hl := findHardLimited(checks); hl != nil {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension":  hl.dimension,
 			"used":       hl.used,
 			"limit":      hl.limit,
@@ -227,7 +227,7 @@ func (e *Engine) checkPreExecBudget(ctx context.Context, rs *runState, runID, br
 // flag: done=true (with result.err set) when execution or validation failed.
 // On an execution error it emits node_finished with the error so the event
 // log stays paired.
-func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]interface{}, iter int, result *branchResult, slot *branchSlot) (map[string]interface{}, bool) {
+func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, branchID, currentNodeID string, node ir.Node, parentOutputs, parentArtifacts map[string]map[string]any, iter int, result *branchResult, slot *branchSlot) (map[string]any, bool) {
 	merged := mergeOutputs(parentOutputs, result.outputs)
 	mergedArt := mergeOutputs(parentArtifacts, result.artifacts)
 	branchScope := resolveScope{
@@ -273,7 +273,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 	output, err := e.executor.Execute(execCtx, node, nodeInput)
 	if err != nil {
 		result.err = fmt.Errorf("node %q in branch %s: %w", currentNodeID, branchID, err)
-		if emitErr := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, currentNodeID, map[string]interface{}{
+		if emitErr := e.emitBranch(ctx, runID, branchID, store.EventNodeFinished, currentNodeID, map[string]any{
 			"error": err.Error(),
 		}); emitErr != nil {
 			e.logger.Warn("branch %s: failed to emit node_finished: %v", branchID, emitErr)
@@ -297,7 +297,7 @@ func (e *Engine) executeNodeForBranch(ctx context.Context, rs *runState, runID, 
 // exceeded. The daily-cap key is "<runID>#<branchID>" so concurrent branches
 // accumulate independently; the per-run budget pause decision stays on the
 // trunk's pre-exec path, branches only contribute spend.
-func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]interface{}, branchCostUSD *float64, result *branchResult) bool {
+func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, branchID, ledgerKey, currentNodeID string, output map[string]any, branchCostUSD *float64, result *branchResult) bool {
 	tokens, costUSD := extractUsage(output)
 
 	if e.dailyCap != nil && costUSD > 0 {
@@ -313,7 +313,7 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	checks := rs.budget.RecordUsage(tokens, costUSD)
 
 	for _, w := range findWarnings(checks) {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]interface{}{
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetWarning, currentNodeID, map[string]any{
 			"dimension": w.dimension,
 			"used":      w.used,
 			"limit":     w.limit,
@@ -324,7 +324,7 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 	}
 
 	if exc := findExceeded(checks); exc != nil {
-		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]interface{}{
+		if err := e.emitBranch(ctx, runID, branchID, store.EventBudgetExceeded, currentNodeID, map[string]any{
 			"dimension": exc.dimension,
 			"used":      exc.used,
 			"limit":     exc.limit,
@@ -344,7 +344,7 @@ func (e *Engine) recordBranchUsage(ctx context.Context, rs *runState, runID, bra
 // aborts the branch (returns true); an event-emit failure is best-effort. The
 // persisted artifact records the OLD version while the in-memory map advances
 // to the next.
-func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, currentNodeID string, node ir.Node, output map[string]interface{}, result *branchResult) bool {
+func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, currentNodeID string, node ir.Node, output map[string]any, result *branchResult) bool {
 	pub := nodePublish(node)
 	if pub == "" {
 		return false
@@ -362,7 +362,7 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 	}
 	result.artifactVersions[currentNodeID] = version + 1
 	result.artifacts[pub] = output
-	if err := e.emitBranch(ctx, runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]interface{}{
+	if err := e.emitBranch(ctx, runID, branchID, store.EventArtifactWritten, currentNodeID, map[string]any{
 		"publish": pub,
 		"version": version,
 	}); err != nil {
@@ -374,13 +374,13 @@ func (e *Engine) publishBranchArtifact(ctx context.Context, runID, branchID, cur
 
 // selectEdgeBranch picks the next node for a branch. It is simpler than
 // selectEdge: no loop counter enforcement, events carry a branch ID.
-func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]interface{}) (string, error) {
+func (e *Engine) selectEdgeBranch(ctx context.Context, runID, branchID, fromNodeID string, output map[string]any) (string, error) {
 	selected := e.evaluateEdges(fromNodeID, fmt.Sprintf("branch %s", branchID), output)
 	if selected == nil {
 		return "", fmt.Errorf("no outgoing edge from node %q in branch %s", fromNodeID, branchID)
 	}
 
-	if err := e.emitBranch(ctx, runID, branchID, store.EventEdgeSelected, "", map[string]interface{}{
+	if err := e.emitBranch(ctx, runID, branchID, store.EventEdgeSelected, "", map[string]any{
 		"from": selected.From,
 		"to":   selected.To,
 	}); err != nil {

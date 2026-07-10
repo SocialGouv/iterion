@@ -215,7 +215,7 @@ func TestMultiplexer_PassesEventsAndSessionCapture(t *testing.T) {
 		captureLog []string
 	)
 	handler := MultiplexerHandler{
-		OnEvent: func(eventType string, _ map[string]interface{}) {
+		OnEvent: func(eventType string, _ map[string]any) {
 			mu.Lock()
 			eventLog = append(eventLog, eventType)
 			mu.Unlock()
@@ -234,7 +234,7 @@ func TestMultiplexer_PassesEventsAndSessionCapture(t *testing.T) {
 		writer := NewEnvelopeWriter(runnerStdoutW)
 		_, _ = reader.Read() // consume task
 
-		evEnv, _ := NewEventEnvelope("tool_called", map[string]interface{}{"name": "Bash"})
+		evEnv, _ := NewEventEnvelope("tool_called", map[string]any{"name": "Bash"})
 		_ = writer.Write(evEnv)
 
 		_ = writer.Write(NewSessionCaptureEnvelope(json.RawMessage(`{"messages":[{"role":"user"}]}`)))

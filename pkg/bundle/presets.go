@@ -33,7 +33,7 @@ type PresetSpec struct {
 	// int / float); the engine coerces each to the declared var's type and
 	// silently drops keys the workflow doesn't declare, exactly like a
 	// stray --var.
-	Vars map[string]interface{}
+	Vars map[string]any
 
 	// Skills lists bundle skill names this preset makes relevant (e.g.
 	// "lang-js-fallow"). Every bundle skill is mirrored into the workspace
@@ -51,11 +51,11 @@ type PresetSpec struct {
 // Unknown keys are rejected (UnmarshalStrict) so a typo surfaces as a
 // clear error rather than being silently ignored.
 type presetFrontmatter struct {
-	Name        string                 `yaml:"name"`
-	DisplayName string                 `yaml:"display_name"`
-	Description string                 `yaml:"description"`
-	Vars        map[string]interface{} `yaml:"vars"`
-	Skills      []string               `yaml:"skills"`
+	Name        string         `yaml:"name"`
+	DisplayName string         `yaml:"display_name"`
+	Description string         `yaml:"description"`
+	Vars        map[string]any `yaml:"vars"`
+	Skills      []string       `yaml:"skills"`
 }
 
 // LoadPresets reads every presets/<name>.md file under dir and returns the

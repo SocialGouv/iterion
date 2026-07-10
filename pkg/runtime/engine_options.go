@@ -92,7 +92,7 @@ func WithAttachmentPromote(fn AttachmentPromoteFunc) EngineOption {
 // run the engine drives, so convention-specific logic (e.g. stamping
 // Run.WatchedIssueIDs from a dispatch node's `dispatched_ids` output)
 // can live in the wiring layer instead of the generic engine.
-func WithOnNodeFinished(fn func(runID, nodeID string, output map[string]interface{})) EngineOption {
+func WithOnNodeFinished(fn func(runID, nodeID string, output map[string]any)) EngineOption {
 	return func(e *Engine) { e.onNodeFinished = fn }
 }
 

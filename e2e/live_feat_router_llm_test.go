@@ -29,8 +29,8 @@ func TestLive_Feat_RouterLLM(t *testing.T) {
 	}
 	seedGitRepo(t, workspaceDir)
 
-	vars := map[string]interface{}{"default_model": "anthropic/claude-sonnet-4-6"}
-	inputs := map[string]interface{}{
+	vars := map[string]any{"default_model": "anthropic/claude-sonnet-4-6"}
+	inputs := map[string]any{
 		"task": "Design and migrate the entire authentication subsystem to OAuth2 with a phased rollout, backward-compatibility shims, and a rollback plan.",
 	}
 	res := runBotLive(t, liveSpec{

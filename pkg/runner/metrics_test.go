@@ -23,7 +23,7 @@ func (r *recordingEmitter) AppendEvent(_ context.Context, _ string, evt store.Ev
 
 func TestToFloat(t *testing.T) {
 	cases := []struct {
-		in   interface{}
+		in   any
 		want float64
 	}{
 		{nil, 0},
@@ -82,7 +82,7 @@ func TestMetricsEmitter_observeLLMStepFinished_tokensAndCost(t *testing.T) {
 		Type:   store.EventLLMRequest,
 		RunID:  "run-1",
 		NodeID: "n1",
-		Data:   map[string]interface{}{"model": "claude-sonnet-4-6"},
+		Data:   map[string]any{"model": "claude-sonnet-4-6"},
 	})
 
 	// Step uses a model known to the cost table; both the tokens and
@@ -91,7 +91,7 @@ func TestMetricsEmitter_observeLLMStepFinished_tokensAndCost(t *testing.T) {
 		Type:   store.EventLLMStepFinished,
 		RunID:  "run-1",
 		NodeID: "n1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"input_tokens":  float64(1000),
 			"output_tokens": float64(500),
 		},
@@ -129,7 +129,7 @@ func TestMetricsEmitter_unknownModel_costStaysZero(t *testing.T) {
 		Type:   store.EventLLMStepFinished,
 		RunID:  "run-2",
 		NodeID: "n9",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"input_tokens":  float64(100),
 			"output_tokens": float64(50),
 		},
@@ -149,7 +149,7 @@ func TestMetricsEmitter_delegateFinished_aggregatedTokens(t *testing.T) {
 		Type:   store.EventDelegateFinished,
 		RunID:  "run-3",
 		NodeID: "n2",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"backend": "claude_code",
 			"tokens":  float64(420),
 		},

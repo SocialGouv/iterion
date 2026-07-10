@@ -202,9 +202,9 @@ type ResumeSpec struct {
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
 	Source  string
-	Answers map[string]interface{} // answers for human nodes; ignored for failed_resumable
-	Force   bool                   // skip workflow hash check
-	Timeout time.Duration          // 0 disables
+	Answers map[string]any // answers for human nodes; ignored for failed_resumable
+	Force   bool           // skip workflow hash check
+	Timeout time.Duration  // 0 disables
 }
 
 // RunSummary is the lightweight per-row shape returned by List.

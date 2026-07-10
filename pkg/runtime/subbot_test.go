@@ -40,19 +40,19 @@ func TestSubbotRunsChildAndMapsOutput(t *testing.T) {
 	}
 
 	var gotSource string
-	var gotVars map[string]interface{}
+	var gotVars map[string]any
 	var gotParent, gotNode string
-	runner := func(_ context.Context, req SubbotRequest) (map[string]interface{}, error) {
+	runner := func(_ context.Context, req SubbotRequest) (map[string]any, error) {
 		gotSource = req.Source
 		gotVars = req.Vars
 		gotParent = req.ParentRunID
 		gotNode = req.NodeID
-		return map[string]interface{}{"validated": true, "pr": "42"}, nil
+		return map[string]any{"validated": true, "pr": "42"}, nil
 	}
 
 	exec := newStubExecutor()
-	exec.on("plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"id": "T-7"}, nil
+	exec.on("plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"id": "T-7"}, nil
 	})
 
 	s := tmpStore(t)

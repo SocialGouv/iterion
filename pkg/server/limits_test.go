@@ -8,7 +8,7 @@ import (
 )
 
 // readCostCap GETs the cost-cap status and decodes it.
-func readCostCap(t *testing.T, base string) map[string]interface{} {
+func readCostCap(t *testing.T, base string) map[string]any {
 	t.Helper()
 	resp, err := http.Get(base + "/api/v1/limits/cost")
 	if err != nil {
@@ -18,7 +18,7 @@ func readCostCap(t *testing.T, base string) map[string]interface{} {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET limits/cost status = %d, want 200", resp.StatusCode)
 	}
-	var out map[string]interface{}
+	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestCostCapStatusAndOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET server/info: %v", err)
 	}
-	var info map[string]interface{}
+	var info map[string]any
 	_ = json.NewDecoder(infoResp.Body).Decode(&info)
 	infoResp.Body.Close()
 	if enabled, _ := info["cost_cap_enabled"].(bool); !enabled {
@@ -68,7 +68,7 @@ func TestCostCapStatusAndOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST override: %v", err)
 	}
-	var ovOut map[string]interface{}
+	var ovOut map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&ovOut)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

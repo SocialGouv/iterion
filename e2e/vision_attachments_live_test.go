@@ -151,7 +151,7 @@ func TestLive_VisionAttachments(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "describer" || evt.Data == nil {
 			continue
 		}
-		out, ok := evt.Data["output"].(map[string]interface{})
+		out, ok := evt.Data["output"].(map[string]any)
 		if !ok {
 			continue
 		}

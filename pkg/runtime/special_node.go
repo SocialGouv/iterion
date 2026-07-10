@@ -24,7 +24,7 @@ import (
 
 // specialNodeBody computes a node's output. It returns an error for a genuine
 // execution failure (the envelope/branch aborts the node).
-type specialNodeBody func() (map[string]interface{}, error)
+type specialNodeBody func() (map[string]any, error)
 
 // execSpecialNode runs the shared started→body→validate→finished→checkpoint→edge
 // envelope for an executor-less node on the main loop. kind is the node-kind
@@ -37,11 +37,11 @@ func (e *Engine) execSpecialNode(
 	rs *runState,
 	nodeID, kind string,
 	node ir.Node,
-	extraStarted map[string]interface{},
+	extraStarted map[string]any,
 	body specialNodeBody,
-	postValidate func(output map[string]interface{}) error,
+	postValidate func(output map[string]any) error,
 ) (string, error) {
-	startedPayload := map[string]interface{}{
+	startedPayload := map[string]any{
 		"kind":      kind,
 		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
 	}
@@ -97,11 +97,11 @@ func (e *Engine) execSpecialNode(
 // node_started/node_finished pair and artifact publish, so this only produces,
 // stores, and validates the output. emit carries no schema, so (matching the
 // main loop) it is not validated.
-func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, branchID, nodeID string, node ir.Node, sc resolveScope, result *branchResult, slot *branchSlot) (output map[string]interface{}, done, handled bool) {
+func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, branchID, nodeID string, node ir.Node, sc resolveScope, result *branchResult, slot *branchSlot) (output map[string]any, done, handled bool) {
 	// store records a successful body output on the branch and validates it,
 	// returning the (output,done) the caller propagates. validate=false skips
 	// the schema check (emit has no output schema).
-	store := func(out map[string]interface{}, validate bool) (map[string]interface{}, bool, bool) {
+	store := func(out map[string]any, validate bool) (map[string]any, bool, bool) {
 		result.outputs[nodeID] = out
 		if validate {
 			if err := e.validateNodeOutput(nodeID, node, out); err != nil {
@@ -111,7 +111,7 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 		}
 		return out, false, true
 	}
-	fail := func(err error) (map[string]interface{}, bool, bool) {
+	fail := func(err error) (map[string]any, bool, bool) {
 		result.err = fmt.Errorf("node %q in branch %s: %w", nodeID, branchID, err)
 		return nil, true, true
 	}
@@ -154,9 +154,9 @@ func (e *Engine) executeSpecialNodeForBranch(ctx context.Context, rs *runState, 
 // same evaluation runs on the main loop (trunk scope) and inside a fan-out
 // branch (merged parent+branch scope). No LLM, no shell, no side effects —
 // artifact persistence is the caller's concern (compute's postValidate hook).
-func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope) (map[string]interface{}, error) {
+func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, sc resolveScope) (map[string]any, error) {
 	nodeInput := e.buildNodeInputRS(nodeID, sc)
-	output := make(map[string]interface{}, len(cn.Exprs))
+	output := make(map[string]any, len(cn.Exprs))
 	exprCtx := e.exprContextScoped(rs, sc, nodeInput)
 	for _, ce := range cn.Exprs {
 		v, err := evalComputeExpr(ce.AST, exprCtx)
@@ -180,7 +180,7 @@ func (e *Engine) computeOutput(rs *runState, nodeID string, cn *ir.ComputeNode, 
 // (the resource isn't used by the downstream validate/checkpoint steps). Scope
 // is explicit so a subbot resolves its inputs correctly on the main loop and
 // inside a fan-out branch alike.
-func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode, sc resolveScope) (map[string]interface{}, error) {
+func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode, sc resolveScope) (map[string]any, error) {
 	if e.subbotRunner == nil {
 		return nil, &RuntimeError{
 			Code:    ErrCodeExecutionFailed,
@@ -191,7 +191,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 	}
 
 	// Resolve the child's input vars from the `with:` mappings.
-	vars := make(map[string]interface{}, len(sn.With))
+	vars := make(map[string]any, len(sn.With))
 	for _, dm := range sn.With {
 		vars[dm.Key] = e.resolveMapping(dm, sc)
 	}
@@ -222,7 +222,7 @@ func (e *Engine) runSubbotNode(ctx context.Context, rs *runState, nodeID string,
 		}
 	}
 	if output == nil {
-		output = map[string]interface{}{}
+		output = map[string]any{}
 	}
 	return output, nil
 }

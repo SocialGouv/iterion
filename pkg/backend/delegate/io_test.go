@@ -122,7 +122,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 
 func TestIOResultRoundTrip(t *testing.T) {
 	original := Result{
-		Output:      map[string]interface{}{"text": "hello"},
+		Output:      map[string]any{"text": "hello"},
 		Tokens:      1234,
 		Duration:    5 * time.Second,
 		ExitCode:    0,

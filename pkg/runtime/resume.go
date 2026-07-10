@@ -30,7 +30,7 @@ import (
 // answers are recorded and execution continues from the human node. For
 // failed-resumable runs, execution restarts from the node after the last
 // successfully completed one (re-executing the failed node).
-func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]interface{}) error {
+func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]any) error {
 	r, err := e.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("runtime: load run for resume: %w", err)
@@ -74,8 +74,8 @@ func (e *Engine) checkWorkflowHash(r *store.Run) error {
 }
 
 // rebuildArtifacts reconstructs the artifacts map from checkpoint outputs.
-func (e *Engine) rebuildArtifacts(outputs map[string]map[string]interface{}) map[string]map[string]interface{} {
-	artifacts := make(map[string]map[string]interface{})
+func (e *Engine) rebuildArtifacts(outputs map[string]map[string]any) map[string]map[string]any {
+	artifacts := make(map[string]map[string]any)
 	for nodeID, output := range outputs {
 		if n, ok := e.workflow.Nodes[nodeID]; ok {
 			if pub := nodePublish(n); pub != "" {
@@ -88,7 +88,7 @@ func (e *Engine) rebuildArtifacts(outputs map[string]map[string]interface{}) map
 
 // resumeFromPause resumes a paused run by recording human answers and
 // continuing execution from the node after the human checkpoint.
-func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]interface{}) error {
+func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[string]any) error {
 	runID := r.ID
 	if err := e.checkWorkflowHash(r); err != nil {
 		return err
@@ -133,7 +133,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// when the legacy/Mongo-omitted-shape produces a nil map.
 	outputs := copyOutputs(cp.Outputs)
 	if outputs == nil {
-		outputs = make(map[string]map[string]interface{})
+		outputs = make(map[string]map[string]any)
 	}
 	outputs[humanNodeID] = answers
 
@@ -224,7 +224,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 // checkpoint's embedded questions if the on-disk file is missing), stamps
 // the operator's answers + AnsweredAt, writes the interaction back, and
 // emits human_answers_recorded. Shared resumeFromPause helper.
-func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]interface{}) error {
+func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store.Checkpoint, answers map[string]any) error {
 	runID := r.ID
 	interaction, err := e.store.LoadInteraction(ctx, runID, cp.InteractionID)
 	if err != nil && cp.InteractionQuestions != nil {
@@ -244,7 +244,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 	if err := e.store.WriteInteraction(ctx, interaction); err != nil {
 		return fmt.Errorf("runtime: write answered interaction: %w", err)
 	}
-	return e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, map[string]interface{}{
+	return e.emit(ctx, runID, store.EventHumanAnswersRecorded, cp.NodeID, map[string]any{
 		"interaction_id": cp.InteractionID,
 		"answers":        answers,
 	})
@@ -257,7 +257,7 @@ func (e *Engine) recordHumanAnswers(ctx context.Context, r *store.Run, cp *store
 // artifact_written emit is best-effort: the artifact is durably written, so
 // emit failures are logged rather than propagated to keep the resume path
 // from aborting on observability hiccups.
-func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]interface{}, artifactVersions map[string]int) (map[string]int, error) {
+func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeID string, answers map[string]any, artifactVersions map[string]int) (map[string]int, error) {
 	humanNode, ok := e.workflow.Nodes[humanNodeID]
 	if !ok {
 		return nil, fmt.Errorf("runtime: human node %q not found in workflow", humanNodeID)
@@ -281,7 +281,7 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 		// observational. Best-effort emit — log the failure so the
 		// observability gap is visible rather than swallowing it
 		// entirely on the resume path.
-		if err := e.emit(ctx, runID, store.EventArtifactWritten, humanNodeID, map[string]interface{}{
+		if err := e.emit(ctx, runID, store.EventArtifactWritten, humanNodeID, map[string]any{
 			"publish": pub,
 			"version": version,
 		}); err != nil && e.logger != nil {
@@ -323,7 +323,7 @@ func (e *Engine) claimForResume(ctx context.Context, runID string, allowed ...st
 // On a sandbox-start failure it persists failed_resumable (PRESERVING the
 // rich checkpoint so the next resume doesn't restart from entry) and
 // returns the error with a nil runState and a no-op cleanup.
-func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]interface{}, artifactVersions map[string]int) (*runState, func(), error) {
+func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store.Checkpoint, outputs map[string]map[string]any, artifactVersions map[string]int) (*runState, func(), error) {
 	runID := r.ID
 	humanNodeID := cp.NodeID
 
@@ -463,7 +463,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	if !claimed {
 		return fmt.Errorf("runtime: run %q is already being executed (status no longer resumable); refusing duplicate resume", runID)
 	}
-	resumeData := map[string]interface{}{
+	resumeData := map[string]any{
 		"resumed_from": "failed",
 		"restart_node": restartNodeID,
 	}
@@ -557,7 +557,7 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		// sibling-isolation discipline as fan_out.go's copyOutputs.
 		rs.outputs = copyOutputs(cp.Outputs)
 		if rs.outputs == nil {
-			rs.outputs = make(map[string]map[string]interface{})
+			rs.outputs = make(map[string]map[string]any)
 		}
 		rs.artifacts = e.rebuildArtifacts(rs.outputs)
 		// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
@@ -648,7 +648,7 @@ func (e *Engine) restoreRunEnv(r *store.Run) {
 // pushExecutorVars refreshes the executor's vars map. Used after every
 // resolveVars on the resume path; the launch path does this inline in
 // Run().
-func (e *Engine) pushExecutorVars(vars map[string]interface{}) {
+func (e *Engine) pushExecutorVars(vars map[string]any) {
 	if sv, ok := e.executor.(varsSetter); ok {
 		sv.SetVars(vars)
 	}
@@ -664,7 +664,7 @@ func (e *Engine) pushExecutorVars(vars map[string]interface{}) {
 func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID string, node ir.Node) (bool, error) {
 	// Emit node_started.
 	iter := e.currentLoopIteration(nodeID, rs.loopCounters)
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]any{
 		"kind":      node.NodeKind().String(),
 		"iteration": iter,
 	}); err != nil {
@@ -729,7 +729,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
-		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
 			"version": version,
 		})
@@ -762,7 +762,7 @@ func (e *Engine) execAutoOrPauseHuman(ctx context.Context, rs *runState, nodeID 
 // saves checkpoint state, and returns ErrRunPaused.
 func (e *Engine) pauseAtHuman(rs *runState, nodeID string, node ir.Node) error {
 	// Emit node_started for the human node.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]any{
 		"kind":      node.NodeKind().String(),
 		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
 	}); err != nil {
@@ -799,7 +799,7 @@ func (e *Engine) persistPause(rs *runState, nodeID string) error {
 // rides on the human_input_requested event, which is persisted in
 // events.jsonl, so both the live WS path and a page reload (event refetch)
 // surface it.
-func (e *Engine) humanInstructionsExtra(nodeID string, questions map[string]interface{}, rs *runState) map[string]interface{} {
+func (e *Engine) humanInstructionsExtra(nodeID string, questions map[string]any, rs *runState) map[string]any {
 	node, ok := e.workflow.Nodes[nodeID]
 	if !ok {
 		return nil
@@ -816,7 +816,7 @@ func (e *Engine) humanInstructionsExtra(nodeID string, questions map[string]inte
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	return map[string]interface{}{"instructions": text}
+	return map[string]any{"instructions": text}
 }
 
 // renderHumanInstructions substitutes a prompt body's {{...}} references
@@ -824,7 +824,7 @@ func (e *Engine) humanInstructionsExtra(nodeID string, questions map[string]inte
 // run vars / outputs / artifacts. strings.NewReplacer does a single
 // left-to-right pass that never re-scans substituted output, so a value
 // that itself contains a "{{...}}" literal can't cascade into later refs.
-func (e *Engine) renderHumanInstructions(p *ir.Prompt, questions map[string]interface{}, rs *runState) string {
+func (e *Engine) renderHumanInstructions(p *ir.Prompt, questions map[string]any, rs *runState) string {
 	if p == nil {
 		return ""
 	}
@@ -849,7 +849,7 @@ func (e *Engine) renderHumanInstructions(p *ir.Prompt, questions map[string]inte
 // Markdown-friendly text for the operator-facing instructions: scalars
 // verbatim, scalar arrays as a bullet list, structured values as a fenced
 // JSON block.
-func renderInstructionValue(v interface{}) string {
+func renderInstructionValue(v any) string {
 	switch val := v.(type) {
 	case nil:
 		return ""
@@ -860,12 +860,12 @@ func renderInstructionValue(v interface{}) string {
 			return "true"
 		}
 		return "false"
-	case []interface{}:
+	case []any:
 		// Any nested map/slice → render the whole array as a JSON block;
 		// a flat scalar array → a Markdown bullet list.
 		for _, it := range val {
 			switch it.(type) {
-			case map[string]interface{}, []interface{}:
+			case map[string]any, []any:
 				return jsonInstructionBlock(val)
 			}
 		}
@@ -874,14 +874,14 @@ func renderInstructionValue(v interface{}) string {
 			lines = append(lines, "- "+fmt.Sprintf("%v", it))
 		}
 		return strings.Join(lines, "\n")
-	case map[string]interface{}:
+	case map[string]any:
 		return jsonInstructionBlock(val)
 	default:
 		return fmt.Sprintf("%v", val)
 	}
 }
 
-func jsonInstructionBlock(v interface{}) string {
+func jsonInstructionBlock(v any) string {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("%v", v)
@@ -896,7 +896,7 @@ func jsonInstructionBlock(v interface{}) string {
 // NO_OUTGOING_EDGE. Only string values are converted; anything already of
 // the right Go type (a JSON --answers-file, or the studio's pre-coerced
 // POST) passes through untouched.
-func (e *Engine) coerceAnswersToSchema(humanNodeID string, answers map[string]interface{}) map[string]interface{} {
+func (e *Engine) coerceAnswersToSchema(humanNodeID string, answers map[string]any) map[string]any {
 	hn, ok := e.workflow.Nodes[humanNodeID].(*ir.HumanNode)
 	if !ok || hn.OutputSchema == "" {
 		return answers
@@ -921,7 +921,7 @@ func (e *Engine) coerceAnswersToSchema(humanNodeID string, answers map[string]in
 // schema field type expects. Returns ok=false (leaving the raw string in
 // place) when the string isn't a clean instance of the type, so a bad
 // --answer surfaces downstream rather than being silently zeroed.
-func coerceStringToFieldType(s string, t ir.FieldType) (interface{}, bool) {
+func coerceStringToFieldType(s string, t ir.FieldType) (any, bool) {
 	switch t {
 	case ir.FieldTypeBool:
 		switch s {
@@ -946,7 +946,7 @@ func coerceStringToFieldType(s string, t ir.FieldType) (interface{}, bool) {
 		if ts == "" {
 			return nil, false
 		}
-		var v interface{}
+		var v any
 		if err := json.Unmarshal([]byte(ts), &v); err == nil {
 			return v, true
 		}
@@ -1071,7 +1071,7 @@ func (e *Engine) handleInteractionLLMOrHuman(ctx context.Context, rs *runState, 
 // prepend a "[PRIOR INTERACTION]" block to the user prompt — without
 // this, claw's stateless re-invocation would lose the question and the
 // LLM might call ask_user with the same question again.
-func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]interface{}, depth int) error {
+func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID string, node ir.Node, ni *model.ErrNeedsInteraction, answers map[string]any, depth int) error {
 	// Build the input for re-invocation: original node input + answers.
 	nodeInput := e.buildNodeInputRS(nodeID, rs.scope())
 	for k, v := range answers {
@@ -1155,7 +1155,7 @@ func (e *Engine) reInvokeBackend(ctx context.Context, rs *runState, nodeID strin
 		}
 		rs.artifactVersions[nodeID] = version + 1
 		rs.artifacts[pub] = output
-		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+		_ = e.emit(rs.ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub,
 			"version": version,
 		})
@@ -1203,7 +1203,7 @@ func interactionFields(node ir.Node) ir.InteractionFields {
 // pauseForBackendInteraction creates an interaction record and pauses the
 // workflow, saving the backend's session ID for re-invocation on resume.
 func (e *Engine) pauseForBackendInteraction(rs *runState, nodeID string, ni *model.ErrNeedsInteraction) error {
-	eventExtra := map[string]interface{}{
+	eventExtra := map[string]any{
 		"source":  "delegate",
 		"backend": ni.Backend,
 	}
@@ -1268,7 +1268,7 @@ func (e *Engine) drainOperatorMessagesForPause(ctx context.Context, runID string
 
 // doPause is the unified implementation for pausing a run. It writes the
 // interaction record, emits pause events, and saves the checkpoint.
-func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]interface{}, eventExtra map[string]interface{}, info pauseInfo) error {
+func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]any, eventExtra map[string]any, info pauseInfo) error {
 	// Create interaction. Include loop iteration in the ID so that
 	// human nodes inside loops produce unique interactions per iteration.
 	interactionID := fmt.Sprintf("%s_%s", rs.runID, nodeID)
@@ -1284,7 +1284,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 	// most runs the queue is already empty by the time we land here.
 	if queuedTexts := e.drainOperatorMessagesForPause(rs.ctx, rs.runID); len(queuedTexts) > 0 {
 		if questions == nil {
-			questions = map[string]interface{}{}
+			questions = map[string]any{}
 		}
 		questions[delegate.QueuedOperatorMessagesKey] = queuedTexts
 	}
@@ -1301,7 +1301,7 @@ func (e *Engine) doPause(rs *runState, nodeID string, questions map[string]inter
 	}
 
 	// Emit human_input_requested.
-	eventData := map[string]interface{}{
+	eventData := map[string]any{
 		"interaction_id": interactionID,
 		"questions":      questions,
 	}

@@ -149,7 +149,7 @@ func main() {
 		OnShutdown:    app.onShutdown,
 		OnDomReady:    app.onDomReady,
 		OnBeforeClose: app.onBeforeClose,
-		Bind:          []interface{}{app},
+		Bind:          []any{app},
 		Menu:          buildMenu(app),
 	})
 	if err != nil {

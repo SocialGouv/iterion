@@ -37,7 +37,7 @@ func (e *Engine) handleNodeFailure(ctx context.Context, rs *runState, nodeID str
 	action, code := e.recoveryDispatch(ctx, execErr, func(c ErrorCode) int { return bucket[c] })
 	bucket[code]++
 
-	emitData := map[string]interface{}{
+	emitData := map[string]any{
 		"code":    string(code),
 		"reason":  action.Reason,
 		"attempt": bucket[code],
@@ -113,7 +113,7 @@ func (e *Engine) tryCompact(ctx context.Context, nodeID string) {
 // operator inspecting the interaction or run.json sees the full
 // context, not just a flattened message.
 func (e *Engine) pauseForRecovery(rs *runState, nodeID string, code ErrorCode, reason string, execErr error) error {
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]any{
 		"kind":            "recovery_pause",
 		"iteration":       e.currentLoopIteration(nodeID, rs.loopCounters),
 		"recovery_code":   string(code),
@@ -121,11 +121,11 @@ func (e *Engine) pauseForRecovery(rs *runState, nodeID string, code ErrorCode, r
 	}); err != nil {
 		return err
 	}
-	questions := map[string]interface{}{
+	questions := map[string]any{
 		"acknowledge_recovery": fmt.Sprintf("%s — resume with any answer (e.g. {\"acknowledge_recovery\": \"continue\"}) to retry.", reason),
 		"recovery_code":        string(code),
 	}
-	eventExtra := map[string]interface{}{
+	eventExtra := map[string]any{
 		"recovery_code":   string(code),
 		"recovery_reason": reason,
 	}
@@ -146,12 +146,12 @@ func (e *Engine) pauseForRecovery(rs *runState, nodeID string, code ErrorCode, r
 // runtimeErrorFields extracts the structured fields of a *RuntimeError
 // (when the error chain carries one) into a JSON-friendly map. Returns
 // nil for non-RuntimeError chains so callers can omit the field.
-func runtimeErrorFields(err error) map[string]interface{} {
+func runtimeErrorFields(err error) map[string]any {
 	var rtErr *RuntimeError
 	if !errors.As(err, &rtErr) || rtErr == nil {
 		return nil
 	}
-	out := map[string]interface{}{
+	out := map[string]any{
 		"code":    string(rtErr.Code),
 		"message": rtErr.Message,
 	}

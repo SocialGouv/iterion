@@ -257,7 +257,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	err = eng.Resume(ctx, opts.RunID, answers)
 	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
-	return reportResumeOutcome(p, s, opts.RunID, err, map[string]interface{}{
+	return reportResumeOutcome(p, s, opts.RunID, err, map[string]any{
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,
 	})

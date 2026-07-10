@@ -53,7 +53,7 @@ Call it with exactly three integers.
 	}
 	seedCommits := seedGoModuleFixture(t, workspaceDir, files)
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir": workspaceDir,
 		"scope_notes":   "Align README with the actual Go API.",
 		"max_passes":    3, // bound cost; the fixture is tiny

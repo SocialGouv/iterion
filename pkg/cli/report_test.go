@@ -9,13 +9,13 @@ import (
 )
 
 // nodeFinished builds a node_finished event carrying the given output map.
-func nodeFinished(seq int64, nodeID string, output map[string]interface{}) *store.Event {
+func nodeFinished(seq int64, nodeID string, output map[string]any) *store.Event {
 	return &store.Event{
 		Seq:       seq,
 		Timestamp: time.Unix(1_700_000_000+seq, 0).UTC(),
 		Type:      store.EventNodeFinished,
 		NodeID:    nodeID,
-		Data:      map[string]interface{}{"output": output},
+		Data:      map[string]any{"output": output},
 	}
 }
 
@@ -35,7 +35,7 @@ func testStore(t *testing.T) store.RunStore {
 func TestReportSurfacesVerifyCommand(t *testing.T) {
 	r := &store.Run{ID: "run-abc", WorkflowName: "feature-dev", CreatedAt: time.Unix(1_700_000_000, 0).UTC()}
 	events := []*store.Event{
-		nodeFinished(1, "verify_build", map[string]interface{}{
+		nodeFinished(1, "verify_build", map[string]any{
 			"prepared": true,
 			"summary":  "devbox run -- go build ./...\nexcluded pre-existing failure in pkg/legacy",
 		}),
@@ -63,7 +63,7 @@ func TestReportNoVerifyCommand(t *testing.T) {
 	r := &store.Run{ID: "run-xyz", WorkflowName: "plain", CreatedAt: time.Unix(1_700_000_000, 0).UTC()}
 	events := []*store.Event{
 		// A node_finished without the {prepared} contract must not trigger it.
-		nodeFinished(1, "campaign", map[string]interface{}{"summary": "shipped a slice"}),
+		nodeFinished(1, "campaign", map[string]any{"summary": "shipped a slice"}),
 	}
 
 	rpt := buildReport(r, events, testStore(t))

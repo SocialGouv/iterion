@@ -523,7 +523,7 @@ func askUserResult(err error) (delegate.Result, bool) {
 	if !errors.As(err, &ask) {
 		return delegate.Result{}, false
 	}
-	questions := map[string]interface{}{
+	questions := map[string]any{
 		delegate.AskUserQuestionKey: ask.Question,
 	}
 	delegate.AddAskUserOptionKeys(questions, ask.Options, ask.AllowFreeText)
@@ -531,7 +531,7 @@ func askUserResult(err error) (delegate.Result, bool) {
 		questions[permission.InteractionMarkerKey] = ask.PermissionMarker
 	}
 	return delegate.Result{
-		Output: map[string]interface{}{
+		Output: map[string]any{
 			"_needs_interaction":     true,
 			"_interaction_questions": questions,
 		},
@@ -546,7 +546,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 	genOpts := opts
 	genOpts.ExplicitSchema = task.OutputSchema
 
-	result, err := GenerateObjectDirect[map[string]interface{}](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
 		if r, ok := askUserResult(err); ok {
 			return r, nil
@@ -556,7 +556,7 @@ func (b *ClawBackend) generateStructured(ctx context.Context, client api.APIClie
 
 	output := result.Object
 	if output == nil {
-		output = make(map[string]interface{})
+		output = make(map[string]any)
 	}
 
 	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
@@ -587,7 +587,7 @@ func (b *ClawBackend) generateText(ctx context.Context, client api.APIClient, ta
 		return delegate.Result{}, fmt.Errorf("claw backend: text generation: %w", err)
 	}
 
-	output := map[string]interface{}{"text": result.Text}
+	output := map[string]any{"text": result.Text}
 	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 
 	return delegate.Result{
@@ -739,7 +739,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	// Try the cheap path first: parse the tool-loop's final text as JSON.
 	// If the model already committed to structured output, we're done.
 	if text != "" {
-		var output map[string]interface{}
+		var output map[string]any
 		if err := json.Unmarshal([]byte(text), &output); err == nil {
 			tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 			return delegate.Result{
@@ -780,7 +780,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 			Timestamp:    time.Now(),
 		})
 	}
-	obj, recErr := GenerateObjectDirect[map[string]interface{}](ctx, client, recoveryOpts)
+	obj, recErr := GenerateObjectDirect[map[string]any](ctx, client, recoveryOpts)
 	if recErr == nil && obj != nil && obj.Object != nil {
 		tokens := cost.Annotate(obj.Object, task.Model,
 			result.TotalUsage.InputTokens+obj.TotalUsage.InputTokens,
@@ -802,7 +802,7 @@ func (b *ClawBackend) generateTextWithToolsAndSchema(ctx context.Context, client
 	if text == "" {
 		return delegate.Result{}, fmt.Errorf("claw backend: text+tools generation produced empty response after tool loop and structured-output recovery failed: %v", recErr)
 	}
-	output := map[string]interface{}{"text": text}
+	output := map[string]any{"text": text}
 	tokens := cost.Annotate(output, task.Model, result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens)
 	return delegate.Result{
 		Output:         output,

@@ -44,7 +44,7 @@ func TestLive_Bot_DepUpdateGuard(t *testing.T) {
 	}
 	seedBranchDiffFixture(t, workspaceDir, "main", base, branch, "dependabot/npm/lodash-4.17.21")
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir": workspaceDir,
 		"base_ref":      "main",
 		"pr_url":        "", // no forge → feedback post skipped

@@ -17,9 +17,9 @@ func IsTTY() bool {
 
 // PromptHumanAnswers displays the interaction questions and prompts the user
 // for answers interactively via stdin. Returns the answers as a map.
-func PromptHumanAnswers(interaction *store.Interaction) (map[string]interface{}, error) {
+func PromptHumanAnswers(interaction *store.Interaction) (map[string]any, error) {
 	reader := bufio.NewReader(os.Stdin)
-	answers := make(map[string]interface{})
+	answers := make(map[string]any)
 
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  Human input required:")

@@ -304,7 +304,7 @@ func parseBaseVars(s string) (map[string]string, error) {
 	if s == "" {
 		return map[string]string{}, nil
 	}
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal([]byte(s), &raw); err != nil {
 		return nil, err
 	}
@@ -475,7 +475,7 @@ func dispatchCloud(ctx context.Context, plans []shardPlan, baseVars map[string]s
 		for k, v := range baseVars {
 			vars[k] = v
 		}
-		body, _ := json.Marshal(map[string]interface{}{
+		body, _ := json.Marshal(map[string]any{
 			"file_path":     scanShardsOpts.workflow,
 			"source":        string(src),
 			"run_id":        p.RunID,

@@ -41,7 +41,7 @@ func TestLive_Bot_ReviConverse(t *testing.T) {
 	seedBranchDiffFixture(t, workspaceDir, "main", base, branch, "feature")
 
 	question := "In this diff, why was the bounds check removed from Pick, and is that safe?"
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir":     workspaceDir,
 		"base_ref":          "main",
 		"converse_question": question,

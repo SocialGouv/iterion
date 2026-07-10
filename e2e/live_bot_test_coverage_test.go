@@ -50,7 +50,7 @@ func Reverse(s string) string {
 	})
 	seedCommits := workspaceCommitCount(t, workspaceDir)
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"target": "Add unit tests for the Reverse function (it has none).",
 	}
 	res := runBotLive(t, liveSpec{

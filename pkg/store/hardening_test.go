@@ -33,11 +33,11 @@ func TestCreateRunIsExclusive(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
 
-	if _, err := s.CreateRun(ctx, "dup", "wf", map[string]interface{}{"k": "v1"}); err != nil {
+	if _, err := s.CreateRun(ctx, "dup", "wf", map[string]any{"k": "v1"}); err != nil {
 		t.Fatalf("first CreateRun: %v", err)
 	}
 
-	_, err := s.CreateRun(ctx, "dup", "wf", map[string]interface{}{"k": "v2"})
+	_, err := s.CreateRun(ctx, "dup", "wf", map[string]any{"k": "v2"})
 	if err == nil {
 		t.Fatal("second CreateRun with a re-used ID: expected error, got nil (run was clobbered)")
 	}
@@ -191,10 +191,10 @@ func TestLoadRunHealDoesNotClobberConcurrentMutation(t *testing.T) {
 	cp := &Checkpoint{
 		NodeID:           "human_review",
 		InteractionID:    "int-1",
-		Outputs:          map[string]map[string]interface{}{},
+		Outputs:          map[string]map[string]any{},
 		LoopCounters:     map[string]int{},
 		ArtifactVersions: map[string]int{},
-		Vars:             map[string]interface{}{"k": "v"},
+		Vars:             map[string]any{"k": "v"},
 	}
 	if err := s.PauseRun(ctx, runID, cp); err != nil {
 		close(release)

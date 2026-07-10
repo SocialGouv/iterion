@@ -29,7 +29,7 @@ import (
 // LoadRun + transition is attempted first; if no doc exists we fall
 // back to CreateRun. Any other status (running, finished, …) is a
 // programming error — refuse to clobber state.
-func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interface{}) (err error) {
+func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (err error) {
 	run, err := e.runResolveDoc(ctx, runID, inputs)
 	if err != nil {
 		return err
@@ -134,7 +134,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]interf
 // run, then stamps any engine-level metadata (workflow hash, file
 // path, run name, merge strategy, auto-merge, preset, bundle hash)
 // onto the persisted record.
-func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]interface{}) (*store.Run, error) {
+func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]any) (*store.Run, error) {
 	var run *store.Run
 	if existing, loadErr := e.store.LoadRun(ctx, runID); loadErr == nil {
 		// Pickup path: the doc already exists.
@@ -412,7 +412,7 @@ func (e *Engine) applyPresetFocus() {
 // decisions don't re-read run.json N times), and pushes the resolved
 // vars back into the executor — PROJECT_DIR-aware expansion may have
 // changed values from what the caller originally seeded.
-func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]interface{}) *runState {
+func (e *Engine) runInitState(ctx context.Context, runID string, inputs map[string]any) *runState {
 	rs := e.newRunState(runID, inputs)
 	rs.ctx = ctx
 	rs.vars = e.resolveVars(inputs)
@@ -501,7 +501,7 @@ func (e *Engine) finalizeOnExit(ctx context.Context, runID string, wtCtx *worktr
 		}
 	}
 	if finRes.FinalBranchError != "" {
-		if err := e.emit(ctx, runID, store.EventWorktreeBranchFailed, "", map[string]interface{}{
+		if err := e.emit(ctx, runID, store.EventWorktreeBranchFailed, "", map[string]any{
 			"sha":    finRes.FinalCommit,
 			"reason": finRes.FinalBranchError,
 		}); err != nil && e.logger != nil {

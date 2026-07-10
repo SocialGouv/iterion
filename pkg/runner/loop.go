@@ -1973,7 +1973,7 @@ func (m *metricsEmitter) lookupModel(nodeID string) string {
 	return m.modelByNode[nodeID]
 }
 
-func (m *metricsEmitter) addTokens(backend, modelName, direction string, raw interface{}) {
+func (m *metricsEmitter) addTokens(backend, modelName, direction string, raw any) {
 	n := toFloat(raw)
 	if n <= 0 || backend == "" || m.reg == nil {
 		return
@@ -2019,7 +2019,7 @@ func normalizeModelLabel(s string) string {
 // toFloat coerces the JSON-decoded scalar (always float64 in Go's
 // encoding/json) to a non-negative float64, returning 0 when the
 // value is missing, nil, or not a number.
-func toFloat(raw interface{}) float64 {
+func toFloat(raw any) float64 {
 	switch v := raw.(type) {
 	case float64:
 		if v < 0 {
@@ -2044,7 +2044,7 @@ func toFloat(raw interface{}) float64 {
 // string-typed map the executor expects. Non-string scalars are
 // formatted with %v; nested structures are JSON-encoded so the
 // downstream template engine can still see them.
-func stringifyVars(in map[string]interface{}) map[string]string {
+func stringifyVars(in map[string]any) map[string]string {
 	if len(in) == 0 {
 		return nil
 	}

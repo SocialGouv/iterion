@@ -31,23 +31,23 @@ func hasEventType(events []*store.Event, typ store.EventType) bool {
 // ---------------------------------------------------------------------------
 
 type stubExecutor struct {
-	handlers map[string]func(map[string]interface{}) (map[string]interface{}, error)
+	handlers map[string]func(map[string]any) (map[string]any, error)
 }
 
 func newStubExecutor() *stubExecutor {
-	return &stubExecutor{handlers: make(map[string]func(map[string]interface{}) (map[string]interface{}, error))}
+	return &stubExecutor{handlers: make(map[string]func(map[string]any) (map[string]any, error))}
 }
 
-func (s *stubExecutor) on(nodeID string, fn func(map[string]interface{}) (map[string]interface{}, error)) {
+func (s *stubExecutor) on(nodeID string, fn func(map[string]any) (map[string]any, error)) {
 	s.handlers[nodeID] = fn
 }
 
-func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	if fn, ok := s.handlers[node.NodeID()]; ok {
 		return fn(input)
 	}
 	// Default: return empty output.
-	return map[string]interface{}{}, nil
+	return map[string]any{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -121,20 +121,20 @@ func TestLinearPath(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "all good"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "all good"}, nil
 	})
-	exec.on("run_cmd", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"exit_code": 0, "output": "ok"}, nil
+	exec.on("run_cmd", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"exit_code": 0, "output": "ok"}, nil
 	})
-	exec.on("verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"pass": true, "reason": "CI green"}, nil
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"pass": true, "reason": "CI green"}, nil
 	})
 
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
-	err := eng.Run(context.Background(), "run-001", map[string]interface{}{"branch": "main"})
+	err := eng.Run(context.Background(), "run-001", map[string]any{"branch": "main"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,8 +224,8 @@ func TestToolAndComputePublishArtifact(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("make_note", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"msg": "hi from tool"}, nil
+	exec.on("make_note", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"msg": "hi from tool"}, nil
 	})
 
 	s := tmpStore(t)
@@ -317,14 +317,14 @@ func TestComputeNodeInsideFanOutBranch(t *testing.T) {
 		Loops:   map[string]*ir.Loop{},
 	}
 
-	var finalizeInput map[string]interface{}
+	var finalizeInput map[string]any
 	exec := newStubExecutor()
-	exec.on("precompute", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"value": "from-branch-local"}, nil
+	exec.on("precompute", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"value": "from-branch-local"}, nil
 	})
-	exec.on("finalize", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("finalize", func(input map[string]any) (map[string]any, error) {
 		finalizeInput = input
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -376,14 +376,14 @@ func TestBoundedLoop(t *testing.T) {
 
 	callCount := 0
 	exec := newStubExecutor()
-	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
 		callCount++
-		return map[string]interface{}{"patch": fmt.Sprintf("attempt-%d", callCount)}, nil
+		return map[string]any{"patch": fmt.Sprintf("attempt-%d", callCount)}, nil
 	})
-	exec.on("verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
 		// Fail twice, succeed on the third attempt.
 		pass := callCount >= 3
-		return map[string]interface{}{"pass": pass, "reason": "check"}, nil
+		return map[string]any{"pass": pass, "reason": "check"}, nil
 	})
 
 	s := tmpStore(t)
@@ -479,15 +479,15 @@ func TestLoopTemplatedCap_FromOutput(t *testing.T) {
 
 	callCount := 0
 	exec := newStubExecutor()
-	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
 		callCount++
 		// Emit a cap of 2 so the loop runs fix exactly 2 times (initial + 1
 		// retry), then verify finally returns pass=true.
-		return map[string]interface{}{"patch": fmt.Sprintf("attempt-%d", callCount), "cap": 2}, nil
+		return map[string]any{"patch": fmt.Sprintf("attempt-%d", callCount), "cap": 2}, nil
 	})
-	exec.on("verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
 		// Pass on the second fix call so the loop must take one retry.
-		return map[string]interface{}{"pass": callCount >= 2}, nil
+		return map[string]any{"pass": callCount >= 2}, nil
 	})
 
 	s := tmpStore(t)
@@ -514,7 +514,7 @@ func TestCoerceToInt(t *testing.T) {
 	// land strings, and some compute nodes pass through native ints.
 	for _, tc := range []struct {
 		name string
-		in   interface{}
+		in   any
 		want int
 		ok   bool
 	}{
@@ -525,7 +525,7 @@ func TestCoerceToInt(t *testing.T) {
 		{"decimal-string", "12", 12, true},
 		{"non-numeric-string", "hello", 0, false},
 		{"nil", nil, 0, false},
-		{"map", map[string]interface{}{"k": 1}, 0, false},
+		{"map", map[string]any{"k": 1}, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := coerceToInt(tc.in)
@@ -567,11 +567,11 @@ func TestLoopExhaustion(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"pass": false}, nil // always fail
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"pass": false}, nil // always fail
 	})
 
 	s := tmpStore(t)
@@ -615,8 +615,8 @@ func TestFailNode(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": false}, nil
+	exec.on("check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": false}, nil
 	})
 
 	s := tmpStore(t)
@@ -718,14 +718,14 @@ func TestDataMappingWithVars(t *testing.T) {
 		Loops: map[string]*ir.Loop{},
 	}
 
-	var capturedInput map[string]interface{}
+	var capturedInput map[string]any
 	exec := newStubExecutor()
-	exec.on("step1", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "looks good"}, nil
+	exec.on("step1", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "looks good"}, nil
 	})
-	exec.on("step2", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step2", func(input map[string]any) (map[string]any, error) {
 		capturedInput = input
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -783,8 +783,8 @@ func humanWorkflow() *ir.Workflow {
 func TestHumanPause(t *testing.T) {
 	wf := humanWorkflow()
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "needs review"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "needs review"}, nil
 	})
 
 	s := tmpStore(t)
@@ -854,11 +854,11 @@ func TestHumanPause(t *testing.T) {
 	}
 }
 
-func toStringSlice(v interface{}) []string {
+func toStringSlice(v any) []string {
 	switch s := v.(type) {
 	case []string:
 		return s
-	case []interface{}:
+	case []any:
 		out := make([]string, 0, len(s))
 		for _, x := range s {
 			if str, ok := x.(string); ok {
@@ -878,8 +878,8 @@ func toStringSlice(v interface{}) []string {
 func TestHumanPause_DrainsOperatorMessages(t *testing.T) {
 	wf := humanWorkflow()
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "needs review"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "needs review"}, nil
 	})
 
 	s := tmpStore(t)
@@ -949,14 +949,14 @@ func TestHumanPause_DrainsOperatorMessages(t *testing.T) {
 func TestHumanPauseAndResume(t *testing.T) {
 	wf := humanWorkflow()
 
-	var capturedIntegrateInput map[string]interface{}
+	var capturedIntegrateInput map[string]any
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "needs review"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "needs review"}, nil
 	})
-	exec.on("integrate", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("integrate", func(input map[string]any) (map[string]any, error) {
 		capturedIntegrateInput = input
-		return map[string]interface{}{"result": "integrated"}, nil
+		return map[string]any{"result": "integrated"}, nil
 	})
 
 	s := tmpStore(t)
@@ -969,7 +969,7 @@ func TestHumanPauseAndResume(t *testing.T) {
 	}
 
 	// Phase 2: Resume with answers.
-	answers := map[string]interface{}{
+	answers := map[string]any{
 		"approve": true,
 		"comment": "Ship it!",
 	}
@@ -995,7 +995,7 @@ func TestHumanPauseAndResume(t *testing.T) {
 	if capturedIntegrateInput == nil {
 		t.Fatal("integrate node was never called")
 	}
-	decisions, ok := capturedIntegrateInput["decisions"].(map[string]interface{})
+	decisions, ok := capturedIntegrateInput["decisions"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected decisions map, got %T: %v", capturedIntegrateInput["decisions"], capturedIntegrateInput["decisions"])
 	}
@@ -1104,7 +1104,7 @@ func TestResumeNonPausedRun(t *testing.T) {
 	}
 
 	// Try to resume a finished run.
-	err := eng.Resume(context.Background(), "run-done", map[string]interface{}{"x": 1})
+	err := eng.Resume(context.Background(), "run-done", map[string]any{"x": 1})
 	if err == nil {
 		t.Fatal("expected error when resuming finished run")
 	}
@@ -1119,12 +1119,12 @@ func TestResumeDoesNotReplayUpstream(t *testing.T) {
 
 	analyzeCallCount := 0
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
 		analyzeCallCount++
-		return map[string]interface{}{"summary": "done"}, nil
+		return map[string]any{"summary": "done"}, nil
 	})
-	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("integrate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -1140,7 +1140,7 @@ func TestResumeDoesNotReplayUpstream(t *testing.T) {
 	}
 
 	// Resume.
-	err = eng.Resume(context.Background(), "run-noreplay", map[string]interface{}{"ok": true})
+	err = eng.Resume(context.Background(), "run-noreplay", map[string]any{"ok": true})
 	if err != nil {
 		t.Fatalf("resume failed: %v", err)
 	}
@@ -1159,8 +1159,8 @@ func TestCheckpointPreservesUpstreamOutputs(t *testing.T) {
 	wf := humanWorkflow()
 
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "analysis result"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "analysis result"}, nil
 	})
 
 	s := tmpStore(t)
@@ -1216,14 +1216,14 @@ func TestHumanPausePreservesLoopCounters(t *testing.T) {
 
 	fixCount := 0
 	exec := newStubExecutor()
-	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
 		fixCount++
-		return map[string]interface{}{"attempt": fixCount}, nil
+		return map[string]any{"attempt": fixCount}, nil
 	})
-	exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("judge", func(_ map[string]any) (map[string]any, error) {
 		// First two: loop back; third: needs human.
 		needsHuman := fixCount >= 3
-		return map[string]interface{}{"needs_human": needsHuman}, nil
+		return map[string]any{"needs_human": needsHuman}, nil
 	})
 
 	s := tmpStore(t)
@@ -1246,7 +1246,7 @@ func TestHumanPausePreservesLoopCounters(t *testing.T) {
 	}
 
 	// Resume and finish.
-	err = eng.Resume(context.Background(), "run-loop-human", map[string]interface{}{"approved": true})
+	err = eng.Resume(context.Background(), "run-loop-human", map[string]any{"approved": true})
 	if err != nil {
 		t.Fatalf("resume failed: %v", err)
 	}
@@ -1281,10 +1281,10 @@ func TestFailedRunIsResumable(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("step_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "ok"}, nil
+	exec.on("step_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "ok"}, nil
 	})
-	exec.on("step_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step_b", func(_ map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("simulated transient failure")
 	})
 
@@ -1340,15 +1340,15 @@ func TestResumeFromFailed(t *testing.T) {
 
 	callCount := 0
 	exec := newStubExecutor()
-	exec.on("step_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "ok"}, nil
+	exec.on("step_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "ok"}, nil
 	})
-	exec.on("step_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step_b", func(_ map[string]any) (map[string]any, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, fmt.Errorf("transient failure")
 		}
-		return map[string]interface{}{"result": "success"}, nil
+		return map[string]any{"result": "success"}, nil
 	})
 
 	s := tmpStore(t)
@@ -1407,15 +1407,15 @@ func TestForceResumeBypassesHashCheck(t *testing.T) {
 
 	callCount := 0
 	exec := newStubExecutor()
-	exec.on("step_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "ok"}, nil
+	exec.on("step_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "ok"}, nil
 	})
-	exec.on("step_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step_b", func(_ map[string]any) (map[string]any, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, fmt.Errorf("transient failure")
 		}
-		return map[string]interface{}{"result": "ok"}, nil
+		return map[string]any{"result": "ok"}, nil
 	})
 
 	s := tmpStore(t)
@@ -1460,7 +1460,7 @@ func TestResumeNonExistentRun(t *testing.T) {
 	s := tmpStore(t)
 	eng := New(wf, s, exec)
 
-	err := eng.Resume(context.Background(), "no-such-run", map[string]interface{}{})
+	err := eng.Resume(context.Background(), "no-such-run", map[string]any{})
 	if err == nil {
 		t.Fatal("expected error when resuming non-existent run")
 	}
@@ -1501,14 +1501,14 @@ func humanModeWorkflow(mode ir.InteractionMode) *ir.Workflow {
 func TestHumanAutoAnswer(t *testing.T) {
 	wf := humanModeWorkflow(ir.InteractionLLM)
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "all good"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "all good"}, nil
 	})
-	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"approved": true, "reason": "auto-approved"}, nil
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"approved": true, "reason": "auto-approved"}, nil
 	})
-	exec.on("integrate", func(input map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"done": true}, nil
+	exec.on("integrate", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -1534,14 +1534,14 @@ func TestHumanAutoAnswerPublishArtifact(t *testing.T) {
 	wf.Nodes["review"].(*ir.HumanNode).Publish = "review_artifact"
 
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "all good"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "all good"}, nil
 	})
-	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"approved": true, "reason": "auto-approved"}, nil
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"approved": true, "reason": "auto-approved"}, nil
 	})
-	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"done": true}, nil
+	exec.on("integrate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -1569,18 +1569,18 @@ func TestHumanAutoAnswerPublishArtifact(t *testing.T) {
 func TestHumanAutoOrPause_Proceeds(t *testing.T) {
 	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "straightforward"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "straightforward"}, nil
 	})
-	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"needs_human_input": false,
 			"approved":          true,
 			"reason":            "auto-decided",
 		}, nil
 	})
-	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"done": true}, nil
+	exec.on("integrate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -1615,11 +1615,11 @@ func TestHumanAutoOrPause_Proceeds(t *testing.T) {
 func TestHumanAutoOrPause_Pauses(t *testing.T) {
 	wf := humanModeWorkflow(ir.InteractionLLMOrHuman)
 	exec := newStubExecutor()
-	exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "complex change"}, nil
+	exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "complex change"}, nil
 	})
-	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"needs_human_input": true,
 			"approved":          false,
 			"reason":            "too complex for auto",
@@ -1644,11 +1644,11 @@ func TestHumanAutoOrPause_Pauses(t *testing.T) {
 	}
 
 	// Now resume with human answers.
-	exec.on("integrate", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"done": true}, nil
+	exec.on("integrate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
 	})
 
-	answers := map[string]interface{}{"approved": true, "reason": "human approved"}
+	answers := map[string]any{"approved": true, "reason": "human approved"}
 	err = eng.Resume(context.Background(), "run-aop-pause", answers)
 	if err != nil {
 		t.Fatalf("resume failed: %v", err)
@@ -1670,7 +1670,7 @@ func TestHumanAutoOrPause_Pauses(t *testing.T) {
 func TestFormatOutputPreview(t *testing.T) {
 	tests := []struct {
 		name string
-		data map[string]interface{}
+		data map[string]any
 		want string // substring that must appear (empty = expect empty result)
 	}{
 		{
@@ -1680,13 +1680,13 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "empty data",
-			data: map[string]interface{}{},
+			data: map[string]any{},
 			want: "",
 		},
 		{
 			name: "only internal fields",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"_tokens": 100,
 					"_model":  "gpt-4",
 				},
@@ -1695,8 +1695,8 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "text-only output",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"text":    "Here is my analysis of the code.",
 					"_tokens": 200,
 				},
@@ -1705,8 +1705,8 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "structured judge output",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"verdict":    "rejected",
 					"reasoning":  "Missing error handling",
 					"confidence": 0.85,
@@ -1718,8 +1718,8 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "structured judge reasoning appears",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"verdict":   "rejected",
 					"reasoning": "Missing error handling",
 					"_tokens":   450,
@@ -1729,8 +1729,8 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "verdict before reasoning in order",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"reasoning": "some reason",
 					"verdict":   "approved",
 					"_tokens":   100,
@@ -1740,7 +1740,7 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "router single route (no output wrapper)",
-			data: map[string]interface{}{
+			data: map[string]any{
 				"selected_route": "fix_agent",
 				"reasoning":      "Issues found",
 			},
@@ -1748,16 +1748,16 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "router multi route",
-			data: map[string]interface{}{
-				"selected_routes": []interface{}{"agent_a", "agent_b"},
+			data: map[string]any{
+				"selected_routes": []any{"agent_a", "agent_b"},
 				"reasoning":       "Both needed",
 			},
 			want: "selected_routes: [agent_a, agent_b]",
 		},
 		{
 			name: "boolean field",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"approved": true,
 					"feedback": "Looks good",
 					"_tokens":  100,
@@ -1767,8 +1767,8 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "long text is truncated",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"text":    strings.Repeat("x", 1600),
 					"_tokens": 100,
 				},
@@ -1777,8 +1777,8 @@ func TestFormatOutputPreview(t *testing.T) {
 		},
 		{
 			name: "newlines preserved in text output",
-			data: map[string]interface{}{
-				"output": map[string]interface{}{
+			data: map[string]any{
+				"output": map[string]any{
 					"text":    "line1\nline2\nline3",
 					"_tokens": 100,
 				},
@@ -1839,10 +1839,10 @@ func TestInteractionHumanPauses(t *testing.T) {
 	wf := interactionWorkflow(ir.InteractionHuman)
 
 	exec := newStubExecutor()
-	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("worker", func(_ map[string]any) (map[string]any, error) {
 		return nil, &model.ErrNeedsInteraction{
 			NodeID:    "worker",
-			Questions: map[string]interface{}{"approval": "Do you approve this change?"},
+			Questions: map[string]any{"approval": "Do you approve this change?"},
 			SessionID: "session-abc",
 			Backend:   "claude_code",
 		}
@@ -1908,10 +1908,10 @@ func TestInteractionLLMAutoRespond(t *testing.T) {
 	wf := interactionWorkflow(ir.InteractionLLM)
 
 	exec := newStubExecutor()
-	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("worker", func(_ map[string]any) (map[string]any, error) {
 		return nil, &model.ErrNeedsInteraction{
 			NodeID:    "worker",
-			Questions: map[string]interface{}{"input": "What branch should I work on?"},
+			Questions: map[string]any{"input": "What branch should I work on?"},
 			SessionID: "session-def",
 			Backend:   "claude_code",
 		}
@@ -1944,10 +1944,10 @@ func TestInteractionLLMOrHumanEscalation(t *testing.T) {
 	wf := interactionWorkflow(ir.InteractionLLMOrHuman)
 
 	exec := newStubExecutor()
-	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("worker", func(_ map[string]any) (map[string]any, error) {
 		return nil, &model.ErrNeedsInteraction{
 			NodeID:    "worker",
-			Questions: map[string]interface{}{"decision": "Should we proceed with the deployment?"},
+			Questions: map[string]any{"decision": "Should we proceed with the deployment?"},
 			SessionID: "session-ghi",
 			Backend:   "codex",
 		}
@@ -1990,10 +1990,10 @@ func TestInteractionNoneRejects(t *testing.T) {
 	wf := interactionWorkflow(ir.InteractionNone)
 
 	exec := newStubExecutor()
-	exec.on("worker", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("worker", func(_ map[string]any) (map[string]any, error) {
 		return nil, &model.ErrNeedsInteraction{
 			NodeID:    "worker",
-			Questions: map[string]interface{}{"input": "unexpected question"},
+			Questions: map[string]any{"input": "unexpected question"},
 			SessionID: "session-jkl",
 			Backend:   "claude_code",
 		}
@@ -2031,21 +2031,21 @@ func TestInteractionAskUserRelaysPriorQA(t *testing.T) {
 
 	exec := newStubExecutor()
 	calls := 0
-	var secondCallInput map[string]interface{}
-	exec.on("worker", func(input map[string]interface{}) (map[string]interface{}, error) {
+	var secondCallInput map[string]any
+	exec.on("worker", func(input map[string]any) (map[string]any, error) {
 		calls++
 		if calls == 1 {
 			// First invocation: simulate the claw backend converting an
 			// ErrAskUser from the tool loop into _needs_interaction.
 			return nil, &model.ErrNeedsInteraction{
 				NodeID:    "worker",
-				Questions: map[string]interface{}{delegate.AskUserQuestionKey: "Which env: staging or prod?"},
+				Questions: map[string]any{delegate.AskUserQuestionKey: "Which env: staging or prod?"},
 				Backend:   "claw",
 			}
 		}
 		// Second invocation (after resume): record the input and return success.
 		secondCallInput = input
-		return map[string]interface{}{"text": "ok", "_tokens": 10}, nil
+		return map[string]any{"text": "ok", "_tokens": 10}, nil
 	})
 
 	s := tmpStore(t)
@@ -2057,7 +2057,7 @@ func TestInteractionAskUserRelaysPriorQA(t *testing.T) {
 	}
 
 	// Resume with the dev's answer.
-	err = eng.Resume(context.Background(), "run-ask-user", map[string]interface{}{
+	err = eng.Resume(context.Background(), "run-ask-user", map[string]any{
 		delegate.AskUserQuestionKey: "staging",
 	})
 	if err != nil {
@@ -2100,20 +2100,20 @@ func TestInteractionAskUserPersistsConversation(t *testing.T) {
 
 	exec := newStubExecutor()
 	calls := 0
-	var secondCallInput map[string]interface{}
-	exec.on("worker", func(input map[string]interface{}) (map[string]interface{}, error) {
+	var secondCallInput map[string]any
+	exec.on("worker", func(input map[string]any) (map[string]any, error) {
 		calls++
 		if calls == 1 {
 			return nil, &model.ErrNeedsInteraction{
 				NodeID:           "worker",
-				Questions:        map[string]interface{}{delegate.AskUserQuestionKey: "Which env?"},
+				Questions:        map[string]any{delegate.AskUserQuestionKey: "Which env?"},
 				Backend:          "claw",
 				Conversation:     persistedConv,
 				PendingToolUseID: "toolu_42",
 			}
 		}
 		secondCallInput = input
-		return map[string]interface{}{"text": "ok", "_tokens": 10}, nil
+		return map[string]any{"text": "ok", "_tokens": 10}, nil
 	})
 
 	s := tmpStore(t)
@@ -2138,7 +2138,7 @@ func TestInteractionAskUserPersistsConversation(t *testing.T) {
 		t.Errorf("checkpoint.BackendPendingToolUseID = %q, want %q", r.Checkpoint.BackendPendingToolUseID, "toolu_42")
 	}
 
-	if err := eng.Resume(context.Background(), "run-ask-user-persist", map[string]interface{}{
+	if err := eng.Resume(context.Background(), "run-ask-user-persist", map[string]any{
 		delegate.AskUserQuestionKey: "staging",
 	}); err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -2178,10 +2178,10 @@ func TestInteractionDepthGuardFailsRunaway(t *testing.T) {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	rs := eng.newRunState("run-depth-guard", nil)
-	rs.vars = map[string]interface{}{}
+	rs.vars = map[string]any{}
 
 	node := wf.Nodes["worker"]
-	ni := &model.ErrNeedsInteraction{NodeID: "worker", Questions: map[string]interface{}{"q": "?"}}
+	ni := &model.ErrNeedsInteraction{NodeID: "worker", Questions: map[string]any{"q": "?"}}
 
 	err := eng.handleNeedsInteraction(context.Background(), rs, "worker", node, ni, maxInteractionDepth+1)
 	if err == nil {

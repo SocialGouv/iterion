@@ -233,7 +233,7 @@ func (e *Engine) execLoopDispatchSpecial(ctx context.Context, rs *runState, curr
 // retry=true the caller `continue`s the loop without advancing; on
 // retry=false + err==nil the output is returned for downstream
 // persistence in execLoopAfterExec.
-func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeID string, node ir.Node) (map[string]interface{}, bool, error) {
+func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeID string, node ir.Node) (map[string]any, bool, error) {
 	// Compute the loop iteration once so the event payload and the
 	// executor's Task.Iteration agree. The frontend uses
 	// data.iteration as the source of truth for the pip-strip UI,
@@ -244,7 +244,7 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 	// iter=5 → canvas showed nothing as running across 5+ pkgs).
 	iter := e.currentLoopIteration(currentNodeID, rs.loopCounters)
 	iterPath := e.currentLoopIterationPath(currentNodeID, rs.loopCounters)
-	payload := map[string]interface{}{
+	payload := map[string]any{
 		"kind":      node.NodeKind().String(),
 		"iteration": iter,
 	}
@@ -397,11 +397,11 @@ func (e *Engine) execLoopRunNode(ctx context.Context, rs *runState, currentNodeI
 // private `_verified_action` key from the output map in place so it does
 // not leak into schema validation, downstream {{outputs.*}} refs, or the
 // persisted artifact. No-op for nodes that did not escalate.
-func (e *Engine) emitVerifiedActionIfPresent(rs *runState, nodeID string, output map[string]interface{}) {
+func (e *Engine) emitVerifiedActionIfPresent(rs *runState, nodeID string, output map[string]any) {
 	if output == nil {
 		return
 	}
-	meta, ok := output["_verified_action"].(map[string]interface{})
+	meta, ok := output["_verified_action"].(map[string]any)
 	// Strip unconditionally (no-op when absent) so the private control key
 	// never reaches schema validation, downstream refs, or the store; bail
 	// when it wasn't the expected map shape (only verifiedOutput writes it).
@@ -422,7 +422,7 @@ func (e *Engine) emitVerifiedActionIfPresent(rs *runState, nodeID string, output
 // EventArtifactWritten. No-op for nodes without publish. Shared by every
 // node-completion path so the behaviour stays identical — including
 // compute, whose bespoke execCompute path calls this directly.
-func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, nodeID string, node ir.Node, output map[string]interface{}) error {
+func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, nodeID string, node ir.Node, output map[string]any) error {
 	pub := nodePublish(node)
 	if pub == "" {
 		return nil
@@ -444,7 +444,7 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 	rs.artifactVersions[nodeID] = version + 1
 	rs.artifacts[pub] = output
 
-	evtData := map[string]interface{}{
+	evtData := map[string]any{
 		"publish": pub,
 		"version": version,
 	}
@@ -463,7 +463,7 @@ func (e *Engine) persistArtifactIfPublished(ctx context.Context, rs *runState, n
 // node_finished + onNodeFinished hook, saves a checkpoint (best-
 // effort), snapshots the worktree at the node boundary, and selects
 // the outgoing edge. Returns the next node ID.
-func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNodeID string, node ir.Node, output map[string]interface{}) (string, error) {
+func (e *Engine) execLoopAfterExec(ctx context.Context, rs *runState, currentNodeID string, node ir.Node, output map[string]any) (string, error) {
 	// Verified Action (ADR-044): a tool node that escalated through the
 	// recovery ladder stamps a private `_verified_action` key. Emit the
 	// node_verified_action event for observability, then strip the key so
@@ -544,8 +544,8 @@ func (e *Engine) snapshotAtNodeBoundary(rs *runState, nodeID string) {
 // compute-specific.
 func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (string, error) {
 	return e.execSpecialNode(rs, nodeID, "compute", cn, nil,
-		func() (map[string]interface{}, error) { return e.computeOutput(rs, nodeID, cn, rs.scope()) },
-		func(output map[string]interface{}) error {
+		func() (map[string]any, error) { return e.computeOutput(rs, nodeID, cn, rs.scope()) },
+		func(output map[string]any) error {
 			// Publish is compute-specific (only ComputeNode has a Publish
 			// field) and gated on validation: persist only known-valid output.
 			return e.persistArtifactIfPublished(rs.ctx, rs, nodeID, cn, output)
@@ -562,8 +562,8 @@ func (e *Engine) execCompute(rs *runState, nodeID string, cn *ir.ComputeNode) (s
 // the lifecycle envelope is execSpecialNode.
 func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn *ir.SubbotNode) (string, error) {
 	return e.execSpecialNode(rs, nodeID, "subbot", sn,
-		map[string]interface{}{"source": sn.Source},
-		func() (map[string]interface{}, error) { return e.runSubbotNode(ctx, rs, nodeID, sn, rs.scope()) },
+		map[string]any{"source": sn.Source},
+		func() (map[string]any, error) { return e.runSubbotNode(ctx, rs, nodeID, sn, rs.scope()) },
 		nil,
 	)
 }
@@ -580,7 +580,7 @@ func (e *Engine) execSubbot(ctx context.Context, rs *runState, nodeID string, sn
 // matching unconditional edge serves as fallback. When a loop's counter is
 // exhausted that edge is skipped — enabling graceful exit patterns like
 // `fix_loop -> outer_loop` or `loop_edge -> done`.
-func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string]interface{}) (string, error) {
+func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string]any) (string, error) {
 	selected := e.evaluateEdgesWithLoopsRS(fromNodeID, "main", output, rs)
 	if selected == nil {
 		return "", &RuntimeError{
@@ -649,7 +649,7 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 			if staged, ok := rs.loopCurrentOutput[selected.LoopName]; ok {
 				rs.loopPreviousOutput[selected.LoopName] = staged
 			}
-			snap := make(map[string]interface{}, len(output))
+			snap := make(map[string]any, len(output))
 			for k, v := range output {
 				snap[k] = v
 			}
@@ -657,7 +657,7 @@ func (e *Engine) selectEdgeRS(rs *runState, fromNodeID string, output map[string
 		}
 	}
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"from": selected.From,
 		"to":   selected.To,
 	}

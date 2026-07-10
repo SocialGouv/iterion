@@ -250,7 +250,7 @@ func sameSet(got, want []string) bool {
 
 func testCreateLoad(t *testing.T, s store.RunStore, opts Opts) {
 	t.Helper()
-	in := map[string]interface{}{"foo": "bar"}
+	in := map[string]any{"foo": "bar"}
 	r, err := s.CreateRun(testCtx(), "run_1", "demo", in)
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
@@ -368,7 +368,7 @@ func testArtifactVersions(t *testing.T, s store.RunStore) {
 			RunID:     "run_5",
 			NodeID:    "node_a",
 			Version:   v,
-			Data:      map[string]interface{}{"v": v},
+			Data:      map[string]any{"v": v},
 			WrittenAt: time.Now().UTC(),
 		}); err != nil {
 			t.Fatalf("WriteArtifact v=%d: %v", v, err)

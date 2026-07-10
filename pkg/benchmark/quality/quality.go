@@ -172,18 +172,18 @@ func family(spec string) string {
 // an OpenAI judge via claw's direct-generation path and an Anthropic judge
 // via the claude_code OAuth delegate (so a true cross-family panel works
 // without an ANTHROPIC_API_KEY). See ClawInvoker for the default.
-type JudgeInvoker func(ctx context.Context, modelSpec, system, userMsg string, schema json.RawMessage) (map[string]interface{}, error)
+type JudgeInvoker func(ctx context.Context, modelSpec, system, userMsg string, schema json.RawMessage) (map[string]any, error)
 
 // ClawInvoker is the default judge invoker: it resolves the model spec to a
 // claw client and forces the structured-output tool. Requires an API key
 // for the model's provider (claw cannot use Claude Code OAuth).
 func ClawInvoker(reg *model.Registry) JudgeInvoker {
-	return func(ctx context.Context, spec, system, userMsg string, schema json.RawMessage) (map[string]interface{}, error) {
+	return func(ctx context.Context, spec, system, userMsg string, schema json.RawMessage) (map[string]any, error) {
 		client, err := reg.Resolve(spec)
 		if err != nil {
 			return nil, err
 		}
-		res, err := model.GenerateObjectDirect[map[string]interface{}](ctx, client, model.GenerationOptions{
+		res, err := model.GenerateObjectDirect[map[string]any](ctx, client, model.GenerationOptions{
 			Model:          spec,
 			System:         system,
 			ExplicitSchema: schema,
@@ -249,7 +249,7 @@ func RunPanelWith(ctx context.Context, models []string, invoke JudgeInvoker, ev 
 // mapToJudgeRaw converts a decoded structured-output object into the typed
 // judgeRaw via a JSON round-trip (the invoker returns a generic map so it
 // can come from any backend).
-func mapToJudgeRaw(obj map[string]interface{}) (judgeRaw, error) {
+func mapToJudgeRaw(obj map[string]any) (judgeRaw, error) {
 	b, err := json.Marshal(obj)
 	if err != nil {
 		return judgeRaw{}, err

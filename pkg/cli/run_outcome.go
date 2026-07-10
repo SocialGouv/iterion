@@ -64,7 +64,7 @@ func reportRunOutcome(
 	s store.RunStore,
 	runID, storeDir, userFile string,
 	err error,
-	runResult map[string]interface{},
+	runResult map[string]any,
 ) error {
 	if errors.Is(err, runtime.ErrRunPaused) {
 		runResult["status"] = "paused_waiting_human"
@@ -95,7 +95,7 @@ func reportResumeOutcome(
 	s store.RunStore,
 	runID string,
 	err error,
-	result map[string]interface{},
+	result map[string]any,
 ) error {
 	if errors.Is(err, runtime.ErrRunPaused) {
 		result["status"] = "paused_waiting_human"
@@ -118,7 +118,7 @@ func reportNonPausedOutcome(
 	p *Printer,
 	runID string,
 	err error,
-	result map[string]interface{},
+	result map[string]any,
 ) error {
 	if err == nil {
 		result["status"] = "finished"

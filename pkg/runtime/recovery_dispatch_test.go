@@ -19,15 +19,15 @@ type flakyExecutor struct {
 	calls    int
 }
 
-func (f *flakyExecutor) Execute(_ context.Context, node ir.Node, _ map[string]interface{}) (map[string]interface{}, error) {
+func (f *flakyExecutor) Execute(_ context.Context, node ir.Node, _ map[string]any) (map[string]any, error) {
 	if node.NodeID() != f.target {
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	}
 	f.calls++
 	if f.calls <= f.failures {
 		return nil, f.failErr
 	}
-	return map[string]interface{}{"ok": true}, nil
+	return map[string]any{"ok": true}, nil
 }
 
 func newRecoveryWorkflow() *ir.Workflow {

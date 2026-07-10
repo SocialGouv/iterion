@@ -10,7 +10,7 @@ import (
 // parseSDKOutput converts SDK result fields into a delegate Result.Output map.
 // It prioritizes structuredOutput over resultText, falling back to JSON extraction
 // from markdown and finally plain text wrapping.
-func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]interface{}, rawLen int, fallback bool) {
+func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]any, rawLen int, fallback bool) {
 	// Priority 1: structured output from SDK — only when non-empty.
 	// claude-code's stream-json emits `structured_output: {}` for
 	// tool-using sessions where no second-pass formatter ran (i.e.
@@ -21,7 +21,7 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 	// resultText path so the assistant's final markdown JSON block
 	// can be extracted instead.
 	if structuredOutput != nil {
-		if obj, ok := structuredOutput.(map[string]interface{}); ok {
+		if obj, ok := structuredOutput.(map[string]any); ok {
 			if len(obj) > 0 {
 				return obj, 0, false
 			}
@@ -29,7 +29,7 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 			// Non-map types: round-trip via JSON.
 			b, err := json.Marshal(structuredOutput)
 			if err == nil {
-				var obj map[string]interface{}
+				var obj map[string]any
 				if json.Unmarshal(b, &obj) == nil && len(obj) > 0 {
 					return obj, len(b), false
 				}
@@ -43,7 +43,7 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 		rawLen = len(text)
 
 		// Try direct JSON object parse.
-		var obj map[string]interface{}
+		var obj map[string]any
 		if json.Unmarshal([]byte(text), &obj) == nil {
 			return obj, rawLen, false
 		}
@@ -56,12 +56,12 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 		}
 
 		// Fallback: wrap raw text.
-		output = map[string]interface{}{"text": text}
+		output = map[string]any{"text": text}
 		fb := len(outputSchema) > 0
 		return output, rawLen, fb
 	}
 
-	return map[string]interface{}{}, 0, false
+	return map[string]any{}, 0, false
 }
 
 // validateWorkDir checks that workDir resolves to a path within baseDir.

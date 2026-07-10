@@ -103,9 +103,9 @@ func TestCancelDuringExecution(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	exec := newStubExecutor()
-	exec.on("step1", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step1", func(_ map[string]any) (map[string]any, error) {
 		cancel() // Cancel after first node executes.
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -206,12 +206,12 @@ func TestCancelDuringParallelBranches(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	exec := newStubExecutor()
-	exec.on("branch_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("branch_a", func(_ map[string]any) (map[string]any, error) {
 		cancel() // Cancel during parallel execution.
-		return map[string]interface{}{"result": "a"}, nil
+		return map[string]any{"result": "a"}, nil
 	})
-	exec.on("branch_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "b"}, nil
+	exec.on("branch_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "b"}, nil
 	})
 
 	s := tmpStore(t)
@@ -334,11 +334,11 @@ func TestLoopExhaustionRuntimeError(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"pass": false}, nil
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"pass": false}, nil
 	})
 
 	s := tmpStore(t)
@@ -399,15 +399,15 @@ func TestLoopExhaustionFallback(t *testing.T) {
 
 	fixCount := 0
 	exec := newStubExecutor()
-	exec.on("fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("fix", func(_ map[string]any) (map[string]any, error) {
 		fixCount++
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"pass": false}, nil
+	exec.on("verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"pass": false}, nil
 	})
-	exec.on("replan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("replan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -535,7 +535,7 @@ func TestExecutorErrorProducesRuntimeError(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("step", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step", func(_ map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("model provider returned 429: rate limited")
 	})
 

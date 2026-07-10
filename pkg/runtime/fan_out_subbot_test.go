@@ -59,22 +59,22 @@ func TestFanOutEach_SubbotPerElement(t *testing.T) {
 	var mu sync.Mutex
 	gotTickets := map[string]bool{}
 	var calls int64
-	runner := func(_ context.Context, req SubbotRequest) (map[string]interface{}, error) {
+	runner := func(_ context.Context, req SubbotRequest) (map[string]any, error) {
 		atomic.AddInt64(&calls, 1)
 		mu.Lock()
 		if tk, ok := req.Vars["ticket"].(string); ok {
 			gotTickets[tk] = true
 		}
 		mu.Unlock()
-		return map[string]interface{}{"committed": true}, nil
+		return map[string]any{"committed": true}, nil
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{item("A"), item("B"), item("C")}}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{item("A"), item("B"), item("C")}}, nil
 	})
-	exec.on("collect", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"done": true}, nil
+	exec.on("collect", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"done": true}, nil
 	})
 
 	s := tmpStore(t)

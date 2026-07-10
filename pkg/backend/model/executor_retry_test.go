@@ -127,7 +127,7 @@ func newTestExecutorForRetry(maxAttempts int) *ClawExecutor {
 func TestRetryDelegateLoop_SucceedsFirstTry(t *testing.T) {
 	e := newTestExecutorForRetry(3)
 	calls := 0
-	want := delegate.Result{Output: map[string]interface{}{"k": "v"}, BackendName: "claw"}
+	want := delegate.Result{Output: map[string]any{"k": "v"}, BackendName: "claw"}
 	got, err := e.retryDelegateLoop(context.Background(), "node1", "claw", func() (delegate.Result, error) {
 		calls++
 		return want, nil
@@ -151,7 +151,7 @@ func TestRetryDelegateLoop_RetriesOnTransientThenSucceeds(t *testing.T) {
 		if calls < 3 {
 			return delegate.Result{}, &delegate.ErrTransient{Reason: "subprocess killed"}
 		}
-		return delegate.Result{Output: map[string]interface{}{"ok": true}}, nil
+		return delegate.Result{Output: map[string]any{"ok": true}}, nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)

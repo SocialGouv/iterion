@@ -14,7 +14,7 @@ import (
 
 // evt is a tiny helper to build a store.Event with a fixed timestamp
 // so tests don't have to thread time through every line.
-func evt(seq int64, t store.EventType, branch, node string, data map[string]interface{}) *store.Event {
+func evt(seq int64, t store.EventType, branch, node string, data map[string]any) *store.Event {
 	return &store.Event{
 		Seq:       seq,
 		Timestamp: time.Unix(int64(seq), 0).UTC(),
@@ -33,9 +33,9 @@ func TestSnapshotReducer_LinearRun(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
 		evt(0, store.EventRunStarted, "", "", nil),
-		evt(1, store.EventNodeStarted, "", "analyze", map[string]interface{}{"kind": "agent"}),
+		evt(1, store.EventNodeStarted, "", "analyze", map[string]any{"kind": "agent"}),
 		evt(2, store.EventNodeFinished, "", "analyze", nil),
-		evt(3, store.EventNodeStarted, "", "verify", map[string]interface{}{"kind": "judge"}),
+		evt(3, store.EventNodeStarted, "", "verify", map[string]any{"kind": "judge"}),
 		evt(4, store.EventNodeFinished, "", "verify", nil),
 		evt(5, store.EventRunFinished, "", "", nil),
 	}
@@ -64,13 +64,13 @@ func TestSnapshotReducer_LoopIterations(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	// Loop body: same node fires three times in main branch.
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "fix", map[string]interface{}{"kind": "agent"}),
+		evt(0, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent"}),
 		evt(1, store.EventNodeFinished, "", "fix", nil),
-		evt(2, store.EventEdgeSelected, "", "", map[string]interface{}{"loop": "until_green", "iteration": 1}),
-		evt(3, store.EventNodeStarted, "", "fix", map[string]interface{}{"kind": "agent"}),
+		evt(2, store.EventEdgeSelected, "", "", map[string]any{"loop": "until_green", "iteration": 1}),
+		evt(3, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent"}),
 		evt(4, store.EventNodeFinished, "", "fix", nil),
-		evt(5, store.EventEdgeSelected, "", "", map[string]interface{}{"loop": "until_green", "iteration": 2}),
-		evt(6, store.EventNodeStarted, "", "fix", map[string]interface{}{"kind": "agent"}),
+		evt(5, store.EventEdgeSelected, "", "", map[string]any{"loop": "until_green", "iteration": 2}),
+		evt(6, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent"}),
 		evt(7, store.EventNodeFinished, "", "fix", nil),
 	}
 	for _, e := range events {
@@ -113,12 +113,12 @@ func TestSnapshotReducer_MonotonicGuardAgainstDuplicateNodeStarted(t *testing.T)
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
 		evt(0, store.EventNodeStarted, "", "family_upgrade",
-			map[string]interface{}{"kind": "compute", "iteration": 0}),
+			map[string]any{"kind": "compute", "iteration": 0}),
 		evt(1, store.EventNodeFinished, "", "family_upgrade", nil),
 		// Stale or runtime re-emission for the same (node, iter) —
 		// must be ignored at status level, must not duplicate order.
 		evt(2, store.EventNodeStarted, "", "family_upgrade",
-			map[string]interface{}{"kind": "compute", "iteration": 0}),
+			map[string]any{"kind": "compute", "iteration": 0}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -143,9 +143,9 @@ func TestSnapshotReducer_MonotonicGuardAgainstStaleStartAfterFailure(t *testing.
 	// without first emitting a fresh exec id.
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 0}),
-		evt(1, store.EventRunFailed, "", "build", map[string]interface{}{"error": "boom"}),
-		evt(2, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 0}),
+		evt(0, store.EventNodeStarted, "", "build", map[string]any{"iteration": 0}),
+		evt(1, store.EventRunFailed, "", "build", map[string]any{"error": "boom"}),
+		evt(2, store.EventNodeStarted, "", "build", map[string]any{"iteration": 0}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -180,10 +180,10 @@ func TestSnapshotReducer_PostResumeReExecutionFlipsBackToRunning(t *testing.T) {
 	// error.
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "commit_changes", map[string]interface{}{"iteration": 5}),
-		evt(1, store.EventRunFailed, "", "commit_changes", map[string]interface{}{"error": "git add failed"}),
+		evt(0, store.EventNodeStarted, "", "commit_changes", map[string]any{"iteration": 5}),
+		evt(1, store.EventRunFailed, "", "commit_changes", map[string]any{"error": "git add failed"}),
 		evt(2, store.EventRunResumed, "", "", nil),
-		evt(3, store.EventNodeStarted, "", "commit_changes", map[string]interface{}{"iteration": 5}),
+		evt(3, store.EventNodeStarted, "", "commit_changes", map[string]any{"iteration": 5}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -221,10 +221,10 @@ func TestSnapshotReducer_PreResumeDuplicateStillGuarded(t *testing.T) {
 	// The lastResumedSeq comparison handles both cases with one rule.
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 0}),
+		evt(0, store.EventNodeStarted, "", "build", map[string]any{"iteration": 0}),
 		evt(1, store.EventNodeFinished, "", "build", nil),
 		// Stale duplicate from a WS replay — no resume in between.
-		evt(2, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 0}),
+		evt(2, store.EventNodeStarted, "", "build", map[string]any{"iteration": 0}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -258,13 +258,13 @@ func TestSnapshotReducer_NestedLoopIterationPathDisambiguates(t *testing.T) {
 	// must therefore produce TWO executions, not one.
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "validate_upgrade", map[string]interface{}{
+		evt(0, store.EventNodeStarted, "", "validate_upgrade", map[string]any{
 			"kind":           "judge",
 			"iteration":      5,
 			"iteration_path": "family_loop=5;fix_loop=0;package_loop=0",
 		}),
 		evt(1, store.EventNodeFinished, "", "validate_upgrade", nil),
-		evt(2, store.EventNodeStarted, "", "validate_upgrade", map[string]interface{}{
+		evt(2, store.EventNodeStarted, "", "validate_upgrade", map[string]any{
 			"kind":           "judge",
 			"iteration":      5,
 			"iteration_path": "family_loop=5;fix_loop=0;package_loop=1",
@@ -297,9 +297,9 @@ func TestSnapshotReducer_LegacyEventsWithoutIterationPathFallBack(t *testing.T) 
 	// path so cold replays of archived runs render correctly.
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 0}),
+		evt(0, store.EventNodeStarted, "", "build", map[string]any{"iteration": 0}),
 		evt(1, store.EventNodeFinished, "", "build", nil),
-		evt(2, store.EventNodeStarted, "", "build", map[string]interface{}{"iteration": 1}),
+		evt(2, store.EventNodeStarted, "", "build", map[string]any{"iteration": 1}),
 		evt(3, store.EventNodeFinished, "", "build", nil),
 	}
 	for _, e := range events {
@@ -320,10 +320,10 @@ func TestSnapshotReducer_MonotonicGuardAgainstStaleStartAfterPause(t *testing.T)
 	// out of paused (handleRunResumed).
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "ask", map[string]interface{}{"kind": "human", "iteration": 0}),
+		evt(0, store.EventNodeStarted, "", "ask", map[string]any{"kind": "human", "iteration": 0}),
 		evt(1, store.EventHumanInputRequested, "", "ask", nil),
 		// Spurious replay of node_started while still awaiting input.
-		evt(2, store.EventNodeStarted, "", "ask", map[string]interface{}{"kind": "human", "iteration": 0}),
+		evt(2, store.EventNodeStarted, "", "ask", map[string]any{"kind": "human", "iteration": 0}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -343,8 +343,8 @@ func TestSnapshotReducer_FanOutBranches(t *testing.T) {
 	events := []*store.Event{
 		evt(0, store.EventBranchStarted, "br_a", "", nil),
 		evt(1, store.EventBranchStarted, "br_b", "", nil),
-		evt(2, store.EventNodeStarted, "br_a", "review", map[string]interface{}{"kind": "judge"}),
-		evt(3, store.EventNodeStarted, "br_b", "review", map[string]interface{}{"kind": "judge"}),
+		evt(2, store.EventNodeStarted, "br_a", "review", map[string]any{"kind": "judge"}),
+		evt(3, store.EventNodeStarted, "br_b", "review", map[string]any{"kind": "judge"}),
 		evt(4, store.EventNodeFinished, "br_a", "review", nil),
 		evt(5, store.EventNodeFinished, "br_b", "review", nil),
 	}
@@ -373,7 +373,7 @@ func TestSnapshotReducer_FanOutBranches(t *testing.T) {
 func TestSnapshotReducer_HumanPauseResume(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "ask", map[string]interface{}{"kind": "human"}),
+		evt(0, store.EventNodeStarted, "", "ask", map[string]any{"kind": "human"}),
 		evt(1, store.EventHumanInputRequested, "", "ask", nil),
 		evt(2, store.EventRunPaused, "", "", nil),
 		evt(3, store.EventRunResumed, "", "", nil),
@@ -394,8 +394,8 @@ func TestSnapshotReducer_HumanPauseResume(t *testing.T) {
 func TestSnapshotReducer_NodeFailure(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "build", map[string]interface{}{"kind": "tool"}),
-		evt(1, store.EventRunFailed, "", "build", map[string]interface{}{"error": "exit 1"}),
+		evt(0, store.EventNodeStarted, "", "build", map[string]any{"kind": "tool"}),
+		evt(1, store.EventRunFailed, "", "build", map[string]any{"error": "exit 1"}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -416,13 +416,13 @@ func TestSnapshotReducer_NodeFailure(t *testing.T) {
 func TestSnapshotReducer_RunCancelledClosesInflight(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "build", map[string]interface{}{"kind": "tool"}),
+		evt(0, store.EventNodeStarted, "", "build", map[string]any{"kind": "tool"}),
 		evt(1, store.EventNodeFinished, "", "build", nil),
-		evt(2, store.EventNodeStarted, "", "deploy", map[string]interface{}{"kind": "agent"}),
+		evt(2, store.EventNodeStarted, "", "deploy", map[string]any{"kind": "agent"}),
 		// User hits cancel while "deploy" is still running. The event
 		// carries no node_id (run-level), so the old code left deploy
 		// stuck in ExecStatusRunning and the spinner never cleared.
-		evt(3, store.EventRunCancelled, "", "", map[string]interface{}{"reason": "user cancelled"}),
+		evt(3, store.EventRunCancelled, "", "", map[string]any{"reason": "user cancelled"}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -454,10 +454,10 @@ func TestSnapshotReducer_RunCancelledClosesInflight(t *testing.T) {
 func TestSnapshotReducer_RunFailedClosesInflight(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "fetch", map[string]interface{}{"kind": "agent"}),
+		evt(0, store.EventNodeStarted, "", "fetch", map[string]any{"kind": "agent"}),
 		// run-level failure with no node_id (e.g. budget exceeded) —
 		// in-flight node must still be closed.
-		evt(1, store.EventRunFailed, "", "", map[string]interface{}{"error": "budget exhausted"}),
+		evt(1, store.EventRunFailed, "", "", map[string]any{"error": "budget exhausted"}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -478,14 +478,14 @@ func TestSnapshotReducer_RunFailedClosesInflight(t *testing.T) {
 func TestSnapshotReducer_RunningNodeTouchesLastSeqForStructuredEvents(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	events := []*store.Event{
-		evt(0, store.EventNodeStarted, "", "agent", map[string]interface{}{"kind": "agent"}),
-		evt(1, store.EventLLMPrompt, "", "agent", map[string]interface{}{"user_message": "hello"}),
-		evt(2, store.EventLLMRequest, "", "agent", map[string]interface{}{"model": "m"}),
-		evt(3, store.EventToolCalled, "", "agent", map[string]interface{}{"tool_name": "Read"}),
-		evt(4, store.EventBudgetWarning, "", "agent", map[string]interface{}{"message": "near limit"}),
+		evt(0, store.EventNodeStarted, "", "agent", map[string]any{"kind": "agent"}),
+		evt(1, store.EventLLMPrompt, "", "agent", map[string]any{"user_message": "hello"}),
+		evt(2, store.EventLLMRequest, "", "agent", map[string]any{"model": "m"}),
+		evt(3, store.EventToolCalled, "", "agent", map[string]any{"tool_name": "Read"}),
+		evt(4, store.EventBudgetWarning, "", "agent", map[string]any{"message": "near limit"}),
 		// A node-scoped event for another branch must not advance the main
 		// branch execution window.
-		evt(5, store.EventToolCalled, "other", "agent", map[string]interface{}{"tool_name": "Write"}),
+		evt(5, store.EventToolCalled, "other", "agent", map[string]any{"tool_name": "Write"}),
 	}
 	for _, e := range events {
 		b.Apply(e)
@@ -507,10 +507,10 @@ func TestSnapshotReducer_ArtifactVersion(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
 	events := []*store.Event{
 		evt(0, store.EventNodeStarted, "", "build", nil),
-		evt(1, store.EventArtifactWritten, "", "build", map[string]interface{}{"version": 0}),
+		evt(1, store.EventArtifactWritten, "", "build", map[string]any{"version": 0}),
 		evt(2, store.EventNodeFinished, "", "build", nil),
 		evt(3, store.EventNodeStarted, "", "build", nil),
-		evt(4, store.EventArtifactWritten, "", "build", map[string]interface{}{"version": 1}),
+		evt(4, store.EventArtifactWritten, "", "build", map[string]any{"version": 1}),
 		evt(5, store.EventNodeFinished, "", "build", nil),
 	}
 	for _, e := range events {
@@ -650,7 +650,7 @@ func TestSnapshotReducer_Timer(t *testing.T) {
 			name: "failed_resumable_excludes_offline_gap",
 			events: []*store.Event{
 				evt(0, store.EventRunStarted, "", "", nil),
-				evt(5, store.EventRunFailed, "", "", map[string]interface{}{"error": "boom"}),
+				evt(5, store.EventRunFailed, "", "", map[string]any{"error": "boom"}),
 				evt(100, store.EventRunResumed, "", "", nil),
 				evt(108, store.EventRunFinished, "", "", nil),
 			},
@@ -791,7 +791,7 @@ func TestSnapshotReducer_TimerSetRunPreservesCounters(t *testing.T) {
 // evtAt builds an event with an explicit timestamp + monotonic ActiveMs
 // stamp, so the active-duration tests can decouple wall-clock from the
 // engine's monotonic clock (the whole point of BUG A).
-func evtAt(seq int64, t store.EventType, node string, tsSec int64, activeMs int64, data map[string]interface{}) *store.Event {
+func evtAt(seq int64, t store.EventType, node string, tsSec int64, activeMs int64, data map[string]any) *store.Event {
 	return &store.Event{
 		Seq:       seq,
 		Timestamp: time.Unix(tsSec, 0).UTC(),
@@ -815,7 +815,7 @@ func TestSnapshotReducer_ActiveDurationMonotonicExcludesSuspend(t *testing.T) {
 	events := []*store.Event{
 		evtAt(0, store.EventRunStarted, "", t0, 0, nil),
 		evtAt(1, store.EventNodeStarted, "work", t0+1, 1000,
-			map[string]interface{}{"kind": "agent"}),
+			map[string]any{"kind": "agent"}),
 		// 6h wall-clock gap (suspend) but only +500ms monotonic active.
 		evtAt(2, store.EventLLMRequest, "work", t0+1+6*3600, 1500, nil),
 		evtAt(3, store.EventRunFinished, "", t0+2+6*3600, 2000, nil),
@@ -840,7 +840,7 @@ func TestSnapshotReducer_ActiveDurationWallClockFallbackLegacy(t *testing.T) {
 	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusRunning})
 	events := []*store.Event{
 		evt(0, store.EventRunStarted, "", "", nil),
-		evt(1, store.EventNodeStarted, "", "a", map[string]interface{}{"kind": "agent"}),
+		evt(1, store.EventNodeStarted, "", "a", map[string]any{"kind": "agent"}),
 		evt(5, store.EventRunFinished, "", "", nil),
 	}
 	for _, e := range events {
@@ -865,7 +865,7 @@ func TestSnapshotReducer_LoopIndicatorSemanticNotExecCount(t *testing.T) {
 	b.Apply(&store.Event{
 		Seq:  0,
 		Type: store.EventRunStarted,
-		Data: map[string]interface{}{"loops": map[string]interface{}{"review_loop": float64(50)}},
+		Data: map[string]any{"loops": map[string]any{"review_loop": float64(50)}},
 	})
 	seq := int64(1)
 	fire := func(iter int) {
@@ -873,7 +873,7 @@ func TestSnapshotReducer_LoopIndicatorSemanticNotExecCount(t *testing.T) {
 			Seq:    seq,
 			Type:   store.EventNodeStarted,
 			NodeID: "reviewer",
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"kind":           "judge",
 				"iteration":      iter,
 				"iteration_path": "review_loop=" + strconv.Itoa(iter),

@@ -762,11 +762,11 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 
 // varsAsAny upgrades a string-keyed map to interface{} so the wire
 // payload can carry richer types if the launch spec ever evolves.
-func varsAsAny(in map[string]string) map[string]interface{} {
+func varsAsAny(in map[string]string) map[string]any {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]interface{}, len(in))
+	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
 	}

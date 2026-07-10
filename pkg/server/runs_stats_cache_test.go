@@ -88,7 +88,7 @@ func seedCostRun(t *testing.T, rs store.RunStore, id, wf string, status store.Ru
 	if _, err := rs.AppendEvent(ctx, run.ID, store.Event{
 		Type:      store.EventNodeFinished,
 		Timestamp: created,
-		Data:      map[string]interface{}{"_cost_usd": cost},
+		Data:      map[string]any{"_cost_usd": cost},
 	}); err != nil {
 		t.Fatalf("AppendEvent %s: %v", id, err)
 	}
@@ -183,7 +183,7 @@ func TestAggregateRunStatsCacheVersionBust(t *testing.T) {
 	if _, err := rs.AppendEvent(ctx, term.ID, store.Event{
 		Type:      store.EventNodeFinished,
 		Timestamp: created,
-		Data:      map[string]interface{}{"_cost_usd": 0.5},
+		Data:      map[string]any{"_cost_usd": 0.5},
 	}); err != nil {
 		t.Fatalf("AppendEvent: %v", err)
 	}

@@ -60,7 +60,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Emit router node_started.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
 		"kind":      "router",
 		"mode":      mode,
 		"iteration": e.currentLoopIteration(routerNodeID, rs.loopCounters),
@@ -89,7 +89,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Emit router node_finished with the resolved cardinality.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
 		"count": len(items),
 		"dag":   dag,
 	}); err != nil {
@@ -168,7 +168,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
 		perBranchOutputs := copyOutputs(rs.outputs)
 		if perBranchOutputs[routerNodeID] == nil {
-			perBranchOutputs[routerNodeID] = make(map[string]interface{})
+			perBranchOutputs[routerNodeID] = make(map[string]any)
 		}
 		perBranchOutputs[routerNodeID][rn.ItemBinding] = item
 		perBranchOutputs[routerNodeID]["item"] = item
@@ -179,7 +179,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 		if err := slot.acquire(branchCtx); err != nil {
 			return &branchResult{
 				branchID: branchID,
-				outputs:  make(map[string]map[string]interface{}),
+				outputs:  make(map[string]map[string]any),
 				err:      e.wrapContextErr(branchCtx.Err()),
 			}
 		}
@@ -204,7 +204,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 				branchID := fmt.Sprintf("branch_%s_%d", routerNodeID, i)
 				defer func() {
 					if r := recover(); r != nil {
-						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
+						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
 					}
 				}()
 				finishBranch(runBranch(i))
@@ -230,7 +230,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 					if r := recover(); r != nil {
 						atomic.StoreInt32(&failed[i], 1)
 						closeDone()
-						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
+						resultsCh <- &branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: fmt.Errorf("panic in branch %s: %v", branchID, r)}
 					}
 				}()
 
@@ -246,7 +246,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 				if branchCtx.Err() != nil {
 					atomic.StoreInt32(&failed[i], 1)
 					closeDone()
-					finishBranch(&branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: e.wrapContextErr(branchCtx.Err())})
+					finishBranch(&branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: e.wrapContextErr(branchCtx.Err())})
 					return
 				}
 
@@ -255,7 +255,7 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 					if atomic.LoadInt32(&failed[d]) == 1 {
 						atomic.StoreInt32(&failed[i], 1)
 						closeDone()
-						finishBranch(&branchResult{branchID: branchID, outputs: make(map[string]map[string]interface{}), err: fmt.Errorf("branch %s skipped: a dependency failed", branchID)})
+						finishBranch(&branchResult{branchID: branchID, outputs: make(map[string]map[string]any), err: fmt.Errorf("branch %s skipped: a dependency failed", branchID)})
 						return
 					}
 				}
@@ -316,11 +316,11 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 // keyField identifies each item; depsField holds the array of ids it depends
 // on. Errors out on a non-object item, missing/empty/duplicate key, an
 // unknown or self dependency, or a dependency cycle (Kahn's algorithm).
-func buildFanOutDAG(items []interface{}, keyField, depsField string) ([][]int, error) {
+func buildFanOutDAG(items []any, keyField, depsField string) ([][]int, error) {
 	idToIdx := make(map[string]int, len(items))
 	ids := make([]string, len(items))
 	for i, it := range items {
-		m, ok := it.(map[string]interface{})
+		m, ok := it.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("DAG: item %d is not an object, cannot read key %q", i, keyField)
 		}
@@ -345,7 +345,7 @@ func buildFanOutDAG(items []interface{}, keyField, depsField string) ([][]int, e
 		// errors out otherwise), but re-check here rather than trust that
 		// invariant across a refactor — a panic on a DAG-scheduled fan-out
 		// would surface as a run crash, not a clean error.
-		m, ok := it.(map[string]interface{})
+		m, ok := it.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("DAG: item %d is not an object, cannot read key %q", i, keyField)
 		}
@@ -353,7 +353,7 @@ func buildFanOutDAG(items []interface{}, keyField, depsField string) ([][]int, e
 		if !ok || raw == nil {
 			continue // no dependencies
 		}
-		arr, ok := raw.([]interface{})
+		arr, ok := raw.([]any)
 		if !ok {
 			return nil, fmt.Errorf("DAG: item %q field %q must be an array of ids, got %T", ids[i], depsField, raw)
 		}
@@ -407,7 +407,7 @@ func buildFanOutDAG(items []interface{}, keyField, depsField string) ([][]int, e
 
 // resolveFanOutArray resolves a fan_out_each router's `over` template to a
 // concrete slice of elements.
-func (e *Engine) resolveFanOutArray(rn *ir.RouterNode, rs *runState) ([]interface{}, error) {
+func (e *Engine) resolveFanOutArray(rn *ir.RouterNode, rs *runState) ([]any, error) {
 	if len(rn.OverRefs) == 0 {
 		return nil, fmt.Errorf("fan_out_each router %q has no resolvable 'over' source", rn.ID)
 	}
@@ -419,18 +419,18 @@ func (e *Engine) resolveFanOutArray(rn *ir.RouterNode, rs *runState) ([]interfac
 // native JSON array, a typed slice (reflect fallback), and — because the DSL
 // has no object-array type, so upstream agents emit ticket lists as a `json`
 // field — a JSON-encoded string that contains an array.
-func coerceToArray(val interface{}, routerID, over string) ([]interface{}, error) {
+func coerceToArray(val any, routerID, over string) ([]any, error) {
 	switch v := val.(type) {
 	case nil:
 		return nil, fmt.Errorf("fan_out_each router %q: 'over' %q resolved to nil (did the source node run and produce this field?)", routerID, over)
-	case []interface{}:
+	case []any:
 		return v, nil
 	case string:
 		trimmed := strings.TrimSpace(v)
 		if trimmed == "" {
-			return []interface{}{}, nil
+			return []any{}, nil
 		}
-		var arr []interface{}
+		var arr []any
 		if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
 			return nil, fmt.Errorf("fan_out_each router %q: 'over' %q resolved to a string that is not a JSON array: %w", routerID, over, err)
 		}
@@ -438,7 +438,7 @@ func coerceToArray(val interface{}, routerID, over string) ([]interface{}, error
 	default:
 		rv := reflect.ValueOf(val)
 		if rv.Kind() == reflect.Slice {
-			out := make([]interface{}, rv.Len())
+			out := make([]any, rv.Len())
 			for i := 0; i < rv.Len(); i++ {
 				out[i] = rv.Index(i).Interface()
 			}

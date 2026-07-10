@@ -42,7 +42,7 @@ func TestToolNodeShellMaterializesSecret(t *testing.T) {
 		},
 	}
 
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

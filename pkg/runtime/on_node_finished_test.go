@@ -30,16 +30,16 @@ func TestOnNodeFinished_ReceivesRunIDAndRawOutput(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("dispatch", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"dispatched_ids": []interface{}{"native:abc", "native:def"},
+	exec.on("dispatch", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"dispatched_ids": []any{"native:abc", "native:def"},
 		}, nil
 	})
 
 	type capture struct {
 		runID  string
 		nodeID string
-		output map[string]interface{}
+		output map[string]any
 	}
 	var (
 		mu  sync.Mutex
@@ -47,7 +47,7 @@ func TestOnNodeFinished_ReceivesRunIDAndRawOutput(t *testing.T) {
 	)
 
 	s := tmpStore(t)
-	eng := New(wf, s, exec, WithOnNodeFinished(func(runID, nodeID string, output map[string]interface{}) {
+	eng := New(wf, s, exec, WithOnNodeFinished(func(runID, nodeID string, output map[string]any) {
 		mu.Lock()
 		got = append(got, capture{runID: runID, nodeID: nodeID, output: output})
 		mu.Unlock()
@@ -71,7 +71,7 @@ func TestOnNodeFinished_ReceivesRunIDAndRawOutput(t *testing.T) {
 	if dispatch == nil {
 		t.Fatalf("onNodeFinished never fired for the dispatch node")
 	}
-	raw, ok := dispatch.output["dispatched_ids"].([]interface{})
+	raw, ok := dispatch.output["dispatched_ids"].([]any)
 	if !ok || len(raw) != 2 {
 		t.Fatalf("raw dispatched_ids not delivered to hook: %#v", dispatch.output)
 	}

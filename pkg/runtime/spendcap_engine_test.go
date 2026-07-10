@@ -45,13 +45,13 @@ func TestDailyCapPausesRunOnCross(t *testing.T) {
 	exec := newStubExecutor()
 	// step1 spends $2 — over the $1 cap. step2 should never run because
 	// the cap pre-check pauses the run first.
-	exec.on("step1", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 2.0, "_tokens": 100}, nil
+	exec.on("step1", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 2.0, "_tokens": 100}, nil
 	})
 	step2Ran := false
-	exec.on("step2", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step2", func(_ map[string]any) (map[string]any, error) {
 		step2Ran = true
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -110,20 +110,20 @@ func TestDailyCapCountsFanOutBranchSpend(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "go", "_cost_usd": 0.0}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "go", "_cost_usd": 0.0}, nil
 	})
 	// Each parallel branch spends $0.60 — together $1.20, over the $1 cap.
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 0.60}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 0.60}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 0.60}, nil
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 0.60}, nil
 	})
 	finalizeRan := false
-	exec.on("finalize", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("finalize", func(_ map[string]any) (map[string]any, error) {
 		finalizeRan = true
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -164,8 +164,8 @@ func TestDailyCapUnderLimitRunsToCompletion(t *testing.T) {
 	wf := threeStepWorkflow()
 	exec := newStubExecutor()
 	for _, id := range []string{"step1", "step2", "step3"} {
-		exec.on(id, func(_ map[string]interface{}) (map[string]interface{}, error) {
-			return map[string]interface{}{"ok": true, "_cost_usd": 0.10}, nil
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true, "_cost_usd": 0.10}, nil
 		})
 	}
 	s := tmpStore(t)
@@ -186,14 +186,14 @@ func TestDailyCapUnderLimitRunsToCompletion(t *testing.T) {
 func TestDailyCapOverrideAllowsResume(t *testing.T) {
 	wf := threeStepWorkflow()
 	exec := newStubExecutor()
-	exec.on("step1", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 2.0}, nil
+	exec.on("step1", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 2.0}, nil
 	})
-	exec.on("step2", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 0.0}, nil
+	exec.on("step2", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 0.0}, nil
 	})
-	exec.on("step3", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true, "_cost_usd": 0.0}, nil
+	exec.on("step3", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true, "_cost_usd": 0.0}, nil
 	})
 
 	s := tmpStore(t)

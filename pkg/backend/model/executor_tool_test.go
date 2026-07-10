@@ -33,7 +33,7 @@ func TestExecutorToolNodeShellDenyAllPolicyRejects(t *testing.T) {
 		BaseNode: ir.BaseNode{ID: "shell_denied"},
 		Command:  "echo should-not-run",
 	}
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := exec.Execute(context.Background(), node, map[string]any{})
 	if !errors.Is(err, tool.ErrToolDenied) {
 		t.Fatalf("err = %v, want ErrToolDenied", err)
 	}
@@ -64,7 +64,7 @@ func TestExecutorToolNodeScriptDenyAllPolicyRejects(t *testing.T) {
 		BaseNode: ir.BaseNode{ID: "script_denied"},
 		Script:   "echo should-not-run",
 	}
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := exec.Execute(context.Background(), node, map[string]any{})
 	if !errors.Is(err, tool.ErrToolDenied) {
 		t.Fatalf("err = %v, want ErrToolDenied", err)
 	}
@@ -80,7 +80,7 @@ func TestExecutorToolNodeDirectPolicyAllows(t *testing.T) {
 			BaseNode: ir.BaseNode{ID: "shell_allowed"},
 			Command:  "echo ok",
 		}
-		out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+		out, err := exec.Execute(context.Background(), node, map[string]any{})
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -96,7 +96,7 @@ func TestExecutorToolNodeDirectPolicyAllows(t *testing.T) {
 			Language: "sh",
 			Script:   "echo ok",
 		}
-		out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+		out, err := exec.Execute(context.Background(), node, map[string]any{})
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -157,7 +157,7 @@ func ref(kind ir.RefKind, name, raw string, unquoted bool) *ir.Ref {
 func TestResolveCommandTemplate_BasicShellEscaping(t *testing.T) {
 	tmpl := "echo {{input.msg}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "msg", "{{input.msg}}", false)},
-		map[string]interface{}{"msg": "hello world"}, nil)
+		map[string]any{"msg": "hello world"}, nil)
 	if got != "echo 'hello world'" {
 		t.Errorf("got %q", got)
 	}
@@ -166,7 +166,7 @@ func TestResolveCommandTemplate_BasicShellEscaping(t *testing.T) {
 func TestResolveCommandTemplate_VarsLookup(t *testing.T) {
 	tmpl := "echo {{vars.name}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefVars, "name", "{{vars.name}}", false)},
-		nil, map[string]interface{}{"name": "Iterion"})
+		nil, map[string]any{"name": "Iterion"})
 	if got != "echo 'Iterion'" {
 		t.Errorf("got %q", got)
 	}
@@ -175,7 +175,7 @@ func TestResolveCommandTemplate_VarsLookup(t *testing.T) {
 func TestResolveCommandTemplate_RawBangBypassesShellEscape(t *testing.T) {
 	tmpl := "{{!input.snippet}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "snippet", "{{!input.snippet}}", true)},
-		map[string]interface{}{"snippet": "echo $HOME; ls"}, nil)
+		map[string]any{"snippet": "echo $HOME; ls"}, nil)
 	// Raw form pastes verbatim — no shell-escaping.
 	if got != "echo $HOME; ls" {
 		t.Errorf("got %q", got)
@@ -186,7 +186,7 @@ func TestResolveCommandTemplate_MissingValueLeftAsRaw(t *testing.T) {
 	// substituteNil=false in shell context → unresolved refs stay literal.
 	tmpl := "echo {{input.missing}}"
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "missing", "{{input.missing}}", false)},
-		map[string]interface{}{}, nil)
+		map[string]any{}, nil)
 	if got != "echo {{input.missing}}" {
 		t.Errorf("missing input should leave placeholder, got %q", got)
 	}
@@ -223,7 +223,7 @@ func TestResolveScriptTemplate_NilBecomesJSONNull(t *testing.T) {
 	// substituteNil=true in script context — nil renders as JSON "null".
 	tmpl := "const v = {{input.missing}};"
 	got := resolveScriptTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "missing", "{{input.missing}}", false)},
-		map[string]interface{}{"missing": nil}, nil)
+		map[string]any{"missing": nil}, nil)
 	if got != "const v = null;" {
 		t.Errorf("got %q", got)
 	}
@@ -232,7 +232,7 @@ func TestResolveScriptTemplate_NilBecomesJSONNull(t *testing.T) {
 func TestResolveScriptTemplate_StringJSONQuoted(t *testing.T) {
 	tmpl := "console.log({{input.s}});"
 	got := resolveScriptTemplate(tmpl, []*ir.Ref{ref(ir.RefInput, "s", "{{input.s}}", false)},
-		map[string]interface{}{"s": `he said "hi"`}, nil)
+		map[string]any{"s": `he said "hi"`}, nil)
 	if got != `console.log("he said \"hi\"");` {
 		t.Errorf("got %q", got)
 	}
@@ -243,9 +243,9 @@ func TestResolveScriptTemplate_ObjectAndArray(t *testing.T) {
 	got := resolveScriptTemplate(tmpl, []*ir.Ref{
 		ref(ir.RefInput, "obj", "{{input.obj}}", false),
 		ref(ir.RefInput, "arr", "{{input.arr}}", false),
-	}, map[string]interface{}{
-		"obj": map[string]interface{}{"k": "v"},
-		"arr": []interface{}{1.0, 2.0, 3.0},
+	}, map[string]any{
+		"obj": map[string]any{"k": "v"},
+		"arr": []any{1.0, 2.0, 3.0},
 	}, nil)
 	if !strings.Contains(got, `{"k":"v"}`) || !strings.Contains(got, "[1,2,3]") {
 		t.Errorf("got %q", got)
@@ -281,7 +281,7 @@ func TestResolveTemplateWith_NoCascadeReplay(t *testing.T) {
 	got := resolveCommandTemplate(tmpl, []*ir.Ref{
 		ref(ir.RefInput, "a", "{{input.a}}", true), // unquoted to pass raw
 		ref(ir.RefInput, "b", "{{input.b}}", false),
-	}, map[string]interface{}{
+	}, map[string]any{
 		"a": "{{input.b}}", // literal that looks like a template
 		"b": "shouldNotLeak",
 	}, nil)
@@ -299,15 +299,15 @@ func TestResolveTemplateWith_NoCascadeReplay(t *testing.T) {
 func TestJSONLiteralValue(t *testing.T) {
 	cases := []struct {
 		name string
-		in   interface{}
+		in   any
 		want string
 	}{
 		{"string", "foo", `"foo"`},
 		{"number", 42.0, "42"},
 		{"bool true", true, "true"},
 		{"nil", nil, "null"},
-		{"slice", []interface{}{1.0, 2.0}, "[1,2]"},
-		{"map", map[string]interface{}{"k": "v"}, `{"k":"v"}`},
+		{"slice", []any{1.0, 2.0}, "[1,2]"},
+		{"map", map[string]any{"k": "v"}, `{"k":"v"}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -327,7 +327,7 @@ func TestRawTemplateValue(t *testing.T) {
 	}
 	// Complex values delegate to formatValue (returns JSON-ish form);
 	// we only care that the string survives unaltered for string input.
-	if got := rawTemplateValue(map[string]interface{}{"k": "v"}); !strings.Contains(got, "k") {
+	if got := rawTemplateValue(map[string]any{"k": "v"}); !strings.Contains(got, "k") {
 		t.Errorf("map didn't include key: %q", got)
 	}
 }
@@ -456,7 +456,7 @@ func TestShellEscape(t *testing.T) {
 func TestShellEscapeValue_Scalars(t *testing.T) {
 	cases := []struct {
 		name string
-		in   interface{}
+		in   any
 		want string
 	}{
 		{"nil", nil, ""},
@@ -484,7 +484,7 @@ func TestShellEscapeValue_StringSlice(t *testing.T) {
 }
 
 func TestShellEscapeValue_HomogeneousInterfaceSlice(t *testing.T) {
-	got := shellEscapeValue([]interface{}{"a", 1, true})
+	got := shellEscapeValue([]any{"a", 1, true})
 	// Scalars → space-separated, each individually escaped.
 	if got != "'a' '1' 'true'" {
 		t.Errorf("got %q", got)
@@ -492,7 +492,7 @@ func TestShellEscapeValue_HomogeneousInterfaceSlice(t *testing.T) {
 }
 
 func TestShellEscapeValue_ComplexSliceJSONEncoded(t *testing.T) {
-	got := shellEscapeValue([]interface{}{map[string]interface{}{"k": "v"}, "x"})
+	got := shellEscapeValue([]any{map[string]any{"k": "v"}, "x"})
 	// Single JSON-encoded shell-quoted token.
 	if !strings.HasPrefix(got, "'") || !strings.HasSuffix(got, "'") {
 		t.Errorf("expected single shell-quoted token, got %q", got)
@@ -503,7 +503,7 @@ func TestShellEscapeValue_ComplexSliceJSONEncoded(t *testing.T) {
 }
 
 func TestShellEscapeValue_Map(t *testing.T) {
-	got := shellEscapeValue(map[string]interface{}{"k": "v"})
+	got := shellEscapeValue(map[string]any{"k": "v"})
 	// Map → JSON-encoded, shell-escaped.
 	if !strings.Contains(got, `{"k":"v"}`) {
 		t.Errorf("expected JSON-encoded map, got %q", got)
@@ -511,13 +511,13 @@ func TestShellEscapeValue_Map(t *testing.T) {
 }
 
 func TestSliceHasComplexElement(t *testing.T) {
-	if sliceHasComplexElement([]interface{}{"a", 1, true}) {
+	if sliceHasComplexElement([]any{"a", 1, true}) {
 		t.Error("scalars only should be reported as not complex")
 	}
-	if !sliceHasComplexElement([]interface{}{"a", map[string]interface{}{"k": "v"}}) {
+	if !sliceHasComplexElement([]any{"a", map[string]any{"k": "v"}}) {
 		t.Error("map element should mark slice as complex")
 	}
-	if !sliceHasComplexElement([]interface{}{[]interface{}{1, 2}}) {
+	if !sliceHasComplexElement([]any{[]any{1, 2}}) {
 		t.Error("nested slice should mark slice as complex")
 	}
 }
