@@ -111,7 +111,7 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 }
 
 // artifactTitle picks a short human title from artifact data, or "".
-func artifactTitle(data map[string]interface{}) string {
+func artifactTitle(data map[string]any) string {
 	for _, k := range []string{"title", "name"} {
 		if s, ok := data[k].(string); ok && s != "" {
 			return s

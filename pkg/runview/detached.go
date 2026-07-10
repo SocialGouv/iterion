@@ -328,7 +328,7 @@ func pidAlive(pid int) error {
 // answers shaped like booleans, numbers, or objects we'd need a
 // JSON-aware --answers-file path; this stub is sufficient for the
 // common case of free-form text questions.
-func resumeAnswersToStrings(answers map[string]interface{}) (map[string]string, error) {
+func resumeAnswersToStrings(answers map[string]any) (map[string]string, error) {
 	out := make(map[string]string, len(answers))
 	for k, v := range answers {
 		switch tv := v.(type) {

@@ -13,14 +13,14 @@ import (
 func TestExtractStringIDs(t *testing.T) {
 	cases := []struct {
 		name string
-		in   interface{}
+		in   any
 		want []string
 	}{
 		{"nil", nil, nil},
 		{"empty string", "", nil},
 		{"single id string", "native:abc", []string{"native:abc"}},
 		{"typed slice", []string{"native:a", "", "native:b"}, []string{"native:a", "native:b"}},
-		{"interface slice", []interface{}{"native:a", "", 7, "native:b"}, []string{"native:a", "native:b"}},
+		{"interface slice", []any{"native:a", "", 7, "native:b"}, []string{"native:a", "native:b"}},
 		// Regression: stringified empty array → zero IDs, no phantom "[]".
 		{"stringified empty array", "[]", nil},
 		{"stringified empty array padded", "  []  ", nil},

@@ -353,7 +353,7 @@ func (s *Service) markInterrupted(runID string) {
 	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
 		Type:  store.EventRunInterrupted,
 		RunID: runID,
-		Data:  map[string]interface{}{"reason": reason},
+		Data:  map[string]any{"reason": reason},
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
 	}

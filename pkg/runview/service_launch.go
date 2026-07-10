@@ -145,7 +145,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		runtime.MergeBundlePresets(wf, b, runLogger)
 	}
 
-	inputs := make(map[string]interface{}, len(spec.Vars))
+	inputs := make(map[string]any, len(spec.Vars))
 	if spec.Preset != "" {
 		preset, ok := wf.Presets[spec.Preset]
 		if !ok {
@@ -321,7 +321,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 
 // validateResumable returns nil if r is in a state from which Resume
 // can proceed; otherwise it returns a descriptive error.
-func validateResumable(r *store.Run, answers map[string]interface{}) error {
+func validateResumable(r *store.Run, answers map[string]any) error {
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		if len(answers) == 0 {
@@ -566,7 +566,7 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 // future board transitions back to this run. The convention lives here,
 // not in the generic engine, so the runtime stays decoupled from a
 // bot-specific schema field.
-func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]interface{}) {
+func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]any) {
 	if output == nil {
 		return
 	}
@@ -582,7 +582,7 @@ func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]inte
 // extractStringIDs coerces a node-output value into a slice of non-empty
 // string IDs. Tolerates the JSON shapes a `json`-typed schema field
 // decodes into: []interface{} of strings, []string, or a single string.
-func extractStringIDs(v interface{}) []string {
+func extractStringIDs(v any) []string {
 	switch t := v.(type) {
 	case []string:
 		out := make([]string, 0, len(t))
@@ -592,7 +592,7 @@ func extractStringIDs(v interface{}) []string {
 			}
 		}
 		return out
-	case []interface{}:
+	case []any:
 		out := make([]string, 0, len(t))
 		for _, e := range t {
 			if str, ok := e.(string); ok && str != "" {
@@ -612,7 +612,7 @@ func extractStringIDs(v interface{}) []string {
 		// a phantom `"[]"` watch (which then 404s in the run console), and
 		// a populated one contributes its real elements.
 		if s[0] == '[' {
-			var arr []interface{}
+			var arr []any
 			if err := json.Unmarshal([]byte(s), &arr); err == nil {
 				return extractStringIDs(arr)
 			}

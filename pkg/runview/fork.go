@@ -42,7 +42,7 @@ type ForkSpec struct {
 	// NewInputs, when non-nil, replaces the child run's Inputs map
 	// (merged onto the parent's). Useful for "fork with a different
 	// prompt vars" workflows from the studio's ForkDialog JSON editor.
-	NewInputs map[string]interface{}
+	NewInputs map[string]any
 }
 
 // ForkResult is the response shape returned to HTTP / CLI callers.
@@ -96,7 +96,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("generate child run id: %w", err)
 	}
-	childInputs := map[string]interface{}{}
+	childInputs := map[string]any{}
 	for k, v := range parent.Inputs {
 		childInputs[k] = v
 	}
@@ -229,11 +229,11 @@ func forkWorktree(parent *store.Run, spec ForkSpec, turn *store.TurnCheckpoint, 
 	return newWtPath, nil
 }
 
-func copyOutputs(cp *store.Checkpoint) map[string]map[string]interface{} {
+func copyOutputs(cp *store.Checkpoint) map[string]map[string]any {
 	if cp == nil {
-		return map[string]map[string]interface{}{}
+		return map[string]map[string]any{}
 	}
-	out := make(map[string]map[string]interface{}, len(cp.Outputs))
+	out := make(map[string]map[string]any, len(cp.Outputs))
 	for k, v := range cp.Outputs {
 		out[k] = maps.Clone(v)
 	}
@@ -264,12 +264,12 @@ func copyArtifactVersions(cp *store.Checkpoint) map[string]int {
 	return map[string]int{}
 }
 
-func copyVars(cp *store.Checkpoint) map[string]interface{} {
+func copyVars(cp *store.Checkpoint) map[string]any {
 	if cp == nil {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 	if out := maps.Clone(cp.Vars); out != nil {
 		return out
 	}
-	return map[string]interface{}{}
+	return map[string]any{}
 }
