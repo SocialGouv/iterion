@@ -56,7 +56,7 @@ func TestE2E_PrivacyPipeline(t *testing.T) {
 	rawText := "Contact " + rawEmail + " or use token " + rawToken
 
 	eng := runtime.New(wf, s, exec)
-	if err := eng.Run(context.Background(), runID, map[string]interface{}{
+	if err := eng.Run(context.Background(), runID, map[string]any{
 		"text": rawText,
 	}); err != nil {
 		t.Fatalf("Run: %v", err)

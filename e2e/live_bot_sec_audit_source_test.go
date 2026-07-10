@@ -63,7 +63,7 @@ const AWSAccessKey = "AKIAIOSFODNN7EXAMPLE"
 `,
 	})
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"severity_threshold": "low",
 		"scope_notes":        "Audit the Go source for injection + secret findings.",
 	}
@@ -106,7 +106,7 @@ func secWorkProduct(res liveResult, triageNode, reportNode string) string {
 	return work
 }
 
-func mapField(m map[string]interface{}, k string) interface{} {
+func mapField(m map[string]any, k string) any {
 	if m == nil {
 		return nil
 	}

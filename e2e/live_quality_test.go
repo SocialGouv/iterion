@@ -338,7 +338,7 @@ func liveJudgeInvoker(reg *model.Registry, workDir string) quality.JudgeInvoker 
 			cc = be
 		}
 	}
-	return func(ctx context.Context, spec, system, userMsg string, schema json.RawMessage) (map[string]interface{}, error) {
+	return func(ctx context.Context, spec, system, userMsg string, schema json.RawMessage) (map[string]any, error) {
 		if cc != nil && strings.HasPrefix(spec, "anthropic/") {
 			// claude_code's NATIVE StructuredOutput tool path (OutputSchema +
 			// tools) returns wrapped prose for this one-shot judge (verified
@@ -456,7 +456,7 @@ func oneLine(s string) string {
 
 // sprintAny renders any decoded-JSON value for inclusion in a work-product
 // blob handed to the quality judges.
-func sprintAny(v interface{}) string { return fmt.Sprintf("%v", v) }
+func sprintAny(v any) string { return fmt.Sprintf("%v", v) }
 
 func truthyEnv(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {

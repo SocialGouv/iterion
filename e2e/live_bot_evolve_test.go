@@ -41,7 +41,7 @@ func TestLive_Bot_Evolve(t *testing.T) {
 		"README.md": "# calc\n\nA tiny calculator library. No tests, no CI, no error handling.\n",
 	})
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir": workspaceDir,
 		"scope_notes":   "Tiny untested lib; propose a pragmatic evolution toward reliability + tooling.",
 	}

@@ -57,7 +57,7 @@ func Div(a, b int) int { return a / b }
 		"README.md": "# calc\n\nA tiny calculator. No tests yet, no CI.\n",
 	})
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir": workspaceDir,
 		"scope_notes":   "Small Go lib with no tests and an unguarded Div; suggest a short, high-value roadmap.",
 		"mode":          "",
@@ -91,7 +91,7 @@ func Div(a, b int) int { return a / b }
 }
 
 // whatsNextWorkProduct renders Nexie's emitted roadmap/issues for grading.
-func whatsNextWorkProduct(emit map[string]interface{}) string {
+func whatsNextWorkProduct(emit map[string]any) string {
 	if emit == nil {
 		return "(emit_action produced no output)"
 	}

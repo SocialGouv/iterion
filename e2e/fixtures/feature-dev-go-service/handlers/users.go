@@ -50,7 +50,7 @@ func NewUserByID(db *store.Store) http.Handler {
 }
 
 // writeJSON serialises body as JSON with the given status code.
-func writeJSON(w http.ResponseWriter, status int, body interface{}) {
+func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)

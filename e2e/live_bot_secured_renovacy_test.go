@@ -88,7 +88,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	// break that remap — every in-container shell tool would receive
 	// a path that exists only on the host and fails with "no such
 	// directory".
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"scope":                "patch",
 		"max_packages_per_run": 1,
 		"major_policy":         "skip",
@@ -105,7 +105,7 @@ func TestLive_SecuredRenovacy(t *testing.T) {
 	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"user_prompt":          "",
 		"scope":                "patch",
 		"max_packages_per_run": 1,
@@ -196,7 +196,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 	// node-ipc malware signal will only surface if `major` is allowed
 	// (the upgrade target is node-ipc@11+ on a different protest
 	// branch and 9.x is the last clean line).
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"scope":                "patch,minor,major",
 		"max_packages_per_run": 6,
 		"major_policy":         "attempt",
@@ -219,7 +219,7 @@ func TestLive_SecuredRenovacy_Real(t *testing.T) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"user_prompt":          "Multi-stack fixture with deliberately vulnerable pins. Pay extra attention to node-ipc — version 10.1.1 is the documented protestware/sabotage release; upgrade it past the compromised range.",
 		"scope":                "patch,minor,major",
 		"max_packages_per_run": 6,
@@ -314,7 +314,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	// cap is a safety floor; we expect the bot to terminate after
 	// node-ipc anyway.
 	const userPrompt = "Single-package npm fixture pinning node-ipc@10.1.1, the documented peacenotwar / protestware sabotage release. The security_audit node MUST detect it via osv-scanner --lockfile=package-lock.json (advisory GHSA-97m3-w2cp-4xx6) and refuse the upgrade as malware-flagged."
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"scope":                "major",
 		"max_packages_per_run": 3,
 		"major_policy":         "attempt",
@@ -331,7 +331,7 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"user_prompt":          userPrompt,
 		"scope":                "major",
 		"max_packages_per_run": 3,
@@ -365,12 +365,12 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 	// runtime bug unrelated to the heuristic — the verdict payload
 	// IS in event.Data["output"]). Walking events makes the test
 	// resilient to that.
-	var verdict map[string]interface{}
+	var verdict map[string]any
 	for _, ev := range events {
 		if ev.Type != store.EventNodeFinished || ev.NodeID != "security_audit" {
 			continue
 		}
-		if out, ok := ev.Data["output"].(map[string]interface{}); ok {
+		if out, ok := ev.Data["output"].(map[string]any); ok {
 			verdict = out
 			break
 		}
@@ -380,8 +380,8 @@ func TestLive_SecuredRenovacy_Protestware(t *testing.T) {
 		t.Fatalf("security_audit node_finished event missing — bot did not reach the audit step")
 	}
 	safe, _ := verdict["safe"].(bool)
-	malware, _ := verdict["malware_signals"].([]interface{})
-	cves, _ := verdict["cves"].([]interface{})
+	malware, _ := verdict["malware_signals"].([]any)
+	cves, _ := verdict["cves"].([]any)
 
 	cveText := func() string {
 		b := strings.Builder{}

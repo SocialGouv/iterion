@@ -62,7 +62,7 @@ var _ = errors.New // keep errors imported for the implementation
 		"Missing: Validate must return a non-nil error when Name is empty, and when " +
 		"Email contains no '@'. Also missing: table-driven tests in user_test.go covering " +
 		"valid input, empty name, and email without '@'."
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"gap_spec":    gapSpec,
 		"scope_notes": "Complete User.Validate per the gap_spec and add tests.",
 	}

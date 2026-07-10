@@ -17,27 +17,27 @@ import (
 // approvingReviewers wires both family reviewers to always approve with a
 // high-confidence verdict tagged with their family.
 func approvingReviewers(exec *scenarioExecutor) {
-	exec.on("seed", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("seed", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "family": "", "confidence": "high",
 			"_tokens": 10, "_cost_usd": 0.001,
 		}, nil
 	})
-	exec.on("reviewer_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("reviewer_claude", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "family": "claude", "confidence": "high",
 			"_tokens": 10, "_cost_usd": 0.001,
 		}, nil
 	})
-	exec.on("reviewer_gpt", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("reviewer_gpt", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "family": "gpt", "confidence": "high",
 			"_tokens": 10, "_cost_usd": 0.001,
 		}, nil
 	})
 }
 
-func runTopology(t *testing.T, runID string, inputs map[string]interface{}) *scenarioExecutor {
+func runTopology(t *testing.T, runID string, inputs map[string]any) *scenarioExecutor {
 	t.Helper()
 	wf := compileFixture(t, "review_topology_mini.bot")
 	exec := newScenarioExecutor()
@@ -58,7 +58,7 @@ func runTopology(t *testing.T, runID string, inputs map[string]interface{}) *sce
 // Dual: both families must run (alternation), converging on the first
 // cross-family double-approval (pass 0 claude, pass 1 gpt → stop).
 func TestReviewTopology_DualAlternates(t *testing.T) {
-	exec := runTopology(t, "e2e-topo-dual", map[string]interface{}{"review_mode": "dual"})
+	exec := runTopology(t, "e2e-topo-dual", map[string]any{"review_mode": "dual"})
 	if !exec.wasCalled("reviewer_claude") {
 		t.Error("dual: reviewer_claude never ran")
 	}
@@ -97,7 +97,7 @@ func TestReviewTopology_AutoDefaultsDual(t *testing.T) {
 // Mono/claude: ONLY claude runs; gpt is never spawned (the frugality
 // guarantee). Converges on two consecutive self-approvals.
 func TestReviewTopology_MonoClaudeSingleFamily(t *testing.T) {
-	exec := runTopology(t, "e2e-topo-mono-claude", map[string]interface{}{
+	exec := runTopology(t, "e2e-topo-mono-claude", map[string]any{
 		"review_mode": "mono", "mono_family": "claude",
 	})
 	if exec.wasCalled("reviewer_gpt") {
@@ -110,7 +110,7 @@ func TestReviewTopology_MonoClaudeSingleFamily(t *testing.T) {
 
 // Mono/gpt: symmetric — only gpt runs.
 func TestReviewTopology_MonoGptSingleFamily(t *testing.T) {
-	exec := runTopology(t, "e2e-topo-mono-gpt", map[string]interface{}{
+	exec := runTopology(t, "e2e-topo-mono-gpt", map[string]any{
 		"review_mode": "mono", "mono_family": "gpt",
 	})
 	if exec.wasCalled("reviewer_claude") {

@@ -43,8 +43,8 @@ type liveSpec struct {
 	botFile      string
 	bundleDir    string
 	workspaceDir string
-	vars         map[string]interface{}
-	inputs       map[string]interface{}
+	vars         map[string]any
+	inputs       map[string]any
 	timeout      time.Duration
 	// withWorkDir passes runtime.WithWorkDir(workspaceDir) — required for
 	// sandbox-backed and worktree:auto bots so the engine mounts/operates
@@ -200,12 +200,12 @@ func compileLiveWorkflow(t *testing.T, spec liveSpec) (*ir.Workflow, *bundle.Bun
 
 // lastNodeOutput returns the output map of the LAST EventNodeFinished for
 // nodeID (loops fire it once per iteration; the last is the settled one).
-func lastNodeOutput(events []*store.Event, nodeID string) (map[string]interface{}, bool) {
-	var out map[string]interface{}
+func lastNodeOutput(events []*store.Event, nodeID string) (map[string]any, bool) {
+	var out map[string]any
 	var found bool
 	for _, e := range events {
 		if e.Type == store.EventNodeFinished && e.NodeID == nodeID {
-			if m, ok := e.Data["output"].(map[string]interface{}); ok {
+			if m, ok := e.Data["output"].(map[string]any); ok {
 				out, found = m, true
 			}
 		}
@@ -256,17 +256,17 @@ func eventDataMentions(events []*store.Event, substr string, types ...store.Even
 	return false
 }
 
-func valueContainsFold(v interface{}, low string) bool {
+func valueContainsFold(v any, low string) bool {
 	switch t := v.(type) {
 	case string:
 		return strings.Contains(strings.ToLower(t), low)
-	case map[string]interface{}:
+	case map[string]any:
 		for _, c := range t {
 			if valueContainsFold(c, low) {
 				return true
 			}
 		}
-	case []interface{}:
+	case []any:
 		for _, c := range t {
 			if valueContainsFold(c, low) {
 				return true
@@ -474,17 +474,17 @@ func driveAutoResume(t *testing.T, ctx context.Context, eng *runtime.Engine, s s
 // synthesizeHumanAnswers builds an answer map for a paused human node from
 // its declared output schema. Falls back to a permissive catch-all when the
 // node has no schema.
-func synthesizeHumanAnswers(wf *ir.Workflow, nodeID string) map[string]interface{} {
+func synthesizeHumanAnswers(wf *ir.Workflow, nodeID string) map[string]any {
 	node, ok := wf.Nodes[nodeID]
 	if !ok {
-		return map[string]interface{}{"approved": true, "action": "close", "response": liveAutoAnswerText}
+		return map[string]any{"approved": true, "action": "close", "response": liveAutoAnswerText}
 	}
 	schemaName := ir.NodeOutputSchema(node)
 	sch, ok := wf.Schemas[schemaName]
 	if schemaName == "" || !ok || len(sch.Fields) == 0 {
-		return map[string]interface{}{"approved": true, "action": "close", "response": liveAutoAnswerText}
+		return map[string]any{"approved": true, "action": "close", "response": liveAutoAnswerText}
 	}
-	ans := make(map[string]interface{}, len(sch.Fields))
+	ans := make(map[string]any, len(sch.Fields))
 	for _, f := range sch.Fields {
 		ans[f.Name] = defaultForField(f)
 	}
@@ -494,7 +494,7 @@ func synthesizeHumanAnswers(wf *ir.Workflow, nodeID string) map[string]interface
 // defaultForField picks a sensible auto-answer value for one schema field.
 // Booleans approve, enums prefer a termination/approval value, strings get
 // the neutral guidance text, lists are empty (select nothing).
-func defaultForField(f *ir.SchemaField) interface{} {
+func defaultForField(f *ir.SchemaField) any {
 	switch f.Type {
 	case ir.FieldTypeBool:
 		return true
@@ -505,7 +505,7 @@ func defaultForField(f *ir.SchemaField) interface{} {
 	case ir.FieldTypeStringArray:
 		return []string{}
 	case ir.FieldTypeJSON:
-		return map[string]interface{}{}
+		return map[string]any{}
 	default: // FieldTypeString
 		if len(f.EnumValues) > 0 {
 			return pickTerminatingEnum(f.EnumValues)
