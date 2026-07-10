@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -129,14 +131,17 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
 	var calls int
-	var gotBot string
+	var gotBot, gotRef string
 	var gotVars map[string]string
 	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
 		return true, "authorized", nil
 	}
-	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/export", TargetBranch: "main", Author: "alice"}, nil
+	}
+	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, repoRef, _ string, _, _ map[string]string) (string, error) {
 		calls++
-		gotBot, gotVars = botID, vars
+		gotBot, gotVars, gotRef = botID, vars, repoRef
 		return "run-gh-1", nil
 	}
 	w := httptest.NewRecorder()
@@ -149,6 +154,78 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 	}
 	if gotVars["feature_prompt"] != "add export endpoint" {
 		t.Fatalf("args should land in feature_prompt: %v", gotVars["feature_prompt"])
+	}
+	// The resolved PR threads the checkout ref + branch vars into the launch.
+	if gotRef != "feat/export" {
+		t.Fatalf("repoRef should be the PR head branch, got %q", gotRef)
+	}
+	for k, want := range map[string]string{"base_ref": "main", "target_branch": "main", "source_branch": "feat/export", "pr_author": "alice"} {
+		if gotVars[k] != want {
+			t.Fatalf("vars[%s]=%q want %q", k, gotVars[k], want)
+		}
+	}
+}
+
+// TestGitHubIssueComment_PRResolutionFailureIsVisible: when the PR head
+// cannot be resolved, the command must NOT silently launch on the default
+// branch (the run would diff nothing and no-op) — it fails loudly as a
+// launch error.
+func TestGitHubIssueComment_PRResolutionFailureIsVisible(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"feature-dev"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{}, fmt.Errorf("forge unreachable")
+	}
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "x", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("resolution failure must be a visible 502, got %d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("must not launch on the default branch, calls=%d", calls)
+	}
+}
+
+// TestGitHubIssueComment_ClosedPRFiltered: a command on a PR that is no
+// longer open (merged/closed since the payload snapshot) is filtered — a
+// launch would churn on a stale or deleted branch.
+func TestGitHubIssueComment_ClosedPRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"feature-dev"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "merged", SourceBranch: "feat/export", TargetBranch: "main"}, nil
+	}
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "x", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("closed PR should be filtered 200, got %d", w.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("closed PR must not launch, calls=%d", calls)
 	}
 }
 

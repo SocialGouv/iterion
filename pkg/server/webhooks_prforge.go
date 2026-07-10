@@ -15,12 +15,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
 
-// prforgeReplierAPI is the minimal forge surface the command gate needs:
-// the bot's own identity (loop-guard) and a commenter's repo permission
-// (role-gate). Both pkg/forge/{github,forgejo}.AdminClient satisfy it.
+// prforgeReplierAPI is the minimal forge surface command handling needs:
+// the bot's own identity (loop-guard), a commenter's repo permission
+// (role-gate), and the PR a command comment sits on (head/base branch
+// resolution). Both pkg/forge/{github,forgejo}.AdminClient satisfy it.
 type prforgeReplierAPI interface {
 	WhoAmI(ctx context.Context) (forge.Identity, error)
 	CollaboratorPermission(ctx context.Context, repo, user string) (string, error)
+	GetPullRequest(ctx context.Context, repo string, number int) (forge.PullRef, error)
 }
 
 // handlePRForgeComment routes a GitHub/Forgejo issue_comment (PR or issue) to
@@ -82,20 +84,76 @@ func (s *Server) handlePRForgeComment(ctx context.Context, w http.ResponseWriter
 	if s.logger != nil {
 		s.logger.Debug("webhooks: %s comment %s#%d (/%s) by %s → %s (%s)", provider, p.ProjectPath, p.IssueNumber, cmd, p.AuthorLogin, route.BotID, reason)
 	}
-	vars := buildPRForgeCommandVars(p, route, cmdArgs, cfg.LaunchVars)
+	// The issue_comment payload carries no PR head branch, so for a PR-surface
+	// command the PR is resolved via the forge API: the run must check out the
+	// PR head (repoRef) and know its base (base_ref/target_branch vars) — a
+	// launch on the default branch sees an empty diff and no-ops, which reads
+	// as "the bot did nothing". Resolution failure is a visible launch error,
+	// never a silent fall-back to the default branch.
+	var pr *forge.PullRef
+	repoRef := ""
+	if p.Surface() == "pr" {
+		resolve := s.webhookPRForgePRResolver
+		if resolve == nil {
+			resolve = s.realWebhookPRForgePRResolver
+		}
+		resolved, rerr := resolve(ctx, cfg, provider, p, route)
+		if rerr != nil {
+			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, "PR resolution: "+rerr.Error())
+			httpError(w, http.StatusBadGateway, "could not resolve the PR head branch")
+			return
+		}
+		if resolved.State != "" && resolved.State != "open" {
+			filtered("PR is " + resolved.State + " — command ignored")
+			return
+		}
+		pr = &resolved
+		repoRef = resolved.SourceBranch
+	}
+	vars := buildPRForgeCommandVars(p, pr, route, cmdArgs, cfg.LaunchVars)
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%s|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.SubjectID())))
-	// The issue_comment payload carries no PR head branch, so repoRef is left
-	// empty (the run resolves the default branch / the PR from pr_url).
-	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, "", payloadHash, srcIP)
+	s.dispatchInvocation(ctx, w, r, cfg, meta, idemKey, route, vars, p.CloneURL, repoRef, payloadHash, srcIP)
+}
+
+// realWebhookPRForgePRResolver fetches the PR a command comment sits on, with
+// the bot's own forge token — the same credential the command gate resolved.
+// The head/base branches feed the launch (checkout ref + branch vars).
+func (s *Server) realWebhookPRForgePRResolver(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error) {
+	token, terr := s.resolveForgeToken(ctx, cfg, route.BotID)
+	if terr != nil || token == "" {
+		return forge.PullRef{}, fmt.Errorf("no forge token resolved: %v", terr)
+	}
+	baseURL, refusal := prforgeBaseURL(cfg, p)
+	if refusal != "" {
+		return forge.PullRef{}, fmt.Errorf("forge base URL: %s", refusal)
+	}
+	api := prforgeReplierClient(provider, s.forgeHTTPClient(), baseURL, token)
+	return api.GetPullRequest(ctx, p.ProjectPath, int(p.IssueNumber))
 }
 
 // buildPRForgeCommandVars composes the launch vars for a generic command on a
 // GitHub/Forgejo comment: issue/PR context + the route's manifest ContextVars
 // + operator LaunchVars, the command args landing in the route's args_var.
-func buildPRForgeCommandVars(p prforge.ParsedNote, route webhooks.CommandRoute, args string, launchVars map[string]string) map[string]string {
+// On a PR-surface command pr carries the resolved PR: its head/base stamp the
+// branch vars (base_ref is the dep-update-guard spelling, target_branch /
+// source_branch the reviewer-loop one) so the bot diffs the right range.
+// ContextVars/LaunchVars still win — an operator override stays authoritative.
+func buildPRForgeCommandVars(p prforge.ParsedNote, pr *forge.PullRef, route webhooks.CommandRoute, args string, launchVars map[string]string) map[string]string {
 	vars := map[string]string{
 		"pr_url":      p.PRURL,
 		"scope_notes": strings.TrimSpace(p.IssueTitle + "\n\n" + p.IssueBody),
+	}
+	if pr != nil {
+		if pr.TargetBranch != "" {
+			vars["base_ref"] = pr.TargetBranch
+			vars["target_branch"] = pr.TargetBranch
+		}
+		if pr.SourceBranch != "" {
+			vars["source_branch"] = pr.SourceBranch
+		}
+		if pr.Author != "" {
+			vars["pr_author"] = pr.Author
+		}
 	}
 	for k, v := range route.ContextVars {
 		vars[k] = v

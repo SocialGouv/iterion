@@ -124,7 +124,11 @@ type Server struct {
 	// command replier gate (forge token + loop-guard + allowlist/role authz —
 	// test seam). nil → realWebhookPRForgeCommandGate.
 	webhookPRForgeCommandGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (authorized bool, reason string, err error)
-	httpClient                *http.Client
+	// webhookPRForgePRResolver overrides the PR head/base resolution for a
+	// PR-surface command comment (the issue_comment payload carries no head
+	// branch — test seam). nil → realWebhookPRForgePRResolver.
+	webhookPRForgePRResolver func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error)
+	httpClient               *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
 	// once (its strict flag is startup-fixed) so connection pooling is
