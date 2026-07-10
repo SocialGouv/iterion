@@ -219,16 +219,17 @@ export default function ArtifactFilesPanel({ runId }: Props) {
         ) : (
           <div className="flex-1 overflow-auto">
             <table className="w-full">
+              <caption className="sr-only">Run workspace files</caption>
               <thead className="sticky top-0 bg-surface-1 border-b border-border-default">
                 <tr className="text-left text-fg-subtle">
-                  <th className="px-3 py-2 font-normal">Path</th>
-                  <th className="px-3 py-2 font-normal text-right whitespace-nowrap">
+                  <th scope="col" className="px-3 py-2 font-normal">Path</th>
+                  <th scope="col" className="px-3 py-2 font-normal text-right whitespace-nowrap">
                     Size
                   </th>
-                  <th className="px-3 py-2 font-normal whitespace-nowrap">
+                  <th scope="col" className="px-3 py-2 font-normal whitespace-nowrap">
                     Modified
                   </th>
-                  <th className="px-3 py-2 font-normal text-right">Actions</th>
+                  <th scope="col" className="px-3 py-2 font-normal text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>

@@ -122,6 +122,30 @@ describe("source discipline", () => {
     expect(hits).toHaveLength(0);
   });
 
+  it("uses the Table primitive, not raw <table>", () => {
+    // ui/Table owns the canonical data-table markup (overflow wrapper,
+    // mandatory sr-only caption for RGAA 5.4/5.5, scope=col headers for
+    // 5.7, densities, TableSkeleton). Allow-listed exceptions, each with
+    // the RGAA fixes applied in place:
+    //   - MarkdownText.tsx renders markdown-authored tables;
+    //   - RunListView.tsx toggles `hidden sm:table` display on the table
+    //     element itself (mobile renders cards instead) — incompatible
+    //     with the primitive's wrapper;
+    //   - ArtifactFilesPanel.tsx needs a sticky thead inside its own
+    //     scroll container.
+    const hits = scan(/^\s*<table\b/, (path) =>
+      /\/(ui\/Table|conversation\/MarkdownText|Runs\/RunListView|Runs\/ArtifactFilesPanel)\.tsx$/.test(
+        path,
+      ),
+    );
+    if (hits.length) {
+      throw new Error(
+        `raw <table> is banned — use <Table> from @/components/ui/Table (caption + scope=col built in):\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
   it("uses the semantic type scale, not text-[Npx] sizes that have a token", () => {
     // 10/11/12/13/14/16px have tokens (text-caption/micro/body/label/title/
     // display). text-[8px]/[9px] are below the scale floor (no token, used in
