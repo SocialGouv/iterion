@@ -357,6 +357,18 @@ Flags:
 | `--store-dir <path>` | Run store directory in local mode only. |
 | `--config <path>` | YAML config file; environment variables take precedence. |
 
+## `iterion remote`
+
+Drive a **remote** iterion instance (cloud or self-hosted server) over its HTTP API — the full operator/admin surface as typed subcommands: `runs` (launch/follow/inspect/merge), `bots`, `marketplace`, `issues`/`labels`/`board`, `dispatcher`, `triggers`, `teams`/`orgs`/`me`, `tokens`, `secrets`/`api-keys`/`bindings`, `webhooks`, `forge`, `audit`/`usage`/`limits`, `memory`, `admin`, `sso`, `plugins`, `server`, plus the raw `api`/`routes`/`openapi` escape hatches.
+
+```bash
+iterion remote login https://iterion.example.com   # browser flow; --token/--email for headless
+iterion remote runs launch ./wf.bot --follow
+iterion remote runs list --json | jq '.runs[].id'
+```
+
+CI mode needs no config file: set `ITERION_REMOTE_URL` + `ITERION_REMOTE_TOKEN` (and optionally `ITERION_REMOTE_TEAM`/`_ORG`). Full reference: [cloud-cli.md](cloud-cli.md).
+
 ## `iterion runner`
 
 Run a cloud-mode runner pod that consumes workflows from the NATS queue. Configured via `pkg/config/` env vars; deployed by the Helm chart with KEDA-based autoscaling.

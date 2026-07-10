@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -21,11 +20,19 @@ import (
 )
 
 // remote groups the commands that authenticate to and drive a REMOTE iterion
-// instance over its HTTP API — turning the local CLI into a thin client (and
-// the mechanism a future OpenAPI-generated command set would build on).
+// instance over its HTTP API — turning the local CLI into a full client for
+// the cloud surface (typed subcommands per domain in the remote_*.go files;
+// `remote api` stays as the raw escape hatch).
 var remoteCmd = &cobra.Command{
 	Use:   "remote",
 	Short: "Authenticate to and drive a remote iterion instance over its API",
+	Long: "Authenticate to and drive a remote iterion instance over its HTTP API.\n\n" +
+		"The full cloud surface is available as typed subcommands (runs, bots,\n" +
+		"issues, teams, secrets, webhooks, admin, …); `remote api` is the raw\n" +
+		"escape hatch and `remote routes`/`openapi` enumerate the live surface.\n\n" +
+		"CI mode: set ITERION_REMOTE_URL + ITERION_REMOTE_TOKEN (and optionally\n" +
+		"ITERION_REMOTE_TEAM / ITERION_REMOTE_ORG) to drive an instance with no\n" +
+		"stored config. See docs/cloud-cli.md.",
 }
 
 var (
@@ -221,40 +228,12 @@ var remoteAPICmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		var body []byte
-		if remoteAPIData != "" {
-			if strings.HasPrefix(remoteAPIData, "@") {
-				b, err := os.ReadFile(remoteAPIData[1:])
-				if err != nil {
-					return err
-				}
-				body = b
-			} else {
-				body = []byte(remoteAPIData)
-			}
-		}
-		code, resp, err := client.API(cmd.Context(), strings.ToUpper(args[0]), args[1], body)
+		body, err := cli.ReadDataArg(remoteAPIData)
 		if err != nil {
 			return err
 		}
-		return printJSONResponse(code, resp)
+		return cli.RemoteAPIPrint(cmd.Context(), client, newPrinter(), strings.ToUpper(args[0]), args[1], body)
 	},
-}
-
-// printJSONResponse pretty-prints a JSON response body (falling back to the raw
-// bytes when it isn't valid JSON) and maps a non-2xx status to an error. Shared
-// by `remote api` and `remote openapi`.
-func printJSONResponse(code int, body []byte) error {
-	out := body
-	var pretty bytes.Buffer
-	if json.Indent(&pretty, body, "", "  ") == nil && pretty.Len() > 0 {
-		out = pretty.Bytes()
-	}
-	fmt.Fprintln(os.Stdout, string(out))
-	if code/100 != 2 {
-		return fmt.Errorf("HTTP %d", code)
-	}
-	return nil
 }
 
 var remoteOpenAPICmd = &cobra.Command{
@@ -265,7 +244,11 @@ var remoteOpenAPICmd = &cobra.Command{
 		"table (zero drift). Pipe it to a generator to build a typed client.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return remoteGetJSON(cmd.Context(), "/api/openapi.json")
+		client, err := cli.NewRemoteClient()
+		if err != nil {
+			return err
+		}
+		return cli.RemoteGetPrint(cmd.Context(), client, newPrinter(), "/api/openapi.json")
 	},
 }
 
@@ -278,51 +261,15 @@ var remoteRoutesCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		code, body, err := client.API(cmd.Context(), "GET", "/api/routes", nil)
-		if err != nil {
-			return err
-		}
-		if code/100 != 2 {
-			return fmt.Errorf("HTTP %d", code)
-		}
-		var rr struct {
-			Routes []struct {
-				Method  string `json:"method"`
-				Pattern string `json:"pattern"`
-			} `json:"routes"`
-		}
-		if err := json.Unmarshal(body, &rr); err != nil {
-			return err
-		}
-		for _, r := range rr.Routes {
-			m := r.Method
-			if m == "" {
-				m = "ANY"
-			}
-			fmt.Printf("%-6s %s\n", m, r.Pattern)
-		}
-		return nil
+		return cli.RemoteRoutesList(cmd.Context(), client, newPrinter())
 	},
-}
-
-// remoteGetJSON fetches a path and pretty-prints the JSON response.
-func remoteGetJSON(ctx context.Context, path string) error {
-	client, err := cli.NewRemoteClient()
-	if err != nil {
-		return err
-	}
-	code, body, err := client.API(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-	return printJSONResponse(code, body)
 }
 
 func init() {
 	remoteLoginCmd.Flags().StringVar(&remoteToken, "token", "", "Personal access token (iap_…) — or set ITERION_TOKEN")
 	remoteLoginCmd.Flags().StringVar(&remoteEmail, "email", "", "Email for headless password login (mints a CLI token)")
 	remoteLoginCmd.Flags().StringVar(&remotePassword, "password", "", "Password (or ITERION_PASSWORD); used with --email")
-	remoteAPICmd.Flags().StringVar(&remoteAPIData, "data", "", "Request body JSON (literal, or @file)")
+	remoteAPICmd.Flags().StringVar(&remoteAPIData, "data", "", "Request body JSON (literal, @file, or @- for stdin)")
 	remoteCmd.AddCommand(remoteLoginCmd, remoteLogoutCmd, remoteStatusCmd, remoteAPICmd, remoteOpenAPICmd, remoteRoutesCmd)
 	rootCmd.AddCommand(remoteCmd)
 }
