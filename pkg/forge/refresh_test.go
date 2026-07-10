@@ -2,11 +2,37 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// tenantScopedSecretStore mirrors the Mongo generic-secret store's contract:
+// Get/Update require the tenant on the ctx (the memory store does not, which is
+// why it never caught the refresh worker passing a tenant-less ctx). Seeding
+// via Create is left unchecked so tests can populate it with a plain ctx.
+type tenantScopedSecretStore struct {
+	*secrets.MemoryGenericSecretStore
+}
+
+var errNoTenant = errors.New("test store: tenant required on ctx")
+
+func (s tenantScopedSecretStore) Get(ctx context.Context, id string) (secrets.GenericSecret, error) {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return secrets.GenericSecret{}, errNoTenant
+	}
+	return s.MemoryGenericSecretStore.Get(ctx, id)
+}
+
+func (s tenantScopedSecretStore) Update(ctx context.Context, rec secrets.GenericSecret) error {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return errNoTenant
+	}
+	return s.MemoryGenericSecretStore.Update(ctx, rec)
+}
 
 type fakeRefresher struct {
 	newAccess string
@@ -97,6 +123,43 @@ func TestRefreshWorker_RotatesTokenAndSecret(t *testing.T) {
 	pt, err := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret)
 	if err != nil || string(pt) != "new-access" {
 		t.Errorf("managed secret = %q (err %v), want new-access", string(pt), err)
+	}
+}
+
+// TestRefreshWorker_RewritesManagedSecretWithTenantScopedStore pins the fix for
+// the tenant-context bug: the Mongo managed-secret store requires the tenant on
+// the ctx, but RunOnce iterates connections cross-tenant. If refreshOne doesn't
+// scope the ctx to the connection's tenant, the token mint succeeds and the
+// connection updates (keyed on _id) while the managed secret is NEVER rewritten
+// — leaving bot runs reading a stale, expired token (HTTP 401 in prod). This
+// uses a tenant-asserting store so the memory store's laxness can't hide it.
+func TestRefreshWorker_RewritesManagedSecretWithTenantScopedStore(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := tenantScopedSecretStore{secrets.NewMemoryGenericSecretStore()}
+	now := time.Unix(1700000000, 0).UTC()
+	_, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(2*time.Minute))
+
+	newExpiry := now.Add(time.Hour)
+	w := &RefreshWorker{
+		Connections: connStore,
+		Secrets:     secStore,
+		Sealer:      sealer,
+		Now:         func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher {
+			return fakeRefresher{newAccess: "fresh-token", expiresAt: newExpiry}
+		},
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v (the refresh must scope the ctx to the connection tenant)", err)
+	}
+	gs, err := secStore.Get(store.WithTenant(context.Background(), "t1"), secID)
+	if err != nil {
+		t.Fatalf("get managed secret: %v", err)
+	}
+	pt, err := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret)
+	if err != nil || string(pt) != "fresh-token" {
+		t.Errorf("managed secret = %q (err %v), want fresh-token — refresh did not rewrite it", string(pt), err)
 	}
 }
 
