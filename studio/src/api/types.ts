@@ -508,15 +508,18 @@ export interface WhenClause {
   expr?: string;
 }
 
-// The AST JSON encoder (pkg/dsl/ast/jsonenc.go) marshals both bound
-// fields with omitempty: a literal bound arrives as `max_iterations`, a
+// The AST JSON encoder (pkg/dsl/ast/jsonenc.go) marshals every bound
+// field with omitempty: a literal bound arrives as `max_iterations`, a
 // template bound (`as name("{{...}}")`) as `max_iterations_expr`, and
-// the unbounded form (`as name(unbounded)`) carries neither. Consumers
-// must handle an absent bound instead of assuming a number.
+// the unbounded form (`as name(unbounded [fuel])`) as `unbounded` (+
+// optional `fuel_cap`). Consumers must handle an absent bound instead
+// of assuming a number.
 export interface LoopClause {
   name: string;
   max_iterations?: number;
   max_iterations_expr?: string;
+  unbounded?: boolean;
+  fuel_cap?: number;
 }
 
 export interface WithEntry {

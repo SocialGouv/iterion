@@ -210,6 +210,41 @@ func TestAttachmentsRoundtrip(t *testing.T) {
 	}
 }
 
+func TestLoopClauseRoundtrip(t *testing.T) {
+	// The loop bound has three wire forms (literal / expression / unbounded
+	// with optional fuel); each must survive marshal → unmarshal untouched,
+	// or a studio open→save silently rewrites `as name(unbounded)` to
+	// `as name(0)`.
+	original := &ast.File{
+		Workflows: []*ast.WorkflowDecl{
+			{
+				Name:  "wf",
+				Entry: "a",
+				Edges: []*ast.Edge{
+					{From: "a", To: "b", Loop: &ast.LoopClause{Name: "lit", MaxIterations: 5}},
+					{From: "b", To: "c", Loop: &ast.LoopClause{Name: "expr", MaxIterationsExpr: "{{vars.max}}"}},
+					{From: "c", To: "d", Loop: &ast.LoopClause{Name: "free", Unbounded: true}},
+					{From: "d", To: "e", Loop: &ast.LoopClause{Name: "fuelled", Unbounded: true, FuelCap: 40}},
+				},
+			},
+		},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !reflect.DeepEqual(original, restored) {
+		t.Errorf("roundtrip mismatch:\noriginal=%#v\nrestored=%#v", original, restored)
+	}
+	if !strings.Contains(string(data), `"unbounded"`) || !strings.Contains(string(data), `"fuel_cap"`) {
+		t.Errorf("unexpected JSON (missing unbounded/fuel_cap): %s", data)
+	}
+}
+
 func TestRoundtrip(t *testing.T) {
 	original := buildTestFile()
 

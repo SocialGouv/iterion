@@ -629,6 +629,8 @@ type jsonLoopClause struct {
 	Name              string `json:"name,omitempty"`
 	MaxIterations     int    `json:"max_iterations,omitempty"`
 	MaxIterationsExpr string `json:"max_iterations_expr,omitempty"`
+	Unbounded         bool   `json:"unbounded,omitempty"`
+	FuelCap           int    `json:"fuel_cap,omitempty"`
 }
 
 type jsonWithEntry struct {
@@ -1170,6 +1172,8 @@ func edgeToJSON(e *Edge) *jsonEdge {
 			Name:              e.Loop.Name,
 			MaxIterations:     e.Loop.MaxIterations,
 			MaxIterationsExpr: e.Loop.MaxIterationsExpr,
+			Unbounded:         e.Loop.Unbounded,
+			FuelCap:           e.Loop.FuelCap,
 		}
 	}
 	for _, w := range e.With {
@@ -1728,6 +1732,8 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 			Name:              je.Loop.Name,
 			MaxIterations:     je.Loop.MaxIterations,
 			MaxIterationsExpr: je.Loop.MaxIterationsExpr,
+			Unbounded:         je.Loop.Unbounded,
+			FuelCap:           je.Loop.FuelCap,
 		}
 	}
 	for _, jw := range je.With {

@@ -12,10 +12,16 @@ const MAX_EXPR_LEN = 24;
  * a string, or absent:
  *   - literal bound     → `loop:name(5)`
  *   - expression bound  → `loop:name({{vars.max}})` (truncated)
+ *   - unbounded         → `loop:name(unbounded)` / `loop:name(unbounded 40)`
  *   - no bound          → `loop:name`
  * Never interpolates undefined into the label.
  */
 export function formatLoopBadge(loop: LoopClause): string {
+  if (loop.unbounded) {
+    return loop.fuel_cap && loop.fuel_cap > 0
+      ? `loop:${loop.name}(unbounded ${loop.fuel_cap})`
+      : `loop:${loop.name}(unbounded)`;
+  }
   if (typeof loop.max_iterations === "number" && loop.max_iterations > 0) {
     return `loop:${loop.name}(${loop.max_iterations})`;
   }

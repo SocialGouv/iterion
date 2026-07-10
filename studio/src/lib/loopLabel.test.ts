@@ -33,6 +33,15 @@ describe("formatLoopBadge", () => {
     expect(out).toBe(`loop:fix_loop(${expr.slice(0, 24)}…)`);
   });
 
+  it("renders the explicit unbounded form, with and without fuel", () => {
+    expect(formatLoopBadge({ name: "l", unbounded: true })).toBe(
+      "loop:l(unbounded)",
+    );
+    expect(formatLoopBadge({ name: "l", unbounded: true, fuel_cap: 40 })).toBe(
+      "loop:l(unbounded 40)",
+    );
+  });
+
   it("never renders the string 'undefined'", () => {
     expect(formatLoopBadge({ name: "l" })).not.toContain("undefined");
   });
