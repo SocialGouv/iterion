@@ -19,6 +19,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { Textarea } from "@/components/ui/Textarea";
 import { PageHeader } from "@/components/ui/PageHeader";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
@@ -104,7 +105,7 @@ export default function Skills() {
         )}
 
         {skills === null ? (
-          <EmptyState message="Loading…" />
+          <TableSkeleton rows={4} cols={4} />
         ) : skills.length === 0 ? (
           <EmptyState
             title="No skills yet"
@@ -159,37 +160,35 @@ function SkillsTable({
   onDelete: (rec: LibrarySkill) => void;
 }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-          <tr>
-            <th className="px-2 py-1">Name</th>
-            <th className="px-2 py-1">Scope</th>
-            <th className="px-2 py-1">Description</th>
-            <th className="px-2 py-1 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {skills.map((s) => (
-            <tr key={`${s.scope}:${s.name}`} className="border-t border-border-subtle">
-              <td className="px-2 py-2 font-mono">{s.name}</td>
-              <td className="px-2 py-2">
-                <Badge variant={s.scope === "project" ? "info" : "neutral"}>{s.scope}</Badge>
-              </td>
-              <td className="px-2 py-2 text-fg-muted">{s.description || "—"}</td>
-              <td className="px-2 py-2 text-right space-x-1 whitespace-nowrap">
-                <Button size="sm" variant="ghost" onClick={() => onEdit(s)}>
-                  Edit
-                </Button>
-                <Button size="sm" variant="ghost" className="text-danger" onClick={() => onDelete(s)}>
-                  Delete
-                </Button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <Table caption="Skill library">
+      <THead>
+        <tr>
+          <Th>Name</Th>
+          <Th>Scope</Th>
+          <Th>Description</Th>
+          <Th align="right">Actions</Th>
+        </tr>
+      </THead>
+      <TBody>
+        {skills.map((s) => (
+          <Tr key={`${s.scope}:${s.name}`}>
+            <Td className="font-mono">{s.name}</Td>
+            <Td>
+              <Badge variant={s.scope === "project" ? "info" : "neutral"}>{s.scope}</Badge>
+            </Td>
+            <Td className="text-fg-muted">{s.description || "—"}</Td>
+            <Td align="right" className="space-x-1 whitespace-nowrap">
+              <Button size="sm" variant="ghost" onClick={() => onEdit(s)}>
+                Edit
+              </Button>
+              <Button size="sm" variant="ghost" className="text-danger" onClick={() => onDelete(s)}>
+                Delete
+              </Button>
+            </Td>
+          </Tr>
+        ))}
+      </TBody>
+    </Table>
   );
 }
 

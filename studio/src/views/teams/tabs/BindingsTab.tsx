@@ -17,6 +17,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { TagInput } from "@/components/ui/TagInput";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
@@ -142,7 +143,7 @@ export default function BindingsTab({ teamID, canManage }: Props) {
       {!activeBot ? (
         <EmptyState message="Pick a bot to view its bindings." />
       ) : loading ? (
-        <EmptyState message="Loading…" />
+        <TableSkeleton rows={4} cols={5} />
       ) : bindings.length === 0 ? (
         <EmptyState
           message={
@@ -152,23 +153,23 @@ export default function BindingsTab({ teamID, canManage }: Props) {
           }
         />
       ) : (
-        <div className="overflow-x-auto"><table className="w-full text-sm">
-          <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
+        <Table caption={`Secret bindings for ${activeBot}`}>
+          <THead>
             <tr>
-              <th className="px-2 py-1">Workflow name</th>
-              <th className="px-2 py-1">Secret</th>
-              <th className="px-2 py-1">Allowed hosts</th>
-              <th className="px-2 py-1">Updated</th>
-              <th className="px-2 py-1 text-right">Actions</th>
+              <Th>Workflow name</Th>
+              <Th>Secret</Th>
+              <Th>Allowed hosts</Th>
+              <Th>Updated</Th>
+              <Th align="right">Actions</Th>
             </tr>
-          </thead>
-          <tbody>
+          </THead>
+          <TBody>
             {bindings.map((b) => {
               const sec = secrets.find((s) => s.id === b.secret_id);
               return (
-                <tr key={b.id} className="border-t border-border-subtle">
-                  <td className="px-2 py-2 font-mono">{b.secret_name_for_workflow}</td>
-                  <td className="px-2 py-2">
+                <Tr key={b.id}>
+                  <Td className="font-mono">{b.secret_name_for_workflow}</Td>
+                  <Td>
                     {sec ? (
                       <span>
                         {sec.name}{" "}
@@ -177,8 +178,8 @@ export default function BindingsTab({ teamID, canManage }: Props) {
                     ) : (
                       <span className="text-danger text-xs">missing ({b.secret_id})</span>
                     )}
-                  </td>
-                  <td className="px-2 py-2 text-xs">
+                  </Td>
+                  <Td className="text-xs">
                     {(b.allowed_hosts ?? []).length === 0 ? (
                       <span className="text-fg-muted">workflow default</span>
                     ) : (
@@ -191,11 +192,11 @@ export default function BindingsTab({ teamID, canManage }: Props) {
                         </span>
                       ))
                     )}
-                  </td>
-                  <td className="px-2 py-2 text-fg-muted text-xs">
+                  </Td>
+                  <Td className="text-fg-muted text-xs">
                     {new Date(b.updated_at).toLocaleString()}
-                  </td>
-                  <td className="px-2 py-2 text-right space-x-1 whitespace-nowrap">
+                  </Td>
+                  <Td align="right" className="space-x-1 whitespace-nowrap">
                     {canManage && (
                       <>
                         <Button size="sm" variant="ghost" onClick={() => setEditing(b)}>
@@ -211,12 +212,12 @@ export default function BindingsTab({ teamID, canManage }: Props) {
                         </Button>
                       </>
                     )}
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               );
             })}
-          </tbody>
-        </table></div>
+          </TBody>
+        </Table>
       )}
 
       {(creating || editing) && activeBot && (

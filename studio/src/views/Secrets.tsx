@@ -19,6 +19,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 
 // Secrets manages the local (non-cloud) sealed secret store: machine-global
@@ -92,7 +93,7 @@ export default function Secrets() {
         )}
 
         {secrets === null ? (
-          <EmptyState message="Loading…" />
+          <TableSkeleton rows={4} cols={5} />
         ) : secrets.length === 0 ? (
           <EmptyState
             title="No secrets yet"
@@ -151,41 +152,39 @@ function SecretsTable({
   onDelete: (rec: LocalSecretView) => void;
 }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-          <tr>
-            <th className="px-2 py-1">Name</th>
-            <th className="px-2 py-1">Scope</th>
-            <th className="px-2 py-1">Last4</th>
-            <th className="px-2 py-1">Hosts</th>
-            <th className="px-2 py-1 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {secrets.map((s) => (
-            <tr key={`${s.scope}:${s.id}`} className="border-t border-border-subtle">
-              <td className="px-2 py-2 font-mono">{s.name}</td>
-              <td className="px-2 py-2">
-                <Badge variant={s.scope === "project" ? "info" : "neutral"}>{s.scope}</Badge>
-              </td>
-              <td className="px-2 py-2 font-mono text-fg-muted">…{s.last4 ?? "????"}</td>
-              <td className="px-2 py-2 text-fg-muted text-xs break-all">
-                {s.allowed_hosts && s.allowed_hosts.length > 0 ? s.allowed_hosts.join(", ") : "—"}
-              </td>
-              <td className="px-2 py-2 text-right space-x-1 whitespace-nowrap">
-                <Button size="sm" variant="ghost" onClick={() => onRotate(s)}>
-                  Rotate
-                </Button>
-                <Button size="sm" variant="ghost" className="text-danger" onClick={() => onDelete(s)}>
-                  Delete
-                </Button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <Table caption="Local secrets">
+      <THead>
+        <tr>
+          <Th>Name</Th>
+          <Th>Scope</Th>
+          <Th>Last4</Th>
+          <Th>Hosts</Th>
+          <Th align="right">Actions</Th>
+        </tr>
+      </THead>
+      <TBody>
+        {secrets.map((s) => (
+          <Tr key={`${s.scope}:${s.id}`}>
+            <Td className="font-mono">{s.name}</Td>
+            <Td>
+              <Badge variant={s.scope === "project" ? "info" : "neutral"}>{s.scope}</Badge>
+            </Td>
+            <Td className="font-mono text-fg-muted">…{s.last4 ?? "????"}</Td>
+            <Td className="text-fg-muted text-xs break-all">
+              {s.allowed_hosts && s.allowed_hosts.length > 0 ? s.allowed_hosts.join(", ") : "—"}
+            </Td>
+            <Td align="right" className="space-x-1 whitespace-nowrap">
+              <Button size="sm" variant="ghost" onClick={() => onRotate(s)}>
+                Rotate
+              </Button>
+              <Button size="sm" variant="ghost" className="text-danger" onClick={() => onDelete(s)}>
+                Delete
+              </Button>
+            </Td>
+          </Tr>
+        ))}
+      </TBody>
+    </Table>
   );
 }
 

@@ -17,6 +17,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
@@ -89,40 +90,40 @@ export default function TokensPanel() {
       )}
 
       {loading ? (
-        <EmptyState message="Loading…" />
+        <TableSkeleton rows={4} cols={7} />
       ) : tokens.length === 0 ? (
         <EmptyState message="No tokens yet." />
       ) : (
-        <div className="overflow-x-auto"><table className="w-full text-sm">
-          <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
+        <Table caption="Personal access tokens">
+          <THead>
             <tr>
-              <th className="px-2 py-1">Name</th>
-              <th className="px-2 py-1">Team</th>
-              <th className="px-2 py-1">Last4</th>
-              <th className="px-2 py-1">Created</th>
-              <th className="px-2 py-1">Expires</th>
-              <th className="px-2 py-1">Last used</th>
-              <th className="px-2 py-1 text-right">Actions</th>
+              <Th>Name</Th>
+              <Th>Team</Th>
+              <Th>Last4</Th>
+              <Th>Created</Th>
+              <Th>Expires</Th>
+              <Th>Last used</Th>
+              <Th align="right">Actions</Th>
             </tr>
-          </thead>
-          <tbody>
+          </THead>
+          <TBody>
             {tokens.map((t) => (
-              <tr key={t.id} className="border-t border-border-subtle">
-                <td className="px-2 py-2">{t.name}</td>
-                <td className="px-2 py-2 text-xs text-fg-muted">
+              <Tr key={t.id}>
+                <Td>{t.name}</Td>
+                <Td className="text-xs text-fg-muted">
                   {t.team_id ?? "(default)"}
-                </td>
-                <td className="px-2 py-2 font-mono text-xs text-fg-muted">…{t.token_last4}</td>
-                <td className="px-2 py-2 text-xs text-fg-muted">
+                </Td>
+                <Td className="font-mono text-xs text-fg-muted">…{t.token_last4}</Td>
+                <Td className="text-xs text-fg-muted">
                   {new Date(t.created_at).toLocaleString()}
-                </td>
-                <td className="px-2 py-2 text-xs text-fg-muted">
+                </Td>
+                <Td className="text-xs text-fg-muted">
                   {t.expires_at ? new Date(t.expires_at).toLocaleString() : "never"}
-                </td>
-                <td className="px-2 py-2 text-xs text-fg-muted">
+                </Td>
+                <Td className="text-xs text-fg-muted">
                   {t.last_used_at ? new Date(t.last_used_at).toLocaleString() : "—"}
-                </td>
-                <td className="px-2 py-2 text-right">
+                </Td>
+                <Td align="right">
                   {t.revoked_at ? (
                     <span className="text-xs text-danger">revoked</span>
                   ) : (
@@ -135,11 +136,11 @@ export default function TokensPanel() {
                       Revoke
                     </Button>
                   )}
-                </td>
-              </tr>
+                </Td>
+              </Tr>
             ))}
-          </tbody>
-        </table></div>
+          </TBody>
+        </Table>
       )}
 
       {creating && (

@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useBotsStore } from "@/store/bots";
@@ -156,7 +157,7 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
       </div>
 
       {loading ? (
-        <EmptyState message="Loading…" />
+        <TableSkeleton rows={4} cols={6} />
       ) : webhooks.length === 0 ? (
         <EmptyState
           message={
@@ -166,78 +167,76 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
           }
         />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-              <tr>
-                <th className="px-2 py-1">Name</th>
-                <th className="px-2 py-1">Provider</th>
-                <th className="px-2 py-1">Bots</th>
-                <th className="px-2 py-1">Last4</th>
-                <th className="px-2 py-1">Status</th>
-                <th className="px-2 py-1 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {webhooks.map((w) => (
-                <tr key={w.id} className="border-t border-border-subtle align-top">
-                  <td className="px-2 py-2">
-                    <div className="font-medium">{w.name}</div>
-                    <div className="text-caption text-fg-subtle font-mono break-all">
-                      {w.id}
-                    </div>
-                  </td>
-                  <td className="px-2 py-2">
-                    <Badge variant="neutral">{w.provider}</Badge>
-                  </td>
-                  <td className="px-2 py-2 text-xs">
-                    {w.wildcard_bots ? (
-                      <Badge variant="warning">wildcard</Badge>
-                    ) : (
-                      (w.bot_ids ?? []).join(", ") || "—"
-                    )}
-                  </td>
-                  <td className="px-2 py-2 text-xs font-mono text-fg-muted">
-                    …{w.token_last4 || "????"}
-                  </td>
-                  <td className="px-2 py-2">
-                    {canManage ? (
-                      <label className="inline-flex items-center gap-1 text-xs cursor-pointer">
-                        <Checkbox
-                          checked={w.enabled}
-                          onChange={() => void toggleEnabled(w)}
-                        />
-                        {w.enabled ? "enabled" : "disabled"}
-                      </label>
-                    ) : (
-                      <span className="text-xs">{w.enabled ? "enabled" : "disabled"}</span>
-                    )}
-                  </td>
-                  <td className="px-2 py-2 text-right space-x-1 whitespace-nowrap">
-                    <Button size="sm" variant="ghost" onClick={() => setDeliveriesFor(w)}>
-                      Deliveries
-                    </Button>
-                    {canManage && (
-                      <>
-                        <Button size="sm" variant="ghost" onClick={() => void askRotate(w)}>
-                          Rotate
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => void askDelete(w)}
-                          className="text-danger"
-                        >
-                          Delete
-                        </Button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table caption="Inbound webhooks">
+          <THead>
+            <tr>
+              <Th>Name</Th>
+              <Th>Provider</Th>
+              <Th>Bots</Th>
+              <Th>Last4</Th>
+              <Th>Status</Th>
+              <Th align="right">Actions</Th>
+            </tr>
+          </THead>
+          <TBody>
+            {webhooks.map((w) => (
+              <Tr key={w.id} className="align-top">
+                <Td>
+                  <div className="font-medium">{w.name}</div>
+                  <div className="text-caption text-fg-subtle font-mono break-all">
+                    {w.id}
+                  </div>
+                </Td>
+                <Td>
+                  <Badge variant="neutral">{w.provider}</Badge>
+                </Td>
+                <Td className="text-xs">
+                  {w.wildcard_bots ? (
+                    <Badge variant="warning">wildcard</Badge>
+                  ) : (
+                    (w.bot_ids ?? []).join(", ") || "—"
+                  )}
+                </Td>
+                <Td className="text-xs font-mono text-fg-muted">
+                  …{w.token_last4 || "????"}
+                </Td>
+                <Td>
+                  {canManage ? (
+                    <label className="inline-flex items-center gap-1 text-xs cursor-pointer">
+                      <Checkbox
+                        checked={w.enabled}
+                        onChange={() => void toggleEnabled(w)}
+                      />
+                      {w.enabled ? "enabled" : "disabled"}
+                    </label>
+                  ) : (
+                    <span className="text-xs">{w.enabled ? "enabled" : "disabled"}</span>
+                  )}
+                </Td>
+                <Td align="right" className="space-x-1 whitespace-nowrap">
+                  <Button size="sm" variant="ghost" onClick={() => setDeliveriesFor(w)}>
+                    Deliveries
+                  </Button>
+                  {canManage && (
+                    <>
+                      <Button size="sm" variant="ghost" onClick={() => void askRotate(w)}>
+                        Rotate
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void askDelete(w)}
+                        className="text-danger"
+                      >
+                        Delete
+                      </Button>
+                    </>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
       )}
 
       {creating && (
