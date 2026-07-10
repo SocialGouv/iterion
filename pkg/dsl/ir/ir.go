@@ -967,7 +967,7 @@ type Var struct {
 	Name       string
 	Type       VarType
 	HasDefault bool
-	Default    interface{} // string, int64, float64, or bool
+	Default    any // string, int64, float64, or bool
 }
 
 // Secret is a resolved workflow secret declaration. Value is the raw
@@ -1059,7 +1059,7 @@ type Preset struct {
 	// Values are variable overrides applied to the run (defaults < preset <
 	// --var). Keys not declared by the workflow's `vars:` are dropped by the
 	// engine's resolveVars, same as a stray --var.
-	Values map[string]interface{}
+	Values map[string]any
 	// DisplayName is the operator-facing label (e.g. "Improve Quality (SRE)");
 	// falls back to Name when empty. File-based presets only.
 	DisplayName string
