@@ -8,7 +8,7 @@
   schema), [`bots/whats-next/skills/session-continuity.md`](../../bots/whats-next/skills/session-continuity.md)
   (findings/ scope lifecycle), [`pkg/store/storedir.go`](../../pkg/store/storedir.go)
   (`EncodeWorkDirKey`, replicated in bash), [`pkg/memory/memory.go`](../../pkg/memory/memory.go)
-  (the `findings` scope path), [`pkg/botreplay/testdata/bot-goldens/whats-next/emit_action_basic.json`](../../pkg/botreplay/testdata/bot-goldens/whats-next/emit_action_basic.json)
+  (the `findings` scope path), [`pkg/botreplay/testdata/bot-goldens/whats-next/nexie_turn_basic.json`](../../pkg/botreplay/testdata/bot-goldens/whats-next/nexie_turn_basic.json)
 
 ## Context
 

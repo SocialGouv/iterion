@@ -273,15 +273,15 @@ func TestEnumsSerializeAsStrings(t *testing.T) {
 
 	// Verify no raw integer enum values leak through (check that "type": 5 doesn't appear etc.)
 	// We do this by unmarshalling to a generic map and checking key types.
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("failed to unmarshal to map: %v", err)
 	}
 
 	// Check the vars field type is a string, not a number
-	vars := raw["vars"].(map[string]interface{})
-	fields := vars["fields"].([]interface{})
-	field0 := fields[0].(map[string]interface{})
+	vars := raw["vars"].(map[string]any)
+	fields := vars["fields"].([]any)
+	field0 := fields[0].(map[string]any)
 	typeVal := field0["type"]
 	if _, ok := typeVal.(string); !ok {
 		t.Errorf("expected vars field type to be string, got %T: %v", typeVal, typeVal)

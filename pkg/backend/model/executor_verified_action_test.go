@@ -21,9 +21,9 @@ func vaExecutor(t *testing.T, workDir string, opts ...ClawExecutorOption) *ClawE
 	return newTestClawExecutor(NewRegistry(), &ir.Workflow{}, all...)
 }
 
-func vaMeta(t *testing.T, out map[string]interface{}) map[string]interface{} {
+func vaMeta(t *testing.T, out map[string]any) map[string]any {
 	t.Helper()
-	m, ok := out["_verified_action"].(map[string]interface{})
+	m, ok := out["_verified_action"].(map[string]any)
 	if !ok {
 		t.Fatalf("output missing _verified_action metadata: %v", out)
 	}
@@ -45,7 +45,7 @@ func TestVerifiedAction_IdempotentSkip(t *testing.T) {
 		Postcondition: "test -f pre_existing",
 		Policy:        ir.PolicyRequired,
 	}
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestVerifiedAction_RecipeOK(t *testing.T) {
 		Postcondition: "test -f marker",
 		Policy:        ir.PolicyRequired,
 	}
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestVerifiedAction_ExitCodeLies(t *testing.T) {
 		Postcondition: "test -f marker",
 		Policy:        ir.PolicyRequired,
 	}
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: recipe exited non-zero but goal held — want success, got %v", err)
 	}
@@ -110,7 +110,7 @@ func TestVerifiedAction_PostconditionJSONOutput(t *testing.T) {
 		Postcondition: `test -f marker && printf '{"sha":"abc123"}'`,
 		Policy:        ir.PolicyRequired,
 	}
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestVerifiedAction_SelfRepair(t *testing.T) {
 		Policy:        ir.PolicyRecover,
 		Recovery:      &ir.RecoverySpec{MaxRepairAttempts: 2},
 	}
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestVerifiedAction_AgentRecovery(t *testing.T) {
 		Policy:        ir.PolicyRecover,
 		Recovery:      &ir.RecoverySpec{MaxAgentAttempts: 1}, // no self-repair
 	}
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestVerifiedAction_PolicyRequiredFails(t *testing.T) {
 		Postcondition: "false",
 		Policy:        ir.PolicyRequired,
 	}
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err == nil {
 		t.Fatal("Execute: want error when postcondition unmet under policy required")
 	}
@@ -210,7 +210,7 @@ func TestVerifiedAction_PolicyBestEffortContinues(t *testing.T) {
 		Postcondition: "false",
 		Policy:        ir.PolicyBestEffort,
 	}
-	out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	out, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("Execute: best_effort must not error, got %v", err)
 	}
@@ -237,7 +237,7 @@ func TestVerifiedAction_RecoverExhaustedFails(t *testing.T) {
 		Policy:        ir.PolicyRecover,
 		Recovery:      &ir.RecoverySpec{MaxRepairAttempts: 1},
 	}
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err == nil {
 		t.Fatal("Execute: want error after recover rungs exhausted and postcondition still unmet")
 	}
@@ -251,13 +251,13 @@ func TestVerifiedAction_BackwardCompatNoPostcondition(t *testing.T) {
 
 	t.Run("exit non-zero errors", func(t *testing.T) {
 		node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "bc_fail"}, Command: "exit 1"}
-		if _, err := exec.Execute(context.Background(), node, map[string]interface{}{}); err == nil {
+		if _, err := exec.Execute(context.Background(), node, map[string]any{}); err == nil {
 			t.Fatal("want error: no postcondition → exit code is truth")
 		}
 	})
 	t.Run("exit zero succeeds with no _verified_action key", func(t *testing.T) {
 		node := &ir.ToolNode{BaseNode: ir.BaseNode{ID: "bc_ok"}, Command: "echo ok"}
-		out, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+		out, err := exec.Execute(context.Background(), node, map[string]any{})
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}

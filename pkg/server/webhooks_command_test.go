@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
@@ -129,14 +131,17 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 		"featurly": {{BotID: "feature-dev", Mode: "board", ArgsVar: "feature_prompt", Scope: "any"}},
 	}
 	var calls int
-	var gotBot string
+	var gotBot, gotRef string
 	var gotVars map[string]string
 	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
 		return true, "authorized", nil
 	}
-	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/export", TargetBranch: "main", Author: "alice"}, nil
+	}
+	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, repoRef, _ string, _, _ map[string]string) (string, error) {
 		calls++
-		gotBot, gotVars = botID, vars
+		gotBot, gotVars, gotRef = botID, vars, repoRef
 		return "run-gh-1", nil
 	}
 	w := httptest.NewRecorder()
@@ -149,6 +154,206 @@ func TestGitHubIssueComment_GenericCommandLaunches(t *testing.T) {
 	}
 	if gotVars["feature_prompt"] != "add export endpoint" {
 		t.Fatalf("args should land in feature_prompt: %v", gotVars["feature_prompt"])
+	}
+	// The resolved PR threads the checkout ref + branch vars into the launch.
+	if gotRef != "feat/export" {
+		t.Fatalf("repoRef should be the PR head branch, got %q", gotRef)
+	}
+	for k, want := range map[string]string{"base_ref": "main", "target_branch": "main", "source_branch": "feat/export", "pr_author": "alice"} {
+		if gotVars[k] != want {
+			t.Fatalf("vars[%s]=%q want %q", k, gotVars[k], want)
+		}
+	}
+}
+
+// TestGitHubIssueComment_BillyPushBackStamped: /billy on a PR comment must
+// get the SAME push-back semantics as the pull_request-event path — without
+// open_mr/push_branch the bot banks its commits on the storage branch and
+// the PR never receives them.
+func TestGitHubIssueComment_BillyPushBackStamped(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", ArgsVar: "scope_notes", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main"}, nil
+	}
+	var gotVars map[string]string
+	var gotRef string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, repoRef, _ string, _, _ map[string]string) (string, error) {
+		gotVars, gotRef = vars, repoRef
+		return "run-billy-1", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"bump deps","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":556,"body":"/billy fix the drift"},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotRef != "dependabot/go_modules/bump" {
+		t.Fatalf("repoRef=%q want the PR head branch", gotRef)
+	}
+	if gotVars["open_mr"] != "false" || gotVars["push_branch"] != "dependabot/go_modules/bump" {
+		t.Fatalf("push-back vars not stamped: open_mr=%q push_branch=%q", gotVars["open_mr"], gotVars["push_branch"])
+	}
+	if gotVars["scope_notes"] != "fix the drift" {
+		t.Fatalf("args should land in scope_notes: %q", gotVars["scope_notes"])
+	}
+}
+
+// TestGitHubIssueComment_BillyPushBackAsPR: with BranchImproveAsPR the same
+// command opens a separate hardening PR instead of pushing in-place.
+func TestGitHubIssueComment_BillyPushBackAsPR(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.BranchImproveAsPR = true
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "feat/x", TargetBranch: "main"}, nil
+	}
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, _ string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotVars = vars
+		return "run-billy-2", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"t","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":557,"body":"/billy"},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotVars["open_mr"] != "true" || gotVars["mr_base"] != "feat/x" {
+		t.Fatalf("as-PR vars not stamped: open_mr=%q mr_base=%q", gotVars["open_mr"], gotVars["mr_base"])
+	}
+	if _, ok := gotVars["push_branch"]; ok {
+		t.Fatalf("push_branch must not be set in as-PR mode")
+	}
+}
+
+// TestGitHubIssueComment_BillyBoardCardCarriesPRContext: a board-mode /billy
+// launches from the card's BotArgs ONLY (cloud coordinator), so the resolved
+// PR context — push_branch, pr_url, base_ref — must ride BotArgs or the run
+// falls back to DSL defaults and strands its commits off-PR.
+func TestGitHubIssueComment_BillyBoardCardCarriesPRContext(t *testing.T) {
+	s := newWebhookTestServer(t)
+	boardStore, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"branch-improve-loop"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"billy": {{BotID: "branch-improve-loop", Mode: "board", ArgsVar: "scope_notes", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "open", SourceBranch: "dependabot/go_modules/bump", TargetBranch: "main", Author: "dependabot[bot]"}, nil
+	}
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		return "run-board-billy", nil
+	}
+	body := `{"action":"created","repository":{"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"issue":{"number":7,"title":"bump deps","body":"","state":"open","pull_request":{"html_url":"https://github.com/acme/widgets/pull/7"}},"comment":{"id":558,"body":"/billy fix it"},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	cards, err := boardStore.List(native.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 1 {
+		t.Fatalf("want 1 card, got %d", len(cards))
+	}
+	got := cards[0].BotArgs
+	for k, want := range map[string]string{
+		"push_branch": "dependabot/go_modules/bump",
+		"open_mr":     "false",
+		"base_ref":    "main",
+		"pr_url":      "https://github.com/acme/widgets/pull/7",
+		"pr_author":   "dependabot[bot]",
+		"scope_notes": "fix it",
+	} {
+		if got[k] != want {
+			t.Fatalf("card BotArgs[%s]=%q want %q (all: %v)", k, got[k], want, got)
+		}
+	}
+}
+
+// TestGitHubIssueComment_PRResolutionFailureIsVisible: when the PR head
+// cannot be resolved, the command must NOT silently launch on the default
+// branch (the run would diff nothing and no-op) — it fails loudly as a
+// launch error.
+func TestGitHubIssueComment_PRResolutionFailureIsVisible(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"feature-dev"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{}, fmt.Errorf("forge unreachable")
+	}
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "x", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("resolution failure must be a visible 502, got %d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("must not launch on the default branch, calls=%d", calls)
+	}
+}
+
+// TestGitHubIssueComment_ClosedPRFiltered: a command on a PR that is no
+// longer open (merged/closed since the payload snapshot) is filtered — a
+// launch would churn on a stale or deleted branch.
+func TestGitHubIssueComment_ClosedPRFiltered(t *testing.T) {
+	s := newWebhookTestServer(t)
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"feature-dev"}
+	cfg.CommandMap = map[string][]webhooks.CommandRoute{
+		"featurly": {{BotID: "feature-dev", ArgsVar: "feature_prompt", Scope: "any"}},
+	}
+	s.webhookPRForgeCommandGate = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (bool, string, error) {
+		return true, "authorized", nil
+	}
+	s.webhookPRForgePRResolver = func(context.Context, webhooks.Config, webhooks.Provider, prforge.ParsedNote, webhooks.CommandRoute) (forge.PullRef, error) {
+		return forge.PullRef{Number: 7, State: "merged", SourceBranch: "feat/export", TargetBranch: "main"}, nil
+	}
+	var calls int
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		calls++
+		return "x", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghIssueCommentFeaturly, prforge.EventHeaderIssueComment, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("closed PR should be filtered 200, got %d", w.Code)
+	}
+	if calls != 0 {
+		t.Fatalf("closed PR must not launch, calls=%d", calls)
 	}
 }
 

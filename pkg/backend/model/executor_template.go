@@ -22,7 +22,7 @@ import (
 // userPrompt is the prompt reference name from the node (empty if not set).
 // td carries the runtime state for cross-namespace refs (`outputs.*`,
 // `loop.*`, `artifacts.*`, `run.*`); pass nil to skip those.
-func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]interface{}, td *TemplateData) string {
+func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]any, td *TemplateData) string {
 	// If the node has a user prompt template, resolve it.
 	if userPrompt != "" {
 		if p, ok := e.prompts[userPrompt]; ok {
@@ -55,7 +55,7 @@ func (e *ClawExecutor) buildUserMessage(userPrompt string, input map[string]inte
 // UserPrompt without bothering with multimodal wrapping.
 func (e *ClawExecutor) buildUserContent(
 	userPrompt string,
-	input map[string]interface{},
+	input map[string]any,
 	td *TemplateData,
 	imageAttachments map[string]bool,
 ) (string, []delegate.ContentBlock) {
@@ -218,7 +218,7 @@ const maxTemplateExpansionSize = 5 * 1024 * 1024 // 5 MB
 // resolveTemplate substitutes {{...}} references in a prompt body.
 // td carries the runtime state for cross-namespace refs; pass nil
 // to limit resolution to `input.*` and `vars.*`.
-func (e *ClawExecutor) resolveTemplate(body string, input map[string]interface{}, td *TemplateData) string {
+func (e *ClawExecutor) resolveTemplate(body string, input map[string]any, td *TemplateData) string {
 	var b strings.Builder
 	remaining := body
 
@@ -273,7 +273,7 @@ func (e *ClawExecutor) resolveTemplate(body string, input map[string]interface{}
 //
 // Cross-namespace refs require td (TemplateData) — when td is nil they
 // resolve as not-found and the literal placeholder is preserved.
-func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface{}, td *TemplateData) (string, bool) {
+func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]any, td *TemplateData) (string, bool) {
 	parts := strings.SplitN(ref, ".", 2)
 	if len(parts) < 2 {
 		return "", false
@@ -427,13 +427,13 @@ func (e *ClawExecutor) resolveTemplateRef(ref string, input map[string]interface
 // the leaf value and true on success, or (nil, false) when any segment
 // can't be resolved. Used by resolveTemplateRef to drill into
 // outputs.<node>.<field>, loop.<name>.previous_output.<field>, etc.
-func drillTemplatePath(root map[string]interface{}, path []string) (interface{}, bool) {
+func drillTemplatePath(root map[string]any, path []string) (any, bool) {
 	if len(path) == 0 {
 		return root, true
 	}
-	var cur interface{} = root
+	var cur any = root
 	for _, p := range path {
-		m, ok := cur.(map[string]interface{})
+		m, ok := cur.(map[string]any)
 		if !ok {
 			return nil, false
 		}
@@ -447,7 +447,7 @@ func drillTemplatePath(root map[string]interface{}, path []string) (interface{},
 }
 
 // formatValue converts an interface value to a string for template substitution.
-func formatValue(v interface{}) string {
+func formatValue(v any) string {
 	switch val := v.(type) {
 	case string:
 		return val
@@ -535,7 +535,7 @@ func sameStringSlice(a, b []string) bool {
 // at the top of userText when the runtime relayed a prior ask_user
 // question and answer. Returns userText unchanged when no relay is
 // present (first invocation, or pause came from another source).
-func prependPriorAskUser(userText string, input map[string]interface{}) string {
+func prependPriorAskUser(userText string, input map[string]any) string {
 	q, qOK := input[delegate.PriorAskUserQuestionKey].(string)
 	if !qOK || q == "" {
 		return userText

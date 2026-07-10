@@ -28,10 +28,10 @@ import (
 // can still mutate the underlying maps where they did previously
 // (e.g. fan_out's `merged` maps).
 type resolveScope struct {
-	vars      map[string]interface{}
-	outputs   map[string]map[string]interface{}
-	runInputs map[string]interface{}
-	artifacts map[string]map[string]interface{}
+	vars      map[string]any
+	outputs   map[string]map[string]any
+	runInputs map[string]any
+	artifacts map[string]map[string]any
 	rs        *runState
 }
 
@@ -57,8 +57,8 @@ func (rs *runState) scope() resolveScope {
 // (sc.rs) is required so that `{{loop.*}}` / `{{run.*}}` references
 // resolve against the run's iteration state. Pass nil for sc.rs only in
 // tests that don't exercise those namespaces.
-func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]interface{} {
-	result := make(map[string]interface{})
+func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]any {
+	result := make(map[string]any)
 
 	// applyEdge merges one edge's with-mappings into result. Only edges whose
 	// source has already produced output contribute (so a not-yet-run source
@@ -76,7 +76,7 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]int
 		// input) with run-level inputs as fallback.
 		effectiveInputs := sc.runInputs
 		if sourceOut := sc.outputs[edge.From]; sourceOut != nil {
-			effectiveInputs = make(map[string]interface{}, len(sc.runInputs)+len(sourceOut))
+			effectiveInputs = make(map[string]any, len(sc.runInputs)+len(sourceOut))
 			for k, v := range sc.runInputs {
 				effectiveInputs[k] = v
 			}
@@ -165,7 +165,7 @@ func (e *Engine) buildNodeInputRS(nodeID string, sc resolveScope) map[string]int
 // resolveMapping resolves a DataMapping's references to concrete values.
 // For simplicity in the minimal runtime, if there is exactly one ref we
 // return the resolved value directly; otherwise we return the raw template.
-func (e *Engine) resolveMapping(dm *ir.DataMapping, sc resolveScope) interface{} {
+func (e *Engine) resolveMapping(dm *ir.DataMapping, sc resolveScope) any {
 	if len(dm.Refs) == 1 {
 		return e.resolveRef(dm.Refs[0], sc)
 	}
@@ -175,7 +175,7 @@ func (e *Engine) resolveMapping(dm *ir.DataMapping, sc resolveScope) interface{}
 // resolveRef resolves a single Ref to a concrete value. The runState
 // (sc.rs) is required for `loop` and `run` namespace resolution; pass
 // nil to skip those (they'll resolve to nil).
-func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
+func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) any {
 	switch ref.Kind {
 	case ir.RefVars:
 		if len(ref.Path) > 0 {
@@ -244,7 +244,7 @@ func (e *Engine) resolveRef(ref *ir.Ref, sc resolveScope) interface{} {
 //	first  — index == 0 (bool)
 //	last   — index >= count-1, or count == 0 (bool)
 //	empty  — count == 0 (bool)
-func (e *Engine) resolveEachPath(path []string, sc resolveScope) interface{} {
+func (e *Engine) resolveEachPath(path []string, sc resolveScope) any {
 	name := path[0]
 	fe, ok := e.workflow.Foreaches[name]
 	if !ok {
@@ -285,7 +285,7 @@ func foreachCounterKey(name string) string { return "foreach/" + name }
 // reusing the same coercion as fan_out_each (handles []interface{}, a
 // JSON-string array, and reflected slices). A non-array resolves to nil, which
 // foreach treats as an empty collection.
-func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []interface{} {
+func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []any {
 	if len(fe.CollectionRefs) == 0 {
 		return nil
 	}
@@ -304,7 +304,7 @@ func (e *Engine) resolveForeachCollection(fe *ir.Foreach, sc resolveScope) []int
 //	                   caps, the resolved template value for templated caps
 //	previous_output — snapshot of the source node output at the previous
 //	                   traversal of this loop's edge; sub-fields drill in.
-func (e *Engine) resolveLoopPath(path []string, rs *runState) interface{} {
+func (e *Engine) resolveLoopPath(path []string, rs *runState) any {
 	loopName := path[0]
 	switch path[1] {
 	case "iteration":
@@ -346,7 +346,7 @@ const maxLoopStall = 3
 // the source output into a progress signature and counts consecutive crossings
 // where the signature is unchanged. Returns true once the loop has been stuck
 // at the same fixpoint for maxLoopStall crossings.
-func (e *Engine) loopStalled(loopName string, output map[string]interface{}, rs *runState) bool {
+func (e *Engine) loopStalled(loopName string, output map[string]any, rs *runState) bool {
 	sig := outputSignature(output)
 	if prev, ok := rs.loopProgressSig[loopName]; ok && prev == sig {
 		rs.loopStaleness[loopName]++
@@ -360,7 +360,7 @@ func (e *Engine) loopStalled(loopName string, output map[string]interface{}, rs 
 // outputSignature produces a stable string fingerprint of a node output for
 // liveness comparison. json.Marshal sorts map keys, so the signature is
 // deterministic for equal content.
-func outputSignature(output map[string]interface{}) string {
+func outputSignature(output map[string]any) string {
 	if b, err := json.Marshal(output); err == nil {
 		return string(b)
 	}
@@ -384,7 +384,7 @@ func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
 	if loop.MaxIterationsExpr == "" || len(loop.MaxIterationsExprRefs) == 0 {
 		return loop.MaxIterations
 	}
-	var resolved interface{}
+	var resolved any
 	for _, ref := range loop.MaxIterationsExprRefs {
 		v := e.resolveRef(ref, rs.scope())
 		if v != nil {
@@ -404,7 +404,7 @@ func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
 // carry for a numeric value: native ints, float64 (the JSON decoder
 // default), json.Number, and decimal-string scalars (some JS nodes
 // emit numbers as strings). Returns false for anything else.
-func coerceToInt(v interface{}) (int, bool) {
+func coerceToInt(v any) (int, bool) {
 	switch x := v.(type) {
 	case int:
 		return x, true
@@ -504,10 +504,10 @@ func (e *Engine) loadAttachmentInfos(ctx context.Context, runID string) map[stri
 // path, returning the final value (or nil if any segment is missing or
 // non-map). Used by every reference resolver that needs to descend into
 // node outputs / artifacts / loop snapshots.
-func drillPath(root interface{}, path []string) interface{} {
+func drillPath(root any, path []string) any {
 	cur := root
 	for _, key := range path {
-		m, ok := cur.(map[string]interface{})
+		m, ok := cur.(map[string]any)
 		if !ok {
 			return nil
 		}
@@ -522,7 +522,7 @@ func drillPath(root interface{}, path []string) interface{} {
 // node ids (`prefix.name`) from the dotted ref grammar at any nesting depth:
 // {{outputs.r1.gate.id}} with a node "r1.gate" yields (outputs["r1.gate"], ["id"]).
 // Returns (nil, nil) when no prefix matches.
-func matchOutputNode(outputs map[string]map[string]interface{}, path []string) (map[string]interface{}, []string) {
+func matchOutputNode(outputs map[string]map[string]any, path []string) (map[string]any, []string) {
 	for n := len(path); n >= 1; n-- {
 		id := strings.Join(path[:n], ".")
 		if out, ok := outputs[id]; ok {
@@ -544,8 +544,8 @@ func matchOutputNode(outputs map[string]map[string]interface{}, path []string) (
 // opaque "cannot compare X >= string" error). Defaults from the
 // .bot source are already typed by the IR compiler — we coerce
 // only on overrides.
-func (e *Engine) resolveVars(inputs map[string]interface{}) map[string]interface{} {
-	vars := make(map[string]interface{})
+func (e *Engine) resolveVars(inputs map[string]any) map[string]any {
+	vars := make(map[string]any)
 	// expandFn lets var values reference ${PROJECT_DIR} (resolved to the
 	// engine's workDir, possibly a worktree path) and any other env var.
 	// Applied to both string defaults AND string user-provided overrides:
@@ -676,7 +676,7 @@ func samePath(a, b string) bool {
 // coerceVarValue narrows a user-provided override (typically a
 // string from --var or POST /api/runs) to the type declared in the
 // IR for that var. Already-typed values pass through.
-func coerceVarValue(v interface{}, vt ir.VarType) (interface{}, error) {
+func coerceVarValue(v any, vt ir.VarType) (any, error) {
 	s, isStr := v.(string)
 	if !isStr {
 		return v, nil
@@ -708,7 +708,7 @@ func coerceVarValue(v interface{}, vt ir.VarType) (interface{}, error) {
 	case ir.VarJSON:
 		// Parse JSON; if the user gave us non-JSON text, leave it
 		// as a string — JSON expressions accept either.
-		var out interface{}
+		var out any
 		if err := json.Unmarshal([]byte(s), &out); err != nil {
 			return s, nil
 		}
@@ -716,18 +716,18 @@ func coerceVarValue(v interface{}, vt ir.VarType) (interface{}, error) {
 	case ir.VarStringArray:
 		trimmed := strings.TrimSpace(s)
 		if trimmed == "" {
-			return []interface{}{}, nil
+			return []any{}, nil
 		}
 		// Accept either JSON array form (["a","b"]) or
 		// comma-separated (a,b).
 		if strings.HasPrefix(trimmed, "[") {
-			var arr []interface{}
+			var arr []any
 			if err := json.Unmarshal([]byte(trimmed), &arr); err == nil {
 				return arr, nil
 			}
 		}
 		parts := strings.Split(trimmed, ",")
-		out := make([]interface{}, len(parts))
+		out := make([]any, len(parts))
 		for i, p := range parts {
 			out[i] = strings.TrimSpace(p)
 		}
@@ -743,7 +743,7 @@ func coerceVarValue(v interface{}, vt ir.VarType) (interface{}, error) {
 // matches the loop-counter at the moment the node was reached. Bails
 // on the first emit error.
 func (e *Engine) emitTerminalNodeEvents(rs *runState, nodeID string) error {
-	iter := map[string]interface{}{"iteration": e.currentLoopIteration(nodeID, rs.loopCounters)}
+	iter := map[string]any{"iteration": e.currentLoopIteration(nodeID, rs.loopCounters)}
 	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, nodeID, iter); err != nil {
 		return err
 	}

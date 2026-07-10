@@ -67,29 +67,29 @@ func TestRoundRobinAlternation(t *testing.T) {
 	iteration := 0
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ready": false}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ready": false}, nil
 	})
-	exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("judge", func(_ map[string]any) (map[string]any, error) {
 		mu.Lock()
 		iter := iteration
 		iteration++
 		mu.Unlock()
 		// Not ready for 4 iterations, then ready.
 		ready := iter >= 4
-		return map[string]interface{}{"ready": ready}, nil
+		return map[string]any{"ready": ready}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		mu.Lock()
 		callOrder = append(callOrder, "agent_a")
 		mu.Unlock()
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		mu.Lock()
 		callOrder = append(callOrder, "agent_b")
 		mu.Unlock()
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -163,23 +163,23 @@ func TestRoundRobinThreeTargets(t *testing.T) {
 	iteration := 0
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ready": false}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ready": false}, nil
 	})
-	exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("judge", func(_ map[string]any) (map[string]any, error) {
 		mu.Lock()
 		iter := iteration
 		iteration++
 		mu.Unlock()
-		return map[string]interface{}{"ready": iter >= 3}, nil
+		return map[string]any{"ready": iter >= 3}, nil
 	})
 	for _, id := range []string{"agent_a", "agent_b", "agent_c"} {
 		id := id
-		exec.on(id, func(_ map[string]interface{}) (map[string]interface{}, error) {
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
 			mu.Lock()
 			callOrder = append(callOrder, id)
 			mu.Unlock()
-			return map[string]interface{}{}, nil
+			return map[string]any{}, nil
 		})
 	}
 
@@ -235,14 +235,14 @@ func TestRoundRobinCounterPersistence(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "from_a"}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "from_a"}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "from_b"}, nil
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "from_b"}, nil
 	})
 
 	s := tmpStore(t)
@@ -284,12 +284,12 @@ func TestRoundRobinEvents(t *testing.T) {
 
 	iteration := 0
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ready": false}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ready": false}, nil
 	})
-	exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("judge", func(_ map[string]any) (map[string]any, error) {
 		iteration++
-		return map[string]interface{}{"ready": iteration >= 3}, nil
+		return map[string]any{"ready": iteration >= 3}, nil
 	})
 
 	s := tmpStore(t)
@@ -387,31 +387,31 @@ func TestRoundRobinWithDataMappings(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	var receivedInputs []map[string]interface{}
+	var receivedInputs []map[string]any
 	iteration := 0
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ready": false, "plan": "the-plan"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ready": false, "plan": "the-plan"}, nil
 	})
-	exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("judge", func(_ map[string]any) (map[string]any, error) {
 		mu.Lock()
 		iter := iteration
 		iteration++
 		mu.Unlock()
-		return map[string]interface{}{"ready": iter >= 2}, nil
+		return map[string]any{"ready": iter >= 2}, nil
 	})
-	exec.on("agent_a", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(input map[string]any) (map[string]any, error) {
 		mu.Lock()
 		receivedInputs = append(receivedInputs, copyMap(input))
 		mu.Unlock()
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("agent_b", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(input map[string]any) (map[string]any, error) {
 		mu.Lock()
 		receivedInputs = append(receivedInputs, copyMap(input))
 		mu.Unlock()
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -444,8 +444,8 @@ func TestRoundRobinWithDataMappings(t *testing.T) {
 	}
 }
 
-func copyMap(m map[string]interface{}) map[string]interface{} {
-	cp := make(map[string]interface{}, len(m))
+func copyMap(m map[string]any) map[string]any {
+	cp := make(map[string]any, len(m))
 	for k, v := range m {
 		cp[k] = v
 	}

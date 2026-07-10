@@ -85,7 +85,7 @@ func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 		Type:   store.EventNodeStarted,
 		RunID:  "run-live",
 		NodeID: "analyze",
-		Data:   map[string]interface{}{"kind": "agent"},
+		Data:   map[string]any{"kind": "agent"},
 	})
 
 	env := readEnvelope(t, c, wsTypeEvent)
@@ -146,7 +146,7 @@ func TestRunsWS_AlertEventBypassesSnapshotDedup(t *testing.T) {
 		Type:   store.EventAlert,
 		RunID:  runID,
 		NodeID: "analyze",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"kind":   "budget_warning",
 			"title":  "Budget warning: wf",
 			"reason": "tokens budget at 82%",

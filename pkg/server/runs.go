@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/SocialGouv/iterion/bots"
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -99,9 +100,16 @@ type launchRunRequest struct {
 	// studio sends this so the server pod doesn't need a shared
 	// filesystem; FilePath is then advisory (used for display + as the
 	// AST parserPath). When both are set, Source wins.
-	Source string            `json:"source,omitempty"`
-	RunID  string            `json:"run_id,omitempty"`
-	Vars   map[string]string `json:"vars,omitempty"`
+	Source string `json:"source,omitempty"`
+	// BotID names a catalog bundle (e.g. "whats-next") to launch. In cloud
+	// mode it lets the server resolve the bot's source off the pod's own
+	// bots/ tree (like the webhook/scheduler/board/trigger launchers) so a
+	// client need not upload the bytes, and it is carried on the LaunchSpec
+	// so the runner mirrors the bundle's skills. Optional: a catalog-shaped
+	// FilePath ("bots/<name>/main.bot") is inferred to the same id.
+	BotID string            `json:"bot_id,omitempty"`
+	RunID string            `json:"run_id,omitempty"`
+	Vars  map[string]string `json:"vars,omitempty"`
 	// Preset is the name of an in-source preset (presets: block) to
 	// apply before Vars. Maps directly to LaunchSpec.Preset; the engine
 	// records it on Run.Preset for resume.
@@ -184,10 +192,10 @@ type resumeRunRequest struct {
 	// Source carries the workflow contents inline. Used in cloud mode
 	// when the resumer (studio) wants to push a possibly-modified
 	// workflow without depending on the server pod's filesystem.
-	Source  string                 `json:"source,omitempty"`
-	Answers map[string]interface{} `json:"answers,omitempty"`
-	Force   bool                   `json:"force,omitempty"`
-	Timeout string                 `json:"timeout,omitempty"`
+	Source  string         `json:"source,omitempty"`
+	Answers map[string]any `json:"answers,omitempty"`
+	Force   bool           `json:"force,omitempty"`
+	Timeout string         `json:"timeout,omitempty"`
 }
 
 type cancelRunResponse struct {
@@ -228,7 +236,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list runs: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"runs": out})
+	s.writeJSONFor(w, r, map[string]any{"runs": out})
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -255,18 +263,27 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
-	if req.FilePath == "" && req.Source == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required")
-		span.SetStatus(codes.Error, "missing file_path/source")
+	if req.FilePath == "" && req.Source == "" && req.BotID == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "file_path, source or bot_id is required")
+		span.SetStatus(codes.Error, "missing file_path/source/bot_id")
 		return
 	}
-	// Cloud mode rejects bare FilePath because the server pod has no
-	// shared filesystem with the operator. Inline Source is the only
-	// path that works cloud-side; document it explicitly so the studio
-	// SPA / CLI / curl users see an actionable 400 instead of a
-	// silent file-not-found further down the publish chain.
+	// Cloud mode has no operator filesystem, so a bare workspace file_path
+	// can't be read. But a CATALOG bot (bots/<name>) IS present on both the
+	// server and runner pod images — resolve it off the pod FS (like the
+	// webhook/scheduler/board/trigger launchers) and carry BotID so the
+	// runner mirrors the bundle's skills. This is what lets the studio
+	// launch Nexie/Revi/etc. by id or catalog path without uploading bytes.
+	botID := strings.TrimSpace(req.BotID)
 	if s.cfg.Mode == "cloud" && req.Source == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source is required (file_path is not portable across the server pod's filesystem)")
+		if src, p, id, ok := s.catalogBotSource(req.BotID, req.FilePath); ok {
+			req.Source, req.FilePath, botID = src, p, id
+		}
+	}
+	// Anything that is not a resolvable catalog bundle still requires inline
+	// Source in cloud: the server pod cannot read an arbitrary operator path.
+	if s.cfg.Mode == "cloud" && req.Source == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source or a catalog bot_id is required (file_path is not portable across the server pod's filesystem)")
 		span.SetStatus(codes.Error, "cloud mode requires source")
 		return
 	}
@@ -301,6 +318,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
 		FilePath:           absPath,
 		Source:             req.Source,
+		BotID:              botID,
 		RunID:              req.RunID,
 		Vars:               req.Vars,
 		Preset:             req.Preset,
@@ -448,7 +466,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 		if events == nil {
 			events = []*store.Event{}
 		}
-		s.writeJSONFor(w, r, map[string]interface{}{"events": events})
+		s.writeJSONFor(w, r, map[string]any{"events": events})
 		return
 	}
 	events, err := s.runs.LoadEventsCtx(r.Context(), id, from, to)
@@ -459,7 +477,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []*store.Event{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"events": events})
+	s.writeJSONFor(w, r, map[string]any{"events": events})
 }
 
 func (s *Server) handleGetRunWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -513,7 +531,7 @@ func (s *Server) handleListAllArtifacts(w http.ResponseWriter, r *http.Request) 
 	if out == nil {
 		out = []runview.RunArtifactSummary{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"artifacts": out})
+	s.writeJSONFor(w, r, map[string]any{"artifacts": out})
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -539,7 +557,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []runview.ArtifactSummary{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"artifacts": out})
+	s.writeJSONFor(w, r, map[string]any{"artifacts": out})
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
@@ -668,7 +686,7 @@ func (s *Server) handleListPlans(w http.ResponseWriter, r *http.Request) {
 	if plans == nil {
 		plans = []store.PlanSnapshot{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"plans": plans})
+	s.writeJSONFor(w, r, map[string]any{"plans": plans})
 }
 
 // handleListArtifactFiles returns the manifest of tool-produced files
@@ -691,7 +709,7 @@ func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request)
 	if files == nil {
 		files = []store.RunFileInfo{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"files": files})
+	s.writeJSONFor(w, r, map[string]any{"files": files})
 }
 
 // handleGetArtifactFile streams one tool-produced file by relative
@@ -940,11 +958,11 @@ func (s *Server) handlePauseRun(w http.ResponseWriter, r *http.Request) {
 // stays decoupled from the service struct (we can deprecate fields
 // without breaking ForkSpec consumers).
 type forkRunRequest struct {
-	NodeID     string                 `json:"node_id"`
-	TurnIndex  int                    `json:"turn_index,omitempty"`
-	RewindCode bool                   `json:"rewind_code,omitempty"`
-	ForkName   string                 `json:"fork_name,omitempty"`
-	NewInputs  map[string]interface{} `json:"new_inputs,omitempty"`
+	NodeID     string         `json:"node_id"`
+	TurnIndex  int            `json:"turn_index,omitempty"`
+	RewindCode bool           `json:"rewind_code,omitempty"`
+	ForkName   string         `json:"fork_name,omitempty"`
+	NewInputs  map[string]any `json:"new_inputs,omitempty"`
 }
 
 func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
@@ -1034,7 +1052,7 @@ func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request
 	if msgs == nil {
 		msgs = []store.QueuedUserMessage{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"messages": msgs})
+	s.writeJSONFor(w, r, map[string]any{"messages": msgs})
 }
 
 type queueMessageRequest struct {
@@ -1139,30 +1157,41 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
-	// Cloud mode rejects bare FilePath for the same reason as launch:
-	// the server pod has no operator filesystem. Resume must carry an
-	// inline source (or have one persisted on the original launch).
-	if s.cfg.Mode == "cloud" && req.Source == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source is required (file_path is not portable across the server pod's filesystem)")
-		span.SetStatus(codes.Error, "cloud mode requires source")
+	// Load the run once: its persisted FilePath is the fallback when the body
+	// omits one, and its TenantID is required to scope the resume's Mongo
+	// queries (see below). LoadRunCtx looks a run up by id without a tenant
+	// filter, so it is safe to call before the tenant is on the context.
+	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		span.SetStatus(codes.Error, "run not found")
 		return
 	}
 	// Resolve file path: explicit body wins, falling back to the
 	// FilePath persisted at launch.
 	filePath := req.FilePath
 	if filePath == "" {
-		runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
-		if err != nil {
-			s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
-			span.SetStatus(codes.Error, "run not found")
-			return
-		}
 		filePath = runMeta.FilePath
 		if filePath == "" && req.Source == "" {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required (run has no persisted FilePath)")
 			span.SetStatus(codes.Error, "missing file_path/source")
 			return
 		}
+	}
+	// Cloud mode has no operator filesystem, so resume must carry inline
+	// source — UNLESS the run's (persisted) FilePath is a catalog bundle
+	// present on the pod, which we read off the pod FS just like launch.
+	// The run's BotID is already persisted + propagated by SubmitResume, so
+	// the runner still mirrors skills; here we only need the source bytes.
+	if s.cfg.Mode == "cloud" && req.Source == "" {
+		if src, _, _, ok := s.catalogBotSource("", filePath); ok {
+			req.Source = src
+		}
+	}
+	if s.cfg.Mode == "cloud" && req.Source == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "cloud mode: source or a catalog bot is required (file_path is not portable across the server pod's filesystem)")
+		span.SetStatus(codes.Error, "cloud mode requires source")
+		return
 	}
 	absPath, pathErr := s.resolveWorkflowPath(filePath, req.Source)
 	if pathErr != nil {
@@ -1178,6 +1207,22 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.WithoutCancel(spanCtx)
+	// Scope the resume to a tenant: Resume runs tenant-scoped store queries
+	// (cloud Mongo) that panic without a tenant on the context — the HTTP
+	// middleware authenticates the /api/runs route but does NOT stamp the store
+	// tenant marker (unlike the /api/teams/{id}/… routes). Prefer the run's own
+	// TenantID (the authoritative owner — a super-admin may resume a run in any
+	// team); fall back to the caller's active team when the run has none, which
+	// happens for a run orphaned before it ever executed (the runner stamps
+	// TenantID at execution start, so a never-run queued/failed row can be
+	// empty). Empty on a local single-tenant store → WithTenant no-ops.
+	tenantID := runMeta.TenantID
+	if tenantID == "" {
+		if id, ok := auth.FromContext(r.Context()); ok {
+			tenantID = id.TeamID
+		}
+	}
+	ctx = store.WithTenant(ctx, tenantID)
 	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,
@@ -1247,6 +1292,64 @@ func (s *Server) resolveWorkflowPath(filePath, source string) (string, error) {
 		return cached, nil
 	}
 	return "", err
+}
+
+// catalogBotSource resolves an inline source for a catalog bot referenced by
+// an explicit bot id or a catalog-shaped file path. It reads the bundle's
+// main.bot off the server pod's own bots/ tree (the same FS-read the
+// webhook/scheduler/board/trigger launchers use via resolveBotSource) and
+// returns the source, its absolute path, and the resolved bot id.
+//
+// This is what lets a CLOUD launch/resume reference a catalog bundle
+// (whats-next, review-pr, …) without the client uploading its bytes: the
+// bundle is present on both the server and runner pod images, and returning
+// the bot id lets the caller set LaunchSpec.BotID so the runner mirrors the
+// bundle's skills. ok=false when the id/path does not resolve to a real
+// catalog bundle — the caller then keeps the strict cloud "source required"
+// gate, so an arbitrary operator/workspace path is never read off the pod.
+func (s *Server) catalogBotSource(botID, filePath string) (source, path, resolvedID string, ok bool) {
+	id := strings.TrimSpace(botID)
+	if id == "" {
+		id = inferCatalogBotID(filePath)
+	}
+	if id == "" {
+		return "", "", "", false
+	}
+	p, src, err := s.resolveBotSource(id)
+	if err != nil {
+		return "", "", "", false
+	}
+	return src, p, id, true
+}
+
+// inferCatalogBotID extracts a catalog bot name from a workflow file path:
+// "bots/whats-next/main.bot", "/opt/iterion/bots/whats-next/main.bot",
+// "examples/foo/main.bot", "whats-next/main.bot", "whats-next", and
+// "hello.bot" all map to their bundle-dir / basename. Returns "" for an
+// absolute path with no bots|examples segment (an arbitrary workspace file
+// that must still carry inline source in cloud). The returned id is only a
+// candidate — catalogBotSource confirms it against the real catalog.
+func inferCatalogBotID(filePath string) string {
+	fp := filepath.ToSlash(strings.TrimSpace(filePath))
+	if fp == "" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(fp, "./"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "bots" || parts[i] == "examples" {
+			return parts[i+1]
+		}
+	}
+	if filepath.IsAbs(filePath) {
+		return ""
+	}
+	if len(parts) >= 2 && parts[len(parts)-1] == "main.bot" {
+		return parts[len(parts)-2]
+	}
+	if len(parts) == 1 {
+		return strings.TrimSuffix(parts[0], ".bot")
+	}
+	return ""
 }
 
 // resolveCachedInlineSource returns filePath unchanged when it points at an

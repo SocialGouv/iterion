@@ -29,13 +29,15 @@ func TestMaterializeFileSecretsNoSandboxRejectsOutOfTreeMountPath(t *testing.T) 
 		// Sandbox nil → the no-sandbox materialize path runs.
 	}
 
-	cleanup, err := r.materializeFileSecretsNoSandbox(ctx, wf)
+	written, cleanup, err := r.materializeFileSecretsNoSandbox(ctx, wf)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cleanup != nil {
-		cleanup()
-		t.Fatalf("expected no cleanup func — nothing should have been written")
+	if cleanup != nil || len(written) != 0 {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatalf("expected nothing written, got %v", written)
 	}
 	if _, statErr := os.Stat(evil); !os.IsNotExist(statErr) {
 		t.Fatalf("out-of-tree secret file was written despite the containment guard: %s (stat err: %v)", evil, statErr)

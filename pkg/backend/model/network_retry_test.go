@@ -70,7 +70,7 @@ func TestRetryDelegateLoop_RecoversMidBudget(t *testing.T) {
 		if calls < 3 {
 			return delegate.Result{}, errors.New("ECONNRESET") // network blip
 		}
-		return delegate.Result{Output: map[string]interface{}{"ok": true}}, nil
+		return delegate.Result{Output: map[string]any{"ok": true}}, nil
 	})
 	if err != nil {
 		t.Fatalf("expected recovery on the 3rd attempt, got %v", err)

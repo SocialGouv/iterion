@@ -72,13 +72,13 @@ func applyHostStateMounts(
 	spec *sandbox.Spec,
 	wf *ir.Workflow,
 	p SandboxParams,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) {
 	resolvedHostState, hsSource := pickHostState(workflowHostState(wf), p.HostStateOverride, p.HostStateDefault)
 	spec.HostState = sandbox.HostState(resolvedHostState)
 	if !spec.HostState.Active() {
-		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
 			"enabled": false,
 			"source":  hsSource,
 		})
@@ -99,9 +99,19 @@ func applyHostStateMounts(
 
 	homeDir := resolveHostHomeDir()
 	iterionHomeDir := store.GlobalIterionDataDir()
-	var claudeDir, codexDir, gitConfigPath string
+	var claudeDir, claudeConfigPath, codexDir, gitConfigPath string
 	if homeDir != "" {
 		claudeDir = filepath.Join(homeDir, ".claude")
+		// `~/.claude.json` is Claude Code's TOP-LEVEL config file — a
+		// sibling of the ~/.claude directory, NOT inside it. Without it
+		// the in-container CLI refuses to start when the mounted
+		// ~/.claude/backups/ holds a config backup (written by the
+		// operator's HOST sessions): it demands a manual restore, loops
+		// the complaint on stderr, and in --print stream-json mode never
+		// emits a single stdout byte nor exits — which the delegate sees
+		// as a 90s cold-phase timeout on EVERY attempt (native:221edac8,
+		// root-caused live on the 2026-07-07 sandboxed dogfood probes).
+		claudeConfigPath = filepath.Join(homeDir, ".claude.json")
 		// `~/.codex/auth.json` is where Codex CLI persists the
 		// "Sign in with ChatGPT" OAuth token + account_id. claw's
 		// OpenAI provider reads it when no OPENAI_API_KEY is set —
@@ -127,7 +137,7 @@ func applyHostStateMounts(
 		gitConfigPath = filepath.Join(homeDir, ".gitconfig")
 	}
 
-	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir, codexDir, gitConfigPath)
+	mounts := collectHostStateMounts(absWorkspace, iterionHomeDir, claudeDir, claudeConfigPath, codexDir, gitConfigPath)
 	mountPairs := make([]string, 0, len(mounts))
 	for _, m := range mounts {
 		entry := fmt.Sprintf("source=%s,target=%s,type=bind", m.HostPath, m.ContainerPath)
@@ -241,7 +251,7 @@ func applyHostStateMounts(
 
 	applyHostUIDRemap(spec, emitEvent, logger)
 
-	_ = emitEvent(store.EventSandboxHostStateMounted, map[string]interface{}{
+	_ = emitEvent(store.EventSandboxHostStateMounted, map[string]any{
 		"enabled":          true,
 		"source":           hsSource,
 		"workspace_folder": spec.WorkspaceFolder,
@@ -319,7 +329,7 @@ func mountTarget(entry string) string {
 // (CI runners) is also a no-op — same UID either way.
 func applyHostUIDRemap(
 	spec *sandbox.Spec,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) {
 	if goruntime.GOOS != "linux" {
@@ -332,7 +342,7 @@ func applyHostUIDRemap(
 	}
 	if spec.User == "" {
 		spec.User = strconv.Itoa(hostUID) + ":" + strconv.Itoa(hostGID)
-		_ = emitEvent(store.EventSandboxUserRemap, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxUserRemap, map[string]any{
 			"uid":    hostUID,
 			"gid":    hostGID,
 			"reason": "host_state=auto: align container UID with host so writes to ~/.iterion + ~/.claude remain host-owned",
@@ -341,7 +351,7 @@ func applyHostUIDRemap(
 	}
 	specUID, ok := parseUserUID(spec.User)
 	if ok && specUID != hostUID {
-		_ = emitEvent(store.EventSandboxUIDMismatchWarning, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxUIDMismatchWarning, map[string]any{
 			"spec_user": spec.User,
 			"host_uid":  hostUID,
 		})

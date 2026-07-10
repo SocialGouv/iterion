@@ -68,6 +68,11 @@ func main() {
 		}
 	}
 
+	// Make the embedded webview render reliably across GPUs before Wails boots
+	// GTK/WebKit (Linux: disables the DMABUF renderer that goes black on
+	// NVIDIA/hybrid/VM setups). No-op on macOS / Windows.
+	applyLinuxWebKitFixes()
+
 	// Prime GTK with the system's color-scheme preference (Linux only)
 	// before Wails boots the GTK runtime. No-op on macOS / Windows.
 	applyLinuxSystemTheme()
@@ -144,7 +149,7 @@ func main() {
 		OnShutdown:    app.onShutdown,
 		OnDomReady:    app.onDomReady,
 		OnBeforeClose: app.onBeforeClose,
-		Bind:          []interface{}{app},
+		Bind:          []any{app},
 		Menu:          buildMenu(app),
 	})
 	if err != nil {

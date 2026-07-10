@@ -10,15 +10,33 @@ import "@xyflow/react/dist/style.css";
 // `--font-mono` tokens in app.css.
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
+import { Router } from "wouter";
 import App from "./App";
+import WorkspaceShell from "./workspace/WorkspaceShell";
 import "./app.css";
 import { initializeTheme } from "./store/theme";
 import { initializeBackendDetect } from "./store/backendDetect";
 import { initializeServerInfo } from "./store/serverInfo";
+import { isWailsHosted } from "./lib/desktopBridge";
+import { isScopedPane, scopePrefix } from "./lib/scope";
+
+// Desktop workspace shell vs. studio app. The DESKTOP main frame (a Wails
+// origin with NO scope) renders the WorkspaceShell — the tab/split chrome that
+// hosts one scoped <iframe> pane per open connection. A PANE (Wails origin WITH
+// a scope) and plain BROWSER mode both render the normal studio App, the pane
+// routed under its /x/<id> base. isWailsHosted() is synchronous (origin check),
+// so the branch is stable at first paint even before window.go finishes
+// injecting — unlike isDesktop(), which would briefly read false.
+const isWorkspaceShell = isWailsHosted() && !isScopedPane();
 
 initializeTheme();
-initializeBackendDetect();
-initializeServerInfo();
+// The workspace shell talks to no single backend, so skip the boot-time
+// backend/server probes (they'd hit the legacy /api primary); each pane runs
+// its own probes scoped to its connection.
+if (!isWorkspaceShell) {
+  initializeBackendDetect();
+  initializeServerInfo();
+}
 
 // Single QueryClient for the whole SPA. Defaults tuned for an
 // interactive studio:
@@ -42,7 +60,13 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      {isWorkspaceShell ? (
+        <WorkspaceShell />
+      ) : (
+        <Router base={scopePrefix()}>
+          <App />
+        </Router>
+      )}
     </QueryClientProvider>
   </StrictMode>,
 );

@@ -4,7 +4,7 @@ import "testing"
 
 func TestRemoveEmptyStrings(t *testing.T) {
 	rules := DefaultSanitizationRules()
-	args := map[string]interface{}{
+	args := map[string]any{
 		"file_path": "/tmp/test.go",
 		"pages":     "",
 		"limit":     "",
@@ -27,7 +27,7 @@ func TestRemoveEmptyStrings(t *testing.T) {
 
 func TestCodexWorkspace(t *testing.T) {
 	rules := DefaultSanitizationRules()
-	args := map[string]interface{}{
+	args := map[string]any{
 		"prompt":  "hello",
 		"sandbox": "read-only",
 	}
@@ -49,7 +49,7 @@ func TestCodexWorkspace(t *testing.T) {
 
 func TestCodexWorkspaceNoWorkDir(t *testing.T) {
 	rules := DefaultSanitizationRules()
-	args := map[string]interface{}{"prompt": "hello"}
+	args := map[string]any{"prompt": "hello"}
 	for _, rule := range rules {
 		if rule.Match("codex") {
 			rule.Apply("codex", args, "")
@@ -64,7 +64,7 @@ func TestReadLimitCap(t *testing.T) {
 	rules := DefaultSanitizationRules()
 
 	t.Run("no limit set", func(t *testing.T) {
-		args := map[string]interface{}{"file_path": "/tmp/f.go"}
+		args := map[string]any{"file_path": "/tmp/f.go"}
 		for _, rule := range rules {
 			if rule.Match("Read") {
 				rule.Apply("Read", args, "")
@@ -76,7 +76,7 @@ func TestReadLimitCap(t *testing.T) {
 	})
 
 	t.Run("limit too high", func(t *testing.T) {
-		args := map[string]interface{}{"file_path": "/tmp/f.go", "limit": float64(9999)}
+		args := map[string]any{"file_path": "/tmp/f.go", "limit": float64(9999)}
 		for _, rule := range rules {
 			if rule.Match("Read") {
 				rule.Apply("Read", args, "")
@@ -88,7 +88,7 @@ func TestReadLimitCap(t *testing.T) {
 	})
 
 	t.Run("limit within range", func(t *testing.T) {
-		args := map[string]interface{}{"file_path": "/tmp/f.go", "limit": float64(100)}
+		args := map[string]any{"file_path": "/tmp/f.go", "limit": float64(100)}
 		for _, rule := range rules {
 			if rule.Match("Read") {
 				rule.Apply("Read", args, "")
@@ -100,7 +100,7 @@ func TestReadLimitCap(t *testing.T) {
 	})
 
 	t.Run("pages set skips limit", func(t *testing.T) {
-		args := map[string]interface{}{"file_path": "/tmp/f.pdf", "pages": "1-5"}
+		args := map[string]any{"file_path": "/tmp/f.pdf", "pages": "1-5"}
 		for _, rule := range rules {
 			if rule.Match("Read") {
 				rule.Apply("Read", args, "")
@@ -117,7 +117,7 @@ func TestCustomRules(t *testing.T) {
 		{
 			Name:  "test-rule",
 			Match: func(name string) bool { return name == "MyTool" },
-			Apply: func(_ string, args map[string]interface{}, _ string) {
+			Apply: func(_ string, args map[string]any, _ string) {
 				args["injected"] = true
 			},
 		},

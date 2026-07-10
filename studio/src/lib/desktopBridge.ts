@@ -6,6 +6,8 @@
 //
 // The shape of `window.go.main.App.*` mirrors the Go method names exactly.
 
+import { isScopedPane } from "./scope";
+
 export interface AppInfo {
   version: string;
   commit: string;
@@ -20,10 +22,24 @@ export interface AppInfo {
 export interface Project {
   id: string;
   name: string;
+  // kind discriminates the connection: "local" (a directory served by the
+  // embedded server / per-project daemon) or "cloud" (a remote iterion
+  // instance reached over the authenticating loopback proxy). Empty/absent
+  // is treated as "local" for backwards compatibility with v1 configs.
+  kind?: "local" | "cloud";
   dir: string;
   store_dir?: string;
   last_opened: string; // ISO timestamp
   color?: string;
+  // Cloud-connection fields (kind === "cloud" only).
+  cloud_url?: string;
+  cloud_email?: string;
+}
+
+// isCloudConnection reports whether a Project entry is a remote cloud
+// connection (mirrors Go's Project.IsCloud).
+export function isCloudConnection(p: Project): boolean {
+  return p.kind === "cloud";
 }
 
 export interface SecretStatus {
@@ -50,10 +66,33 @@ export interface Release {
   released_at: string;
 }
 
+// CloudUserSummary is the identity the desktop returns after a cloud login —
+// enough to name the connection; the full org tree comes from /api/auth/me
+// through the proxy.
+export interface CloudUserSummary {
+  id: string;
+  email: string;
+  name?: string;
+  is_super_admin: boolean;
+  active_org_id?: string;
+  active_team_id?: string;
+}
+
+export interface CloudProvider {
+  name: string;
+  display: string;
+}
+
+export interface CloudProviders {
+  signup_mode: string;
+  providers: CloudProvider[];
+}
+
 // Internal: shape of the window.go object Wails injects.
 interface WailsBindings {
   GetServerURL: () => Promise<string>;
   GetSessionToken: () => Promise<string>;
+  GetWsTicket: () => Promise<string>;
   GetDaemonURLForStore: (storePath: string) => Promise<string>;
   SaveTextFile: (suggestedFilename: string, content: string) => Promise<string>;
   SaveBinaryFile: (suggestedFilename: string, base64Data: string) => Promise<string>;
@@ -63,13 +102,27 @@ interface WailsBindings {
   OpenExternal: (url: string) => Promise<void>;
   RevealInFinder: (path: string) => Promise<void>;
   ListProjects: () => Promise<Project[]>;
+  ListConnections: () => Promise<Project[]>;
   GetCurrentProject: () => Promise<Project | null>;
   AddProject: (dir: string) => Promise<Project>;
   AddProjectSilently: (dir: string) => Promise<Project>;
   RemoveProject: (id: string) => Promise<void>;
+  RemoveConnection: (id: string) => Promise<void>;
   SwitchProject: (id: string) => Promise<void>;
+  // Workspace (multi-connection): open/close a connection as a live pane and
+  // list the currently-open ones. OpenConnection activates the backend (spawn
+  // local daemon / hydrate cloud jar) without changing any "current" pointer.
+  OpenConnection: (id: string) => Promise<Project>;
+  CloseConnection: (id: string) => Promise<void>;
+  GetOpenConnections: () => Promise<string[]>;
   PickProjectDirectory: () => Promise<string>;
   ScaffoldProject: (dir: string) => Promise<void>;
+  // Cloud connections (password + SSO auth).
+  ConnectCloud: (cloudURL: string, email: string, password: string) => Promise<Project>;
+  ConnectCloudSSO: (cloudURL: string, provider: string) => Promise<Project>;
+  LoginCloud: (connID: string, email: string, password: string) => Promise<CloudUserSummary>;
+  LogoutCloud: (connID: string) => Promise<void>;
+  ListCloudProviders: (cloudURL: string, email: string) => Promise<CloudProviders>;
   GetKnownSecretKeys: () => Promise<string[]>;
   GetSecretStatuses: () => Promise<SecretStatus[]>;
   SetSecret: (key: string, value: string) => Promise<void>;
@@ -95,6 +148,12 @@ declare global {
 }
 
 export function isDesktop(): boolean {
+  // A workspace pane (iframe at /x/<connID>/) must NOT use the Wails IPC:
+  // Wails evaluates a binding's result callback into the MAIN frame, so a call
+  // from the iframe would hang. Wails may still inject window.go into the
+  // iframe, so gate explicitly on the scope marker — a scoped pane behaves as
+  // browser-mode against its demuxed /x/<id>/api, with WS resolved over HTTP.
+  if (isScopedPane()) return false;
   return (
     typeof window !== "undefined" &&
     !!window.go &&
@@ -145,6 +204,7 @@ export const desktop = {
 
   getServerURL: () => call("GetServerURL"),
   getSessionToken: () => call("GetSessionToken"),
+  getWsTicket: () => call("GetWsTicket"),
   // getDaemonURLForStore resolves the daemon URL serving the given iterion
   // store path. Used by RunsPanel's "in other locations" section to deep-link
   // cross-daemon runs without 404ing. Returns "" when no live daemon is found
@@ -162,15 +222,32 @@ export const desktop = {
   openExternal: (url: string) => call("OpenExternal", url),
   revealInFinder: (path: string) => call("RevealInFinder", path),
 
-  // Projects
+  // Projects / connections (the unified MRU list holds both local projects
+  // and remote cloud connections; listConnections is the semantic alias).
   listProjects: () => call("ListProjects"),
+  listConnections: () => call("ListConnections"),
   getCurrentProject: () => call("GetCurrentProject"),
   addProject: (dir: string) => call("AddProject", dir),
   addProjectSilently: (dir: string) => call("AddProjectSilently", dir),
   removeProject: (id: string) => call("RemoveProject", id),
+  removeConnection: (id: string) => call("RemoveConnection", id),
   switchProject: (id: string) => call("SwitchProject", id),
+  openConnection: (id: string) => call("OpenConnection", id),
+  closeConnection: (id: string) => call("CloseConnection", id),
+  getOpenConnections: () => call("GetOpenConnections"),
   pickProjectDirectory: () => call("PickProjectDirectory"),
   scaffoldProject: (dir: string) => call("ScaffoldProject", dir),
+
+  // Cloud connections
+  connectCloud: (cloudURL: string, email: string, password: string) =>
+    call("ConnectCloud", cloudURL, email, password),
+  connectCloudSSO: (cloudURL: string, provider: string) =>
+    call("ConnectCloudSSO", cloudURL, provider),
+  loginCloud: (connID: string, email: string, password: string) =>
+    call("LoginCloud", connID, email, password),
+  logoutCloud: (connID: string) => call("LogoutCloud", connID),
+  listCloudProviders: (cloudURL: string, email: string) =>
+    call("ListCloudProviders", cloudURL, email),
 
   // Secrets
   getKnownSecretKeys: () => call("GetKnownSecretKeys"),
@@ -199,12 +276,14 @@ export const desktop = {
  * WebSocket upgrades with 501, so the studio's WS clients must dial the
  * embedded HTTP server DIRECTLY at http://127.0.0.1:<port>/api/ws...
  *
- * This helper resolves to that absolute ws:// URL with the session token
- * on the query string (the only auth channel available across this origin
- * boundary — HttpOnly cookies set on the loopback domain are not sent
- * cross-origin from wails://). In browser/CLI mode the SPA shares an origin
- * with the API so we hand back a relative URL that the caller's
- * `${proto}//${host}` derivation already handles.
+ * This helper resolves to that absolute ws:// URL with an auth credential on
+ * the query string (the only channel available across this origin boundary —
+ * HttpOnly cookies set on the loopback/cloud domain are not sent cross-origin
+ * from wails://). For a CLOUD connection it mints a fresh single-use WS ticket
+ * per dial (?ticket=), so a long-lived JWT never lands in the URL; it falls
+ * back to ?t=<token> when no ticket is available (local mode returns neither).
+ * In browser/CLI mode the SPA shares an origin with the API so we hand back a
+ * relative URL that the caller's `${proto}//${host}` derivation already handles.
  *
  * The resolved URL is cached per server URL so a project switch
  * (which rebinds the server on a new ephemeral port and triggers
@@ -243,7 +322,21 @@ export async function getDesktopWsBase(path: string): Promise<string | null> {
   }
   const base = cachedDesktopWsBase.wsBase;
   const u = new URL(base + path);
-  if (token) u.searchParams.set("t", token);
+  // Prefer a single-use WS ticket (cloud) so the access JWT never enters the
+  // URL; fall back to ?t=<token> when no ticket is available. Tickets are
+  // single-use, so this mints a fresh one per dial. A mint failure degrades to
+  // the token rather than breaking the connection.
+  let ticket = "";
+  try {
+    ticket = await desktop.getWsTicket();
+  } catch {
+    ticket = "";
+  }
+  if (ticket) {
+    u.searchParams.set("ticket", ticket);
+  } else if (token) {
+    u.searchParams.set("t", token);
+  }
   return u.toString();
 }
 

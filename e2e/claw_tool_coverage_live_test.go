@@ -267,13 +267,13 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		model.WithEventHooks(hooks),
 	)
 	defer executor.Close()
-	executor.SetVars(map[string]interface{}{"workspace_dir": workspaceDir})
+	executor.SetVars(map[string]any{"workspace_dir": workspaceDir})
 
 	eng := runtime.New(wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	if runErr := eng.Run(ctx, runID, map[string]interface{}{}); runErr != nil {
+	if runErr := eng.Run(ctx, runID, map[string]any{}); runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
 	}
 	r, _ := s.LoadRun(context.Background(), runID)
@@ -413,7 +413,7 @@ func TestLive_ClawToolCoverage(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
 			continue
 		}
-		out, _ := evt.Data["output"].(map[string]interface{})
+		out, _ := evt.Data["output"].(map[string]any)
 		if out == nil {
 			continue
 		}

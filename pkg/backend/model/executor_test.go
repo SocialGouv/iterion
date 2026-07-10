@@ -321,7 +321,7 @@ func TestSchemaToJSON(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestSchemaToJSON(t *testing.T) {
 		t.Errorf("expected type=object, got %v", parsed["type"])
 	}
 
-	props, ok := parsed["properties"].(map[string]interface{})
+	props, ok := parsed["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("missing properties")
 	}
@@ -343,8 +343,8 @@ func TestSchemaToJSON(t *testing.T) {
 	assertPropType(t, props, "score", "number")
 	assertPropType(t, props, "tags", "array")
 
-	status := props["status"].(map[string]interface{})
-	enumVals, ok := status["enum"].([]interface{})
+	status := props["status"].(map[string]any)
+	enumVals, ok := status["enum"].([]any)
 	if !ok {
 		t.Fatal("missing enum for status")
 	}
@@ -352,7 +352,7 @@ func TestSchemaToJSON(t *testing.T) {
 		t.Errorf("expected 2 enum values, got %d", len(enumVals))
 	}
 
-	req, ok := parsed["required"].([]interface{})
+	req, ok := parsed["required"].([]any)
 	if !ok {
 		t.Fatal("missing required")
 	}
@@ -372,9 +372,9 @@ func TestSchemaToJSONNil(t *testing.T) {
 	}
 }
 
-func assertPropType(t *testing.T, props map[string]interface{}, field, expectedType string) {
+func assertPropType(t *testing.T, props map[string]any, field, expectedType string) {
 	t.Helper()
-	p, ok := props[field].(map[string]interface{})
+	p, ok := props[field].(map[string]any)
 	if !ok {
 		t.Errorf("missing property %q", field)
 		return
@@ -414,7 +414,7 @@ func TestExecuteLLMTextGeneration(t *testing.T) {
 		LLMFields: ir.LLMFields{Model: "test/test-model", SystemPrompt: "system_review"},
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"diff": "some diff content",
 	})
 	if err != nil {
@@ -489,7 +489,7 @@ func TestExecuteLLMStructuredOutput(t *testing.T) {
 		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"review": "code looks clean",
 	})
 	if err != nil {
@@ -536,7 +536,7 @@ func TestExecutorEventHooks(t *testing.T) {
 		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
+	_, err := exec.Execute(context.Background(), node, map[string]any{"prompt": "hello"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestExecutorToolNode(t *testing.T) {
 		Command:  "git_diff",
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"branch": "feature",
 	})
 	if err != nil {
@@ -599,7 +599,7 @@ func TestExecutorToolNodeTextOutput(t *testing.T) {
 		Command:  "echo",
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	output, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -629,7 +629,7 @@ func TestExecutorToolNodeShellCommand(t *testing.T) {
 		CommandRefs: refs,
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"message": "hello world",
 	})
 	if err != nil {
@@ -661,7 +661,7 @@ func TestExecutorToolNodeShellMultipleRefs(t *testing.T) {
 		CommandRefs: refs,
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"name":  "foo",
 		"value": "bar",
 	})
@@ -694,7 +694,7 @@ func TestExecutorToolNodeShellJSONOutput(t *testing.T) {
 		CommandRefs: refs,
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"status": "ok",
 	})
 	if err != nil {
@@ -727,7 +727,7 @@ func TestExecutorToolNodeShellInjection(t *testing.T) {
 	}
 
 	malicious := "'; echo INJECTED; echo '"
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"msg": malicious,
 	})
 	if err != nil {
@@ -777,7 +777,7 @@ func TestExecutorToolNodeEnvVarInjectionAfterEscape(t *testing.T) {
 	// `''; touch <sentinel>; echo ''` which sh would interpret as three
 	// commands: an empty string, a `touch`, and another empty string.
 	payload := "$ITERION_TEST_INJECT"
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"msg": payload,
 	})
 	if err != nil {
@@ -822,7 +822,7 @@ func TestExecutorToolNodeEnvVarInTemplateStillExpands(t *testing.T) {
 		CommandRefs: refs,
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"suffix": "tail",
 	})
 	if err != nil {
@@ -840,67 +840,67 @@ func TestResolveCommandTemplate(t *testing.T) {
 	tests := []struct {
 		name    string
 		command string
-		input   map[string]interface{}
+		input   map[string]any
 		want    string
 	}{
 		{
 			name:    "single ref",
 			command: "echo {{input.msg}}",
-			input:   map[string]interface{}{"msg": "hello"},
+			input:   map[string]any{"msg": "hello"},
 			want:    "echo 'hello'",
 		},
 		{
 			name:    "multiple refs",
 			command: "git -C {{input.dir}} commit -m {{input.msg}}",
-			input:   map[string]interface{}{"dir": "/tmp/repo", "msg": "feat: port"},
+			input:   map[string]any{"dir": "/tmp/repo", "msg": "feat: port"},
 			want:    "git -C '/tmp/repo' commit -m 'feat: port'",
 		},
 		{
 			name:    "missing ref unchanged",
 			command: "echo {{input.missing}}",
-			input:   map[string]interface{}{},
+			input:   map[string]any{},
 			want:    "echo {{input.missing}}",
 		},
 		{
 			name:    "no refs passthrough",
 			command: "echo hello",
-			input:   map[string]interface{}{},
+			input:   map[string]any{},
 			want:    "echo hello",
 		},
 		{
 			name:    "injection escaped",
 			command: "echo {{input.msg}}",
-			input:   map[string]interface{}{"msg": "'; rm -rf / #"},
+			input:   map[string]any{"msg": "'; rm -rf / #"},
 			want:    "echo ''\\''; rm -rf / #'",
 		},
 		{
 			name:    "string slice expands to space-separated args",
 			command: "git add -- {{input.files}}",
-			input:   map[string]interface{}{"files": []string{"a.go", "b.go"}},
+			input:   map[string]any{"files": []string{"a.go", "b.go"}},
 			want:    "git add -- 'a.go' 'b.go'",
 		},
 		{
 			name:    "interface slice (JSON-decoded) expands the same",
 			command: "git add -- {{input.files}}",
-			input:   map[string]interface{}{"files": []interface{}{"a.go", "b.go"}},
+			input:   map[string]any{"files": []any{"a.go", "b.go"}},
 			want:    "git add -- 'a.go' 'b.go'",
 		},
 		{
 			name:    "slice with shell metacharacters stays quoted",
 			command: "rm -- {{input.paths}}",
-			input:   map[string]interface{}{"paths": []string{"a b.go", "c'd.go", "$HOME/x"}},
+			input:   map[string]any{"paths": []string{"a b.go", "c'd.go", "$HOME/x"}},
 			want:    `rm -- 'a b.go' 'c'\''d.go' '$HOME/x'`,
 		},
 		{
 			name:    "empty slice substitutes as empty string",
 			command: "git add -- {{input.files}}",
-			input:   map[string]interface{}{"files": []string{}},
+			input:   map[string]any{"files": []string{}},
 			want:    "git add -- ",
 		},
 		{
 			name:    "slice with one element",
 			command: "echo {{input.files}}",
-			input:   map[string]interface{}{"files": []string{"only"}},
+			input:   map[string]any{"files": []string{"only"}},
 			want:    "echo 'only'",
 		},
 		{
@@ -911,7 +911,7 @@ func TestResolveCommandTemplate(t *testing.T) {
 			// to RUN, not pass as a single quoted token.
 			name:    "raw substitution skips shell escape",
 			command: "OUT=$( {{!input.cmd}} 2>&1 )",
-			input:   map[string]interface{}{"cmd": "echo hi | jq -c '.'"},
+			input:   map[string]any{"cmd": "echo hi | jq -c '.'"},
 			want:    "OUT=$( echo hi | jq -c '.' 2>&1 )",
 		},
 		{
@@ -919,14 +919,14 @@ func TestResolveCommandTemplate(t *testing.T) {
 			// prompt convention).
 			name:    "raw substitution json-encodes slice",
 			command: "echo {{!input.list}}",
-			input:   map[string]interface{}{"list": []interface{}{"a", "b"}},
+			input:   map[string]any{"list": []any{"a", "b"}},
 			want:    `echo ["a","b"]`,
 		},
 		{
 			// Default substitution still escapes — raw mode is opt-in.
 			name:    "raw and default coexist",
 			command: "{{!input.cmd}} {{input.arg}}",
-			input:   map[string]interface{}{"cmd": "yarn up --exact", "arg": "lodash@1.0"},
+			input:   map[string]any{"cmd": "yarn up --exact", "arg": "lodash@1.0"},
 			want:    "yarn up --exact 'lodash@1.0'",
 		},
 	}
@@ -1058,7 +1058,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 	// `'\''` sequence does.
 	t.Run("string JSON-quoted", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"name"}, Raw: "{{input.name}}"}}
-		input := map[string]interface{}{"name": "@types/express"}
+		input := map[string]any{"name": "@types/express"}
 		got := resolveScriptTemplate("const n = {{input.name}};", refs, input, nil)
 		want := `const n = "@types/express";`
 		if got != want {
@@ -1067,7 +1067,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 	})
 	t.Run("string with apostrophe survives", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"msg"}, Raw: "{{input.msg}}"}}
-		input := map[string]interface{}{"msg": "Bob's note"}
+		input := map[string]any{"msg": "Bob's note"}
 		got := resolveScriptTemplate("const m = {{input.msg}};", refs, input, nil)
 		want := `const m = "Bob's note";`
 		if got != want {
@@ -1076,7 +1076,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 	})
 	t.Run("map as object literal", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"obj"}, Raw: "{{input.obj}}"}}
-		input := map[string]interface{}{"obj": map[string]interface{}{"k": "v"}}
+		input := map[string]any{"obj": map[string]any{"k": "v"}}
 		got := resolveScriptTemplate("const o = {{input.obj}};", refs, input, nil)
 		want := `const o = {"k":"v"};`
 		if got != want {
@@ -1085,9 +1085,9 @@ func TestResolveScriptTemplate(t *testing.T) {
 	})
 	t.Run("slice of maps as array literal", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"arr"}, Raw: "{{input.arr}}"}}
-		input := map[string]interface{}{
-			"arr": []interface{}{
-				map[string]interface{}{"name": "@types/express", "target": "5.0.6"},
+		input := map[string]any{
+			"arr": []any{
+				map[string]any{"name": "@types/express", "target": "5.0.6"},
 			},
 		}
 		got := resolveScriptTemplate("const a = {{input.arr}};", refs, input, nil)
@@ -1098,7 +1098,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 	})
 	t.Run("bang form still raw", func(t *testing.T) {
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"name"}, Raw: "{{!input.name}}", Unquoted: true}}
-		input := map[string]interface{}{"name": "foo"}
+		input := map[string]any{"name": "foo"}
 		got := resolveScriptTemplate("var x = {{!input.name}};", refs, input, nil)
 		// Bang form returns the string verbatim — author is
 		// responsible for any wrapping. Mirrors the shell-context
@@ -1115,7 +1115,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 		// The fix renders nil as the JSON null literal — valid in
 		// JS / Python / Ruby — so the script always parses.
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"attempted"}, Raw: "{{input.attempted}}"}}
-		input := map[string]interface{}{} // attempted missing
+		input := map[string]any{} // attempted missing
 		got := resolveScriptTemplate("const x = {{input.attempted}};", refs, input, nil)
 		want := `const x = null;`
 		if got != want {
@@ -1128,7 +1128,7 @@ func TestResolveScriptTemplate(t *testing.T) {
 		// value must become a valid script literal, not vanish into
 		// an empty expression.
 		refs := []*ir.Ref{{Kind: ir.RefInput, Path: []string{"attempted"}, Raw: "{{!input.attempted}}", Unquoted: true}}
-		input := map[string]interface{}{} // attempted missing
+		input := map[string]any{} // attempted missing
 		got := resolveScriptTemplate("const x = {{!input.attempted}};", refs, input, nil)
 		want := `const x = null;`
 		if got != want {
@@ -1151,7 +1151,7 @@ func TestExecutorUnknownModel(t *testing.T) {
 		LLMFields: ir.LLMFields{Model: "unknown/model"},
 	}
 
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for unknown model")
 	}
@@ -1191,7 +1191,7 @@ func TestRetryOnTransientError(t *testing.T) {
 		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
+	output, err := exec.Execute(context.Background(), node, map[string]any{"prompt": "hello"})
 	if err != nil {
 		t.Fatalf("expected success after retries, got error: %v", err)
 	}
@@ -1240,7 +1240,7 @@ func TestRetryExhausted(t *testing.T) {
 		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
+	_, err := exec.Execute(context.Background(), node, map[string]any{"prompt": "hello"})
 	if err == nil {
 		t.Fatal("expected error after retries exhausted")
 	}
@@ -1286,7 +1286,7 @@ func TestNoRetryOnNonRetryableError(t *testing.T) {
 		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{"prompt": "hello"})
+	_, err := exec.Execute(context.Background(), node, map[string]any{"prompt": "hello"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1365,7 +1365,7 @@ func TestRetryOnStructuredOutput(t *testing.T) {
 		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"review": "code",
 	})
 	if err != nil {
@@ -1403,7 +1403,7 @@ func TestRetryContextCancellation(t *testing.T) {
 		LLMFields: ir.LLMFields{Model: "test/test-model"},
 	}
 
-	_, err := exec.Execute(ctx, node, map[string]interface{}{"prompt": "hello"})
+	_, err := exec.Execute(ctx, node, map[string]any{"prompt": "hello"})
 	if err == nil {
 		t.Fatal("expected error on cancelled context")
 	}
@@ -1480,7 +1480,7 @@ func TestStructuredOutputMissingField(t *testing.T) {
 		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	_, err := exec.Execute(context.Background(), node, map[string]any{
 		"review": "code",
 	})
 	if err == nil {
@@ -1555,7 +1555,7 @@ func TestStructuredOutputMissingFieldRecoversOnRetry(t *testing.T) {
 		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
-	output, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	output, err := exec.Execute(context.Background(), node, map[string]any{
 		"review": "code",
 	})
 	if err != nil {
@@ -1621,7 +1621,7 @@ func TestStructuredOutputWrongType(t *testing.T) {
 		SchemaFields: ir.SchemaFields{OutputSchema: "verdict_schema"},
 	}
 
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{
+	_, err := exec.Execute(context.Background(), node, map[string]any{
 		"review": "code",
 	})
 	if err == nil {
@@ -1681,7 +1681,7 @@ func TestStructuredOutputInvalidEnum(t *testing.T) {
 		SchemaFields: ir.SchemaFields{OutputSchema: "status_schema"},
 	}
 
-	_, err := exec.Execute(context.Background(), node, map[string]interface{}{})
+	_, err := exec.Execute(context.Background(), node, map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for invalid enum value")
 	}
@@ -1705,13 +1705,13 @@ func TestValidateOutputValid(t *testing.T) {
 		},
 	}
 
-	output := map[string]interface{}{
+	output := map[string]any{
 		"text":  "hello",
 		"ok":    true,
 		"count": float64(42),
 		"score": 3.14,
-		"tags":  []interface{}{"a", "b"},
-		"meta":  map[string]interface{}{"key": "value"},
+		"tags":  []any{"a", "b"},
+		"meta":  map[string]any{"key": "value"},
 	}
 
 	if err := ValidateOutput(output, schema); err != nil {
@@ -1725,7 +1725,7 @@ func TestValidateOutputMissingField(t *testing.T) {
 		Fields: []*ir.SchemaField{{Name: "required_field", Type: ir.FieldTypeString}},
 	}
 
-	err := ValidateOutput(map[string]interface{}{}, schema)
+	err := ValidateOutput(map[string]any{}, schema)
 	if err == nil {
 		t.Fatal("expected error for missing field")
 	}
@@ -1737,7 +1737,7 @@ func TestValidateOutputNullField(t *testing.T) {
 		Fields: []*ir.SchemaField{{Name: "val", Type: ir.FieldTypeString}},
 	}
 
-	err := ValidateOutput(map[string]interface{}{"val": nil}, schema)
+	err := ValidateOutput(map[string]any{"val": nil}, schema)
 	if err == nil {
 		t.Fatal("expected error for null field")
 	}
@@ -1751,7 +1751,7 @@ func TestValidateOutputEnumViolation(t *testing.T) {
 		},
 	}
 
-	err := ValidateOutput(map[string]interface{}{"status": "maybe"}, schema)
+	err := ValidateOutput(map[string]any{"status": "maybe"}, schema)
 	if err == nil {
 		t.Fatal("expected error for invalid enum")
 	}
@@ -1763,11 +1763,11 @@ func TestValidateOutputIntegerCheck(t *testing.T) {
 		Fields: []*ir.SchemaField{{Name: "count", Type: ir.FieldTypeInt}},
 	}
 
-	if err := ValidateOutput(map[string]interface{}{"count": float64(42)}, schema); err != nil {
+	if err := ValidateOutput(map[string]any{"count": float64(42)}, schema); err != nil {
 		t.Errorf("expected 42.0 to be valid integer, got: %v", err)
 	}
 
-	if err := ValidateOutput(map[string]interface{}{"count": 3.14}, schema); err == nil {
+	if err := ValidateOutput(map[string]any{"count": 3.14}, schema); err == nil {
 		t.Error("expected error for non-integer float")
 	}
 }
@@ -1778,7 +1778,7 @@ func TestValidateOutputStringArrayBadElement(t *testing.T) {
 		Fields: []*ir.SchemaField{{Name: "tags", Type: ir.FieldTypeStringArray}},
 	}
 
-	err := ValidateOutput(map[string]interface{}{"tags": []interface{}{"ok", 42}}, schema)
+	err := ValidateOutput(map[string]any{"tags": []any{"ok", 42}}, schema)
 	if err == nil {
 		t.Fatal("expected error for non-string array element")
 	}
@@ -1790,12 +1790,12 @@ func TestValidateOutputStringArrayBadElement(t *testing.T) {
 
 func TestResolveTemplate(t *testing.T) {
 	exec := &ClawExecutor{
-		vars: map[string]interface{}{
+		vars: map[string]any{
 			"rules": "Be thorough",
 		},
 	}
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"diff": "file.go: +func Hello()",
 	}
 
@@ -1820,7 +1820,7 @@ func TestResolveTemplateUnknownRef(t *testing.T) {
 func TestResolveTemplateJSONValue(t *testing.T) {
 	exec := &ClawExecutor{}
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"items": []string{"a", "b", "c"},
 	}
 
@@ -1882,7 +1882,7 @@ func TestResolveTemplateAttachments_Unknown(t *testing.T) {
 
 func TestSetVars(t *testing.T) {
 	exec := &ClawExecutor{}
-	vars := map[string]interface{}{"key": "value"}
+	vars := map[string]any{"key": "value"}
 	exec.SetVars(vars)
 
 	if exec.vars["key"] != "value" {
@@ -1924,7 +1924,7 @@ func TestNewClawExecutorSeedsVarsDefaults(t *testing.T) {
 	}
 
 	// SetVars merges on top, preserving non-overridden defaults.
-	exec.SetVars(map[string]interface{}{
+	exec.SetVars(map[string]any{
 		"workspace_dir": "/runtime/override",
 	})
 	if got, want := exec.vars["workspace_dir"], "/runtime/override"; got != want {
@@ -1946,49 +1946,49 @@ func TestResolveReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name       string
 		nodeEffort string
-		input      map[string]interface{}
+		input      map[string]any
 		expected   string
 	}{
 		{
 			name:       "static only",
 			nodeEffort: "high",
-			input:      map[string]interface{}{},
+			input:      map[string]any{},
 			expected:   "high",
 		},
 		{
 			name:       "dynamic override",
 			nodeEffort: "medium",
-			input:      map[string]interface{}{"_reasoning_effort": "low"},
+			input:      map[string]any{"_reasoning_effort": "low"},
 			expected:   "low",
 		},
 		{
 			name:       "dynamic xhigh",
 			nodeEffort: "low",
-			input:      map[string]interface{}{"_reasoning_effort": "xhigh"},
+			input:      map[string]any{"_reasoning_effort": "xhigh"},
 			expected:   "xhigh",
 		},
 		{
 			name:       "dynamic max",
 			nodeEffort: "low",
-			input:      map[string]interface{}{"_reasoning_effort": "max"},
+			input:      map[string]any{"_reasoning_effort": "max"},
 			expected:   "max",
 		},
 		{
 			name:       "invalid dynamic falls back to static",
 			nodeEffort: "high",
-			input:      map[string]interface{}{"_reasoning_effort": "ultra"},
+			input:      map[string]any{"_reasoning_effort": "ultra"},
 			expected:   "high",
 		},
 		{
 			name:       "no value set",
 			nodeEffort: "",
-			input:      map[string]interface{}{},
+			input:      map[string]any{},
 			expected:   "",
 		},
 		{
 			name:       "dynamic non-string ignored",
 			nodeEffort: "medium",
-			input:      map[string]interface{}{"_reasoning_effort": 42},
+			input:      map[string]any{"_reasoning_effort": 42},
 			expected:   "medium",
 		},
 	}
@@ -2013,7 +2013,7 @@ func TestResolveReasoningEffortEnvSubst(t *testing.T) {
 		nodeEffort string
 		envKey     string
 		envValue   string
-		input      map[string]interface{}
+		input      map[string]any
 		expected   string
 	}{
 		{
@@ -2063,7 +2063,7 @@ func TestResolveReasoningEffortEnvSubst(t *testing.T) {
 			nodeEffort: "${ITERION_TEST_EFFORT:-max}",
 			envKey:     "ITERION_TEST_EFFORT",
 			envValue:   "low",
-			input:      map[string]interface{}{"_reasoning_effort": "high"},
+			input:      map[string]any{"_reasoning_effort": "high"},
 			expected:   "high",
 		},
 	}
@@ -2073,7 +2073,7 @@ func TestResolveReasoningEffortEnvSubst(t *testing.T) {
 			t.Setenv(tt.envKey, tt.envValue)
 			input := tt.input
 			if input == nil {
-				input = map[string]interface{}{}
+				input = map[string]any{}
 			}
 			got := resolveReasoningEffort(tt.nodeEffort, input)
 			if got != tt.expected {
@@ -2115,7 +2115,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 	})
 
 	t.Run("scalar interface slice still space-separated", func(t *testing.T) {
-		got := shellEscapeValue([]interface{}{"foo", 42, true})
+		got := shellEscapeValue([]any{"foo", 42, true})
 		want := `'foo' '42' 'true'`
 		if got != want {
 			t.Errorf("scalar []interface{}: got %q, want %q", got, want)
@@ -2123,8 +2123,8 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 	})
 
 	t.Run("slice of maps JSON-encoded as single token", func(t *testing.T) {
-		patches := []interface{}{
-			map[string]interface{}{"name": "@types/express", "current": "5.0.0", "target": "5.0.6", "risk": "patch"},
+		patches := []any{
+			map[string]any{"name": "@types/express", "current": "5.0.0", "target": "5.0.6", "risk": "patch"},
 		}
 		got := shellEscapeValue(patches)
 		// Single shell-quoted JSON token (json.Marshal sorts map keys).
@@ -2135,7 +2135,7 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 	})
 
 	t.Run("bare map JSON-encoded", func(t *testing.T) {
-		m := map[string]interface{}{"sha": "deadbeef", "branch": "main"}
+		m := map[string]any{"sha": "deadbeef", "branch": "main"}
 		got := shellEscapeValue(m)
 		want := `'{"branch":"main","sha":"deadbeef"}'`
 		if got != want {
@@ -2144,14 +2144,14 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 	})
 
 	t.Run("empty complex slice still empty string", func(t *testing.T) {
-		got := shellEscapeValue([]interface{}{})
+		got := shellEscapeValue([]any{})
 		if got != "" {
 			t.Errorf("empty slice: got %q, want empty", got)
 		}
 	})
 
 	t.Run("nested slice JSON-encoded", func(t *testing.T) {
-		nested := []interface{}{[]interface{}{"a", "b"}, []interface{}{"c"}}
+		nested := []any{[]any{"a", "b"}, []any{"c"}}
 		got := shellEscapeValue(nested)
 		want := `'[["a","b"],["c"]]'`
 		if got != want {
@@ -2163,8 +2163,8 @@ func TestShellEscapeValue_ComplexTypes(t *testing.T) {
 		// A package whose name contains a single quote (rare but legal in
 		// some ecosystems) must not break out of the shell-quoted JSON
 		// token. shellEscape replaces ' with '\''.
-		patches := []interface{}{
-			map[string]interface{}{"name": "Bob's package"},
+		patches := []any{
+			map[string]any{"name": "Bob's package"},
 		}
 		got := shellEscapeValue(patches)
 		if !strings.Contains(got, `'\''s package`) {

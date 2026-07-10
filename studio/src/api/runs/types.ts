@@ -494,6 +494,11 @@ export interface CreateRunRequest {
   // Inline workflow source — required in cloud mode (no shared FS),
   // ignored in local mode where file_path resolves on disk.
   source?: string;
+  // Catalog bundle id (e.g. "whats-next"). In cloud mode the server
+  // resolves the bot's source + skills off the pod's own bots/ tree, so a
+  // catalog bot launches without uploading its bytes. A catalog-shaped
+  // file_path is inferred to the same id when this is omitted.
+  bot_id?: string;
   run_id?: string;
   vars?: Record<string, string>;
   // Name of an in-source preset (presets: block) to apply before vars.

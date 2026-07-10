@@ -18,7 +18,7 @@ import (
 // CreateRun inserts a new run document with status=queued. Cloud
 // runs always start queued; the runner pod transitions them to
 // running on pickup (plan §F T-31).
-func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]interface{}) (*store.Run, error) {
+func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*store.Run, error) {
 	now := time.Now().UTC()
 	r := &store.Run{
 		FormatVersion:  store.RunFormatVersion,

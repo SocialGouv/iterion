@@ -25,10 +25,10 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	}
 
 	// Collect failed branches metadata.
-	var failedBranches []map[string]interface{}
+	var failedBranches []map[string]any
 	for _, r := range results {
 		if r.err != nil {
-			failedBranches = append(failedBranches, map[string]interface{}{
+			failedBranches = append(failedBranches, map[string]any{
 				"branch_id": r.branchID,
 				"error":     r.err.Error(),
 			})
@@ -81,13 +81,13 @@ func (e *Engine) processConvergence(rs *runState, convergenceNodeID string, resu
 	if len(failedBranches) > 0 {
 		// Expose as a special output on the convergence node.
 		if rs.outputs[convergenceNodeID] == nil {
-			rs.outputs[convergenceNodeID] = make(map[string]interface{})
+			rs.outputs[convergenceNodeID] = make(map[string]any)
 		}
 		rs.outputs[convergenceNodeID]["_failed_branches"] = failedBranches
 	}
 
 	// Emit convergence_ready event.
-	convData := map[string]interface{}{
+	convData := map[string]any{
 		"strategy": strategy.String(),
 	}
 	if len(failedBranches) > 0 {
@@ -128,7 +128,7 @@ func (e *Engine) processConvergenceTerminal(rs *runState, results []*branchResul
 	// Use the first branch's terminal node — the engine treats any Done
 	// node as run_finished, so picking one is unambiguous.
 	terminal := results[0].terminalNodeID
-	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, terminal, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventJoinReady, terminal, map[string]any{
 		"strategy":       ir.AwaitBestEffort.String(),
 		"terminal_join":  true,
 		"branches_total": len(results),
@@ -203,8 +203,8 @@ func (e *Engine) findConvergencePoint(routerNodeID string, fanEdges []*ir.Edge) 
 
 // mergeOutputs creates a merged view of parent and branch outputs.
 // Branch outputs take precedence over parent outputs.
-func mergeOutputs(parent, branch map[string]map[string]interface{}) map[string]map[string]interface{} {
-	merged := make(map[string]map[string]interface{}, len(parent)+len(branch))
+func mergeOutputs(parent, branch map[string]map[string]any) map[string]map[string]any {
+	merged := make(map[string]map[string]any, len(parent)+len(branch))
 	for k, v := range parent {
 		merged[k] = v
 	}
@@ -220,10 +220,10 @@ func mergeOutputs(parent, branch map[string]map[string]interface{}) map[string]m
 // between branches: a fan-out where two branches both received an
 // upstream output containing a nested map would race on that map's
 // internal hashtable.
-func copyOutputs(src map[string]map[string]interface{}) map[string]map[string]interface{} {
-	dst := make(map[string]map[string]interface{}, len(src))
+func copyOutputs(src map[string]map[string]any) map[string]map[string]any {
+	dst := make(map[string]map[string]any, len(src))
 	for k, v := range src {
-		inner := make(map[string]interface{}, len(v))
+		inner := make(map[string]any, len(v))
 		for ik, iv := range v {
 			inner[ik] = deepCopyValue(iv)
 		}
@@ -237,16 +237,16 @@ func copyOutputs(src map[string]map[string]interface{}) map[string]map[string]in
 // scalars). Other concrete types pass through unchanged — the runtime
 // only stores JSON-shaped values in node outputs, so this covers the
 // real cases without paying the cost of reflection-based cloning.
-func deepCopyValue(v interface{}) interface{} {
+func deepCopyValue(v any) any {
 	switch t := v.(type) {
-	case map[string]interface{}:
-		out := make(map[string]interface{}, len(t))
+	case map[string]any:
+		out := make(map[string]any, len(t))
 		for k, val := range t {
 			out[k] = deepCopyValue(val)
 		}
 		return out
-	case []interface{}:
-		out := make([]interface{}, len(t))
+	case []any:
+		out := make([]any, len(t))
 		for i, val := range t {
 			out[i] = deepCopyValue(val)
 		}

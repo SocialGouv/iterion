@@ -59,7 +59,7 @@ the chosen node boundary (requires per-node snapshots; Phase 2+).`,
 			return fmt.Errorf("open service: %w", err)
 		}
 
-		var newInputs map[string]interface{}
+		var newInputs map[string]any
 		if forkOpts.newInputsFile != "" {
 			data, err := os.ReadFile(forkOpts.newInputsFile)
 			if err != nil {

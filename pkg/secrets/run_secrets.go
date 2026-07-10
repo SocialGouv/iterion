@@ -36,10 +36,28 @@ type RunBundle struct {
 	// only NARROW egress, never broaden it. This is what makes a
 	// binding's AllowedHosts an enforced control rather than metadata.
 	GenericSecretHosts map[string][]string `json:"generic_secret_hosts,omitempty"`
+	// GenericSecretRefs maps a workflow secret name to the ID of the
+	// generic-secret store record it was resolved from (IDs only, never
+	// values). A short-lived credential (a GitHub App installation token
+	// lives 1h) can expire while the run executes; the server-side
+	// refresh worker keeps the STORE record fresh, so these refs let the
+	// runner re-read the current value mid-run and rewrite the secret's
+	// materialised file — the bundle snapshot alone would go stale.
+	GenericSecretRefs map[string]string `json:"generic_secret_refs,omitempty"`
 	// OAuthCredentials maps "claude_code" / "codex" → opaque blob
 	// that the runner materialises as a credentials.json /
 	// auth.json before spawning the CLI subprocess.
 	OAuthCredentials map[string][]byte `json:"oauth_credentials,omitempty"`
+	// ForgeAppBotLogin is the GitHub-App bot login (e.g.
+	// "iterion-forge-1234[bot]") when the run's forge_token was resolved
+	// from a github_app connection. An installation token can't `GET /user`
+	// (403), so the runner can't self-resolve the committer identity from
+	// the token alone — this login lets it look up the bot's numeric id via
+	// `GET /users/<login>` (which an installation token CAN read) and seed
+	// the canonical `<id>+<login>@users.noreply.github.com` committer, so a
+	// bot's commits are attributed to the App bot, not the neutral fallback.
+	// Empty for PAT/OAuth connections (the token's own /user resolves them).
+	ForgeAppBotLogin string `json:"forge_app_bot_login,omitempty"`
 }
 
 // RunSecretsRecord is the persisted form of a sealed bundle. _id is

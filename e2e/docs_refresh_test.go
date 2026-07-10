@@ -38,38 +38,38 @@ func (st *docsRefreshState) coverage() int {
 // stubDocsRefresh registers the baseline green-path stubs. Individual
 // tests override nodes afterward (later .on wins).
 func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
-	exec.on("scan_docs", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"doc_files": []interface{}{"README.md"}, "doc_count": 1, "no_docs": false,
-			"footprint_hash": "h", "scope_globs": []interface{}{"README.md"},
-			"recently_changed_code_files": []interface{}{}, "bundle_self_path": "",
-			"pre_verified_docs": []interface{}{}, "cache_hits": 0, "cache_misses": 1,
+	exec.on("scan_docs", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"doc_files": []any{"README.md"}, "doc_count": 1, "no_docs": false,
+			"footprint_hash": "h", "scope_globs": []any{"README.md"},
+			"recently_changed_code_files": []any{}, "bundle_self_path": "",
+			"pre_verified_docs": []any{}, "cache_hits": 0, "cache_misses": 1,
 			"_tokens": 1,
 		}, nil
 	})
-	exec.on("scan_code_surface", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"cli_commands": []interface{}{}, "cli_flags": []interface{}{},
-			"diagnostic_codes": []interface{}{}, "scan_skipped": "no globs", "_tokens": 1,
+	exec.on("scan_code_surface", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"cli_commands": []any{}, "cli_flags": []any{},
+			"diagnostic_codes": []any{}, "scan_skipped": "no globs", "_tokens": 1,
 		}, nil
 	})
-	exec.on("build_manifest", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("build_manifest", func(_ map[string]any) (map[string]any, error) {
 		cov := st.coverage()
-		return map[string]interface{}{
+		return map[string]any{
 			"total_docs": 1, "total_anchors": 10, "verified_anchors": cov / 10,
 			"drifted_anchors": 1, "unverifiable_anchors": 0, "checkable_anchors": 10,
 			"coverage_pct": cov,
-			"drift_candidates": []interface{}{
-				map[string]interface{}{"doc": "README.md", "line": 3, "kind": "file_ref", "value": "gone.go", "status": "drifted", "evidence": "missing", "excerpt": "see gone.go"},
+			"drift_candidates": []any{
+				map[string]any{"doc": "README.md", "line": 3, "kind": "file_ref", "value": "gone.go", "status": "drifted", "evidence": "missing", "excerpt": "see gone.go"},
 			},
-			"per_doc_anchor_counts": []interface{}{}, "all_audited_docs": []interface{}{"README.md"},
+			"per_doc_anchor_counts": []any{}, "all_audited_docs": []any{"README.md"},
 			"docs_with_drift_count": 1, "chunked": false, "chunk_doc_count": 1,
 			"max_review_chunk_docs": 30,
-			"verified_pairs":        []interface{}{"README.md::cmd/app"},
+			"verified_pairs":        []any{"README.md::cmd/app"},
 			"_tokens":               1,
 		}, nil
 	})
-	exec.on("campaign", func(in map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
 		st.pass++
 		fl := ""
 		if raw, ok := in["fail_log"]; ok {
@@ -81,30 +81,30 @@ func stubDocsRefresh(exec *scenarioExecutor, st *docsRefreshState) {
 		if aligned {
 			remaining = ""
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"docs_aligned": aligned, "commits_this_pass": 1, "drift_remaining": remaining,
 			"is_code_bug": false, "needs_human": false, "human_note": "",
 			"summary": "aligned docs this pass", "_tokens": 10,
 		}, nil
 	})
-	exec.on("scope_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"scope_ok": true, "out_of_scope": []interface{}{}, "log": "", "_tokens": 1}, nil
+	exec.on("scope_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"scope_ok": true, "out_of_scope": []any{}, "log": "", "_tokens": 1}, nil
 	})
-	exec.on("verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
+	exec.on("verify_build", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
 	})
-	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+	exec.on("verify_run", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
-	exec.on("mark_issue_for_review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"text": "{\"skipped\":\"no issue_id\"}", "_tokens": 1}, nil
+	exec.on("mark_issue_for_review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"text": "{\"skipped\":\"no issue_id\"}", "_tokens": 1}, nil
 	})
-	exec.on("update_audit_cache", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"cache_path": "", "entries_written": 0, "skipped": "no cache_path", "_tokens": 1}, nil
+	exec.on("update_audit_cache", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"cache_path": "", "entries_written": 0, "skipped": "no cache_path", "_tokens": 1}, nil
 	})
-	exec.on("author_docs", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"docs_created": true, "created_doc_files": []interface{}{"docs/overview.md"},
+	exec.on("author_docs", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"docs_created": true, "created_doc_files": []any{"docs/overview.md"},
 			"summary": "authored initial docs", "_tokens": 5,
 		}, nil
 	})
@@ -175,15 +175,15 @@ func TestDocsRefresh_ScopeViolationRoutesBack(t *testing.T) {
 	st := &docsRefreshState{alignedBy: 1} // claims aligned every pass
 	stubDocsRefresh(exec, st)
 	scopeCalls := 0
-	exec.on("scope_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("scope_check", func(_ map[string]any) (map[string]any, error) {
 		scopeCalls++
 		if scopeCalls == 1 {
-			return map[string]interface{}{
-				"scope_ok": false, "out_of_scope": []interface{}{"pkg/foo/bar.go"},
+			return map[string]any{
+				"scope_ok": false, "out_of_scope": []any{"pkg/foo/bar.go"},
 				"log": "SCOPE VIOLATION: this run changed files outside the doc writeable-set: pkg/foo/bar.go", "_tokens": 1,
 			}, nil
 		}
-		return map[string]interface{}{"scope_ok": true, "out_of_scope": []interface{}{}, "log": "", "_tokens": 1}, nil
+		return map[string]any{"scope_ok": true, "out_of_scope": []any{}, "log": "", "_tokens": 1}, nil
 	})
 
 	run := runDocsRefresh(t, exec, "run-dr-scope")
@@ -224,20 +224,20 @@ func TestDocsRefresh_DefaultCreateAuthorsThenRefreshes(t *testing.T) {
 	st := &docsRefreshState{alignedBy: 1}
 	stubDocsRefresh(exec, st)
 	scans := 0
-	exec.on("scan_docs", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("scan_docs", func(_ map[string]any) (map[string]any, error) {
 		scans++
 		noDocs := scans == 1
 		count := 0
-		files := []interface{}{}
+		files := []any{}
 		if !noDocs {
 			count = 1
-			files = []interface{}{"docs/overview.md"}
+			files = []any{"docs/overview.md"}
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"doc_files": files, "doc_count": count, "no_docs": noDocs,
-			"footprint_hash": "h", "scope_globs": []interface{}{"docs/**/*.md"},
-			"recently_changed_code_files": []interface{}{}, "bundle_self_path": "",
-			"pre_verified_docs": []interface{}{}, "cache_hits": 0, "cache_misses": count,
+			"footprint_hash": "h", "scope_globs": []any{"docs/**/*.md"},
+			"recently_changed_code_files": []any{}, "bundle_self_path": "",
+			"pre_verified_docs": []any{}, "cache_hits": 0, "cache_misses": count,
 			"_tokens": 1,
 		}, nil
 	})

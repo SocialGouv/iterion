@@ -3,8 +3,9 @@
 // apiURL, and the cross-store override helpers shared by every submodule.
 
 import { apiRequest, extractErrorMessage } from "../client";
+import { apiBase } from "@/lib/scope";
 
-export const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
+export const BASE_URL = apiBase();
 
 // Delegate to the shared apiRequest so this module picks up:
 //   - credentials: "include" (needed in cross-origin cloud deployments)

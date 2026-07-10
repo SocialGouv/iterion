@@ -1,0 +1,32 @@
+{{- if and .Values.runner.enabled .Values.runner.cache.enabled (not .Values.runner.cache.existingClaim) -}}
+# Shared build-cache PVC for the runner fleet. A bot's verify gate re-clones
+# the target repo into an ephemeral workdir every run, so without a persistent
+# cache each fresh (or scaled-up) runner pod re-downloads the Go module graph
+# and recompiles from cold — the dominant cost observed in live runs (e.g. a
+# ~44s cold sqlite compile). This RWX volume holds GOMODCACHE + GOCACHE so
+# every pod, including newly scaled-up ones, starts warm.
+#
+# Access mode is ReadWriteMany: the Go module cache is read-mostly and the Go
+# build cache is content-addressed and concurrency-safe by design, so many
+# runner pods can share one warm volume. Provide an RWX storageClass (on OVH:
+# openebs-nfs-hspeed). The Nix toolchain store (/nix) is deliberately NOT put
+# here — it is baked warm in the runner image, and a shared RWX *live* /nix
+# would risk store-DB corruption across the fleet; its scale-up warm-fix is a
+# binary-cache substituter (see ADR), not a shared mount.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "iterion.fullname" . }}-runner-cache
+  labels:
+    {{- include "iterion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner-cache
+spec:
+  accessModes:
+    {{- toYaml .Values.runner.cache.accessModes | nindent 4 }}
+  {{- if .Values.runner.cache.storageClass }}
+  storageClassName: {{ .Values.runner.cache.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.runner.cache.size | quote }}
+{{- end -}}

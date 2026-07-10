@@ -52,7 +52,7 @@ type Manifest struct {
 
 	// Compat is a forward-compatible bag for additive fields. Unknown
 	// keys here are ignored without breaking loads from newer bundles.
-	Compat map[string]interface{} `yaml:"compat,omitempty"`
+	Compat map[string]any `yaml:"compat,omitempty"`
 
 	// Attachments declares default values for the workflow's
 	// `attachments:` block: keys are attachment names, values are

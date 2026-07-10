@@ -1,6 +1,7 @@
 import type { IterDocument, FileEntry, ListFilesResponse, SaveFileResponse } from "./types";
+import { apiBase, isScopedPane, scopePrefix } from "@/lib/scope";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
+const BASE_URL = apiBase();
 
 // onUnauthorized fires when the studio server returns 401 on any
 // /api/* call AND a token refresh couldn't recover the session. The
@@ -95,6 +96,12 @@ export async function apiRequest<T>(
   init?: RequestInit,
   isRetry = false,
 ): Promise<T> {
+  // Workspace pane: literal /api/... paths (native board, dispatcher, bots, …)
+  // bypass BASE_URL, so scope them here — the single choke point every
+  // apiRequest caller flows through. Paths already carrying the scope (built
+  // from BASE_URL = apiBase(), i.e. "/x/<id>/api/…") don't start with "/api",
+  // so they're never double-prefixed. No-op outside a pane (scopePrefix() "").
+  if (fullPath.startsWith("/api")) fullPath = scopePrefix() + fullPath;
   const res = await fetch(fullPath, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
@@ -106,7 +113,14 @@ export async function apiRequest<T>(
   // first call after the 15-minute access-token TTL bounces the user to
   // login even though their refresh token is valid for weeks. Skip the retry
   // for the refresh endpoint itself (avoid a loop) and when already retried.
-  if (res.status === 401 && !isRetry && !fullPath.endsWith("/auth/refresh")) {
+  // In a workspace pane the desktop owns the token lifecycle: the demux proxy
+  // strips the request Cookie and injects a Bearer (refreshed off the OS-held
+  // jar by the cloudRoundTripper + background loop), so a pane-side
+  // POST /auth/refresh has no refresh cookie and can only fail. Skip it — a 401
+  // reaching the pane means the desktop's refresh already failed, and recovery
+  // is driven from the shell (cloud:auth-expired → re-login → reload). We still
+  // fire onUnauthorized so the pane's AuthGate can surface the expired state.
+  if (res.status === 401 && !isRetry && !isScopedPane() && !fullPath.endsWith("/auth/refresh")) {
     if (await tryRefreshSession()) {
       return apiRequest<T>(fullPath, init, true);
     }

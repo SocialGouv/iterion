@@ -76,7 +76,7 @@ func TestParseAskUserToolInput(t *testing.T) {
 // persisted verbatim in the checkpoint's InteractionQuestions) and the
 // no-options call must leave the historical single-key shape untouched.
 func TestAddAskUserOptionKeys(t *testing.T) {
-	questions := map[string]interface{}{AskUserQuestionKey: "pick one"}
+	questions := map[string]any{AskUserQuestionKey: "pick one"}
 	AddAskUserOptionKeys(questions, nil, true)
 	if _, ok := questions[AskUserOptionsKey]; ok {
 		t.Fatalf("no-options call must not stamp %s", AskUserOptionsKey)
@@ -87,15 +87,15 @@ func TestAddAskUserOptionKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var back map[string]interface{}
+	var back map[string]any
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	list, ok := back[AskUserOptionsKey].([]interface{})
+	list, ok := back[AskUserOptionsKey].([]any)
 	if !ok || len(list) != 1 {
 		t.Fatalf("options round-trip = %#v", back[AskUserOptionsKey])
 	}
-	opt, _ := list[0].(map[string]interface{})
+	opt, _ := list[0].(map[string]any)
 	if opt["id"] != "a" || opt["label"] != "A" {
 		t.Errorf("option round-trip = %#v", opt)
 	}

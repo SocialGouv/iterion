@@ -360,6 +360,13 @@ type Task struct {
 	// Required for API-based backends; ignored by CLI-based backends.
 	Model string
 
+	// Command is the per-node CLI binary override (env-expanded). Honored
+	// only by claude_code, where it replaces the default `claude` binary
+	// with an alternate claude-code-compatible CLI (a pinned build or wrapper). It takes
+	// precedence over the backend-level Command default. Empty means "use
+	// the backend default"; ignored by all other backends.
+	Command string
+
 	// HasTools indicates whether the node has tools, enabling backends to
 	// choose between structured-output and text-with-tools generation strategies.
 	HasTools bool
@@ -873,13 +880,13 @@ const (
 // free-text ask_user pauses keep their historical single-key shape.
 // Options serialize as []map so the checkpoint's JSON round-trip is
 // loss-free.
-func AddAskUserOptionKeys(questions map[string]interface{}, options []AskUserOption, allowFreeText bool) {
+func AddAskUserOptionKeys(questions map[string]any, options []AskUserOption, allowFreeText bool) {
 	if len(options) == 0 {
 		return
 	}
-	list := make([]interface{}, 0, len(options))
+	list := make([]any, 0, len(options))
 	for _, o := range options {
-		list = append(list, map[string]interface{}{"id": o.ID, "label": o.Label})
+		list = append(list, map[string]any{"id": o.ID, "label": o.Label})
 	}
 	questions[AskUserOptionsKey] = list
 	questions[AskUserAllowFreeTextKey] = allowFreeText
@@ -960,7 +967,7 @@ const QueuedOperatorMessagesKey = "_queued_operator_messages"
 // Result contains the output from a delegation backend.
 type Result struct {
 	// Output is the parsed structured output from the CLI agent.
-	Output map[string]interface{}
+	Output map[string]any
 
 	// Tokens is an estimate of total tokens consumed (if available from CLI metadata).
 	Tokens int

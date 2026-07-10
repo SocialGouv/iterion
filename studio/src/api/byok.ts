@@ -1,6 +1,8 @@
 // BYOK + OAuth-forfait API client.
 
-const BASE = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
+import { apiBase } from "@/lib/scope";
+
+const BASE = apiBase().replace(/\/$/, "");
 
 export type Provider =
   | "anthropic"

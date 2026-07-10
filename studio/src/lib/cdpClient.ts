@@ -11,6 +11,8 @@
 // chunking: Chromium emits one whole JSON object per pipe write, so
 // one BinaryMessage = one CDP message.
 
+import { isScopedPane, resolveScopedWsUrl } from "./scope";
+
 export type CDPMessage = {
   id?: number;
   method?: string;
@@ -57,33 +59,52 @@ export class CDPClient {
   constructor(private opts: CDPClientOptions) {}
 
   // connect resolves once the WS handshake completes. Idempotent —
-  // calling twice yields the same promise.
+  // calling twice yields the same promise. URL resolution is async because
+  // a workspace pane must fetch its ws base (+ cloud ticket) over the demux
+  // proxy — its window.location.origin is the Wails asset origin, which 501s
+  // WS upgrades, so the sync buildURL() default can't work inside a pane.
   connect(): Promise<void> {
     if (this.connectPromise) return this.connectPromise;
-    this.connectPromise = new Promise<void>((resolve, reject) => {
-      const url = this.buildURL();
-      const ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
-      this.ws = ws;
-      ws.onopen = () => {
-        this.connected = true;
-        resolve();
-      };
-      ws.onerror = () => {
-        if (!this.connected) reject(new Error("cdp: ws connect failed"));
-      };
-      ws.onclose = () => {
-        this.closed = true;
-        this.connected = false;
-        // Reject all in-flight requests so callers don't hang.
-        for (const p of this.pending.values()) {
-          p.reject(new Error("cdp: ws closed"));
-        }
-        this.pending.clear();
-      };
-      ws.onmessage = (evt) => this.handleMessage(evt.data);
-    });
+    this.connectPromise = (async () => {
+      const url = await this.resolveURL();
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(url);
+        ws.binaryType = "arraybuffer";
+        this.ws = ws;
+        ws.onopen = () => {
+          this.connected = true;
+          resolve();
+        };
+        ws.onerror = () => {
+          if (!this.connected) reject(new Error("cdp: ws connect failed"));
+        };
+        ws.onclose = () => {
+          this.closed = true;
+          this.connected = false;
+          // Reject all in-flight requests so callers don't hang.
+          for (const p of this.pending.values()) {
+            p.reject(new Error("cdp: ws closed"));
+          }
+          this.pending.clear();
+        };
+        ws.onmessage = (evt) => this.handleMessage(evt.data);
+      });
+    })();
     return this.connectPromise;
+  }
+
+  // resolveURL picks the WS URL: inside a workspace pane, resolve the pane's
+  // backend ws base + (cloud) ticket over the demux proxy; otherwise fall back
+  // to the historical sync buildURL (browser same-origin, or the explicit
+  // serverBase the single-connection desktop injected).
+  private async resolveURL(): Promise<string> {
+    if (isScopedPane()) {
+      const path =
+        `/api/runs/${encodeURIComponent(this.opts.runId)}/browser/cdp` +
+        `?session=${encodeURIComponent(this.opts.sessionId)}`;
+      return resolveScopedWsUrl(path);
+    }
+    return this.buildURL();
   }
 
   // send issues a CDP method call and resolves with the `result`

@@ -12,6 +12,16 @@ that catch a real regression, NOT coverage %.
 
 ---
 
+## 2026-07-07 — v2 dogfood on pkg/skilllib: 78.1%→93.2%, 35 mutation-verified tests, converged first pass (run 019f3d44-bf42)
+- Status: **VALIDATED** — first live run of the v2 shape; the strengthened anti-façade floor proved out in real conditions.
+- Versions: bot v2.0.0 · iterion `dev+239203525cc8` · sandbox-full (worktree: auto).
+- Method: CLI run, `--store-dir <workspace>/.iterion`, `--merge-into none`, target = "pkg/skilllib — frontmatter parser + layered store", `max_passes=3`, `--max-cost-usd 20 --max-duration 1h` (mono claude, forfait). 7m50s wall.
+- Result: `finished`, `gate.converged=true` first pass. **2 semantic commits in stride** on `iterion/run/sonic-blast-fiberglyph-fb91`: `test(skilllib): lock down ScanFrontmatter parsing edge cases` (frontmatter_test.go, 14-case table — the parser previously had ZERO direct test) then `test(skilllib): cover store error paths, skip rules, and invariants` (store_edge_test.go), +327 test lines. Coverage 78.1%→93.2%, 35 tests, self-reported mutation-verified. Deterministic gate: suite green AND `new_test_code=true` — the diff-vs-RUN-BASE (reflog) measurement counted the in-stride commits correctly (the exact hole the v2 conversion hardened).
+- Value: real — skilllib is fresh ADR-059 surface; the campaign honestly scoped the remainder ("only IO-fault injection branches left, low regression value") instead of padding.
+- Findings / misses: none observed; termination contract fields all coherent.
+- Engine hardening: none needed.
+- Lessons for next run: a focused package target converges in one pass well under budget; whole-module targets should still expect multi-pass.
+
 ## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
 - Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
 - Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)

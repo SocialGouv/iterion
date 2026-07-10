@@ -75,9 +75,9 @@ type RunHeader struct {
 	// "Nexie"). When set, the studio RunHeader leads the bot chip
 	// with this persona name + a ✨ icon so dispatcher-spawned runs
 	// belonging to a named bot read at a glance.
-	BundleDisplayName string                 `json:"bundle_display_name,omitempty"`
-	Status            store.RunStatus        `json:"status"`
-	Inputs            map[string]interface{} `json:"inputs,omitempty"`
+	BundleDisplayName string          `json:"bundle_display_name,omitempty"`
+	Status            store.RunStatus `json:"status"`
+	Inputs            map[string]any  `json:"inputs,omitempty"`
 	// PermissionMode is the workflow-declared tool-permission gate mode
 	// ("off"|"ask"|"deny"); empty when the gate is off/unset. The studio
 	// badges ask/deny. See docs/permissions.md.
@@ -689,7 +689,7 @@ func (b *SnapshotBuilder) recordLoopBounds(evt *store.Event) {
 	if !ok {
 		return
 	}
-	m, ok := raw.(map[string]interface{})
+	m, ok := raw.(map[string]any)
 	if !ok {
 		return
 	}
@@ -731,7 +731,7 @@ func (b *SnapshotBuilder) recordLoopIteration(evt *store.Event) {
 // toInt coerces a JSON-decoded numeric (int / int64 / float64) to int;
 // 0 for anything else. Event.Data round-trips through JSON so integer
 // payloads surface as float64 on replay.
-func toInt(v interface{}) int {
+func toInt(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n
@@ -852,7 +852,7 @@ func MakeExecutionID(branch, nodeID string, iteration int) string {
 // attempt's terminal status). Events emitted by older runtime builds
 // don't carry `iteration_path` — fall back to the legacy int form
 // transparently so historical event streams still replay deterministically.
-func makeExecutionIDFromEvent(branch, nodeID string, iteration int, data map[string]interface{}) string {
+func makeExecutionIDFromEvent(branch, nodeID string, iteration int, data map[string]any) string {
 	if branch == "" {
 		branch = MainBranch
 	}

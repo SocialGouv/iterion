@@ -20,7 +20,7 @@ import (
 // schemas through without having to register them on the shared
 // e.schemas map — eliminating a concurrent-map-write race when multiple
 // fan-out branches dispatch interaction LLMs in parallel.
-func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]interface{}, schemaOverride *ir.Schema) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, input map[string]any, schemaOverride *ir.Schema) (map[string]any, error) {
 	if node.Interaction == ir.InteractionHuman || node.Interaction == ir.InteractionNone {
 		return nil, fmt.Errorf("model: human node %q in %s interaction mode should not be executed by the model layer", node.ID, node.Interaction)
 	}
@@ -102,14 +102,14 @@ func (e *ClawExecutor) executeHumanLLM(ctx context.Context, node *ir.HumanNode, 
 	}
 	genOpts.ExplicitSchema = jsonSchema
 
-	result, err := GenerateObjectDirect[map[string]interface{}](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
 		return nil, fmt.Errorf("model: human node %q: structured generation: %w", node.ID, err)
 	}
 
 	output := result.Object
 	if output == nil {
-		output = make(map[string]interface{})
+		output = make(map[string]any)
 	}
 
 	// Attach usage metadata.
@@ -134,7 +134,7 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 	nodeID string,
 	ni *ErrNeedsInteraction,
 	fields ir.InteractionFields,
-) (answers map[string]interface{}, needsHuman bool, err error) {
+) (answers map[string]any, needsHuman bool, err error) {
 	// Build synthetic schema from question keys.
 	schemaFields := make([]*ir.SchemaField, 0, len(ni.Questions))
 	for key := range ni.Questions {
@@ -172,7 +172,7 @@ func (e *ClawExecutor) ExecuteHumanLLMForInteraction(
 	}
 
 	// Build input from questions (question_key → question text).
-	input := make(map[string]interface{}, len(ni.Questions))
+	input := make(map[string]any, len(ni.Questions))
 	for k, v := range ni.Questions {
 		input[sanitizeSchemaKey(k)] = v
 	}

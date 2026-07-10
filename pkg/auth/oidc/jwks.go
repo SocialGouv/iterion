@@ -210,7 +210,7 @@ func parseJWK(k jwk) (crypto.PublicKey, error) {
 // alg-confusion (none / HMAC-with-public-key).
 func verifyIDToken(ctx context.Context, cache *jwksCache, idToken, issuer, audience string) (idTokenClaims, error) {
 	var claims idTokenClaims
-	keyfunc := func(t *jwt.Token) (interface{}, error) {
+	keyfunc := func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
 		return cache.keyForKID(ctx, kid)
 	}

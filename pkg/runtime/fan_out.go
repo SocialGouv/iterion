@@ -60,15 +60,15 @@ type fanOutPlan struct {
 	maxParallel            int
 	preComputedConvergence string
 	cancelOnFirstFailure   bool
-	parentOutputs          map[string]map[string]interface{}
-	parentArtifacts        map[string]map[string]interface{}
+	parentOutputs          map[string]map[string]any
+	parentArtifacts        map[string]map[string]any
 }
 
 // emitRouterPassThrough emits the fan_out router's node_started /
 // node_finished pair and records its pass-through output (router output =
 // its input from incoming edges).
 func (e *Engine) emitRouterPassThrough(rs *runState, routerNodeID string) error {
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
 		"kind":      "router",
 		"mode":      "fan_out_all",
 		"iteration": e.currentLoopIteration(routerNodeID, rs.loopCounters),
@@ -200,7 +200,7 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 				if r := recover(); r != nil {
 					resultsCh <- &branchResult{
 						branchID: branchID,
-						outputs:  make(map[string]map[string]interface{}),
+						outputs:  make(map[string]map[string]any),
 						err:      fmt.Errorf("panic in branch %s: %v", branchID, r),
 					}
 				}
@@ -217,7 +217,7 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 			if err := slot.acquire(branchCtx); err != nil {
 				resultsCh <- &branchResult{
 					branchID: branchID,
-					outputs:  make(map[string]map[string]interface{}),
+					outputs:  make(map[string]map[string]any),
 					err:      e.wrapContextErr(branchCtx.Err()),
 				}
 				return

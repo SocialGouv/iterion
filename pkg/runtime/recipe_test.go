@@ -46,10 +46,10 @@ func TestNewFromRecipePresetVars(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	var capturedInput map[string]interface{}
-	exec.on("review", func(input map[string]interface{}) (map[string]interface{}, error) {
+	var capturedInput map[string]any
+	exec.on("review", func(input map[string]any) (map[string]any, error) {
 		capturedInput = input
-		return map[string]interface{}{"summary": "ok"}, nil
+		return map[string]any{"summary": "ok"}, nil
 	})
 
 	s := tmpStore(t)
@@ -109,8 +109,8 @@ func TestNewFromRecipePromptPack(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "done"}, nil
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "done"}, nil
 	})
 
 	s := tmpStore(t)
@@ -174,8 +174,8 @@ func TestNewFromRecipeBudgetOverride(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -253,13 +253,13 @@ func TestResolveVarsExpandsProjectDirInOverrides(t *testing.T) {
 	// Override path: the studio re-sends the literal default. The same
 	// expansion must apply, otherwise tool nodes see `${PROJECT_DIR}`
 	// verbatim and shell-out fails.
-	got2 := eng.resolveVars(map[string]interface{}{"workspace_dir": "${PROJECT_DIR}"})
+	got2 := eng.resolveVars(map[string]any{"workspace_dir": "${PROJECT_DIR}"})
 	if got2["workspace_dir"] != "/tmp/run-xyz" {
 		t.Errorf("override expansion: got %q, want %q", got2["workspace_dir"], "/tmp/run-xyz")
 	}
 
 	// User explicitly setting an absolute path remains untouched.
-	got3 := eng.resolveVars(map[string]interface{}{"workspace_dir": "/some/other/path"})
+	got3 := eng.resolveVars(map[string]any{"workspace_dir": "/some/other/path"})
 	if got3["workspace_dir"] != "/some/other/path" {
 		t.Errorf("explicit path passthrough: got %q, want %q", got3["workspace_dir"], "/some/other/path")
 	}
@@ -288,11 +288,11 @@ func TestResolveVarsRemapsRepoRootToWorktree(t *testing.T) {
 	eng.repoRoot = "/repo"
 
 	// A var explicitly set to the repo root is remapped to the worktree.
-	if got := eng.resolveVars(map[string]interface{}{"workspace_dir": "/repo"}); got["workspace_dir"] != "/repo/.iterion/worktrees/run-1" {
+	if got := eng.resolveVars(map[string]any{"workspace_dir": "/repo"}); got["workspace_dir"] != "/repo/.iterion/worktrees/run-1" {
 		t.Errorf("repo-root override should remap to the worktree, got %q", got["workspace_dir"])
 	}
 	// A var pointing elsewhere is left untouched.
-	if got := eng.resolveVars(map[string]interface{}{"workspace_dir": "/some/other/path"}); got["workspace_dir"] != "/some/other/path" {
+	if got := eng.resolveVars(map[string]any{"workspace_dir": "/some/other/path"}); got["workspace_dir"] != "/some/other/path" {
 		t.Errorf("non-repo-root path should pass through, got %q", got["workspace_dir"])
 	}
 	// The ${PROJECT_DIR} default still resolves to the worktree (and is not
@@ -379,8 +379,8 @@ func TestNewFromRecipeInputsOverridePresets(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("agent", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -392,7 +392,7 @@ func TestNewFromRecipeInputsOverridePresets(t *testing.T) {
 	// The recipe sets "target" default to "preset_value".
 	// Run inputs override it to "run_value".
 	// resolveVars should pick up the run input over the preset default.
-	vars := eng.resolveVars(map[string]interface{}{"target": "run_value"})
+	vars := eng.resolveVars(map[string]any{"target": "run_value"})
 	if vars["target"] != "run_value" {
 		t.Errorf("target = %v, want %q (run input should override preset)", vars["target"], "run_value")
 	}

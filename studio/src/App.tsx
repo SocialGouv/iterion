@@ -28,6 +28,7 @@ const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const Settings = lazy(() => import("@/views/Settings"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
+const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginModal"));
 const SettingsPage = lazy(() => import("@/views/settings/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
@@ -53,6 +54,7 @@ import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
 import { useProjectScopeSync } from "@/hooks/useProjectScopeSync";
 import { onDesktopEvent } from "@/lib/desktopBridge";
 import { DesktopEvent } from "@/lib/desktopEvents";
+import { isScopedPane, scopePrefix } from "@/lib/scope";
 import { showRunAlertNotification, type RunAlertPayload } from "@/lib/desktopNotify";
 import { AuthProvider, useAuth } from "@/auth/AuthContext";
 import { setUnauthorizedHandler } from "@/api/client";
@@ -75,6 +77,22 @@ export default function App() {
     <AuthProvider>
       <AuthGate />
     </AuthProvider>
+  );
+}
+
+// ScopedPaneReauth is what a workspace pane shows when its cloud session
+// expired: it signals the shell (parent frame) to prompt re-login — the pane
+// can't (no window.go) — and waits for the shell to re-arm the token + reload.
+function ScopedPaneReauth() {
+  useEffect(() => {
+    const connId = scopePrefix().replace(/^\/x\//, "");
+    window.parent?.postMessage({ source: "iterion-pane", type: "auth-expired", connId }, "*");
+  }, []);
+  return (
+    <div className="h-screen flex flex-col items-center justify-center gap-2 bg-surface-0 text-fg-muted px-6 text-center">
+      <p className="text-sm font-medium text-fg-default">Session expired</p>
+      <p className="text-xs">Reconnect from the desktop — the sign-in prompt should appear.</p>
+    </div>
   );
 }
 
@@ -107,6 +125,12 @@ function AuthGate() {
     );
   }
   if (status === "anonymous") {
+    // A workspace pane (iframe) can't run its own auth — the desktop owns the
+    // token jar. On expiry, ask the shell (parent frame) to prompt re-login,
+    // then reload us; don't render the pane's own Login/landing.
+    if (isScopedPane()) {
+      return <ScopedPaneReauth />;
+    }
     return (
       <Suspense
         fallback={
@@ -178,6 +202,9 @@ function AuthedApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<string>("api-keys");
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  // Set to a cloud connection id when its session expires (cloud:auth-expired);
+  // opens the re-login modal.
+  const [cloudReloginConnId, setCloudReloginConnId] = useState<string | null>(null);
 
   useDocumentTitle();
   // Reset SPA state on a server-side project hot-swap so the new
@@ -217,6 +244,11 @@ function AuthedApp() {
       onDesktopEvent<RunAlertPayload>(DesktopEvent.RunAlert, (payload) =>
         showRunAlertNotification(payload),
       ),
+      // A cloud connection's session expired (silent refresh rejected) —
+      // prompt re-login for that connection. Payload is the connection id.
+      onDesktopEvent<string>(DesktopEvent.CloudAuthExpired, (connId) =>
+        setCloudReloginConnId(connId),
+      ),
     ];
     // Listen for the SPA-emitted open-switcher event from ProjectLabel
     // (clicking the project chip in the toolbar / run header).
@@ -232,10 +264,31 @@ function AuthedApp() {
       setSettingsOpen(true);
     };
     window.addEventListener("iterion:open-settings", onOpenSettings as EventListener);
+    // In a workspace pane, native menu events reach the main frame, not this
+    // iframe — the shell FORWARDS the connection-scoped ones (Settings / About /
+    // Undo / Redo) via postMessage. Translate them into the same local actions.
+    const onShellMenu = (e: MessageEvent) => {
+      const d = e.data as { source?: string; type?: string; menu?: string; tab?: string } | null;
+      if (d?.source !== "iterion-shell" || d.type !== "menu") return;
+      switch (d.menu) {
+        case "settings":
+          setSettingsTab(d.tab || (isDesktop ? "api-keys" : "appearance"));
+          setSettingsOpen(true);
+          break;
+        case "undo":
+          activeEditorDocStore()?.getState().undo();
+          break;
+        case "redo":
+          activeEditorDocStore()?.getState().redo();
+          break;
+      }
+    };
+    window.addEventListener("message", onShellMenu);
     return () => {
       offs.forEach((off) => off());
       window.removeEventListener("iterion:open-project-switcher", onOpenSwitcher);
       window.removeEventListener("iterion:open-settings", onOpenSettings as EventListener);
+      window.removeEventListener("message", onShellMenu);
     };
   }, [pickAndAddProject, isDesktop]);
 
@@ -401,6 +454,10 @@ function AuthedApp() {
         {serverInfo?.mode !== "cloud" && (
           <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
         )}
+        <CloudReloginModal
+          connId={cloudReloginConnId}
+          onClose={() => setCloudReloginConnId(null)}
+        />
       </Suspense>
     </>
   );

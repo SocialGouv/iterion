@@ -20,26 +20,26 @@ import (
 type stubExecutor struct {
 	name     string
 	calls    []string // records nodeIDs in execution order
-	handlers map[string]func(map[string]interface{}) (map[string]interface{}, error)
+	handlers map[string]func(map[string]any) (map[string]any, error)
 }
 
 func newStubExecutor(name string) *stubExecutor {
 	return &stubExecutor{
 		name:     name,
-		handlers: make(map[string]func(map[string]interface{}) (map[string]interface{}, error)),
+		handlers: make(map[string]func(map[string]any) (map[string]any, error)),
 	}
 }
 
-func (s *stubExecutor) on(nodeID string, fn func(map[string]interface{}) (map[string]interface{}, error)) {
+func (s *stubExecutor) on(nodeID string, fn func(map[string]any) (map[string]any, error)) {
 	s.handlers[nodeID] = fn
 }
 
-func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (s *stubExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	s.calls = append(s.calls, node.NodeID())
 	if fn, ok := s.handlers[node.NodeID()]; ok {
 		return fn(input)
 	}
-	return map[string]interface{}{}, nil
+	return map[string]any{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -123,18 +123,18 @@ func TestMultiRecipeBenchmark(t *testing.T) {
 		CaseLabel: "test-pr-42",
 		Workflow:  wf,
 		Recipes:   recipes,
-		Inputs:    map[string]interface{}{"pr_title": "fix: bug"},
+		Inputs:    map[string]any{"pr_title": "fix: bug"},
 		ExecutorFactory: func() runtime.NodeExecutor {
 			exec := newStubExecutor("exec")
-			exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
-				return map[string]interface{}{
+			exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{
 					"text":      "analysis",
 					"_tokens":   100,
 					"_cost_usd": 0.005,
 				}, nil
 			})
-			exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
-				return map[string]interface{}{
+			exec.on("judge", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{
 					"approved":  true,
 					"pass":      true,
 					"_tokens":   50,
@@ -205,18 +205,18 @@ func TestRunIsolation(t *testing.T) {
 		CaseLabel: "isolation-test",
 		Workflow:  wf,
 		Recipes:   recipes,
-		Inputs:    map[string]interface{}{},
+		Inputs:    map[string]any{},
 		ExecutorFactory: func() runtime.NodeExecutor {
 			st := &execState{}
 			states = append(states, st)
 			exec := newStubExecutor("iso")
-			exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+			exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
 				st.callCount++
-				return map[string]interface{}{"text": "ok", "_tokens": st.callCount * 100}, nil
+				return map[string]any{"text": "ok", "_tokens": st.callCount * 100}, nil
 			})
-			exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
+			exec.on("judge", func(_ map[string]any) (map[string]any, error) {
 				st.callCount++
-				return map[string]interface{}{"pass": true, "_tokens": st.callCount * 50}, nil
+				return map[string]any{"pass": true, "_tokens": st.callCount * 50}, nil
 			})
 			return exec
 		},
@@ -266,26 +266,26 @@ func TestMetricsComparison(t *testing.T) {
 		CaseLabel: "compare-cost",
 		Workflow:  wf,
 		Recipes:   recipes,
-		Inputs:    map[string]interface{}{},
+		Inputs:    map[string]any{},
 		ExecutorFactory: func() runtime.NodeExecutor {
 			idx := callIndex
 			callIndex++
 			exec := newStubExecutor("cmp")
-			exec.on("analyze", func(_ map[string]interface{}) (map[string]interface{}, error) {
+			exec.on("analyze", func(_ map[string]any) (map[string]any, error) {
 				cost := 0.001
 				tokens := 50
 				if idx == 1 {
 					cost = 0.010
 					tokens = 500
 				}
-				return map[string]interface{}{
+				return map[string]any{
 					"text":      "analysis",
 					"_tokens":   tokens,
 					"_cost_usd": cost,
 				}, nil
 			})
-			exec.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
-				return map[string]interface{}{"pass": true, "_tokens": 10, "_cost_usd": 0.0005}, nil
+			exec.on("judge", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{"pass": true, "_tokens": 10, "_cost_usd": 0.0005}, nil
 			})
 			return exec
 		},
@@ -411,14 +411,14 @@ func TestCollectMetrics(t *testing.T) {
 		{Type: store.EventLLMRequest, NodeID: "analyze"},
 		{Type: store.EventLLMRetry, NodeID: "analyze"},
 		{Type: store.EventLLMRequest, NodeID: "analyze"},
-		{Type: store.EventNodeFinished, NodeID: "analyze", Data: map[string]interface{}{
-			"output":  map[string]interface{}{"text": "ok"},
+		{Type: store.EventNodeFinished, NodeID: "analyze", Data: map[string]any{
+			"output":  map[string]any{"text": "ok"},
 			"_tokens": float64(200), "_cost_usd": 0.01,
 		}},
 		{Type: store.EventNodeStarted, NodeID: "judge"},
 		{Type: store.EventLLMRequest, NodeID: "judge"},
-		{Type: store.EventNodeFinished, NodeID: "judge", Data: map[string]interface{}{
-			"output":    map[string]interface{}{"approved": true},
+		{Type: store.EventNodeFinished, NodeID: "judge", Data: map[string]any{
+			"output":    map[string]any{"approved": true},
 			"_tokens":   float64(100),
 			"_cost_usd": 0.005,
 		}},

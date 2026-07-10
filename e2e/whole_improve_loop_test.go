@@ -27,11 +27,12 @@ type campaignState struct {
 }
 
 // stubCampaignSweep registers the baseline stubs for a green continuation:
-// campaign (the adaptive agent), the verify_build→verify_run gate (green), and
-// finalize_mr. Individual tests override a node afterward (later .on wins) to
-// exercise a red verify pass or the MR path.
+// campaign (the adaptive agent), the verify gate (verify_probe regenerate →
+// verify_build → verify_run green), and the MR tail (forge_auth_probe
+// credential-present → finalize_mr). Individual tests override a node
+// afterward (later .on wins) to exercise a red verify pass or the MR path.
 func stubCampaignSweep(exec *scenarioExecutor, st *campaignState) {
-	exec.on("campaign", func(in map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("campaign", func(in map[string]any) (map[string]any, error) {
 		st.pass++
 		fl := ""
 		if raw, ok := in["fail_log"]; ok {
@@ -45,7 +46,7 @@ func stubCampaignSweep(exec *scenarioExecutor, st *campaignState) {
 			commits = 1
 			remaining = ""
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"axis_complete":     complete,
 			"commits_this_pass": commits,
 			"sites_remaining":   remaining,
@@ -55,14 +56,24 @@ func stubCampaignSweep(exec *scenarioExecutor, st *campaignState) {
 			"_tokens":           10,
 		}, nil
 	})
-	exec.on("verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
+	// fresh=false routes every pass through verify_build → verify_run, the
+	// flow the per-test call-count assertions are written against.
+	exec.on("verify_probe", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"fresh": false, "reason": "no verify.sh yet", "_tokens": 1}, nil
 	})
-	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+	exec.on("verify_build", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
 	})
-	exec.on("finalize_mr", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("verify_run", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+	})
+	// available=true keeps the opt-in MR path reachable (finalize_mr fires
+	// when open_mr=true); the probe only runs behind the open_mr gate.
+	exec.on("forge_auth_probe", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"available": true, "reason": "env:GH_TOKEN", "_tokens": 1}, nil
+	})
+	exec.on("finalize_mr", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"opened": true, "url": "https://forge/mr/1", "branch": "iterion/improve/x",
 			"back_linked": false, "skipped_reason": "", "summary": "opened", "_tokens": 5,
 		}, nil
@@ -71,7 +82,7 @@ func stubCampaignSweep(exec *scenarioExecutor, st *campaignState) {
 
 // toStr coerces an edge-relayed value (template substitution may deliver a
 // string, or a nil placeholder) to a string for the fail_log assertions.
-func toStr(v interface{}) string {
+func toStr(v any) string {
 	if v == nil {
 		return ""
 	}
@@ -166,15 +177,15 @@ func TestWholeImproveLoop_RedVerifyRoutesBackToCampaign(t *testing.T) {
 	stubCampaignSweep(exec, st)
 	// Override the gate: red on the first run, green thereafter.
 	verifyCalls := 0
-	exec.on("verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("verify_run", func(_ map[string]any) (map[string]any, error) {
 		verifyCalls++
 		if verifyCalls == 1 {
-			return map[string]interface{}{
+			return map[string]any{
 				"passed": false, "skipped": false, "exit_code": 1,
 				"log_tail": "stub build failure: undefined symbol Foo", "_tokens": 1,
 			}, nil
 		}
-		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
 
 	s := tmpStore(t)
@@ -207,7 +218,7 @@ func TestWholeImproveLoop_MRPathOnConverge(t *testing.T) {
 
 	s := tmpStore(t)
 	eng := runtime.New(wf, s, exec)
-	inputs := map[string]interface{}{"open_mr": true}
+	inputs := map[string]any{"open_mr": true}
 	if err := eng.Run(context.Background(), "run-wil-mr", inputs); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

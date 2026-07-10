@@ -32,7 +32,7 @@ type WorkflowRef struct {
 
 // PresetVars is a map of variable name → preset value. These override
 // workflow variable defaults and can themselves be overridden by run inputs.
-type PresetVars map[string]interface{}
+type PresetVars map[string]any
 
 // PromptPack is a map of prompt name → template body override. When applied,
 // these replace the corresponding prompts in the compiled workflow.

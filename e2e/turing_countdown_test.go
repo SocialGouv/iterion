@@ -74,7 +74,7 @@ func TestTuringCountdown(t *testing.T) {
 // toInt coerces a JSON-decoded numeric (float64 / int64 / int) to int for
 // assertion. Compute outputs round-trip through JSON, so integers may arrive as
 // float64.
-func toInt(v interface{}) int {
+func toInt(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n

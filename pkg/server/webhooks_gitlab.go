@@ -132,7 +132,7 @@ func (s *Server) handleGitLabIssueEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	botID, ok := s.resolveReviewBot(ctx, w, cfg, meta, payloadHash, srcIP)
+	botID, ok := s.selectIssueLabeledBot(ctx, w, cfg, meta, payloadHash, srcIP)
 	if !ok {
 		return
 	}
@@ -383,6 +383,8 @@ func (s *Server) handleGitLabCommandNote(ctx context.Context, w http.ResponseWri
 	vars := buildCommandVars(p, route, cmdArgs, cfg.LaunchVars)
 	if surface == "issue" {
 		vars = buildGitLabIssueCommandVars(p, route, cmdArgs, cfg.LaunchVars)
+	} else {
+		stampBranchImprovePushBack(vars, route.BotID, p.SourceBranch, cfg.BranchImproveAsPR)
 	}
 	// "cmd|" prefix keeps the key space disjoint from the mr|/note| paths.
 	idemKey := knowledge.ChecksumHex([]byte(fmt.Sprintf("cmd|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectID, p.SubjectID())))

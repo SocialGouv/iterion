@@ -92,6 +92,40 @@ When in doubt, prefer `""` and let the operator triage manually
 in the board UI. An empty assignee is honest; a wrong one
 wastes a bot run.
 
+## An issue that ALREADY has an open PR → Billy, with a fork guard
+
+Before routing a roadmap item or board card the normal way, check
+whether it ALREADY has an open pull request — a linked PR, or a branch
+whose diff answers the item. If it does, the work is NOT greenfield: it
+lives in a PR that needs finishing, reviewing, hardening, and landing.
+Route it to **Billy (`branch-improve-loop`)**, NOT Featurly
+(`feature-dev`). Featurly would re-implement from scratch and collide
+with the contributor's branch; Billy reads the branch diff
+(`base_ref...HEAD`), improves what it finds (bugs, weak tests, unhandled
+errors), and commits in stride onto the PR branch. Set the item's
+assignee to `branch-improve-loop` and pass the PR's target branch as
+`base_ref`.
+
+**The fork guard — a hard budget-safety rule, not a preference.** The
+attribution is automatic ONLY when the PR's branch is on the repo
+itself. When the PR comes from a **fork**, do NOT auto-assign Billy: a
+fork PR is contributor/attacker-controllable, and auto-dispatching a bot
+onto it spends LLM budget on code you don't control — a budget-exhaustion
+and prompt-injection vector. Surface it and get explicit operator
+approval first (an `ask_user` gate) before assigning.
+
+- Same-repo PR (`head.repo == base.repo`, not cross-repository) → Billy,
+  automatic.
+- Fork PR (cross-repository, `head.repo != base.repo`) → ask the
+  operator: "PR #N on issue #M comes from a fork (`<owner>`) — dispatch
+  Billy on it? (y/N)". Assign only on an explicit yes; default is NO.
+
+The signal you need is the PR's origin (GitHub's
+`pull_request.head.repo.fork` / `isCrossRepository`; a same-repo PR's
+head branch lives in the repo). When the board card doesn't carry that
+signal, say so and ask the operator — never auto-dispatch a PR whose
+origin you cannot confirm.
+
 ## Distinguishers — the three pairs that ALWAYS need a tie-break
 
 These overlaps come up often; commit each distinguisher to memory
@@ -344,7 +378,7 @@ docs/references/productive-session-patterns.md.
   improves what it finds, converging when a fresh re-review is clean and a
   deterministic build/test gate is green. For a whole-codebase (not
   branch-scoped) cross-cutting improvement, use whole-improve-loop instead.
-- **Vars**: `base_ref` (string), `baseline` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
+- **Vars**: `base_ref` (string), `baseline` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `pr_url` (string), `push_branch` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/branch-improve-loop/main.bot`
 
 ### `dep-update-guard` — Vetty

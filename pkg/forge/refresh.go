@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TokenRefresher renews one connection's admin credential. Per-provider
@@ -96,6 +97,14 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	if r == nil {
 		return nil // not refreshable (PAT) — skip
 	}
+	// RunOnce iterates connections across every tenant, so its ctx carries no
+	// tenant. The managed-secret store is tenant-scoped (Get/Update require the
+	// tenant on the ctx); without this the token mint succeeds and the
+	// connection updates (its store keys on _id only), but rewriteManagedSecret
+	// silently fails to persist the fresh token — leaving bot runs reading a
+	// stale, expired installation token (HTTP 401). Scope the ctx to THIS
+	// connection's tenant for all its store writes.
+	ctx = store.WithTenant(ctx, conn.TenantID)
 	cur, err := openConnectionSecret(w.Sealer, conn.ID, conn.SealedPayload)
 	if err != nil {
 		return err

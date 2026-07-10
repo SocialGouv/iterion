@@ -55,7 +55,7 @@ func TestLive_Bot_RgaaAudit(t *testing.T) {
 	})
 	gitCommitAll(t, workspaceDir, "chore: seed a11y fixture")
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir": workspaceDir,
 		"post_to_board": false, // report-only; no board writes
 		"scope_notes":   "Audit index.html for RGAA conformity.",

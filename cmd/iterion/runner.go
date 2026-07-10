@@ -192,11 +192,13 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 		Metrics:           mreg,
 		RunSecrets:        runSecretsStore,
 		Sealer:            sealer,
+		GenericSecrets:    secrets.NewMongoGenericSecretStore(st.DB()),
 		MemoryStore:       memStore,
 		OrgUsage:          orgUsageCounter,
 		BotsPaths:         botsPaths,
 		SandboxDefault:    cfg.Sandbox.Default,
 		SandboxHostState:  cfg.Sandbox.HostState,
+		SandboxOverride:   cfg.Sandbox.Override,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: build: %w", err)

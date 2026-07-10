@@ -18,8 +18,10 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	iterauth "github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
+	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
@@ -253,17 +255,18 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	pub, err := cloudpublisher.New(cloudpublisher.Config{
-		NATS:           natsConn,
-		Store:          st,
-		MongoColl:      st.RunsCollection(),
-		Logger:         logger,
-		Metrics:        mreg,
-		ApiKeys:        stores.apiKeys,
-		GenericSecrets: stores.genericSecrets,
-		BotBindings:    stores.botBindings,
-		RunSecrets:     stores.runSecrets,
-		Sealer:         sealer,
-		OAuthForfait:   stores.oauth,
+		NATS:             natsConn,
+		Store:            st,
+		MongoColl:        st.RunsCollection(),
+		Logger:           logger,
+		Metrics:          mreg,
+		ApiKeys:          stores.apiKeys,
+		GenericSecrets:   stores.genericSecrets,
+		BotBindings:      stores.botBindings,
+		RunSecrets:       stores.runSecrets,
+		Sealer:           sealer,
+		OAuthForfait:     stores.oauth,
+		ForgeConnections: stores.forgeConn,
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -374,6 +377,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		AuthSigner:             authStack.signer,
 		OIDCRegistry:           registry,
 		OIDCStates:             stores.oidcState,
+		DesktopTickets:         stores.desktopTickets,
+		WSTickets:              stores.wsTickets,
 		OrgSSO:                 stores.orgSSO,
 		OrgDomains:             stores.orgDomain,
 		ApiKeys:                stores.apiKeys,
@@ -447,6 +452,8 @@ type cloudStores struct {
 	orgSSO           *orgsso.MongoStore
 	orgDomain        *orgsso.MongoDomainStore
 	oidcState        *oidc.MongoStateStore
+	desktopTickets   *desktopsso.MongoStore
+	wsTickets        *wsticket.MongoStore
 	orgUsage         *orgusage.MongoCounter
 	audit            *audit.MongoStore
 	marketplace      marketplace.Store
@@ -478,11 +485,13 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store) (*cloudStores, 
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
 		// (an OIDC /start on pod A and /callback on pod B), which the per-process
 		// memory store can't guarantee in HA.
-		oidcState: oidc.NewMongoStateStore(st.DB(), 10*time.Minute),
-		orgUsage:  orgusage.NewMongoCounter(st.DB()),
-		audit:     audit.NewMongoStore(st.DB()),
-		pat:       pat.NewMongoStore(st.DB()),
-		memory:    mongostore.NewMongoMemoryStore(st.DB()),
+		oidcState:      oidc.NewMongoStateStore(st.DB(), 10*time.Minute),
+		desktopTickets: desktopsso.NewMongoStore(st.DB(), 2*time.Minute),
+		wsTickets:      wsticket.NewMongoStore(st.DB(), time.Minute),
+		orgUsage:       orgusage.NewMongoCounter(st.DB()),
+		audit:          audit.NewMongoStore(st.DB()),
+		pat:            pat.NewMongoStore(st.DB()),
+		memory:         mongostore.NewMongoMemoryStore(st.DB()),
 	}
 
 	// Hosted marketplace (Mongo-backed) — opt-in for cloud via
@@ -507,6 +516,8 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store) (*cloudStores, 
 		{"org_sso_providers", s.orgSSO.EnsureSchema},
 		{"org_verified_domains", s.orgDomain.EnsureSchema},
 		{"oidc_states", s.oidcState.EnsureSchema},
+		{"desktop_sso_tickets", s.desktopTickets.EnsureSchema},
+		{"ws_tickets", s.wsTickets.EnsureSchema},
 		{"org_usage", func(c context.Context) error { return orgusage.EnsureSchema(c, st.DB()) }},
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},

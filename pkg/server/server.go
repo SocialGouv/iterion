@@ -13,8 +13,10 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/audit"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/auth/desktopsso"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/auth/orgsso"
+	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -67,6 +69,8 @@ type Server struct {
 	signer         *auth.JWTSigner
 	oidcRegistry   *oidc.Registry
 	oidcStates     oidc.StateStore
+	desktopTickets desktopsso.Store
+	wsTickets      wsticket.Store
 	apiKeys        secrets.ApiKeyStore
 	genericSecrets secrets.GenericSecretStore
 	// localSecrets is the concrete layered file store when running in local
@@ -120,7 +124,11 @@ type Server struct {
 	// command replier gate (forge token + loop-guard + allowlist/role authz —
 	// test seam). nil → realWebhookPRForgeCommandGate.
 	webhookPRForgeCommandGate func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (authorized bool, reason string, err error)
-	httpClient                *http.Client
+	// webhookPRForgePRResolver overrides the PR head/base resolution for a
+	// PR-surface command comment (the issue_comment payload carries no head
+	// branch — test seam). nil → realWebhookPRForgePRResolver.
+	webhookPRForgePRResolver func(ctx context.Context, cfg webhooks.Config, provider webhooks.Provider, p prforge.ParsedNote, route webhooks.CommandRoute) (forge.PullRef, error)
+	httpClient               *http.Client
 
 	// forgeHTTP is the SSRF-guarded client for outbound forge calls, built
 	// once (its strict flag is startup-fixed) so connection pooling is
@@ -236,6 +244,12 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if cfg.OIDCStates == nil {
 		cfg.OIDCStates = oidc.NewMemoryStateStore(10 * time.Minute)
 	}
+	if cfg.DesktopTickets == nil {
+		cfg.DesktopTickets = desktopsso.NewMemoryStore(desktopTicketTTL)
+	}
+	if cfg.WSTickets == nil {
+		cfg.WSTickets = wsticket.NewMemoryStore(wsTicketTTL)
+	}
 	s := &Server{
 		cfg:               cfg,
 		logger:            logger,
@@ -246,6 +260,8 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		signer:            cfg.AuthSigner,
 		oidcRegistry:      cfg.OIDCRegistry,
 		oidcStates:        cfg.OIDCStates,
+		desktopTickets:    cfg.DesktopTickets,
+		wsTickets:         cfg.WSTickets,
 		apiKeys:           cfg.ApiKeys,
 		genericSecrets:    cfg.GenericSecrets,
 		runSecrets:        cfg.RunSecrets,
@@ -314,6 +330,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			Webhooks:        s.webhookConfigs,
 			Secrets:         s.genericSecrets,
 			Sealer:          s.sealer,
+			Bindings:        s.botBindings,
 			Bots:            s.forgeBotForge,
 			Invocations:     s.forgeBotInvocations,
 			Schedules:       cfg.ScheduledBots,

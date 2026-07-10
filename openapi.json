@@ -878,6 +878,20 @@
         ]
       }
     },
+    "/api/auth/desktop/exchange": {
+      "post": {
+        "operationId": "postAuthDesktopExchange",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/auth/desktop/exchange",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/auth/invitations/accept": {
       "post": {
         "operationId": "postAuthInvitationsAccept",
@@ -5439,6 +5453,20 @@
           }
         }
       ]
+    },
+    "/api/ws/ticket": {
+      "post": {
+        "operationId": "postWsTicket",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/ws/ticket",
+        "tags": [
+          "ws"
+        ]
+      }
     }
   },
   "servers": [

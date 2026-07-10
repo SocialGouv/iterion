@@ -46,6 +46,21 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
+		// Single-use WS ticket path (?ticket= on /api/ws[/*]): the ticket
+		// resolves DIRECTLY to an identity, so it runs before the JWT/PAT
+		// verification. ok=true with an empty UserID means a ticket was
+		// presented but was invalid/expired/used — reject rather than falling
+		// through to the (absent) bearer.
+		if id, ok := s.wsTicketIdentity(r); ok {
+			if id.UserID == "" {
+				httpError(w, http.StatusUnauthorized, "invalid or expired ws ticket")
+				return
+			}
+			ctx := auth.WithIdentity(r.Context(), id)
+			ctx = store.WithIdentity(ctx, id.TeamID, id.UserID)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
 		token := extractBearer(r)
 		if token == "" {
 			httpError(w, http.StatusUnauthorized, "authentication required")
@@ -152,6 +167,7 @@ func isPublicPath(path string) bool {
 		"/api/auth/refresh",
 		"/api/auth/logout",
 		"/api/auth/providers",
+		"/api/auth/desktop/exchange",
 		"/api/auth/invitations/lookup",
 		"/api/auth/invitations/accept",
 		// /api/server/info carries the AuthRequired flag the SPA

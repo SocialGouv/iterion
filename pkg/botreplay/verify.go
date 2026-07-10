@@ -50,15 +50,15 @@ func VerifyRequiredNonEmpty(f *Fixture, fields []string) error {
 	return nil
 }
 
-func isEmptyValue(v interface{}) bool {
+func isEmptyValue(v any) bool {
 	switch t := v.(type) {
 	case nil:
 		return true
 	case string:
 		return strings.TrimSpace(t) == ""
-	case []interface{}:
+	case []any:
 		return len(t) == 0
-	case map[string]interface{}:
+	case map[string]any:
 		return len(t) == 0
 	}
 	return false
@@ -76,10 +76,10 @@ var assigneeKeys = map[string]bool{
 // every string found under an assignee/bot key. This finds both
 // emit_output.created_issues[].assignee and the nested
 // roadmap_item.assignee arrays without hardcoding either path.
-func collectAssignees(v interface{}) []string {
+func collectAssignees(v any) []string {
 	var out []string
 	switch t := v.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		for k, child := range t {
 			if assigneeKeys[k] {
 				if s, ok := child.(string); ok {
@@ -88,7 +88,7 @@ func collectAssignees(v interface{}) []string {
 			}
 			out = append(out, collectAssignees(child)...)
 		}
-	case []interface{}:
+	case []any:
 		for _, item := range t {
 			out = append(out, collectAssignees(item)...)
 		}

@@ -416,15 +416,25 @@ export default function Toolbar() {
             size="sm"
             leadingIcon={<PlayIcon />}
             onClick={() =>
-              setLocation(`/runs/new?file=${encodeURIComponent(currentFilePath ?? "")}`)
+              setLocation(
+                currentFilePath
+                  ? `/runs/new?file=${encodeURIComponent(currentFilePath)}`
+                  : // Unsaved buffer — launch off inline source (LaunchView
+                    // reads the document store). The only launch path in cloud
+                    // mode, where the pod rootfs is read-only and a workflow
+                    // can never be saved to disk.
+                    `/runs/new`,
+              )
             }
-            disabled={!currentFilePath || !hasResolvedBackend}
+            disabled={(!currentFilePath && !document) || !hasResolvedBackend}
             title={
-              !currentFilePath
-                ? "Save the workflow first to launch a run"
+              !currentFilePath && !document
+                ? "Write or open a workflow first to launch a run"
                 : !hasResolvedBackend
                 ? "No LLM credentials detected — open Settings → Backends to configure."
-                : `Launch ${currentFilePath}`
+                : currentFilePath
+                ? `Launch ${currentFilePath}`
+                : "Launch the unsaved workflow"
             }
           >
             Run

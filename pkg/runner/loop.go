@@ -405,6 +405,15 @@ type Config struct {
 	RunSecrets secrets.RunSecretsStore
 	Sealer     secrets.Sealer
 
+	// GenericSecrets, when non-nil, is the tenant generic-secret store
+	// (same Mongo DB, same Sealer). It powers the mid-run refresh of
+	// materialised file secrets: the bundle's value is a launch-time
+	// snapshot, so a short-TTL credential (1h GitHub App installation
+	// token) dies under a long run — the server-side refresh worker
+	// keeps the STORE record fresh, and the runner re-reads it via
+	// RunBundle.GenericSecretRefs. nil → no refresh (snapshot only).
+	GenericSecrets secrets.GenericSecretStore
+
 	// OrgUsage, when non-nil, receives each run's accumulated LLM
 	// cost/tokens into the org's monthly bucket at the end of every
 	// execution attempt (the billing source of truth — Prometheus
@@ -428,6 +437,15 @@ type Config struct {
 	// value the way pkg/cli/run.go does for `iterion run`.
 	SandboxDefault   string
 	SandboxHostState string
+
+	// SandboxOverride carries ITERION_SANDBOX_OVERRIDE (cfg.Sandbox.Override)
+	// into the engine at CLI-override strength, where "none" beats a
+	// workflow's inline `sandbox:` block. Set to "none" on runners that are
+	// themselves the isolation boundary (a k8s runner pod shipping its own
+	// toolchain): a bot's sandbox block — written for local runs — must not
+	// spawn a sibling sandbox pod there. SandboxDefault cannot express this
+	// (a workflow block outranks the default tier).
+	SandboxOverride string
 }
 
 // Runner is the long-running consumer loop.
@@ -1021,7 +1039,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	// sandbox (the noop driver can't mount) needs them materialized as 0600
 	// files at their mount paths in the runner pod so the in-pod agent can
 	// read them — e.g. review-pr's forge_token for glab. Removed on return.
-	rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf)
+	fileSecrets, rm, ferr := r.materializeFileSecretsNoSandbox(ctx, wf)
 	if rm != nil {
 		// Always schedule cleanup, even on error: materialize returns a
 		// non-nil remover covering the files it wrote BEFORE failing, so
@@ -1030,6 +1048,18 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	}
 	if ferr != nil {
 		r.cfg.Logger.Warn("runner: materialize file secrets %s: %v", msg.RunID, ferr)
+	}
+	// Mid-run refresh of materialised file secrets: the bundle value is a
+	// launch-time snapshot and a GitHub App installation token lives 1h, so
+	// a long (or redelivered) run would push/comment with a dead credential.
+	// The server-side refresh worker keeps the STORE record fresh; re-read
+	// it and rewrite the file so `cat` at use time gets a live token.
+	if len(fileSecrets) > 0 && r.cfg.GenericSecrets != nil {
+		if creds, ok := secrets.CredentialsFromContext(ctx); ok && len(creds.GenericRefs) > 0 {
+			refreshCtx, stopRefresh := context.WithCancel(ctx)
+			defer stopRefresh()
+			go r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
+		}
 	}
 
 	// Isolate the forge CLI (glab/gh) auth config to a PER-RUN directory so a
@@ -1066,20 +1096,15 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		r.cfg.Logger.Warn("runner: isolate forge CLI config %s: %v", msg.RunID, derr)
 	}
 
-	executor, usage, err := r.buildExecutor(ctx, msg, wf)
-	if err != nil {
-		return err
-	}
-	// Charge the org's monthly usage whatever the outcome — paused,
-	// cancelled and failed attempts incurred real LLM spend.
-	defer r.recordOrgSpend(msg, usage)
-
 	// Per-run log persistence (ADR-053): tee the engine logger into the
 	// store's RunLogStore so the server pod can live-stream and replay
 	// the run's log without a shared filesystem. The offset seed makes a
 	// resumed/redelivered run append after the persisted tail. Flushes
 	// ride a background ctx carrying the run's tenant identity — NOT the
-	// run ctx — so a cancelled run still flushes its final lines.
+	// run ctx — so a cancelled run still flushes its final lines. Built
+	// BEFORE the executor so the executor's agent-stream lines (the
+	// `[node#iter/backend]` tool/LLM tags the studio's per-node Logs tab
+	// filters on) persist too — not only the engine's node-level lines.
 	runLogger := r.cfg.Logger
 	if ls := store.AsRunLogStore(r.cfg.Store); ls != nil {
 		idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
@@ -1094,6 +1119,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		runLogger = iterlog.New(r.cfg.Logger.Level(), io.MultiWriter(r.cfg.Logger.Writer(), w))
 	}
 
+	executor, usage, err := r.buildExecutor(ctx, msg, wf, runLogger)
+	if err != nil {
+		return err
+	}
+	// Charge the org's monthly usage whatever the outcome — paused,
+	// cancelled and failed attempts incurred real LLM spend.
+	defer r.recordOrgSpend(msg, usage)
+
 	engineOpts := []runtime.EngineOption{
 		runtime.WithLogger(runLogger),
 		runtime.WithWorkflowHash(msg.WorkflowHash),
@@ -1105,6 +1138,10 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// driver (host_state=auto has no host filesystem to bind).
 		runtime.WithSandboxDefault(r.cfg.SandboxDefault),
 		runtime.WithSandboxHostStateDefault(r.cfg.SandboxHostState),
+		// CLI-strength override (ITERION_SANDBOX_OVERRIDE): "none" on a
+		// runner that is itself the isolation boundary beats a bot's inline
+		// sandbox block, so the run executes directly in the runner pod.
+		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
 	}
 	// Bundle skills: a bot-qualified run mirrors its bundle's skills/ into
 	// <workspace>/.claude/skills exactly like a local `iterion run
@@ -1221,9 +1258,10 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		return "", fmt.Errorf("mkdir repo parent: %w", err)
 	}
 
-	cloneURL, tok := msg.RepoURL, ""
+	cloneURL, tok, appBotLogin := msg.RepoURL, "", ""
 	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
 		tok = strutil.FirstNonBlank(creds.GenericSecret("forge_token"), creds.GenericSecret("gitlab_token"), creds.GenericSecret("github_token"))
+		appBotLogin = creds.ForgeAppBotLogin
 		if tok != "" {
 			cloneURL = injectGitToken(msg.RepoURL, tok)
 		}
@@ -1244,13 +1282,31 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 		}
 	}
 	// Cloud sandboxes have no ~/.gitconfig (the host bind-mount is dropped on
-	// kubernetes and the runner pod has none of its own), so seed a default
+	// kubernetes and the runner pod has none of its own), so seed an
 	// author/committer in the clone's LOCAL config. It travels into the sandbox
 	// with .git, so commit-producing bots (feature-dev's commit_changes, willy,
-	// billy, docs-refresh, …) don't fail "Author identity unknown". Overridable
-	// via ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
-	_ = r.runGit(ctx, dir, "", "config", "user.name", gitAuthorName())
-	_ = r.runGit(ctx, dir, "", "config", "user.email", gitAuthorEmail())
+	// billy, docs-refresh, …) don't fail "Author identity unknown".
+	//
+	// Prefer the identity that OWNS the push token (resolved from the forge) so
+	// a pushed commit is attributed to the real pusher, not a stray account
+	// sharing the fallback email. Falls back to a neutral bot identity (never a
+	// real person's) when there's no token or resolution fails. Overridable via
+	// ITERION_GIT_AUTHOR_NAME / ITERION_GIT_AUTHOR_EMAIL.
+	authorName, authorEmail := gitAuthorName(), gitAuthorEmail()
+	if tok != "" {
+		// A github_app connection's forge_token is an installation token that
+		// can't `GET /user`; the publisher threads the App bot login so we
+		// resolve its canonical committer via `GET /users/<login>` instead.
+		if appBotLogin != "" {
+			if n, e, ok := resolveAppBotCommitterIdentity(ctx, msg.RepoURL, appBotLogin, tok); ok {
+				authorName, authorEmail = n, e
+			}
+		} else if n, e, ok := resolveForgeCommitterIdentity(ctx, msg.RepoURL, tok); ok {
+			authorName, authorEmail = n, e
+		}
+	}
+	_ = r.runGit(ctx, dir, "", "config", "user.name", authorName)
+	_ = r.runGit(ctx, dir, "", "config", "user.email", authorEmail)
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
 	return dir, nil
@@ -1263,14 +1319,20 @@ func gitAuthorName() string {
 	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_NAME")); v != "" {
 		return v
 	}
-	return "iterion"
+	return "iterion-runner[bot]"
 }
 
 func gitAuthorEmail() string {
 	if v := strings.TrimSpace(os.Getenv("ITERION_GIT_AUTHOR_EMAIL")); v != "" {
 		return v
 	}
-	return "iterion@users.noreply.github.com"
+	// A `.invalid` domain (RFC 2606, reserved, never resolvable) guarantees this
+	// fallback maps to NO GitHub account — the commit shows the bot name as
+	// plain text, never a stray individual. The default was
+	// `iterion@users.noreply.github.com`, which GitHub silently attributed to an
+	// unrelated real user "iterion". The push-token identity above is the
+	// preferred, attributed path; this only fires token-less.
+	return "iterion-runner@bot.iterion.invalid"
 }
 
 // seedRunScratchIgnore locally excludes iterion's per-run scratch — the
@@ -1406,17 +1468,30 @@ func injectGitToken(rawURL, token string) string {
 
 // materializeFileSecretsNoSandbox writes the workflow's `as: file` secrets to
 // 0600 files at their mount paths in the runner pod when the run has no
-// sandbox (a sandboxed run mounts them into the container instead). Returns a
-// cleanup that removes the written files, or nil when nothing was written.
-func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (func(), error) {
-	if wf == nil || len(wf.Secrets) == 0 || wf.Sandbox != nil {
-		// No secrets, or the workflow opts into a sandbox (which mounts file
-		// secrets into the container). review-pr et al. have no sandbox block
-		// → wf.Sandbox is nil and we materialize below.
-		return nil, nil
+// sandbox (a sandboxed run mounts them into the container instead). Returns
+// the written files keyed by secret name (for the mid-run refresher) and a
+// cleanup that removes them; both nil when nothing was written.
+func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Workflow) (map[string]string, func(), error) {
+	if wf == nil || len(wf.Secrets) == 0 ||
+		runtime.WorkflowSandboxActive(wf, r.cfg.SandboxOverride, r.cfg.SandboxDefault) {
+		// No secrets, or the run RESOLVES to an active sandbox (which mounts
+		// file secrets into the container). The resolved decision — not
+		// wf.Sandbox — is what matters: under ITERION_SANDBOX_OVERRIDE=none a
+		// bot's sandbox block is neutralized and the run executes in this pod,
+		// so its file secrets must be materialized here (run 019f4551's
+		// push_auth_probe found no forge_token exactly because this gate used
+		// to test the static declaration).
+		return nil, nil, nil
 	}
 	creds, _ := secrets.CredentialsFromContext(ctx)
-	var written []string
+	written := map[string]string{}
+	paths := func() []string {
+		out := make([]string, 0, len(written))
+		for _, p := range written {
+			out = append(out, p)
+		}
+		return out
+	}
 	for name, s := range wf.Secrets {
 		if !s.IsFile() {
 			continue
@@ -1439,17 +1514,83 @@ func (r *Runner) materializeFileSecretsNoSandbox(ctx context.Context, wf *ir.Wor
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(mp), 0o700); err != nil {
-			return removeFilesFunc(written), err
+			return written, removeFilesFunc(paths()), err
 		}
 		if err := os.WriteFile(mp, []byte(val), 0o600); err != nil {
-			return removeFilesFunc(written), err
+			return written, removeFilesFunc(paths()), err
 		}
-		written = append(written, mp)
+		written[name] = mp
 	}
 	if len(written) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return removeFilesFunc(written), nil
+	return written, removeFilesFunc(paths()), nil
+}
+
+// fileSecretRefreshInterval paces the mid-run re-read of materialised file
+// secrets from the generic-secret store. Well under the 10-minute cadence of
+// the server-side refresh worker, so a rotated credential reaches the file
+// within minutes of the store update.
+const fileSecretRefreshInterval = 5 * time.Minute
+
+// refreshFileSecretsLoop re-reads each materialised file secret's store
+// record on a fixed cadence and rewrites the file when the value changed.
+// Tools re-read the file per invocation (`cat /run/iterion/secrets/<name>`),
+// so a rotation propagates to every subsequent forge push/comment without
+// touching the process environment. Failures are logged and retried next
+// tick — the file keeps its last good value; nothing is ever truncated.
+func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, refs, files map[string]string) {
+	tick := time.NewTicker(fileSecretRefreshInterval)
+	defer tick.Stop()
+	last := map[string]string{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		r.refreshFileSecretsOnce(ctx, tenantID, refs, files, last)
+	}
+}
+
+// refreshFileSecretsOnce is one tick of refreshFileSecretsLoop: re-read every
+// ref'd file secret and atomically rewrite the ones whose store value moved.
+func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, refs, files, last map[string]string) {
+	for name, path := range files {
+		id := refs[name]
+		if id == "" {
+			continue // snapshot-only secret (no store ref) — nothing to refresh
+		}
+		// Bounded, tenant-scoped read; the loop ctx dies with the run.
+		rctx, cancel := context.WithTimeout(store.WithTenant(ctx, tenantID), 15*time.Second)
+		rec, err := r.cfg.GenericSecrets.Get(rctx, id)
+		cancel()
+		if err != nil {
+			r.cfg.Logger.Warn("runner: refresh file secret %q (ref %s): %v", name, id, err)
+			continue
+		}
+		val, err := secrets.OpenGenericSecret(r.cfg.Sealer, rec.ID, rec.SealedSecret)
+		if err != nil {
+			r.cfg.Logger.Warn("runner: refresh file secret %q: unseal: %v", name, err)
+			continue
+		}
+		if len(val) == 0 || string(val) == last[name] {
+			continue
+		}
+		// Atomic replace so a concurrent `cat` never sees a torn write.
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, val, 0o600); err != nil {
+			r.cfg.Logger.Warn("runner: refresh file secret %q: write: %v", name, err)
+			continue
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			_ = os.Remove(tmp)
+			r.cfg.Logger.Warn("runner: refresh file secret %q: rename: %v", name, err)
+			continue
+		}
+		last[name] = string(val)
+		r.cfg.Logger.Info("runner: refreshed file secret %q from store (rotation picked up)", name)
+	}
 }
 
 func removeFilesFunc(paths []string) func() {
@@ -1494,7 +1635,9 @@ func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (
 		// intersects these with the workflow's declared hosts. Hostnames
 		// are not secret, so cleanup below leaves them untouched.
 		GenericHosts:         bundle.GenericSecretHosts,
+		GenericRefs:          bundle.GenericSecretRefs,
 		OAuthCredentialFiles: map[string]string{},
+		ForgeAppBotLogin:     bundle.ForgeAppBotLogin,
 	}
 	tmpDirs := make([]string, 0, len(bundle.OAuthCredentials))
 	// cancelRefresh stops the per-run OAuth-forfait token refreshers (set
@@ -1693,7 +1836,7 @@ func envPositiveFloat(key string) (float64, bool) {
 // through — executeRun reads its RunTotals at the end of the attempt
 // to charge the org's monthly usage. Always wrapped (Prometheus
 // registry may be nil) so org metering works without metrics.
-func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow) (runtime.NodeExecutor, *metricsEmitter, error) {
+func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *ir.Workflow, logger *iterlog.Logger) (runtime.NodeExecutor, *metricsEmitter, error) {
 	emitter, ok := r.cfg.Store.(model.EventEmitter)
 	if !ok {
 		return nil, nil, fmt.Errorf("runner: store does not satisfy model.EventEmitter")
@@ -1706,12 +1849,16 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
 	vars := stringifyVars(msg.Vars)
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
-		Ctx:         ctx,
-		Workflow:    wf,
-		Vars:        vars,
-		Store:       usage,
-		RunID:       msg.RunID,
-		Logger:      r.cfg.Logger,
+		Ctx:      ctx,
+		Workflow: wf,
+		Vars:     vars,
+		Store:    usage,
+		RunID:    msg.RunID,
+		// The run-scoped logger (teed into the RunLogStore) — the executor
+		// emits the `[node#iter/backend]` agent-stream lines the studio's
+		// per-node Logs tab filters on; on the raw pod logger they would
+		// reach stdout but never the persisted run.log.
+		Logger:      logger,
 		StoreDir:    r.cfg.WorkDir,
 		BotID:       msg.BotID,
 		MemoryStore: r.cfg.MemoryStore,
@@ -1929,7 +2076,7 @@ func (m *metricsEmitter) lookupModel(nodeID string) string {
 	return m.modelByNode[nodeID]
 }
 
-func (m *metricsEmitter) addTokens(backend, modelName, direction string, raw interface{}) {
+func (m *metricsEmitter) addTokens(backend, modelName, direction string, raw any) {
 	n := toFloat(raw)
 	if n <= 0 || backend == "" || m.reg == nil {
 		return
@@ -1975,7 +2122,7 @@ func normalizeModelLabel(s string) string {
 // toFloat coerces the JSON-decoded scalar (always float64 in Go's
 // encoding/json) to a non-negative float64, returning 0 when the
 // value is missing, nil, or not a number.
-func toFloat(raw interface{}) float64 {
+func toFloat(raw any) float64 {
 	switch v := raw.(type) {
 	case float64:
 		if v < 0 {
@@ -2000,7 +2147,7 @@ func toFloat(raw interface{}) float64 {
 // string-typed map the executor expects. Non-string scalars are
 // formatted with %v; nested structures are JSON-encoded so the
 // downstream template engine can still see them.
-func stringifyVars(in map[string]interface{}) map[string]string {
+func stringifyVars(in map[string]any) map[string]string {
 	if len(in) == 0 {
 		return nil
 	}

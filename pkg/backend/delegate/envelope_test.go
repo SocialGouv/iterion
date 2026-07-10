@@ -33,7 +33,7 @@ func TestEnvelopeRoundTripAllTypes(t *testing.T) {
 		{"ask_user_answer", build(NewAskUserAnswerEnvelope("ask-1", map[string]string{"ok?": "yes"}))},
 		{"session_capture", NewSessionCaptureEnvelope(json.RawMessage(`{"messages":[{"role":"user"}]}`))},
 		{"session_replay", NewSessionReplayEnvelope(json.RawMessage(`{"messages":[{"role":"assistant"}]}`))},
-		{"event", build(NewEventEnvelope("tool_called", map[string]interface{}{"name": "Bash"}))},
+		{"event", build(NewEventEnvelope("tool_called", map[string]any{"name": "Bash"}))},
 		{"result", build(NewResultEnvelope(IOResult{BackendName: "claw", Tokens: 1234}))},
 	}
 	for _, tc := range cases {

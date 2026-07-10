@@ -43,9 +43,9 @@ func TestSchemaValidation_CatchesBadOutput(t *testing.T) {
 	wf := validationWorkflow()
 
 	exec := newStubExecutor()
-	exec.on("my_agent", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
 		// Return wrong types: score should be int (float64 in JSON), not string.
-		return map[string]interface{}{
+		return map[string]any{
 			"summary": "looks good",
 			"score":   "not_a_number",
 		}, nil
@@ -73,9 +73,9 @@ func TestSchemaValidation_DisabledByDefault(t *testing.T) {
 	wf := validationWorkflow()
 
 	exec := newStubExecutor()
-	exec.on("my_agent", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
 		// Return wrong types — but validation is disabled.
-		return map[string]interface{}{
+		return map[string]any{
 			"summary": "looks good",
 			"score":   "not_a_number",
 		}, nil
@@ -92,8 +92,8 @@ func TestSchemaValidation_PassesValidOutput(t *testing.T) {
 	wf := validationWorkflow()
 
 	exec := newStubExecutor()
-	exec.on("my_agent", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary":  "all good",
 			"score":    float64(42), // JSON numbers are float64
 			"_tokens":  float64(100),
@@ -112,9 +112,9 @@ func TestSchemaValidation_MissingField(t *testing.T) {
 	wf := validationWorkflow()
 
 	exec := newStubExecutor()
-	exec.on("my_agent", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
 		// Missing "score" field.
-		return map[string]interface{}{
+		return map[string]any{
 			"summary": "partial",
 		}, nil
 	})
@@ -180,12 +180,12 @@ func TestSchemaValidation_InBranch(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("branch_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "ok"}, nil
+	exec.on("branch_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "ok"}, nil
 	})
-	exec.on("branch_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("branch_b", func(_ map[string]any) (map[string]any, error) {
 		// Return wrong type — should cause branch to fail.
-		return map[string]interface{}{"result": 42}, nil
+		return map[string]any{"result": 42}, nil
 	})
 
 	eng := New(wf, tmpStore(t), exec, WithOutputValidation(true))
@@ -214,8 +214,8 @@ func TestSchemaValidation_NoSchemaSkipsValidation(t *testing.T) {
 	}
 
 	exec := newStubExecutor()
-	exec.on("my_agent", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"anything": "goes"}, nil
+	exec.on("my_agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"anything": "goes"}, nil
 	})
 
 	eng := New(wf, tmpStore(t), exec, WithOutputValidation(true))

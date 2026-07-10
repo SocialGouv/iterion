@@ -27,14 +27,14 @@ func TestParseSDKOutput(t *testing.T) {
 		{
 			name:       "populated structured_output is returned directly (fast path)",
 			resultText: strptr("I returned it in the echoed field."),
-			structured: map[string]interface{}{"echoed": "HELLO"},
+			structured: map[string]any{"echoed": "HELLO"},
 			schema:     schema,
 			wantKey:    "echoed", wantVal: "HELLO", wantFallback: false,
 		},
 		{
 			name:       "empty structured_output falls through to result text",
 			resultText: strptr(`{"echoed":"FROM_TEXT"}`),
-			structured: map[string]interface{}{}, // {} — tool session, no StructuredOutput call
+			structured: map[string]any{},
 			schema:     schema,
 			wantKey:    "echoed", wantVal: "FROM_TEXT", wantFallback: false,
 		},
@@ -62,7 +62,7 @@ func TestParseSDKOutput(t *testing.T) {
 		{
 			name:       "empty structured_output AND empty text yields empty map (drives formatting fallback)",
 			resultText: strptr(""),
-			structured: map[string]interface{}{},
+			structured: map[string]any{},
 			schema:     schema,
 			wantKey:    "", wantFallback: false,
 		},

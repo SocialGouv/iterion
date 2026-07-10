@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
@@ -21,6 +22,7 @@ type backendFields struct {
 	model            string
 	backend          string
 	provider         string
+	command          string // node-level `command:` CLI binary override (honored by claude_code)
 	systemPrompt     string
 	userPrompt       string
 	reasoningEffort  string
@@ -38,6 +40,7 @@ type backendFields struct {
 	cursors          *ir.CursorInvocation
 	compress         string // node-level `compress:` value ("" = unset)
 	permission       string // node-level `permission:` mode override ("" = inherit)
+	timeout          string // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
 }
 
 // extractBackendFields normalises the LLM-relevant fields shared by
@@ -51,6 +54,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 	case *ir.AgentNode:
 		return backendFields{
 			id: n.ID, model: n.Model, backend: n.Backend, provider: n.Provider,
+			command:      n.Command,
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
@@ -65,10 +69,12 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			permission:       n.Permission,
+			timeout:          n.Timeout,
 		}, nil
 	case *ir.JudgeNode:
 		return backendFields{
 			id: n.ID, model: n.Model, backend: n.Backend, provider: n.Provider,
+			command:      n.Command,
 			systemPrompt: n.SystemPrompt, userPrompt: n.UserPrompt,
 			reasoningEffort: n.ReasoningEffort, outputSchema: n.OutputSchema,
 			tools: n.Tools, toolMaxSteps: n.ToolMaxSteps,
@@ -83,6 +89,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			cursors:          n.Cursors,
 			compress:         n.Compress,
 			permission:       n.Permission,
+			timeout:          n.Timeout,
 		}, nil
 	default:
 		return backendFields{}, fmt.Errorf("model: extractBackendFields called with unsupported node type %T", node)
@@ -120,7 +127,7 @@ func (e *ClawExecutor) resolvePermissionPolicy(nodeMode string) (*permission.Pol
 //
 // `output` is passed explicitly so the LLM router path can re-stamp
 // after a `{"text": …}` fallback has reassigned to a fresh map.
-func stampDelegateOutputMeta(output map[string]interface{}, result delegate.Result, backendName string) {
+func stampDelegateOutputMeta(output map[string]any, result delegate.Result, backendName string) {
 	if output == nil {
 		return
 	}
@@ -195,11 +202,27 @@ func (e *ClawExecutor) dispatchWithObservability(
 
 // executeBackend is the unified execution path for agent and judge nodes.
 // It resolves the backend, builds a Task, and dispatches to the backend.
-func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	f, err := extractBackendFields(node)
 	if err != nil {
 		return nil, err
 	}
+
+	// Per-node `timeout:` bounds this node's whole backend interaction
+	// (task build + dispatch + schema-retry). WithTimeout derives from the
+	// incoming ctx, so whichever fires first — this bound or the workflow
+	// budget deadline already carried on ctx — wins; expiry surfaces as
+	// context.DeadlineExceeded and fails the node cleanly. Compile-time
+	// validation (C122) already rejects malformed durations, so a parse
+	// error here is defensive: skip the bound rather than fail the node.
+	if f.timeout != "" {
+		if d, derr := time.ParseDuration(ir.ExpandEnvWithDefault(f.timeout)); derr == nil && d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+	}
+
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {
@@ -262,12 +285,12 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 	// its own reason to pause. Recognise it by the permission marker so
 	// such a pause converts cleanly here too.
 	needsInteraction, _ := result.Output["_needs_interaction"].(bool)
-	questions, _ := result.Output["_interaction_questions"].(map[string]interface{})
+	questions, _ := result.Output["_interaction_questions"].(map[string]any)
 	_, isPermissionPause := questions[permission.InteractionMarkerKey]
 	if needsInteraction && (f.interaction != ir.InteractionNone || isPermissionPause) {
 		{
 			if questions == nil {
-				questions = map[string]interface{}{"input": "The backend needs your input to continue."}
+				questions = map[string]any{"input": "The backend needs your input to continue."}
 			}
 			delete(result.Output, "_needs_interaction")
 			delete(result.Output, "_interaction_questions")
@@ -309,8 +332,11 @@ func (e *ClawExecutor) executeBackend(ctx context.Context, node ir.Node, input m
 // failure that one retry can plausibly fix (parse-fallback OR missing-
 // required-field), one retry through retryDelegateLoop is attempted —
 // inheriting the standard transient-backoff budget — and the retry
-// result is re-validated. The OnDelegateRetry observer hook fires for
-// the schema-fallback retry (otherwise invisible to outer observers,
+// result is re-validated. The retry does not replay the identical prompt:
+// its UserPrompt (plus, for multimodal tasks, an extra text ContentBlock)
+// is augmented with a delimited feedback block naming the validation error
+// so the model can correct itself. The OnDelegateRetry observer hook fires
+// for the schema-fallback retry (otherwise invisible to outer observers,
 // which only see transient-error retries), token / duration are
 // accumulated across the first attempt + retry so per-node accounting
 // reflects the full cost paid, and stampDelegateOutputMeta is re-applied
@@ -362,12 +388,29 @@ func (e *ClawExecutor) validateAndRetry(
 		di.Attempt = 1
 		e.hooks.OnDelegateRetry(f.id, di)
 	}
+	// Build a retry copy of the task whose UserPrompt (and, for multimodal
+	// tasks, an extra text ContentBlock) carries a delimited feedback block
+	// naming the validation failure, so the model can correct its output
+	// instead of blindly re-running the identical prompt. The ORIGINAL task
+	// is preserved untouched — its token/duration accounting has already
+	// been accumulated above and must not be disturbed.
+	retryTask := *task
+	feedback := formatSchemaRetryFeedback(err)
+	retryTask.UserPrompt = appendSchemaRetryFeedback(retryTask.UserPrompt, feedback)
+	if len(retryTask.UserContent) > 0 {
+		// Copy the slice header so appending feedback to the retry task does
+		// not mutate the original task's backing array.
+		retryTask.UserContent = append(
+			append([]delegate.ContentBlock(nil), retryTask.UserContent...),
+			delegate.ContentBlock{Type: "text", Text: feedback},
+		)
+	}
 	// Route the schema-fallback retry through retryDelegateLoop so it
 	// inherits the same transient-error backoff every other delegate call
 	// gets — a direct backend.Execute here skipped the retry budget and
 	// gave up on the first transient SDK hiccup.
 	retryResult, retryErr := e.retryDelegateLoop(ctx, f.id, backendName, func() (delegate.Result, error) {
-		return backend.Execute(ctx, *task)
+		return backend.Execute(ctx, retryTask)
 	})
 	if retryErr != nil || retryResult.ParseFallback {
 		return result, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
@@ -385,11 +428,36 @@ func (e *ClawExecutor) validateAndRetry(
 	return retryResult, nil
 }
 
+// schemaRetryFeedbackMarker delimits the schema-validation feedback block
+// injected into a retry prompt. Kept as a const so tests can assert on it
+// without duplicating the literal.
+const schemaRetryFeedbackMarker = "[OUTPUT SCHEMA VALIDATION FAILED]"
+
+// formatSchemaRetryFeedback renders the delimited feedback block appended to
+// a retry prompt when structured output fails validation. err is the concrete
+// validation failure (missing field, parse fallback) so the model knows what
+// to fix.
+func formatSchemaRetryFeedback(err error) string {
+	return fmt.Sprintf(
+		"%s\n%s\nReturn a corrected response that matches the required output schema exactly. Output only the JSON object.",
+		schemaRetryFeedbackMarker, err,
+	)
+}
+
+// appendSchemaRetryFeedback appends the feedback block to an existing user
+// prompt, separated by a blank line. An empty prompt yields the feedback alone.
+func appendSchemaRetryFeedback(prompt, feedback string) string {
+	if prompt == "" {
+		return feedback
+	}
+	return prompt + "\n\n" + feedback
+}
+
 // buildTask assembles the delegate.Task for an agent/judge LLM node from the
 // node's resolved fields, prompts, schema, reasoning effort, capabilities,
 // tool set, and session/resume continuity. Split out of executeBackend to
 // keep that method focused on dispatch + validation.
-func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFields, input map[string]interface{}, backendName string) (delegate.Task, error) {
+func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFields, input map[string]any, backendName string) (delegate.Task, error) {
 	td := TemplateDataFromContext(ctx)
 
 	systemText := e.resolveSystemPrompt(f.systemPrompt, input, td)
@@ -455,6 +523,9 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		Hooks:      e.delegateHooksFor(f.id, backendName, LoopIterationFromContext(ctx)),
 		InboxDrain: e.bindInboxDrain(ctx),
 	}
+	// Per-node CLI binary override (env-expanded). Only claude_code consumes
+	// it; other backends ignore Task.Command. Empty = backend default.
+	task.Command = ir.ExpandEnvWithDefault(f.command)
 	// Command-output compression mode (precedence: run override > node DSL >
 	// workflow DSL > ITERION_COMPRESS env). Stored as a string so the delegate
 	// layer + IPC wire form stay decoupled from the rewrite enum; "" (off) is
@@ -538,7 +609,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 // resolveSystemPrompt returns the {{vars}}-resolved body of the named
 // prompt block, or "" when the name is empty or unknown. Kept as a
 // helper so buildTask's top reads as a flat assembly.
-func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]interface{}, td *TemplateData) string {
+func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]any, td *TemplateData) string {
 	if promptName == "" {
 		return ""
 	}
@@ -562,7 +633,7 @@ func (e *ClawExecutor) resolveSystemPrompt(promptName string, input map[string]i
 // the (stateless) LLM doesn't lose the thread — without this, claw
 // would re-ask the same question because its conversation history isn't
 // persisted.
-func (e *ClawExecutor) buildUserPromptParts(f backendFields, input map[string]interface{}, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
+func (e *ClawExecutor) buildUserPromptParts(f backendFields, input map[string]any, td *TemplateData, backendName string) (string, []delegate.ContentBlock) {
 	userText := e.buildUserMessage(f.userPrompt, input, td)
 	// And the multimodal variant when this backend supports it AND the
 	// resolved prompt references at least one image attachment.
@@ -622,7 +693,7 @@ func (e *ClawExecutor) applyMemorySpec(task *delegate.Task, m *ir.Memory) {
 // Applies run-wide to every LLM node, so a "sous-bot" focus (e.g.
 // Willy as improve-quality SRE) shapes the reviewer and fixer alike
 // without the author wiring it into each prompt.
-func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string]interface{}, td *TemplateData) {
+func (e *ClawExecutor) applyPresetFragment(task *delegate.Task, input map[string]any, td *TemplateData) {
 	if e.presetPrompt == "" && len(e.presetSkills) == 0 {
 		return
 	}
@@ -742,7 +813,7 @@ func (e *ClawExecutor) applyBoardEndpoint(task *delegate.Task, effectiveCaps []s
 // behaviour instead of routing into the backend with an empty session
 // id (which has produced silent 0-token failures on at least the
 // OpenAI provider).
-func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFields, input map[string]interface{}) {
+func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFields, input map[string]any) {
 	if f.session != ir.SessionInherit && f.session != ir.SessionInheritIfAvailable && f.session != ir.SessionFork {
 		return
 	}
@@ -773,7 +844,7 @@ func (e *ClawExecutor) applySessionContinuity(task *delegate.Task, f backendFiel
 // pause) onto the task. The backend uses these fields to rehydrate
 // the LLM's exact pre-pause state instead of restarting from the
 // rendered system+user prompts.
-func applyResumeContinuity(task *delegate.Task, input map[string]interface{}) {
+func applyResumeContinuity(task *delegate.Task, input map[string]any) {
 	conv, ok := input[delegate.ResumeConversationKey].(json.RawMessage)
 	if !ok || len(conv) == 0 {
 		return

@@ -8,7 +8,7 @@ type SanitizationRule struct {
 	// Match returns true if this rule applies to the given tool.
 	Match func(toolName string) bool
 	// Apply modifies args in-place.
-	Apply func(toolName string, args map[string]interface{}, workDir string)
+	Apply func(toolName string, args map[string]any, workDir string)
 }
 
 // DefaultSanitizationRules returns the built-in sanitization rules that fix
@@ -20,7 +20,7 @@ func DefaultSanitizationRules() []SanitizationRule {
 			// which MCP servers reject.
 			Name:  "remove-empty-strings",
 			Match: func(_ string) bool { return true },
-			Apply: func(_ string, args map[string]interface{}, _ string) {
+			Apply: func(_ string, args map[string]any, _ string) {
 				for key, val := range args {
 					if s, ok := val.(string); ok && s == "" {
 						delete(args, key)
@@ -34,7 +34,7 @@ func DefaultSanitizationRules() []SanitizationRule {
 			// may send incorrect values (wrong cwd, restrictive sandbox, etc.).
 			Name:  "codex-workspace",
 			Match: func(name string) bool { return name == "codex" },
-			Apply: func(_ string, args map[string]interface{}, workDir string) {
+			Apply: func(_ string, args map[string]any, workDir string) {
 				if workDir != "" {
 					args["cwd"] = workDir
 				}
@@ -49,7 +49,7 @@ func DefaultSanitizationRules() []SanitizationRule {
 			// even the capped limit is too large.
 			Name:  "read-limit-cap",
 			Match: func(name string) bool { return name == "Read" },
-			Apply: func(_ string, args map[string]interface{}, _ string) {
+			Apply: func(_ string, args map[string]any, _ string) {
 				if _, hasPages := args["pages"]; hasPages {
 					return
 				}

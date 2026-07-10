@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
@@ -29,6 +30,11 @@ type GitHubOptions struct {
 	// IncludeLabels must be present; any ExcludeLabel disqualifies.
 	IncludeLabels []string
 	ExcludeLabels []string
+
+	// AuthorAllowlist, when non-empty, restricts candidates to issues opened by
+	// one of these logins (case-insensitive) — the trusted-author scope for
+	// auto-dispatch on a public repo. Empty = any author.
+	AuthorAllowlist []string
 
 	// StateMapping maps a workflow state name to a label predicate.
 	// The first entry that matches in iteration order determines
@@ -118,6 +124,9 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 	}
 	out2 := make([]Issue, 0, len(raw))
 	for _, r := range raw {
+		if !a.authorAllowed(r.Author.Login) {
+			continue // author not in the trusted-author allowlist
+		}
 		iss := a.toIssue(r)
 		if iss.WorkflowState == "" {
 			continue // doesn't match any configured state
@@ -125,6 +134,20 @@ func (a *GitHubAdapter) ListCandidates(ctx context.Context) ([]Issue, error) {
 		out2 = append(out2, iss)
 	}
 	return out2, nil
+}
+
+// authorAllowed reports whether an issue author passes AuthorAllowlist
+// (case-insensitive). An empty allowlist admits any author.
+func (a *GitHubAdapter) authorAllowed(login string) bool {
+	if len(a.opts.AuthorAllowlist) == 0 {
+		return true
+	}
+	for _, allowed := range a.opts.AuthorAllowlist {
+		if strings.EqualFold(allowed, login) {
+			return true
+		}
+	}
+	return false
 }
 
 // RefreshStates returns the current state for each ID (which on the
@@ -282,6 +305,58 @@ func (a *GitHubAdapter) Release(ctx context.Context, id, marker string) error {
 	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--remove-label", a.opts.ClaimedLabel}
 	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
 		return fmt.Errorf("gh issue edit (release): %w", err)
+	}
+	return nil
+}
+
+// HasLinkedPR reports whether an OPEN pull request already references this
+// issue with a "#N" link — the same signal GitHub's own auto-close and the
+// board projection use (forge.ParseIssueRefs over each PR's title+body). The
+// deterministic ticket router reads it to decide whether a fresh issue needs
+// implementing (no PR) or is already owned by the inbound PR-webhook (a PR
+// links it → the dispatcher steps aside). Satisfies the optional linkedPRProbe
+// capability the dispatcher type-asserts. One `gh pr list` per call; the repo's
+// PR count is small in practice.
+func (a *GitHubAdapter) HasLinkedPR(ctx context.Context, id string) (bool, error) {
+	num, ok := parseGitHubID(a.opts.Repo, id)
+	if !ok {
+		return false, ErrNotFound
+	}
+	args := []string{"pr", "list", "--repo", a.opts.Repo, "--state", "open", "--json", "number,title,body", "--limit", "200"}
+	out, err := a.opts.Command(ctx, args, a.env())
+	if err != nil {
+		return false, fmt.Errorf("gh pr list (linked-pr probe): %w", err)
+	}
+	var prs []struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
+	}
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return false, fmt.Errorf("gh pr list decode: %w", err)
+	}
+	for _, pr := range prs {
+		for _, ref := range forge.ParseIssueRefs(true, pr.Title, pr.Body) {
+			if ref == num {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// ApplyLabel adds a label to the issue (the visible bot:featurly / bot:billy
+// association the ticket router stamps). Reuses the same `gh issue edit
+// --add-label` seam as Claim; idempotent (gh no-ops an already-present label).
+// Satisfies the optional labelApplier capability.
+func (a *GitHubAdapter) ApplyLabel(ctx context.Context, id, label string) error {
+	num, ok := parseGitHubID(a.opts.Repo, id)
+	if !ok {
+		return ErrNotFound
+	}
+	args := []string{"issue", "edit", fmt.Sprintf("%d", num), "--repo", a.opts.Repo, "--add-label", label}
+	if _, err := a.opts.Command(ctx, args, a.env()); err != nil {
+		return fmt.Errorf("gh issue edit (apply-label %q): %w", label, err)
 	}
 	return nil
 }

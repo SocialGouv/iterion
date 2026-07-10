@@ -1,5 +1,42 @@
 # Featurly — `feature-dev` run bilans
 
+## 2026-07-09 — first CLOUD runs: label an issue → implement → open a PR (runs 019f4590 / 019f45dd / 019f45f6)
+
+- Status: **validated end-to-end on prod.** Labeling a GitHub issue `implement`
+  routes to Featurly (fix `2281a2eff` — a 3-bot webhook used to send it to
+  review-pr), which implements the feature on the devbox runner and opens a
+  back-linked PR — which then auto-triggers Billy. The full loop
+  `issue → Featurly → PR → Billy` ran live.
+- Versions: iterion `:edge` (fixes shipped this session, chart 0.34.0) · runner
+  `iterion-runner-devbox:edge` uid 1000 · webhook `d291059c` on
+  SocialGouv/iterion.
+- Value produced (real, merge-worthy commits):
+  - #86 → Featurly threaded a `*log.Logger` through the whole generic-secret
+    resolution path so silent credential drops become greppable (the
+    erreurs-explicites gap the debugging itself surfaced).
+  - #88 → PR #89 `feat(report): surface resolved verify command in report head`.
+- Three infra gaps found + fixed before the PR could open (all in the
+  board-launched path — an issue-labeled delivery makes a board card the
+  coordinator launches, NOT the direct webhook path):
+  1. **routing** (`2281a2eff`) — issue → implementer, not reviewer;
+  2. **forge token binding** (`483e69a3f` + `9b339c999`) — the coordinator
+     resolves secrets by (tenant, bot) binding, which forge provisioning didn't
+     create (only a webhook override, which the board path never sees);
+  3. **writable secret mount** (chart 0.34.0) — the uid-1000 runner couldn't
+     `mkdir /run/iterion` to materialize `forge_token` in-pod (root-owned
+     `/run`); a Memory-backed emptyDir fixes it.
+- Findings / misses: Featurly's implementation quality was high (correct diff,
+  tests, self-check for parallel issues) — the gaps were all platform
+  plumbing, not the bot. The PR is opened under the connection identity
+  (devthejo), not a bot identity — the GitHub-App migration (deferred) fixes
+  that.
+- Lessons for next run: an issue-labeled re-trigger needs a FRESH issue
+  (re-applying the same label is an idempotent replay); a PR re-trigger needs a
+  new head sha + close/reopen (synchronize alone isn't in the review-pr action
+  set opened/reopened); deploying a chart mid-run (ArgoCD sync) orphans the
+  in-flight run (`process orphaned: server restart`) — a real but benign infra
+  race, resumable/re-triggerable.
+
 Autonomous end-to-end feature development. **v2 (ADR-058 minimal-framing)
 since 2026-07-07**: one `campaign` agent ships the feature slice by slice
 (commits in stride) against a deterministic build/test gate + bounded

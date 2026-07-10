@@ -589,6 +589,34 @@ func TestJudgeMaxTokens(t *testing.T) {
 	assertEq(t, "MaxTokens", j.MaxTokens, 1024)
 }
 
+func TestAgentTimeout(t *testing.T) {
+	src := `agent worker:
+  model: "claude-sonnet-4-6"
+  system: sys
+  user: usr
+  timeout: "30s"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "Timeout", a.Timeout, "30s")
+}
+
+func TestJudgeTimeout(t *testing.T) {
+	src := `judge reviewer:
+  model: "claude-sonnet-4-6"
+  system: sys
+  user: usr
+  timeout: "${NODE_TIMEOUT:-20m}"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	j := res.File.Judges[0]
+	assertEq(t, "Timeout", j.Timeout, "${NODE_TIMEOUT:-20m}")
+}
+
 func TestAgentSessionFork(t *testing.T) {
 	src := `agent commit_namer:
   model: "claude-4"
@@ -605,6 +633,36 @@ func TestAgentSessionFork(t *testing.T) {
 	a := res.File.Agents[0]
 	assertEq(t, "Session", a.Session, ast.SessionFork)
 	assertEq(t, "Backend", a.Backend, "claude_code")
+}
+
+func TestAgentCommand(t *testing.T) {
+	src := `agent alt_worker:
+  model: "claude-opus-4-8"
+  backend: "claude_code"
+  command: "claude-canary"
+  system: sys
+  user: usr
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	a := res.File.Agents[0]
+	assertEq(t, "Command", a.Command, "claude-canary")
+}
+
+func TestJudgeCommand(t *testing.T) {
+	src := `judge alt_reviewer:
+  model: "claude-opus-4-8"
+  backend: "claude_code"
+  command: "claude-canary"
+  system: sys
+  user: usr
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	j := res.File.Judges[0]
+	assertEq(t, "Command", j.Command, "claude-canary")
 }
 
 func TestAgentReasoningEffort(t *testing.T) {

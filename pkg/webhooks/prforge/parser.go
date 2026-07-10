@@ -25,6 +25,10 @@ type Parsed struct {
 	HeadSHA      string
 	State        string
 	SenderLogin  string
+	// HeadRepoFullName is the "owner/repo" the PR's head branch lives in. It
+	// differs from ProjectPath (the base repo) for a fork PR; empty when the
+	// payload omits head.repo. Read by IsCrossRepo for the fork guard.
+	HeadRepoFullName string
 }
 
 // ParsePullRequest decodes a pull_request webhook body from GitHub or
@@ -42,20 +46,32 @@ func ParsePullRequest(body []byte) (Parsed, error) {
 		pr.Number = e.Number
 	}
 	return Parsed{
-		RepoID:       e.Repository.ID,
-		ProjectPath:  e.Repository.FullName,
-		CloneURL:     e.Repository.CloneURL,
-		PRNumber:     pr.Number,
-		Action:       e.Action,
-		SourceBranch: pr.Head.Ref,
-		TargetBranch: pr.Base.Ref,
-		Title:        pr.Title,
-		Description:  pr.Body,
-		PRURL:        pr.HTMLURL,
-		HeadSHA:      pr.Head.SHA,
-		State:        pr.State,
-		SenderLogin:  e.Sender.Login,
+		RepoID:           e.Repository.ID,
+		ProjectPath:      e.Repository.FullName,
+		CloneURL:         e.Repository.CloneURL,
+		PRNumber:         pr.Number,
+		Action:           e.Action,
+		SourceBranch:     pr.Head.Ref,
+		TargetBranch:     pr.Base.Ref,
+		Title:            pr.Title,
+		Description:      pr.Body,
+		PRURL:            pr.HTMLURL,
+		HeadSHA:          pr.Head.SHA,
+		State:            pr.State,
+		SenderLogin:      e.Sender.Login,
+		HeadRepoFullName: pr.Head.Repo.FullName,
 	}, nil
+}
+
+// IsCrossRepo reports whether the PR's head branch lives in a DIFFERENT repo
+// than its base — i.e. the PR comes from a fork. This is the fork-guard
+// signal: a fork PR is untrusted, so the inbound handler must not auto-launch a
+// MUTATING bot (which would run costly LLM work + push commits) on it without
+// operator validation — the anti budget-exhaustion boundary. An empty head
+// repo (minimal/legacy payloads) is treated as same-repo to avoid falsely
+// gating a trusted internal PR.
+func (p Parsed) IsCrossRepo() bool {
+	return p.HeadRepoFullName != "" && p.HeadRepoFullName != p.ProjectPath
 }
 
 // IsReviewable reports whether the PR action should AUTO-trigger a

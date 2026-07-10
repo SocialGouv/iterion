@@ -96,8 +96,8 @@ func (a Alert) WebhookText() string {
 // AsEventData renders the alert as a flat map for the in-process `alert`
 // store event (the browser delivery path). Keys mirror the JSON tags so
 // the SPA can read them directly off RunEvent.data.
-func (a Alert) AsEventData() map[string]interface{} {
-	d := map[string]interface{}{
+func (a Alert) AsEventData() map[string]any {
+	d := map[string]any{
 		"kind":      string(a.Kind),
 		"run_id":    a.RunID,
 		"title":     a.Title(),

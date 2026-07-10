@@ -51,7 +51,7 @@ func TestLoopStalled(t *testing.T) {
 	eng := newEngineWith(t, wf)
 	rs := eng.newRunState("r", nil)
 
-	same := map[string]interface{}{"approved": false, "n": 1}
+	same := map[string]any{"approved": false, "n": 1}
 	// First crossing: records signature, not stalled.
 	if eng.loopStalled("l", same, rs) {
 		t.Fatal("stalled on first crossing")
@@ -70,9 +70,9 @@ func TestLoopStalled(t *testing.T) {
 
 	// A changed output resets the staleness window.
 	rs2 := eng.newRunState("r2", nil)
-	eng.loopStalled("l", map[string]interface{}{"n": 1}, rs2)
-	eng.loopStalled("l", map[string]interface{}{"n": 1}, rs2)
-	if eng.loopStalled("l", map[string]interface{}{"n": 2}, rs2) {
+	eng.loopStalled("l", map[string]any{"n": 1}, rs2)
+	eng.loopStalled("l", map[string]any{"n": 1}, rs2)
+	if eng.loopStalled("l", map[string]any{"n": 2}, rs2) {
 		t.Fatal("changed output should reset staleness, not report stalled")
 	}
 	if rs2.loopStaleness["l"] != 0 {

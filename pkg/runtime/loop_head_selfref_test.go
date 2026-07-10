@@ -32,20 +32,20 @@ func headExecutor(t *testing.T, target int) (*stubExecutor, *[]int64) {
 	var mu sync.Mutex
 	seen := &[]int64{}
 	exec := newStubExecutor()
-	exec.on("head", func(in map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("head", func(in map[string]any) (map[string]any, error) {
 		c := toInt64(in["c"])
 		mu.Lock()
 		*seen = append(*seen, c)
 		mu.Unlock()
-		return map[string]interface{}{"c_next": c + 1, "c_now": c, "done": c >= int64(target)}, nil
+		return map[string]any{"c_next": c + 1, "c_now": c, "done": c >= int64(target)}, nil
 	})
-	exec.on("seed", func(map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"zero": int64(0)}, nil
+	exec.on("seed", func(map[string]any) (map[string]any, error) {
+		return map[string]any{"zero": int64(0)}, nil
 	})
 	return exec, seen
 }
 
-func toInt64(v interface{}) int64 {
+func toInt64(v any) int64 {
 	switch x := v.(type) {
 	case int64:
 		return x

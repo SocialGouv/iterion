@@ -38,25 +38,28 @@ func (s *Server) registerWebhookRoutes() {
 }
 
 type webhookConfigReq struct {
-	Name               *string           `json:"name,omitempty"`
-	Provider           *string           `json:"provider,omitempty"`
-	SignMode           *string           `json:"sign_mode,omitempty"`
-	Enabled            *bool             `json:"enabled,omitempty"`
-	BotIDs             []string          `json:"bot_ids,omitempty"`
-	WildcardBots       *bool             `json:"wildcard_bots,omitempty"`
-	DefaultBotID       *string           `json:"default_bot_id,omitempty"`
-	ProjectAllowlist   []string          `json:"project_allowlist,omitempty"`
-	EventAllowlist     []string          `json:"event_allowlist,omitempty"`
-	AuthorAllowlist    []string          `json:"author_allowlist,omitempty"`
-	LabelAllowlist     []string          `json:"label_allowlist,omitempty"`
-	RateLimit          *webhooks.Rate    `json:"rate_limit,omitempty"`
-	MonthlyCallLimit   *int              `json:"monthly_call_limit,omitempty"`
-	LaunchVars         map[string]string `json:"launch_vars,omitempty"`
-	KeyOverrides       map[string]string `json:"key_overrides,omitempty"`
-	SecretOverrides    map[string]string `json:"secret_overrides,omitempty"`
-	AuthorizedRepliers []string          `json:"authorized_repliers,omitempty"`
-	MinReplierRole     *string           `json:"min_replier_role,omitempty"`
-	ForgeBaseURL       *string           `json:"forge_base_url,omitempty"`
+	Name                *string           `json:"name,omitempty"`
+	Provider            *string           `json:"provider,omitempty"`
+	SignMode            *string           `json:"sign_mode,omitempty"`
+	Enabled             *bool             `json:"enabled,omitempty"`
+	BotIDs              []string          `json:"bot_ids,omitempty"`
+	WildcardBots        *bool             `json:"wildcard_bots,omitempty"`
+	DefaultBotID        *string           `json:"default_bot_id,omitempty"`
+	ProjectAllowlist    []string          `json:"project_allowlist,omitempty"`
+	EventAllowlist      []string          `json:"event_allowlist,omitempty"`
+	AuthorAllowlist     []string          `json:"author_allowlist,omitempty"`
+	LabelAllowlist      []string          `json:"label_allowlist,omitempty"`
+	BlockForkPRs        *bool             `json:"block_fork_prs,omitempty"`
+	AutoImplementOnOpen *bool             `json:"auto_implement_on_open,omitempty"`
+	BranchImproveAsPR   *bool             `json:"branch_improve_as_pr,omitempty"`
+	RateLimit           *webhooks.Rate    `json:"rate_limit,omitempty"`
+	MonthlyCallLimit    *int              `json:"monthly_call_limit,omitempty"`
+	LaunchVars          map[string]string `json:"launch_vars,omitempty"`
+	KeyOverrides        map[string]string `json:"key_overrides,omitempty"`
+	SecretOverrides     map[string]string `json:"secret_overrides,omitempty"`
+	AuthorizedRepliers  []string          `json:"authorized_repliers,omitempty"`
+	MinReplierRole      *string           `json:"min_replier_role,omitempty"`
+	ForgeBaseURL        *string           `json:"forge_base_url,omitempty"`
 }
 
 // supportedProviders is the closed enum the create endpoint accepts.
@@ -228,29 +231,31 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 	cfg := webhooks.Config{
-		ID:                 uuid.NewString(),
-		TenantID:           teamID,
-		Name:               *req.Name,
-		Provider:           provider,
-		SignMode:           signMode,
-		Enabled:            enabled,
-		TokenHash:          hash,
-		TokenLast4:         last4,
-		Fingerprint:        fp,
-		BotIDs:             botIDs,
-		WildcardBots:       wildcard,
-		ProjectAllowlist:   req.ProjectAllowlist,
-		EventAllowlist:     req.EventAllowlist,
-		AuthorAllowlist:    req.AuthorAllowlist,
-		LabelAllowlist:     req.LabelAllowlist,
-		RateLimit:          rate,
-		LaunchVars:         req.LaunchVars,
-		KeyOverrides:       req.KeyOverrides,
-		SecretOverrides:    req.SecretOverrides,
-		AuthorizedRepliers: req.AuthorizedRepliers,
-		CreatedBy:          id.UserID,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		ID:                  uuid.NewString(),
+		TenantID:            teamID,
+		Name:                *req.Name,
+		Provider:            provider,
+		SignMode:            signMode,
+		Enabled:             enabled,
+		TokenHash:           hash,
+		TokenLast4:          last4,
+		Fingerprint:         fp,
+		BotIDs:              botIDs,
+		WildcardBots:        wildcard,
+		ProjectAllowlist:    req.ProjectAllowlist,
+		EventAllowlist:      req.EventAllowlist,
+		AuthorAllowlist:     req.AuthorAllowlist,
+		LabelAllowlist:      req.LabelAllowlist,
+		BlockForkPRs:        req.BlockForkPRs != nil && *req.BlockForkPRs,
+		AutoImplementOnOpen: req.AutoImplementOnOpen != nil && *req.AutoImplementOnOpen,
+		RateLimit:           rate,
+		LaunchVars:          req.LaunchVars,
+		KeyOverrides:        req.KeyOverrides,
+		SecretOverrides:     req.SecretOverrides,
+		AuthorizedRepliers:  req.AuthorizedRepliers,
+		CreatedBy:           id.UserID,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	if req.DefaultBotID != nil {
 		cfg.DefaultBotID = *req.DefaultBotID
@@ -405,6 +410,15 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.LabelAllowlist != nil {
 		cfg.LabelAllowlist = req.LabelAllowlist
+	}
+	if req.BlockForkPRs != nil {
+		cfg.BlockForkPRs = *req.BlockForkPRs
+	}
+	if req.AutoImplementOnOpen != nil {
+		cfg.AutoImplementOnOpen = *req.AutoImplementOnOpen
+	}
+	if req.BranchImproveAsPR != nil {
+		cfg.BranchImproveAsPR = *req.BranchImproveAsPR
 	}
 	if req.RateLimit != nil {
 		cfg.RateLimit = *req.RateLimit

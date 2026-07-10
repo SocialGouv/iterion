@@ -172,7 +172,7 @@ func (r *valkeyAuthRateLimiter) allow(key string, cfg authBucketCfg) (bool, time
 		// Fail-open: a Valkey blip must not lock everyone out of login.
 		return true, 0
 	}
-	arr, ok := res.([]interface{})
+	arr, ok := res.([]any)
 	if !ok || len(arr) != 2 {
 		return true, 0
 	}

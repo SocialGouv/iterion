@@ -165,15 +165,15 @@ type Run struct {
 	// Empty when the bundle's manifest doesn't declare one. The studio
 	// adds a ✨ icon next to the BotChip when this is set, so a run
 	// belonging to a named persona reads at a glance.
-	BundleDisplayName string                 `json:"bundle_display_name,omitempty" bson:"bundle_display_name,omitempty"`
-	Status            RunStatus              `json:"status" bson:"status"`
-	Inputs            map[string]interface{} `json:"inputs,omitempty" bson:"inputs,omitempty"`
-	CreatedAt         time.Time              `json:"created_at" bson:"created_at"`
-	UpdatedAt         time.Time              `json:"updated_at" bson:"updated_at"`
-	FinishedAt        *time.Time             `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
-	Error             string                 `json:"error,omitempty" bson:"error,omitempty"`
-	Checkpoint        *Checkpoint            `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
-	ArtifactIndex     map[string]int         `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
+	BundleDisplayName string         `json:"bundle_display_name,omitempty" bson:"bundle_display_name,omitempty"`
+	Status            RunStatus      `json:"status" bson:"status"`
+	Inputs            map[string]any `json:"inputs,omitempty" bson:"inputs,omitempty"`
+	CreatedAt         time.Time      `json:"created_at" bson:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at" bson:"updated_at"`
+	FinishedAt        *time.Time     `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
+	Error             string         `json:"error,omitempty" bson:"error,omitempty"`
+	Checkpoint        *Checkpoint    `json:"checkpoint,omitempty" bson:"checkpoint,omitempty"`
+	ArtifactIndex     map[string]int `json:"artifact_index,omitempty" bson:"artifact_index,omitempty"` // node_id → latest version written
 	// WorkDir is the absolute filesystem path the run executes in
 	// (the per-run git worktree when Worktree is true, otherwise the
 	// engine's resolved cwd at start). Persisted so studio surfaces
@@ -523,23 +523,23 @@ const (
 // event replay. The separate interaction file (interactions/<id>.json) is a
 // convenience for tooling; InteractionQuestions is embedded here for resilience.
 type Checkpoint struct {
-	NodeID             string                            `json:"node_id" bson:"node_id"`                                               // the node where we paused
-	InteractionID      string                            `json:"interaction_id" bson:"interaction_id,omitempty"`                       // pending interaction ID
-	Outputs            map[string]map[string]interface{} `json:"outputs" bson:"outputs"`                                               // per-node outputs accumulated so far
-	LoopCounters       map[string]int                    `json:"loop_counters" bson:"loop_counters"`                                   // current loop iteration counts
-	RoundRobinCounters map[string]int                    `json:"round_robin_counters,omitempty" bson:"round_robin_counters,omitempty"` // round-robin router counters (keyed by router node ID)
+	NodeID             string                    `json:"node_id" bson:"node_id"`                                               // the node where we paused
+	InteractionID      string                    `json:"interaction_id" bson:"interaction_id,omitempty"`                       // pending interaction ID
+	Outputs            map[string]map[string]any `json:"outputs" bson:"outputs"`                                               // per-node outputs accumulated so far
+	LoopCounters       map[string]int            `json:"loop_counters" bson:"loop_counters"`                                   // current loop iteration counts
+	RoundRobinCounters map[string]int            `json:"round_robin_counters,omitempty" bson:"round_robin_counters,omitempty"` // round-robin router counters (keyed by router node ID)
 	// LoopPreviousOutput / LoopCurrentOutput preserve the rotating snapshot
 	// of source-node outputs at each loop-edge traversal so that
 	// {{loop.<name>.previous_output}} resolves correctly across resume.
 	// Without these, a paused/failed run would lose the prior-iteration
 	// snapshot and the very next iteration would see nil.
-	LoopPreviousOutput map[string]map[string]interface{} `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
-	LoopCurrentOutput  map[string]map[string]interface{} `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
-	ArtifactVersions   map[string]int                    `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
-	Vars               map[string]interface{}            `json:"vars" bson:"vars"`                           // resolved workflow variables
+	LoopPreviousOutput map[string]map[string]any `json:"loop_previous_output,omitempty" bson:"loop_previous_output,omitempty"`
+	LoopCurrentOutput  map[string]map[string]any `json:"loop_current_output,omitempty" bson:"loop_current_output,omitempty"`
+	ArtifactVersions   map[string]int            `json:"artifact_versions" bson:"artifact_versions"` // next artifact version per node
+	Vars               map[string]any            `json:"vars" bson:"vars"`                           // resolved workflow variables
 	// InteractionQuestions embeds the questions from the interaction record
 	// so that resume is self-sufficient even if the interaction file is deleted.
-	InteractionQuestions map[string]interface{} `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`
+	InteractionQuestions map[string]any `json:"interaction_questions,omitempty" bson:"interaction_questions,omitempty"`
 	// BackendSessionID is the session ID of a blocked backend, enabling
 	// re-invocation with session: inherit on resume.
 	BackendSessionID string `json:"backend_session_id,omitempty" bson:"backend_session_id,omitempty"`
@@ -586,10 +586,10 @@ type Checkpoint struct {
 
 // Artifact is a versioned output persisted under artifacts/<node>/<version>.json.
 type Artifact struct {
-	RunID   string                 `json:"run_id" bson:"run_id"`
-	NodeID  string                 `json:"node_id" bson:"node_id"`
-	Version int                    `json:"version" bson:"version"`
-	Data    map[string]interface{} `json:"data" bson:"data"`
+	RunID   string         `json:"run_id" bson:"run_id"`
+	NodeID  string         `json:"node_id" bson:"node_id"`
+	Version int            `json:"version" bson:"version"`
+	Data    map[string]any `json:"data" bson:"data"`
 	// Labels categorise the artifact (e.g. "plan", "verdict") so the studio
 	// can group artifacts by label. Sourced from the node's DSL
 	// `artifact_labels:` plus a shape heuristic (pkg/artifactlabels). Empty
@@ -646,13 +646,13 @@ type AttachmentRecord struct {
 
 // Interaction records a human pause/resume exchange.
 type Interaction struct {
-	ID          string                 `json:"id" bson:"interaction_id"`
-	RunID       string                 `json:"run_id" bson:"run_id"`
-	NodeID      string                 `json:"node_id" bson:"node_id"`
-	RequestedAt time.Time              `json:"requested_at" bson:"requested_at"`
-	AnsweredAt  *time.Time             `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
-	Questions   map[string]interface{} `json:"questions,omitempty" bson:"questions,omitempty"`
-	Answers     map[string]interface{} `json:"answers,omitempty" bson:"answers,omitempty"`
+	ID          string         `json:"id" bson:"interaction_id"`
+	RunID       string         `json:"run_id" bson:"run_id"`
+	NodeID      string         `json:"node_id" bson:"node_id"`
+	RequestedAt time.Time      `json:"requested_at" bson:"requested_at"`
+	AnsweredAt  *time.Time     `json:"answered_at,omitempty" bson:"answered_at,omitempty"`
+	Questions   map[string]any `json:"questions,omitempty" bson:"questions,omitempty"`
+	Answers     map[string]any `json:"answers,omitempty" bson:"answers,omitempty"`
 	// Turns is the ordered companion↔human dialogue for a review gate
 	// (interaction: review). The gate re-pauses on the same interaction ID
 	// each round and appends a turn, so the whole conversation lives here
@@ -669,8 +669,8 @@ type Interaction struct {
 // The companion (an LLM that walks the human through testing the change)
 // and the human alternate turns until the gate squash-merges.
 type InteractionTurn struct {
-	Role    string                 `json:"role" bson:"role"`                           // "companion" | "human"
-	Content string                 `json:"content,omitempty" bson:"content,omitempty"` // rendered companion message, or the human's reply text
-	Verdict map[string]interface{} `json:"verdict,omitempty" bson:"verdict,omitempty"` // companion's structured verdict (decision/confidence/blockers)
-	At      time.Time              `json:"at" bson:"at"`
+	Role    string         `json:"role" bson:"role"`                           // "companion" | "human"
+	Content string         `json:"content,omitempty" bson:"content,omitempty"` // rendered companion message, or the human's reply text
+	Verdict map[string]any `json:"verdict,omitempty" bson:"verdict,omitempty"` // companion's structured verdict (decision/confidence/blockers)
+	At      time.Time      `json:"at" bson:"at"`
 }

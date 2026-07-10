@@ -9,21 +9,21 @@ import (
 // ctxLists builds a Context exposing arrays/maps under input.* so the bounded
 // combinators and indexing have realistic, runtime-shaped data to work on.
 func ctxLists() *Context {
-	input := map[string]interface{}{
-		"nums":  []interface{}{int64(3), int64(1), int64(2)},
-		"words": []interface{}{"b", "a", "c"},
-		"people": []interface{}{
-			map[string]interface{}{"name": "ana", "score": int64(7)},
-			map[string]interface{}{"name": "bo", "score": int64(3)},
+	input := map[string]any{
+		"nums":  []any{int64(3), int64(1), int64(2)},
+		"words": []any{"b", "a", "c"},
+		"people": []any{
+			map[string]any{"name": "ana", "score": int64(7)},
+			map[string]any{"name": "bo", "score": int64(3)},
 		},
-		"nested": []interface{}{[]interface{}{int64(1), int64(2)}, []interface{}{int64(3)}},
-		"obj":    map[string]interface{}{"x": int64(10), "y": int64(20)},
-		"floats": []interface{}{1.5, 2.5},
+		"nested": []any{[]any{int64(1), int64(2)}, []any{int64(3)}},
+		"obj":    map[string]any{"x": int64(10), "y": int64(20)},
+		"floats": []any{1.5, 2.5},
 	}
 	return makeCtx(nil, input, nil, nil)
 }
 
-func evalOK(t *testing.T, src string, ctx *Context) interface{} {
+func evalOK(t *testing.T, src string, ctx *Context) any {
 	t.Helper()
 	ast, err := Parse(src)
 	if err != nil {
@@ -40,7 +40,7 @@ func TestExpr_Indexing(t *testing.T) {
 	ctx := ctxLists()
 	cases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{"nums[0]", int64(3)},
 		{"nums[2]", int64(2)},
@@ -80,13 +80,13 @@ func TestExpr_IndexingErrors(t *testing.T) {
 func TestExpr_Map(t *testing.T) {
 	ctx := ctxLists()
 	got := evalOK(t, "map(input.people, p => p.score)", ctx)
-	want := []interface{}{int64(7), int64(3)}
+	want := []any{int64(7), int64(3)}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("map scores = %v, want %v", got, want)
 	}
 	// map producing a derived scalar
 	got = evalOK(t, "map(input.nums, x => x * 2)", ctx)
-	want = []interface{}{int64(6), int64(2), int64(4)}
+	want = []any{int64(6), int64(2), int64(4)}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("map doubled = %v, want %v", got, want)
 	}
@@ -95,7 +95,7 @@ func TestExpr_Map(t *testing.T) {
 func TestExpr_Filter(t *testing.T) {
 	ctx := ctxLists()
 	got := evalOK(t, "filter(input.people, p => p.score > 5)", ctx)
-	want := []interface{}{map[string]interface{}{"name": "ana", "score": int64(7)}}
+	want := []any{map[string]any{"name": "ana", "score": int64(7)}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("filter = %v, want %v", got, want)
 	}
@@ -118,13 +118,13 @@ func TestExpr_NestedCombinators(t *testing.T) {
 	ctx := ctxLists()
 	// map over names, each mapped from a person; sort the result
 	got := evalOK(t, "sort(map(input.people, p => p.name))", ctx)
-	want := []interface{}{"ana", "bo"}
+	want := []any{"ana", "bo"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("sort(map names) = %v, want %v", got, want)
 	}
 	// nested map: flatten(map(nested, xs => xs))
 	got = evalOK(t, "flatten(input.nested)", ctx)
-	want = []interface{}{int64(1), int64(2), int64(3)}
+	want = []any{int64(1), int64(2), int64(3)}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("flatten = %v, want %v", got, want)
 	}
@@ -134,14 +134,14 @@ func TestExpr_Helpers(t *testing.T) {
 	ctx := ctxLists()
 	cases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
-		{"sort(input.nums)", []interface{}{int64(1), int64(2), int64(3)}},
-		{"sort(input.words)", []interface{}{"a", "b", "c"}},
-		{"keys(input.obj)", []interface{}{"x", "y"}},
-		{"values(input.obj)", []interface{}{int64(10), int64(20)}},
-		{"slice(input.nums, 1, 3)", []interface{}{int64(1), int64(2)}},
-		{"slice(input.nums, -1, 3)", []interface{}{int64(2)}},
+		{"sort(input.nums)", []any{int64(1), int64(2), int64(3)}},
+		{"sort(input.words)", []any{"a", "b", "c"}},
+		{"keys(input.obj)", []any{"x", "y"}},
+		{"values(input.obj)", []any{int64(10), int64(20)}},
+		{"slice(input.nums, 1, 3)", []any{int64(1), int64(2)}},
+		{"slice(input.nums, -1, 3)", []any{int64(2)}},
 		{"sum(input.nums)", int64(6)},
 		{"sum(input.floats)", 4.0},
 		{"min(input.nums)", int64(1)},
@@ -181,11 +181,11 @@ func TestExpr_LambdaParseErrors(t *testing.T) {
 // TestExpr_VisitBudget proves the combinator work budget is finite: an
 // adversarial doubly-nested map over large inputs must error rather than spin.
 func TestExpr_VisitBudget(t *testing.T) {
-	big := make([]interface{}, 1000)
+	big := make([]any, 1000)
 	for i := range big {
 		big[i] = int64(i)
 	}
-	ctx := makeCtx(nil, map[string]interface{}{"big": big}, nil, nil)
+	ctx := makeCtx(nil, map[string]any{"big": big}, nil, nil)
 	// 1000 * 1000 = 1_000_000 element visits > maxEvalVisits (100_000).
 	ast, err := Parse("map(input.big, x => map(input.big, y => y))")
 	if err != nil {

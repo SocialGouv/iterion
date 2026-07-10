@@ -25,6 +25,30 @@ const githubOpenPR = `{
   "sender": {"login": "alice"}
 }`
 
+// sameRepoPR carries head.repo == base repo (an internal-branch PR): NOT a fork.
+const sameRepoPR = `{
+  "action": "opened",
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {
+    "number": 7, "title": "Add X", "body": "Fixes #12", "state": "open",
+    "head": {"ref": "feature/x", "sha": "abc123", "repo": {"full_name": "acme/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}
+  },
+  "sender": {"login": "alice"}
+}`
+
+// forkPR carries head.repo in a DIFFERENT owner — the fork-guard signal.
+const forkPR = `{
+  "action": "opened",
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {
+    "number": 8, "title": "Add Y", "body": "Fixes #13", "state": "open",
+    "head": {"ref": "patch-1", "sha": "def456", "repo": {"full_name": "mallory/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}
+  },
+  "sender": {"login": "mallory"}
+}`
+
 // forgejoOpenPR is the wire shape Forgejo/Gitea sends — pull_request
 // before repository (the only structural difference from GitHub), and
 // the codeberg.org URL flavour.
@@ -86,6 +110,43 @@ func TestParsePullRequest_Forgejo(t *testing.T) {
 	}
 	if !p.IsReviewable() {
 		t.Fatal("opened should be reviewable")
+	}
+}
+
+// TestIsCrossRepo guards the fork-guard signal: a PR whose head branch lives
+// in a different repo than its base is a fork (untrusted), and a payload with
+// no head.repo defaults to same-repo so a trusted internal PR is never falsely
+// gated off the auto-launch path.
+func TestIsCrossRepo(t *testing.T) {
+	same, err := ParsePullRequest([]byte(sameRepoPR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same.HeadRepoFullName != "acme/widgets" {
+		t.Fatalf("same-repo head: %q", same.HeadRepoFullName)
+	}
+	if same.IsCrossRepo() {
+		t.Error("same-repo PR must NOT be cross-repo")
+	}
+
+	fork, err := ParsePullRequest([]byte(forkPR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fork.HeadRepoFullName != "mallory/widgets" {
+		t.Fatalf("fork head: %q", fork.HeadRepoFullName)
+	}
+	if !fork.IsCrossRepo() {
+		t.Error("fork PR MUST be cross-repo (fork-guard signal)")
+	}
+
+	// Legacy/minimal payload with no head.repo → same-repo (not a fork).
+	min, err := ParsePullRequest([]byte(githubOpenPR))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if min.IsCrossRepo() {
+		t.Error("PR with no head.repo must default to same-repo")
 	}
 }
 

@@ -174,7 +174,7 @@ func TestSubmitResumeReusesWebhookRepoAndBotSecretBinding(t *testing.T) {
 	if err := p.SubmitResume(context.Background(), runview.ResumeSpec{
 		RunID:   "run-resume",
 		Source:  spec.Source,
-		Answers: map[string]interface{}{"ok": true},
+		Answers: map[string]any{"ok": true},
 	}, wf, "hash"); err != nil {
 		t.Fatalf("SubmitResume: %v", err)
 	}

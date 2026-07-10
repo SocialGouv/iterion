@@ -232,8 +232,8 @@ RUN /usr/sbin/groupadd --system --gid 10001 iterion \
 # so this only affects subsequent commits made by the bot inside the
 # pod — never the clone HTTPS auth — and is deliberately overridden by
 # any per-repo `.gitconfig` the workflow stages.
-RUN git config --system user.email "bot@iterion.dev" \
- && git config --system user.name "iterion-bot"
+RUN git config --system user.email "iterion-runner@bot.iterion.invalid" \
+ && git config --system user.name "iterion-runner[bot]"
 
 USER iterion
 WORKDIR /home/iterion

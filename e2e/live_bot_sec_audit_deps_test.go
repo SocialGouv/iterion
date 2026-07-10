@@ -57,7 +57,7 @@ func TestLive_Bot_SecAuditDeps(t *testing.T) {
 	})
 	gitCommitAll(t, workspaceDir, "chore: seed npm lockfile with CVE-flagged lodash")
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"severity_threshold": "low",
 		"scope_notes":        "Audit the npm lockfile for known-CVE dependencies.",
 	}

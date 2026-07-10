@@ -70,7 +70,7 @@ func Handler(s *Store) http.Handler {
 		"README.md": "# fixture\n\nIn-memory mutex-guarded storage; stdlib net/http; no database.\n",
 	})
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"workspace_dir":          workspaceDir,
 		"rechallenge_after_days": 0, // no handoff issues
 		"scope_notes":            "Document the storage and HTTP-framework decisions.",

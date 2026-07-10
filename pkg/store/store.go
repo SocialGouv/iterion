@@ -375,7 +375,7 @@ func (s *FilesystemRunStore) Root() string { return s.root }
 // instead of resetting an existing run's metadata/checkpoint. Resume and
 // crash-recovery code relies on run.json being the authoritative identity
 // and checkpoint record for a run.
-func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName string, inputs map[string]interface{}) (*Run, error) {
+func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName string, inputs map[string]any) (*Run, error) {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}

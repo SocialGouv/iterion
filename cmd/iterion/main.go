@@ -12,6 +12,11 @@ import (
 	"strings"
 	"syscall"
 
+	// Embed the IANA tz database so the TZ env var works in minimal
+	// containers (debian-slim and the sandbox images ship no tzdata) —
+	// log timestamps and time.Local then honour the operator's timezone.
+	_ "time/tzdata"
+
 	"github.com/SocialGouv/iterion/pkg/cli"
 	"github.com/spf13/cobra"
 )

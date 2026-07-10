@@ -45,7 +45,7 @@ type saveFileResponse struct {
 
 // --- Helpers ---
 
-func readJSON(r *http.Request, v interface{}) error {
+func readJSON(r *http.Request, v any) error {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20)) // 10 MB max
 	if err != nil {
 		return err
@@ -168,20 +168,20 @@ func (s *Server) reflectAllowedOrigin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, v interface{}) {
+func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
 
 // writeJSONFor is the request-aware variant of writeJSON: it also reflects an
 // allowlisted Origin header so legitimate browser callers receive ACAO.
-func (s *Server) writeJSONFor(w http.ResponseWriter, r *http.Request, v interface{}) {
+func (s *Server) writeJSONFor(w http.ResponseWriter, r *http.Request, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func httpError(w http.ResponseWriter, code int, format string, args ...interface{}) {
+func httpError(w http.ResponseWriter, code int, format string, args ...any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	msg := fmt.Sprintf(format, args...)
@@ -190,7 +190,7 @@ func httpError(w http.ResponseWriter, code int, format string, args ...interface
 
 // httpErrorFor is the request-aware variant: reflects allowlisted Origin so
 // browser code can read the error body when same-origin or loopback.
-func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, format string, args ...interface{}) {
+func (s *Server) httpErrorFor(w http.ResponseWriter, r *http.Request, code int, format string, args ...any) {
 	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
 	w.WriteHeader(code)

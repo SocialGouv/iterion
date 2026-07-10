@@ -138,14 +138,84 @@ func TestMigrateConfig_FromV0(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfigFrom: %v", err)
 	}
-	if c.Version != 1 {
-		t.Errorf("Version after migrate = %d, want 1", c.Version)
+	// A v0 doc migrates all the way to the current schema version.
+	if c.Version != configSchemaVersion {
+		t.Errorf("Version after migrate = %d, want %d", c.Version, configSchemaVersion)
 	}
 	if c.Window.Width != 1400 || c.Window.Height != 900 {
 		t.Errorf("window defaults not applied: %+v", c.Window)
 	}
 	if c.Updater.Channel != ChannelStable {
 		t.Errorf("updater channel default not applied: %q", c.Updater.Channel)
+	}
+}
+
+func TestMigrateConfig_V1ToV2_StampsLocalKind(t *testing.T) {
+	// A v1 doc held only local projects with no Kind field. Migration must
+	// stamp them local and bump to v2, without touching other fields.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	raw := `{
+		"version": 1,
+		"recent_projects": [
+			{"id": "p1", "name": "alpha", "dir": "/tmp/alpha"},
+			{"id": "p2", "name": "beta", "dir": "/tmp/beta"}
+		],
+		"current_project_id": "p1"
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadConfigFrom(path)
+	if err != nil {
+		t.Fatalf("loadConfigFrom: %v", err)
+	}
+	if c.Version != configSchemaVersion {
+		t.Errorf("Version after migrate = %d, want %d", c.Version, configSchemaVersion)
+	}
+	for _, p := range c.RecentProjects {
+		if p.Kind != ProjectKindLocal {
+			t.Errorf("project %q Kind = %q, want %q", p.ID, p.Kind, ProjectKindLocal)
+		}
+		if p.IsCloud() {
+			t.Errorf("migrated local project %q reports IsCloud()", p.ID)
+		}
+	}
+	if c.CurrentProjectID != "p1" {
+		t.Errorf("CurrentProjectID = %q, want p1 (unchanged)", c.CurrentProjectID)
+	}
+}
+
+func TestAddCloudConnection(t *testing.T) {
+	c := NewConfig()
+	p := c.AddCloudConnection("https://cloud.example.io", "user-1", "a@b.io", "")
+	if !p.IsCloud() {
+		t.Fatalf("AddCloudConnection produced non-cloud entry: %+v", p)
+	}
+	if p.Name != "cloud.example.io" {
+		t.Errorf("derived name = %q, want host cloud.example.io", p.Name)
+	}
+	if p.CloudURL != "https://cloud.example.io" || p.CloudUserID != "user-1" || p.CloudEmail != "a@b.io" {
+		t.Errorf("cloud fields not set: %+v", p)
+	}
+	if c.CurrentProjectID != p.ID {
+		t.Errorf("cloud connection did not become current: %q vs %q", c.CurrentProjectID, p.ID)
+	}
+	// Re-adding the same (url,user) refreshes rather than duplicating.
+	p2 := c.AddCloudConnection("https://cloud.example.io", "user-1", "new@b.io", "My Cloud")
+	if p2.ID != p.ID {
+		t.Errorf("re-add produced new ID %q, want stable %q", p2.ID, p.ID)
+	}
+	if len(c.RecentProjects) != 1 {
+		t.Errorf("re-add duplicated entry: %d projects", len(c.RecentProjects))
+	}
+	if got := c.ProjectByID(p.ID); got == nil || got.CloudEmail != "new@b.io" || got.Name != "My Cloud" {
+		t.Errorf("re-add did not refresh email/name: %+v", got)
+	}
+	// A different user on the same URL is a distinct connection.
+	p3 := c.AddCloudConnection("https://cloud.example.io", "user-2", "c@b.io", "")
+	if p3.ID == p.ID || len(c.RecentProjects) != 2 {
+		t.Errorf("distinct user should add a second connection; got %d projects", len(c.RecentProjects))
 	}
 }
 

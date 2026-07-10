@@ -22,7 +22,7 @@ import (
 // The companion never has tools — it reasons over the change and the
 // conversation. systemText is resolved by the caller (the runtime, which
 // holds rs.vars/outputs), so this layer only performs the LLM call.
-func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.HumanNode, systemText, userMessage string) (map[string]interface{}, error) {
+func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.HumanNode, systemText, userMessage string) (map[string]any, error) {
 	if node == nil {
 		return nil, fmt.Errorf("model: review companion: nil node")
 	}
@@ -63,13 +63,13 @@ func (e *ClawExecutor) ExecuteReviewCompanion(ctx context.Context, node *ir.Huma
 	}
 	applyHooks(node.ID, LoopIterationFromContext(ctx), e.hooks, &genOpts)
 
-	result, err := GenerateObjectDirect[map[string]interface{}](ctx, client, genOpts)
+	result, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
 	if err != nil {
 		return nil, fmt.Errorf("model: review node %q: companion generation: %w", node.ID, err)
 	}
 	out := result.Object
 	if out == nil {
-		out = make(map[string]interface{})
+		out = make(map[string]any)
 	}
 	return out, nil
 }

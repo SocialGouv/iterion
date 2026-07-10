@@ -1,0 +1,221 @@
+package delegate
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"testing"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
+)
+
+// recordingRun is a minimal sandbox.Run that records the ExecOpts handed to
+// Command and runs a canned host command in the container's stead, so a
+// backend's sandbox wiring can be asserted without a real container.
+type recordingRun struct {
+	gotOpts sandbox.ExecOpts
+	script  string // sh -c body the fake "container" runs
+}
+
+func (r *recordingRun) Driver() string { return "recording" }
+func (r *recordingRun) Command(ctx context.Context, _ []string, opts sandbox.ExecOpts) *exec.Cmd {
+	r.gotOpts = opts
+	return exec.CommandContext(ctx, "sh", "-c", r.script) // #nosec G204 — test fixture
+}
+func (r *recordingRun) Exec(context.Context, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {
+	return sandbox.ExecResult{}, nil
+}
+func (r *recordingRun) Cleanup(context.Context) error { return nil }
+
+func testLogger() *iterlog.Logger { return iterlog.New(iterlog.LevelError, io.Discard) }
+
+func TestCLIAgentBuildArgs(t *testing.T) {
+	b := &CLIAgentBackend{Protocol: kimiProtocol, Logger: testLogger()}
+
+	t.Run("kimi native argv, system folded into prompt", func(t *testing.T) {
+		task := Task{
+			SystemPrompt:     "be terse",
+			SystemPromptMode: SystemPromptStandalone,
+			UserPrompt:       "hello",
+			Model:            "moonshot/kimi-k2",
+		}
+		promptArg := task.BuildSystemPrompt() + "\n\n" + task.UserPrompt
+		args, stdin := b.buildArgs(kimiProtocol, task, promptArg, task.BuildSystemPrompt())
+		want := []string{"-p", "be terse\n\nhello", "--output-format", "stream-json", "-m", "kimi-k2"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+		if stdin != "" {
+			t.Fatalf("stdin = %q, want empty (kimi passes prompt as -p arg)", stdin)
+		}
+	})
+
+	t.Run("no model flag when model empty", func(t *testing.T) {
+		args, _ := b.buildArgs(kimiProtocol, Task{UserPrompt: "x"}, "x", "")
+		for _, a := range args {
+			if a == "-m" {
+				t.Fatalf("unexpected -m flag with empty model: %v", args)
+			}
+		}
+	})
+
+	t.Run("stdin delivery", func(t *testing.T) {
+		proto := CLIAgentProtocol{Name: "t", DefaultBinary: "t", PromptFlag: "-", PromptViaStdin: true}
+		args, stdin := (&CLIAgentBackend{Protocol: proto}).buildArgs(proto, Task{UserPrompt: "hi"}, "hi", "")
+		if len(args) != 1 || args[0] != "-" {
+			t.Fatalf("args = %v, want [-]", args)
+		}
+		if stdin != "hi" {
+			t.Fatalf("stdin = %q, want hi", stdin)
+		}
+	})
+
+	t.Run("effort + extra args", func(t *testing.T) {
+		proto := CLIAgentProtocol{
+			Name: "t", DefaultBinary: "t", PromptFlag: "-p",
+			MapEffort: func(e string) []string { return []string{"--effort", e} },
+			ExtraArgs: []string{"--yes"},
+		}
+		args, _ := (&CLIAgentBackend{Protocol: proto}).buildArgs(proto, Task{UserPrompt: "x", ReasoningEffort: "high"}, "x", "")
+		want := []string{"-p", "x", "--effort", "high", "--yes"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+	})
+}
+
+func TestKimiMapModel(t *testing.T) {
+	cases := map[string]string{
+		"moonshot/kimi-k2": "kimi-k2",
+		"kimi/k2":          "k2",
+		"kimi-k2":          "kimi-k2",
+		"  moonshot/x  ":   "x",
+	}
+	for in, want := range cases {
+		if got := kimiMapModel(in); got != want {
+			t.Errorf("kimiMapModel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseStreamJSONText(t *testing.T) {
+	t.Run("result event wins", func(t *testing.T) {
+		stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}
+{"type":"result","result":"final answer","session_id":"sess-1","usage":{"input_tokens":10,"output_tokens":5}}`
+		text, sid, tokens := parseStreamJSONText(stream)
+		if text != "final answer" {
+			t.Errorf("text = %q, want %q", text, "final answer")
+		}
+		if sid != "sess-1" {
+			t.Errorf("sessionID = %q, want sess-1", sid)
+		}
+		if tokens != 15 {
+			t.Errorf("tokens = %d, want 15", tokens)
+		}
+	})
+
+	t.Run("falls back to assistant text when no result", func(t *testing.T) {
+		stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"part1 "}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"part2"}]}}`
+		text, _, _ := parseStreamJSONText(stream)
+		if text != "part1 part2" {
+			t.Errorf("text = %q, want %q", text, "part1 part2")
+		}
+	})
+
+	t.Run("non-json falls back to raw", func(t *testing.T) {
+		text, _, _ := parseStreamJSONText("plain text output")
+		if text != "plain text output" {
+			t.Errorf("text = %q, want raw passthrough", text)
+		}
+	})
+}
+
+// TestCLIAgentExecute drives the backend end-to-end against a fake CLI script
+// that echoes a stream-json result, verifying argv assembly, stdout parsing,
+// and structured-output extraction.
+func TestCLIAgentExecute(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fakekimi")
+	// The script emits a stream-json result whose text is a JSON object, so
+	// the schema-aware fallback extracts it into Result.Output.
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"result","result":"{\"answer\":\"42\"}","session_id":"s9","usage":{"input_tokens":3,"output_tokens":7}}'
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
+		t.Fatal(err)
+	}
+
+	b := &CLIAgentBackend{Protocol: kimiProtocol, Command: fake, Logger: testLogger()}
+	task := Task{
+		NodeID:       "n1",
+		UserPrompt:   "what is the answer",
+		Model:        "moonshot/kimi-k2",
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`),
+	}
+	res, err := b.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.BackendName != BackendKimi {
+		t.Errorf("BackendName = %q, want %q", res.BackendName, BackendKimi)
+	}
+	if res.SessionID != "s9" {
+		t.Errorf("SessionID = %q, want s9", res.SessionID)
+	}
+	if res.ParseFallback {
+		t.Errorf("ParseFallback = true, want false (result was valid JSON)")
+	}
+	if got := res.Output["answer"]; got != "42" {
+		t.Errorf("Output[answer] = %v, want 42", got)
+	}
+	if res.Tokens != 10 {
+		t.Errorf("Tokens = %d, want 10", res.Tokens)
+	}
+}
+
+// TestCLIAgentSandboxStdin guards that a PromptViaStdin protocol running under
+// a sandbox routes its prompt through sandbox.ExecOpts.Stdin (so the container
+// driver allocates a forwarded stdin), rather than a post-hoc cmd.Stdin the
+// driver silently drops.
+func TestCLIAgentSandboxStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake CLI is POSIX-only")
+	}
+	proto := CLIAgentProtocol{
+		Name:           "stdinbot",
+		DefaultBinary:  "stdinbot",
+		PromptViaStdin: true,
+		ParseOutput:    parseStreamJSONText,
+	}
+	run := &recordingRun{script: `printf '%s\n' '{"type":"result","result":"ok"}'`}
+	b := &CLIAgentBackend{Protocol: proto, Logger: testLogger()}
+	_, err := b.Execute(context.Background(), Task{NodeID: "n1", UserPrompt: "the prompt", Sandbox: run})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if run.gotOpts.Stdin == nil {
+		t.Fatal("ExecOpts.Stdin is nil — prompt would be dropped inside the container")
+	}
+	got, _ := io.ReadAll(run.gotOpts.Stdin)
+	if string(got) != "the prompt" {
+		t.Errorf("stdin = %q, want %q", got, "the prompt")
+	}
+}
+
+func TestCLIAgentExecuteNoBinary(t *testing.T) {
+	b := &CLIAgentBackend{Protocol: CLIAgentProtocol{Name: "x"}, Logger: testLogger()}
+	_, err := b.Execute(context.Background(), Task{UserPrompt: "hi"})
+	if err == nil {
+		t.Fatal("expected error when no binary configured")
+	}
+}

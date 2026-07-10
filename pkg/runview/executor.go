@@ -357,7 +357,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	executor := model.NewClawExecutor(reg, spec.Workflow, opts...)
 
 	if len(spec.Vars) > 0 {
-		v := make(map[string]interface{}, len(spec.Vars))
+		v := make(map[string]any, len(spec.Vars))
 		for k, val := range spec.Vars {
 			v[k] = val
 		}

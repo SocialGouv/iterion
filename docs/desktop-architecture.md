@@ -36,6 +36,74 @@ Iterion.app  /  iterion-desktop.exe  /  Iterion.AppImage
    └─ Single-instance lock + IPC for "focus existing"
 ```
 
+## Multi-connection workspace (local + cloud side by side)
+
+The desktop is a **workspace**, not a single-connection window: several
+connections — local projects and remote cloud instances — are open and
+LIVE at once, each in its own pane, shown as tabs or split side by side.
+Connecting to the cloud no longer hides the local runs.
+
+The constraint this lifts: the studio SPA is a single-origin app that
+assumes ONE backend (module-level `/api` base, one WebSocket target, one
+`wouter` route tree off `window.location`). Rather than thread a
+connection id through every data hook, each pane is an **iframe** — its
+own JS realm, so its `/api` base, react-query cache, WS client and router
+are naturally independent with almost no change to the data layer.
+
+```
+Wails main frame  =  WorkspaceShell (owns ALL native window.go bindings)
+  ├─ tab bar / split  (OpenConnection / CloseConnection / GetOpenConnections)
+  └─ one <iframe src="/x/<connID>/"> per open connection
+        └─ the SAME studio bundle, scoped by an injected
+           window.__ITERION_SCOPE__ = "/x/<connID>"
+```
+
+Two rules make it work:
+
+1. **A pane never calls `window.go`.** Wails evaluates a binding's result
+   callback into the MAIN frame, so an IPC call from an iframe would hang.
+   `isDesktop()` therefore returns `false` inside a scoped pane; the pane
+   behaves like browser-mode against its demuxed `/x/<id>/api`, and reaches
+   everything it needs over HTTP through the demux proxy.
+
+2. **The asset proxy demultiplexes `/x/<connID>/*`** ([asset_proxy.go](../cmd/iterion-desktop/asset_proxy.go)
+   `serveScoped`) against a registry of open connections
+   ([connections.go](../cmd/iterion-desktop/connections.go)):
+   - `/x/<id>/api/…`     → the connection's backend (loopback daemon, or
+     cloud with an injected `Bearer` + refresh-on-401), path rewritten to
+     `/api/…`.
+   - `/x/<id>/_ws/info`  → `{ ws_base, needs_ticket }` so the pane can dial
+     its WebSocket **directly** at the backend (WS can't cross the Wails
+     asset origin, which 501s upgrades).
+   - `/x/<id>/_ws/ticket`→ a single-use cloud WS ticket (empty for local).
+   - `/x/<id>/…` (else)  → the SPA `index.html` with the scope injected.
+   Shared `/assets/*` are referenced at the root and served once, unscoped.
+
+The registry (`App.conns`) holds one `activeConn` per open connection —
+local daemons are shared and kept alive across close (in-flight runs
+survive); each cloud connection carries its own token jar + background
+refresh loop. The legacy single-connection fields (`serverURL`,
+`cloudJar`) still drive the unscoped `/api/*` path for plain browser mode.
+
+Client-side: [lib/scope.ts](../studio/src/lib/scope.ts) reads the injected
+scope; `apiBase()` prefixes it onto `/api` (one choke point in
+[api/client.ts](../studio/src/api/client.ts) `apiRequest` also scopes any
+literal `/api/…` path); `resolveScopedWsUrl()` resolves the WS base +
+ticket over the `_ws/*` endpoints; and [main.tsx](../studio/src/main.tsx)
+branches on `isWailsHosted() && !isScopedPane()` (synchronous, stable at
+first paint) to render the [WorkspaceShell](../studio/src/workspace/WorkspaceShell.tsx)
+in the main frame vs. the normal `App` (under a `wouter` base of the
+scope) in a pane.
+
+Auth in a cloud pane is desktop-owned: the demux strips the request Cookie
+and injects a Bearer refreshed off the OS-held jar, so a pane never runs its
+own `/auth/refresh` (it can't — no cookie); a 401 that reaches the pane means
+the desktop's refresh already failed, and recovery is driven from the shell
+(`cloud:auth-expired` → re-login → reload). The Browser-Live (CDP) pane
+resolves its WS through the same `_ws/*` path as every other pane, so it
+works for a local pane; a cloud CDP pane additionally needs the CDP endpoint
+to accept the `?ticket=` WS credential (follow-up).
+
 ## Key decisions
 
 ### Why a real `127.0.0.1:<random>` server PLUS Wails AssetServer reverse-proxy

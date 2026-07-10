@@ -40,7 +40,7 @@ func TestDefaultRegistry(t *testing.T) {
 }
 
 func TestParseSDKOutput_StructuredOutput(t *testing.T) {
-	structured := map[string]interface{}{"approved": true, "summary": "looks good"}
+	structured := map[string]any{"approved": true, "summary": "looks good"}
 	output, rawLen, fallback := parseSDKOutput(nil, structured, nil)
 	if output["approved"] != true {
 		t.Errorf("expected approved=true, got %v", output["approved"])
@@ -258,7 +258,7 @@ func TestFormattingPassUsed_MockBackend(t *testing.T) {
 	r := NewRegistry()
 	r.Register("mock", &mockBackend{
 		response: Result{
-			Output:             map[string]interface{}{"approved": true},
+			Output:             map[string]any{"approved": true},
 			FormattingPassUsed: true,
 			BackendName:        "mock",
 		},
@@ -285,7 +285,7 @@ func TestParseSDKOutput_NoFallbackWhenFormattingPassHandles(t *testing.T) {
 	// When a two-pass backend returns structured output from Pass 2,
 	// parseSDKOutput should return fallback=false since the SDK provides
 	// native structured output.
-	structured := map[string]interface{}{"verdict": "pass", "score": 9.5}
+	structured := map[string]any{"verdict": "pass", "score": 9.5}
 	schema := json.RawMessage(`{"type":"object","properties":{"verdict":{"type":"string"},"score":{"type":"number"}}}`)
 
 	output, _, fallback := parseSDKOutput(nil, structured, schema)

@@ -44,12 +44,12 @@ workflow w:
 	exec := newScenarioExecutor()
 	// Simulate the real executor: the node escalated to self-repair and the
 	// postcondition then held.
-	exec.on("commit_changes", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("commit_changes", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"sha":       "abc123",
 			"_tokens":   10,
 			"_cost_usd": 0.0,
-			"_verified_action": map[string]interface{}{
+			"_verified_action": map[string]any{
 				"rung":              "self_repair",
 				"postcondition_met": true,
 				"policy":            "recover",

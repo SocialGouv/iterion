@@ -30,9 +30,12 @@ func TestMirrorBundleSkills_CopiesIntoClaudeSkills(t *testing.T) {
 	}
 
 	dest := filepath.Join(workDir, ".claude", "skills")
-	if _, err := os.Stat(filepath.Join(dest, "probe.md")); err != nil {
-		t.Errorf("probe.md missing: %v", err)
+	// Flat "probe.md" source mirrors to the directory form "probe/SKILL.md"
+	// (the only form claude_code's Skill tool discovers).
+	if _, err := os.Stat(filepath.Join(dest, "probe", "SKILL.md")); err != nil {
+		t.Errorf("probe/SKILL.md missing: %v", err)
 	}
+	// A source that is already a directory is copied through unchanged.
 	if _, err := os.Stat(filepath.Join(dest, "nested", "step.md")); err != nil {
 		t.Errorf("nested/step.md missing: %v", err)
 	}
@@ -41,10 +44,12 @@ func TestMirrorBundleSkills_CopiesIntoClaudeSkills(t *testing.T) {
 func TestMirrorBundleSkills_WorkspaceWinsOnCollision(t *testing.T) {
 	workDir := t.TempDir()
 	dest := filepath.Join(workDir, ".claude", "skills")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	// A pre-existing workspace skill at the directory form the mirror targets.
+	sharedDir := filepath.Join(dest, "shared")
+	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dest, "shared.md"), []byte("workspace"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sharedDir, "SKILL.md"), []byte("workspace"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,7 +65,7 @@ func TestMirrorBundleSkills_WorkspaceWinsOnCollision(t *testing.T) {
 		t.Fatalf("mirror: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dest, "shared.md"))
+	got, err := os.ReadFile(filepath.Join(sharedDir, "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +112,8 @@ func TestMirrorBundleSkills_RefreshesPreviouslyMirroredFile(t *testing.T) {
 	if err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
 		t.Fatalf("first mirror: %v", err)
 	}
-	mirrored, _ := os.ReadFile(filepath.Join(workDir, ".claude", "skills", "alpha.md"))
+	alphaDest := filepath.Join(workDir, ".claude", "skills", "alpha", "SKILL.md")
+	mirrored, _ := os.ReadFile(alphaDest)
 	if string(mirrored) != "v1 content" {
 		t.Fatalf("after first mirror: got %q, want %q", string(mirrored), "v1 content")
 	}
@@ -122,7 +128,7 @@ func TestMirrorBundleSkills_RefreshesPreviouslyMirroredFile(t *testing.T) {
 	if err := mirrorBundleSkills(workDir, &bundle.Bundle{SkillsDir: skillsSrc}, nil); err != nil {
 		t.Fatalf("second mirror: %v", err)
 	}
-	refreshed, _ := os.ReadFile(filepath.Join(workDir, ".claude", "skills", "alpha.md"))
+	refreshed, _ := os.ReadFile(alphaDest)
 	if string(refreshed) != "v2 content" {
 		t.Errorf("v2 refresh did not land: got %q, want %q", string(refreshed), "v2 content")
 	}
@@ -148,8 +154,8 @@ func TestMirrorBundleSkills_PreservesUserCustomizationOnUpgrade(t *testing.T) {
 		t.Fatalf("first mirror: %v", err)
 	}
 
-	// User customises the mirrored skill.
-	destPath := filepath.Join(workDir, ".claude", "skills", "beta.md")
+	// User customises the mirrored skill (directory form).
+	destPath := filepath.Join(workDir, ".claude", "skills", "beta", "SKILL.md")
 	if err := os.WriteFile(destPath, []byte("user-edited"), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -72,6 +73,12 @@ type Config struct {
 	// into the run bundle so the runner can materialise it for the
 	// CLI subprocess.
 	OAuthForfait secrets.OAuthStore
+	// ForgeConnections, when non-nil, lets the publisher resolve the
+	// github_app connection a run's forge_token came from and thread its
+	// bot login to the runner, so an installation token's commits are
+	// attributed to the App bot (the runner can't self-resolve it — see
+	// RunBundle.ForgeAppBotLogin).
+	ForgeConnections forge.ConnectionStore
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
@@ -89,6 +96,7 @@ type Publisher struct {
 	runSecrets     secrets.RunSecretsStore
 	sealer         secrets.Sealer
 	oauthForfait   secrets.OAuthStore
+	forgeConns     forge.ConnectionStore
 
 	// detached tracks fire-and-forget goroutines (e.g. MarkUsed
 	// observability writes) so Drain can wait for them on shutdown
@@ -128,6 +136,7 @@ func New(cfg Config) (*Publisher, error) {
 		runSecrets:     cfg.RunSecrets,
 		sealer:         cfg.Sealer,
 		oauthForfait:   cfg.OAuthForfait,
+		forgeConns:     cfg.ForgeConnections,
 	}, nil
 }
 
@@ -159,6 +168,37 @@ func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
 	return names
 }
 
+// appBotLoginForForgeToken returns the github_app bot login (e.g.
+// "iterion-forge-1234[bot]") whose managed secret backs the run's resolved
+// forge push token, or "" when the token is a PAT/OAuth/GitLab token (the
+// runner resolves those from the token's own /user) or the store is
+// unavailable. Best-effort: any store error yields "".
+func (p *Publisher) appBotLoginForForgeToken(ctx context.Context, tenantID string, resolved map[string]secrets.GenericResolution) string {
+	if p.forgeConns == nil || tenantID == "" {
+		return ""
+	}
+	var secretID string
+	for _, name := range []string{"forge_token", "github_token"} {
+		if r, ok := resolved[name]; ok && r.SecretID != "" {
+			secretID = r.SecretID
+			break
+		}
+	}
+	if secretID == "" {
+		return ""
+	}
+	conns, err := p.forgeConns.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	for _, c := range conns {
+		if c.Kind == forge.KindGitHubApp && c.ManagedSecretID == secretID && strings.TrimSpace(c.AccountLogin) != "" {
+			return c.AccountLogin
+		}
+	}
+	return ""
+}
+
 // resolveAndSealCredentials looks up every provider key visible to
 // (tenantID, ownerID), pairs it with any OAuth-forfait the owner has
 // connected, seals the resulting bundle, and persists it under a
@@ -183,6 +223,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		APIKeys:            map[secrets.Provider]string{},
 		GenericSecrets:     map[string]string{},
 		GenericSecretHosts: map[string][]string{},
+		GenericSecretRefs:  map[string]string{},
 		OAuthCredentials:   map[string][]byte{},
 	}
 
@@ -251,6 +292,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 			if len(r.AllowedHosts) > 0 {
 				bundle.GenericSecretHosts[name] = r.AllowedHosts
 			}
+			if r.SecretID != "" {
+				// ID only (never the value): lets the runner re-read the
+				// worker-refreshed store record mid-run — the snapshot above
+				// outlives short-TTL credentials (App tokens live 1h).
+				bundle.GenericSecretRefs[name] = r.SecretID
+			}
 			usedIDs = append(usedIDs, r.SecretID)
 		}
 		if len(usedIDs) > 0 {
@@ -262,6 +309,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 					_ = p.genericSecrets.MarkUsed(bg, id, t)
 				}
 			})
+		}
+		// When the run's forge token came from a github_app connection,
+		// thread the App bot login so the runner can seed the App-bot git
+		// committer (an installation token can't `GET /user`). Best-effort:
+		// a lookup failure just leaves the neutral fallback identity.
+		if login := p.appBotLoginForForgeToken(ctx, tenantID, resolved); login != "" {
+			bundle.ForgeAppBotLogin = login
 		}
 	}
 
@@ -452,6 +506,14 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 //
 // Idempotent: running CancelRun on an already-terminal run is a no-op.
 func (p *Publisher) CancelRun(ctx context.Context, runID string) error {
+	// Cancel descends here with a NON-request context (runview.Service.Cancel
+	// takes no ctx), so the mongo tenant filter has no tenant and its
+	// tenant-scoped queries panic. The caller (handleCancelRun / the WS
+	// handleCancel) has ALREADY gated access with a tenant-scoped LoadRunCtx,
+	// so bypass the filter explicitly here rather than crashing — exactly the
+	// seam store.WithoutTenantFilter exists for. Without this, cancelling any
+	// cloud run 502s (panic: "tenant-scoped query without tenant in ctx").
+	ctx = store.WithoutTenantFilter(ctx)
 	r, err := p.store.LoadRun(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("cloudpublisher: load run %s: %w", runID, err)
@@ -707,11 +769,11 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 
 // varsAsAny upgrades a string-keyed map to interface{} so the wire
 // payload can carry richer types if the launch spec ever evolves.
-func varsAsAny(in map[string]string) map[string]interface{} {
+func varsAsAny(in map[string]string) map[string]any {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]interface{}, len(in))
+	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
 	}

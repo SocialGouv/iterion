@@ -158,10 +158,12 @@ type LLMFields struct {
 	Model           string // model identifier (env refs already noted)
 	Backend         string // execution backend name (empty = direct LLM call); may contain ${VAR} env refs
 	Provider        string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${VAR} env refs
+	Command         string // per-node CLI binary override, honored by claude_code; may contain ${VAR}
 	SystemPrompt    string // prompt reference name
 	UserPrompt      string // prompt reference name
 	MaxTokens       int    // per-node cap on output tokens (0 = backend default)
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max"
+	Timeout         string // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = no per-node bound; may contain ${VAR} env refs
 	Readonly        bool   // when true, node is not considered mutating for workspace safety
 }
 
@@ -965,7 +967,7 @@ type Var struct {
 	Name       string
 	Type       VarType
 	HasDefault bool
-	Default    interface{} // string, int64, float64, or bool
+	Default    any // string, int64, float64, or bool
 }
 
 // Secret is a resolved workflow secret declaration. Value is the raw
@@ -1057,7 +1059,7 @@ type Preset struct {
 	// Values are variable overrides applied to the run (defaults < preset <
 	// --var). Keys not declared by the workflow's `vars:` are dropped by the
 	// engine's resolveVars, same as a stray --var.
-	Values map[string]interface{}
+	Values map[string]any
 	// DisplayName is the operator-facing label (e.g. "Improve Quality (SRE)");
 	// falls back to Name when empty. File-based presets only.
 	DisplayName string

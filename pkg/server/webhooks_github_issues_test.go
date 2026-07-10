@@ -118,6 +118,36 @@ func TestGitHubWebhook_IssueNonLabeledActionFiltered(t *testing.T) {
 	}
 }
 
+// Zero-touch lane: with AutoImplementOnOpen, an "opened" action launches the
+// implementer without any label (the opt-in that turns every new issue into a
+// PR). The default (flag off) stays filtered — see IssueNonLabeledActionFiltered.
+func TestGitHubWebhook_IssueOpened_ZeroTouch(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	var gotBot string
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotBot, gotVars = botID, vars
+		return "run-open", nil
+	}
+	cfg, pt := issueConfig(t, s)
+	cfg.AutoImplementOnOpen = true // opt in to zero-touch
+	body := strings.Replace(ghLabeledIssue, `"action": "labeled"`, `"action": "opened"`, 1)
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderIssues, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("opened+zero-touch should launch: code=%d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 1 || gotBot != "feature-dev" {
+		t.Fatalf("launch: calls=%d bot=%q", calls, gotBot)
+	}
+	// Same implementer contract as the labeled path — it opens a back-linked PR.
+	if gotVars["open_mr"] != "true" || gotVars["source_issue_ref"] == "" {
+		t.Fatalf("zero-touch must carry the implement contract: %v", gotVars)
+	}
+}
+
 // A label outside the allowlist must not launch.
 func TestGitHubWebhook_IssueWrongLabelFiltered(t *testing.T) {
 	s := newWebhookTestServer(t)

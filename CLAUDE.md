@@ -579,10 +579,17 @@ default mental model won't surface:
   root); the Taskfile's `desktop:*` targets set `dir: cmd/iterion-desktop`
   accordingly. `cmd/iterion-desktop/build/` is a symlink to `../../build/`
   so packaging configs stay in one place.
-- Linux builds need apt headers (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
-  `libsoup-3.0-dev`, plus `dpkg-dev`/`patchelf`/`libfuse2t64`/`fuse` for
-  AppImage). Devbox/Nix doesn't expose `.pc` files — use the host
-  package manager. Devcontainers wire this into `postCreateCommand`.
+- Linux builds need the gtk3/webkitgtk dev headers. The default path is
+  apt (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, plus
+  `dpkg-dev`/`patchelf`/`libfuse2t64`/`fuse` for AppImage); devcontainers
+  wire this into `postCreateCommand`. `devbox install` only links the
+  *runtime* outputs, so `.pc` files are missing by default — **but nix can
+  still provide them without apt/sudo**: `scripts/desktop/nix-pkgconfig-env.sh
+  <cmd>` realises gtk3/webkitgtk `-dev` from the pinned nixpkgs and sets the
+  target-specific `PKG_CONFIG_PATH_<arch>_unknown_linux_gnu` (the nix
+  pkg-config wrapper ignores a bare `PKG_CONFIG_PATH`). That's enough to
+  `go build`/`vet`/`test -tags desktop,webkit2_41`; `.deb`/AppImage packaging
+  still wants the apt tooling. See [docs/desktop-build.md](docs/desktop-build.md#alternative-nix-provided-headers-no-apt--no-sudo).
 - The Linux build tag is `desktop,webkit2_41` (already wired in the
   Taskfile) so Wails uses the modern WebKit ABI shipped by current distros.
 - `-skipbindings -s` flags are intentional: the SPA reads runtime-injected
@@ -961,7 +968,7 @@ Global flags: `--json` (machine output), `--help`
 - **Scenario executor** (`e2e/e2e_test.go`) — configurable stub with `.on(nodeID, handler)` for per-node behavior
 - Table-driven subtests with standard `testing` package
 - `task test:live` — runs E2E with real Claude/Codex CLIs (requires API keys)
-- **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures — impractical for the v2 `campaign` nodes (whole-session claude_code agents), whose fixtures are hand-authored seeds frozen on the termination-contract schema. Wired scenarios: feature-dev `campaign_feature_complete`, docs-refresh `campaign_docs_aligned`, whats-next `propose_roadmap_basic` + `emit_action_basic`. See [docs/adr/008-bot-golden-replay-framework.md](docs/adr/008-bot-golden-replay-framework.md).
+- **Bot golden replay** (`pkg/botreplay/`, `task test:goldens`, wired into `check`) — freezes a bot's LLM node output as a committed fixture under `pkg/botreplay/testdata/bot-goldens/<bot>/<scenario>.json` and re-validates it against the current schema + invariants (required-field presence, no hallucinated assignees) with no API calls. Record mode (`task test:goldens:record`, build tag `goldens_record`) hits the real LLM to (re)generate fixtures — impractical for the v2 `campaign` nodes (whole-session claude_code agents), whose fixtures are hand-authored seeds frozen on the termination-contract schema. Wired scenarios: feature-dev `campaign_feature_complete`, docs-refresh `campaign_docs_aligned`, whats-next `nexie_turn_basic`. See [docs/adr/008-bot-golden-replay-framework.md](docs/adr/008-bot-golden-replay-framework.md).
 
 ### Live dogfood runs MUST be visible in the operator's studio
 
@@ -989,6 +996,16 @@ separate store:
   files → git there reports a phantom "all files deleted". The engine now
   auto-remaps a repo-root override back to the worktree (with a warning), but
   omitting it is cleaner.
+- **Sandboxed dogfood fixtures must NOT live under `/tmp/claude-<uid>/`**
+  (the Claude Code scratchpad, e.g. `/tmp/claude-1000/...`). Docker creates
+  the bind target's missing parent dirs root-owned inside the container,
+  which shadows the in-container Claude CLI's own temp root
+  (`/tmp/claude-$UID`) — claude then hangs silently before its first stdout
+  byte, so every claude_code attempt dies on the 90s cold-phase timeout
+  (surgically isolated 2026-07-07 while validating native:221edac8: the
+  same fixture at `/tmp/probe-fixture` boots in 3s, at
+  `/tmp/claude-1000/<x>` it hangs). Clone fixtures to a neutral path
+  (e.g. `/tmp/iterion-probe-<x>/`) before a sandboxed run.
 
 The same applies to a dedicated server instance you spin up from a worktree to
 exercise modified engine code: bind it to the operator's store dir (or tell

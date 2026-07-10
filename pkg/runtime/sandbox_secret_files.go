@@ -24,7 +24,7 @@ func workflowHasFileSecrets(wf *ir.Workflow) bool {
 	return false
 }
 
-func addSecretFileMounts(ctx context.Context, spec *sandbox.Spec, wf *ir.Workflow, vars map[string]interface{}) error {
+func addSecretFileMounts(ctx context.Context, spec *sandbox.Spec, wf *ir.Workflow, vars map[string]any) error {
 	if spec == nil || wf == nil || len(wf.Secrets) == 0 {
 		return nil
 	}
@@ -89,7 +89,7 @@ func addSecretFileMounts(ctx context.Context, spec *sandbox.Spec, wf *ir.Workflo
 	return nil
 }
 
-func resolveRuntimeSecretValue(expr string, vars map[string]interface{}) string {
+func resolveRuntimeSecretValue(expr string, vars map[string]any) string {
 	expr = strings.TrimSpace(expr)
 	if strings.HasPrefix(expr, "{{") && strings.HasSuffix(expr, "}}") {
 		inner := strings.TrimSpace(expr[2 : len(expr)-2])

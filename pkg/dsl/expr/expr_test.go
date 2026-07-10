@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-func makeCtx(vars, input map[string]interface{}, outputs map[string]map[string]interface{}, loop map[string]map[string]interface{}) *Context {
-	resolveMap := func(m map[string]interface{}) func([]string) interface{} {
-		return func(path []string) interface{} {
+func makeCtx(vars, input map[string]any, outputs map[string]map[string]any, loop map[string]map[string]any) *Context {
+	resolveMap := func(m map[string]any) func([]string) any {
+		return func(path []string) any {
 			if len(path) == 0 {
 				return m
 			}
-			cur := interface{}(m)
+			cur := any(m)
 			for _, key := range path {
 				switch t := cur.(type) {
-				case map[string]interface{}:
+				case map[string]any:
 					cur = t[key]
 				default:
 					return nil
@@ -24,7 +24,7 @@ func makeCtx(vars, input map[string]interface{}, outputs map[string]map[string]i
 			return cur
 		}
 	}
-	resolveOutputs := func(path []string) interface{} {
+	resolveOutputs := func(path []string) any {
 		if len(path) == 0 {
 			return nil
 		}
@@ -37,7 +37,7 @@ func makeCtx(vars, input map[string]interface{}, outputs map[string]map[string]i
 		}
 		return out[path[1]]
 	}
-	resolveLoop := func(path []string) interface{} {
+	resolveLoop := func(path []string) any {
 		if len(path) < 2 {
 			return nil
 		}
@@ -49,13 +49,13 @@ func makeCtx(vars, input map[string]interface{}, outputs map[string]map[string]i
 			return loopState[path[1]]
 		}
 		// loop.<name>.previous_output.field
-		nested, ok := loopState[path[1]].(map[string]interface{})
+		nested, ok := loopState[path[1]].(map[string]any)
 		if !ok {
 			return nil
 		}
-		cur := interface{}(nested)
+		cur := any(nested)
 		for _, key := range path[2:] {
-			m, ok := cur.(map[string]interface{})
+			m, ok := cur.(map[string]any)
 			if !ok {
 				return nil
 			}
@@ -68,7 +68,7 @@ func makeCtx(vars, input map[string]interface{}, outputs map[string]map[string]i
 		Input:   resolveMap(input),
 		Outputs: resolveOutputs,
 		Loop:    resolveLoop,
-		Run: func(path []string) interface{} {
+		Run: func(path []string) any {
 			if len(path) == 1 && path[0] == "id" {
 				return "run-test-123"
 			}
@@ -80,7 +80,7 @@ func makeCtx(vars, input map[string]interface{}, outputs map[string]map[string]i
 func TestExpr_Literals(t *testing.T) {
 	cases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{"true", true},
 		{"false", false},
@@ -107,9 +107,9 @@ func TestExpr_Literals(t *testing.T) {
 
 func TestExpr_Boolean(t *testing.T) {
 	ctx := makeCtx(
-		map[string]interface{}{"flag": true},
+		map[string]any{"flag": true},
 		nil,
-		map[string]map[string]interface{}{
+		map[string]map[string]any{
 			"reviewer": {"approved": true, "family": "claude"},
 			"prev":     {"approved": true, "family": "gpt"},
 		},
@@ -181,7 +181,7 @@ func TestExpr_Comparisons(t *testing.T) {
 func TestExpr_Arithmetic(t *testing.T) {
 	cases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{"1 + 2", int64(3)},
 		{"10 - 4", int64(6)},
@@ -209,11 +209,11 @@ func TestExpr_Arithmetic(t *testing.T) {
 func TestExpr_LoopNamespace(t *testing.T) {
 	ctx := makeCtx(
 		nil, nil, nil,
-		map[string]map[string]interface{}{
+		map[string]map[string]any{
 			"review_loop": {
 				"iteration": int64(2),
 				"max":       int64(6),
-				"previous_output": map[string]interface{}{
+				"previous_output": map[string]any{
 					"approved": true,
 					"family":   "gpt",
 				},
@@ -306,16 +306,16 @@ func TestExpr_DepthLimit(t *testing.T) {
 
 func TestExpr_FuncCall_Length(t *testing.T) {
 	ctx := makeCtx(
-		map[string]interface{}{
-			"items": []interface{}{"a", "b", "c"},
-			"empty": []interface{}{},
+		map[string]any{
+			"items": []any{"a", "b", "c"},
+			"empty": []any{},
 			"name":  "iterion",
 		},
 		nil, nil, nil,
 	)
 	cases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{"length(vars.items)", int64(3)},
 		{"length(vars.empty)", int64(0)},
@@ -331,7 +331,7 @@ func TestExpr_FuncCall_Length(t *testing.T) {
 	// `length(blockers) > 0` would silently no-op when blockers came
 	// in as []string instead of the canonical []interface{}.
 	concreteCtx := makeCtx(
-		map[string]interface{}{
+		map[string]any{
 			"strs":  []string{"x", "y"},
 			"ints":  []int{1, 2, 3, 4},
 			"empty": []string{},
@@ -340,7 +340,7 @@ func TestExpr_FuncCall_Length(t *testing.T) {
 	)
 	concreteCases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{"length(vars.strs)", int64(2)},
 		{"length(vars.ints)", int64(4)},
@@ -377,9 +377,9 @@ func TestExpr_FuncCall_Length(t *testing.T) {
 }
 
 func TestExpr_FuncCall_Tail(t *testing.T) {
-	asStrings := func(t *testing.T, v interface{}) []string {
+	asStrings := func(t *testing.T, v any) []string {
 		t.Helper()
-		arr, ok := v.([]interface{})
+		arr, ok := v.([]any)
 		if !ok {
 			t.Fatalf("expected []interface{}, got %T", v)
 		}
@@ -390,10 +390,10 @@ func TestExpr_FuncCall_Tail(t *testing.T) {
 		return out
 	}
 	ctx := makeCtx(
-		map[string]interface{}{
-			"items": []interface{}{"a", "b", "c", "d", "e"},
-			"prev":  []interface{}{"p1", "p2", "p3"},
-			"new":   []interface{}{"p3", "n1"},
+		map[string]any{
+			"items": []any{"a", "b", "c", "d", "e"},
+			"prev":  []any{"p1", "p2", "p3"},
+			"new":   []any{"p3", "n1"},
 		},
 		nil, nil, nil,
 	)
@@ -445,9 +445,9 @@ func TestExpr_FuncCall_Tail(t *testing.T) {
 
 func TestExpr_FuncCall_Concat(t *testing.T) {
 	ctx := makeCtx(
-		map[string]interface{}{
-			"a": []interface{}{"x", "y"},
-			"b": []interface{}{"z"},
+		map[string]any{
+			"a": []any{"x", "y"},
+			"b": []any{"z"},
 		},
 		nil, nil, nil,
 	)
@@ -459,11 +459,11 @@ func TestExpr_FuncCall_Concat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval error: %v", err)
 	}
-	arr, ok := got.([]interface{})
+	arr, ok := got.([]any)
 	if !ok {
 		t.Fatalf("expected []interface{}, got %T", got)
 	}
-	want := []interface{}{"x", "y", "z"}
+	want := []any{"x", "y", "z"}
 	if len(arr) != len(want) {
 		t.Fatalf("concat length = %d, want %d (%v)", len(arr), len(want), arr)
 	}
@@ -476,8 +476,8 @@ func TestExpr_FuncCall_Concat(t *testing.T) {
 
 func TestExpr_FuncCall_Unique(t *testing.T) {
 	ctx := makeCtx(
-		map[string]interface{}{
-			"items": []interface{}{"a", "b", "a", "c", "b"},
+		map[string]any{
+			"items": []any{"a", "b", "a", "c", "b"},
 		},
 		nil, nil, nil,
 	)
@@ -489,11 +489,11 @@ func TestExpr_FuncCall_Unique(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval error: %v", err)
 	}
-	arr, ok := got.([]interface{})
+	arr, ok := got.([]any)
 	if !ok {
 		t.Fatalf("expected []interface{}, got %T", got)
 	}
-	want := []interface{}{"a", "b", "c"}
+	want := []any{"a", "b", "c"}
 	if len(arr) != len(want) {
 		t.Fatalf("unique length = %d, want %d (%v)", len(arr), len(want), arr)
 	}
@@ -509,22 +509,22 @@ func TestExpr_FuncCall_Unique(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval nil error: %v", err)
 	}
-	if a, ok := out.([]interface{}); !ok || len(a) != 0 {
+	if a, ok := out.([]any); !ok || len(a) != 0 {
 		t.Errorf("unique(nil) = %v, want empty array", out)
 	}
 }
 
 func TestExpr_FuncCall_Contains(t *testing.T) {
 	ctx := makeCtx(
-		map[string]interface{}{
-			"items": []interface{}{"a", "b", "c"},
-			"nums":  []interface{}{int64(1), int64(2), int64(3)},
+		map[string]any{
+			"items": []any{"a", "b", "c"},
+			"nums":  []any{int64(1), int64(2), int64(3)},
 		},
 		nil, nil, nil,
 	)
 	cases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{`contains(vars.items, "a")`, true},
 		{`contains(vars.items, "z")`, false},
@@ -548,11 +548,11 @@ func TestExpr_FuncCall_Contains(t *testing.T) {
 
 func TestExpr_FuncCall_Join(t *testing.T) {
 	ctx := makeCtx(
-		map[string]interface{}{
-			"files":  []interface{}{"src/index.js", "package.json", "README.md"},
-			"single": []interface{}{"only.txt"},
-			"empty":  []interface{}{},
-			"mixed":  []interface{}{int64(1), "two", true},
+		map[string]any{
+			"files":  []any{"src/index.js", "package.json", "README.md"},
+			"single": []any{"only.txt"},
+			"empty":  []any{},
+			"mixed":  []any{int64(1), "two", true},
 		},
 		nil, nil, nil,
 	)
@@ -605,21 +605,21 @@ func TestExpr_FuncCall_If(t *testing.T) {
 	// Used by recipes to derive policy values without falling back to a
 	// JS tool (e.g. "effective_risk = if(has_breaking, 'major', risk)").
 	ctx := makeCtx(
-		map[string]interface{}{
+		map[string]any{
 			"flag_true":  true,
 			"flag_false": false,
 			"missing":    nil,
 			"empty_str":  "",
 			"zero":       int64(0),
 			"three":      int64(3),
-			"items":      []interface{}{"a", "b", "c"},
+			"items":      []any{"a", "b", "c"},
 			"risk":       "minor",
 		},
 		nil, nil, nil,
 	)
 	cases := []struct {
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{`if(vars.flag_true, "yes", "no")`, "yes"},
 		{`if(vars.flag_false, "yes", "no")`, "no"},
@@ -668,7 +668,7 @@ func TestExpr_FuncCall_If(t *testing.T) {
 // `if(doc_count > 0, total*100/doc_count, 0)` on an empty workspace.
 func TestExpr_If_ShortCircuits(t *testing.T) {
 	ctx := makeCtx(
-		map[string]interface{}{
+		map[string]any{
 			"zero":  int64(0),
 			"total": int64(100),
 		},
@@ -677,7 +677,7 @@ func TestExpr_If_ShortCircuits(t *testing.T) {
 	cases := []struct {
 		name   string
 		src    string
-		expect interface{}
+		expect any
 	}{
 		{
 			"div-by-zero hidden in then arm, false cond",
@@ -710,14 +710,14 @@ func TestExpr_FuncCall_Nested(t *testing.T) {
 	// unique(concat(loop.l.previous_output.cumulative, input.scanned_areas))
 	ctx := makeCtx(
 		nil,
-		map[string]interface{}{
-			"scanned_areas": []interface{}{"docs/", "pkg/dsl/"},
+		map[string]any{
+			"scanned_areas": []any{"docs/", "pkg/dsl/"},
 		},
 		nil,
-		map[string]map[string]interface{}{
+		map[string]map[string]any{
 			"l": {
-				"previous_output": map[string]interface{}{
-					"cumulative": []interface{}{"docs/", "pkg/runtime/"},
+				"previous_output": map[string]any{
+					"cumulative": []any{"docs/", "pkg/runtime/"},
 				},
 			},
 		},
@@ -730,11 +730,11 @@ func TestExpr_FuncCall_Nested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval error: %v", err)
 	}
-	arr, ok := got.([]interface{})
+	arr, ok := got.([]any)
 	if !ok {
 		t.Fatalf("expected []interface{}, got %T", got)
 	}
-	want := []interface{}{"docs/", "pkg/runtime/", "pkg/dsl/"}
+	want := []any{"docs/", "pkg/runtime/", "pkg/dsl/"}
 	if len(arr) != len(want) {
 		t.Fatalf("got %v, want %v", arr, want)
 	}
@@ -750,17 +750,17 @@ func TestExpr_FuncCall_FirstIterationNilCumulative(t *testing.T) {
 	// loop.l.previous_output.cumulative is nil.
 	ctx := makeCtx(
 		nil,
-		map[string]interface{}{"scanned_areas": []interface{}{"a", "b"}},
+		map[string]any{"scanned_areas": []any{"a", "b"}},
 		nil,
-		map[string]map[string]interface{}{
-			"l": {"previous_output": map[string]interface{}{}},
+		map[string]map[string]any{
+			"l": {"previous_output": map[string]any{}},
 		},
 	)
 	got, err := MustParse("unique(concat(loop.l.previous_output.cumulative, input.scanned_areas))").Eval(ctx)
 	if err != nil {
 		t.Fatalf("Eval error: %v", err)
 	}
-	arr, _ := got.([]interface{})
+	arr, _ := got.([]any)
 	if len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
 		t.Errorf("got %v, want [a b]", arr)
 	}
@@ -779,7 +779,7 @@ func TestExpr_FuncCall_Errors(t *testing.T) {
 
 	// Eval-time: arg-count mismatches and type errors.
 	ctx := makeCtx(
-		map[string]interface{}{"s": "hi", "n": int64(5)},
+		map[string]any{"s": "hi", "n": int64(5)},
 		nil, nil, nil,
 	)
 	bad := []string{

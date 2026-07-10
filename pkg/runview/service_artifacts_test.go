@@ -22,7 +22,7 @@ func TestListAllArtifacts(t *testing.T) {
 	if _, err := seed.CreateRun(ctx, "run1", "wf", nil); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	write := func(node string, v int, labels []string, data map[string]interface{}) {
+	write := func(node string, v int, labels []string, data map[string]any) {
 		if err := seed.WriteArtifact(ctx, &store.Artifact{
 			RunID: "run1", NodeID: node, Version: v, Labels: labels, Data: data,
 		}); err != nil {
@@ -30,10 +30,10 @@ func TestListAllArtifacts(t *testing.T) {
 		}
 	}
 	// planner: two versions; latest carries the plan label + a title.
-	write("planner", 0, []string{"plan"}, map[string]interface{}{"plan": "draft"})
-	write("planner", 1, []string{"plan"}, map[string]interface{}{"plan": "final", "title": "Migration plan"})
+	write("planner", 0, []string{"plan"}, map[string]any{"plan": "draft"})
+	write("planner", 1, []string{"plan"}, map[string]any{"plan": "final", "title": "Migration plan"})
 	// reviewer: one version, verdict label, no title.
-	write("reviewer", 0, []string{"verdict"}, map[string]interface{}{"approved": true})
+	write("reviewer", 0, []string{"verdict"}, map[string]any{"approved": true})
 
 	svc, err := NewService(dir, WithLogger(logger))
 	if err != nil {

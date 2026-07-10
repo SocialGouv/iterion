@@ -8,6 +8,16 @@ ADRs in `docs/adr/`, plus a feature-completeness audit; files optional
 handoff issues to `adr-rechallenge` (re-challenge) and `feature-gap-fill`
 (gap completion). Template: docs-refresh (Doki).
 
+## 2026-07-07 — v2 dogfood on iterion's recent work: 4 ADRs in stride, converged first pass (run 019f3d3b-6a56)
+- Status: **VALIDATED** — first live run of the v2 shape, textbook behaviour end to end.
+- Versions: bot v2.0.0 · iterion `dev+239203525cc8` · no sandbox (host run, worktree: auto).
+- Method: CLI run, `--store-dir <workspace>/.iterion`, `--merge-into none`, `bundle_self_path=bots/adr-cartograph`, `diff_since=origin/main` (prioritise the recent unpushed work), `max_passes=3`, `--max-cost-usd 25 --max-duration 1h` (mono claude, forfait). 15m39s wall.
+- Result: `finished`, `gate.converged=true` on the FIRST pass. Pipeline: scan_adrs 61 ADRs (dup '002' flagged, next NNN correct) → survey_code 4 non-mechanic decisions + 2 gaps → manifest drift=4/orphans=0/coverage 93% → campaign authored **4 ADRs, one commit each in stride** on storage branch `iterion/run/meteor-ray-ashglyph-fb1c` @edeae90e0c: `docs(adr): 061 per-backend system-prompt composition mode`, `062 system-reminder envelope`, `063 post-compaction todo-reseed nudge`, `064 worktree finalization delegated authority`. scope_check clean (adr_dir-only); deterministic verify green (devbox-pinned go build); cache updated.
+- Value: HIGH — the four ADRs document exactly the real, undocumented decisions of the last days' unpushed work; spot-read of ADR-061 shows proper Nygard form, an accurate Context (the claude_code-vs-claw composition seam), a real trade-off and correct code anchors. NNN sequencing correct (061-064 after the parallel session's 060).
+- Findings / misses: none observed — handoff issues correctly NOT filed (gaps were below the medium bar / rechallenge_after_days=0).
+- Engine hardening: none needed.
+- Lessons for next run: `diff_since=origin/main` is an excellent default for recurring Adry runs on an active repo — it focuses the survey on fresh decisions; cherry-picking the storage branch is the operator follow-up (commits deliberately not FF'd here).
+
 ## 2026-07-07 — converted to v2 minimal-framing (ADR-058 fleet rollout) — structural-validated, dogfood pending
 - Status: **converted, dogfood pending** — structural validation only this pass: `iterion validate` clean, catalog universality/typing/bundle-consistency green, stub e2e green where wired. NOT yet live-dogfooded in the v2 shape; treat the sections below as describing the RETIRED v1 shape.
 - Versions: bot v2.0.0 · iterion worktree branch (rollout of 2026-07-07, see git log)

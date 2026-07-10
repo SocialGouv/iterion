@@ -113,6 +113,10 @@ vars:
   ## hit. Sizes the declared continuation loop. Raise it (with the budget) for
   ## a big axis on a large repo; the agent commits in stride, so every pass
   ## banks real, landed work.
+  ## NOTE loop semantics: the DSL `as continuation_loop(N)` bounds the
+  ## loop-BACKS (re-entries), so the TOTAL number of passes is N+1 —
+  ## max_passes: 2 yields up to 3 campaign→verify cycles (observed live,
+  ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
 
   ## ─── MR/PR finalization (opt-in) ───────────────────────────────
@@ -372,6 +376,20 @@ schema verify_result:
   exit_code: int
   log_tail: string
 
+## verify_probe output — deterministic "is a usable verify.sh already prepared?"
+## so verify_build (an LLM agent, ~$0.69/13k tok EVERY pass) is only paid when
+## the script is missing/invalid or on the first pass. fresh=true reuses it.
+## verify_probe input — the continuation-loop iteration, mapped on the
+## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
+## tool command (only input/vars/run do), so the iteration is passed in as node
+## input via the edge data-mapping. Pass 1 = iteration 0 (always regenerate).
+schema verify_probe_input:
+  iteration: int
+
+schema verify_probe_state:
+  fresh: bool
+  reason: string
+
 ## gate is the deterministic continuation decision. converged = the tree is
 ## green AND the campaign reported the axis fully applied. fail_log relays the
 ## real build failure to the campaign on a RED pass (empty when green).
@@ -381,6 +399,12 @@ schema gate_state:
 
 schema mr_gate_output:
   open_mr: bool
+
+## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
+## LLM agent) is only ever entered when a push credential actually exists.
+schema forge_auth_state:
+  available: bool
+  reason: string
 
 schema finalize_mr_input:
   workspace_dir: string
@@ -419,13 +443,50 @@ agent campaign:
   session: fresh
   interaction: human
 
+## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
+## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent
+## (~$0.69/13k tok EVERY pass); once pass 1 has authored verify.sh, re-authoring
+## it every pass is pure waste. This tool answers "reuse it?" in ~50ms of
+## subprocess: fresh=true when verify.sh exists, is non-empty, and passes
+## `sh -n` — AND this is not the first pass (iteration>0), so pass 1 of every run
+## always (re)generates verify.sh for the CURRENT tree, defeating a stale script
+## a prior run may have left in a persistent (non-sandbox) scratch dir. python3
+## for safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
+tool verify_probe:
+  command: `SCRATCH={{vars.scratch_dir}} ITER="{{input.iteration}}" python3 -c "
+import os, subprocess, json
+scratch = os.environ.get('SCRATCH', '.')
+script = os.path.join(scratch, 'verify.sh')
+try:
+    iteration = int(os.environ.get('ITER', '0') or '0')
+except ValueError:
+    iteration = 0
+fresh = False
+if iteration <= 0:
+    reason = 'first pass of this run: (re)generate verify.sh for the current tree'
+elif not os.path.isfile(script):
+    reason = 'no verify.sh in the scratch dir yet'
+elif os.path.getsize(script) == 0:
+    reason = 'verify.sh is empty'
+else:
+    chk = subprocess.run(['sh', '-n', script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if chk.returncode != 0:
+        reason = 'verify.sh failed the sh -n syntax check: ' + (chk.stdout or '')[-300:]
+    else:
+        fresh = True
+        reason = 'verify.sh present and valid; reuse it (skip verify_build)'
+print(json.dumps({'fresh': fresh, 'reason': reason}))
+"`
+  input: verify_probe_input
+  output: verify_probe_state
+
 ## verify_build — adaptive, stack-agnostic gate authoring (writes
 ## <scratch_dir>/verify.sh). fresh: whole-tree buildability, not a per-site
 ## session. high, not max: mechanical capture of the repo's build/test.
 agent verify_build:
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_VERIFY_BUILD:-medium}"
   output: verify_plan
   system: verify_system
   user: verify_user
@@ -494,6 +555,35 @@ compute mr_gate:
 ## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-pass commits.
 ## claude_code so the bundled forge-mr-create skill is mirrored and the board
 ## comment tool (native back-link) is available.
+## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
+## LLM agent (claude_code, opus); entering it with NO push credential mounted
+## burns a whole turn just to REDISCOVER, in shell, that it can't push (~$0.26
+## observed on branch-improve-loop run 019f415c — this node is byte-shared).
+## This tool answers "is there a push credential?" in ~100ms of subprocess so
+## the graph only pays finalize_mr when a push can actually happen. python3 for
+## safe JSON + no quote clashes (mirrors verify_run); read-only, idempotent.
+tool forge_auth_probe:
+  command: `python3 -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
 agent finalize_mr:
   backend: "claude_code"
   model: "${ITERION_WHOLE_IMPROVE_MR_MODEL:-claude-opus-4-8}"
@@ -504,7 +594,10 @@ agent finalize_mr:
   user: finalize_mr_user
   tools: [bash, read_file, glob, grep]
   capabilities: [board.read, board.comment]
-  tool_max_steps: 40
+  ## 20 is ample for push + open-MR + back-link (~5-8 commands nominal); 40 was
+  ## headroom for a degenerate credential-probe spin that forge_auth_probe now
+  ## makes impossible (the node is only entered when a push credential exists).
+  tool_max_steps: 20
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -538,7 +631,14 @@ workflow whole_improve_loop:
 
   ## Each pass: the campaign applies the axis (committing each site in
   ## stride), then the deterministic build/test gate re-checks the tree.
-  campaign -> verify_build
+  campaign -> verify_probe with {
+    iteration: "{{loop.continuation_loop.iteration}}"
+  }
+  ## verify_probe reuses an already-valid verify.sh (skipping the LLM
+  ## verify_build) on passes 2+; the first pass of every run regenerates it for
+  ## the current tree. Both outgoing edges test the bool `fresh` (C012-exhaustive).
+  verify_probe -> verify_run when fresh
+  verify_probe -> verify_build when not fresh
   verify_build -> verify_run
   verify_run -> gate
 
@@ -559,15 +659,22 @@ workflow whole_improve_loop:
   ## Unconditional fallthrough after the loop-back retries are spent.
   gate -> mr_gate
 
-  ## Converged (or capped) → optional MR path, else finish. finalize_mr pushes
-  ## the run's HEAD (the series of per-pass commits) + opens the MR/PR and
-  ## (when source_issue_ref is set) posts the URL back.
-  mr_gate -> finalize_mr when open_mr with {
+  ## Converged (or capped) → optional MR path, else finish. When open_mr, first
+  ## the deterministic forge_auth_probe checks a push credential EXISTS before we
+  ## pay the finalize_mr agent turn.
+  mr_gate -> forge_auth_probe when open_mr
+  mr_gate -> done when not open_mr
+
+  ## Push credential present → finalize_mr pushes the run's HEAD (the series of
+  ## per-pass commits) + opens the MR/PR and (when source_issue_ref is set)
+  ## posts the URL back. Absent → finish cleanly; the commits are on the
+  ## engine's persistent iterion/run/<name> storage branch for a manual push.
+  forge_auth_probe -> finalize_mr when available with {
     workspace_dir:    "{{vars.workspace_dir}}",
     mr_branch:        "{{vars.mr_branch}}",
     mr_base:          "{{vars.mr_base}}",
     source_issue_ref: "{{vars.source_issue_ref}}",
     scope_notes:      "{{vars.scope_notes}}"
   }
-  mr_gate -> done when not open_mr
+  forge_auth_probe -> done when not available
   finalize_mr -> done

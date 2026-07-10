@@ -82,6 +82,16 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		d.MaxTokens = p.expectInt()
 	case TokenReasoningEffort:
 		d.ReasoningEffort = p.parseReasoningEffort()
+	case TokenIdent:
+		// `timeout:` is not a reserved keyword (the wait node also parses it
+		// as a bare ident), so match on the value here rather than a token.
+		if propTok.Value == "timeout" {
+			p.expect(TokenColon)
+			d.Timeout = p.expectString()
+		} else {
+			p.addError(DiagUnknownProperty, propTok, "unknown "+kind+" property '"+propTok.Value+"'")
+			p.skipToNewline()
+		}
 	case TokenReadonly:
 		p.expect(TokenColon)
 		if v := p.parseBool(); v != nil {
@@ -105,6 +115,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenProvider:
 		p.expect(TokenColon)
 		d.Provider = p.expectString()
+	case TokenCommand:
+		p.expect(TokenColon)
+		d.Command = p.expectString()
 	case TokenInteraction:
 		p.expect(TokenColon)
 		d.Interaction = p.parseInteractionMode()

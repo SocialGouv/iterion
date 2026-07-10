@@ -27,7 +27,7 @@ type ToolInfo struct {
 // ToolCallResult is the MCP result returned by tools/call.
 type ToolCallResult struct {
 	Content           []ToolContent `json:"content,omitempty"`
-	StructuredContent interface{}   `json:"structuredContent,omitempty"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
 	IsError           bool          `json:"isError,omitempty"`
 }
 
@@ -62,7 +62,7 @@ type clientInfo struct {
 type protocolClient interface {
 	Ping(ctx context.Context) error
 	ListTools(ctx context.Context) ([]ToolInfo, error)
-	CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*ToolCallResult, error)
+	CallTool(ctx context.Context, toolName string, args map[string]any) (*ToolCallResult, error)
 	ListResources(ctx context.Context) ([]ResourceInfo, error)
 	ReadResource(ctx context.Context, uri string) (ResourceContent, error)
 	Close() error
@@ -368,7 +368,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 		// different signature won't have its args overwritten.
 		toolHasLimitParam := schemaDeclaresLimit(info.InputSchema)
 		if err := registry.RegisterMCP(serverName, toolName, info.Description, info.InputSchema, func(callCtx context.Context, input json.RawMessage) (string, error) {
-			var args map[string]interface{}
+			var args map[string]any
 			if len(input) > 0 && string(input) != "null" {
 				if err := json.Unmarshal(input, &args); err != nil {
 					return "", fmt.Errorf("mcp: decode input for %s.%s: %w", serverName, toolName, err)
@@ -386,7 +386,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 			if fmtErr != nil && toolName == "Read" && toolHasLimitParam &&
 				strings.Contains(fmtErr.Error(), "exceeds maximum allowed tokens") {
 				if args == nil {
-					args = make(map[string]interface{})
+					args = make(map[string]any)
 				}
 				// Shrink to 300 and retry when no caller-supplied limit exists
 				// OR the current limit is still above 300. The DefaultSanitization
@@ -445,7 +445,7 @@ func (m *Manager) smokeTestWorkspace(ctx context.Context, client protocolClient,
 	switch {
 	case toolNames["Bash"]:
 		// Claude Code exposes Bash — run a quick "ls" in workDir.
-		args := map[string]interface{}{
+		args := map[string]any{
 			"command":     "ls >/dev/null 2>&1 && pwd",
 			"description": "smoke test: verify workspace access",
 		}
@@ -459,7 +459,7 @@ func (m *Manager) smokeTestWorkspace(ctx context.Context, client protocolClient,
 		}
 	case toolNames["codex"]:
 		// Codex exposes a single "codex" tool — ask it to list files.
-		args := map[string]interface{}{
+		args := map[string]any{
 			"prompt":          "Run: ls -la . && pwd",
 			"cwd":             workDir,
 			"sandbox":         "read-only",
@@ -618,7 +618,7 @@ func stringsFromContent(content []ToolContent) string {
 	return strings.Join(out, "\n")
 }
 
-func (m *Manager) applySanitizationRules(toolName string, args map[string]interface{}, workDir string) {
+func (m *Manager) applySanitizationRules(toolName string, args map[string]any, workDir string) {
 	if args == nil {
 		return
 	}

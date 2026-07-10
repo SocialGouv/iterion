@@ -5,7 +5,9 @@
 // explicitly. We send `credentials: "include"` on every request so
 // cross-origin dev (vite proxy) still attaches them.
 
-const BASE = (import.meta.env.VITE_API_URL ?? "/api").replace(/\/$/, "");
+import { apiBase } from "@/lib/scope";
+
+const BASE = apiBase().replace(/\/$/, "");
 
 export type Role = "owner" | "admin" | "member" | "viewer";
 export type UserStatus = "active" | "disabled" | "pending_password_change";

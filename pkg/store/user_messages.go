@@ -200,7 +200,7 @@ func (s *FilesystemRunStore) ListQueuedMessages(ctx context.Context, runID strin
 // JSONL helpers
 // ---------------------------------------------------------------------------
 
-func appendJSONL(path string, v interface{}) error {
+func appendJSONL(path string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("store: marshal user_message: %w", err)
@@ -296,7 +296,7 @@ func InboxEventFor(typ EventType, runID string, msg QueuedUserMessage) Event {
 	return Event{
 		Type:  typ,
 		RunID: runID,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"id":           msg.ID,
 			"text":         msg.Text,
 			"status":       string(msg.Status),
