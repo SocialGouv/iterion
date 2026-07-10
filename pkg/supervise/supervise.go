@@ -154,7 +154,7 @@ func eventToolName(evt *store.Event) string {
 
 // numField reads a numeric data field, tolerating int/int64/float64
 // (JSON round-trips through float64; in-process events may carry ints).
-func numField(data map[string]interface{}, key string) (float64, bool) {
+func numField(data map[string]any, key string) (float64, bool) {
 	if data == nil {
 		return 0, false
 	}

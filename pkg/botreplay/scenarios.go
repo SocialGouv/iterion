@@ -23,7 +23,7 @@ type Scenario struct {
 	// Record-only fields (ignored by replay). Input is the per-node
 	// input map handed to NodeExecutor.Execute.
 	Vars  map[string]string
-	Input map[string]interface{}
+	Input map[string]any
 }
 
 // FixturePath returns the testdata path for a scenario's fixture,
@@ -50,7 +50,7 @@ func Scenarios() []Scenario {
 			Vars: map[string]string{
 				"feature_prompt": "add Answer() int returning 42 in answer.go",
 			},
-			Input: map[string]interface{}{
+			Input: map[string]any{
 				"fail_log": "",
 			},
 		},
@@ -69,7 +69,7 @@ func Scenarios() []Scenario {
 				"scope_notes":     "",
 				"initial_message": "Quels sont les quick wins sur ce board ? Recommande-m'en un.",
 			},
-			Input: map[string]interface{}{
+			Input: map[string]any{
 				"operator_message": "Quels sont les quick wins sur ce board ? Recommande-m'en un.",
 			},
 		},
@@ -79,7 +79,7 @@ func Scenarios() []Scenario {
 			Node:             "campaign",
 			RequiredNonEmpty: []string{"summary"},
 			CheckAssignees:   true, // docs-refresh routes no work to bots; scan must stay clean
-			Input: map[string]interface{}{
+			Input: map[string]any{
 				"total_docs":                  float64(3),
 				"total_anchors":               float64(12),
 				"verified_anchors":            float64(11),
@@ -87,12 +87,12 @@ func Scenarios() []Scenario {
 				"unverifiable_anchors":        float64(0),
 				"manifest_coverage_pct":       float64(91),
 				"coverage_target_pct":         float64(80),
-				"drift_candidates":            []interface{}{},
+				"drift_candidates":            []any{},
 				"docs_with_drift_count":       float64(1),
 				"chunked":                     false,
 				"chunk_doc_count":             float64(1),
 				"max_review_chunk_docs":       float64(30),
-				"recently_changed_code_files": []interface{}{},
+				"recently_changed_code_files": []any{},
 				"fail_log":                    "",
 			},
 		},

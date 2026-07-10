@@ -119,7 +119,7 @@ func wfWithVars(names ...string) *ir.Workflow {
 
 func TestInjectIfDeclared_optIn(t *testing.T) {
 	// Bot that does NOT declare review_mode is untouched.
-	inputs := map[string]interface{}{}
+	inputs := map[string]any{}
 	_, _, injected := InjectIfDeclared(wfWithVars("workspace_dir"), inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "")
 	if injected {
@@ -132,7 +132,7 @@ func TestInjectIfDeclared_optIn(t *testing.T) {
 
 func TestInjectIfDeclared_autoDetectDual(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
-	inputs := map[string]interface{}{VarReviewMode: ModeAuto}
+	inputs := map[string]any{VarReviewMode: ModeAuto}
 	mode, family, injected := InjectIfDeclared(wf, inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "")
 	if !injected || mode != ModeDual || family != "" {
@@ -145,7 +145,7 @@ func TestInjectIfDeclared_autoDetectDual(t *testing.T) {
 
 func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
-	inputs := map[string]interface{}{VarReviewMode: ModeAuto}
+	inputs := map[string]any{VarReviewMode: ModeAuto}
 	mode, family, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
 	if mode != ModeMono || family != FamilyGPT {
 		t.Fatalf("got (%q,%q), want mono/gpt", mode, family)
@@ -158,7 +158,7 @@ func TestInjectIfDeclared_autoDetectMono(t *testing.T) {
 func TestInjectIfDeclared_flagOverrideWins(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	// Two families available (auto would pick dual) but the flag forces mono.
-	inputs := map[string]interface{}{VarReviewMode: ModeAuto}
+	inputs := map[string]any{VarReviewMode: ModeAuto}
 	mode, family, _ := InjectIfDeclared(wf, inputs,
 		rep(prov("anthropic", true), prov("openai", true)), "mono")
 	if mode != ModeMono || family != FamilyClaude {
@@ -169,7 +169,7 @@ func TestInjectIfDeclared_flagOverrideWins(t *testing.T) {
 func TestInjectIfDeclared_varOverrideUsedWhenNoFlag(t *testing.T) {
 	wf := wfWithVars(VarReviewMode, VarMonoFamily)
 	// Operator set --var review_mode=dual; no flag → var wins over auto.
-	inputs := map[string]interface{}{VarReviewMode: ModeDual}
+	inputs := map[string]any{VarReviewMode: ModeDual}
 	mode, _, _ := InjectIfDeclared(wf, inputs, rep(prov("openai", true)), "")
 	if mode != ModeDual {
 		t.Fatalf("got %q, want dual (var override)", mode)

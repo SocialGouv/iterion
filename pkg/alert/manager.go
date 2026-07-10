@@ -356,7 +356,7 @@ func (m *Manager) dispatch(sinks []Sink, alerts []Alert) {
 	}
 }
 
-func strData(d map[string]interface{}, key string) string {
+func strData(d map[string]any, key string) string {
 	if d == nil {
 		return ""
 	}
@@ -366,7 +366,7 @@ func strData(d map[string]interface{}, key string) string {
 	return ""
 }
 
-func floatData(d map[string]interface{}, key string) float64 {
+func floatData(d map[string]any, key string) float64 {
 	if d == nil {
 		return 0
 	}

@@ -180,7 +180,7 @@ func declaresVar(wf *ir.Workflow, name string) bool {
 //
 // Returns the resolved (mode, monoFamily) and whether injection happened
 // (for logging by the caller).
-func InjectIfDeclared(wf *ir.Workflow, inputs map[string]interface{}, rep detect.Report, flagOverride string) (mode, monoFamily string, injected bool) {
+func InjectIfDeclared(wf *ir.Workflow, inputs map[string]any, rep detect.Report, flagOverride string) (mode, monoFamily string, injected bool) {
 	if !declaresVar(wf, VarReviewMode) {
 		return "", "", false
 	}
