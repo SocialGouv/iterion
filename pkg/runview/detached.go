@@ -195,7 +195,17 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 		if pidS := store.AsPIDStore(s.store); pidS != nil {
 			_ = pidS.RemovePIDFile(spec.RunID)
 		}
-		s.broker.CloseRun(spec.RunID)
+		// Mirror spawnRun's pause handling: a paused runner exits like a
+		// terminal one, but the run is only dormant — keep WS subscribers
+		// so the pause/resume events reach them (the resume's tailers
+		// publish to the same broker runID).
+		paused := false
+		if r, err := s.store.LoadRun(store.WithoutTenantFilter(context.Background()), spec.RunID); err == nil {
+			paused = r.Status == store.RunStatusPausedWaitingHuman || r.Status == store.RunStatusPausedOperator
+		}
+		if !paused {
+			s.broker.CloseRun(spec.RunID)
+		}
 		s.dropRunLog(spec.RunID)
 		s.manager.Deregister(spec.RunID)
 	}()
@@ -223,8 +233,22 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// point (see server.resolveWorkflowPath), so the spawned subprocess
 	// can read it from disk; we use the inline copy here to avoid an
 	// extra ReadFile for the pre-flight compile.
-	if _, _, err := compileForLaunch(spec.FilePath, spec.Source); err != nil {
+	wf, _, err := compileForLaunch(spec.FilePath, spec.Source)
+	if err != nil {
 		return nil, err
+	}
+
+	// Persist the run doc before the runner subprocess boots (mirrors
+	// spawnRun's pre-create): a GET /api/runs/{id} issued right after the
+	// launch response must not 404 while the runner is still forking. The
+	// runner engine's runResolveDoc claims the running doc instead of
+	// re-creating it, and overwrites Inputs with the preset-merged set.
+	inputs := make(map[string]any, len(spec.Vars))
+	for k, v := range spec.Vars {
+		inputs[k] = v
+	}
+	if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, inputs); err != nil {
+		return nil, fmt.Errorf("runview: create run: %w", err)
 	}
 
 	// LaunchSpec.Backend is honored only by the in-process spawnRun
@@ -253,6 +277,11 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		BranchName: spec.BranchName,
 	})
 	if err != nil {
+		// The doc was pre-created above; without a runner it would sit
+		// as a phantom "running" run forever — mark it failed instead.
+		if uerr := s.store.UpdateRunStatus(context.Background(), runID, store.RunStatusFailed, "runner failed to start: "+err.Error()); uerr != nil {
+			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
+		}
 		s.dropRunLog(runID)
 		return nil, err
 	}

@@ -195,6 +195,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
+		inputs,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -305,6 +306,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
+		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -354,6 +356,7 @@ func (s *Service) spawnRun(
 	promote runtime.AttachmentPromoteFunc,
 	preset string,
 	modelOverrides []store.RunModelOverride,
+	precreateInputs map[string]any,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
 	lock, err := s.store.LockRun(context.Background(), runID)
@@ -367,6 +370,20 @@ func (s *Service) spawnRun(
 		_ = lock.Unlock()
 		s.dropRunLog(runID)
 		return nil, regErr
+	}
+
+	// Launch path only (nil on resume, whose doc already exists): persist
+	// the run doc BEFORE returning, so a GET /api/runs/{id} issued right
+	// after the launch response never 404s on the engine goroutine still
+	// being scheduled. The engine's runResolveDoc sees the running doc and
+	// claims it instead of re-creating.
+	if precreateInputs != nil {
+		if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs); err != nil {
+			s.manager.Deregister(runID)
+			_ = lock.Unlock()
+			s.dropRunLog(runID)
+			return nil, fmt.Errorf("runview: create run: %w", err)
+		}
 	}
 
 	var cancelTimeout context.CancelFunc
@@ -407,10 +424,21 @@ func (s *Service) spawnRun(
 
 	done := make(chan struct{})
 	go func() {
+		var paused bool
 		defer close(done)
 		defer s.unregisterRunEngine(runID)
 		defer s.dropRunLog(runID)
-		defer s.broker.CloseRun(runID)
+		// Keep WS subscribers across a pause: the goroutine exits on
+		// ErrRunPaused(Operator) like on any outcome, but the run is only
+		// dormant — the resume's goroutine publishes to the same broker
+		// runID, and dropping subscribers here loses the very events that
+		// announce the pause/resume (the human-gate form then lags until a
+		// reload). Terminal outcomes still close the stream.
+		defer func() {
+			if !paused {
+				s.broker.CloseRun(runID)
+			}
+		}()
 		defer s.manager.Deregister(runID)
 		defer func() { _ = lock.Unlock() }()
 		if cancelTimeout != nil {
@@ -430,6 +458,7 @@ func (s *Service) spawnRun(
 		defer stopBoard()
 
 		bodyErr := body(ctx, eng)
+		paused = errors.Is(bodyErr, runtime.ErrRunPaused) || errors.Is(bodyErr, runtime.ErrRunPausedOperator)
 		s.logRunOutcome(runID, bodyErr)
 		// Fire the run-completion webhook (no-op unless the run carries a
 		// callback URL). Uses a fresh, tenant-unfiltered ctx: the run ctx
