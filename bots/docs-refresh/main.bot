@@ -943,7 +943,7 @@ print(json.dumps({
 ## All inputs flow via env vars (JSON-encoded for arrays); the
 ## tool's argv is empty.
 tool build_manifest:
-  command: `WS={{input.workspace_dir}} DOC_FILES='{{!input.doc_files}}' CLI_COMMANDS='{{!input.cli_commands}}' CLI_FLAGS='{{!input.cli_flags}}' DIAG_CODES='{{!input.diagnostic_codes}}' CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} python3 -c "
+  command: `WS={{input.workspace_dir}} DOC_FILES={{input.doc_files}} CLI_COMMANDS={{input.cli_commands}} CLI_FLAGS={{input.cli_flags}} DIAG_CODES={{input.diagnostic_codes}} CODE_GLOBS={{input.code_scope_globs}} MAX_CANDIDATES={{input.max_drift_candidates}} MAX_CHUNK_DOCS={{input.max_review_chunk_docs}} python3 -c "
 import os, json, re, glob, subprocess
 ws = os.environ['WS']
 os.chdir(ws)
