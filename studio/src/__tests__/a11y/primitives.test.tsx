@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ReactNode } from "react";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 
 import { Button } from "@/components/ui/Button";
@@ -21,6 +21,11 @@ import { FieldLabel } from "@/components/ui/FieldLabel";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { TerminalCaret } from "@/components/ui/TerminalCaret";
 import CommandPalette from "@/components/shared/CommandPalette";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { Textarea } from "@/components/ui/Textarea";
+import { Drawer } from "@/components/ui/Drawer";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { setupMatchMedia, expectNoViolations } from "./axeHelpers";
 
 // Smoke a11y test for the shared UI primitives. Uses axe-core in
@@ -291,6 +296,82 @@ describe("a11y / primitives", () => {
       </main>,
     );
     await expectNoViolations(root, "TerminalCaret");
+  });
+
+  it("Table — caption, header scope, densities, skeleton", async () => {
+    const root = mount(
+      <main>
+        <Table caption="Personal access tokens">
+          <THead>
+            <Tr hover={false}>
+              <Th>Name</Th>
+              <Th>Created</Th>
+              <Th align="right">Actions</Th>
+            </Tr>
+          </THead>
+          <TBody>
+            <Tr>
+              <Td>CI bot</Td>
+              <Td>2026-07-10</Td>
+              <Td align="right">
+                <Button variant="ghost" size="sm">Revoke</Button>
+              </Td>
+            </Tr>
+          </TBody>
+        </Table>
+        <Table caption="Dense dashboard" density="sm" captionVisible>
+          <THead>
+            <Tr hover={false}>
+              <Th>Run</Th>
+              <Th>State</Th>
+            </Tr>
+          </THead>
+          <TBody>
+            <Tr className="bg-warning-soft">
+              <Td>abc123</Td>
+              <Td>running</Td>
+            </Tr>
+          </TBody>
+        </Table>
+        <TableSkeleton rows={2} cols={3} />
+      </main>,
+    );
+    // RGAA 5.4/5.5: the caption element must exist even when visually hidden.
+    expect(root.querySelectorAll("caption")).toHaveLength(2);
+    // RGAA 5.7: every header cell carries an explicit scope.
+    for (const th of root.querySelectorAll("th")) {
+      expect(th.getAttribute("scope")).toBe("col");
+    }
+    await expectNoViolations(root, "Table");
+  });
+
+  it("Drawer — Radix sheet with title/description", async () => {
+    const root = mount(
+      <Drawer open onOpenChange={() => {}} title="Bundle detail" description="Marketplace listing">
+        <p>Body</p>
+      </Drawer>,
+    );
+    // Radix portals the content to document.body — audit the whole document.
+    await expectNoViolations(document.body, "Drawer");
+    void root;
+  });
+
+  it("Input/Select/Textarea expose aria-invalid when error is set (RGAA 11.10)", async () => {
+    const root = mount(
+      <main>
+        <Input aria-label="Name" error />
+        <Input aria-label="Name ok" />
+        <Select aria-label="Team" error>
+          <option>a</option>
+        </Select>
+        <Textarea aria-label="Notes" error />
+      </main>,
+    );
+    expect(root.querySelector("input[aria-label='Name']")?.getAttribute("aria-invalid")).toBe("true");
+    expect(root.querySelector("input[aria-label='Name ok']")?.hasAttribute("aria-invalid")).toBe(false);
+    expect(root.querySelector("select")?.getAttribute("aria-invalid")).toBe("true");
+    expect(root.querySelector("textarea")?.getAttribute("aria-invalid")).toBe("true");
+    await expectNoViolations(root, "aria-invalid");
   });
 
   it("CommandPalette — dialog + combobox + listbox roles pass axe", async () => {

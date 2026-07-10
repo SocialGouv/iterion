@@ -43,6 +43,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           className={`${base} ${sizeClass[size]} ${ringClass} ${
             leadingIcon ? "pl-7" : ""
           } ${trailingIcon ? "pr-7" : ""} ${className}`.trim()}
+          aria-invalid={error || undefined}
           {...rest}
         />
         {trailingIcon && (
@@ -58,6 +59,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     <input
       ref={ref}
       className={`${base} ${sizeClass[size]} ${ringClass} ${className}`.trim()}
+      aria-invalid={error || undefined}
       {...rest}
     />
   );

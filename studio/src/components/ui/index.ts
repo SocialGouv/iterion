@@ -61,6 +61,12 @@ export type {
 export { Dialog, DialogClose } from "./Dialog";
 export type { DialogProps } from "./Dialog";
 
+export { Drawer, DrawerClose } from "./Drawer";
+export type { DrawerProps } from "./Drawer";
+
+export { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "./Table";
+export type { TableProps, ThProps, TrProps, TdProps, TableSkeletonProps } from "./Table";
+
 export { Badge } from "./Badge";
 export type { BadgeProps, BadgeVariant, BadgeSize } from "./Badge";
 

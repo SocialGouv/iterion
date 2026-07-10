@@ -13,6 +13,8 @@ export interface DialogProps {
   widthClass?: string;
   /** Hide the default close button (e.g., for confirm dialogs that own their actions). */
   hideClose?: boolean;
+  /** Stacking layer: "confirm" pins the dialog above other open modals (--z-confirm). */
+  stack?: "modal" | "confirm";
 }
 
 export function Dialog({
@@ -24,13 +26,18 @@ export function Dialog({
   footer,
   widthClass = "max-w-lg",
   hideClose = false,
+  stack = "modal",
 }: DialogProps) {
+  // "confirm" puts overlay AND content at --z-confirm; the content paints
+  // above its own overlay by DOM order, and both sit above --z-modal.
+  const overlayZ = stack === "confirm" ? "z-[var(--z-confirm)]" : "z-[var(--z-overlay)]";
+  const contentZ = stack === "confirm" ? "z-[var(--z-confirm)]" : "z-[var(--z-modal)]";
   return (
     <RD.Root open={open} onOpenChange={onOpenChange}>
       <RD.Portal>
-        <RD.Overlay className="fixed inset-0 z-[var(--z-overlay)] bg-scrim-modal animate-fade-in" />
+        <RD.Overlay className={`fixed inset-0 ${overlayZ} bg-scrim-modal animate-fade-in`} />
         <RD.Content
-          className={`fixed left-1/2 top-1/2 z-[var(--z-modal)] w-[calc(100vw-2rem)] ${widthClass} -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-default bg-surface-1 text-fg-default shadow-[var(--shadow-lg)] animate-fade-in`}
+          className={`fixed left-1/2 top-1/2 ${contentZ} w-[calc(100vw-2rem)] ${widthClass} -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-default bg-surface-1 text-fg-default shadow-[var(--shadow-lg)] animate-fade-in`}
         >
           {(title || !hideClose) && (
             <div className="flex items-start justify-between border-b border-border-default px-4 py-3">
