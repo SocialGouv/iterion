@@ -296,6 +296,9 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 	if step.Text != "" {
 		data["response_text"] = iterlog.Truncate(step.Text, maxFieldSize)
 	}
+	if step.Thinking != "" {
+		data["thinking"] = iterlog.Truncate(step.Thinking, maxFieldSize)
+	}
 
 	// At trace, include tool call details.
 	if h.logger.IsEnabled(iterlog.LevelTrace) && len(step.ToolCalls) > 0 {
@@ -367,7 +370,15 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		h.logger.Logf(iterlog.LevelDebug, "📊", "[%s#%d/claw] step %d: %d in / %d out tokens",
 			nodeID, step.Iteration, step.Number, step.InputTokens, step.OutputTokens)
 	}
-	if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {
+	// Thinking content folds under its header in the studio log view
+	// (LogBlock), so full reasoning text at INFO doesn't crowd the log.
+	// Metrics-only line kept as fallback when no text was captured.
+	if step.Thinking != "" {
+		h.logger.LogBlock(iterlog.LevelInfo, "🧠",
+			fmt.Sprintf("[%s#%d/claw] thinking step %d (~%d tok, %dms):",
+				nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs),
+			h.red(step.Thinking))
+	} else if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {
 		h.logger.Logf(iterlog.LevelInfo, "🧠", "[%s#%d/claw] step %d thinking: ~%d tok, %dms",
 			nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs)
 	}

@@ -927,6 +927,7 @@ func GenerateTextDirect(ctx context.Context, client api.APIClient, opts Generati
 			ToolCalls:    stepToolCalls,
 			FinishReason: finishReason,
 			Usage:        agg.usage,
+			Thinking:     agg.thinkingText,
 		}
 		steps = append(steps, stepResult)
 
@@ -1207,6 +1208,7 @@ func GenerateObjectDirect[T any](ctx context.Context, client api.APIClient, opts
 		ToolCalls:    toolCallsFromBlocks(agg.toolUses),
 		FinishReason: finishReason,
 		Usage:        agg.usage,
+		Thinking:     agg.thinkingText,
 	}
 
 	if opts.OnStepFinish != nil {

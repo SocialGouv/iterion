@@ -544,7 +544,11 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 		ms := int(time.Since(lastItemTime) / time.Millisecond)
 		meta.thinkingTokens += tokens
 		meta.thinkingMs += ms
-		b.Logger.Info("[%s#%d/claude-code] 🧠 thinking: ~%d tok, %dms", task.NodeID, task.Iteration, tokens, ms)
+		// LogBlock so the reasoning text folds under the header in the
+		// studio's run log (expand/collapse), like tool I/O and 💬 text.
+		b.Logger.LogBlock(iterlog.LevelInfo, "🧠",
+			fmt.Sprintf("[%s#%d/claude-code] thinking ~%d tok, %dms:", task.NodeID, task.Iteration, tokens, ms),
+			turnThinking)
 	}
 	// Capture the latest non-empty text block — the final assistant message
 	// is the model's intended answer (and where it puts the JSON).

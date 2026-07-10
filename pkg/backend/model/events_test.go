@@ -34,6 +34,26 @@ func TestToLLMStepInfo_PropagatesCacheTokens(t *testing.T) {
 	}
 }
 
+func TestToLLMStepInfo_PropagatesThinking(t *testing.T) {
+	step := StepResult{
+		Number:   1,
+		Thinking: "Let me reason about this.",
+		Usage:    Usage{ReasoningTokens: 7, ThinkingMs: 120},
+	}
+
+	info := toLLMStepInfo(step)
+
+	if info.Thinking != "Let me reason about this." {
+		t.Errorf("Thinking = %q, want the step's thinking text", info.Thinking)
+	}
+	if info.ReasoningTokens != 7 {
+		t.Errorf("ReasoningTokens = %d, want 7", info.ReasoningTokens)
+	}
+	if info.ThinkingMs != 120 {
+		t.Errorf("ThinkingMs = %d, want 120", info.ThinkingMs)
+	}
+}
+
 func TestToLLMResponseInfo_PropagatesCacheTokens(t *testing.T) {
 	resp := ResponseInfo{
 		Usage: Usage{
