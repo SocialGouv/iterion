@@ -1,3 +1,7 @@
+// Deliberately NOT built on ui/Dialog (Radix): this is a NON-modal
+// floating panel — the operator keeps interacting with the run view
+// behind it (no scrim, no focus trap, page stays live). Radix Dialog is
+// modal by design, so the hand-rolled shell here is intentional.
 import { useEffect, useRef, useState } from "react";
 import {
   ChatBubbleIcon,

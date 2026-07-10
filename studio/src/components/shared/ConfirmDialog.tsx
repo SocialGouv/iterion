@@ -1,7 +1,7 @@
-import { useEffect, useRef, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useRef, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
 
 interface SecondaryAction {
   label: string;
@@ -24,6 +24,10 @@ interface Props {
   secondaryAction?: SecondaryAction;
 }
 
+// Thin wrapper over ui/Dialog (Radix): focus trap, focus restore, Escape
+// and overlay-click dismissal all come from Radix. stack="confirm" pins
+// overlay + content at --z-confirm so the dialog always stacks above a
+// parent modal that opened it.
 export default function ConfirmDialog({
   open,
   title,
@@ -35,87 +39,38 @@ export default function ConfirmDialog({
   secondaryAction,
 }: Props) {
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const previouslyFocused = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    // Remember what had focus, move focus to Cancel (least-destructive),
-    // and restore it on close so keyboard users aren't dumped at <body>.
-    previouslyFocused.current = document.activeElement as HTMLElement | null;
-    cancelRef.current?.focus();
-    return () => previouslyFocused.current?.focus?.();
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onCancel();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      // Focus trap: keep Tab / Shift+Tab cycling inside the dialog so
-      // focus can't wander into the (visually inert) background DOM.
-      const root = dialogRef.current;
-      if (!root) return;
-      const focusable = Array.from(
-        root.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((el) => !el.hasAttribute("disabled"));
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-      const active = document.activeElement as HTMLElement | null;
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      } else if (active && !root.contains(active)) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [open, onCancel]);
-
-  if (!open) return null;
 
   // Strings render inside a <p> for the historical layout; ReactNode
   // bodies (multi-paragraph, inline strong, etc) render inside a div
   // so callers can supply their own structure.
   const messageNode =
     typeof message === "string" ? (
-      <p className="text-xs text-fg-muted mb-4">{message}</p>
+      <p className="text-xs text-fg-muted">{message}</p>
     ) : (
-      <div className="text-xs text-fg-muted mb-4 space-y-2">{message}</div>
+      <div className="text-xs text-fg-muted space-y-2">{message}</div>
     );
 
-  // Portal to document.body and pin z-[var(--z-confirm)] so the dialog
-  // always stacks above a parent modal that opened it. The semantic
-  // ladder lives in app.css @theme.
-  const content = (
-    <div className="fixed inset-0 z-[var(--z-confirm)] bg-scrim-modal flex items-center justify-center">
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className="bg-surface-1 border border-border-strong rounded-lg p-4 min-w-[300px] max-w-[440px]"
-      >
-        <h3 className="text-sm font-bold text-fg-default mb-2">{title}</h3>
-        {messageNode}
-        <div className="flex justify-end gap-2">
-          <Button
-            ref={cancelRef}
-            variant="secondary"
-            size="sm"
-            onClick={onCancel}
-          >
+  return (
+    <Dialog
+      open={open}
+      // Radix reports Escape and overlay clicks as onOpenChange(false);
+      // both mean "don't do it" here.
+      onOpenChange={(v) => {
+        if (!v) onCancel();
+      }}
+      title={title}
+      stack="confirm"
+      hideClose
+      widthClass="max-w-[440px]"
+      // Initial focus lands on Cancel (least-destructive), not the
+      // first tabbable element Radix would pick.
+      onOpenAutoFocus={(e) => {
+        e.preventDefault();
+        cancelRef.current?.focus();
+      }}
+      footer={
+        <>
+          <Button ref={cancelRef} variant="secondary" size="sm" onClick={onCancel}>
             Cancel
           </Button>
           {secondaryAction && (
@@ -134,11 +89,10 @@ export default function ConfirmDialog({
           >
             {confirmLabel}
           </Button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      {messageNode}
+    </Dialog>
   );
-
-  if (typeof document === "undefined") return content;
-  return createPortal(content, document.body);
 }

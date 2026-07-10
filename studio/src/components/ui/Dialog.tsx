@@ -15,6 +15,9 @@ export interface DialogProps {
   hideClose?: boolean;
   /** Stacking layer: "confirm" pins the dialog above other open modals (--z-confirm). */
   stack?: "modal" | "confirm";
+  /** Radix open-autofocus hook — call event.preventDefault() and focus a
+   *  specific element to override the default focus-first-tabbable. */
+  onOpenAutoFocus?: (event: Event) => void;
 }
 
 export function Dialog({
@@ -27,6 +30,7 @@ export function Dialog({
   widthClass = "max-w-lg",
   hideClose = false,
   stack = "modal",
+  onOpenAutoFocus,
 }: DialogProps) {
   // "confirm" puts overlay AND content at --z-confirm; the content paints
   // above its own overlay by DOM order, and both sit above --z-modal.
@@ -38,6 +42,7 @@ export function Dialog({
         <RD.Overlay className={`fixed inset-0 ${overlayZ} bg-scrim-modal animate-fade-in`} />
         <RD.Content
           className={`fixed left-1/2 top-1/2 ${contentZ} w-[calc(100vw-2rem)] ${widthClass} -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border-default bg-surface-1 text-fg-default shadow-[var(--shadow-lg)] animate-fade-in`}
+          onOpenAutoFocus={onOpenAutoFocus}
         >
           {(title || !hideClose) && (
             <div className="flex items-start justify-between border-b border-border-default px-4 py-3">

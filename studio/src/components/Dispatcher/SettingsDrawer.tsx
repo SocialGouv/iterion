@@ -60,7 +60,7 @@ export default function SettingsDrawer({ open, onClose, onSaved }: Props) {
   return (
     <RD.Root open={open} onOpenChange={(o) => !o && onClose()}>
       <RD.Portal>
-        <RD.Overlay className="fixed inset-0 z-[var(--z-overlay)] bg-scrim-popover animate-fade-in" />
+        <RD.Overlay className="fixed inset-0 z-[var(--z-overlay)] bg-scrim-modal animate-fade-in" />
         <RD.Content
           aria-describedby={undefined}
           className="fixed inset-y-0 right-0 z-[var(--z-modal)] flex w-full max-w-3xl flex-col bg-surface-0 text-fg-default shadow-[var(--shadow-lg)]"

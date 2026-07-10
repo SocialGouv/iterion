@@ -29,6 +29,10 @@ function setup(extra?: Record<string, unknown>) {
   };
 }
 
+// Focus trapping and focus restore are owned by Radix Dialog (ui/Dialog);
+// these tests assert the ConfirmDialog contract layered on top: initial
+// focus on Cancel, Escape → onCancel, labelled modal semantics, and the
+// action wiring / button order.
 describe("ConfirmDialog", () => {
   it("moves focus to Cancel (least-destructive) on open", () => {
     const { cancel } = setup();
@@ -37,37 +41,43 @@ describe("ConfirmDialog", () => {
 
   it("Escape calls onCancel", () => {
     const { onCancel } = setup();
-    fireEvent.keyDown(window, { key: "Escape" });
+    // Radix's escape handler hangs off the document tree, not window —
+    // dispatch from the focused element like a real keypress would.
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("exposes a labelled modal dialog", () => {
+  it("exposes a labelled dialog with the title as accessible name", () => {
     setup();
-    const dialog = screen.getByRole("dialog");
-    expect(dialog.getAttribute("aria-modal")).toBe("true");
-    expect(dialog.getAttribute("aria-label")).toBe("Delete node?");
+    // Radix conveys modality by aria-hiding the rest of the page rather
+    // than aria-modal; the labelled dialog role is the contract here.
+    const dialog = screen.getByRole("dialog", { name: "Delete node?" });
+    expect(dialog).toBeTruthy();
   });
 
-  it("traps Tab inside the dialog (last → first)", () => {
-    const { cancel, confirm } = setup();
-    confirm.focus();
-    expect(document.activeElement).toBe(confirm);
-    fireEvent.keyDown(window, { key: "Tab" });
-    expect(document.activeElement).toBe(cancel);
+  it("confirm button calls onConfirm", () => {
+    const { onConfirm, confirm } = setup();
+    fireEvent.click(confirm);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it("traps Shift+Tab inside the dialog (first → last)", () => {
-    const { cancel, confirm } = setup();
-    cancel.focus();
-    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
-    expect(document.activeElement).toBe(confirm);
+  it("cancel button calls onCancel", () => {
+    const { onCancel, cancel } = setup();
+    fireEvent.click(cancel);
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("pulls stray focus back into the dialog on Tab", () => {
-    const { cancel } = setup();
-    // Simulate focus having escaped to the background (e.g. via a click).
-    document.body.focus();
-    fireEvent.keyDown(window, { key: "Tab" });
-    expect(document.activeElement).toBe(cancel);
+  it("renders the secondary action between Cancel and confirm", () => {
+    const onSecondary = vi.fn();
+    setup({
+      secondaryAction: { label: "Keep copy", onClick: onSecondary },
+    });
+    const labels = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(labels.indexOf("Cancel")).toBeLessThan(labels.indexOf("Keep copy"));
+    expect(labels.indexOf("Keep copy")).toBeLessThan(labels.indexOf("Delete"));
+    fireEvent.click(screen.getByRole("button", { name: "Keep copy" }));
+    expect(onSecondary).toHaveBeenCalledTimes(1);
   });
 });
