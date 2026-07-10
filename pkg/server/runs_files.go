@@ -183,6 +183,20 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		// failure mode as a removed worktree from the studio's POV.
 	}
 
+	// Persisted-metadata fallback: a cloud run's worktree lives in the
+	// runner pod and is gone by the time this server pod serves the panel.
+	// The runner recorded the branch-range modified-files list into the
+	// store before the clone was wiped (runner.recordRunGitMeta); serve it.
+	// The persisted view is the committed branch range (files vs base) — it
+	// cannot reconstruct uncommitted state, so a strict `uncommitted`
+	// request still degrades to worktree_gone below; every other mode
+	// (default, branch, combined) is answerable from the snapshot.
+	if requested != modeUncommitted {
+		if s.servePersistedFiles(w, r, run, requested) {
+			return
+		}
+	}
+
 	// Past this point the worktree is gone (or never was a git repo).
 	// The uncommitted and combined views both need a worktree to read
 	// pending changes: signal that to the UI so it can disable the
@@ -221,6 +235,48 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		Available: false,
 		Reason:    "not_git_repo",
 	})
+}
+
+// servePersistedFiles serves the modified-files list from the run's
+// persisted git-metadata snapshot (RunGitMetaStore). Returns true when it
+// handled the response. This is the cloud fallback for a run whose worktree
+// is gone: the runner recorded the branch-range diff (files vs base) into
+// the store. The snapshot represents the committed branch view, so for a
+// `combined` request the entries are tagged lifecycle=committed (there is
+// no uncommitted set to merge). A snapshot with zero files is a valid
+// "no changes" answer (Available=true), not an empty-state error.
+func (s *Server) servePersistedFiles(w http.ResponseWriter, r *http.Request, run *store.Run, requested fileMode) bool {
+	gs := store.AsRunGitMetaStore(s.runs.RunStore())
+	if gs == nil {
+		return false
+	}
+	meta, err := gs.LoadRunGitMeta(r.Context(), run.ID)
+	if err != nil || meta == nil {
+		return false
+	}
+	files := meta.Files
+	if files == nil {
+		files = []gitlib.FileStatus{}
+	}
+	effective := modeBranch
+	if requested == modeCombined {
+		effective = modeCombined
+		tagged := make([]gitlib.FileStatus, len(files))
+		for i, f := range files {
+			f.Lifecycle = lifecycleCommitted
+			tagged[i] = f
+		}
+		files = tagged
+	}
+	s.writeJSONFor(w, r, runFilesResponse{
+		WorkDir:   run.WorkDir,
+		Worktree:  run.Worktree,
+		Live:      false,
+		Mode:      effective,
+		Files:     files,
+		Available: true,
+	})
+	return true
 }
 
 // liveFiles returns the live-worktree file list for the requested mode.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -52,17 +53,11 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
-	if run.WorkDir == "" || run.BaseCommit == "" {
-		s.writeJSONFor(w, r, runCommitsResponse{
-			Commits:   []gitlib.CommitInfo{},
-			Available: false,
-			Reason:    reasonForCommits(run),
-		})
-		return
-	}
 
-	// Live-worktree path: log against HEAD of the worktree directory.
-	if dirExists(run.WorkDir) {
+	// Live-worktree path: log against HEAD of the worktree directory. Kept
+	// primary so local/studio runs (which can also show uncommitted state
+	// elsewhere) always read the on-disk truth.
+	if run.WorkDir != "" && run.BaseCommit != "" && dirExists(run.WorkDir) {
 		commits, logErr := gitlib.Log(run.WorkDir, run.BaseCommit, "HEAD")
 		if logErr == nil {
 			head, _ := gitlib.RevParseHead(run.WorkDir)
@@ -82,6 +77,16 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 		}
 		// Fall through on ErrNotGitRepo (worktree dir exists but is no
 		// longer a git checkout — same shape as removed worktree).
+	}
+
+	// Persisted-metadata fallback: a cloud run's worktree lives in the
+	// runner pod and is gone by the time the server pod serves this. The
+	// runner recorded the commit list into the store while it still had the
+	// clone (see runner.recordRunGitMeta); serve it here. This is checked
+	// before the local finalized-branch path because cloud runs never have a
+	// resolvable repo root on the server pod.
+	if s.servePersistedCommits(w, r, run) {
+		return
 	}
 
 	// Finalized-run path: log against the persisted storage branch.
@@ -105,8 +110,42 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 	s.writeJSONFor(w, r, runCommitsResponse{
 		Commits:   []gitlib.CommitInfo{},
 		Available: false,
-		Reason:    "not_git_repo",
+		Reason:    reasonForCommits(run),
 	})
+}
+
+// servePersistedCommits serves the commits list from the run's persisted
+// git-metadata snapshot (RunGitMetaStore) when one exists. Returns true
+// when it handled the response. This is the cloud fallback: the runner
+// recorded the commit list before its pod's clone was wiped, so the
+// server pod — which has no worktree — can still render the Commits panel.
+// A snapshot with zero commits is a valid "no commits" answer
+// (Available=true, Count=0), not an empty-state error.
+func (s *Server) servePersistedCommits(w http.ResponseWriter, r *http.Request, run *store.Run) bool {
+	gs := store.AsRunGitMetaStore(s.runs.RunStore())
+	if gs == nil {
+		return false
+	}
+	meta, err := gs.LoadRunGitMeta(r.Context(), run.ID)
+	if err != nil || meta == nil {
+		return false
+	}
+	commits := meta.Commits
+	if commits == nil {
+		commits = []gitlib.CommitInfo{}
+	}
+	s.writeJSONFor(w, r, runCommitsResponse{
+		Commits:    commits,
+		Count:      len(commits),
+		BaseCommit: meta.BaseCommit,
+		HeadCommit: meta.HeadCommit,
+		// Repo is absent on the server pod; BuildSquashMessageFromCommits
+		// degrades to a commit-subject summary (single-commit body recovery
+		// needs the repo, which cloud finalize handles separately).
+		DefaultSquashMessage: runtime.BuildSquashMessageFromCommits("", meta.HeadCommit, runtime.RunDisplayName(run), commits),
+		Available:            true,
+	})
+	return true
 }
 
 // reasonForCommits chooses the empty-state reason for the studio when the
@@ -173,6 +212,12 @@ func (s *Server) handleGetRunCommit(w http.ResponseWriter, r *http.Request) {
 	}
 	repo, info, ok := s.resolveRunCommit(run, rawSHA)
 	if !ok {
+		// Cloud fallback: no live/finalized repo, but the runner recorded
+		// the per-commit file list into the store before its clone vanished.
+		if detail, handled := s.persistedCommitDetail(r.Context(), run, rawSHA); handled {
+			s.writeJSONFor(w, r, detail)
+			return
+		}
 		s.writeJSONFor(w, r, runCommitDetailResponse{
 			Files:     []gitlib.FileStatus{},
 			Available: false,
@@ -237,6 +282,55 @@ func (s *Server) handleGetRunCommitFileDiff(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.writeJSONFor(w, r, payload)
+}
+
+// persistedCommitDetail builds a commit-detail response from the run's
+// persisted git-metadata snapshot. Returns (detail, true) when the SHA
+// resolves to a commit the run recorded; (nil-ish, false) otherwise. Used
+// as the cloud fallback for GET /commits/{sha} when no repo is reachable.
+// Parent is derived from the recorded ordering (commits are oldest-first,
+// so the parent within the run range is the previous commit, or BaseCommit
+// for the first) — sufficient for the studio header; diff CONTENT is a
+// separate best-effort surface.
+func (s *Server) persistedCommitDetail(ctx context.Context, run *store.Run, rawSHA string) (runCommitDetailResponse, bool) {
+	gs := store.AsRunGitMetaStore(s.runs.RunStore())
+	if gs == nil {
+		return runCommitDetailResponse{}, false
+	}
+	meta, err := gs.LoadRunGitMeta(ctx, run.ID)
+	if err != nil || meta == nil {
+		return runCommitDetailResponse{}, false
+	}
+	idx := -1
+	for i, c := range meta.Commits {
+		if equalSHA(c.SHA, rawSHA) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return runCommitDetailResponse{}, false
+	}
+	info := meta.Commits[idx]
+	parent := meta.BaseCommit
+	if idx > 0 {
+		parent = meta.Commits[idx-1].SHA
+	}
+	files := meta.CommitFiles[info.SHA]
+	if files == nil {
+		files = []gitlib.FileStatus{}
+	}
+	return runCommitDetailResponse{
+		SHA:       info.SHA,
+		Short:     info.Short,
+		Parent:    parent,
+		Subject:   info.Subject,
+		Author:    info.Author,
+		Email:     info.Email,
+		Date:      info.Date.Format("2006-01-02T15:04:05Z07:00"),
+		Files:     files,
+		Available: true,
+	}, true
 }
 
 // resolveRunCommit picks the right repo (live worktree or main repo) and
