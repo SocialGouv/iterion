@@ -20,7 +20,7 @@ import (
 // has no repo to inspect, so the runner records this metadata into the
 // store (Mongo in cloud, filesystem locally) while the worktree still
 // exists, and the handlers fall back to it when the working directory is
-// gone. See docs/adr/060-persist-run-git-metadata.md.
+// gone. See docs/adr/067-persist-run-git-metadata-for-cloud-panels.md.
 //
 // It is a whole-snapshot overwrite (not append-only): the runner
 // recomputes and re-saves it on each commit-in-stride and again at
