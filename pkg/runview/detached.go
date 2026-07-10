@@ -201,7 +201,7 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 		// publish to the same broker runID).
 		paused := false
 		if r, err := s.store.LoadRun(store.WithoutTenantFilter(context.Background()), spec.RunID); err == nil {
-			paused = r.Status == store.RunStatusPausedWaitingHuman || r.Status == store.RunStatusPausedOperator
+			paused = r.Status.IsPaused()
 		}
 		if !paused {
 			s.broker.CloseRun(spec.RunID)

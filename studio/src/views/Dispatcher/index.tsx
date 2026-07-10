@@ -251,17 +251,10 @@ export default function DispatcherView() {
   const skips = snap.dispatch_skips ?? [];
   // With no dispatcher attached (never started / no config), GET /state
   // returns the manager's idle stub — a Snapshot with only generated_at
-  // set. All-zero polling/stall/slots together with empty queues is that
-  // stub's signature: a real configured dispatcher always carries a
-  // non-zero polling interval, so a configured-but-idle-queue dispatcher
-  // (zeros only in running/retries) is NOT matched.
-  const idleStub =
-    !snap.tracker &&
-    snap.polling_interval_seconds === 0 &&
-    snap.stall_timeout_seconds === 0 &&
-    (!snap.slots || snap.slots.global_max === 0) &&
-    running.length === 0 &&
-    retries.length === 0;
+  // set. The manager serves the stub exactly when its lifecycle state is
+  // not running/paused, so gate the empty state on the polled status
+  // (`dispatcherAttached` above) rather than fingerprinting zero fields.
+  const idleStub = !dispatcherAttached;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -430,11 +423,9 @@ function DispatchSkipsTable({
         className="min-w-full"
       >
         <THead>
-          <tr>
-            <Th className="whitespace-nowrap">Issue</Th>
-            <Th>Bot</Th>
-            <Th>Reason</Th>
-          </tr>
+          <Th className="whitespace-nowrap">Issue</Th>
+          <Th>Bot</Th>
+          <Th>Reason</Th>
         </THead>
         <TBody>
           {rows.map((s) => (

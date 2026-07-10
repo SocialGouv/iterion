@@ -1,3 +1,4 @@
+import { is404 } from "@/api/client";
 import { errorMessage } from "@/lib/errorHints";
 import { readJSONFlag, writeJSONFlag, removeFlag } from "@/lib/localStorageFlag";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -176,9 +177,9 @@ export function useWatchList(runId: string | null): UseWatchListResult {
           const msg = errorMessage(e) ?? String(e);
           // A 404 means the issue doesn't exist on this tracker (a
           // deleted card, or a malformed id from an older run). Stop
-          // polling it — same detection idiom as useRunSnapshot — but
+          // polling it — same detection helper as useRunSnapshot — but
           // keep the byId entry so the failure stays visible.
-          if (msg.includes("API error 404")) {
+          if (is404(e)) {
             stoppedIdsRef.current.add(id);
             const timer = pollers.get(id);
             if (timer !== undefined) {

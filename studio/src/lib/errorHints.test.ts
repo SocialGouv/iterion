@@ -35,6 +35,19 @@ describe("errorHint", () => {
     { input: "fork/exec /usr/bin/x: no such file or directory", title: "Tool not installed" },
     { input: "HTTP 404: not found", title: "Not found" },
     { input: "issue not found", title: "Not found" },
+    // Git revision-range failures arrive wrapped in an "API error 500"
+    // envelope — the git rule must win over the generic 5xx rule
+    // (ordering guard).
+    {
+      input:
+        "API error 500: git log: git log -z --reverse --pretty=format:%H exit status 128 (stderr: fatal: Invalid revision range c2390502..07c78ea)",
+      title: "Run branch unavailable",
+    },
+    {
+      input:
+        "fatal: ambiguous argument 'iterion/run/x': unknown revision or path not in the working tree",
+      title: "Run branch unavailable",
+    },
     { input: "HTTP 500: internal server error", title: "Server error" },
     { input: "502 Bad Gateway", title: "Server error" },
     { input: "cannot edit binary file", title: "Binary file" },

@@ -82,12 +82,10 @@ export default function RetriesTable({
       ) : (
         <Table caption="Failed dispatches queued for retry" density="sm" className="min-w-full">
           <THead>
-            <tr>
-              <Th className="whitespace-nowrap">Issue</Th>
-              <Th>Attempt</Th>
-              <Th className="whitespace-nowrap">Due</Th>
-              <Th>Last error</Th>
-            </tr>
+            <Th className="whitespace-nowrap">Issue</Th>
+            <Th>Attempt</Th>
+            <Th className="whitespace-nowrap">Due</Th>
+            <Th>Last error</Th>
           </THead>
           <TBody>
             {rows!.map((r) => {

@@ -229,7 +229,7 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 				return nil
 			case st.IsTerminal():
 				return fmt.Errorf("run %s ended %s", runID, st)
-			case st == store.RunStatusPausedWaitingHuman || st == store.RunStatusPausedOperator:
+			case st.IsPaused():
 				// Parked on a human/operator gate — stop waiting; the card
 				// goes to blocked and the operator resumes the run.
 				return fmt.Errorf("run %s paused (%s)", runID, st)

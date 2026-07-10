@@ -96,15 +96,13 @@ export default function TokensPanel() {
       ) : (
         <Table caption="Personal access tokens">
           <THead>
-            <tr>
-              <Th>Name</Th>
-              <Th>Team</Th>
-              <Th>Last4</Th>
-              <Th>Created</Th>
-              <Th>Expires</Th>
-              <Th>Last used</Th>
-              <Th align="right">Actions</Th>
-            </tr>
+            <Th>Name</Th>
+            <Th>Team</Th>
+            <Th>Last4</Th>
+            <Th>Created</Th>
+            <Th>Expires</Th>
+            <Th>Last used</Th>
+            <Th align="right">Actions</Th>
           </THead>
           <TBody>
             {tokens.map((t) => (

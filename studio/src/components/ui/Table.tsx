@@ -75,19 +75,28 @@ export function Table({
   );
 }
 
-export function THead({ children }: { children: ReactNode }) {
+export function THead({
+  className = "",
+  children,
+}: {
+  /** Styles the header row (e.g. bg-surface-1 header fills). */
+  className?: string;
+  children: ReactNode;
+}) {
   return (
     <thead className="text-xs uppercase tracking-wider text-fg-muted">
-      {children}
+      <tr className={className}>{children}</tr>
     </thead>
   );
 }
 
 export interface ThProps extends ThHTMLAttributes<HTMLTableCellElement> {
   align?: Align;
+  /** Screen-reader-only label for visually empty header cells (e.g. action columns). */
+  srLabel?: string;
 }
 
-export function Th({ align = "left", scope = "col", className = "", children, ...rest }: ThProps) {
+export function Th({ align = "left", scope = "col", className = "", srLabel, children, ...rest }: ThProps) {
   const density = useContext(DensityContext);
   return (
     <th
@@ -95,7 +104,7 @@ export function Th({ align = "left", scope = "col", className = "", children, ..
       className={`${headPad[density]} font-medium ${alignClass[align]} ${className}`.trim()}
       {...rest}
     >
-      {children}
+      {srLabel && !children ? <span className="sr-only">{srLabel}</span> : children}
     </th>
   );
 }

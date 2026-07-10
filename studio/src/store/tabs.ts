@@ -98,6 +98,21 @@ function generateId(): string {
   return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// UNTITLED_TAB_LABEL is the default label newEditorTab assigns to a
+// fresh unbound tab. Exported (with isDefaultTabLabel) as the single
+// source of truth for "this tab never named a real file" checks —
+// EditorTabHost's lost-binding detection and useDocumentTitle's
+// fallback both key off it.
+export const UNTITLED_TAB_LABEL = "untitled.bot";
+
+// isDefaultTabLabel reports whether a label is one a fresh unbound
+// editor tab can carry (newEditorTab's default, or defaultLabelFor
+// ("editor", {})). Any OTHER label on a tab without a file param names
+// a real document the tab can no longer reach.
+export function isDefaultTabLabel(label: string): boolean {
+  return label === UNTITLED_TAB_LABEL || label === "Editor";
+}
+
 function defaultLabelFor(kind: TabKind, params: Record<string, string>): string {
   if (kind === "editor") {
     return params.file ? (params.file.split(/[/\\]/).pop() ?? "Editor") : "Editor";
@@ -178,7 +193,7 @@ export const useTabsStore = create<TabsState>()(
           id,
           kind: "editor",
           params: {},
-          label: label ?? "untitled.bot",
+          label: label ?? UNTITLED_TAB_LABEL,
           projectKey: get().currentProjectKey ?? undefined,
           hydrated: true,
         };

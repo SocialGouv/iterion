@@ -391,14 +391,12 @@ function WorkflowTable({ workflows, colors }: WorkflowTableProps) {
       density="sm"
     >
       <THead>
-        <Tr hover={false} className="border-t-0">
-          <Th>Workflow</Th>
-          <Th align="right">Runs</Th>
-          <Th>Status</Th>
-          <Th align="right">Fail rate</Th>
-          <Th align="right">P50 / P95</Th>
-          <Th align="right">Cost</Th>
-        </Tr>
+        <Th>Workflow</Th>
+        <Th align="right">Runs</Th>
+        <Th>Status</Th>
+        <Th align="right">Fail rate</Th>
+        <Th align="right">P50 / P95</Th>
+        <Th align="right">Cost</Th>
       </THead>
       <TBody>
         {workflows.map((w) => {

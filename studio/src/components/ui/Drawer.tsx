@@ -67,5 +67,3 @@ export function Drawer({
     </RD.Root>
   );
 }
-
-export const DrawerClose = RD.Close;

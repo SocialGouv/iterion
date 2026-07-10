@@ -174,14 +174,12 @@ function FieldsViewInner() {
           caption="Custom fields on the board schema"
           className="border border-border-subtle"
         >
-          <THead>
-            <tr className="bg-surface-1">
-              <Th>Name</Th>
-              <Th className="w-24">Type</Th>
-              <Th className="w-20">Required</Th>
-              <Th>Values</Th>
-              <Th className="w-56">Actions</Th>
-            </tr>
+          <THead className="bg-surface-1">
+            <Th>Name</Th>
+            <Th className="w-24">Type</Th>
+            <Th className="w-20">Required</Th>
+            <Th>Values</Th>
+            <Th className="w-56">Actions</Th>
           </THead>
           <TBody>
             {fields.map((f, i) => (

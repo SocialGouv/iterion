@@ -181,13 +181,11 @@ export default function OrgsAdminPage() {
           ) : (
             <Table caption="Organizations">
               <THead>
-                <tr>
-                  <Th>Name</Th>
-                  <Th>Slug</Th>
-                  <Th>Status</Th>
-                  <Th>Memory quota</Th>
-                  <Th align="right">Manage</Th>
-                </tr>
+                <Th>Name</Th>
+                <Th>Slug</Th>
+                <Th>Status</Th>
+                <Th>Memory quota</Th>
+                <Th align="right">Manage</Th>
               </THead>
               <TBody>
                 {orgs.map((o) => {

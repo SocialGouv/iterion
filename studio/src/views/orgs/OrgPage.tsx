@@ -284,14 +284,10 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
         <h3 className="font-medium mb-2">Members</h3>
         <Table caption="Organization members">
           <THead>
-            <tr>
-              <Th>Email</Th>
-              <Th>Name</Th>
-              <Th>Org role</Th>
-              <Th align="right">
-                <span className="sr-only">Actions</span>
-              </Th>
-            </tr>
+            <Th>Email</Th>
+            <Th>Name</Th>
+            <Th>Org role</Th>
+            <Th align="right" srLabel="Actions" />
           </THead>
           <TBody>
             {members.map((m) => (
@@ -336,14 +332,10 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
           ) : (
             <Table caption="Pending organization invitations">
               <THead>
-                <tr>
-                  <Th>Email</Th>
-                  <Th>Role</Th>
-                  <Th>Expires</Th>
-                  <Th align="right">
-                    <span className="sr-only">Actions</span>
-                  </Th>
-                </tr>
+                <Th>Email</Th>
+                <Th>Role</Th>
+                <Th>Expires</Th>
+                <Th align="right" srLabel="Actions" />
               </THead>
               <TBody>
                 {invs.map((i) => (

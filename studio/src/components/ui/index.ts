@@ -61,7 +61,7 @@ export type {
 export { Dialog, DialogClose } from "./Dialog";
 export type { DialogProps } from "./Dialog";
 
-export { Drawer, DrawerClose } from "./Drawer";
+export { Drawer } from "./Drawer";
 export type { DrawerProps } from "./Drawer";
 
 export { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "./Table";

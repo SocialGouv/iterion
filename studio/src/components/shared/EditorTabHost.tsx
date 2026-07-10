@@ -14,22 +14,14 @@ import {
   getOrCreateSelectionStore,
 } from "@/store/selection";
 import * as api from "@/api/client";
-import { useTabsStore } from "@/store/tabs";
+import { isDefaultTabLabel, useTabsStore } from "@/store/tabs";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 import { botDisplayLabel } from "@/lib/botLabel";
 import { toastError } from "@/lib/errorHints";
-import { Button } from "@/components/ui";
+import { Button, EmptyState } from "@/components/ui";
 
 const EditorView = lazy(() => import("@/components/EditorView"));
-
-// Labels a fresh unbound tab can carry (newEditorTab default and
-// defaultLabelFor("editor", {})). A restored tab with one of these and no
-// file param is a legitimate untitled scaffold; any OTHER label without a
-// file param means the tab lost its document binding and must show an
-// explicit error instead of silently presenting a scaffold under the old
-// name (data-loss hazard: the user would edit it believing it's their bot).
-const UNTITLED_LABELS = new Set(["untitled.bot", "Editor"]);
 
 type LoadState = "ready" | "loading" | "error";
 
@@ -112,10 +104,13 @@ export default function EditorTabHost({ tabId, file }: Props) {
 
   // A tab restored from localStorage whose label names a file but whose
   // params carry none can't reload its document — surface that instead
-  // of the scaffold. (In-session tabs mid-open — example fork, toolbar
-  // Open — legitimately have no file param yet; `restored` excludes them.)
+  // of the scaffold (data-loss hazard: the user would edit a fresh
+  // scaffold believing it's their bot). A default label (isDefaultTabLabel)
+  // marks a legitimate untitled scaffold; in-session tabs mid-open —
+  // example fork, toolbar Open — legitimately have no file param yet and
+  // are excluded by `restored`.
   const lostBinding =
-    !file && !!tab?.restored && !!tab.label && !UNTITLED_LABELS.has(tab.label);
+    !file && !!tab?.restored && !!tab.label && !isDefaultTabLabel(tab.label);
 
   let body;
   if (lostBinding) {
@@ -169,39 +164,42 @@ function TabLoadErrorState({
   onRetry?: () => void;
 }) {
   const [, setLocation] = useLocation();
+  const closeButton = (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={() => {
+        useTabsStore.getState().closeTab(tabId);
+        const next = useTabsStore.getState();
+        const newActive = next.tabs.find(
+          (t) => t.id === next.activeEditorTabId,
+        );
+        const f = newActive?.params.file ?? "";
+        setLocation(f ? `/editor?file=${encodeURIComponent(f)}` : "/editor", {
+          replace: true,
+        });
+      }}
+    >
+      Close tab
+    </Button>
+  );
   return (
-    <div className="h-full flex items-center justify-center p-6 bg-surface-0">
-      <div className="max-w-sm text-center space-y-3">
-        <ExclamationTriangleIcon className="w-6 h-6 mx-auto text-warning" />
-        <h2 className="text-sm font-semibold text-fg-default">{title}</h2>
-        <p className="text-xs text-fg-muted">{message}</p>
-        <div className="flex items-center justify-center gap-2 pt-1">
-          {onRetry && (
-            <Button variant="primary" size="sm" onClick={onRetry}>
-              Retry
-            </Button>
-          )}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              useTabsStore.getState().closeTab(tabId);
-              const next = useTabsStore.getState();
-              const newActive = next.tabs.find(
-                (t) => t.id === next.activeEditorTabId,
-              );
-              const f = newActive?.params.file ?? "";
-              setLocation(
-                f ? `/editor?file=${encodeURIComponent(f)}` : "/editor",
-                { replace: true },
-              );
-            }}
-          >
-            Close tab
+    <EmptyState
+      className="bg-surface-0"
+      icon={<ExclamationTriangleIcon className="h-6 w-6 text-warning" />}
+      title={title}
+      message={message}
+      action={
+        onRetry ? (
+          <Button variant="primary" size="sm" onClick={onRetry}>
+            Retry
           </Button>
-        </div>
-      </div>
-    </div>
+        ) : (
+          closeButton
+        )
+      }
+      secondaryAction={onRetry ? closeButton : undefined}
+    />
   );
 }
 

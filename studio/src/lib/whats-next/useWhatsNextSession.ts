@@ -95,6 +95,24 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // into the composer after the run closed) reuses the same scope.
   const lastVarsRef = useRef<Record<string, string> | null>(null);
 
+  // Hook-lifetime abort handle for the launch path's getRunWithRetry:
+  // without it, an abandoned launch (user navigates away mid-launch)
+  // keeps its 404-backoff loop ticking against the network for up to
+  // ~5s after unmount. Created per mount inside the effect (not in the
+  // ref initializer) so StrictMode's simulated unmount doesn't leave a
+  // permanently-aborted controller behind for the real mount.
+  const lifetimeAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetimeAbortRef.current = controller;
+    return () => {
+      controller.abort();
+      if (lifetimeAbortRef.current === controller) {
+        lifetimeAbortRef.current = null;
+      }
+    };
+  }, []);
+
   // Subscribe to the WS for the active run. The hook is a no-op when
   // runId is null. The store is shared with the rest of the SPA — a
   // user who flips to /runs/:id mid-session will see the same data,
@@ -380,18 +398,20 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     }
   }, [pendingHuman, messages]);
 
-  // Human-gate lag mitigation. The pending question FORM is derived
-  // from the `human_input_requested` EVENT via the transcript fold —
-  // but the run's paused status can reach us through a snapshot alone
-  // (REST getRun refresh, or the WS "snapshot" envelope): the broker
-  // drops a run's subscribers on every pause, so the WS can miss the
-  // human_input_requested event entirely. rehydratePendingHumanInput
-  // then fills the store's pendingHumanInput from the checkpoint, but
-  // the fold has no event → no question message → the form lags until
-  // a reload refetches history. When we observe that inconsistent
-  // state, pull the event tail once per pause transition (the ref
-  // resets whenever the run leaves paused_waiting_human, and stays set
-  // otherwise, so a late backend flush can't trigger a refetch loop).
+  // Human-gate lag mitigation (belt-and-braces). The pending question
+  // FORM is derived from the `human_input_requested` EVENT via the
+  // transcript fold — but the run's paused status can reach us through
+  // a snapshot alone (REST getRun refresh, or the WS "snapshot"
+  // envelope) when a WS disconnect/reconnect races the pause window and
+  // the event never arrives. (Broker subscribers survive a pause since
+  // 45bba653e, so this is a rare disconnect race, not the normal path.)
+  // rehydratePendingHumanInput then fills the store's pendingHumanInput
+  // from the checkpoint, but the fold has no event → no question message
+  // → the form lags until a reload refetches history. When we observe
+  // that inconsistent state, pull the event tail once per pause
+  // transition (the ref resets whenever the run leaves
+  // paused_waiting_human, and stays set otherwise, so a late backend
+  // flush can't trigger a refetch loop).
   // We can't route through loadEventHistoryIfMissing here: it dedupes
   // via historyFetchedForRun, which is already stamped for this run.
   const pauseRefetchedForRef = useRef<string | null>(null);
@@ -401,11 +421,14 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
       return;
     }
     if (!runId) return;
+    // Once-per-pause guard first: it's O(1) and satisfied in the steady
+    // state, so the O(n) transcript scan below only runs until the one
+    // refetch this pause is allowed has been issued.
+    if (pauseRefetchedForRef.current === runId) return;
     const hasPendingQuestion = messages.some(
       (m) => m.kind === "human-question" && m.status === "pending",
     );
     if (hasPendingQuestion) return;
-    if (pauseRefetchedForRef.current === runId) return;
     pauseRefetchedForRef.current = runId;
     const stored = runStore.getState().events;
     const tail = stored[stored.length - 1];
@@ -456,8 +479,12 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         try {
           // Retry-on-404: the launch API returns before the engine
           // goroutine flushed run.json, so an immediate getRun can 404
-          // into this ignore-catch and skip the seeding entirely.
-          const snap = await getRunWithRetry(res.run_id);
+          // into this ignore-catch and skip the seeding entirely. The
+          // hook-lifetime signal stops the retry loop on unmount (the
+          // AbortError lands in the ignore-catch below).
+          const snap = await getRunWithRetry(res.run_id, {
+            signal: lifetimeAbortRef.current?.signal,
+          });
           applySnapshot(snap);
           await loadEventHistoryIfMissing(res.run_id);
         } catch {
@@ -514,10 +541,11 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         // explicit toggle for the rare hash-pinned case.
         await resumeRun(runId, { answers, force: true });
         setRunStatus("running");
-        // Re-dial the WS so the resumed engine's events reach us.
-        // Without this, the broker may have dropped subscribers when
-        // the run went paused_waiting_human and the live tail stays
-        // silent. Same trick the generic HumanPromptForm uses.
+        // Re-dial the WS so the resumed engine's events reach us even
+        // if the connection silently dropped across the pause window.
+        // Belt-and-braces: subscribers survive a pause since 45bba653e,
+        // so this only covers disconnect/reconnect races. Same trick
+        // the generic HumanPromptForm uses.
         requestWsReconnect();
         // Belt-and-braces: refresh the snapshot ~600ms later so a
         // short-lived run that finishes before the WS redial still

@@ -155,13 +155,11 @@ export default function BindingsTab({ teamID, canManage }: Props) {
       ) : (
         <Table caption={`Secret bindings for ${activeBot}`}>
           <THead>
-            <tr>
-              <Th>Workflow name</Th>
-              <Th>Secret</Th>
-              <Th>Allowed hosts</Th>
-              <Th>Updated</Th>
-              <Th align="right">Actions</Th>
-            </tr>
+            <Th>Workflow name</Th>
+            <Th>Secret</Th>
+            <Th>Allowed hosts</Th>
+            <Th>Updated</Th>
+            <Th align="right">Actions</Th>
           </THead>
           <TBody>
             {bindings.map((b) => {

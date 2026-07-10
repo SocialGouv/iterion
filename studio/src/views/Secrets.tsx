@@ -154,13 +154,11 @@ function SecretsTable({
   return (
     <Table caption="Local secrets">
       <THead>
-        <tr>
-          <Th>Name</Th>
-          <Th>Scope</Th>
-          <Th>Last4</Th>
-          <Th>Hosts</Th>
-          <Th align="right">Actions</Th>
-        </tr>
+        <Th>Name</Th>
+        <Th>Scope</Th>
+        <Th>Last4</Th>
+        <Th>Hosts</Th>
+        <Th align="right">Actions</Th>
       </THead>
       <TBody>
         {secrets.map((s) => (

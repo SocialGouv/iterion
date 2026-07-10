@@ -210,15 +210,13 @@ function LabelsViewInner() {
               caption={`Labels in the ${ns} namespace`}
               className="border border-border-subtle"
             >
-              <THead>
-                <tr className="bg-surface-1">
-                  <Th>Label</Th>
-                  <Th align="right" className="w-16">
-                    Count
-                  </Th>
-                  <Th className="w-36">Last used</Th>
-                  <Th className="w-64">Actions</Th>
-                </tr>
+              <THead className="bg-surface-1">
+                <Th>Label</Th>
+                <Th align="right" className="w-16">
+                  Count
+                </Th>
+                <Th className="w-36">Last used</Th>
+                <Th className="w-64">Actions</Th>
               </THead>
               <TBody>
                 {rows.map((row) => (

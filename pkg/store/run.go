@@ -47,6 +47,13 @@ func (s RunStatus) IsTerminal() bool {
 	}
 }
 
+// IsPaused returns true for the dormant-but-resumable statuses —
+// parked on a human gate or an operator pause. The run is neither
+// running nor terminal; a resume continues it in place.
+func (s RunStatus) IsPaused() bool {
+	return s == RunStatusPausedWaitingHuman || s == RunStatusPausedOperator
+}
+
 // ---------------------------------------------------------------------------
 // Run — top-level run metadata persisted in run.json
 // ---------------------------------------------------------------------------

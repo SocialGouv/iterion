@@ -22,6 +22,8 @@ import {
 } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
 
+import { ErrorNotice } from "@/components/shared/ErrorNotice";
+
 import CommitDetailDialog from "./CommitDetailDialog";
 import MergeConflictView from "./MergeConflictView";
 
@@ -78,7 +80,11 @@ export default function CommitsPanel({
       </header>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {error ? (
-          <CommitsError error={error} />
+          <ErrorNotice
+            error={error}
+            context="Couldn't read this run's commits"
+            className="m-2"
+          />
         ) : !data ? (
           loading ? (
             <EmptyState message="Loading…" />
@@ -151,43 +157,6 @@ function CommitRow({
       </Tooltip>
     </li>
   );
-}
-
-// CommitsError renders a failed commit-list fetch as a human-readable
-// summary, with the raw API error preserved verbatim behind a native
-// <details> disclosure — the error stays fully inspectable without
-// hijacking the panel with an unreadable wall of git output.
-function CommitsError({ error }: { error: string }) {
-  return (
-    <div className="px-3 py-4 text-xs space-y-2">
-      <p className="m-0 text-fg-muted">{commitsErrorSummary(error)}</p>
-      <details>
-        <summary className="cursor-pointer select-none text-caption text-fg-subtle hover:text-fg-default">
-          Show raw error
-        </summary>
-        <pre className="mt-1 m-0 max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded border border-border-subtle bg-surface-2 px-2 py-1.5 font-mono text-caption text-fg-muted">
-          {error}
-        </pre>
-      </details>
-    </div>
-  );
-}
-
-// commitsErrorSummary maps a raw commit-list API error to a one-line
-// human summary. Git revision-range failures (the storage branch / base
-// commit isn't reachable in this checkout — typical after a worktree GC
-// or when inspecting a run from another clone) get a specific
-// explanation; anything else keeps a generic headline. The raw text is
-// always shown alongside via the disclosure, never swallowed.
-export function commitsErrorSummary(raw: string): string {
-  if (
-    /invalid revision range|unknown revision|bad revision|not a valid ref|exit status 128/i.test(
-      raw,
-    )
-  ) {
-    return "Couldn't read this run's commits — the run branch isn't available in this repo.";
-  }
-  return "Couldn't read this run's commits.";
 }
 
 // mergeBlockedReason returns the caption explaining why the merge

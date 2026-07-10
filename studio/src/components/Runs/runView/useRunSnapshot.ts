@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { is404 } from "@/api/client";
 import { getRun, getRunWithRetry } from "@/api/runs";
 import { errorMessage } from "@/lib/errorHints";
 import { useRunStore } from "@/store/run";
@@ -91,9 +92,10 @@ export function useRunSnapshot(runId: string | null): RunSnapshotHandle {
       })
       .catch((err: Error) => {
         if (controller.signal.aborted || err?.name === "AbortError") return;
-        const msg = err?.message ?? "";
-        const is404 = msg.includes("API error 404");
-        setLoadFailed({ status: is404 ? 404 : 0, message: msg });
+        setLoadFailed({
+          status: is404(err) ? 404 : 0,
+          message: err?.message ?? "",
+        });
       });
   }, [runId, applySnapshot]);
   useEffect(() => {

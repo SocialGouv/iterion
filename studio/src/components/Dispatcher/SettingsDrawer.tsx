@@ -1,9 +1,9 @@
-import * as RD from "@radix-ui/react-dialog";
 import { useEffect, useState } from "react";
 
 import * as dispatcher from "@/api/dispatcher";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { Drawer } from "@/components/ui/Drawer";
 import { IconButton } from "@/components/ui/IconButton";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
@@ -58,45 +58,44 @@ export default function SettingsDrawer({ open, onClose, onSaved }: Props) {
     });
 
   return (
-    <RD.Root open={open} onOpenChange={(o) => !o && onClose()}>
-      <RD.Portal>
-        <RD.Overlay className="fixed inset-0 z-[var(--z-overlay)] bg-scrim-modal animate-fade-in" />
-        <RD.Content
-          aria-describedby={undefined}
-          className="fixed inset-y-0 right-0 z-[var(--z-modal)] flex w-full max-w-3xl flex-col bg-surface-0 text-fg-default shadow-[var(--shadow-lg)]"
-        >
-          <header className="flex items-center gap-3 border-b border-border-default bg-surface-1 px-4 py-2.5">
-            <RD.Title className="text-sm font-semibold">Dispatcher settings</RD.Title>
-            {loading && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-fg-muted" aria-live="polite">
-                <Spinner size="sm" />
-                <span>loading…</span>
-              </span>
-            )}
-            <div className="ml-auto flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={!cfg}
-                loading={saving}
-                onClick={() => void onSave()}
-              >
-                Save
-              </Button>
-            </div>
-          </header>
+    <Drawer
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="Dispatcher settings"
+      widthClass="max-w-3xl"
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!cfg}
+            loading={saving}
+            onClick={() => void onSave()}
+          >
+            Save
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3 text-sm">
+        {loading && (
+          <span
+            className="inline-flex items-center gap-1.5 text-xs text-fg-muted"
+            aria-live="polite"
+          >
+            <Spinner size="sm" />
+            <span>loading…</span>
+          </span>
+        )}
 
-          {error && <InlineBanner tone="danger">{error}</InlineBanner>}
+        {error && <InlineBanner tone="danger">{error}</InlineBanner>}
 
-          <div className="flex-1 overflow-auto p-4 text-sm">
-            {cfg && <Form cfg={cfg} setCfg={setCfg} />}
-          </div>
-        </RD.Content>
-      </RD.Portal>
-    </RD.Root>
+        {cfg && <Form cfg={cfg} setCfg={setCfg} />}
+      </div>
+    </Drawer>
   );
 }
 

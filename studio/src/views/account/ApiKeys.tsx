@@ -233,17 +233,13 @@ export default function ApiKeysPanel({ team }: Props) {
       ) : (
         <Table caption={team ? `${team.name} team API keys` : "My API keys"}>
           <THead>
-            <tr>
-              <Th>Provider</Th>
-              <Th>Name</Th>
-              <Th>Last4</Th>
-              <Th>Default</Th>
-              <Th>Created</Th>
-              <Th>Last used</Th>
-              <Th align="right">
-                <span className="sr-only">Actions</span>
-              </Th>
-            </tr>
+            <Th>Provider</Th>
+            <Th>Name</Th>
+            <Th>Last4</Th>
+            <Th>Default</Th>
+            <Th>Created</Th>
+            <Th>Last used</Th>
+            <Th align="right" srLabel="Actions" />
           </THead>
           <TBody>
             {keys.map((k) => (

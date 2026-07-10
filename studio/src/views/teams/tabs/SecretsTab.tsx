@@ -224,14 +224,12 @@ function SecretsTable({
   return (
     <Table caption={caption}>
       <THead>
-        <tr>
-          <Th>Name</Th>
-          <Th>Last4</Th>
-          <Th>Fingerprint</Th>
-          <Th>Created</Th>
-          <Th>Last used</Th>
-          <Th align="right">Actions</Th>
-        </tr>
+        <Th>Name</Th>
+        <Th>Last4</Th>
+        <Th>Fingerprint</Th>
+        <Th>Created</Th>
+        <Th>Last used</Th>
+        <Th align="right">Actions</Th>
       </THead>
       <TBody>
         {secrets.map((s) => (

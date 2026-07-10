@@ -303,11 +303,9 @@ describe("a11y / primitives", () => {
       <main>
         <Table caption="Personal access tokens">
           <THead>
-            <Tr hover={false}>
-              <Th>Name</Th>
-              <Th>Created</Th>
-              <Th align="right">Actions</Th>
-            </Tr>
+            <Th>Name</Th>
+            <Th>Created</Th>
+            <Th align="right">Actions</Th>
           </THead>
           <TBody>
             <Tr>
@@ -321,10 +319,8 @@ describe("a11y / primitives", () => {
         </Table>
         <Table caption="Dense dashboard" density="sm" captionVisible>
           <THead>
-            <Tr hover={false}>
-              <Th>Run</Th>
-              <Th>State</Th>
-            </Tr>
+            <Th>Run</Th>
+            <Th>State</Th>
           </THead>
           <TBody>
             <Tr className="bg-warning-soft">

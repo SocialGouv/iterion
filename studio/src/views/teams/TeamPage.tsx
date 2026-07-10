@@ -300,14 +300,10 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
         <h3 className="font-medium mb-2">Members</h3>
         <Table caption="Team members">
           <THead>
-            <tr>
-              <Th>Email</Th>
-              <Th>Name</Th>
-              <Th>Role</Th>
-              <Th align="right">
-                <span className="sr-only">Actions</span>
-              </Th>
-            </tr>
+            <Th>Email</Th>
+            <Th>Name</Th>
+            <Th>Role</Th>
+            <Th align="right" srLabel="Actions" />
           </THead>
           <TBody>
             {members.map((m) => (
@@ -355,14 +351,10 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
         ) : (
           <Table caption="Pending team invitations">
             <THead>
-              <tr>
-                <Th>Email</Th>
-                <Th>Role</Th>
-                <Th>Expires</Th>
-                <Th align="right">
-                  <span className="sr-only">Actions</span>
-                </Th>
-              </tr>
+              <Th>Email</Th>
+              <Th>Role</Th>
+              <Th>Expires</Th>
+              <Th align="right" srLabel="Actions" />
             </THead>
             <TBody>
               {invs.map((i) => (

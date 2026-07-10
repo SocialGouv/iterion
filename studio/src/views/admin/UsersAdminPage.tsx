@@ -158,13 +158,11 @@ export default function UsersAdminPage() {
           ) : (
           <Table caption="Platform users">
             <THead>
-              <tr>
-                <Th>Email</Th>
-                <Th>Name</Th>
-                <Th>Status</Th>
-                <Th>Super-admin</Th>
-                <Th align="right">Actions</Th>
-              </tr>
+              <Th>Email</Th>
+              <Th>Name</Th>
+              <Th>Status</Th>
+              <Th>Super-admin</Th>
+              <Th align="right">Actions</Th>
             </THead>
             <TBody>
               {users.map((u) => (

@@ -2,6 +2,7 @@
 // Single-run reads: snapshot, paginated events, and tool I/O sidecar
 // streaming (the only direct-fetch endpoint in the runs barrel).
 
+import { is404 } from "@/api/client";
 import { BASE_URL, extractErrorMessage, request, withStoreParam } from "./client";
 import type {
   RunEvent,
@@ -49,7 +50,7 @@ export async function getRun(
 // rejects with an "AbortError"-named error, which callers should treat
 // as "stop silently" (the same contract as a plain aborted getRun).
 // On retry exhaustion the LAST error is rethrown unchanged, so callers
-// keep the "API error 404" message idiom for status detection.
+// can still classify it (see is404 in @/api/client).
 export async function getRunWithRetry(
   runId: string,
   opts?: { signal?: AbortSignal },
@@ -67,9 +68,7 @@ export async function getRunWithRetry(
         throw err;
       }
       attempt += 1;
-      const msg = (err as Error)?.message ?? "";
-      const is404 = msg.includes("API error 404");
-      const cap = is404 ? MAX_ATTEMPTS_404 : MAX_ATTEMPTS_OTHER;
+      const cap = is404(err) ? MAX_ATTEMPTS_404 : MAX_ATTEMPTS_OTHER;
       if (attempt >= cap) throw err;
       await abortableDelay(RETRY_DELAY_MS, signal);
     }

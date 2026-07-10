@@ -151,13 +151,11 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
       ) : (
         <Table caption="Audit log events">
           <THead>
-            <tr>
-              <Th>When</Th>
-              <Th>Actor</Th>
-              <Th>Action</Th>
-              <Th>Target</Th>
-              <Th>IP</Th>
-            </tr>
+            <Th>When</Th>
+            <Th>Actor</Th>
+            <Th>Action</Th>
+            <Th>Target</Th>
+            <Th>IP</Th>
           </THead>
           <TBody>
             {events.map((e) => (

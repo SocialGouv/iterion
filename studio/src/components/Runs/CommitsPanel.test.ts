@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  commitsErrorSummary,
   defaultConventionalMessage,
   mergeBlockedReason,
 } from "./CommitsPanel";
@@ -66,22 +65,6 @@ describe("defaultConventionalMessage", () => {
     });
     expect(defaultConventionalMessage(run)).toBe(
       "docs: Update README and onboarding docs",
-    );
-  });
-});
-
-describe("commitsErrorSummary", () => {
-  it("explains a missing run branch for git revision-range failures", () => {
-    const raw =
-      "API error 500: git log: git log -z --reverse --pretty=format:%H exit status 128 (stderr: fatal: Invalid revision range c2390502..07c78ea)";
-    expect(commitsErrorSummary(raw)).toBe(
-      "Couldn't read this run's commits — the run branch isn't available in this repo.",
-    );
-  });
-
-  it("keeps a generic headline for non-git failures", () => {
-    expect(commitsErrorSummary("network timeout")).toBe(
-      "Couldn't read this run's commits.",
     );
   });
 });

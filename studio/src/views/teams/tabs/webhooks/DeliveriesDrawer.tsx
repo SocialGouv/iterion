@@ -78,13 +78,11 @@ export function DeliveriesDrawer({
       ) : (
         <Table caption={`Recent deliveries for webhook ${webhook.name}`} density="sm">
           <THead>
-            <tr>
-              <Th>Status</Th>
-              <Th>Received</Th>
-              <Th>Event</Th>
-              <Th>From</Th>
-              <Th>Error</Th>
-            </tr>
+            <Th>Status</Th>
+            <Th>Received</Th>
+            <Th>Event</Th>
+            <Th>From</Th>
+            <Th>Error</Th>
           </THead>
           <TBody>
             {deliveries.map((d) => (

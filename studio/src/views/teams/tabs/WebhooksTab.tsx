@@ -169,14 +169,12 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
       ) : (
         <Table caption="Inbound webhooks">
           <THead>
-            <tr>
-              <Th>Name</Th>
-              <Th>Provider</Th>
-              <Th>Bots</Th>
-              <Th>Last4</Th>
-              <Th>Status</Th>
-              <Th align="right">Actions</Th>
-            </tr>
+            <Th>Name</Th>
+            <Th>Provider</Th>
+            <Th>Bots</Th>
+            <Th>Last4</Th>
+            <Th>Status</Th>
+            <Th align="right">Actions</Th>
           </THead>
           <TBody>
             {webhooks.map((w) => (

@@ -61,15 +61,13 @@ export default function RunningTable({
         // reachable when the page is capped by max-w-4xl on small viewports.
         <Table caption="Runs the dispatcher currently has in flight" density="sm" className="min-w-full">
           <THead>
-            <tr>
-              <Th className="whitespace-nowrap">Identifier</Th>
-              <Th>Run</Th>
-              <Th>State</Th>
-              <Th>Workspace</Th>
-              <Th className="whitespace-nowrap">Started</Th>
-              <Th className="whitespace-nowrap">Last event</Th>
-              <Th align="right">Actions</Th>
-            </tr>
+            <Th className="whitespace-nowrap">Identifier</Th>
+            <Th>Run</Th>
+            <Th>State</Th>
+            <Th>Workspace</Th>
+            <Th className="whitespace-nowrap">Started</Th>
+            <Th className="whitespace-nowrap">Last event</Th>
+            <Th align="right">Actions</Th>
           </THead>
           <TBody>
             {rows!.map((r) => {

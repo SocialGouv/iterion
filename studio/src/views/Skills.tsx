@@ -162,12 +162,10 @@ function SkillsTable({
   return (
     <Table caption="Skill library">
       <THead>
-        <tr>
-          <Th>Name</Th>
-          <Th>Scope</Th>
-          <Th>Description</Th>
-          <Th align="right">Actions</Th>
-        </tr>
+        <Th>Name</Th>
+        <Th>Scope</Th>
+        <Th>Description</Th>
+        <Th align="right">Actions</Th>
       </THead>
       <TBody>
         {skills.map((s) => (
