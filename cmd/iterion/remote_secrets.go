@@ -19,11 +19,7 @@ var (
 func remoteScopedBase(cmd *cobra.Command, c *cli.RemoteClient, resource string) (string, error) {
 	switch remoteSecretScope {
 	case "", "team":
-		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
-		if err != nil {
-			return "", err
-		}
-		return "/api/teams/" + team + "/" + resource, nil
+		return teamBase(cmd, c, "/"+resource)
 	case "me":
 		return "/api/me/" + resource, nil
 	default:
@@ -40,68 +36,52 @@ var remoteSecretsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List secrets (metadata only — values are sealed)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := remoteScopedBase(cmd, c, "secrets")
 		if err != nil {
 			return err
 		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), base)
-	},
+		return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+	}),
 }
 
 var remoteSecretsSetCmd = &cobra.Command{
 	Use:   "set <name>",
 	Short: "Create a secret (value from --from-env/--from-file/stdin)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		value, err := cli.ReadSecretValue(remoteSecretFromEnv, remoteSecretFromFile, true)
 		if err != nil {
 			return err
 		}
-		return cli.RemoteSecretsSet(cmd.Context(), c, newPrinter(), remoteSecretScope, remoteTeamFlag, args[0], value)
-	},
+		return cli.RemoteSecretsSet(cmd.Context(), c, p, remoteSecretScope, remoteTeamFlag, args[0], value)
+	}),
 }
 
 var remoteSecretsRotateCmd = &cobra.Command{
 	Use:   "rotate <secret-id>",
 	Short: "Rotate a secret's value",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		value, err := cli.ReadSecretValue(remoteSecretFromEnv, remoteSecretFromFile, true)
 		if err != nil {
 			return err
 		}
-		return cli.RemoteSecretsRotate(cmd.Context(), c, newPrinter(), remoteSecretScope, remoteTeamFlag, args[0], value)
-	},
+		return cli.RemoteSecretsRotate(cmd.Context(), c, p, remoteSecretScope, remoteTeamFlag, args[0], value)
+	}),
 }
 
 var remoteSecretsDeleteCmd = &cobra.Command{
 	Use:   "delete <secret-id>",
 	Short: "Delete a secret",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := remoteScopedBase(cmd, c, "secrets")
 		if err != nil {
 			return err
 		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "DELETE", base+"/"+args[0], nil)
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[0], nil)
+	}),
 }
 
 // --- BYOK api-keys ---
@@ -115,17 +95,13 @@ var remoteAPIKeysListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List API keys (metadata only)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := remoteScopedBase(cmd, c, "api-keys")
 		if err != nil {
 			return err
 		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), base)
-	},
+		return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+	}),
 }
 
 var (
@@ -138,20 +114,16 @@ var remoteAPIKeysCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Add an API key (--provider + --name; value from --from-env/--from-file/stdin)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if remoteAPIKeyProvider == "" || remoteAPIKeyName == "" {
 			return fmt.Errorf("--provider and --name are required")
-		}
-		c, err := remoteClient()
-		if err != nil {
-			return err
 		}
 		value, err := cli.ReadSecretValue(remoteSecretFromEnv, remoteSecretFromFile, true)
 		if err != nil {
 			return err
 		}
-		return cli.RemoteAPIKeysCreate(cmd.Context(), c, newPrinter(), remoteSecretScope, remoteTeamFlag, remoteAPIKeyProvider, remoteAPIKeyName, value, remoteAPIKeyDefault)
-	},
+		return cli.RemoteAPIKeysCreate(cmd.Context(), c, p, remoteSecretScope, remoteTeamFlag, remoteAPIKeyProvider, remoteAPIKeyName, value, remoteAPIKeyDefault)
+	}),
 }
 
 var remoteAPIKeysUpdateData string
@@ -160,41 +132,26 @@ var remoteAPIKeysUpdateCmd = &cobra.Command{
 	Use:   "update <key-id>",
 	Short: "Update an API key's metadata (--data JSON; rotate via secrets fields)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := remoteScopedBase(cmd, c, "api-keys")
 		if err != nil {
 			return err
 		}
-		body, err := cli.ReadDataArg(remoteAPIKeysUpdateData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "PATCH", base+"/"+args[0], body)
-	},
+		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base+"/"+args[0], remoteAPIKeysUpdateData, "patch JSON")
+	}),
 }
 
 var remoteAPIKeysDeleteCmd = &cobra.Command{
 	Use:   "delete <key-id>",
 	Short: "Delete an API key",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base, err := remoteScopedBase(cmd, c, "api-keys")
 		if err != nil {
 			return err
 		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "DELETE", base+"/"+args[0], nil)
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[0], nil)
+	}),
 }
 
 // --- bot-secret bindings (team-scoped only) ---
@@ -205,35 +162,22 @@ var remoteBindingsCmd = &cobra.Command{
 	Use:   "bindings <bot-id> [create|delete <binding-id>]",
 	Short: "Bot↔secret bindings for a bot (team scope)",
 	Args:  cobra.RangeArgs(1, 3),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/bots/"+args[0]+"/bindings")
 		if err != nil {
 			return err
 		}
-		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
-		if err != nil {
-			return err
-		}
-		p := newPrinter()
-		base := "/api/teams/" + team + "/bots/" + args[0] + "/bindings"
 		switch {
 		case len(args) == 1:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case args[1] == "create":
-			body, err := cli.ReadDataArg(remoteBindingsData)
-			if err != nil {
-				return err
-			}
-			if len(body) == 0 {
-				return fmt.Errorf("--data is required (binding JSON)")
-			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
+			return cli.RemoteSendData(cmd.Context(), c, p, "POST", base, remoteBindingsData, "binding JSON")
 		case args[1] == "delete" && len(args) == 3:
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[2], nil)
 		default:
 			return fmt.Errorf("usage: bindings <bot-id> [create --data @f|delete <binding-id>]")
 		}
-	},
+	}),
 }
 
 func init() {

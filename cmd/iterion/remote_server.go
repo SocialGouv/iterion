@@ -16,26 +16,18 @@ var remoteServerInfoCmd = &cobra.Command{
 	Use:   "info",
 	Short: "Instance capabilities and feature flags (GET /api/server/info)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/server/info")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/server/info")
+	}),
 }
 
 var remoteServerHealthCmd = &cobra.Command{
 	Use:   "health",
 	Short: "Instance health (GET /healthz)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/healthz")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/healthz")
+	}),
 }
 
 func init() {

@@ -38,14 +38,12 @@ func RemoteIssuesList(ctx context.Context, c *RemoteClient, p *Printer, opts Rem
 	if len(q) > 0 {
 		path += "?" + strings.Join(q, "&")
 	}
-	var issues []remoteIssue
-	raw, err := c.Call(ctx, "GET", path, nil, &issues)
-	if err != nil {
-		return err
-	}
 	if p.Format == OutputJSON {
-		PrintRemoteJSON(p, raw)
-		return nil
+		return RemoteGetPrint(ctx, c, p, path)
+	}
+	var issues []remoteIssue
+	if _, err := c.Call(ctx, "GET", path, nil, &issues); err != nil {
+		return err
 	}
 	rows := make([][]string, 0, len(issues))
 	for _, i := range issues {

@@ -23,16 +23,14 @@ type remotePAT struct {
 }
 
 func RemoteTokensList(ctx context.Context, c *RemoteClient, p *Printer) error {
+	if p.Format == OutputJSON {
+		return RemoteGetPrint(ctx, c, p, "/api/me/tokens")
+	}
 	var out struct {
 		Tokens []remotePAT `json:"tokens"`
 	}
-	raw, err := c.Call(ctx, "GET", "/api/me/tokens", nil, &out)
-	if err != nil {
+	if _, err := c.Call(ctx, "GET", "/api/me/tokens", nil, &out); err != nil {
 		return err
-	}
-	if p.Format == OutputJSON {
-		PrintRemoteJSON(p, raw)
-		return nil
 	}
 	rows := make([][]string, 0, len(out.Tokens))
 	for _, t := range out.Tokens {
@@ -94,16 +92,14 @@ type remoteTeam struct {
 }
 
 func RemoteTeamsList(ctx context.Context, c *RemoteClient, p *Printer) error {
+	if p.Format == OutputJSON {
+		return RemoteGetPrint(ctx, c, p, "/api/teams")
+	}
 	var out struct {
 		Teams []remoteTeam `json:"teams"`
 	}
-	raw, err := c.Call(ctx, "GET", "/api/teams", nil, &out)
-	if err != nil {
+	if _, err := c.Call(ctx, "GET", "/api/teams", nil, &out); err != nil {
 		return err
-	}
-	if p.Format == OutputJSON {
-		PrintRemoteJSON(p, raw)
-		return nil
 	}
 	active := c.cfg.TeamID
 	rows := make([][]string, 0, len(out.Teams))

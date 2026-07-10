@@ -198,8 +198,9 @@ func PrintRemoteJSON(p *Printer, body []byte) {
 	p.Line("%s", strings.TrimRight(string(body), "\n"))
 }
 
-// queryString builds a ?k=v&… query from the non-empty pairs.
-func queryString(pairs map[string]string) string {
+// QueryString builds a ?k=v&… query from the non-empty pairs (empty
+// string when none are set).
+func QueryString(pairs map[string]string) string {
 	q := url.Values{}
 	for k, v := range pairs {
 		if v != "" {

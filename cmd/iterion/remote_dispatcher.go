@@ -21,16 +21,12 @@ func dispatcherSimpleCmd(use, short, method, path string) *cobra.Command {
 		Use:   use,
 		Short: short,
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := remoteClient()
-			if err != nil {
-				return err
-			}
+		RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 			if method == "GET" {
-				return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), path)
+				return cli.RemoteGetPrint(cmd.Context(), c, p, path)
 			}
-			return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), method, path, nil)
-		},
+			return cli.RemoteSendPrint(cmd.Context(), c, p, method, path, nil)
+		}),
 	}
 }
 
@@ -40,53 +36,33 @@ var remoteDispatcherConfigCmd = &cobra.Command{
 	Use:   "config [set]",
 	Short: "Show (or with `set --data @file`, replace) the dispatcher config",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		p := newPrinter()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 0 {
 			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/dispatcher/config")
 		}
 		if args[0] != "set" {
 			return fmt.Errorf("unknown config action %q (want set)", args[0])
 		}
-		body, err := cli.ReadDataArg(remoteDispatcherConfigData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required (dispatcher config JSON)")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, p, "PUT", "/api/v1/dispatcher/config", body)
-	},
+		return cli.RemoteSendData(cmd.Context(), c, p, "PUT", "/api/v1/dispatcher/config", remoteDispatcherConfigData, "dispatcher config JSON")
+	}),
 }
 
 var remoteDispatcherIssueCmd = &cobra.Command{
 	Use:   "issue <id>",
 	Short: "Dispatcher view of one issue",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/dispatcher/issues/"+args[0])
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/dispatcher/issues/"+args[0])
+	}),
 }
 
 var remoteDispatcherCancelCmd = &cobra.Command{
 	Use:   "cancel <issue-id>",
 	Short: "Cancel the dispatcher's in-flight run for an issue",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/v1/dispatcher/issues/"+args[0]+"/cancel", nil)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/dispatcher/issues/"+args[0]+"/cancel", nil)
+	}),
 }
 
 // --- triggers ---
@@ -100,26 +76,18 @@ var remoteTriggersListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List trigger subscriptions",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/triggers")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/triggers")
+	}),
 }
 
 var remoteTriggersGetCmd = &cobra.Command{
 	Use:   "get <id>",
 	Short: "Show a trigger subscription",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/triggers/"+args[0])
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/triggers/"+args[0])
+	}),
 }
 
 var remoteTriggersData string
@@ -128,73 +96,36 @@ var remoteTriggersCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a trigger subscription (--data @file)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		body, err := cli.ReadDataArg(remoteTriggersData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/v1/triggers", body)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendData(cmd.Context(), c, p, "POST", "/api/v1/triggers", remoteTriggersData, "trigger JSON")
+	}),
 }
 
 var remoteTriggersUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a trigger subscription (--data @file)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		body, err := cli.ReadDataArg(remoteTriggersData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "PUT", "/api/v1/triggers/"+args[0], body)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendData(cmd.Context(), c, p, "PUT", "/api/v1/triggers/"+args[0], remoteTriggersData, "trigger JSON")
+	}),
 }
 
 var remoteTriggersDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a trigger subscription",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "DELETE", "/api/v1/triggers/"+args[0], nil)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/v1/triggers/"+args[0], nil)
+	}),
 }
 
 var remoteTriggersEmitCmd = &cobra.Command{
 	Use:   "emit",
 	Short: "Publish a trigger event (--data @file)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		body, err := cli.ReadDataArg(remoteTriggersData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/v1/triggers/emit", body)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendData(cmd.Context(), c, p, "POST", "/api/v1/triggers/emit", remoteTriggersData, "event JSON")
+	}),
 }
 
 func init() {

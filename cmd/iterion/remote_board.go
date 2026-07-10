@@ -25,28 +25,20 @@ var remoteIssuesListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List board issues",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteIssuesList(cmd.Context(), c, newPrinter(), cli.RemoteIssuesListOptions{
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteIssuesList(cmd.Context(), c, p, cli.RemoteIssuesListOptions{
 			States: remoteIssuesStates, Labels: remoteIssuesLabels, Assignee: remoteIssuesAssignee,
 		})
-	},
+	}),
 }
 
 var remoteIssuesGetCmd = &cobra.Command{
 	Use:   "get <id>",
 	Short: "Show one issue",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/native/issues/"+args[0])
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/native/issues/"+args[0])
+	}),
 }
 
 var (
@@ -81,29 +73,21 @@ var remoteIssuesCreateCmd = &cobra.Command{
 	Use:   "create <title>",
 	Short: "Create an issue",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		f, err := remoteIssueFieldsFromFlags()
 		if err != nil {
 			return err
 		}
 		f.Title = args[0]
-		return cli.RemoteIssuesCreate(cmd.Context(), c, newPrinter(), f)
-	},
+		return cli.RemoteIssuesCreate(cmd.Context(), c, p, f)
+	}),
 }
 
 var remoteIssuesUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update an issue (only the flags you pass are changed)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		f, err := remoteIssueFieldsFromFlags()
 		if err != nil {
 			return err
@@ -117,35 +101,27 @@ var remoteIssuesUpdateCmd = &cobra.Command{
 		if len(set) == 0 {
 			return fmt.Errorf("nothing to update — pass at least one field flag")
 		}
-		return cli.RemoteIssuesUpdate(cmd.Context(), c, newPrinter(), args[0], f, set)
-	},
+		return cli.RemoteIssuesUpdate(cmd.Context(), c, p, args[0], f, set)
+	}),
 }
 
 var remoteIssuesDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete an issue",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "DELETE", "/api/v1/native/issues/"+args[0], nil)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/v1/native/issues/"+args[0], nil)
+	}),
 }
 
 var remoteIssuesTransitionCmd = &cobra.Command{
 	Use:   "transition <id> <state>",
 	Short: "Move an issue to a state",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		body := fmt.Sprintf(`{"to":%q}`, args[1])
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/v1/native/issues/"+args[0]+"/transition", []byte(body))
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/issues/"+args[0]+"/transition", []byte(body))
+	}),
 }
 
 var (
@@ -157,11 +133,7 @@ var remoteIssuesCommentCmd = &cobra.Command{
 	Use:   "comment <id> <text>",
 	Short: "Comment on an issue (--bot to also dispatch a run)",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		body := map[string]any{"body": args[1]}
 		if remoteCommentBot != "" {
 			body["bot"] = remoteCommentBot
@@ -169,14 +141,13 @@ var remoteIssuesCommentCmd = &cobra.Command{
 		if remoteCommentTransitionTo != "" {
 			body["transition_to"] = remoteCommentTransitionTo
 		}
-		p := newPrinter()
 		raw, err := c.Call(cmd.Context(), "POST", "/api/v1/native/issues/"+args[0]+"/comments", body, nil)
 		if err != nil {
 			return err
 		}
 		cli.PrintRemoteJSON(p, raw)
 		return nil
-	},
+	}),
 }
 
 // --- board↔forge bridge ---
@@ -185,13 +156,9 @@ var remoteIssuesPushCmd = &cobra.Command{
 	Use:   "push <id>",
 	Short: "Push the issue to the linked forge",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/v1/native/issues/"+args[0]+"/push", nil)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/issues/"+args[0]+"/push", nil)
+	}),
 }
 
 var remotePullsData string
@@ -200,12 +167,7 @@ var remotePullsCmd = &cobra.Command{
 	Use:   "pulls <issue-id> [create|ci <number>|merge <number>]",
 	Short: "Forge pull requests linked to a board issue",
 	Args:  cobra.RangeArgs(1, 3),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		p := newPrinter()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		base := "/api/v1/native/issues/" + args[0] + "/pulls"
 		if len(args) == 1 {
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
@@ -234,7 +196,7 @@ var remotePullsCmd = &cobra.Command{
 		default:
 			return fmt.Errorf("unknown pulls action %q (want create|ci|merge)", args[1])
 		}
-	},
+	}),
 }
 
 // --- labels ---
@@ -248,54 +210,38 @@ var remoteLabelsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List labels",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/native/labels")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/native/labels")
+	}),
 }
 
 var remoteLabelsRenameCmd = &cobra.Command{
 	Use:   "rename <from> <to>",
 	Short: "Rename a label across all issues",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		body := fmt.Sprintf(`{"from":%q,"to":%q}`, args[0], args[1])
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/v1/native/labels/rename", []byte(body))
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/labels/rename", []byte(body))
+	}),
 }
 
 var remoteLabelsMergeCmd = &cobra.Command{
 	Use:   "merge <from> <to>",
 	Short: "Merge a label into another",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		body := fmt.Sprintf(`{"from":%q,"to":%q}`, args[0], args[1])
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/v1/native/labels/merge", []byte(body))
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/v1/native/labels/merge", []byte(body))
+	}),
 }
 
 var remoteLabelsDeleteCmd = &cobra.Command{
 	Use:   "delete <label>",
 	Short: "Delete a label from all issues",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "DELETE", "/api/v1/native/labels/"+args[0], nil)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", "/api/v1/native/labels/"+args[0], nil)
+	}),
 }
 
 // --- board config ---
@@ -309,13 +255,9 @@ var remoteBoardGetCmd = &cobra.Command{
 	Use:   "get",
 	Short: "Show the board configuration",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/native/board")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/native/board")
+	}),
 }
 
 var remoteBoardSetData string
@@ -324,20 +266,9 @@ var remoteBoardSetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Replace the board configuration (--data @file)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		body, err := cli.ReadDataArg(remoteBoardSetData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required (board config JSON, literal or @file)")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "PUT", "/api/v1/native/board", body)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteSendData(cmd.Context(), c, p, "PUT", "/api/v1/native/board", remoteBoardSetData, "board config JSON")
+	}),
 }
 
 func init() {

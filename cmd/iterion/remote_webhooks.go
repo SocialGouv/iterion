@@ -17,145 +17,95 @@ var remoteWebhooksCmd = &cobra.Command{
 	Short: "Inbound webhook endpoints (team scope)",
 }
 
-func remoteWebhooksBase(cmd *cobra.Command, c *cli.RemoteClient) (string, error) {
-	team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
-	if err != nil {
-		return "", err
-	}
-	return "/api/teams/" + team + "/webhooks", nil
-}
-
 var remoteWebhooksListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List webhooks",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
 		}
-		base, err := remoteWebhooksBase(cmd, c)
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), base)
-	},
+		return cli.RemoteGetPrint(cmd.Context(), c, p, base)
+	}),
 }
 
 var remoteWebhooksGetCmd = &cobra.Command{
 	Use:   "get <webhook-id>",
 	Short: "Show a webhook",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
 		}
-		base, err := remoteWebhooksBase(cmd, c)
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), base+"/"+args[0])
-	},
+		return cli.RemoteGetPrint(cmd.Context(), c, p, base+"/"+args[0])
+	}),
 }
 
 var remoteWebhooksCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a webhook (--data @file)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
 		}
-		base, err := remoteWebhooksBase(cmd, c)
-		if err != nil {
-			return err
-		}
-		body, err := cli.ReadDataArg(remoteWebhooksData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required (webhook config JSON)")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", base, body)
-	},
+		return cli.RemoteSendData(cmd.Context(), c, p, "POST", base, remoteWebhooksData, "webhook config JSON")
+	}),
 }
 
 var remoteWebhooksUpdateCmd = &cobra.Command{
 	Use:   "update <webhook-id>",
 	Short: "Update a webhook (--data @file)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
 		}
-		base, err := remoteWebhooksBase(cmd, c)
-		if err != nil {
-			return err
-		}
-		body, err := cli.ReadDataArg(remoteWebhooksData)
-		if err != nil {
-			return err
-		}
-		if len(body) == 0 {
-			return fmt.Errorf("--data is required")
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "PATCH", base+"/"+args[0], body)
-	},
+		return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base+"/"+args[0], remoteWebhooksData, "webhook config JSON")
+	}),
 }
 
 var remoteWebhooksDeleteCmd = &cobra.Command{
 	Use:   "delete <webhook-id>",
 	Short: "Delete a webhook",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
 		}
-		base, err := remoteWebhooksBase(cmd, c)
-		if err != nil {
-			return err
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "DELETE", base+"/"+args[0], nil)
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[0], nil)
+	}),
 }
 
 var remoteWebhooksRotateCmd = &cobra.Command{
 	Use:   "rotate <webhook-id>",
 	Short: "Rotate the webhook's token",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
 		}
-		base, err := remoteWebhooksBase(cmd, c)
-		if err != nil {
-			return err
-		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", base+"/"+args[0]+"/rotate", nil)
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/"+args[0]+"/rotate", nil)
+	}),
 }
 
 var remoteWebhooksDeliveriesCmd = &cobra.Command{
 	Use:   "deliveries <webhook-id>",
 	Short: "List the webhook's recent deliveries",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/webhooks")
 		if err != nil {
 			return err
 		}
-		base, err := remoteWebhooksBase(cmd, c)
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), base+"/"+args[0]+"/deliveries")
-	},
+		return cli.RemoteGetPrint(cmd.Context(), c, p, base+"/"+args[0]+"/deliveries")
+	}),
 }
 
 // --- forge ---
@@ -171,29 +121,16 @@ var remoteForgeConnectionsCmd = &cobra.Command{
 	Use:   "connections [create|delete <conn-id>|repos <conn-id>]",
 	Short: "Forge connections",
 	Args:  cobra.MaximumNArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/forge/connections")
 		if err != nil {
 			return err
 		}
-		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
-		if err != nil {
-			return err
-		}
-		p := newPrinter()
-		base := "/api/teams/" + team + "/forge/connections"
 		switch {
 		case len(args) == 0:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case args[0] == "create":
-			body, err := cli.ReadDataArg(remoteForgeData)
-			if err != nil {
-				return err
-			}
-			if len(body) == 0 {
-				return fmt.Errorf("--data is required (connection JSON)")
-			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
+			return cli.RemoteSendData(cmd.Context(), c, p, "POST", base, remoteForgeData, "connection JSON")
 		case args[0] == "delete" && len(args) == 2:
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
 		case args[0] == "repos" && len(args) == 2:
@@ -201,106 +138,67 @@ var remoteForgeConnectionsCmd = &cobra.Command{
 		default:
 			return fmt.Errorf("usage: connections [create --data @f|delete <id>|repos <id>]")
 		}
-	},
+	}),
 }
 
 var remoteForgeRepoBotsCmd = &cobra.Command{
 	Use:   "repo-bots [create|preview|delete <integration-id>]",
 	Short: "Repo↔bot provisioning (forge integrations)",
 	Args:  cobra.MaximumNArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/forge/repo-bots")
 		if err != nil {
 			return err
 		}
-		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
-		if err != nil {
-			return err
-		}
-		p := newPrinter()
-		base := "/api/teams/" + team + "/forge/repo-bots"
 		switch {
 		case len(args) == 0:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case args[0] == "preview":
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base+"/preview")
 		case args[0] == "create":
-			body, err := cli.ReadDataArg(remoteForgeData)
-			if err != nil {
-				return err
-			}
-			if len(body) == 0 {
-				return fmt.Errorf("--data is required")
-			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
+			return cli.RemoteSendData(cmd.Context(), c, p, "POST", base, remoteForgeData, "request body JSON")
 		case args[0] == "delete" && len(args) == 2:
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
 		default:
 			return fmt.Errorf("usage: repo-bots [create --data @f|preview|delete <id>]")
 		}
-	},
+	}),
 }
 
 var remoteForgeOAuthAppsCmd = &cobra.Command{
 	Use:   "oauth-apps [create|delete <app-id>]",
 	Short: "Per-tenant forge OAuth apps",
 	Args:  cobra.MaximumNArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/forge/oauth-apps")
 		if err != nil {
 			return err
 		}
-		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
-		if err != nil {
-			return err
-		}
-		p := newPrinter()
-		base := "/api/teams/" + team + "/forge/oauth-apps"
 		switch {
 		case len(args) == 0:
 			return cli.RemoteGetPrint(cmd.Context(), c, p, base)
 		case args[0] == "create":
-			body, err := cli.ReadDataArg(remoteForgeData)
-			if err != nil {
-				return err
-			}
-			if len(body) == 0 {
-				return fmt.Errorf("--data is required")
-			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base, body)
+			return cli.RemoteSendData(cmd.Context(), c, p, "POST", base, remoteForgeData, "request body JSON")
 		case args[0] == "delete" && len(args) == 2:
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "DELETE", base+"/"+args[1], nil)
 		default:
 			return fmt.Errorf("usage: oauth-apps [create --data @f|delete <id>]")
 		}
-	},
+	}),
 }
 
 var remoteForgeIntegrationsCmd = &cobra.Command{
 	Use:   "integrations [update <id>|sync <id>|hooks <id>]",
 	Short: "Board↔forge integrations",
 	Args:  cobra.MaximumNArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		base, err := teamBase(cmd, c, "/forge/integrations")
 		if err != nil {
 			return err
 		}
-		team, err := c.ResolveTeam(cmd.Context(), remoteTeamFlag)
-		if err != nil {
-			return err
-		}
-		p := newPrinter()
-		base := "/api/teams/" + team + "/forge/integrations"
 		switch {
 		case len(args) == 2 && args[0] == "update":
-			body, err := cli.ReadDataArg(remoteForgeData)
-			if err != nil {
-				return err
-			}
-			if len(body) == 0 {
-				return fmt.Errorf("--data is required")
-			}
-			return cli.RemoteSendPrint(cmd.Context(), c, p, "PATCH", base+"/"+args[1], body)
+			return cli.RemoteSendData(cmd.Context(), c, p, "PATCH", base+"/"+args[1], remoteForgeData, "request body JSON")
 		case len(args) == 2 && args[0] == "sync":
 			return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", base+"/"+args[1]+"/sync", nil)
 		case len(args) == 2 && args[0] == "hooks":
@@ -308,7 +206,7 @@ var remoteForgeIntegrationsCmd = &cobra.Command{
 		default:
 			return fmt.Errorf("usage: integrations update|sync|hooks <integration-id>")
 		}
-	},
+	}),
 }
 
 func init() {

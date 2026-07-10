@@ -18,13 +18,9 @@ var remoteTokensListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List your tokens",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteTokensList(cmd.Context(), c, newPrinter())
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteTokensList(cmd.Context(), c, p)
+	}),
 }
 
 var (
@@ -37,29 +33,21 @@ var remoteTokensCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Mint a token (--name required; plaintext shown once)",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if remoteTokenName == "" {
 			return fmt.Errorf("--name is required")
 		}
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteTokensCreate(cmd.Context(), c, newPrinter(), remoteTokenName, remoteTokenTeam, remoteTokenExpires)
-	},
+		return cli.RemoteTokensCreate(cmd.Context(), c, p, remoteTokenName, remoteTokenTeam, remoteTokenExpires)
+	}),
 }
 
 var remoteTokensRevokeCmd = &cobra.Command{
 	Use:   "revoke <token-id>",
 	Short: "Revoke a token",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteTokensRevoke(cmd.Context(), c, newPrinter(), args[0])
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteTokensRevoke(cmd.Context(), c, p, args[0])
+	}),
 }
 
 func init() {

@@ -119,7 +119,7 @@ func ResolveRemoteConfig() (RemoteConfig, error) {
 		loaded, err := LoadRemoteConfig()
 		if err != nil {
 			if errors.Is(err, ErrNotLoggedIn) {
-				return RemoteConfig{}, fmt.Errorf("no remote configured: run `iterion remote login <url>`, or set ITERION_REMOTE_URL (+ ITERION_REMOTE_TOKEN)")
+				return RemoteConfig{}, fmt.Errorf("%w (or set ITERION_REMOTE_URL + ITERION_REMOTE_TOKEN for env-only use)", ErrNotLoggedIn)
 			}
 			return RemoteConfig{}, err
 		}

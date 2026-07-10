@@ -32,19 +32,15 @@ var remoteRunsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List runs",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsList(cmd.Context(), c, newPrinter(), cli.RemoteRunsListOptions{
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsList(cmd.Context(), c, p, cli.RemoteRunsListOptions{
 			Status:   remoteRunsListStatus,
 			Workflow: remoteRunsListWorkflow,
 			Repo:     remoteRunsListRepo,
 			Since:    remoteRunsListSince,
 			Limit:    remoteRunsListLimit,
 		})
-	},
+	}),
 }
 
 var (
@@ -72,11 +68,7 @@ var remoteRunsLaunchCmd = &cobra.Command{
 	Use:   "launch [file.bot]",
 	Short: "Launch a run (uploads the file inline, or --bot <catalog id>)",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		vars, err := cli.ParseVarFlags(remoteLaunchVars)
 		if err != nil {
 			return err
@@ -115,21 +107,17 @@ var remoteRunsLaunchCmd = &cobra.Command{
 		if len(args) == 1 {
 			opts.FilePath = args[0]
 		}
-		return cli.RemoteRunsLaunch(cmd.Context(), c, newPrinter(), opts)
-	},
+		return cli.RemoteRunsLaunch(cmd.Context(), c, p, opts)
+	}),
 }
 
 var remoteRunsGetCmd = &cobra.Command{
 	Use:   "get <run-id>",
 	Short: "Inspect a run",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsGet(cmd.Context(), c, newPrinter(), args[0])
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsGet(cmd.Context(), c, p, args[0])
+	}),
 }
 
 var (
@@ -142,52 +130,36 @@ var remoteRunsEventsCmd = &cobra.Command{
 	Use:   "events <run-id>",
 	Short: "Print run events (--follow tails by seq cursor)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsEvents(cmd.Context(), c, newPrinter(), args[0], remoteEventsFrom, remoteEventsFollow, remoteFollowInterval)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsEvents(cmd.Context(), c, p, args[0], remoteEventsFrom, remoteEventsFollow, remoteFollowInterval)
+	}),
 }
 
 var remoteRunsFollowCmd = &cobra.Command{
 	Use:   "follow <run-id>",
 	Short: "Tail a run until it terminates (exit 1 on failure)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsFollow(cmd.Context(), c, newPrinter(), args[0], remoteFollowInterval)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsFollow(cmd.Context(), c, p, args[0], remoteFollowInterval)
+	}),
 }
 
 var remoteRunsLogCmd = &cobra.Command{
 	Use:   "log <run-id>",
 	Short: "Print the raw run log",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsRaw(cmd.Context(), c, newPrinter(), args[0], "/log")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsRaw(cmd.Context(), c, p, args[0], "/log")
+	}),
 }
 
 var remoteRunsWorkflowCmd = &cobra.Command{
 	Use:   "workflow <run-id>",
 	Short: "Print the run's compiled workflow",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsRaw(cmd.Context(), c, newPrinter(), args[0], "/workflow")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsRaw(cmd.Context(), c, p, args[0], "/workflow")
+	}),
 }
 
 var (
@@ -199,13 +171,9 @@ var remoteRunsArtifactsCmd = &cobra.Command{
 	Use:   "artifacts <run-id>",
 	Short: "List run artifacts (--node for one node, --file for artifact files)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsArtifacts(cmd.Context(), c, newPrinter(), args[0], remoteArtifactsNode, remoteArtifactsFile)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsArtifacts(cmd.Context(), c, p, args[0], remoteArtifactsNode, remoteArtifactsFile)
+	}),
 }
 
 var (
@@ -219,11 +187,7 @@ var remoteRunsFilesCmd = &cobra.Command{
 	Use:   "files <run-id> [path]",
 	Short: "Run workspace files: list, --diff/--content on a path, --edit @local to write",
 	Args:  cobra.RangeArgs(1, 2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		opts := cli.RemoteRunsFilesOptions{Diff: remoteFilesDiff, Content: remoteFilesContent, Mode: remoteFilesMode}
 		if len(args) == 2 {
 			opts.Path = args[1]
@@ -234,8 +198,8 @@ var remoteRunsFilesCmd = &cobra.Command{
 			}
 			opts.EditFile = remoteFilesEdit[1:]
 		}
-		return cli.RemoteRunsFiles(cmd.Context(), c, newPrinter(), args[0], opts)
-	},
+		return cli.RemoteRunsFiles(cmd.Context(), c, p, args[0], opts)
+	}),
 }
 
 var remoteCommitsDiff bool
@@ -244,43 +208,31 @@ var remoteRunsCommitsCmd = &cobra.Command{
 	Use:   "commits <run-id> [sha]",
 	Short: "List the run's commits (with a sha: detail; --diff: its diff)",
 	Args:  cobra.RangeArgs(1, 2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		sha := ""
 		if len(args) == 2 {
 			sha = args[1]
 		}
-		return cli.RemoteRunsCommits(cmd.Context(), c, newPrinter(), args[0], sha, remoteCommitsDiff)
-	},
+		return cli.RemoteRunsCommits(cmd.Context(), c, p, args[0], sha, remoteCommitsDiff)
+	}),
 }
 
 var remoteRunsCancelCmd = &cobra.Command{
 	Use:   "cancel <run-id>",
 	Short: "Cancel a run (checkpoint preserved — resumable)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsAction(cmd.Context(), c, newPrinter(), args[0], "cancel", nil)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsAction(cmd.Context(), c, p, args[0], "cancel", nil)
+	}),
 }
 
 var remoteRunsPauseCmd = &cobra.Command{
 	Use:   "pause <run-id>",
 	Short: "Pause a run",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsAction(cmd.Context(), c, newPrinter(), args[0], "pause", nil)
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsAction(cmd.Context(), c, p, args[0], "pause", nil)
+	}),
 }
 
 var (
@@ -294,19 +246,15 @@ var remoteRunsResumeCmd = &cobra.Command{
 	Use:   "resume <run-id>",
 	Short: "Resume a paused/failed run (--answers @file for human answers)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		answers := strings.TrimPrefix(remoteResumeAnswers, "@")
-		return cli.RemoteRunsResume(cmd.Context(), c, newPrinter(), args[0], cli.RemoteRunsResumeOptions{
+		return cli.RemoteRunsResume(cmd.Context(), c, p, args[0], cli.RemoteRunsResumeOptions{
 			AnswersFile: answers,
 			FilePath:    remoteResumeFile,
 			Force:       remoteResumeForce,
 			Timeout:     remoteResumeTimeout,
 		})
-	},
+	}),
 }
 
 var (
@@ -320,11 +268,7 @@ var remoteRunsForkCmd = &cobra.Command{
 	Use:   "fork <run-id>",
 	Short: "Fork a run at a node (--node required; resume the fork after)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if remoteForkNode == "" {
 			return fmt.Errorf("--node is required")
 		}
@@ -338,8 +282,8 @@ var remoteRunsForkCmd = &cobra.Command{
 		if remoteForkName != "" {
 			body["fork_name"] = remoteForkName
 		}
-		return cli.RemoteRunsAction(cmd.Context(), c, newPrinter(), args[0], "fork", body)
-	},
+		return cli.RemoteRunsAction(cmd.Context(), c, p, args[0], "fork", body)
+	}),
 }
 
 var remoteSendSkills []string
@@ -348,17 +292,13 @@ var remoteRunsSendCmd = &cobra.Command{
 	Use:   "send <run-id> <message>",
 	Short: "Queue a steering message for a live run's next agent turn",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		body := map[string]any{"text": args[1]}
 		if len(remoteSendSkills) > 0 {
 			body["skills"] = remoteSendSkills
 		}
-		return cli.RemoteRunsAction(cmd.Context(), c, newPrinter(), args[0], "queue-message", body)
-	},
+		return cli.RemoteRunsAction(cmd.Context(), c, p, args[0], "queue-message", body)
+	}),
 }
 
 var (
@@ -371,11 +311,7 @@ var remoteRunsMergeCmd = &cobra.Command{
 	Use:   "merge <run-id>",
 	Short: "Merge the run's storage branch (--strategy squash|merge)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		body := map[string]any{}
 		if remoteMergeStrategy != "" {
 			body["merge_strategy"] = remoteMergeStrategy
@@ -386,8 +322,8 @@ var remoteRunsMergeCmd = &cobra.Command{
 		if remoteMergeMessage != "" {
 			body["commit_message"] = remoteMergeMessage
 		}
-		return cli.RemoteRunsAction(cmd.Context(), c, newPrinter(), args[0], "merge", body)
-	},
+		return cli.RemoteRunsAction(cmd.Context(), c, p, args[0], "merge", body)
+	}),
 }
 
 var remoteConflictsData string
@@ -396,13 +332,9 @@ var remoteRunsConflictsCmd = &cobra.Command{
 	Use:   "conflicts <run-id> [resolve|resolve-with-agent|finalize|abort]",
 	Short: "Show or act on the run's merge conflicts",
 	Args:  cobra.RangeArgs(1, 2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if len(args) == 1 {
-			return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/runs/"+args[0]+"/merge/conflicts")
+			return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/runs/"+args[0]+"/merge/conflicts")
 		}
 		action := args[1]
 		switch action {
@@ -414,21 +346,17 @@ var remoteRunsConflictsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return cli.RemoteSendPrint(cmd.Context(), c, newPrinter(), "POST", "/api/runs/"+args[0]+"/merge/conflicts/"+action, body)
-	},
+		return cli.RemoteSendPrint(cmd.Context(), c, p, "POST", "/api/runs/"+args[0]+"/merge/conflicts/"+action, body)
+	}),
 }
 
 var remoteRunsRenameCmd = &cobra.Command{
 	Use:   "rename <run-id> <name>",
 	Short: "Rename a run",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteRunsAction(cmd.Context(), c, newPrinter(), args[0], "rename", map[string]string{"name": args[1]})
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteRunsAction(cmd.Context(), c, p, args[0], "rename", map[string]string{"name": args[1]})
+	}),
 }
 
 var remoteDeleteYes bool
@@ -437,16 +365,12 @@ var remoteRunsDeleteCmd = &cobra.Command{
 	Use:   "delete <run-id>",
 	Short: "Delete a run and its artifacts (asks unless --yes)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		if !remoteDeleteYes {
 			return fmt.Errorf("refusing to delete run %s without --yes", args[0])
 		}
-		return cli.RemoteRunsDelete(cmd.Context(), c, newPrinter(), args[0])
-	},
+		return cli.RemoteRunsDelete(cmd.Context(), c, p, args[0])
+	}),
 }
 
 var remotePreviewCostVars []string
@@ -455,66 +379,49 @@ var remoteRunsPreviewCostCmd = &cobra.Command{
 	Use:   "preview-cost <file.bot>",
 	Short: "Estimate a workflow's cost before launching",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		vars, err := cli.ParseVarFlags(remotePreviewCostVars)
 		if err != nil {
 			return err
 		}
-		return cli.RemoteRunsPreviewCost(cmd.Context(), c, newPrinter(), args[0], vars)
-	},
+		return cli.RemoteRunsPreviewCost(cmd.Context(), c, p, args[0], vars)
+	}),
 }
 
 var remoteRunsUploadCmd = &cobra.Command{
 	Use:   "upload <path>",
 	Short: "Stage an attachment upload; prints the upload id",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
 		id, err := cli.RemoteRunsUploadFile(cmd.Context(), c, args[0])
 		if err != nil {
 			return err
 		}
-		p := newPrinter()
 		if p.Format == cli.OutputJSON {
 			p.JSON(map[string]string{"upload_id": id})
 			return nil
 		}
 		p.Line("%s", id)
 		return nil
-	},
+	}),
 }
 
 var remoteRunsStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Cross-run statistics",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/runs/stats")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/runs/stats")
+	}),
 }
 
 var remoteRunsReposCmd = &cobra.Command{
 	Use:   "repos",
 	Short: "Distinct repositories seen across runs",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := remoteClient()
-		if err != nil {
-			return err
-		}
-		return cli.RemoteGetPrint(cmd.Context(), c, newPrinter(), "/api/v1/runs/repos")
-	},
+	RunE: remoteRunE(func(cmd *cobra.Command, args []string, c *cli.RemoteClient, p *cli.Printer) error {
+		return cli.RemoteGetPrint(cmd.Context(), c, p, "/api/v1/runs/repos")
+	}),
 }
 
 func init() {

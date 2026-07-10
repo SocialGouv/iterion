@@ -43,16 +43,15 @@ func RemoteRunsList(ctx context.Context, c *RemoteClient, p *Printer, opts Remot
 	if opts.Limit > 0 {
 		q["limit"] = fmt.Sprintf("%d", opts.Limit)
 	}
+	path := "/api/runs" + QueryString(q)
+	if p.Format == OutputJSON {
+		return RemoteGetPrint(ctx, c, p, path)
+	}
 	var out struct {
 		Runs []remoteRunSummary `json:"runs"`
 	}
-	raw, err := c.Call(ctx, "GET", "/api/runs"+queryString(q), nil, &out)
-	if err != nil {
+	if _, err := c.Call(ctx, "GET", path, nil, &out); err != nil {
 		return err
-	}
-	if p.Format == OutputJSON {
-		PrintRemoteJSON(p, raw)
-		return nil
 	}
 	rows := make([][]string, 0, len(out.Runs))
 	for _, r := range out.Runs {
@@ -208,8 +207,7 @@ func RemoteRunsGet(ctx context.Context, c *RemoteClient, p *Printer, id string) 
 		PrintRemoteJSON(p, raw)
 		return nil
 	}
-	// The snapshot shape nests differently across versions; when the
-	// typed decode found nothing, fall back to pretty JSON.
+	// Unrecognized/empty decode → lossless raw passthrough.
 	if run.Run.ID == "" {
 		PrintRemoteJSON(p, raw)
 		return nil
@@ -329,6 +327,7 @@ func followRemoteRun(ctx context.Context, c *RemoteClient, p *Printer, id string
 			}
 			continue
 		}
+		advanced := false
 		for _, e := range out.Events {
 			if p.Format == OutputJSON {
 				p.JSON(e)
@@ -337,17 +336,19 @@ func followRemoteRun(ctx context.Context, c *RemoteClient, p *Printer, id string
 			}
 			if e.Seq >= cursor {
 				cursor = e.Seq + 1
+				advanced = true
 			}
 		}
-		// A full page means more events may already be waiting.
-		if len(out.Events) > 0 {
+		// New events mean more may already be waiting — poll again right
+		// away. Gated on the cursor actually moving so a page of
+		// already-seen events can't turn the loop into a zero-delay spin.
+		if advanced {
 			continue
 		}
 		var snap struct {
 			Run struct {
 				Status string `json:"status"`
 			} `json:"run"`
-			Status string `json:"status"`
 		}
 		if _, err := c.Call(ctx, "GET", "/api/runs/"+id, nil, &snap); err != nil {
 			ok, err := tolerate404(err)
@@ -360,13 +361,9 @@ func followRemoteRun(ctx context.Context, c *RemoteClient, p *Printer, id string
 			continue
 		}
 		notFoundSince = time.Time{}
-		status := snap.Run.Status
-		if status == "" {
-			status = snap.Status
-		}
-		switch status {
+		switch snap.Run.Status {
 		case "finished", "failed", "failed_resumable", "cancelled":
-			return status, nil
+			return snap.Run.Status, nil
 		}
 		if err := wait(); err != nil {
 			return "", err
@@ -446,7 +443,7 @@ func RemoteRunsFiles(ctx context.Context, c *RemoteClient, p *Printer, id string
 		if opts.Path == "" {
 			return fmt.Errorf("--diff requires a path argument")
 		}
-		q := queryString(map[string]string{"path": opts.Path, "mode": opts.Mode})
+		q := QueryString(map[string]string{"path": opts.Path, "mode": opts.Mode})
 		raw, err := c.Call(ctx, "GET", "/api/runs/"+id+"/files/diff"+q, nil, nil)
 		if err != nil {
 			return err
@@ -457,14 +454,14 @@ func RemoteRunsFiles(ctx context.Context, c *RemoteClient, p *Printer, id string
 		if opts.Path == "" {
 			return fmt.Errorf("--content requires a path argument")
 		}
-		raw, err := c.Call(ctx, "GET", "/api/runs/"+id+"/files/content"+queryString(map[string]string{"path": opts.Path}), nil, nil)
+		raw, err := c.Call(ctx, "GET", "/api/runs/"+id+"/files/content"+QueryString(map[string]string{"path": opts.Path}), nil, nil)
 		if err != nil {
 			return err
 		}
 		PrintRemoteJSON(p, raw)
 		return nil
 	default:
-		raw, err := c.Call(ctx, "GET", "/api/runs/"+id+"/files"+queryString(map[string]string{"mode": opts.Mode}), nil, nil)
+		raw, err := c.Call(ctx, "GET", "/api/runs/"+id+"/files"+QueryString(map[string]string{"mode": opts.Mode}), nil, nil)
 		if err != nil {
 			return err
 		}
