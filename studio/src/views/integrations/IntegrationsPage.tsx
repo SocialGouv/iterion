@@ -4,7 +4,9 @@ import { Tabs } from "@/components/ui/Tabs";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useAuth } from "@/auth/AuthContext";
 import { useCanManageTeam } from "@/hooks/useCanManageTeam";
+import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import IntegrationsTab from "@/views/teams/tabs/IntegrationsTab";
 import WebhooksTab from "@/views/teams/tabs/WebhooksTab";
@@ -37,6 +39,12 @@ const TAB_ITEMS = TABS.map((t) => ({ value: t.id, label: t.label }));
 export default function IntegrationsPage() {
   const { activeTeam } = useAuth();
   const canManage = useCanManageTeam();
+  // Integrations are team-scoped cloud resources (forge/webhook/secret
+  // stores are wired only in cloud mode). Local mode has no team selector,
+  // so "select a team" would be an instruction that can't be followed —
+  // show the standard cloud-only state instead.
+  const serverInfo = useServerInfoStore((s) => s.info);
+  const isCloud = serverInfo?.mode === "cloud";
   const search = useSearch();
   const [, navigate] = useLocation();
 
@@ -56,6 +64,19 @@ export default function IntegrationsPage() {
       <span className="text-xs text-fg-muted">{activeTeam.team_name}</span>
     ) : null,
   });
+
+  if (serverInfo && !isCloud) {
+    return (
+      <div className="h-full overflow-auto">
+        <div className="max-w-6xl mx-auto p-3 sm:p-6">
+          <CloudOnlyNotice
+            title="Integrations"
+            feature="Team integration management (forges, webhooks, secrets, model providers)"
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (!teamID) {
     return (

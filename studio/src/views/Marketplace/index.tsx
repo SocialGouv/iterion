@@ -111,11 +111,17 @@ export default function MarketplaceView() {
       .catch(() => setConfig(null));
   }, []);
 
+  // The moderation queue only exists on a moderated (cloud) registry —
+  // config.moderated is the capability signal. Local mode gets no
+  // /api/v1/marketplace/moderation endpoint, so gating here avoids a
+  // doomed 404 on every visit.
+  const moderated = config?.moderated ?? false;
+
   // Best-effort moderation queue — populated only for admins (the
   // endpoint 403s / 404s otherwise, leaving the section hidden). Used by
   // the mutation handlers to refetch after an approve/reject/submit.
   const refreshPending = useCallback(async () => {
-    if (anonymous) {
+    if (anonymous || !moderated) {
       setPending([]);
       return;
     }
@@ -124,19 +130,18 @@ export default function MarketplaceView() {
     } catch {
       setPending([]);
     }
-  }, [anonymous]);
+  }, [anonymous, moderated]);
 
   // Initial load via a promise chain (no synchronous setState in the
   // effect body) so the queue shows on first paint for admins. Skipped for
-  // anonymous viewers (the endpoint is auth-only).
+  // anonymous viewers (the endpoint is auth-only) and for unmoderated
+  // registries (the endpoint doesn't exist).
   useEffect(() => {
-    // Anonymous viewers never load the (auth-only) moderation queue; the
-    // initial empty state already hides the section.
-    if (anonymous) return;
+    if (anonymous || !moderated) return;
     listModerationQueue()
       .then(setPending)
       .catch(() => setPending([]));
-  }, [anonymous]);
+  }, [anonymous, moderated]);
 
   // Best-effort: reconcile the registry against the bots already in the
   // workspace so cards can show Installed / Update. A failure (e.g. cloud

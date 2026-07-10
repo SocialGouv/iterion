@@ -10,16 +10,27 @@ import { FeatureUnavailableError, listAdminUsers, updateAdminUser } from "@/api/
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 const PAGE = 50;
 
 export default function UsersAdminPage() {
   const { user: me } = useAuth();
   const isSuper = me?.is_super_admin ?? false;
+  // User administration is a cloud-mode console (/api/admin/users isn't
+  // registered locally) — gate on server_info BEFORE fetching so local
+  // mode never fires a doomed 404 request.
+  const serverInfo = useServerInfoStore((s) => s.info);
+  const isCloud = serverInfo?.mode === "cloud";
 
   const [users, setUsers] = useState<UserView[]>([]);
+  // loaded flips once the first list fetch settles — drives the initial
+  // TableSkeleton without re-skeletoning on pagination/refresh.
+  const [loaded, setLoaded] = useState(false);
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -48,19 +59,33 @@ export default function UsersAdminPage() {
         else setErr(errorMessage(e));
       } finally {
         setBusy(false);
+        setLoaded(true);
       }
     },
     [],
   );
 
   useEffect(() => {
-    if (isSuper) void refresh(0);
-  }, [isSuper, refresh]);
+    if (isSuper && isCloud) void refresh(0);
+  }, [isSuper, isCloud, refresh]);
 
   if (!isSuper) {
     return (
       <div className="p-6">
         <p className="text-sm text-fg-muted">Super-admin only.</p>
+      </div>
+    );
+  }
+
+  // Deliberate local-mode gate: no fetch fired. While server_info is still
+  // loading we fall through to the skeleton below instead of flashing this
+  // notice on cloud.
+  if (serverInfo && !isCloud) {
+    return (
+      <div className="h-full overflow-auto">
+        <div className="max-w-5xl mx-auto p-3 sm:p-6">
+          <CloudOnlyNotice feature="User administration" />
+        </div>
       </div>
     );
   }
@@ -124,35 +149,42 @@ export default function UsersAdminPage() {
         )}
 
         <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
-          <div className="overflow-x-auto"><table className="w-full text-sm">
-            <thead className="text-left text-fg-muted border-b border-border-subtle">
+          {!loaded ? (
+            <div className="p-3">
+              <TableSkeleton rows={5} cols={5} />
+            </div>
+          ) : users.length === 0 ? (
+            <EmptyState message="No users on this page." />
+          ) : (
+          <Table caption="Platform users">
+            <THead>
               <tr>
-                <th className="px-3 py-2 font-medium">Email</th>
-                <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Super-admin</th>
-                <th className="px-3 py-2 font-medium text-right">Actions</th>
+                <Th>Email</Th>
+                <Th>Name</Th>
+                <Th>Status</Th>
+                <Th>Super-admin</Th>
+                <Th align="right">Actions</Th>
               </tr>
-            </thead>
-            <tbody>
+            </THead>
+            <TBody>
               {users.map((u) => (
-                <tr key={u.id} className="border-b border-border-subtle last:border-0 align-top">
-                  <td className="px-3 py-2">
+                <Tr key={u.id} className="align-top">
+                  <Td>
                     <div>{u.email}</div>
                     <div className="text-caption text-fg-subtle font-mono">{u.id}</div>
-                  </td>
-                  <td className="px-3 py-2 text-fg-muted">{u.name ?? "—"}</td>
-                  <td className="px-3 py-2">
+                  </Td>
+                  <Td className="text-fg-muted">{u.name ?? "—"}</Td>
+                  <Td>
                     <StatusPill status={u.status} />
-                  </td>
-                  <td className="px-3 py-2">
+                  </Td>
+                  <Td>
                     {u.is_super_admin ? (
                       <span className="text-warning-fg text-xs">yes</span>
                     ) : (
                       <span className="text-fg-muted text-xs">no</span>
                     )}
-                  </td>
-                  <td className="px-3 py-2 text-right space-x-1 whitespace-nowrap">
+                  </Td>
+                  <Td align="right" className="space-x-1 whitespace-nowrap">
                     {u.status === "disabled" ? (
                       <Button size="sm" variant="ghost" onClick={() => setConfirm({ user: u, action: "enable" })}>
                         Re-enable
@@ -197,18 +229,12 @@ export default function UsersAdminPage() {
                         Grant super-admin
                       </Button>
                     )}
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               ))}
-              {users.length === 0 && (
-                <tr>
-                  <td className="px-3 py-6 text-center text-fg-muted" colSpan={5}>
-                    No users on this page.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table></div>
+            </TBody>
+          </Table>
+          )}
         </section>
 
         <div className="flex justify-between items-center">

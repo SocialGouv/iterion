@@ -30,8 +30,11 @@ export default function SettingsPage() {
   const serverInfo = useServerInfoStore((s) => s.info);
   const [tab, setTab] = useState<Tab>("api-keys");
 
+  // "Account" matches the /account route and the account-chip menu entry
+  // ("Account settings") — plain "Settings" collided with the app-settings
+  // dialog vocabulary.
   useHeaderSlot({
-    left: <span className="text-sm font-semibold">Settings</span>,
+    left: <span className="text-sm font-semibold">Account</span>,
   });
 
   // The SSO link/callback bounces back here with ?sso_linked / ?sso_link_error.

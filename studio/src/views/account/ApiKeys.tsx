@@ -7,7 +7,10 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { useConfirm } from "@/hooks/useConfirm";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
+import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useAuth } from "@/auth/AuthContext";
+import { useServerInfoStore } from "@/store/serverInfo";
 import {
   type ApiKeyView,
   type Provider,
@@ -37,6 +40,11 @@ interface Props {
 
 export default function ApiKeysPanel({ team }: Props) {
   const { activeRole, user } = useAuth();
+  // BYOK stores (/api/me/api-keys, /api/teams/{id}/api-keys) are only wired
+  // in cloud mode — gate on server_info BEFORE fetching so local/desktop
+  // mode never fires a doomed 404 request.
+  const serverInfo = useServerInfoStore((s) => s.info);
+  const isCloud = serverInfo?.mode === "cloud";
   const [keys, setKeys] = useState<ApiKeyView[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -68,9 +76,10 @@ export default function ApiKeysPanel({ team }: Props) {
   };
 
   useEffect(() => {
+    if (!isCloud) return;
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [team?.id]);
+  }, [team?.id, isCloud]);
 
   const submitAdd = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -118,6 +127,23 @@ export default function ApiKeysPanel({ team }: Props) {
       setErr(errorMessage(e));
     }
   };
+
+  // Deliberate local-mode gate (not an error): no fetch fired, no mutating
+  // controls rendered. While server_info is still loading we fall through to
+  // the skeleton below instead of flashing this notice.
+  if (serverInfo && !isCloud) {
+    return (
+      <CloudOnlyNotice
+        title="API keys (BYOK)"
+        feature="Bring-your-own-key management"
+        hint={
+          serverInfo.secrets_enabled
+            ? "In local mode, credentials live in the sealed secret store — see the Secrets view."
+            : undefined
+        }
+      />
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -201,41 +227,44 @@ export default function ApiKeysPanel({ team }: Props) {
       )}
 
       {loading ? (
-        <EmptyState message="Loading…" />
+        <TableSkeleton rows={3} cols={7} />
       ) : keys.length === 0 ? (
         <EmptyState message="No keys yet." />
       ) : (
-        <div className="overflow-x-auto"><table className="w-full text-sm">
-          <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
+        <Table caption={team ? `${team.name} team API keys` : "My API keys"}>
+          <THead>
             <tr>
-              <th className="px-2 py-1">Provider</th>
-              <th className="px-2 py-1">Name</th>
-              <th className="px-2 py-1">Last4</th>
-              <th className="px-2 py-1">Default</th>
-              <th className="px-2 py-1">Created</th>
-              <th className="px-2 py-1">Last used</th>
-              <th className="px-2 py-1"></th>
+              <Th>Provider</Th>
+              <Th>Name</Th>
+              <Th>Last4</Th>
+              <Th>Default</Th>
+              <Th>Created</Th>
+              <Th>Last used</Th>
+              <Th align="right">
+                <span className="sr-only">Actions</span>
+              </Th>
             </tr>
-          </thead>
-          <tbody>
+          </THead>
+          <TBody>
             {keys.map((k) => (
-              <tr key={k.id} className="border-t border-border-subtle">
-                <td className="px-2 py-2">{k.provider}</td>
-                <td className="px-2 py-2">{k.name}</td>
-                <td className="px-2 py-2 font-mono">{k.last4 ?? "—"}</td>
-                <td className="px-2 py-2">
+              <Tr key={k.id}>
+                <Td>{k.provider}</Td>
+                <Td>{k.name}</Td>
+                <Td className="font-mono">{k.last4 ?? "—"}</Td>
+                <Td>
                   {canManage ? (
                     <Checkbox
+                      aria-label={`Default key for ${k.provider}: ${k.name}`}
                       checked={k.is_default}
                       onChange={() => toggleDefault(k)}
                     />
                   ) : k.is_default ? "✓" : ""}
-                </td>
-                <td className="px-2 py-2 text-fg-muted">{new Date(k.created_at).toLocaleDateString()}</td>
-                <td className="px-2 py-2 text-fg-muted">
+                </Td>
+                <Td className="text-fg-muted">{new Date(k.created_at).toLocaleDateString()}</Td>
+                <Td className="text-fg-muted">
                   {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "—"}
-                </td>
-                <td className="px-2 py-2 text-right">
+                </Td>
+                <Td align="right">
                   {canManage && (
                     <Button
                       variant="ghost"
@@ -246,11 +275,11 @@ export default function ApiKeysPanel({ team }: Props) {
                       Delete
                     </Button>
                   )}
-                </td>
-              </tr>
+                </Td>
+              </Tr>
             ))}
-          </tbody>
-        </table></div>
+          </TBody>
+        </Table>
       )}
     </div>
   );
