@@ -794,6 +794,7 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 			ReasoningEffort: d.ReasoningEffort,
 			Timeout:         d.Timeout,
 			Readonly:        d.Readonly,
+			FullAccess:      d.FullAccess,
 		}, SchemaFields{
 			InputSchema:  d.Input,
 			OutputSchema: d.Output,

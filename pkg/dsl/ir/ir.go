@@ -165,6 +165,7 @@ type LLMFields struct {
 	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max"
 	Timeout         string // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = no per-node bound; may contain ${VAR} env refs
 	Readonly        bool   // when true, node is not considered mutating for workspace safety
+	FullAccess      bool   // when true, lift the codex backend sandbox to danger-full-access (network + out-of-workspace writes); off by default; other backends ignore it
 }
 
 // SchemaFields groups input/output schema references.
