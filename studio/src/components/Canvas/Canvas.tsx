@@ -7,6 +7,7 @@ import { useUIStore } from "@/store/ui";
 import { useThemeStore } from "@/store/theme";
 import { NODE_COLORS, DEBOUNCE_FIT_VIEW_MS, DEBOUNCE_LAYOUT_SETTLE_MS, type LayerKind } from "@/lib/constants";
 import { parseGroups } from "@/lib/groups";
+import { FLOW_CONTROLS_STYLE, FLOW_MINIMAP_BG, FLOW_MINIMAP_MASK, FLOW_MINIMAP_STYLE } from "@/lib/flowTheme";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useCanvasSearch } from "@/hooks/useCanvasSearch";
 import { useCanvasKeyboard } from "@/hooks/useCanvasKeyboard";
@@ -386,9 +387,11 @@ export default function Canvas({ active = true }: CanvasProps) {
         colorMode={resolvedTheme}
       >
         <Background />
-        <Controls />
+        <Controls style={FLOW_CONTROLS_STYLE} />
         <MiniMap
-          style={{ width: 200, height: 150 }}
+          style={{ width: 200, height: 150, ...FLOW_MINIMAP_STYLE }}
+          bgColor={FLOW_MINIMAP_BG}
+          maskColor={FLOW_MINIMAP_MASK}
           zoomable
           pannable
           nodeColor={(node) => {

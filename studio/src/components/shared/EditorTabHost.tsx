@@ -1,4 +1,6 @@
-import { Suspense, lazy, useEffect, useMemo } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import { useLocation } from "wouter";
 
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import MainSpinner from "@/components/shared/MainSpinner";
@@ -17,8 +19,19 @@ import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 import { botDisplayLabel } from "@/lib/botLabel";
 import { toastError } from "@/lib/errorHints";
+import { Button } from "@/components/ui";
 
 const EditorView = lazy(() => import("@/components/EditorView"));
+
+// Labels a fresh unbound tab can carry (newEditorTab default and
+// defaultLabelFor("editor", {})). A restored tab with one of these and no
+// file param is a legitimate untitled scaffold; any OTHER label without a
+// file param means the tab lost its document binding and must show an
+// explicit error instead of silently presenting a scaffold under the old
+// name (data-loss hazard: the user would edit it believing it's their bot).
+const UNTITLED_LABELS = new Set(["untitled.bot", "Editor"]);
+
+type LoadState = "ready" | "loading" | "error";
 
 interface Props {
   tabId: string;
@@ -32,7 +45,9 @@ interface Props {
 // (or fetches from registry) the tab's DocumentStore + SelectionStore,
 // plumbs them through Context so every component below reads its own
 // per-tab data, and triggers the initial `api.openFile` hydration when
-// a file path is provided.
+// a file path is provided. While that hydration is in flight it shows a
+// spinner — never the untitled scaffold the store initializes with —
+// and on failure an explicit "couldn't reload" state.
 //
 // Disposal of the per-tab stores is driven by useTabsStore.closeTab,
 // not by this component's unmount — StrictMode would otherwise dispose-
@@ -47,6 +62,13 @@ export default function EditorTabHost({ tabId, file }: Props) {
   // the Canvas needs to know when it regains visibility to refit the
   // viewport. Drives that signal down through EditorView.
   const isActive = useTabsStore((s) => s.activeEditorTabId === tabId);
+  const tab = useTabsStore((s) => s.tabs.find((t) => t.id === tabId));
+
+  const [loadState, setLoadState] = useState<LoadState>(() =>
+    file && docStore.getState().currentFilePath !== file ? "loading" : "ready",
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // Initial file hydration. We trigger it once per (tabId, file). If
   // the file changes via deep-link navigation later we let EditorView's
@@ -54,56 +76,149 @@ export default function EditorTabHost({ tabId, file }: Props) {
   // through the per-tab store via Context.
   useEffect(() => {
     if (!file) return;
-    const state = docStore.getState();
-    if (state.currentFilePath === file) return;
+    if (docStore.getState().currentFilePath === file) {
+      setLoadState("ready");
+      return;
+    }
     let cancelled = false;
+    setLoadState("loading");
+    setLoadError(null);
     void api
       .openFile(file)
       .then((result) => {
         if (cancelled) return;
         const s = docStore.getState();
-        if (s.currentFilePath === file) return;
-        s.setDocument(result.document);
-        s.setCurrentFilePath(result.path);
-        s.setCurrentSource(result.source);
-        s.setDiagnostics(result.diagnostics);
-        s.markSaved();
+        // Another path (deep link, Save As) may have bound the file
+        // while the fetch was in flight — don't clobber it.
+        if (s.currentFilePath !== file) {
+          s.setDocument(result.document);
+          s.setCurrentFilePath(result.path);
+          s.setCurrentSource(result.source);
+          s.setDiagnostics(result.diagnostics);
+          s.markSaved();
+        }
+        setLoadState("ready");
       })
       .catch((err) => {
         if (cancelled) return;
+        setLoadState("error");
+        setLoadError(err instanceof Error ? err.message : String(err));
         toastError(addToast, err, "Open file failed");
       });
     return () => {
       cancelled = true;
     };
-  }, [file, docStore, addToast]);
+  }, [file, docStore, addToast, retryNonce]);
+
+  // A tab restored from localStorage whose label names a file but whose
+  // params carry none can't reload its document — surface that instead
+  // of the scaffold. (In-session tabs mid-open — example fork, toolbar
+  // Open — legitimately have no file param yet; `restored` excludes them.)
+  const lostBinding =
+    !file && !!tab?.restored && !!tab.label && !UNTITLED_LABELS.has(tab.label);
+
+  let body;
+  if (lostBinding) {
+    body = (
+      <TabLoadErrorState
+        tabId={tabId}
+        title={`Couldn't reload “${tab!.label}”`}
+        message="This tab lost its link to the file it was editing. Reopen the file from Home → Recent files or the file picker."
+      />
+    );
+  } else if (file && loadState === "loading") {
+    body = <MainSpinner />;
+  } else if (file && loadState === "error") {
+    body = (
+      <TabLoadErrorState
+        tabId={tabId}
+        title={`Couldn't reload “${tab?.label ?? file}”`}
+        message={loadError ?? "The file could not be opened."}
+        onRetry={() => setRetryNonce((n) => n + 1)}
+      />
+    );
+  } else {
+    body = <EditorView active={isActive} />;
+  }
 
   return (
     <DocumentStoreProvider store={docStore}>
       <SelectionStoreProvider store={selStore}>
-        <TabLabelSync tabId={tabId} />
+        <TabBindingSync tabId={tabId} />
         <ErrorBoundary area="Editor view" resetKey={tabId}>
-          <Suspense fallback={<MainSpinner />}>
-            <EditorView active={isActive} />
-          </Suspense>
+          <Suspense fallback={<MainSpinner />}>{body}</Suspense>
         </ErrorBoundary>
       </SelectionStoreProvider>
     </DocumentStoreProvider>
   );
 }
 
-// TabLabelSync mirrors the document's current file path onto the tab
-// label so opening a file (deep link, RecentFiles click, Save As)
-// retitles the tab. Hosted under DocumentStoreProvider so the selector
-// hits the per-tab store, not the module default.
+// Explicit non-scaffold state for a tab whose document can't be shown:
+// restored without a file binding, or the file failed to load. Keeps the
+// tab (and its name) visible so the user understands what's missing, and
+// never hands them an editable untitled scaffold under that name.
+function TabLoadErrorState({
+  tabId,
+  title,
+  message,
+  onRetry,
+}: {
+  tabId: string;
+  title: string;
+  message: string;
+  onRetry?: () => void;
+}) {
+  const [, setLocation] = useLocation();
+  return (
+    <div className="h-full flex items-center justify-center p-6 bg-surface-0">
+      <div className="max-w-sm text-center space-y-3">
+        <ExclamationTriangleIcon className="w-6 h-6 mx-auto text-warning" />
+        <h2 className="text-sm font-semibold text-fg-default">{title}</h2>
+        <p className="text-xs text-fg-muted">{message}</p>
+        <div className="flex items-center justify-center gap-2 pt-1">
+          {onRetry && (
+            <Button variant="primary" size="sm" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              useTabsStore.getState().closeTab(tabId);
+              const next = useTabsStore.getState();
+              const newActive = next.tabs.find(
+                (t) => t.id === next.activeEditorTabId,
+              );
+              const f = newActive?.params.file ?? "";
+              setLocation(
+                f ? `/editor?file=${encodeURIComponent(f)}` : "/editor",
+                { replace: true },
+              );
+            }}
+          >
+            Close tab
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// TabBindingSync mirrors the document's current file path onto the tab —
+// both the label AND the params.file binding — so opening a file through
+// any path (deep link, RecentFiles click, toolbar Open, Save As, example
+// fork) retitles the tab and keeps it reloadable after a page reload.
+// Hosted under DocumentStoreProvider so the selector hits the per-tab
+// store, not the module default.
 //
 // Uses botDisplayLabel so a bundle's `main.bot` shows the persona
 // display_name (e.g. "Featurly") / technical id ("feature-dev") rather
 // than the non-distinctive basename "main.bot". Only acts when
-// `currentFilePath` is non-null. Resetting the label to "untitled.bot"
-// whenever path is null would race the openFile resolution on every new
-// tab open and clobber labels set by the caller.
-function TabLabelSync({ tabId }: { tabId: string }) {
+// `currentFilePath` is non-null. Resetting label/params whenever path is
+// null would race the openFile resolution on every new tab open and
+// clobber values set by the caller.
+function TabBindingSync({ tabId }: { tabId: string }) {
   const path = useDocumentStore((s) => s.currentFilePath);
   const bots = useBotsStore((s) => s.bots);
   const fetchBots = useBotsStore((s) => s.fetch);
@@ -114,6 +229,7 @@ function TabLabelSync({ tabId }: { tabId: string }) {
   }, [path, bots, fetchBots]);
   useEffect(() => {
     if (!path) return;
+    useTabsStore.getState().bindFile(tabId, path);
     const next = botDisplayLabel(path, bots);
     const tabs = useTabsStore.getState().tabs;
     const current = tabs.find((t) => t.id === tabId);

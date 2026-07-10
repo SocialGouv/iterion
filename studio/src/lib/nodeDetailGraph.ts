@@ -3,6 +3,7 @@ import { MarkerType } from "@xyflow/react";
 import type { IterDocument, AgentDecl, JudgeDecl, HumanDecl, ToolNodeDecl, RouterDecl, ComputeDecl } from "@/api/types";
 import { findNodeDecl } from "@/lib/defaults";
 import { NODE_COLORS, SUB_COLORS } from "@/lib/constants";
+import { formatLoopBadge } from "@/lib/loopLabel";
 import type { DetailSubNodeData } from "@/components/Canvas/DetailSubNode";
 
 // Prefixes for detail sub-node IDs
@@ -278,7 +279,7 @@ export function generateNodeDetailGraph(
           badges.push(edge.when.negated ? `not ${edge.when.condition}` : edge.when.condition);
         }
       }
-      if (edge.loop) badges.push(`loop:${edge.loop.name}(${edge.loop.max_iterations})`);
+      if (edge.loop) badges.push(formatLoopBadge(edge.loop));
       if (edge.with && edge.with.length > 0) badges.push(`${edge.with.length} mapping${edge.with.length > 1 ? "s" : ""}`);
 
       nodes.push({

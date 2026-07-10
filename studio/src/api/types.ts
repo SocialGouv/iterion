@@ -508,9 +508,15 @@ export interface WhenClause {
   expr?: string;
 }
 
+// The AST JSON encoder (pkg/dsl/ast/jsonenc.go) marshals both bound
+// fields with omitempty: a literal bound arrives as `max_iterations`, a
+// template bound (`as name("{{...}}")`) as `max_iterations_expr`, and
+// the unbounded form (`as name(unbounded)`) carries neither. Consumers
+// must handle an absent bound instead of assuming a number.
 export interface LoopClause {
   name: string;
-  max_iterations: number;
+  max_iterations?: number;
+  max_iterations_expr?: string;
 }
 
 export interface WithEntry {

@@ -26,9 +26,14 @@ const RUNNING: StatusClasses = {
   label: "Running",
 };
 
+// Border classes carry a light/dark split: the `-soft` fills are ~10%
+// tints in the light palette, so at overview zoom the border is the only
+// readable status signal — light mode gets the full-strength status color
+// while dark keeps the original translucent border (already legible on
+// dark surfaces, and softer glare next to the pulse animation).
 const FINISHED: StatusClasses = {
   bg: "bg-success-soft",
-  border: "border-success/60",
+  border: "border-success dark:border-success/60",
   text: "text-fg-default",
   badgeVariant: "success",
   glyph: "✓",
@@ -37,7 +42,7 @@ const FINISHED: StatusClasses = {
 
 const FAILED: StatusClasses = {
   bg: "bg-danger-soft",
-  border: "border-danger/60",
+  border: "border-danger dark:border-danger/60",
   text: "text-fg-default",
   badgeVariant: "danger",
   glyph: "✗",
@@ -51,7 +56,7 @@ const FAILED_RESUMABLE: StatusClasses = {
 
 const PAUSED: StatusClasses = {
   bg: "bg-warning-soft",
-  border: "border-warning/60",
+  border: "border-warning dark:border-warning/60",
   text: "text-fg-default",
   badgeVariant: "warning",
   glyph: "⏸",
@@ -65,16 +70,19 @@ const PAUSED: StatusClasses = {
 // flight to inspect or fork it.
 const PAUSED_OPERATOR: StatusClasses = {
   bg: "bg-info-soft",
-  border: "border-info/60",
+  border: "border-info dark:border-info/60",
   text: "text-fg-default",
   badgeVariant: "info",
   glyph: "⏸",
   label: "Paused (operator)",
 };
 
+// Neutral (unvisited/skipped/cancelled/queued) cards use border-strong in
+// light mode: border-default is gray-200 on a near-white fill, invisible
+// at overview zoom (the audit's "pale gray nodes on white").
 const CANCELLED: StatusClasses = {
   bg: "bg-surface-2",
-  border: "border-border-default",
+  border: "border-border-strong dark:border-border-default",
   text: "text-fg-muted",
   badgeVariant: "neutral",
   glyph: "⊘",
@@ -83,7 +91,7 @@ const CANCELLED: StatusClasses = {
 
 const SKIPPED: StatusClasses = {
   bg: "bg-surface-2",
-  border: "border-border-default",
+  border: "border-border-strong dark:border-border-default",
   text: "text-fg-subtle",
   badgeVariant: "neutral",
   glyph: "·",
@@ -91,8 +99,8 @@ const SKIPPED: StatusClasses = {
 };
 
 const NONE: StatusClasses = {
-  bg: "bg-surface-1",
-  border: "border-border-default",
+  bg: "bg-surface-2 dark:bg-surface-1",
+  border: "border-border-strong dark:border-border-default",
   text: "text-fg-subtle",
   badgeVariant: "neutral",
   glyph: "○",
@@ -106,7 +114,7 @@ const NONE: StatusClasses = {
 // §F (T-12).
 const QUEUED: StatusClasses = {
   bg: "bg-surface-2",
-  border: "border-border-default",
+  border: "border-border-strong dark:border-border-default",
   text: "text-fg-muted",
   badgeVariant: "neutral",
   glyph: "⧗",

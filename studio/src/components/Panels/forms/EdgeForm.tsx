@@ -213,12 +213,31 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
               onChange={(v) => setLoop({ ...loop, name: v })}
               placeholder="e.g. refine_loop"
             />
-            <NumberField
-              label="Max Iterations"
-              value={loop.max_iterations}
-              onChange={(v) => setLoop({ ...loop, max_iterations: v ?? 3 })}
-              min={1}
-            />
+            {loop.max_iterations_expr ? (
+              <TextField
+                label="Max Iterations (expression)"
+                value={loop.max_iterations_expr}
+                onChange={(v) => setLoop({ ...loop, max_iterations_expr: v })}
+                placeholder="{{outputs.node.field}}"
+                help="Template bound resolved at run time. Clear the text to switch back to a literal number."
+              />
+            ) : loop.max_iterations === undefined ? (
+              <NumberField
+                label="Max Iterations"
+                value={undefined}
+                onChange={(v) => setLoop({ ...loop, max_iterations: v })}
+                min={1}
+                placeholder="unbounded"
+                help="No upper bound is set (unbounded form): the loop runs until a when-exit fires, capped by fuel. Enter a number to bound it."
+              />
+            ) : (
+              <NumberField
+                label="Max Iterations"
+                value={loop.max_iterations}
+                onChange={(v) => setLoop({ ...loop, max_iterations: v ?? 3 })}
+                min={1}
+              />
+            )}
           </>
         )}
       </div>

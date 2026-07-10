@@ -7,6 +7,7 @@ import type { GroupNodeData } from "@/components/Canvas/GroupNode";
 import type { GroupAnnotation } from "./groups";
 import { makeGroupNodeId } from "./groups";
 import { NODE_COLORS, LAYER_COLORS } from "./constants";
+import { formatLoopBadge } from "./loopLabel";
 
 export interface NodeData extends Record<string, unknown> {
   label: string;
@@ -120,7 +121,7 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
         }
       }
       if (edge.loop) {
-        label += `${label ? " " : ""}loop:${edge.loop.name}(${edge.loop.max_iterations})`;
+        label += `${label ? " " : ""}${formatLoopBadge(edge.loop)}`;
       }
       if (edge.with && edge.with.length > 0) {
         label += `${label ? " " : ""}[${edge.with.length} mapping${edge.with.length > 1 ? "s" : ""}]`;
