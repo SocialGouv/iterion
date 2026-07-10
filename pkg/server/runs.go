@@ -192,10 +192,10 @@ type resumeRunRequest struct {
 	// Source carries the workflow contents inline. Used in cloud mode
 	// when the resumer (studio) wants to push a possibly-modified
 	// workflow without depending on the server pod's filesystem.
-	Source  string                 `json:"source,omitempty"`
-	Answers map[string]interface{} `json:"answers,omitempty"`
-	Force   bool                   `json:"force,omitempty"`
-	Timeout string                 `json:"timeout,omitempty"`
+	Source  string         `json:"source,omitempty"`
+	Answers map[string]any `json:"answers,omitempty"`
+	Force   bool           `json:"force,omitempty"`
+	Timeout string         `json:"timeout,omitempty"`
 }
 
 type cancelRunResponse struct {
@@ -236,7 +236,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list runs: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"runs": out})
+	s.writeJSONFor(w, r, map[string]any{"runs": out})
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -466,7 +466,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 		if events == nil {
 			events = []*store.Event{}
 		}
-		s.writeJSONFor(w, r, map[string]interface{}{"events": events})
+		s.writeJSONFor(w, r, map[string]any{"events": events})
 		return
 	}
 	events, err := s.runs.LoadEventsCtx(r.Context(), id, from, to)
@@ -477,7 +477,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []*store.Event{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"events": events})
+	s.writeJSONFor(w, r, map[string]any{"events": events})
 }
 
 func (s *Server) handleGetRunWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -531,7 +531,7 @@ func (s *Server) handleListAllArtifacts(w http.ResponseWriter, r *http.Request) 
 	if out == nil {
 		out = []runview.RunArtifactSummary{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"artifacts": out})
+	s.writeJSONFor(w, r, map[string]any{"artifacts": out})
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -557,7 +557,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []runview.ArtifactSummary{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"artifacts": out})
+	s.writeJSONFor(w, r, map[string]any{"artifacts": out})
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +686,7 @@ func (s *Server) handleListPlans(w http.ResponseWriter, r *http.Request) {
 	if plans == nil {
 		plans = []store.PlanSnapshot{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"plans": plans})
+	s.writeJSONFor(w, r, map[string]any{"plans": plans})
 }
 
 // handleListArtifactFiles returns the manifest of tool-produced files
@@ -709,7 +709,7 @@ func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request)
 	if files == nil {
 		files = []store.RunFileInfo{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"files": files})
+	s.writeJSONFor(w, r, map[string]any{"files": files})
 }
 
 // handleGetArtifactFile streams one tool-produced file by relative
@@ -958,11 +958,11 @@ func (s *Server) handlePauseRun(w http.ResponseWriter, r *http.Request) {
 // stays decoupled from the service struct (we can deprecate fields
 // without breaking ForkSpec consumers).
 type forkRunRequest struct {
-	NodeID     string                 `json:"node_id"`
-	TurnIndex  int                    `json:"turn_index,omitempty"`
-	RewindCode bool                   `json:"rewind_code,omitempty"`
-	ForkName   string                 `json:"fork_name,omitempty"`
-	NewInputs  map[string]interface{} `json:"new_inputs,omitempty"`
+	NodeID     string         `json:"node_id"`
+	TurnIndex  int            `json:"turn_index,omitempty"`
+	RewindCode bool           `json:"rewind_code,omitempty"`
+	ForkName   string         `json:"fork_name,omitempty"`
+	NewInputs  map[string]any `json:"new_inputs,omitempty"`
 }
 
 func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
@@ -1052,7 +1052,7 @@ func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request
 	if msgs == nil {
 		msgs = []store.QueuedUserMessage{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"messages": msgs})
+	s.writeJSONFor(w, r, map[string]any{"messages": msgs})
 }
 
 type queueMessageRequest struct {

@@ -54,7 +54,7 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 	if err != nil {
 		t.Fatalf("open seed store: %v", err)
 	}
-	if _, err := st.CreateRun(context.Background(), runID, workflowName, map[string]interface{}{"k": "v"}); err != nil {
+	if _, err := st.CreateRun(context.Background(), runID, workflowName, map[string]any{"k": "v"}); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	if err := st.UpdateRunStatus(context.Background(), runID, status, ""); err != nil {
@@ -62,7 +62,7 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 	}
 	for i, evt := range []store.Event{
 		{Type: store.EventRunStarted, RunID: runID},
-		{Type: store.EventNodeStarted, RunID: runID, NodeID: "analyze", Data: map[string]interface{}{"kind": "agent"}},
+		{Type: store.EventNodeStarted, RunID: runID, NodeID: "analyze", Data: map[string]any{"kind": "agent"}},
 		{Type: store.EventNodeFinished, RunID: runID, NodeID: "analyze"},
 	} {
 		if _, err := st.AppendEvent(context.Background(), runID, evt); err != nil {
@@ -74,7 +74,7 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 // decodeJSONResp reads + unmarshals the response body into v, failing
 // the test on any error. Distinct from production's decodeJSON (which
 // drives request decoding from a handler), hence the -Resp suffix.
-func decodeJSONResp(t *testing.T, resp *http.Response, v interface{}) {
+func decodeJSONResp(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)

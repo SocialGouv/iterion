@@ -57,7 +57,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 	// other tenants (or the cloud store's local mirror), so we refuse
 	// here rather than risk a cross-tenant leak.
 	if s.cfg.Mode == "cloud" {
-		s.writeJSONFor(w, r, map[string]interface{}{"runs": []globalActiveRun{}})
+		s.writeJSONFor(w, r, map[string]any{"runs": []globalActiveRun{}})
 		return
 	}
 	roots, err := globalStoreRoots()
@@ -136,7 +136,7 @@ func (s *Server) handleListGlobalActiveRuns(w http.ResponseWriter, r *http.Reque
 		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 
-	s.writeJSONFor(w, r, map[string]interface{}{"runs": out})
+	s.writeJSONFor(w, r, map[string]any{"runs": out})
 }
 
 // runJSONShape is the subset of run.json this endpoint reads. Defined

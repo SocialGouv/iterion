@@ -37,14 +37,14 @@ func TestAggregateRunStatsBucketsCostByEventDay(t *testing.T) {
 	if _, err := rs.AppendEvent(ctx, run.ID, store.Event{
 		Type:      store.EventNodeFinished,
 		Timestamp: created,
-		Data:      map[string]interface{}{"_cost_usd": 1.25},
+		Data:      map[string]any{"_cost_usd": 1.25},
 	}); err != nil {
 		t.Fatalf("AppendEvent day 1: %v", err)
 	}
 	if _, err := rs.AppendEvent(ctx, run.ID, store.Event{
 		Type:      store.EventNodeFinished,
 		Timestamp: nextDay,
-		Data:      map[string]interface{}{"_cost_usd": 2.50},
+		Data:      map[string]any{"_cost_usd": 2.50},
 	}); err != nil {
 		t.Fatalf("AppendEvent day 2: %v", err)
 	}
