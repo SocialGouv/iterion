@@ -14,8 +14,8 @@ import (
 )
 
 // runGitMetaDoc is the persisted snapshot of a run's git activity, one
-// document per run (unique run_id). The runner pod upserts it on each
-// commit-in-stride and at finalize; the server pod reads it back to
+// document per run (unique run_id). The runner pod upserts it once after
+// the run returns (post-finalize); the server pod reads it back to
 // render the Commits/Files panels for a run whose worktree is gone. The
 // embedded gitlib types keep the wire shape identical to the live git
 // path, so the HTTP handlers serve persisted and live data uniformly.

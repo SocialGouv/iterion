@@ -324,7 +324,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	}
 
 	// run_gitmeta: one doc per run, keyed uniquely by run_id (the runner
-	// upserts a whole-snapshot on each commit-in-stride and at finalize).
+	// upserts a whole-snapshot once after the run returns, post-finalize).
 	_, err = s.runGitMeta.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "run_id", Value: 1}},
 		Options: options.Index().SetUnique(true).SetName("run_id_unique"),

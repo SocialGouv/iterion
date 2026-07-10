@@ -23,9 +23,10 @@ import (
 // gone. See docs/adr/067-persist-run-git-metadata-for-cloud-panels.md.
 //
 // It is a whole-snapshot overwrite (not append-only): the runner
-// recomputes and re-saves it on each commit-in-stride and again at
-// finalize, so the latest write always reflects the full base..head
-// range. The types are the same gitlib.CommitInfo / gitlib.FileStatus
+// recomputes and saves it once after the run returns (post-finalize,
+// before the clone is wiped), so that single write reflects the full
+// base..head range. Re-saving simply replaces the prior snapshot.
+// The types are the same gitlib.CommitInfo / gitlib.FileStatus
 // the live git path produces, so the HTTP handlers serve persisted and
 // live data through one wire shape with no conversion.
 type RunGitMeta struct {
