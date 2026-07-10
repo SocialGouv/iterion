@@ -41,6 +41,7 @@ const (
 	colRunLogs      = "run_logs"
 	colInteractions = "interactions"
 	colUserMessages = "user_messages"
+	colRunGitMeta   = "run_gitmeta"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -93,6 +94,7 @@ type Store struct {
 	runLogs            *mongo.Collection
 	interactions       *mongo.Collection
 	userMessages       *mongo.Collection
+	runGitMeta         *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -151,6 +153,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runLogs:            db.Collection(colRunLogs),
 		interactions:       db.Collection(colInteractions),
 		userMessages:       db.Collection(colUserMessages),
+		runGitMeta:         db.Collection(colRunGitMeta),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
@@ -318,6 +321,16 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure user_messages indexes: %w", err)
+	}
+
+	// run_gitmeta: one doc per run, keyed uniquely by run_id (the runner
+	// upserts a whole-snapshot on each commit-in-stride and at finalize).
+	_, err = s.runGitMeta.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "run_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("run_id_unique"),
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_gitmeta index: %w", err)
 	}
 
 	return nil
