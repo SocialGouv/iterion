@@ -18,8 +18,8 @@ import (
 // re-editing the JSON). Returns an error when no answers are provided
 // for a paused-waiting-human resume; failed-resumable resumes don't
 // require answers since the engine just re-executes the failing node.
-func buildResumeAnswers(opts ResumeOptions, resumingFromFailure bool) (map[string]interface{}, error) {
-	answers := make(map[string]interface{})
+func buildResumeAnswers(opts ResumeOptions, resumingFromFailure bool) (map[string]any, error) {
+	answers := make(map[string]any)
 	if opts.AnswersFile != "" {
 		fileAnswers, err := ParseAnswersFile(opts.AnswersFile)
 		if err != nil {

@@ -36,7 +36,7 @@ func NewPrinter(format OutputFormat) *Printer {
 // value: channels, cycles, etc.), write a JSON error envelope to
 // stderr so machine consumers see a parse-able failure signal rather
 // than an empty stdout that looks like a clean success.
-func (p *Printer) JSON(v interface{}) {
+func (p *Printer) JSON(v any) {
 	enc := json.NewEncoder(p.W)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
@@ -46,7 +46,7 @@ func (p *Printer) JSON(v interface{}) {
 }
 
 // Line prints a formatted line.
-func (p *Printer) Line(format string, args ...interface{}) {
+func (p *Printer) Line(format string, args ...any) {
 	fmt.Fprintf(p.W, format+"\n", args...)
 }
 

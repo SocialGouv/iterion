@@ -91,7 +91,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 	}
 
 	if p.Format == OutputJSON {
-		result := map[string]interface{}{
+		result := map[string]any{
 			"run": r,
 		}
 		if opts.Events || opts.Full {
@@ -103,7 +103,7 @@ func RunInspect(opts InspectOptions, p *Printer) error {
 		if opts.Full {
 			interactions, _ := s.ListInteractions(context.Background(), opts.RunID)
 			if len(interactions) > 0 {
-				var ints []interface{}
+				var ints []any
 				for _, id := range interactions {
 					inter, err := s.LoadInteraction(context.Background(), opts.RunID, id)
 					if err == nil {
@@ -205,7 +205,7 @@ func listRuns(s store.RunStore, p *Printer) error {
 
 	if len(ids) == 0 {
 		if p.Format == OutputJSON {
-			p.JSON([]interface{}{})
+			p.JSON([]any{})
 		} else {
 			p.Line("No runs found.")
 		}
@@ -213,7 +213,7 @@ func listRuns(s store.RunStore, p *Printer) error {
 	}
 
 	if p.Format == OutputJSON {
-		var runs []interface{}
+		var runs []any
 		for _, id := range ids {
 			r, err := s.LoadRun(context.Background(), id)
 			if err == nil {

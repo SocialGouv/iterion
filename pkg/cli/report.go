@@ -291,7 +291,7 @@ func (rb *reportBuilder) sumNodeFinished(evt *store.Event, step *reportStep) boo
 
 	summary := ""
 	if output, ok := evt.Data["output"]; ok {
-		if outMap, ok := output.(map[string]interface{}); ok {
+		if outMap, ok := output.(map[string]any); ok {
 			// Thinking metrics are stamped onto the node output by
 			// stampDelegateOutputMeta for both backends (claude_code
 			// never emits llm_step_finished), so node_finished is the
@@ -577,11 +577,11 @@ func renderMarkdown(rpt *report) string {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func extractTokens(data map[string]interface{}) int {
+func extractTokens(data map[string]any) int {
 	return extractInt(data, "_tokens")
 }
 
-func extractInt(data map[string]interface{}, key string) int {
+func extractInt(data map[string]any, key string) int {
 	v, ok := data[key]
 	if !ok {
 		return 0
@@ -598,7 +598,7 @@ func extractInt(data map[string]interface{}, key string) int {
 	return 0
 }
 
-func extractCost(data map[string]interface{}) float64 {
+func extractCost(data map[string]any) float64 {
 	if v, ok := data["_cost_usd"]; ok {
 		switch t := v.(type) {
 		case float64:

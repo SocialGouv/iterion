@@ -66,33 +66,33 @@ type toolCallRef struct {
 }
 
 type toolCallReport struct {
-	Seq        int64                  `json:"seq"`
-	ToolName   string                 `json:"tool_name"`
-	IsError    bool                   `json:"is_error"`
-	DurationMs int                    `json:"duration_ms,omitempty"`
-	Input      string                 `json:"input,omitempty"`
-	Output     string                 `json:"output,omitempty"`
-	Error      string                 `json:"error,omitempty"`
-	Raw        map[string]interface{} `json:"raw,omitempty"`
+	Seq        int64          `json:"seq"`
+	ToolName   string         `json:"tool_name"`
+	IsError    bool           `json:"is_error"`
+	DurationMs int            `json:"duration_ms,omitempty"`
+	Input      string         `json:"input,omitempty"`
+	Output     string         `json:"output,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	Raw        map[string]any `json:"raw,omitempty"`
 }
 
 // nodeArtifact is one persisted artifact version. Body is included
 // only when the caller explicitly asked for the artifacts section
 // (or --full) so the default JSON stays small.
 type nodeArtifact struct {
-	Version   int                    `json:"version"`
-	WrittenAt time.Time              `json:"written_at"`
-	Data      map[string]interface{} `json:"data,omitempty"`
-	Error     string                 `json:"error,omitempty"`
+	Version   int            `json:"version"`
+	WrittenAt time.Time      `json:"written_at"`
+	Data      map[string]any `json:"data,omitempty"`
+	Error     string         `json:"error,omitempty"`
 }
 
 type interactionSummary struct {
-	ID          string                 `json:"id"`
-	RequestedAt time.Time              `json:"requested_at"`
-	AnsweredAt  *time.Time             `json:"answered_at,omitempty"`
-	Questions   map[string]interface{} `json:"questions,omitempty"`
-	Answers     map[string]interface{} `json:"answers,omitempty"`
-	Error       string                 `json:"error,omitempty"`
+	ID          string         `json:"id"`
+	RequestedAt time.Time      `json:"requested_at"`
+	AnsweredAt  *time.Time     `json:"answered_at,omitempty"`
+	Questions   map[string]any `json:"questions,omitempty"`
+	Answers     map[string]any `json:"answers,omitempty"`
+	Error       string         `json:"error,omitempty"`
 }
 
 // nodeLogSlice is a best-effort timestamp-windowed slice of run.log.
@@ -111,7 +111,7 @@ func listNodeExecutions(s store.RunStore, runID string, p *Printer) error {
 	}
 
 	if p.Format == OutputJSON {
-		p.JSON(map[string]interface{}{
+		p.JSON(map[string]any{
 			"run_id":     runID,
 			"executions": snap.Executions,
 		})
@@ -442,9 +442,9 @@ func buildLLMTrace(events []*store.Event) []llmStep {
 			if v := stringField(e.Data, "finish_reason"); v != "" {
 				current.FinishReason = v
 			}
-			if calls, ok := e.Data["tool_call_details"].([]interface{}); ok {
+			if calls, ok := e.Data["tool_call_details"].([]any); ok {
 				for _, c := range calls {
-					if m, ok := c.(map[string]interface{}); ok {
+					if m, ok := c.(map[string]any); ok {
 						current.ToolCalls = append(current.ToolCalls, toolCallRef{
 							ToolName: stringField(m, "tool_name"),
 							Input:    stringField(m, "input"),
@@ -468,7 +468,7 @@ func buildToolCalls(events []*store.Event) []toolCallReport {
 		}
 		data := e.Data
 		if data == nil {
-			data = map[string]interface{}{}
+			data = map[string]any{}
 		}
 		name := stringField(data, "tool_name")
 		if name == "" {
@@ -760,7 +760,7 @@ func sumTokensCost(events []*store.Event) (int, float64) {
 	return tokens, cost
 }
 
-func stringField(m map[string]interface{}, key string) string {
+func stringField(m map[string]any, key string) string {
 	if m == nil {
 		return ""
 	}
@@ -770,7 +770,7 @@ func stringField(m map[string]interface{}, key string) string {
 	return ""
 }
 
-func coerceString(v interface{}) string {
+func coerceString(v any) string {
 	if v == nil {
 		return ""
 	}
@@ -780,7 +780,7 @@ func coerceString(v interface{}) string {
 	return safeJSON(v)
 }
 
-func safeJSON(v interface{}) string {
+func safeJSON(v any) string {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("%v", v)

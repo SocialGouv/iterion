@@ -19,8 +19,8 @@ import (
 // in scope here. An unknown preset name returns a user-readable error
 // listing the available names, since this is a CLI argument mistake
 // the operator can correct.
-func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string) (map[string]interface{}, error) {
-	inputs := make(map[string]interface{})
+func buildRunInputs(wf *ir.Workflow, presetName string, vars map[string]string) (map[string]any, error) {
+	inputs := make(map[string]any)
 	if presetName != "" {
 		preset, ok := wf.Presets[presetName]
 		if !ok {
