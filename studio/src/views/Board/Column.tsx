@@ -480,7 +480,7 @@ function IssueCard({
             claimed by {iss.claim}
           </span>
         )}
-        {!running && iss.last_run_id && (() => {
+        {iss.last_run_id && (() => {
           const lastRunId = iss.last_run_id;
           return (
             <button
@@ -490,9 +490,13 @@ function IssueCard({
                 onOpenRun(lastRunId);
               }}
               className="font-mono text-info hover:underline opacity-80"
-              title={`Open the last run on this issue (run ${lastRunId})`}
+              title={
+                running
+                  ? `Open the live run on this issue (run ${lastRunId})`
+                  : `Open the last run on this issue (run ${lastRunId})`
+              }
             >
-              ↪ last run
+              {running ? "▶ live run" : "↪ last run"}
             </button>
           );
         })()}
