@@ -63,6 +63,11 @@ func (d runPlanDoc) toSnapshot() store.PlanSnapshot {
 // TodoWrite fires often with no change. Otherwise the snapshot is
 // inserted at the next sequence and (snap, true, nil) is returned.
 //
+// The dedupe is best-effort under concurrency: racing byte-identical
+// writers get DISTINCT seqs from the counter and can both persist (see
+// the PlanStore interface contract) — a redundant snapshot, never a
+// lost one.
+//
 // Seq is allocated from a per-run monotonic counter (allocPlanSeq),
 // mirroring AppendEvent's allocSeq — a clean atomic increment rather than
 // the former max-read+1, which removed the theoretical seq-0 poisoning
@@ -119,9 +124,19 @@ func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store
 		}
 		if _, err := s.runPlans.InsertOne(ctx, doc); err != nil {
 			if mongo.IsDuplicateKeyError(err) {
-				// A sibling branch (or a desynced counter after a handoff)
-				// grabbed this seq; realloc after a brief jittered pause.
+				// The seq is already taken: either a sibling branch raced us,
+				// or the counter is BEHIND the persisted tail — runs whose
+				// snapshots predate the counter (max-read allocation) have
+				// docs at 0..N with no counter document, so a fresh counter
+				// would hand out colliding seqs until the retries run dry and
+				// the snapshot is LOST. Re-sync the counter to tail+1 ($max:
+				// monotonic, never rewinds a concurrent advance) and realloc.
 				lastErr = err
+				if tail, hasTail, terr := s.lastPlanSnapshot(ctx, runID); terr == nil && hasTail && tail.Seq >= seq {
+					if serr := s.seedSeqField(ctx, runID, planSeqField, int64(tail.Seq)+1); serr != nil {
+						return store.PlanSnapshot{}, false, serr
+					}
+				}
 				continue
 			}
 			return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: insert plan snapshot %s/%d: %w", runID, seq, err)

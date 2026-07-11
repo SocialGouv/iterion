@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -223,5 +224,51 @@ func TestPlanStore_DeleteRunCleanup(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("after DeleteRun, plan snapshots = %d, want 0 (orphaned run_plans)", len(got))
+	}
+}
+
+// TestPlanStore_LegacySeqsHealCounter pins the deploy-migration path: a run
+// whose snapshots were written by the pre-counter max-read allocation has
+// docs at 0..N and NO counter field. The first counter-backed append
+// collides on seq 0 — the write site must re-seed the counter from the
+// persisted tail and land the snapshot at N+1 instead of burning every
+// retry and LOSING it.
+func TestPlanStore_LegacySeqsHealCounter(t *testing.T) {
+	s := newPlanTestStore(t)
+	ctx := store.WithTenant(context.Background(), "acme")
+	runID := "run-legacy-heal"
+
+	// Seed 15 "legacy" docs directly (no counter document), as the
+	// max-read era left them.
+	for i := 0; i < 15; i++ {
+		doc := runPlanDoc{
+			TenantID:  "acme",
+			RunID:     runID,
+			Seq:       i,
+			NodeID:    "n",
+			Iteration: 0,
+			Tool:      "TodoWrite",
+			Timestamp: time.Now().UTC(),
+			Todos:     []store.PlanTodo{{Content: fmt.Sprintf("legacy %d", i), Status: "pending"}},
+		}
+		if _, err := s.runPlans.InsertOne(ctx, doc); err != nil {
+			t.Fatalf("seed legacy doc %d: %v", i, err)
+		}
+	}
+
+	written, wrote, err := s.AppendPlanSnapshot(ctx, runID, planSnap("n", 1, store.PlanTodo{Content: "fresh", Status: "pending"}))
+	if err != nil {
+		t.Fatalf("append after legacy seqs: %v", err)
+	}
+	if !wrote {
+		t.Fatalf("append after legacy seqs: wrote=false, snapshot lost")
+	}
+	if written.Seq != 15 {
+		t.Fatalf("healed seq = %d, want 15 (tail+1)", written.Seq)
+	}
+	// The counter is now ahead of the tail: the next append is collision-free.
+	w2, wrote2, err := s.AppendPlanSnapshot(ctx, runID, planSnap("n", 2, store.PlanTodo{Content: "fresh 2", Status: "pending"}))
+	if err != nil || !wrote2 || w2.Seq != 16 {
+		t.Fatalf("post-heal append: seq=%d wrote=%v err=%v, want 16/true/nil", w2.Seq, wrote2, err)
 	}
 }

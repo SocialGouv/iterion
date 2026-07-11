@@ -121,8 +121,11 @@ func (s *Store) allocSeq(ctx context.Context, runID string) (int64, error) {
 // independently of event seqs (both start at 0 per run). Replaces the
 // former max-read+retry allocation, giving plans the same clean
 // counter-backed seq-0 handling events already had.
+// planSeqField is the run_seq counter field backing plan-snapshot seqs.
+const planSeqField = "next_plan_seq"
+
 func (s *Store) allocPlanSeq(ctx context.Context, runID string) (int64, error) {
-	return s.allocSeqField(ctx, runID, "next_plan_seq")
+	return s.allocSeqField(ctx, runID, planSeqField)
 }
 
 // allocSeqField is the shared FindOneAndUpdate $inc counter behind
@@ -141,9 +144,27 @@ func (s *Store) allocPlanSeq(ctx context.Context, runID string) (int64, error) {
 // creates a fresh counter starting at 0, which is correct as long as the
 // legacy run is no longer writing. A counter document created by the
 // sibling sequence (e.g. next_seq present, next_plan_seq absent) also
-// starts the new field at 0 via the absent-field path below. For runs
-// still actively writing, the migration tool copies the value across;
-// see scripts/migrate/run-seq-tenant-backfill.go.
+// starts the new field at 0 via the absent-field path below. Runs whose
+// docs predate their counter self-heal at the write site: a duplicate-key
+// collision re-seeds the counter from the persisted tail (seedSeqField).
+// seedSeqField raises the run's counter field to at least floor ($max —
+// monotonic, a concurrent $inc past floor is never rewound). Used to
+// re-sync a counter that is BEHIND the persisted tail (docs written by
+// the pre-counter max-read allocation).
+func (s *Store) seedSeqField(ctx context.Context, runID, field string, floor int64) error {
+	tenantID, _ := store.TenantFromContext(ctx)
+	_, err := s.runSeq.UpdateOne(
+		ctx,
+		bson.M{"_id": bson.M{"tenant_id": tenantID, "run_id": runID}},
+		bson.M{"$max": bson.M{field: floor}},
+		options.UpdateOne().SetUpsert(true),
+	)
+	if err != nil {
+		return fmt.Errorf("store/mongo: seed seq %s for run %s: %w", field, runID, err)
+	}
+	return nil
+}
+
 func (s *Store) allocSeqField(ctx context.Context, runID, field string) (int64, error) {
 	tenantID, _ := store.TenantFromContext(ctx)
 	res := s.runSeq.FindOneAndUpdate(
