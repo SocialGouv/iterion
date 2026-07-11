@@ -39,6 +39,7 @@ import {
 } from "@/components/ui";
 import { EmojiPicker } from "@/components/ui/EmojiPicker";
 import { errorMessage } from "@/lib/errorHints";
+import { humanizeCron } from "@/lib/humanizeCron";
 import { useBackendDetectStore } from "@/store/backendDetect";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -1039,6 +1040,16 @@ function AdvancedCard({
               placeholder="0 7 * * 1-5"
               className="max-w-56 font-mono"
             />
+            {(() => {
+              const human = draft.scheduleCron.trim()
+                ? humanizeCron(draft.scheduleCron.trim())
+                : null;
+              return human ? (
+                <p className="mt-1 text-caption text-fg-muted" aria-live="polite">
+                  Runs {human}
+                </p>
+              ) : null;
+            })()}
           </div>
         </div>
       )}
@@ -1107,6 +1118,11 @@ function SummaryCard({
         {draft.scheduleCron.trim() !== "" && (
           <Chip>
             <span className="font-mono">{draft.scheduleCron.trim()}</span>
+            {humanizeCron(draft.scheduleCron.trim()) && (
+              <span className="ml-1 text-fg-muted">
+                — {humanizeCron(draft.scheduleCron.trim())}
+              </span>
+            )}
           </Chip>
         )}
       </div>
