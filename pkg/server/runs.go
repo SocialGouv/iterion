@@ -22,6 +22,7 @@ import (
 
 	"github.com/SocialGouv/iterion/bots"
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -155,6 +156,12 @@ type launchRunRequest struct {
 	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
 	// See runview.ModelOverrideEntry.
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
+	// Budget carries run-level budget-cap overrides for the workflow's
+	// `budget:` block — the HTTP twin of the CLI --max-* flags. Non-zero
+	// fields win over the DSL/recipe budget; zero fields inherit. A bad
+	// max_duration is a 400. Not supported for queued cloud runs yet
+	// (rejected with a 400, never silently dropped).
+	Budget *launchBudgetSpec `json:"budget,omitempty"`
 	// Cap. 3 sharding fields. When ParentRunID is non-empty, this
 	// launch is a shard child of an existing parent run; the server
 	// propagates the fields to the persisted Run document and (in
@@ -180,6 +187,36 @@ type launchRunRequest struct {
 	// holds the run's user-facing answer (the "final_answer" field).
 	// Empty → the notifier scans all artifact nodes for "final_answer".
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
+}
+
+// launchBudgetSpec is the wire shape of launchRunRequest.Budget. Field
+// types mirror ir.Budget (MaxDuration stays a Go duration string, parsed
+// via time.ParseDuration at admission).
+type launchBudgetSpec struct {
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
+	MaxTokens           int     `json:"max_tokens,omitempty"`
+	MaxDuration         string  `json:"max_duration,omitempty"`
+	MaxIterations       int     `json:"max_iterations,omitempty"`
+	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+}
+
+// toOverrides projects the wire shape onto the engine's override type,
+// returning nil when every field is zero (no override requested).
+func (b *launchBudgetSpec) toOverrides() *ir.BudgetOverrides {
+	if b == nil {
+		return nil
+	}
+	o := ir.BudgetOverrides{
+		MaxCostUSD:          b.MaxCostUSD,
+		MaxTokens:           b.MaxTokens,
+		MaxDuration:         b.MaxDuration,
+		MaxIterations:       b.MaxIterations,
+		MaxParallelBranches: b.MaxParallelBranches,
+	}
+	if o.IsZero() {
+		return nil
+	}
+	return &o
 }
 
 type launchRunResponse struct {
@@ -210,6 +247,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	filter := runview.ListFilter{
 		Workflow: q.Get("workflow"),
 		Repo:     q.Get("repo"),
+		Bundle:   q.Get("bot"),
 		Node:     q.Get("node"),
 	}
 	if status := q.Get("status"); status != "" {
@@ -299,6 +337,26 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid timeout")
 		return
 	}
+	budget := req.Budget.toOverrides()
+	if budget != nil {
+		// Validate max_duration at admission so the caller gets a 400
+		// with the offending value instead of a launch-time failure.
+		if err := budget.Validate(); err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid budget: %v", err)
+			span.SetStatus(codes.Error, "invalid budget")
+			return
+		}
+		// The queued cloud path has no seam to apply a launch-time budget
+		// override yet (the runner pod recompiles + applies its own
+		// ceiling). Reject explicitly — never silently drop a cap the
+		// caller asked for. The service double-checks on its publisher
+		// path; this admission check gives the clearer 400.
+		if s.cfg.Mode == "cloud" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "budget overrides are not supported for queued cloud runs yet")
+			span.SetStatus(codes.Error, "budget override on cloud path")
+			return
+		}
+	}
 
 	// Detach lifecycle from the HTTP request context so a client
 	// disconnect doesn't abort the run, but keep the trace span so
@@ -333,6 +391,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Permission:         req.Permission,
 		ReviewMode:         req.ReviewMode,
 		ModelOverrides:     req.ModelOverrides,
+		Budget:             budget,
 		ParentRunID:        req.ParentRunID,
 		ShardIndex:         req.ShardIndex,
 		ShardCount:         req.ShardCount,
@@ -661,10 +720,11 @@ func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListPlans returns the chronological plan snapshots captured for a
-// run — the agents' TodoWrite/todo_write living TODO lists, persisted to
-// runs/<id>/plans/. Ascending seq order (chronological). Returns an empty
-// array (not 404) for a valid run that captured no plans — older runs
-// predate the feature, and cloud stores don't back it — so the studio's
+// run — the agents' TodoWrite/todo_write living TODO lists (filesystem
+// runs/<id>/plans/ or the Mongo run_plans collection in cloud mode).
+// Ascending seq order (chronological). Returns an empty array (not 404)
+// for a valid run that captured no plans — e.g. an agent that never
+// called TodoWrite, or a run predating the feature — so the studio's
 // Plans panel renders a clean empty state. Tenant-scoped like the other
 // run sub-resource handlers (load the run under the caller's context
 // first so the mongo tenant filter rejects cross-tenant requests).

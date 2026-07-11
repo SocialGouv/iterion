@@ -3,8 +3,9 @@
 Iterion surfaces two per-node extended-thinking metrics for LLM nodes:
 
 - **`thinking_ms`** — wall-clock time spent in thinking blocks (milliseconds).
-- **`thinking_tokens`** — count of thinking tokens, always shown with a `~`
-  because it is an **approximation** (see below).
+- **`thinking_tokens`** — count of thinking tokens, shown with a `~` because
+  it may be an approximation depending on the backend (see below; on claw it
+  is the provider's exact billed count whenever the API reports one).
 
 They appear on four surfaces:
 
@@ -25,15 +26,25 @@ They appear on four surfaces:
 - **`iterion report`** — `Thinking Tokens` / `Thinking Time` rows in the
   metrics table.
 
-## Why tokens are approximate
+## How tokens are counted
 
-The Anthropic Messages API bills thinking inside `output_tokens` with **no
-separate breakdown**, so there is no exact thinking-token count to read. Iterion
-re-encodes the thinking text with a real BPE tokenizer (`o200k_base`, vendored
-and offline) in [pkg/backend/thinktokens](../pkg/backend/thinktokens/thinktokens.go).
+On the **claw** path, the preferred source is the provider's **exact billed
+count**: Anthropic's `usage.output_tokens_details.thinking_tokens` (raw
+internal reasoning, independent of `thinking.display`) and OpenAI's
+`output_tokens_details.reasoning_tokens` both flow through claw-code-go's
+`UsageDelta` into `Usage.ReasoningTokens`. This is authoritative — it counts
+the model's full internal reasoning, which with summarized display is
+systematically larger than the visible summary.
+
+When the provider omits the breakdown (and always on the **claude_code**
+path, whose stream-json usage carries no details), iterion falls back to
+re-encoding the visible thinking text with a real BPE tokenizer
+(`o200k_base`, vendored and offline) in
+[pkg/backend/thinktokens](../pkg/backend/thinktokens/thinktokens.go).
 `o200k_base` is OpenAI's encoding, not Anthropic's (whose tokenizer is not
-public), so the figure is a comparable-across-backends estimate — never claimed
-to be exact. It falls back to a chars/4 heuristic if the codec fails to load.
+public), so that figure is a comparable-across-backends estimate — and with
+summarized display it counts the *summary*, not the underlying reasoning.
+It falls back to a chars/4 heuristic if the codec fails to load.
 
 ## How time is measured
 
@@ -71,16 +82,17 @@ inspecting raw `stream-json` frames):
   thinking even on Opus 4.8. Override with
   `CLAW_ANTHROPIC_THINKING_DISPLAY=omitted|off`. OpenAI reasoning
   summaries flow via the Responses API (`reasoning.summary=auto`).
-- **claude_code** — the CLI controls its own request and exposes **no
-  knob** for `display` as of 2.1.195 (`MAX_THINKING_TOKENS` and
-  `alwaysThinkingEnabled` affect whether thinking happens, not its
-  visibility; upstream feature requests:
-  [#36006](https://github.com/anthropics/claude-code/issues/36006),
-  [#8477](https://github.com/anthropics/claude-code/issues/8477)). So:
-  sonnet-4-6 streams summarized text (its default) and iterion folds it;
-  opus-4-8 streams signed-but-empty blocks and iterion logs
+- **claude_code** — in `--print` (headless/SDK) mode the CLI defaults
+  thinking display to omitted on Opus 4.8+ while its own interactive UI
+  requests the summary (that's why the VS Code extension shows thinking
+  live). The CLI has an undocumented `--thinking-display
+  summarized|omitted` flag (present in 2.1.195; absent from `--help`),
+  which iterion passes as `summarized` by default — so opus thinking
+  summaries fold in run.log like sonnet's. Override with
+  `ITERION_CLAUDE_CODE_THINKING_DISPLAY=omitted` (latency) or `off`
+  (don't pass the flag — required for claude CLIs that predate it and
+  reject unknown options). When the flag can't be applied and blocks
+  arrive signed-but-empty, iterion still logs
   `🧠 thinking: Nms (content withheld by provider)` with the timing
-  metric (tokens stay 0 — nothing to re-encode). Even the session
-  transcript and `--include-partial-messages` deltas are empty on opus
-  (only `estimated_tokens`). Revisit when the CLI grows a display
-  setting.
+  metric (tokens stay 0 — nothing to re-encode; even the session
+  transcript and `--include-partial-messages` deltas are empty then).

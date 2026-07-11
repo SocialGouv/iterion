@@ -452,6 +452,39 @@ func TestGenerateTextDirect_ThinkingOnStep(t *testing.T) {
 	}
 }
 
+// When the provider reports the exact billed thinking-token count
+// (usage.output_tokens_details), it must win over the re-encoded
+// approximation of the visible (summarized) text.
+func TestGenerateTextDirect_ExactThinkingTokensWin(t *testing.T) {
+	deltaEv := api.StreamEvent{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 348}}
+	deltaEv.Usage.OutputTokensDetails.ThinkingTokens = 312
+	events := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 50},
+		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "thinking", Index: 0}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "thinking_delta", Thinking: "Short summary."}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 1}},
+		{Type: api.EventContentBlockDelta, Index: 1, Delta: api.Delta{Type: "text_delta", Text: "42."}},
+		{Type: api.EventContentBlockStop, Index: 1},
+		deltaEv,
+		{Type: api.EventMessageStop},
+	}
+	client := newMockClient(events)
+
+	result, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-opus-4-8",
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := result.Steps[0].Usage.ReasoningTokens; got != 312 {
+		t.Errorf("ReasoningTokens = %d, want the provider's exact 312 (not a re-encode of the summary)", got)
+	}
+}
+
 func TestGenerateTextDirect_ToolLoop(t *testing.T) {
 	// Step 1: model calls tool "add" with {a:2,b:3}
 	// Step 2: model returns "The sum is 5"

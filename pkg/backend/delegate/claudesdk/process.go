@@ -39,6 +39,12 @@ type processConfig struct {
 
 	IncludePartialMessages bool
 
+	// ThinkingDisplay maps to --thinking-display (summarized|omitted).
+	// Opus 4.8+ defaults display to omitted in headless mode, streaming
+	// thinking blocks with empty text; "summarized" makes the reasoning
+	// text visible. Empty means the flag is not emitted.
+	ThinkingDisplay string
+
 	Resume               string
 	ForkSession          bool
 	ContinueConversation bool
@@ -85,6 +91,9 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 	}
 	if cfg.IncludePartialMessages {
 		args = append(args, "--include-partial-messages")
+	}
+	if cfg.ThinkingDisplay != "" {
+		args = append(args, "--thinking-display", cfg.ThinkingDisplay)
 	}
 
 	if len(cfg.AllowedTools) > 0 {

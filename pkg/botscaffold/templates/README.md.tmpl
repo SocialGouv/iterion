@@ -1,0 +1,20 @@
+# {{if .DisplayName}}{{.DisplayName}}{{else}}{{.Slug}}{{end}}
+
+{{if .Description}}{{.Description}}{{else}}An iterion bot.{{end}}
+
+Created with the studio bot builder. Layout:
+
+- `main.bot` — the workflow: one adaptive `campaign` agent carrying the
+  mission (its system prompt is the `mission` prompt block).
+- `manifest.yaml` — catalog metadata (name, icon, when_to_use, triggers).
+- `skills/` — drop `SKILL.md` files here to ship knowledge with the bot;
+  they are mirrored into the run workspace's `.claude/skills/`.
+
+Run it:
+
+```sh
+iterion run {{.Slug}}/main.bot
+```
+
+Or from the studio: open the bot's page and hit Launch (or Test for a
+throwaway run).

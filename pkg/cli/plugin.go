@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/plugin"
 )
@@ -49,46 +47,15 @@ func PluginSetEnabled(name string, enabled bool) error {
 }
 
 // PluginRun executes a plugin's lifecycle command ("index" or "refresh") in the
-// given workspace (default: cwd), streaming output to stdout/stderr.
+// given workspace (default: cwd), streaming output to stdout/stderr. The
+// mechanism lives in pkg/plugin (plugin.RunLifecycle) so the CLI and the HTTP
+// server run lifecycles identically.
 func PluginRun(ctx context.Context, name, phase, workspace string) error {
 	reg, err := plugin.Load()
 	if err != nil {
 		return err
 	}
-	p, ok := reg.Get(name)
-	if !ok {
-		return fmt.Errorf("plugin %q not found", name)
-	}
-	lc := p.Manifest.Contributes.Lifecycle
-	if lc == nil {
-		return fmt.Errorf("plugin %q has no lifecycle commands", name)
-	}
-	var cmdStr string
-	switch phase {
-	case "index":
-		cmdStr = lc.Index
-	case "refresh":
-		cmdStr = lc.Refresh
-	default:
-		return fmt.Errorf("unknown lifecycle phase %q (want index|refresh)", phase)
-	}
-	if strings.TrimSpace(cmdStr) == "" {
-		return fmt.Errorf("plugin %q has no %q command", name, phase)
-	}
-	if workspace == "" {
-		if wd, werr := os.Getwd(); werr == nil {
-			workspace = wd
-		}
-	}
-	expanded := reg.ExpandContextFor(name, workspace).Expand(cmdStr)
-	if cdErr := os.MkdirAll(reg.CacheDir(name), 0o755); cdErr != nil {
-		return cdErr
-	}
-	c := exec.CommandContext(ctx, "sh", "-c", expanded)
-	c.Dir = workspace
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	return c.Run()
+	return plugin.RunLifecycle(ctx, reg, name, phase, workspace, os.Stdout, os.Stderr)
 }
 
 // PluginInstall installs a plugin from a local directory or git URL into

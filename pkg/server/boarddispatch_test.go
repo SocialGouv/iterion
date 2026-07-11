@@ -65,6 +65,40 @@ func readyCard(id, bot string) boardmongo.Candidate {
 	return boardmongo.Candidate{Tenant: "t1", Issue: native.Issue{ID: id, Bot: bot, State: native.StateReady}}
 }
 
+// TestStampCardLastRun: the cloud coordinator must stamp the launched run onto
+// the card via the CloudBoardFor seam (the local dispatcher does this itself;
+// the cloud path launches through runs.Launch and previously never stamped, so
+// a running card had no link to its run). A missing seam / empty run id / store
+// error is a silent no-op — stamping is best-effort and never fails the run.
+func TestStampCardLastRun(t *testing.T) {
+	boardStore, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := boardStore.Create(native.Issue{Title: "x", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{}
+	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
+
+	s.stampCardLastRun("t1", iss.ID, "run-live-1")
+	got, err := boardStore.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastRunID != "run-live-1" {
+		t.Fatalf("card LastRunID = %q, want run-live-1", got.LastRunID)
+	}
+
+	// Empty run id and a nil seam must be no-ops, not panics.
+	s.stampCardLastRun("t1", iss.ID, "")
+	if got, _ := boardStore.Get(iss.ID); got.LastRunID != "run-live-1" {
+		t.Fatalf("empty run id must not clobber the stamp, got %q", got.LastRunID)
+	}
+	(&Server{}).stampCardLastRun("t1", iss.ID, "run-x") // CloudBoardFor nil → no-op
+}
+
 func TestBoardDispatcher_ClaimsProcessesAndMoves(t *testing.T) {
 	f := newFakeBoardCoord(readyCard("native:1", "feature-dev"), readyCard("native:2", "sec-audit-source"))
 	var pmu sync.Mutex

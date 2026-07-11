@@ -11,20 +11,24 @@ export interface RunSettingsSectionProps {
   backendOverride: string;
   compressOverride: string;
   permissionOverride: string;
+  reviewModeOverride: string;
   backendReport: BackendDetectReport | null;
   onBackendChange: (value: string) => void;
   onCompressChange: (value: string) => void;
   onPermissionChange: (value: string) => void;
+  onReviewModeChange: (value: string) => void;
 }
 
 export default function RunSettingsSection({
   backendOverride,
   compressOverride,
   permissionOverride,
+  reviewModeOverride,
   backendReport,
   onBackendChange,
   onCompressChange,
   onPermissionChange,
+  onReviewModeChange,
 }: RunSettingsSectionProps) {
   return (
     <section className="mt-6 border-t border-border-default pt-4 mb-6">
@@ -119,6 +123,26 @@ export default function RunSettingsSection({
               <code>allow:</code> list are paused for your approval (
               <code>ask</code>) or blocked (<code>deny</code>). Rule lists are
               set in the <code>.bot</code> DSL. See docs/permissions.md.
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+          <div>
+            <div className="text-xs font-medium font-mono">review_mode</div>
+            <div className="text-caption text-fg-subtle">review topology</div>
+          </div>
+          <div>
+            <Select
+              value={reviewModeOverride}
+              onChange={(e) => onReviewModeChange(e.currentTarget.value)}
+            >
+              <option value="">auto — resolve from detected providers</option>
+              <option value="mono">mono — single-family review</option>
+              <option value="dual">dual — cross-family review</option>
+            </Select>
+            <div className="mt-1 text-caption text-fg-subtle">
+              Review topology for bots that declare <code>review_mode</code>.
+              Ignored by bots that don&apos;t.
             </div>
           </div>
         </div>

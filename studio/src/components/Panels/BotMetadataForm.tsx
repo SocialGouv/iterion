@@ -3,6 +3,8 @@ import { useMemo, useState } from "react";
 import type { BotEntryWithSchema, BotPatch } from "@/api/bots";
 import { CheckboxField, TagListField, TextField } from "@/components/Panels/forms/FormField";
 import { Button } from "@/components/ui/Button";
+import { EmojiPicker } from "@/components/ui/EmojiPicker";
+import { botIdentity } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
 
@@ -13,6 +15,7 @@ interface Draft {
   triggers: string[];
   author: string;
   version: string;
+  icon: string;
   enabled: boolean; // edits the MANIFEST default (manifest_enabled)
 }
 
@@ -24,6 +27,7 @@ function toDraft(b: BotEntryWithSchema): Draft {
     triggers: b.triggers ?? [],
     author: b.author ?? "",
     version: b.version ?? "",
+    icon: b.icon ?? "",
     enabled: b.manifest_enabled !== false,
   };
 }
@@ -65,6 +69,7 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
       triggers: draft.triggers,
       author: draft.author.trim(),
       version: draft.version.trim(),
+      icon: draft.icon.trim(),
       enabled: draft.enabled,
     };
     try {
@@ -83,6 +88,38 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
       <div className="mb-3">
         <div className="mb-1 text-xs text-fg-subtle">Bot (technical name — immutable)</div>
         <div className="font-mono text-sm text-fg-default">{bot.name}</div>
+      </div>
+
+      <div className="mb-2">
+        <div className="mb-1 text-xs text-fg-subtle">Icon</div>
+        <div className="flex items-center gap-2">
+          <EmojiPicker
+            onSelect={(emoji) => update("icon", emoji)}
+            trigger={
+              <button
+                type="button"
+                aria-label={draft.icon ? `Icon ${draft.icon} — change` : "Pick an icon"}
+                title="Pick an emoji icon for this bot"
+                className="flex h-9 w-9 items-center justify-center rounded-md border border-border-strong bg-surface-1 text-lg leading-none transition-colors hover:border-accent"
+              >
+                {draft.icon || (
+                  <span className="text-fg-subtle" aria-hidden="true">
+                    {botIdentity(bot.name).emoji}
+                  </span>
+                )}
+              </button>
+            }
+          />
+          {draft.icon ? (
+            <Button variant="ghost" size="sm" onClick={() => update("icon", "")}>
+              Clear
+            </Button>
+          ) : (
+            <span className="text-caption text-fg-subtle">
+              No manifest icon — using the built-in default.
+            </span>
+          )}
+        </div>
       </div>
 
       <TextField

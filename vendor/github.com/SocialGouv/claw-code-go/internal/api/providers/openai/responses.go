@@ -177,6 +177,11 @@ type oaiResponsesUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
+	// ReasoningTokens (output_tokens_details.reasoning_tokens) is the
+	// exact billed reasoning-token count; 0 when the API omits it.
+	OutputTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 // ----- Dispatch decision ----------------------------------------------------
@@ -502,6 +507,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		reasonOpenOrder []string
 		stopReason      = "end_turn"
 		outputTokens    int
+		reasoningTokens int
 	)
 
 	// closeBlock emits content_block_stop for a started, not-yet-closed
@@ -782,6 +788,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		case "response.completed":
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
+				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
 			}
 			// Reconcile any function_call accumulator that landed
 			// without call_id/name at output_item.added time (under-
@@ -830,6 +837,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// a successful empty turn.
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
+				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
 			}
 			reason := "unknown"
 			if ev.Response != nil && ev.Response.IncompleteDetails != nil && ev.Response.IncompleteDetails.Reason != "" {
@@ -888,10 +896,12 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		}
 	}
 
+	usage := api.UsageDelta{OutputTokens: outputTokens}
+	usage.OutputTokensDetails.ThinkingTokens = reasoningTokens
 	if !send(api.StreamEvent{
 		Type:       api.EventMessageDelta,
 		StopReason: stopReason,
-		Usage:      api.UsageDelta{OutputTokens: outputTokens},
+		Usage:      usage,
 	}) {
 		return
 	}

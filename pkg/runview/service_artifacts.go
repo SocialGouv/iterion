@@ -178,11 +178,12 @@ func (s *Service) OpenArtifactFileCtx(ctx context.Context, runID, relPath string
 }
 
 // ListPlanSnapshots returns the chronological plan snapshots captured for
-// a run (agents' TodoWrite/todo_write living TODO lists, persisted to
-// runs/<id>/plans/). Returns nil when the store doesn't satisfy PlanStore
-// (cloud mode) so the HTTP handler surfaces a clean empty list without
-// leaking the backend choice — mirroring ListArtifactFiles. Ascending Seq
-// order (chronological): the sequence shows how the plan evolved.
+// a run (agents' TodoWrite/todo_write living TODO lists — filesystem
+// runs/<id>/plans/ or the Mongo run_plans collection). Returns nil when
+// the store doesn't satisfy PlanStore so the HTTP handler surfaces a clean
+// empty list without leaking the backend choice — mirroring
+// ListArtifactFiles. Ascending Seq order (chronological): the sequence
+// shows how the plan evolved.
 func (s *Service) ListPlanSnapshots(runID string) ([]store.PlanSnapshot, error) {
 	return s.ListPlanSnapshotsCtx(context.Background(), runID)
 }

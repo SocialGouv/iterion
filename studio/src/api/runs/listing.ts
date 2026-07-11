@@ -18,6 +18,7 @@ export async function listRuns(params: ListRunsParams = {}): Promise<RunSummary[
   if (params.since) qs.set("since", params.since);
   if (params.limit) qs.set("limit", String(params.limit));
   if (params.node) qs.set("node", params.node);
+  if (params.bot) qs.set("bot", params.bot);
   const suffix = qs.toString();
   const res = await request<{ runs: RunSummary[] }>(
     `/runs${suffix ? `?${suffix}` : ""}`,

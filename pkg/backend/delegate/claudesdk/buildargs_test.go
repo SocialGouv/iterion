@@ -47,6 +47,18 @@ func TestBuildArgs_SettingSources(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_ThinkingDisplay(t *testing.T) {
+	args := buildArgs(processConfig{ThinkingDisplay: "summarized"}, true)
+	if got := flagValue(args, "--thinking-display"); got != "summarized" {
+		t.Errorf("--thinking-display = %q, want summarized", got)
+	}
+
+	// Empty → flag omitted (older CLIs reject unknown options).
+	if hasFlag(buildArgs(processConfig{}, true), "--thinking-display") {
+		t.Error("--thinking-display must be omitted when unset")
+	}
+}
+
 func TestBuildArgs_SettingSourcesAllThree(t *testing.T) {
 	args := buildArgs(processConfig{
 		SettingSources: []SettingSource{SettingSourceUser, SettingSourceProject, SettingSourceLocal},

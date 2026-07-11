@@ -90,6 +90,9 @@ type config struct {
 	// Streaming
 	includePartialMessages bool
 
+	// Thinking visibility (--thinking-display)
+	thinkingDisplay string
+
 	// Extensions
 	mcpServers map[string]MCPServerConfig
 	hooks      map[HookEvent][]HookMatcher
@@ -202,6 +205,13 @@ func WithMaxBudgetUSD(budget float64) Option {
 // WithMaxThinkingTokens sets the maximum thinking token budget.
 func WithMaxThinkingTokens(n int) Option {
 	return func(c *config) { c.maxThinkingTokens = n }
+}
+
+// WithThinkingDisplay sets --thinking-display (summarized|omitted).
+// Opus 4.8+ defaults to omitted in headless mode (empty thinking text,
+// signature only); "summarized" makes the reasoning text visible.
+func WithThinkingDisplay(display string) Option {
+	return func(c *config) { c.thinkingDisplay = display }
 }
 
 // WithIncludePartialMessages enables token-level stream events.

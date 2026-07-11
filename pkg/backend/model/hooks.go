@@ -111,13 +111,16 @@ type TurnWriter interface {
 	WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error
 }
 
-// PlanWriter is the optional capability filesystem stores satisfy for
-// persisting the chronological plan snapshots agents produce via their
-// TodoWrite (claude_code) / todo_write (claw) tool. When present, the
-// tool-started hook captures each snapshot to runs/<id>/plans/. Mongo
-// (cloud) stores don't satisfy it today; the hook skips the capture when
-// the capability is missing rather than failing the LLM call. See
-// store.PlanStore for the on-disk format + dedup semantics.
+// PlanWriter is the optional capability stores satisfy for persisting
+// the chronological plan snapshots agents produce via their TodoWrite
+// (claude_code) / todo_write (claw) tool. When present, the tool-started
+// hook captures each snapshot (filesystem → runs/<id>/plans/, Mongo →
+// run_plans collection). The hook skips the capture when the capability
+// is missing rather than failing the LLM call. In cloud mode the runner's
+// metricsEmitter wrapper forwards this interface to the inner Mongo store
+// (see pkg/runner metricsEmitter.AppendPlanSnapshot), otherwise the plain
+// `emitter.(PlanWriter)` assertion below would hide it. See
+// store.PlanStore for the format + dedup semantics.
 type PlanWriter interface {
 	AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error)
 }
@@ -515,12 +518,13 @@ func (h *storeHooks) onToolStarted(nodeID string, info LLMToolStartedInfo) {
 }
 
 // capturePlan persists a TodoWrite/todo_write plan snapshot to the run's
-// plan store (runs/<id>/plans/). Best-effort: any error is logged and
-// swallowed — a plan-write failure must never fail the in-flight LLM call,
-// exactly like the artifact/attachment sinks. No-ops when the store lacks
-// the PlanWriter capability (cloud/Mongo today), when the tool isn't a
-// plan write, or when the input carries no todos (e.g. a claw
-// `todo_write` read). Todos are secret-redacted before landing on disk.
+// plan store (filesystem runs/<id>/plans/ or the Mongo run_plans
+// collection). Best-effort: any error is logged and swallowed — a
+// plan-write failure must never fail the in-flight LLM call, exactly like
+// the artifact/attachment sinks. No-ops when the store lacks the
+// PlanWriter capability, when the tool isn't a plan write, or when the
+// input carries no todos (e.g. a claw `todo_write` read). Todos are
+// secret-redacted before landing in the store.
 func (h *storeHooks) capturePlan(nodeID string, info LLMToolStartedInfo) {
 	if h.planSink == nil || !isPlanTool(info.ToolName) {
 		return

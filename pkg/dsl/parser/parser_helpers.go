@@ -241,7 +241,7 @@ func isKeywordToken(tt TokenType) bool {
 		TokenPublish, TokenSystem, TokenUser, TokenSession, TokenTools, TokenToolPolicy,
 		TokenCapabilities, TokenSkills, TokenArtifactLabels, TokenToolMaxSteps, TokenReasoningEffort, TokenMode, TokenStrategy, TokenRequire,
 		TokenInstructions, TokenCommand, TokenScript, TokenLanguage, TokenArgs, TokenURL,
-		TokenAuth, TokenReadonly, TokenFullAccess,
+		TokenAuth, TokenReadonly, TokenFullAccess, TokenImages,
 		TokenDefaultBackend,
 		TokenInteraction, TokenInteractionPrompt, TokenInteractionModel,
 		TokenBackend, TokenProvider, TokenAwait, TokenWhen, TokenNot, TokenAs,

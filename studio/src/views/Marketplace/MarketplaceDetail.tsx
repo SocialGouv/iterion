@@ -1,9 +1,11 @@
 import type { MarketplaceEntry } from "@/api/marketplace";
+import { Badge } from "@/components/ui/Badge";
 import { Drawer } from "@/components/ui/Drawer";
 import MarkdownText from "@/components/Runs/conversation/MarkdownText";
 import type { InstalledState } from "./installState";
 import { InstallControls } from "./InstallControls";
 import { DownloadBotz } from "./DownloadBotz";
+import { CopyPluginInstall } from "./CopyPluginInstall";
 
 interface Props {
   entry: MarketplaceEntry;
@@ -13,7 +15,8 @@ interface Props {
   onUpdate: () => void;
   onUninstall: () => void;
   onClose: () => void;
-  /** Anonymous viewers download the `.botz` instead of installing. */
+  /** Anonymous viewers download the `.botz` (bots) or copy the CLI
+   *  install command (plugins) instead of installing. */
   anonymous?: boolean;
 }
 
@@ -32,13 +35,24 @@ export function MarketplaceDetail({
   anonymous = false,
 }: Props) {
   const label = entry.display_name?.trim() || entry.name;
+  const isPlugin = (entry.kind ?? "bot") === "plugin";
   return (
     <Drawer
       open
       onOpenChange={(v) => {
         if (!v) onClose();
       }}
-      title={<span className="block truncate">{label}</span>}
+      title={
+        <span className="flex min-w-0 items-center gap-1.5">
+          {entry.icon && (
+            <span aria-hidden className="shrink-0 text-base leading-none">
+              {entry.icon}
+            </span>
+          )}
+          <span className="block truncate">{label}</span>
+          {isPlugin && <Badge variant="info">Plugin</Badge>}
+        </span>
+      }
       description={
         <span className="block truncate font-mono">
           {entry.slug}
@@ -49,8 +63,16 @@ export function MarketplaceDetail({
         <>
           <span className="mr-auto text-caption text-fg-subtle">
             {anonymous ? (
+              isPlugin ? (
+                <>Copy the CLI command, or sign in to install.</>
+              ) : (
+                <>
+                  Download the <code className="text-fg-default">.botz</code> bundle, or sign in to install.
+                </>
+              )
+            ) : isPlugin ? (
               <>
-                Download the <code className="text-fg-default">.botz</code> bundle, or sign in to install.
+                Installs into <code className="text-fg-default">~/.iterion/plugins/</code> — enable from Plugins.
               </>
             ) : (
               <>
@@ -59,7 +81,11 @@ export function MarketplaceDetail({
             )}
           </span>
           {anonymous ? (
-            <DownloadBotz slug={entry.slug} />
+            isPlugin ? (
+              <CopyPluginInstall repoUrl={entry.repo_url} />
+            ) : (
+              <DownloadBotz slug={entry.slug} />
+            )
           ) : (
             <InstallControls
               state={state}

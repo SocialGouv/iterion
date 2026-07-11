@@ -13,6 +13,9 @@ const WhatsNextView = lazy(() => import("@/components/WhatsNext/WhatsNextView"))
 const EditorTabsView = lazy(() => import("@/components/Editor/EditorTabsView"));
 const LaunchView = lazy(() => import("@/components/Runs/LaunchView"));
 const RunsTabsView = lazy(() => import("@/components/Runs/RunsTabsView"));
+const BotsView = lazy(() => import("@/views/Bots"));
+const BotHomeView = lazy(() => import("@/views/Bots/BotHome"));
+const BotBuilderView = lazy(() => import("@/views/Bots/BotBuilder"));
 const BoardView = lazy(() => import("@/views/Board"));
 const LabelsView = lazy(() => import("@/views/Board/Labels"));
 const FieldsView = lazy(() => import("@/views/Board/Fields"));
@@ -344,6 +347,22 @@ function AuthedApp() {
           <Route path="/runs">
             <ErrorBoundary area="Runs list">
               <RunsTabsView />
+            </ErrorBoundary>
+          </Route>
+          {/* Order matters: the literal /bots/new must win over /bots/:name. */}
+          <Route path="/bots/new">
+            <ErrorBoundary area="Bot builder view">
+              <BotBuilderView />
+            </ErrorBoundary>
+          </Route>
+          <Route path="/bots/:name">
+            <ErrorBoundary area="Bot home view">
+              <BotHomeView />
+            </ErrorBoundary>
+          </Route>
+          <Route path="/bots">
+            <ErrorBoundary area="Bots view">
+              <BotsView />
             </ErrorBoundary>
           </Route>
           <Route path="/account" component={SettingsPage} />

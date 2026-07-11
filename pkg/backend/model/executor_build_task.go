@@ -38,10 +38,11 @@ type backendFields struct {
 	capabilities     []string
 	skills           []string
 	cursors          *ir.CursorInvocation
-	compress         string // node-level `compress:` value ("" = unset)
-	permission       string // node-level `permission:` mode override ("" = inherit)
-	timeout          string // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
-	fullAccess       bool   // node-level `full_access:` — lift the codex sandbox to danger-full-access (network egress)
+	compress         string   // node-level `compress:` value ("" = unset)
+	permission       string   // node-level `permission:` mode override ("" = inherit)
+	timeout          string   // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
+	fullAccess       bool     // node-level `full_access:` — lift the codex sandbox to danger-full-access (network egress)
+	images           []string // node-level `images:` — templated input image paths forwarded to codex as `-i` (i2i)
 }
 
 // extractBackendFields normalises the LLM-relevant fields shared by
@@ -72,6 +73,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			permission:       n.Permission,
 			timeout:          n.Timeout,
 			fullAccess:       n.FullAccess,
+			images:           n.Images,
 		}, nil
 	case *ir.JudgeNode:
 		return backendFields{
@@ -93,6 +95,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			permission:       n.Permission,
 			timeout:          n.Timeout,
 			fullAccess:       n.FullAccess,
+			images:           n.Images,
 		}, nil
 	default:
 		return backendFields{}, fmt.Errorf("model: extractBackendFields called with unsupported node type %T", node)
@@ -496,6 +499,16 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		effectiveCaps = e.wfCapabilities
 	}
 
+	// Resolve node-level image inputs (templated paths) so the codex backend can
+	// forward them as `-i` for image-to-image. Empty/whitespace results (an
+	// optional ref that didn't apply this run) are dropped.
+	var resolvedImages []string
+	for _, tmpl := range f.images {
+		if p := strings.TrimSpace(e.resolveTemplate(tmpl, input, td)); p != "" {
+			resolvedImages = append(resolvedImages, p)
+		}
+	}
+
 	task := delegate.Task{
 		NodeID:                f.id,
 		Iteration:             LoopIterationFromContext(ctx),
@@ -505,6 +518,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		UserContent:           userContent,
 		AllowedTools:          f.tools,
 		FullAccess:            f.fullAccess,
+		Images:                resolvedImages,
 		Capabilities:          effectiveCaps,
 		StoreDir:              e.storeDir,
 		OutputSchema:          outputSchema,
