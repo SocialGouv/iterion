@@ -41,6 +41,11 @@ export interface BotEntry {
    *  pre-fill + edit them. */
   author?: string;
   version?: string;
+  /** Optional emoji avatar from manifest.yaml `icon` (e.g. "🧭"). Takes
+   *  precedence over the studio's built-in persona map; see
+   *  `botVisual()` in lib/personas.ts. Editable in the Bot metadata
+   *  panel. */
+  icon?: string;
   /** The manifest `enabled` DEFAULT (pre-overlay). The Bot panel edits
    *  this; `enabled` is the resolved value the Catalog manager overlay
    *  controls. They differ when a workspace overlay is active. */
@@ -110,6 +115,7 @@ export type BotPatch = Partial<{
   when_to_use: string;
   enabled: boolean;
   triggers: string[];
+  icon: string;
 }>;
 
 /** BotEntryWithSchema augments BotEntry with the workflow's declared

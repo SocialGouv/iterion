@@ -5,7 +5,7 @@ import type { BotEntryWithSchema } from "@/api/bots";
 import { installBot, uploadBotBundle } from "@/api/bots";
 import { useAuth } from "@/auth/AuthContext";
 import { Button, Dialog, Input } from "@/components/ui";
-import { botIdentity } from "@/lib/personas";
+import { botVisual } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
@@ -242,7 +242,7 @@ export function BotCatalogDialog({
         <ul className="space-y-0.5">
           {rows.map((b) => {
             const enabled = b.enabled !== false;
-            const identity = botIdentity(b.name);
+            const identity = botVisual(b);
             const label = b.display_name?.trim();
             const canEdit = bundleMainRel(b) !== null;
             return (
