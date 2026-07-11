@@ -50,6 +50,7 @@ export function IterationCrumb({
       trigger={
         <button
           type="button"
+          aria-expanded={open}
           className="hover:text-fg-default underline-offset-2 hover:underline"
           title={`Jump to a different iteration · execution ${position} of ${total}`}
         >

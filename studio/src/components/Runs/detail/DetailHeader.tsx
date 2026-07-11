@@ -87,6 +87,7 @@ export function DetailHeader({
               <button
                 type="button"
                 onClick={() => setShowAbsoluteTimes((v) => !v)}
+                aria-pressed={showAbsoluteTimes}
                 className="hover:text-fg-default text-left"
                 title={
                   showAbsoluteTimes
