@@ -219,6 +219,10 @@ func aggregateStream(ctx context.Context, ch <-chan api.StreamEvent) aggregatedR
 
 			case api.EventMessageDelta:
 				res.usage.OutputTokens = event.Usage.OutputTokens
+				// Exact billed thinking tokens (raw internal reasoning,
+				// independent of thinking.display); 0 when the provider
+				// omits the breakdown.
+				res.usage.ReasoningTokens = event.Usage.OutputTokensDetails.ThinkingTokens
 				res.stopReason = event.StopReason
 
 			case api.EventError:
@@ -446,10 +450,14 @@ func callAndAggregate(
 	agg := aggregateStream(ctx, ch)
 	latency := time.Since(start)
 
-	// Thinking metrics: the API does not report thinking tokens separately, so
-	// re-encode the accumulated thinking text. Timing is measured from the
-	// stream (start→stop of each thinking block).
-	agg.usage.ReasoningTokens = thinktokens.Count(agg.thinkingText)
+	// Thinking metrics. Preferred source is the provider's exact billed
+	// count (usage.output_tokens_details, captured from message_delta);
+	// when absent, approximate by re-encoding the accumulated thinking
+	// text. Timing is measured from the stream (start→stop of each
+	// thinking block).
+	if agg.usage.ReasoningTokens == 0 {
+		agg.usage.ReasoningTokens = thinktokens.Count(agg.thinkingText)
+	}
 	agg.usage.ThinkingMs = agg.thinkingMs
 
 	finishReason := mapStopReason(agg.stopReason)

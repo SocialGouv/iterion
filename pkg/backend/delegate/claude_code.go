@@ -188,6 +188,9 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	if d := claudeCodeThinkingDisplay(); d != "" {
+		opts = append(opts, claudesdk.WithThinkingDisplay(d))
+	}
 
 	// tool_max_steps caps agentic tool-use iterations. Until now this
 	// field was defined in delegate.Task but never wired into the CLI,
@@ -201,6 +204,25 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	}
 
 	return opts, sandboxCleanup
+}
+
+// claudeCodeThinkingDisplay resolves the --thinking-display value passed
+// to the CLI. In headless (--print) mode the CLI defaults thinking
+// display to omitted on Opus 4.8+ — thinking blocks stream with empty
+// text and only the encrypted signature — so iterion requests the
+// readable summary by default. ITERION_CLAUDE_CODE_THINKING_DISPLAY
+// overrides: "omitted" restores the latency-optimised default, "off"
+// stops passing the flag entirely (required for claude CLIs older than
+// the flag, which reject unknown options).
+func claudeCodeThinkingDisplay() string {
+	switch v := os.Getenv("ITERION_CLAUDE_CODE_THINKING_DISPLAY"); v {
+	case "":
+		return "summarized"
+	case "off":
+		return ""
+	default:
+		return v
+	}
 }
 
 func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Result, err error) {
@@ -845,6 +867,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	if d := claudeCodeThinkingDisplay(); d != "" {
+		opts = append(opts, claudesdk.WithThinkingDisplay(d))
+	}
 
 	prompt := "Format your complete findings as JSON matching the required output schema."
 

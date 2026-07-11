@@ -161,6 +161,7 @@ func configToProcess(cfg *config) processConfig {
 		MaxTurns:               cfg.maxTurns,
 		MaxBudgetUSD:           cfg.maxBudgetUSD,
 		IncludePartialMessages: cfg.includePartialMessages,
+		ThinkingDisplay:        cfg.thinkingDisplay,
 		Resume:                 cfg.resume,
 		ForkSession:            cfg.forkSession,
 		ContinueConversation:   cfg.continueConversation,

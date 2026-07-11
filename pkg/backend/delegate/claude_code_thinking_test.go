@@ -48,10 +48,28 @@ func TestHandleAssistantMessage_ThinkingFoldsInRunLog(t *testing.T) {
 	}
 }
 
+// claudeCodeThinkingDisplay defaults to summarized; the env var overrides
+// and "off" suppresses the flag for CLIs that predate it.
+func TestClaudeCodeThinkingDisplay(t *testing.T) {
+	t.Setenv("ITERION_CLAUDE_CODE_THINKING_DISPLAY", "")
+	if got := claudeCodeThinkingDisplay(); got != "summarized" {
+		t.Errorf("default = %q, want summarized", got)
+	}
+	t.Setenv("ITERION_CLAUDE_CODE_THINKING_DISPLAY", "omitted")
+	if got := claudeCodeThinkingDisplay(); got != "omitted" {
+		t.Errorf("omitted override = %q, want omitted", got)
+	}
+	t.Setenv("ITERION_CLAUDE_CODE_THINKING_DISPLAY", "off")
+	if got := claudeCodeThinkingDisplay(); got != "" {
+		t.Errorf("off kill-switch = %q, want empty (flag suppressed)", got)
+	}
+}
+
 // TestHandleAssistantMessage_RedactedThinkingSurfacesTiming: some models
 // redact thinking client-side (claude-opus-4-8 streams the block with empty
-// text + encrypted signature). The signed-but-empty block must still surface
-// a timing line instead of vanishing without a trace.
+// text + encrypted signature) when --thinking-display can't be applied.
+// The signed-but-empty block must still surface a timing line instead of
+// vanishing without a trace.
 func TestHandleAssistantMessage_RedactedThinkingSurfacesTiming(t *testing.T) {
 	var logBuf bytes.Buffer
 	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelInfo, &logBuf)}
