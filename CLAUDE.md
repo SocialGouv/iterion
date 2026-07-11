@@ -137,6 +137,12 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 
 - Go 1.26.0
 - `claw-code-go` (sibling repo, vendored under `vendor/github.com/SocialGouv/claw-code-go/`) — native multi-provider LLM client. iterion uses `claw-code-go/pkg/api.Client.StreamResponse` directly via `pkg/backend/model/generation.go` for in-process LLM calls (anthropic + openai validated; bedrock/vertex/foundry available but untested).
+  **Bump the pin ONLY with [`scripts/bump-claw.sh`](scripts/bump-claw.sh)**
+  (pushes the claw commit if needed, then `go get @<sha>` + tidy + vendor +
+  verify + commit). NEVER hand-write the pseudo-version: a locally-computed
+  timestamp (non-UTC) fails `go mod verify` ("does not match version-control
+  timestamp") and turns vendor-check red on main and every PR merge-ref —
+  this happened three times on 2026-07-11 alone.
 
 ## Architecture
 
