@@ -57,7 +57,10 @@ func planSnap(node string, iter int, todos ...store.PlanTodo) store.PlanSnapshot
 // document) exactly like the filesystem impl.
 func TestPlanStore_AppendListDedupe(t *testing.T) {
 	s := newPlanTestStore(t)
-	ctx := context.Background()
+	// Mongo is cloud-only and every query is tenant-scoped:
+	// withTenantFilter fail-closed-panics on a ctx with no tenant, so use
+	// an identity-carrying ctx (the conformance suite does the same).
+	ctx := store.WithIdentity(context.Background(), "t1", "u1")
 	const runID = "run-plan-1"
 
 	first := planSnap("implement", 0, store.PlanTodo{Content: "step one", Status: "pending"})
@@ -142,9 +145,14 @@ func TestPlanStore_TenantScoping(t *testing.T) {
 		t.Errorf("globex list len = %d, want 0 (tenant leak)", len(other))
 	}
 
-	// The tenant's own append starts a fresh sequence — globex's first
-	// snapshot for the same run id is seq 0, not fenced by acme's doc.
-	g, wrote, err := s.AppendPlanSnapshot(globex, runID, planSnap("n", 0, store.PlanTodo{Content: "globex work", Status: "pending"}))
+	// A second tenant appends under its OWN run id (run ids are globally
+	// unique, one tenant per run) and starts a fresh sequence at 0. We use
+	// a distinct run id rather than reusing acme's: the (run_id, seq)
+	// unique index is global (mirroring the events collection), so two
+	// tenants can never legitimately share a run id — the isolation that
+	// matters is the read fence asserted just above.
+	const globexRunID = "run-plan-tenant-globex"
+	g, wrote, err := s.AppendPlanSnapshot(globex, globexRunID, planSnap("n", 0, store.PlanTodo{Content: "globex work", Status: "pending"}))
 	if err != nil {
 		t.Fatalf("append globex: %v", err)
 	}
@@ -158,7 +166,8 @@ func TestPlanStore_TenantScoping(t *testing.T) {
 // run_gitmeta) so a deleted run leaves no orphaned run_plans docs.
 func TestPlanStore_DeleteRunCleanup(t *testing.T) {
 	s := newPlanTestStore(t)
-	ctx := context.Background()
+	// Tenant-scoped ctx: withTenantFilter panics on a tenant-less ctx.
+	ctx := store.WithIdentity(context.Background(), "t1", "u1")
 	const runID = "run-plan-del"
 
 	// A run document must exist for DeleteRun's runs.DeleteOne + blob
