@@ -6,7 +6,7 @@ import {
   ReloadIcon,
 } from "@radix-ui/react-icons";
 
-import { EmptyState, IconButton, Tooltip } from "@/components/ui";
+import { EmptyState, IconButton, Spinner, Tooltip } from "@/components/ui";
 import { useRunFiles } from "@/hooks/useRunFiles";
 import { useToggleSet } from "@/hooks/useToggleSet";
 import {
@@ -169,7 +169,9 @@ export default function FilesPanel({
           <EmptyState message={error} />
         ) : !data ? (
           loading ? (
-            <EmptyState message="Loading…" />
+            <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
+              <Spinner size="sm" label="Loading" />
+            </div>
           ) : (
             <EmptyState message="" />
           )

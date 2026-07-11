@@ -8,6 +8,7 @@ import {
   EmptyState,
   IconButton,
   Select,
+  Spinner,
   Textarea,
   Tooltip,
 } from "@/components/ui";
@@ -87,7 +88,9 @@ export default function CommitsPanel({
           />
         ) : !data ? (
           loading ? (
-            <EmptyState message="Loading…" />
+            <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
+              <Spinner size="sm" label="Loading" />
+            </div>
           ) : (
             <EmptyState message="" />
           )

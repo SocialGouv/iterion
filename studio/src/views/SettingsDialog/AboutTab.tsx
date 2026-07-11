@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 
 import { desktop, type AppInfo } from "@/lib/desktopBridge";
 import { useServerInfoStore } from "@/store/serverInfo";
-import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Spinner } from "@/components/ui/Spinner";
 
 interface Props {
   desktopFeatures: boolean;
@@ -42,7 +42,11 @@ export default function AboutTab({ desktopFeatures }: Props) {
         </div>
       );
     }
-    return <EmptyState message="Loading…" />;
+    return (
+      <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
+        <Spinner size="sm" label="Loading" />
+      </div>
+    );
   }
 
   return (

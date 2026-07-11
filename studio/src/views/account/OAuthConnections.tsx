@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { Input } from "@/components/ui/Input";
 import { useConfirm } from "@/hooks/useConfirm";
-import { EmptyState } from "@/components/ui/EmptyState";
+import { Spinner } from "@/components/ui/Spinner";
 import { useUIStore } from "@/store/ui";
 import {
   type OAuthConnection,
@@ -200,7 +200,9 @@ export default function OAuthConnections({
       )}
 
       {loading ? (
-        <EmptyState message="Loading…" />
+        <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
+          <Spinner size="sm" label="Loading" />
+        </div>
       ) : (
         <div className="space-y-4">
           {KINDS.map(({ kind, display, filename, hint, browser }) => {

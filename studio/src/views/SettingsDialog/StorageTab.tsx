@@ -1,9 +1,15 @@
 import { useServerInfoStore } from "@/store/serverInfo";
-import { EmptyState } from "@/components/ui/EmptyState";
+import { Spinner } from "@/components/ui/Spinner";
 
 export default function StorageTab() {
   const info = useServerInfoStore((s) => s.info);
-  if (!info) return <EmptyState message="Loading…" />;
+  if (!info) {
+    return (
+      <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
+        <Spinner size="sm" label="Loading" />
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-3 p-4 text-sm">
       <div>

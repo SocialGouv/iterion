@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Spinner } from "@/components/ui/Spinner";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 interface Props {
@@ -221,9 +222,15 @@ export default function MemoryTab({ teamID: _teamID }: Props) {
             Preview {selected ? <span className="font-mono text-xs">{selected.path}</span> : null}
           </h3>
           {selected ? (
-            <pre className="bg-surface-1 border border-border-subtle rounded p-3 text-xs whitespace-pre-wrap break-words max-h-[60vh] overflow-auto">
-              {body || "Loading…"}
-            </pre>
+            body ? (
+              <pre className="bg-surface-1 border border-border-subtle rounded p-3 text-xs whitespace-pre-wrap break-words max-h-[60vh] overflow-auto">
+                {body}
+              </pre>
+            ) : (
+              <div className="flex items-center justify-center rounded border border-border-subtle bg-surface-1 p-6">
+                <Spinner size="sm" label="Loading document" />
+              </div>
+            )
           ) : (
             <EmptyState message="Pick a document on the left to preview it." />
           )}

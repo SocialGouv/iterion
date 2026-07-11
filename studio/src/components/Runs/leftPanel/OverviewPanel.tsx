@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-import { EmptyState } from "@/components/ui";
+import { Spinner } from "@/components/ui";
 import { useNow } from "@/hooks/useNow";
 import { useRunMetrics } from "@/hooks/useRunMetrics";
 import { useRunStore } from "@/store/run";
@@ -49,7 +49,11 @@ export default function OverviewPanel({
   const metrics = useRunMetrics(nowMs);
 
   if (!run) {
-    return <EmptyState message="Loading…" />;
+    return (
+      <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
+        <Spinner size="sm" label="Loading" />
+      </div>
+    );
   }
 
   return (

@@ -5,6 +5,7 @@ import { BrandMark } from "@/components/ui/BrandMark";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import MainSpinner from "@/components/shared/MainSpinner";
 import { useAuth } from "@/auth/AuthContext";
 
 const MarketplaceView = lazy(() => import("@/views/Marketplace"));
@@ -44,13 +45,7 @@ export default function RestrictedShell() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <Suspense
-          fallback={
-            <div className="flex h-full items-center justify-center text-fg-muted">
-              Loading…
-            </div>
-          }
-        >
+        <Suspense fallback={<MainSpinner />}>
           <MarketplaceView />
         </Suspense>
       </div>
