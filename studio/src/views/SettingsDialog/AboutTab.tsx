@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { desktop, type AppInfo } from "@/lib/desktopBridge";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { InlineBanner } from "@/components/ui/InlineBanner";
-import { Spinner } from "@/components/ui/Spinner";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface Props {
   desktopFeatures: boolean;
@@ -43,9 +43,7 @@ export default function AboutTab({ desktopFeatures }: Props) {
       );
     }
     return (
-      <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
-        <Spinner size="sm" label="Loading" />
-      </div>
+      <PanelLoading />
     );
   }
 

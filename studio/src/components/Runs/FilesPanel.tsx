@@ -6,7 +6,7 @@ import {
   ReloadIcon,
 } from "@radix-ui/react-icons";
 
-import { Button, EmptyState, IconButton, Spinner, Tooltip } from "@/components/ui";
+import { Button, EmptyState, IconButton, Tooltip } from "@/components/ui";
 import { useRunFiles } from "@/hooks/useRunFiles";
 import { useToggleSet } from "@/hooks/useToggleSet";
 import {
@@ -18,6 +18,7 @@ import {
 import { basename } from "@/lib/format";
 import type { RunFile, RunFilesMode } from "@/api/runs";
 import { StatusDot } from "./StatusDot";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 // View scope for the files tree. "combined" is the union of branch +
 // uncommitted (each file tagged with a lifecycle), surfaced to the operator
@@ -169,9 +170,7 @@ export default function FilesPanel({
           <EmptyState message={error} />
         ) : !data ? (
           loading ? (
-            <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
-              <Spinner size="sm" label="Loading" />
-            </div>
+            <PanelLoading />
           ) : (
             <EmptyState message="" />
           )

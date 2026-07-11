@@ -8,7 +8,6 @@ import {
   EmptyState,
   IconButton,
   Select,
-  Spinner,
   Textarea,
   Tooltip,
 } from "@/components/ui";
@@ -27,6 +26,7 @@ import { ErrorNotice } from "@/components/shared/ErrorNotice";
 
 import CommitDetailDialog from "./CommitDetailDialog";
 import MergeConflictView from "./MergeConflictView";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface CommitsPanelProps {
   runId: string;
@@ -88,9 +88,7 @@ export default function CommitsPanel({
           />
         ) : !data ? (
           loading ? (
-            <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
-              <Spinner size="sm" label="Loading" />
-            </div>
+            <PanelLoading />
           ) : (
             <EmptyState message="" />
           )

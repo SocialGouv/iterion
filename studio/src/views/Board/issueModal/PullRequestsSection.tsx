@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
+import { LiveDot } from "@/components/ui/LiveDot";
 import { Select } from "@/components/ui/Select";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm, type ConfirmOptions } from "@/hooks/useConfirm";
@@ -329,21 +330,21 @@ function PullRow({
   );
 }
 
-// CIDot renders the aggregate CI state as a coloured dot:
+// CIDot renders the aggregate CI state as a steady coloured dot:
 // success=green, failed=red, running/pending=amber, unknown=grey.
+// CITone names are a subset of LiveDot tones, so the tone passes through.
 function CIDot({ state }: { state: string }) {
-  const tone = ciTone(state);
-  const cls: Record<typeof tone, string> = {
-    success: "bg-success",
-    danger: "bg-danger",
-    warning: "bg-warning",
-    neutral: "bg-fg-subtle",
-  };
   return (
     <span
-      className={`inline-block h-2 w-2 rounded-full shrink-0 ${cls[tone]}`}
+      className="inline-flex shrink-0"
       title={state ? `CI: ${state}` : "CI status unknown"}
-      aria-label={state ? `CI ${state}` : "CI status unknown"}
-    />
+    >
+      <LiveDot
+        tone={ciTone(state)}
+        size="md"
+        pulse={false}
+        label={state ? `CI ${state}` : "CI status unknown"}
+      />
+    </span>
   );
 }

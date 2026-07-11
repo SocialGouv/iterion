@@ -18,13 +18,16 @@ import type { RunStatus } from "@/api/runs";
 
 export type ChatDock = "closed" | "floating" | "docked-right";
 
-// openedDock picks the presentation when the panel OPENS from closed:
-// on narrow viewports the floating panel would cover most of the canvas
-// and the bottom tab bar, so it opens docked instead. An explicit dock
-// choice the user makes afterwards is persisted by the caller and wins
-// on subsequent opens-from-closed only via this same width check.
+// Tailwind's lg breakpoint — below it the floating panel covers most of
+// the canvas and the bottom tab bar, so open-from-closed docks instead.
+const DOCK_BREAKPOINT_PX = 1024;
+
+// openedDock picks the presentation when the panel OPENS from closed.
+// Point-in-time check by design: an already-open panel must not re-dock
+// itself on window resize, and the user's explicit dock choice (persisted
+// by the caller) wins afterwards.
 function openedDock(): ChatDock {
-  return window.innerWidth <= 1024 ? "docked-right" : "floating";
+  return window.innerWidth <= DOCK_BREAKPOINT_PX ? "docked-right" : "floating";
 }
 
 interface Props {

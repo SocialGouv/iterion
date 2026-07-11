@@ -14,23 +14,11 @@ export function ciTone(state: string): CITone {
   return "neutral";
 }
 
-export function ciToneToBadge(tone: CITone): BadgeVariant {
-  switch (tone) {
-    case "success":
-      return "success";
-    case "danger":
-      return "danger";
-    case "warning":
-      return "warning";
-    default:
-      return "neutral";
-  }
-}
-
 // ciRunVariant prefers the run's conclusion (terminal) over its status
-// (lifecycle) when colouring the per-run badge.
+// (lifecycle) when colouring the per-run badge. CITone is a subset of
+// BadgeVariant, so the tone doubles as the variant.
 export function ciRunVariant(run: CIRun): BadgeVariant {
-  return ciToneToBadge(ciTone(run.conclusion || run.status));
+  return ciTone(run.conclusion || run.status);
 }
 
 // prStateVariant maps a PR state to a badge variant (open=success,

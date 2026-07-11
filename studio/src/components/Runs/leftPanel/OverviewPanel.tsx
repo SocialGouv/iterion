@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 
-import { Spinner } from "@/components/ui";
 import { useNow } from "@/hooks/useNow";
 import { useRunMetrics } from "@/hooks/useRunMetrics";
 import { useRunStore } from "@/store/run";
@@ -13,6 +12,7 @@ import { BriefingSection } from "./overview/BriefingSection";
 import { ConfigurationSection } from "./overview/ConfigurationSection";
 import { OutcomeSection } from "./overview/OutcomeSection";
 import { AdvancedSection } from "./overview/AdvancedSection";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface OverviewPanelProps {
   runId: string;
@@ -50,9 +50,7 @@ export default function OverviewPanel({
 
   if (!run) {
     return (
-      <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
-        <Spinner size="sm" label="Loading" />
-      </div>
+      <PanelLoading />
     );
   }
 

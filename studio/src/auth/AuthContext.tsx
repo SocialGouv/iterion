@@ -7,7 +7,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import BootLoading from "@/components/shared/BootLoading";
 import { apiBase } from "@/lib/scope";
 import {
   ApiError,
@@ -256,17 +255,12 @@ export function useAuth(): AuthCtx {
   return v;
 }
 
-// RequireAuth wraps children and renders <fallback/> when the user
-// is unauthenticated. Used at the routing level to gate the studio.
-export function RequireAuth({ children, fallback }: { children: ReactNode; fallback: ReactNode }) {
-  const { status } = useAuth();
-  if (status === "loading") {
-    return <BootLoading />;
-  }
-  if (status === "anonymous") {
-    return <>{fallback}</>;
-  }
-  return <>{children}</>;
+// isLocalIdentity reports whether user is the synthetic local-mode
+// principal (auth disabled server-side, see localIdentity above).
+// Consumers use it to hide cloud-only account chrome in local mode —
+// keep the sentinel knowledge here rather than re-hardcoding "dev".
+export function isLocalIdentity(user: UserView | null | undefined): boolean {
+  return user?.id === localIdentity.user?.id;
 }
 
 // RequireRole: nested gate that checks an active-team role. Renders

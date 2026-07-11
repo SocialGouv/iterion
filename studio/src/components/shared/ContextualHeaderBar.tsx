@@ -1,4 +1,4 @@
-import { useAuth } from "@/auth/AuthContext";
+import { isLocalIdentity, useAuth } from "@/auth/AuthContext";
 import { useUIStore } from "@/store/ui";
 import UserTeamChip from "./UserTeamChip";
 
@@ -13,7 +13,7 @@ export default function ContextualHeaderBar() {
   const right = useUIStore((s) => s.headerRight);
   const { user } = useAuth();
 
-  const chipHidden = user?.id === "dev";
+  const chipHidden = isLocalIdentity(user);
   if (chipHidden && !left && !right) return null;
 
   return (

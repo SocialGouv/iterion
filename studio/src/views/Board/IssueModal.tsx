@@ -10,15 +10,13 @@ import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Tabs } from "@/components/ui/Tabs";
-import VarFieldInput, { defaultStringFor } from "@/components/shared/VarFieldInput";
+import { defaultStringFor } from "@/components/shared/VarFieldInput";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { isVarMissing } from "@/lib/varValidation";
 import { useBotsStore } from "@/store/bots";
 
 import { BotTab } from "./issueModal/BotTab";
 import { TicketTab } from "./issueModal/TicketTab";
-
-void VarFieldInput; // re-exported through BotArgsForm; keep import path stable
 
 interface Props {
   board: NativeBoard;

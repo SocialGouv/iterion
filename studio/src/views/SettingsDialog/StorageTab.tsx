@@ -1,13 +1,11 @@
 import { useServerInfoStore } from "@/store/serverInfo";
-import { Spinner } from "@/components/ui/Spinner";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 export default function StorageTab() {
   const info = useServerInfoStore((s) => s.info);
   if (!info) {
     return (
-      <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
-        <Spinner size="sm" label="Loading" />
-      </div>
+      <PanelLoading />
     );
   }
   return (

@@ -71,7 +71,7 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		if !errors.Is(logErr, gitlib.ErrNotGitRepo) && !gitlib.IsUnknownRevision(logErr) {
+		if !errors.Is(logErr, gitlib.ErrNotGitRepo) && !errors.Is(logErr, gitlib.ErrUnknownRevision) {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "git log: %v", logErr)
 			return
 		}
@@ -107,7 +107,7 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 		// A pruned storage branch / gc'd base commit is an expected
 		// end-of-life state for an old run, not a server fault: render
 		// the structured empty-state instead of a 500 with git stderr.
-		if errors.Is(logErr, gitlib.ErrNotGitRepo) || gitlib.IsUnknownRevision(logErr) {
+		if errors.Is(logErr, gitlib.ErrNotGitRepo) || errors.Is(logErr, gitlib.ErrUnknownRevision) {
 			s.writeJSONFor(w, r, runCommitsResponse{
 				Commits:   []gitlib.CommitInfo{},
 				Available: false,

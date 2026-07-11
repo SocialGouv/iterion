@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { Spinner } from "@/components/ui/Spinner";
+import { EmptyState } from "@/components/ui/EmptyState";
 
 // Full-viewport screen for the "server unreachable" auth state: the
 // public /server/info probe failed on a network error or 5xx, so the
@@ -32,26 +32,22 @@ export default function ServerUnreachable({ onRetry }: { onRetry: () => Promise<
   }, []);
 
   return (
-    <div className="h-screen flex flex-col items-center justify-center gap-4 bg-surface-0 text-fg-default px-6">
-      <div className="text-3xl" aria-hidden>
-        ⚡
-      </div>
-      <h1 className="text-lg font-semibold">Can&apos;t reach the iterion server</h1>
-      <p className="text-sm text-fg-muted text-center max-w-md">
-        The studio backend isn&apos;t responding. It may be restarting, stopped, or
-        unreachable from this machine. Reconnecting automatically…
-      </p>
-      <div className="flex items-center gap-3">
-        <Button variant="secondary" size="sm" onClick={() => void attempt()} disabled={retrying}>
-          {retrying ? (
-            <span className="inline-flex items-center gap-2">
-              <Spinner size="xs" /> Retrying…
-            </span>
-          ) : (
-            "Retry now"
-          )}
-        </Button>
-      </div>
+    <div className="h-screen bg-surface-0">
+      <EmptyState
+        icon={<span className="text-2xl">⚡</span>}
+        title="Can't reach the iterion server"
+        message="The studio backend isn't responding. It may be restarting, stopped, or unreachable from this machine. Reconnecting automatically…"
+        action={
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={retrying}
+            onClick={() => void attempt()}
+          >
+            {retrying ? "Retrying…" : "Retry now"}
+          </Button>
+        }
+      />
     </div>
   );
 }

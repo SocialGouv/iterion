@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { Input } from "@/components/ui/Input";
 import { useConfirm } from "@/hooks/useConfirm";
-import { Spinner } from "@/components/ui/Spinner";
 import { useUIStore } from "@/store/ui";
+import PanelLoading from "@/components/shared/PanelLoading";
 import {
   type OAuthConnection,
   type OAuthKind,
@@ -200,9 +200,7 @@ export default function OAuthConnections({
       )}
 
       {loading ? (
-        <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
-          <Spinner size="sm" label="Loading" />
-        </div>
+        <PanelLoading />
       ) : (
         <div className="space-y-4">
           {KINDS.map(({ kind, display, filename, hint, browser }) => {

@@ -174,7 +174,10 @@ describe("source discipline", () => {
     for (const [path, src] of files) {
       if (ALLOW.test(path)) continue;
       src.split("\n").forEach((line, i) => {
-        if (RE.test(line) && !line.includes("Spinner")) {
+        // Same-line exemption keys on the JSX element (<Spinner), not
+        // the bare word — a comment or import mentioning Spinner must
+        // not launder a raw literal past the trap.
+        if (RE.test(line) && !line.includes("<Spinner")) {
           hits.push(`${path}:${i + 1}  ${line.trim().slice(0, 100)}`);
         }
       });

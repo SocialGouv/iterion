@@ -11,8 +11,8 @@ import {
   pct,
 } from "@/api/usage";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { Spinner } from "@/components/ui/Spinner";
 import { Tooltip } from "@/components/ui/Tooltip";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface Props {
   orgID: string;
@@ -58,9 +58,7 @@ export default function UsageTab({ orgID }: Props) {
   }
   if (!usage) {
     return (
-      <div className="flex h-full items-center justify-center px-3 py-8 text-fg-subtle">
-        <Spinner size="sm" label="Loading" />
-      </div>
+      <PanelLoading />
     );
   }
 
