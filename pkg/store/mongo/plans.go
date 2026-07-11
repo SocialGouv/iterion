@@ -63,10 +63,18 @@ func (d runPlanDoc) toSnapshot() store.PlanSnapshot {
 // TodoWrite fires often with no change. Otherwise the snapshot is
 // inserted at the next sequence and (snap, true, nil) is returned.
 //
-// The (run_id, seq) unique index guards two parallel branches racing on
-// the next seq: a duplicate-key error means a sibling grabbed it first,
-// so we re-read the tail and realloc with a jittered backoff (mirroring
-// AppendEvent), rather than surfacing a hard failure.
+// The dedupe is best-effort under concurrency: racing byte-identical
+// writers get DISTINCT seqs from the counter and can both persist (see
+// the PlanStore interface contract) — a redundant snapshot, never a
+// lost one.
+//
+// Seq is allocated from a per-run monotonic counter (allocPlanSeq),
+// mirroring AppendEvent's allocSeq — a clean atomic increment rather than
+// the former max-read+1, which removed the theoretical seq-0 poisoning
+// asymmetry with events. The (run_id, seq) unique index remains the
+// safety net: a duplicate-key error (e.g. a server-runner handoff that
+// desynced the counter) reallocs with a jittered backoff rather than
+// surfacing a hard failure.
 func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error) {
 	newTodos, err := json.Marshal(snap.Todos)
 	if err != nil {
@@ -77,6 +85,19 @@ func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store
 	}
 	tenantID, _ := store.TenantFromContext(ctx)
 
+	// Dedup against the immediately-previous snapshot before consuming a
+	// seq: a byte-identical TodoWrite writes nothing and never advances
+	// the counter.
+	prev, hasPrev, perr := s.lastPlanSnapshot(ctx, runID)
+	if perr != nil {
+		return store.PlanSnapshot{}, false, perr
+	}
+	if hasPrev {
+		if prevTodos, merr := json.Marshal(prev.Todos); merr == nil && bytes.Equal(prevTodos, newTodos) {
+			return prev, false, nil
+		}
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < appendPlanMaxRetries; attempt++ {
 		if attempt > 0 {
@@ -85,23 +106,16 @@ func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store
 			}
 		}
 
-		prev, hasPrev, perr := s.lastPlanSnapshot(ctx, runID)
-		if perr != nil {
-			return store.PlanSnapshot{}, false, perr
+		seq64, aerr := s.allocPlanSeq(ctx, runID)
+		if aerr != nil {
+			return store.PlanSnapshot{}, false, aerr
 		}
-		nextSeq := 0
-		if hasPrev {
-			if prevTodos, merr := json.Marshal(prev.Todos); merr == nil && bytes.Equal(prevTodos, newTodos) {
-				return prev, false, nil
-			}
-			nextSeq = prev.Seq + 1
-		}
-
-		snap.Seq = nextSeq
+		seq := int(seq64)
+		snap.Seq = seq
 		doc := runPlanDoc{
 			TenantID:  tenantID,
 			RunID:     runID,
-			Seq:       nextSeq,
+			Seq:       seq,
 			NodeID:    snap.NodeID,
 			Iteration: snap.Iteration,
 			Tool:      snap.Tool,
@@ -110,12 +124,22 @@ func (s *Store) AppendPlanSnapshot(ctx context.Context, runID string, snap store
 		}
 		if _, err := s.runPlans.InsertOne(ctx, doc); err != nil {
 			if mongo.IsDuplicateKeyError(err) {
-				// A sibling branch grabbed this seq; re-read the tail and
-				// realloc after a brief jittered pause.
+				// The seq is already taken: either a sibling branch raced us,
+				// or the counter is BEHIND the persisted tail — runs whose
+				// snapshots predate the counter (max-read allocation) have
+				// docs at 0..N with no counter document, so a fresh counter
+				// would hand out colliding seqs until the retries run dry and
+				// the snapshot is LOST. Re-sync the counter to tail+1 ($max:
+				// monotonic, never rewinds a concurrent advance) and realloc.
 				lastErr = err
+				if tail, hasTail, terr := s.lastPlanSnapshot(ctx, runID); terr == nil && hasTail && tail.Seq >= seq {
+					if serr := s.seedSeqField(ctx, runID, planSeqField, int64(tail.Seq)+1); serr != nil {
+						return store.PlanSnapshot{}, false, serr
+					}
+				}
 				continue
 			}
-			return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: insert plan snapshot %s/%d: %w", runID, nextSeq, err)
+			return store.PlanSnapshot{}, false, fmt.Errorf("store/mongo: insert plan snapshot %s/%d: %w", runID, seq, err)
 		}
 		return snap, true, nil
 	}

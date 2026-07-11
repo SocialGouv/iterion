@@ -59,6 +59,13 @@ type PlanStore interface {
 	// (previous, false, nil) is returned — TodoWrite fires often with no
 	// change. Otherwise the snapshot is written and (snap, true, nil) is
 	// returned with Seq populated.
+	//
+	// The dedupe is best-effort under CONCURRENT identical appends: the
+	// filesystem impl serialises under a mutex, but the Mongo impl's
+	// counter allocation gives racing identical writers distinct seqs, so
+	// both may persist. A run's snapshots come from one process, so the
+	// race is theoretical; the cost is a redundant identical snapshot,
+	// never a lost one.
 	AppendPlanSnapshot(ctx context.Context, runID string, snap PlanSnapshot) (PlanSnapshot, bool, error)
 	// ListPlanSnapshots returns every persisted plan snapshot for the run
 	// in chronological (ascending Seq) order. A run with no plans/ dir
