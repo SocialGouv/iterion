@@ -23,6 +23,7 @@ import { useRunStore, type WsState } from "@/store/run";
 
 import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
+import BackendsUsedRow from "./runHeader/BackendsUsedRow";
 import BotChip from "./runHeader/BotChip";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
 import FinalizationRow from "./runHeader/FinalizationRow";
@@ -358,6 +359,12 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           {/* run id lives on the copy-id button (row 1) + the Overview's
               Advanced details — no need to repeat the raw string here. */}
         </div>
+        {/* Row 3: the resolved backend/model chip row — one chip per
+            distinct pair the run's LLM nodes ran on. Nothing renders for
+            tool/compute-only runs. */}
+        {run.backends_used && run.backends_used.length > 0 && (
+          <BackendsUsedRow backends={run.backends_used} />
+        )}
       </div>
       {error && (
         <InlineBanner
