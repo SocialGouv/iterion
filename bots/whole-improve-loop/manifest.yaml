@@ -1,5 +1,6 @@
 name: whole-improve-loop
 display_name: Willy
+icon: 🌍
 version: 2.0.0
 ## 2.0.0 — RADICAL SIMPLIFICATION (mechanism change). Replaces the v1
 ## axis-sweep (ADR-057, ~16 nodes: enumerate/next_item/transform/verify/

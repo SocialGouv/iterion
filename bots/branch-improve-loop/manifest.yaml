@@ -1,5 +1,6 @@
 name: branch-improve-loop
 display_name: Billy
+icon: 🌿
 version: 1.0.0
 ## 1.0.0 — RADICAL SIMPLIFICATION (mechanism change, ADR-058). Replaces the v1
 ## chunked cross-family review loop (~11 nodes: plan_chunks → alt →
