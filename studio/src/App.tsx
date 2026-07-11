@@ -3,6 +3,7 @@ import { Route, Switch, useLocation } from "wouter";
 
 import AppShell from "@/components/shared/AppShell";
 import BootLoading from "@/components/shared/BootLoading";
+import ServerUnreachable from "@/components/shared/ServerUnreachable";
 
 // Routes are React.lazy'd so each view ships its own chunk and the
 // initial download covers only the shell + AuthGate. The eager imports
@@ -109,7 +110,7 @@ function ScopedPaneReauth() {
 // session so the AuthGate consults the URL when it sees the
 // "anonymous" state and dispatches to the matching public view.
 function AuthGate() {
-  const { status, signOut, isRestricted } = useAuth();
+  const { status, signOut, isRestricted, retryConnection } = useAuth();
   const [location] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
 
@@ -121,11 +122,12 @@ function AuthGate() {
   }, [signOut]);
 
   if (status === "loading") {
-    return (
-      <div className="h-screen flex items-center justify-center bg-surface-0 text-fg-muted">
-        Loading…
-      </div>
-    );
+    return <BootLoading />;
+  }
+  // Backend down ≠ signed out: show the reconnect screen, never the
+  // sign-in form (a local no-auth operator has no credentials to give).
+  if (status === "unreachable") {
+    return <ServerUnreachable onRetry={retryConnection} />;
   }
   if (status === "anonymous") {
     // A workspace pane (iframe) can't run its own auth — the desktop owns the
@@ -135,13 +137,7 @@ function AuthGate() {
       return <ScopedPaneReauth />;
     }
     return (
-      <Suspense
-        fallback={
-          <div className="h-screen flex items-center justify-center bg-surface-0 text-fg-muted">
-            Loading…
-          </div>
-        }
-      >
+      <Suspense fallback={<BootLoading />}>
         <Switch>
           <Route path="/auth/password/change" component={ForcedPasswordChange} />
           <Route path="/auth/forgot-password" component={ForgotPassword} />

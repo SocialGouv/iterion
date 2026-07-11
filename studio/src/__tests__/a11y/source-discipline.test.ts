@@ -166,11 +166,9 @@ describe("source discipline", () => {
     //   - views/auth/AcceptInvitation.tsx — pre-shell status screens already
     //     composed as Spinner + text across two lines;
     //   - views/Skills.tsx — "Loading…" as a textarea placeholder= attribute,
-    //     not a rendered literal;
-    //   - App.tsx — its two boot divs are owned by the server-unreachable
-    //     boot-state fix (separate workstream); drop this entry once it lands.
+    //     not a rendered literal.
     const ALLOW =
-      /\/(ui\/Spinner|shared\/BootLoading|shared\/MainSpinner|views\/auth\/AcceptInvitation|views\/Skills|App)\.tsx$/;
+      /\/(ui\/Spinner|shared\/BootLoading|shared\/MainSpinner|views\/auth\/AcceptInvitation|views\/Skills)\.tsx$/;
     const RE = /(^\s*|>\s*|["'])Loading…/;
     const hits: string[] = [];
     for (const [path, src] of files) {
