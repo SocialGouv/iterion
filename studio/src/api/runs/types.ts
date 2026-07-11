@@ -293,6 +293,23 @@ export interface RunHeader {
   // iteration counter (matching the runtime's `node#N` log label), NOT
   // the count of node executions. Absent for runs with no named loops.
   loops?: Record<string, RunLoopProgress>;
+  // backends_used summarizes the distinct (backend, model) pairs the
+  // run's LLM/delegate nodes executed against, reducer-derived from each
+  // node_finished's stamped _backend / _model. Auto-detected backends
+  // report their resolved value, never "auto". Absent for tool/compute-
+  // only runs (the header then renders no backend chip).
+  backends_used?: BackendUsage[];
+}
+
+// BackendUsage is one distinct (backend, model) pair the run's LLM /
+// delegate nodes executed against. node_count is the number of distinct
+// IR nodes that resolved to it (loops / resumes don't inflate it); model
+// is empty when the backend reported no effective model. Mirror of
+// runview.BackendUsage.
+export interface BackendUsage {
+  backend: string;
+  model?: string;
+  node_count: number;
 }
 
 // RunLoopProgress reports a named loop's semantic progress: the current
