@@ -125,6 +125,12 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	if model == "" {
 		model = defaultClaudeCodeModel
 	}
+	// The DSL's canonical model spec is provider-prefixed
+	// ("anthropic/claude-…", the form claw parses), but the claude CLI
+	// only accepts bare model names and rejects the prefixed form as an
+	// unknown model. Strip the anthropic prefix; any other provider
+	// prefix stays and fails fast as a genuinely non-Anthropic model.
+	model = strings.TrimPrefix(model, "anthropic/")
 	opts = append(opts, claudesdk.WithModel(model))
 
 	// CLI binary path: the per-node task override (DSL `command:`, an
@@ -747,6 +753,12 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	if model == "" {
 		model = defaultClaudeCodeModel
 	}
+	// The DSL's canonical model spec is provider-prefixed
+	// ("anthropic/claude-…", the form claw parses), but the claude CLI
+	// only accepts bare model names and rejects the prefixed form as an
+	// unknown model. Strip the anthropic prefix; any other provider
+	// prefix stays and fails fast as a genuinely non-Anthropic model.
+	model = strings.TrimPrefix(model, "anthropic/")
 	opts = append(opts, claudesdk.WithModel(model))
 	// CLI binary path: the per-node task override (DSL `command:`, an
 	// alternate claude-code-compatible CLI) wins over the backend-level

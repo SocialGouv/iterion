@@ -88,6 +88,7 @@ const (
 	TokenURL
 	TokenAuth
 	TokenReadonly
+	TokenFullAccess
 	TokenBackend
 	TokenNeeds
 	TokenDefaultBackend
@@ -260,6 +261,7 @@ var tokenNames = map[TokenType]string{
 	TokenArgs:               "args",
 	TokenURL:                "url",
 	TokenReadonly:           "readonly",
+	TokenFullAccess:         "full_access",
 	TokenBackend:            "backend",
 	TokenNeeds:              "needs",
 	TokenDefaultBackend:     "default_backend",
@@ -398,6 +400,7 @@ var keywords = map[string]TokenType{
 	"url":                   TokenURL,
 	"auth":                  TokenAuth,
 	"readonly":              TokenReadonly,
+	"full_access":           TokenFullAccess,
 	"backend":               TokenBackend,
 	"needs":                 TokenNeeds,
 	"default_backend":       TokenDefaultBackend,

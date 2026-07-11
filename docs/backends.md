@@ -291,6 +291,29 @@ no subprocess fork). To use `claude_code` with API-key auth, set
 Same logic as claude_code: only OAuth flips it to "available" for
 auto-resolution. `OPENAI_API_KEY` alone routes to `claw`.
 
+#### Sandbox and `full_access`
+
+A codex node runs under codex's own sandbox. By default the mode is the
+least-privilege one implied by the node's tools: `read-only`, or
+`workspace-write` when a mutating tool (`Bash`/`Edit`/`Write`/`NotebookEdit`)
+is declared. Neither allows **network egress** — so a codex agent cannot reach
+an external API (e.g. codex's built-in `imagegen`, or any HTTP call) by default.
+
+To grant network access, the pipeline author sets `full_access: true` on the
+node. It lifts the sandbox to `danger-full-access` (unrestricted network +
+out-of-workspace writes) — the same posture as `codex exec -s
+danger-full-access`. It is **off by default and opt-in per node**, so network is
+always a deliberate choice, never granted implicitly:
+
+```
+agent make_cover:
+  backend: "codex"
+  full_access: true    # codex sandbox -> danger-full-access (needed for imagegen / network)
+  user: cover_prompt
+```
+
+Other backends ignore `full_access` (they do not impose the codex sandbox).
+
 ### `claw`
 
 `claw` is in-process and pluralised across providers. It reports

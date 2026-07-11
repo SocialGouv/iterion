@@ -1,0 +1,21 @@
+{
+  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, forfait cost). Shape frozen against the bot's campaign_output termination contract (ADR-058 v2). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "bot": "adr-cartograph",
+  "scenario": "campaign_adrs_aligned",
+  "node": "campaign",
+  "backend": "claude_code",
+  "model": "claude-opus-4-8",
+  "recorded_at": "2026-07-11T00:00:00Z",
+  "vars": {},
+  "input": {
+    "fail_log": ""
+  },
+  "output": {
+    "adrs_aligned": true,
+    "commits_this_pass": 1,
+    "drift_remaining": "",
+    "needs_human": false,
+    "human_note": "",
+    "summary": "Aligned ADR-012 with the shipped retry semantics (docs(adr): update 0012 backoff description to match executor_retry_policy) — the remaining corpus matches the code per the drift manifest; verify.sh green."
+  }
+}

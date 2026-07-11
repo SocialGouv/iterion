@@ -32,29 +32,44 @@ func (s Scenario) FixturePath() string {
 	return filepath.Join("testdata", "bot-goldens", s.Bot, s.Name+".json")
 }
 
-// Scenarios returns the wired golden scenarios for this iteration:
-// feature_dev + docs-refresh (the ADR-058 v2 campaign termination
-// contracts — their claude_code whole-session `campaign` nodes are
-// impractical to record live (cost, side-effects, interaction: human),
-// so those fixtures are hand-authored seeds frozen against the
-// termination schema; see the _note field) and whats-next (v2 — one
+// campaignScenario builds the shared shape of an ADR-058 v2 campaign
+// termination-contract scenario: hand-authored fixture (recording a
+// claude_code whole-session campaign node is impractical — cost, repo
+// side-effects), summary required non-empty, assignee scan on (campaign
+// outputs carry no assignees; the scan must stay clean).
+func campaignScenario(bot, name string) Scenario {
+	return Scenario{
+		Bot:              bot,
+		Name:             name,
+		Node:             "campaign",
+		RequiredNonEmpty: []string{"summary"},
+		CheckAssignees:   true,
+		Input:            map[string]any{"fail_log": ""},
+	}
+}
+
+// Scenarios returns the wired golden scenarios: the ADR-058 v2 campaign
+// termination contracts of the whole loop fleet (hand-authored seeds
+// frozen against each bot's campaign_output schema — recording a
+// claude_code whole-session campaign node live is impractical: cost,
+// side-effects, interaction: human; see the fixtures' _note field),
+// docs-refresh (same family, richer input), and whats-next (v2 — one
 // conversational nexie turn, recorded live: claude_code + board MCP).
 func Scenarios() []Scenario {
-	return []Scenario{
-		{
-			Bot:              "feature-dev",
-			Name:             "campaign_feature_complete",
-			Node:             "campaign",
-			RequiredNonEmpty: []string{"summary"},
-			CheckAssignees:   true, // campaign_output carries no assignees; scan must stay clean
-			Vars: map[string]string{
-				"feature_prompt": "add Answer() int returning 42 in answer.go",
-			},
-			Input: map[string]any{
-				"fail_log": "",
-			},
-		},
-		{
+	campaigns := []Scenario{
+		campaignScenario("whole-improve-loop", "campaign_axis_complete"),
+		campaignScenario("branch-improve-loop", "campaign_branch_clean"),
+		campaignScenario("feature-gap-fill", "campaign_gap_closed"),
+		campaignScenario("test-coverage", "campaign_coverage_complete"),
+		campaignScenario("adr-cartograph", "campaign_adrs_aligned"),
+	}
+	featureDev := campaignScenario("feature-dev", "campaign_feature_complete")
+	featureDev.Vars = map[string]string{
+		"feature_prompt": "add Answer() int returning 42 in answer.go",
+	}
+	campaigns = append(campaigns, featureDev)
+	return append(campaigns,
+		Scenario{
 			// whats-next v2: ONE conversational agent. The golden freezes a
 			// full nexie turn (reply + close + quick_replies + dispatched_ids)
 			// against the nexie_turn schema; the assignee scan keeps any bot
@@ -73,7 +88,7 @@ func Scenarios() []Scenario {
 				"operator_message": "Quels sont les quick wins sur ce board ? Recommande-m'en un.",
 			},
 		},
-		{
+		Scenario{
 			Bot:              "docs-refresh",
 			Name:             "campaign_docs_aligned",
 			Node:             "campaign",
@@ -96,5 +111,5 @@ func Scenarios() []Scenario {
 				"fail_log":                    "",
 			},
 		},
-	}
+	)
 }

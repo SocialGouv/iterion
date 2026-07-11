@@ -45,6 +45,9 @@ type depSignal struct {
 func runDepHeuristic(t *testing.T, nodeID, scannerFile, fixture string) depHeuristicOut {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("python3 not in PATH — required in CI; skipping here would silently drop the heuristics coverage")
+		}
 		t.Skip("python3 not in PATH — skipping sec-audit-deps heuristic test")
 	}
 	wf := compileFixture(t, "sec-audit-deps/main.bot")
@@ -120,6 +123,9 @@ func writeNpmPkg(t *testing.T, nodeModules, dir, body string) {
 func runGenericHeuristic(t *testing.T, wsDir string) depHeuristicOut {
 	t.Helper()
 	if _, err := exec.LookPath("python3"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("python3 not in PATH — required in CI; skipping here would silently drop the CVE-floor coverage")
+		}
 		t.Skip("python3 not in PATH")
 	}
 	wf := compileFixture(t, "sec-audit-deps/main.bot")

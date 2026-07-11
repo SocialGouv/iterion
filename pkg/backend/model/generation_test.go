@@ -408,6 +408,50 @@ func TestGenerateTextDirect_NoTools(t *testing.T) {
 	}
 }
 
+// TestGenerateTextDirect_ThinkingOnStep verifies that a step's
+// extended-thinking text is propagated onto StepResult.Thinking (and thus
+// to OnStepFinish), not just re-encoded into the token metrics.
+func TestGenerateTextDirect_ThinkingOnStep(t *testing.T) {
+	events := []api.StreamEvent{
+		{Type: api.EventMessageStart, InputTokens: 50},
+		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "thinking", Index: 0}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "thinking_delta", Thinking: "Let me reason "}},
+		{Type: api.EventContentBlockDelta, Index: 0, Delta: api.Delta{Type: "thinking_delta", Thinking: "about this carefully."}},
+		{Type: api.EventContentBlockStop, Index: 0},
+		{Type: api.EventContentBlockStart, ContentBlock: api.ContentBlockInfo{Type: "text", Index: 1}},
+		{Type: api.EventContentBlockDelta, Index: 1, Delta: api.Delta{Type: "text_delta", Text: "The answer is 42."}},
+		{Type: api.EventContentBlockStop, Index: 1},
+		{Type: api.EventMessageDelta, StopReason: "end_turn", Usage: api.UsageDelta{OutputTokens: 30}},
+		{Type: api.EventMessageStop},
+	}
+	client := newMockClient(events)
+
+	const wantThinking = "Let me reason about this carefully."
+	var hookThinking string
+	result, err := GenerateTextDirect(context.Background(), client, GenerationOptions{
+		Model: "claude-sonnet-4-6",
+		Messages: []api.Message{
+			{Role: "user", Content: []api.ContentBlock{{Type: "text", Text: "Hi"}}},
+		},
+		OnStepFinish: func(step StepResult) { hookThinking = step.Thinking },
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("Steps = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Thinking != wantThinking {
+		t.Errorf("Steps[0].Thinking = %q, want %q", result.Steps[0].Thinking, wantThinking)
+	}
+	if hookThinking != wantThinking {
+		t.Errorf("OnStepFinish thinking = %q, want %q", hookThinking, wantThinking)
+	}
+	if result.Steps[0].Usage.ReasoningTokens <= 0 {
+		t.Errorf("ReasoningTokens = %d, want > 0", result.Steps[0].Usage.ReasoningTokens)
+	}
+}
+
 func TestGenerateTextDirect_ToolLoop(t *testing.T) {
 	// Step 1: model calls tool "add" with {a:2,b:3}
 	// Step 2: model returns "The sum is 5"

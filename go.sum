@@ -17,8 +17,8 @@ github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0/go.mod h1:HKpQ
 github.com/Masterminds/semver v1.5.0 h1:H65muMkzWKEuNDnfl9d70GUjFniHKHRbFPGBuZ3QEww=
 github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAwZ/2OOE=
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260707151623-21c4b7d4356e h1:Lvg/ZCBN97+r9DR56kF+CJ7P53l+TtzW3laO4W/FUoU=
-github.com/SocialGouv/claw-code-go v0.1.1-0.20260707151623-21c4b7d4356e/go.mod h1:c0yGvkNqLl+A4KNRBBEg1iP3dhnnM9z0XX6jCFlA15k=
+github.com/SocialGouv/claw-code-go v0.1.1-0.20260711053405-a27d632dade0 h1:x9OxExKIl2jy4OePNDFBHSeI2oVzDyASpUJR2jA3xsI=
+github.com/SocialGouv/claw-code-go v0.1.1-0.20260711053405-a27d632dade0/go.mod h1:c0yGvkNqLl+A4KNRBBEg1iP3dhnnM9z0XX6jCFlA15k=
 github.com/alicebob/miniredis/v2 v2.38.0 h1:nZAzCR+Lj+Vxk4ZXzm2NuKq2O33RXj1XxJ2e2uP9jiw=
 github.com/alicebob/miniredis/v2 v2.38.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/aws/aws-sdk-go-v2 v1.42.1 h1:9eOTgu1z/dVtYpNZ3/8/XbbaX0x/BqE3HUzAzs6K0ek=

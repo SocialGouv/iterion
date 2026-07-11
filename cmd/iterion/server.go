@@ -236,7 +236,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("server: build sealer: %w", err)
 	}
 
-	stores, err := buildCloudStores(rootCtx, st)
+	stores, err := buildCloudStores(rootCtx, st, logger)
 	if err != nil {
 		return err
 	}
@@ -471,7 +471,7 @@ type cloudStores struct {
 // blocks (api_keys → generic_secrets → … → pat → memory). Marketplace
 // is opt-in via ITERION_CLOUD_MARKETPLACE and is appended to the
 // table only when enabled.
-func buildCloudStores(ctx context.Context, st *mongostore.Store) (*cloudStores, error) {
+func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog.Logger) (*cloudStores, error) {
 	s := &cloudStores{
 		apiKeys:          secrets.NewMongoApiKeyStore(st.DB()),
 		genericSecrets:   secrets.NewMongoGenericSecretStore(st.DB()),
@@ -494,7 +494,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store) (*cloudStores, 
 		orgUsage:       orgusage.NewMongoCounter(st.DB()),
 		audit:          audit.NewMongoStore(st.DB()),
 		pat:            pat.NewMongoStore(st.DB()),
-		memory:         mongostore.NewMongoMemoryStore(st.DB()),
+		memory:         mongostore.NewMongoMemoryStore(st.DB()).WithLogger(logger),
 	}
 
 	// Hosted marketplace (Mongo-backed) — opt-in for cloud via

@@ -264,6 +264,17 @@ type FilesystemRunStore struct {
 	// loading the JSONL when nothing changed. Read+write under `mu`.
 	inboxVersion map[string]uint64
 
+	// eventsUnsynced marks runs whose events.jsonl has appended bytes
+	// that a failed fsync left without a durability guarantee.
+	// AppendEvent treats an fsync failure as non-fatal (advancing Seq
+	// keeps the stream monotonic), but run.json — written atomically
+	// WITH fsync — must not durably reference state whose events never
+	// reached disk: a power loss would then recover a checkpoint ahead
+	// of its event log. writeRun re-syncs a flagged run's events file
+	// first (the write-ahead ordering barrier) and only proceeds when
+	// that succeeds. Guarded by `mu`.
+	eventsUnsynced map[string]bool
+
 	// logPositionFn returns the current per-run log buffer byte total
 	// for stamping Event.LogOffset at AppendEvent time. nil disables
 	// stamping (LogOffset stays 0). Wired post-construction by the
@@ -335,10 +346,11 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	// Failures (read-only FS, permission, etc.) are non-fatal.
 	_ = ensureGitignore(root)
 	s := &FilesystemRunStore{
-		root:         root,
-		seq:          make(map[string]int64),
-		seqSeed:      make(map[string]bool),
-		inboxVersion: make(map[string]uint64),
+		root:           root,
+		seq:            make(map[string]int64),
+		seqSeed:        make(map[string]bool),
+		inboxVersion:   make(map[string]uint64),
+		eventsUnsynced: make(map[string]bool),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -843,9 +855,17 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 	// fsync failure as fatal used to leave the in-memory seq counter
 	// pinned at evt.Seq, so the next AppendEvent would assign the same
 	// Seq to a different event and produce duplicate sequence numbers
-	// in the file. Log instead, and advance seq.
-	if err := f.Sync(); err != nil && s.logger != nil {
-		s.logger.Warn("store: fsync event for run %s seq %d: %v — line written but not durable", runID, evt.Seq, err)
+	// in the file. Log instead, advance seq, and flag the run so the
+	// next run.json write re-syncs the events file first (writeRun's
+	// ordering barrier) — the checkpoint must never be durably ahead
+	// of its event log.
+	if err := f.Sync(); err != nil {
+		s.eventsUnsynced[runID] = true
+		if s.logger != nil {
+			s.logger.Warn("store: fsync event for run %s seq %d: %v — line written but not durable", runID, evt.Seq, err)
+		}
+	} else {
+		delete(s.eventsUnsynced, runID)
 	}
 
 	// Always advance once the bytes are in the file. fsync confirms
@@ -1597,7 +1617,40 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
+	// Write-ahead ordering barrier: if an earlier AppendEvent fsync
+	// failed, re-sync events.jsonl BEFORE the checkpoint write. run.json
+	// is written atomically with fsync, so without the barrier a power
+	// loss could recover a checkpoint that references events which never
+	// reached disk. Failing here is consistent with writeFileAtomic's
+	// own hard-fail on fsync: if the disk can't persist the log, it
+	// can't persist the checkpoint either.
+	if s.eventsUnsynced[r.ID] {
+		if err := s.syncEventsLocked(r.ID); err != nil {
+			return fmt.Errorf("store: write run %s blocked — events.jsonl re-sync after an earlier fsync failure: %w", r.ID, err)
+		}
+	}
 	// Atomic write: run.json is the authoritative resume checkpoint
 	// (per CLAUDE.md). A torn write would lose all prior checkpoint state.
 	return writeFileAtomic(s.runJSONPath(r.ID), data, filePerm)
+}
+
+// syncEventsLocked fsyncs the run's events.jsonl and clears its
+// unsynced flag. Called under s.mu. A missing events file counts as
+// synced (nothing to persist — the failed append may have been the
+// file's first line on a path that never materialised).
+func (s *FilesystemRunStore) syncEventsLocked(runID string) error {
+	f, err := os.OpenFile(s.eventsPath(runID), os.O_RDWR, filePerm)
+	if err != nil {
+		if os.IsNotExist(err) {
+			delete(s.eventsUnsynced, runID)
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	delete(s.eventsUnsynced, runID)
+	return nil
 }
