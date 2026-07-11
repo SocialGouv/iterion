@@ -20,6 +20,7 @@ interface Props {
     ref?: string;
     path?: string;
     tags?: string[];
+    icon?: string;
     scope?: MarketplaceScope;
   }) => Promise<void>;
   /** Called after a successful .botz upload so the parent can re-reconcile
@@ -51,6 +52,7 @@ export function MarketplaceSubmit({
   const [ref, setRef] = useState("");
   const [path, setPath] = useState("");
   const [tagsRaw, setTagsRaw] = useState("");
+  const [icon, setIcon] = useState("");
   const [scope, setScope] = useState<MarketplaceScope | undefined>(defaultScope);
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -59,6 +61,7 @@ export function MarketplaceSubmit({
   const refId = useId();
   const pathId = useId();
   const tagsId = useId();
+  const iconId = useId();
   const scopeId = useId();
   const showScopePicker = (scopes?.length ?? 0) > 1;
 
@@ -84,6 +87,7 @@ export function MarketplaceSubmit({
     setRef("");
     setPath("");
     setTagsRaw("");
+    setIcon("");
   };
 
   const handle = async () => {
@@ -100,6 +104,7 @@ export function MarketplaceSubmit({
         ref: ref.trim() || undefined,
         path: path.trim() || undefined,
         tags: tags.length > 0 ? tags : undefined,
+        icon: icon.trim() || undefined,
         scope: showScopePicker ? scope : undefined,
       });
       reset();
@@ -172,20 +177,41 @@ export function MarketplaceSubmit({
               />
             </div>
           </div>
-          <div className="flex flex-col gap-1">
-            <label
-              htmlFor={tagsId}
-              className="text-caption uppercase tracking-wide text-fg-subtle"
-            >
-              Tags (comma-separated)
-            </label>
-            <Input
-              id={tagsId}
-              type="text"
-              value={tagsRaw}
-              onChange={(e) => setTagsRaw(e.target.value)}
-              placeholder="review, kanban, sre"
-            />
+          <div className="flex items-end gap-2">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <label
+                htmlFor={tagsId}
+                className="text-caption uppercase tracking-wide text-fg-subtle"
+              >
+                Tags (comma-separated)
+              </label>
+              <Input
+                id={tagsId}
+                type="text"
+                value={tagsRaw}
+                onChange={(e) => setTagsRaw(e.target.value)}
+                placeholder="review, kanban, sre"
+              />
+            </div>
+            <div className="flex w-24 shrink-0 flex-col gap-1">
+              <label
+                htmlFor={iconId}
+                className="text-caption uppercase tracking-wide text-fg-subtle"
+              >
+                Icon
+              </label>
+              <Input
+                id={iconId}
+                type="text"
+                value={icon}
+                onChange={(e) => setIcon(e.target.value)}
+                placeholder="🤖"
+                maxLength={4}
+                aria-label="Icon (an emoji, 1-2 characters)"
+                title="An emoji (1-2 characters)"
+                className="text-center"
+              />
+            </div>
           </div>
           {showScopePicker && (
             <div className="flex flex-col gap-1">
@@ -210,7 +236,8 @@ export function MarketplaceSubmit({
           )}
           <div className="flex items-center justify-between gap-3">
             <p className="text-caption text-fg-subtle">
-              The server clones the repo and validates the bundle (no install).
+              The server clones the repo and validates it (no install). Bot
+              bundles and plugin.yaml repos are detected automatically.
               {moderated
                 ? " Your submission is queued for an admin to review before it appears."
                 : " Submitting again with the same name refreshes the entry."}

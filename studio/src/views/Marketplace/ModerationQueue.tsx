@@ -2,6 +2,8 @@ import { useState } from "react";
 
 import type { MarketplaceEntry } from "@/api/marketplace";
 import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
+import { Textarea } from "@/components/ui/Textarea";
 
 interface Props {
   entries: MarketplaceEntry[];
@@ -10,17 +12,28 @@ interface Props {
 }
 
 /** ModerationQueue lists entries awaiting review (cloud, admin-only).
- *  Each row offers Approve / Reject; reject prompts for an optional
- *  reason surfaced back to the submitter. Hidden by the parent when the
- *  queue is empty (or the caller isn't an admin → the fetch 403s). */
+ *  Each row offers Approve / Reject; reject opens a dialog asking for an
+ *  optional reason surfaced back to the submitter. Hidden by the parent
+ *  when the queue is empty (or the caller isn't an admin → the fetch
+ *  403s). */
 export function ModerationQueue({ entries, onApprove, onReject }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
+  // The entry a reject is being composed for; null = dialog closed.
+  const [rejecting, setRejecting] = useState<MarketplaceEntry | null>(null);
+  const [reason, setReason] = useState("");
 
-  const reject = async (slug: string) => {
-    const reason = window.prompt("Reason for rejection (optional):") ?? "";
+  const openReject = (e: MarketplaceEntry) => {
+    setReason("");
+    setRejecting(e);
+  };
+
+  const confirmReject = async () => {
+    if (!rejecting) return;
+    const slug = rejecting.slug;
     setBusy(slug);
     try {
-      await onReject(slug, reason);
+      await onReject(slug, reason.trim());
+      setRejecting(null);
     } finally {
       setBusy(null);
     }
@@ -74,7 +87,7 @@ export function ModerationQueue({ entries, onApprove, onReject }: Props) {
               <Button
                 variant="danger"
                 size="sm"
-                onClick={() => void reject(e.slug)}
+                onClick={() => openReject(e)}
                 disabled={busy === e.slug}
               >
                 Reject
@@ -83,6 +96,50 @@ export function ModerationQueue({ entries, onApprove, onReject }: Props) {
           </li>
         ))}
       </ul>
+
+      <Dialog
+        open={rejecting !== null}
+        onOpenChange={(open) => {
+          // Keep the dialog up while the reject request is in flight.
+          if (!open && busy === null) setRejecting(null);
+        }}
+        title={`Reject "${rejecting?.display_name?.trim() || rejecting?.name || ""}"`}
+        description="The reason is surfaced back to the submitter."
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setRejecting(null)}
+              disabled={busy !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => void confirmReject()}
+              disabled={busy !== null}
+              loading={busy !== null}
+            >
+              {busy !== null ? "Rejecting…" : "Reject"}
+            </Button>
+          </>
+        }
+      >
+        <label className="flex flex-col gap-1">
+          <span className="text-caption uppercase tracking-wide text-fg-subtle">
+            Reason (optional)
+          </span>
+          <Textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={3}
+            placeholder="e.g. manifest missing a description, repo not reachable…"
+            disabled={busy !== null}
+          />
+        </label>
+      </Dialog>
     </section>
   );
 }
