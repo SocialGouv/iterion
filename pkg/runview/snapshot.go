@@ -142,6 +142,13 @@ type RunHeader struct {
 	// WatchPanel reads it as the primary watch-list source, falling back
 	// to its event-derived list for legacy runs that predate the field.
 	WatchedIssueIDs []string `json:"watched_issue_ids,omitempty"`
+	// BackendsUsed summarizes the distinct (backend, model) pairs the
+	// run's LLM/delegate nodes actually executed against, derived by
+	// folding node_finished events (each stamps _backend / _model on its
+	// output). Auto-detected backends report their RESOLVED value, not
+	// "auto". Nil for runs with no LLM nodes (tool/compute-only) so the
+	// studio RunHeader renders no chip. See the studio BackendsUsed row.
+	BackendsUsed []BackendUsage `json:"backends_used,omitempty"`
 	// Loops is the run-level "real loops" indicator: one entry per
 	// declared named loop (e.g. "review_loop"), reporting the SEMANTIC
 	// iteration counter (matching the runtime's `node#N` log label and
@@ -152,6 +159,17 @@ type RunHeader struct {
 	// (iteration_path); Max is the declared bound (0 = unbounded /
 	// expression cap / unknown). Absent for runs with no named loops.
 	Loops map[string]RunLoopProgress `json:"loops,omitempty"`
+}
+
+// BackendUsage is one distinct (backend, model) pair a run's LLM /
+// delegate nodes executed against. NodeCount is the number of distinct
+// IR nodes that resolved to this pair, so loop iterations and resume
+// re-executions of the same node do not inflate it. Model is empty when
+// the backend did not report an effective model.
+type BackendUsage struct {
+	Backend   string `json:"backend"`
+	Model     string `json:"model,omitempty"`
+	NodeCount int    `json:"node_count"`
 }
 
 // RunLoopProgress reports a named loop's semantic progress at the run
@@ -236,6 +254,21 @@ type SnapshotBuilder struct {
 	// RunHeader.Loops on Snapshot.
 	loopCurrent map[string]int
 	loopBound   map[string]int
+	// backendUsage aggregates the distinct (backend, model) pairs the
+	// run's LLM/delegate nodes executed against (from each node_finished's
+	// stamped _backend / _model). Keyed by backend\x00model; backendOrder
+	// preserves first-seen order for a deterministic BackendsUsed slice;
+	// each agg tracks the set of distinct IR node ids so loops/resumes
+	// don't inflate NodeCount.
+	backendUsage map[string]*backendAgg
+	backendOrder []string
+}
+
+// backendAgg accumulates one (backend, model) pair while folding events.
+type backendAgg struct {
+	backend string
+	model   string
+	nodes   map[string]bool
 }
 
 // NewSnapshotBuilder seeds a builder from the persisted Run metadata.
@@ -250,6 +283,7 @@ func NewSnapshotBuilder(run *store.Run) *SnapshotBuilder {
 		lastResumedSeq: NoEventsSeq,
 		loopCurrent:    make(map[string]int),
 		loopBound:      make(map[string]int),
+		backendUsage:   make(map[string]*backendAgg),
 	}
 	if run != nil {
 		b.header = headerFromRun(run)
@@ -315,6 +349,7 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 		b.handleNodeStarted(evt, branch)
 	case store.EventNodeFinished:
 		b.handleNodeFinished(evt, branch)
+		b.recordBackendUsage(evt)
 	case store.EventArtifactWritten:
 		b.handleArtifactWritten(evt, branch)
 	case store.EventRunFailed:
@@ -361,6 +396,7 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	}
 	header := b.header
 	header.Loops = b.buildLoopProgress()
+	header.BackendsUsed = b.buildBackendsUsed()
 	return &RunSnapshot{
 		Run:        header,
 		Executions: execs,
@@ -386,6 +422,54 @@ func (b *SnapshotBuilder) buildLoopProgress() map[string]RunLoopProgress {
 		if _, seen := out[name]; !seen {
 			out[name] = RunLoopProgress{Current: 0, Max: max}
 		}
+	}
+	return out
+}
+
+// recordBackendUsage folds a node_finished event into the per-(backend,
+// model) usage tally. The runtime stamps _backend (always, for delegate
+// nodes) and _model (when the backend reports an effective model) onto
+// the node's output map, which node_finished carries under data.output.
+// Nodes with no _backend (tool/compute/router terminals) contribute
+// nothing, so a run with only such nodes yields an empty BackendsUsed.
+func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
+	if evt.NodeID == "" || evt.Data == nil {
+		return
+	}
+	output, ok := evt.Data["output"].(map[string]any)
+	if !ok {
+		return
+	}
+	backend, _ := output["_backend"].(string)
+	if backend == "" {
+		return
+	}
+	model, _ := output["_model"].(string)
+	key := backend + "\x00" + model
+	agg := b.backendUsage[key]
+	if agg == nil {
+		agg = &backendAgg{backend: backend, model: model, nodes: make(map[string]bool)}
+		b.backendUsage[key] = agg
+		b.backendOrder = append(b.backendOrder, key)
+	}
+	agg.nodes[evt.NodeID] = true
+}
+
+// buildBackendsUsed materialises the aggregated (backend, model) pairs
+// in first-seen order. Returns nil when no delegate node has finished so
+// tool/compute-only runs render no backend chip.
+func (b *SnapshotBuilder) buildBackendsUsed() []BackendUsage {
+	if len(b.backendOrder) == 0 {
+		return nil
+	}
+	out := make([]BackendUsage, 0, len(b.backendOrder))
+	for _, key := range b.backendOrder {
+		agg := b.backendUsage[key]
+		out = append(out, BackendUsage{
+			Backend:   agg.backend,
+			Model:     agg.model,
+			NodeCount: len(agg.nodes),
+		})
 	}
 	return out
 }

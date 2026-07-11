@@ -902,3 +902,97 @@ func TestSnapshotReducer_LoopIndicatorSemanticNotExecCount(t *testing.T) {
 		t.Errorf("Loops[review_loop].Max = %d, want 50 (declared bound)", p.Max)
 	}
 }
+
+// nodeFinishedWithMeta builds a node_finished event whose output carries
+// the runtime-stamped _backend / _model observability keys.
+func nodeFinishedWithMeta(seq int64, node, backend, model string) *store.Event {
+	out := map[string]any{}
+	if backend != "" {
+		out["_backend"] = backend
+	}
+	if model != "" {
+		out["_model"] = model
+	}
+	return evt(seq, store.EventNodeFinished, "", node, map[string]any{"output": out})
+}
+
+func TestSnapshotReducer_BackendsUsedAggregation(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1", Status: store.RunStatusFinished})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		// analyze: claw · openai/gpt-5.4-mini
+		evt(1, store.EventNodeStarted, "", "analyze", map[string]any{"kind": "agent"}),
+		nodeFinishedWithMeta(2, "analyze", "claw", "openai/gpt-5.4-mini"),
+		// implement: claude_code · sonnet
+		evt(3, store.EventNodeStarted, "", "implement", map[string]any{"kind": "agent"}),
+		nodeFinishedWithMeta(4, "implement", "claude_code", "sonnet"),
+		// review: claw · openai/gpt-5.4-mini (same pair as analyze → node_count 2)
+		evt(5, store.EventNodeStarted, "", "review", map[string]any{"kind": "judge"}),
+		nodeFinishedWithMeta(6, "review", "claw", "openai/gpt-5.4-mini"),
+		evt(7, store.EventRunFinished, "", "", nil),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	used := b.Snapshot().Run.BackendsUsed
+	if len(used) != 2 {
+		t.Fatalf("BackendsUsed = %d pairs, want 2: %+v", len(used), used)
+	}
+	// First-seen order: claw pair first, claude_code second.
+	if used[0].Backend != "claw" || used[0].Model != "openai/gpt-5.4-mini" {
+		t.Errorf("used[0] = %+v, want claw/openai/gpt-5.4-mini", used[0])
+	}
+	if used[0].NodeCount != 2 {
+		t.Errorf("used[0].NodeCount = %d, want 2 (analyze + review)", used[0].NodeCount)
+	}
+	if used[1].Backend != "claude_code" || used[1].Model != "sonnet" {
+		t.Errorf("used[1] = %+v, want claude_code/sonnet", used[1])
+	}
+	if used[1].NodeCount != 1 {
+		t.Errorf("used[1].NodeCount = %d, want 1", used[1].NodeCount)
+	}
+}
+
+// A loop re-runs the same node many times against the same pair; the
+// distinct-node dedup keeps NodeCount at 1, not the iteration count.
+func TestSnapshotReducer_BackendsUsedDedupesLoopIterations(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		evt(1, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent", "iteration": 0}),
+		nodeFinishedWithMeta(2, "fix", "claw", "anthropic/claude-sonnet-4-6"),
+		evt(3, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent", "iteration": 1}),
+		nodeFinishedWithMeta(4, "fix", "claw", "anthropic/claude-sonnet-4-6"),
+		evt(5, store.EventNodeStarted, "", "fix", map[string]any{"kind": "agent", "iteration": 2}),
+		nodeFinishedWithMeta(6, "fix", "claw", "anthropic/claude-sonnet-4-6"),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	used := b.Snapshot().Run.BackendsUsed
+	if len(used) != 1 {
+		t.Fatalf("BackendsUsed = %d, want 1: %+v", len(used), used)
+	}
+	if used[0].NodeCount != 1 {
+		t.Errorf("NodeCount = %d, want 1 (one distinct node despite 3 loop iterations)", used[0].NodeCount)
+	}
+}
+
+// Tool/compute-only runs stamp no _backend, so BackendsUsed stays nil
+// and the studio renders no backend chip.
+func TestSnapshotReducer_BackendsUsedEmptyForNonLLMRun(t *testing.T) {
+	b := NewSnapshotBuilder(&store.Run{ID: "r1"})
+	events := []*store.Event{
+		evt(0, store.EventRunStarted, "", "", nil),
+		evt(1, store.EventNodeStarted, "", "build", map[string]any{"kind": "tool"}),
+		// A tool node's output carries no _backend key.
+		evt(2, store.EventNodeFinished, "", "build", map[string]any{"output": map[string]any{"text": "ok"}}),
+		evt(3, store.EventRunFinished, "", "", nil),
+	}
+	for _, e := range events {
+		b.Apply(e)
+	}
+	if used := b.Snapshot().Run.BackendsUsed; used != nil {
+		t.Errorf("BackendsUsed = %+v, want nil for a tool-only run", used)
+	}
+}
