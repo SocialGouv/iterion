@@ -654,6 +654,8 @@ function reasonLabel(reason: string | undefined): string {
       return "Run has no recorded base commit — cannot compute commit list";
     case "not_git_repo":
       return "Not a git repository";
+    case "history_unavailable":
+      return "Run history is no longer in this repo — the storage branch or base commit was pruned, or lives in another checkout";
     default:
       return reason ?? "Commits unavailable";
   }

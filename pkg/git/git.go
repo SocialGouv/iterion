@@ -34,6 +34,22 @@ const gitCommandTimeout = 30 * time.Second
 // neutral empty-state instead of a red error.
 var ErrNotGitRepo = errors.New("git: not a git repository")
 
+// IsUnknownRevision reports whether err comes from git rejecting a
+// revision/range that no longer resolves in the repository (branch
+// pruned, base commit gc'd, checkout living elsewhere). Callers in the
+// HTTP layer translate it — like ErrNotGitRepo — to a 200 with
+// `available: false` so a missing history renders as an empty-state,
+// not a 500 carrying raw git stderr.
+func IsUnknownRevision(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Invalid revision range") ||
+		strings.Contains(msg, "unknown revision") ||
+		strings.Contains(msg, "bad revision")
+}
+
 // FileStatus is a single entry in the porcelain output, distilled to one
 // effective change per path. The on-disk reality (worktree) wins over the
 // index when both columns disagree — the studio cares about "what would I
