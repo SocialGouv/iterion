@@ -46,22 +46,41 @@ to be exact. It falls back to a chars/4 heuristic if the codec fails to load.
   Iterion attributes the wall-clock gap since the previous stream item to a
   thinking-bearing assistant message — a proxy, not an exact measurement.
 
-## Model-dependent redaction — claude_code thinking content
+## Model-dependent redaction — the `thinking.display` parameter
 
-Whether the thinking **content** is visible depends on the model, not on
-iterion (verified against `claude` CLI 2.1.195 by inspecting the raw
-`stream-json` frames):
+Whether the thinking **content** is visible is governed by the Anthropic
+API's `thinking.display` parameter, not by iterion
+([adaptive-thinking docs](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)):
 
-- **claude-sonnet-4-6** — the CLI streams `ThinkingBlock`s with the full
-  reasoning text; iterion folds it as the 🧠 LogBlock and counts tokens.
-- **claude-opus-4-8** — the provider redacts thinking client-side: the CLI
-  streams the block with **empty** text and only the encrypted `signature`
-  (even the session transcript and `--include-partial-messages` deltas carry
-  empty text with `estimated_tokens` only). There is no content to display
-  anywhere. Iterion still detects the signed-but-empty block and logs
-  `🧠 thinking: Nms (content withheld by provider)`, accumulating the timing
-  metric; the token metric stays 0 (nothing to re-encode).
+- `display: "summarized"` returns a **summary** of the reasoning (produced
+  by a separate summarizer model — the raw chain-of-thought is never
+  returned on Claude 4 models; that policy is anti-distillation/misuse).
+  This is the request-time default on Opus 4.6 / Sonnet 4.6 and earlier.
+- `display: "omitted"` returns thinking blocks with an **empty** `thinking`
+  field and only the encrypted `signature` (full reasoning, decryptable
+  only by the API for multi-turn continuity). This is the default on
+  **Opus 4.8 / 4.7 and Sonnet 5** — a silent change from Opus 4.6. Billing
+  is identical either way (full thinking tokens); omitting only reduces
+  time-to-first-text-token.
 
-The claw path is unaffected by this: it parses the raw SSE, so whenever the
-API returns thinking deltas (Anthropic models via API key, OpenAI reasoning
-summaries via the Responses API) the content is captured.
+Consequences per backend (verified against `claude` CLI 2.1.195 by
+inspecting raw `stream-json` frames):
+
+- **claw** — requests `display: "summarized"` on every adaptive request
+  (claw ≥ a27d632), so Anthropic models via API key show summarized
+  thinking even on Opus 4.8. Override with
+  `CLAW_ANTHROPIC_THINKING_DISPLAY=omitted|off`. OpenAI reasoning
+  summaries flow via the Responses API (`reasoning.summary=auto`).
+- **claude_code** — the CLI controls its own request and exposes **no
+  knob** for `display` as of 2.1.195 (`MAX_THINKING_TOKENS` and
+  `alwaysThinkingEnabled` affect whether thinking happens, not its
+  visibility; upstream feature requests:
+  [#36006](https://github.com/anthropics/claude-code/issues/36006),
+  [#8477](https://github.com/anthropics/claude-code/issues/8477)). So:
+  sonnet-4-6 streams summarized text (its default) and iterion folds it;
+  opus-4-8 streams signed-but-empty blocks and iterion logs
+  `🧠 thinking: Nms (content withheld by provider)` with the timing
+  metric (tokens stay 0 — nothing to re-encode). Even the session
+  transcript and `--include-partial-messages` deltas are empty on opus
+  (only `estimated_tokens`). Revisit when the CLI grows a display
+  setting.
