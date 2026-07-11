@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -94,6 +95,130 @@ func TestTriggers_CreateAndList(t *testing.T) {
 	}
 	if len(listed.Subscriptions) != 1 || listed.Subscriptions[0].ID != created.ID {
 		t.Fatalf("list = %+v; want the created subscription", listed.Subscriptions)
+	}
+}
+
+// newFromInvocationServer builds a server whose workdir ships one bundle
+// bot declaring schedule + board + command invocations, plus a memory
+// trigger store — the bot home's one-click enablement surface.
+func newFromInvocationServer(t *testing.T) *Server {
+	t.Helper()
+	workdir := t.TempDir()
+	dir := filepath.Join(workdir, "bots", "trig-bot")
+	writeBotFile(t, filepath.Join(dir, "main.bot"), "workflow w:\n  agent a:\n    model: \"test\"\n  a -> done\n\nagent a:\n  model: \"test\"\n")
+	writeBotFile(t, filepath.Join(dir, "manifest.yaml"), `name: trig-bot
+schema_version: 1
+invocations:
+  - kind: schedule
+    schedule:
+      suggested_cron: "0 7 * * 1"
+      default_vars:
+        window: "7 days"
+  - kind: board
+    board:
+      to_states: [ready]
+      all_labels: [triage]
+  - kind: command
+    command:
+      name: trig
+`)
+	srv := New(Config{DisableAuth: true, WorkDir: workdir, TriggerStore: trigger.NewMemorySubscriptionStore()}, iterlog.New(iterlog.LevelError, nil))
+	srv.handler = srv.mux
+	return srv
+}
+
+func postFromInvocation(t *testing.T, srv *Server, bot, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/bots/"+bot+"/triggers/from-invocation", bytes.NewBufferString(body))
+	req.SetPathValue("name", bot)
+	srv.handleTriggerFromInvocation(rec, req)
+	return rec
+}
+
+func TestTriggerFromInvocation_Schedule(t *testing.T) {
+	srv := newFromInvocationServer(t)
+	rec := postFromInvocation(t, srv, "trig-bot", `{"index":0}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var sub trigger.Subscription
+	if err := json.Unmarshal(rec.Body.Bytes(), &sub); err != nil {
+		t.Fatal(err)
+	}
+	if sub.BotID != "trig-bot" || sub.Cron != "0 7 * * 1" || sub.Origin != botHomeTriggerOrigin || !sub.Enabled {
+		t.Fatalf("unexpected subscription: %+v", sub)
+	}
+	if sub.Vars["window"] != "7 days" {
+		t.Errorf("default_vars not carried: %+v", sub.Vars)
+	}
+
+	// Same invocation again → 409 with the existing id.
+	dup := postFromInvocation(t, srv, "trig-bot", `{"index":0}`)
+	if dup.Code != http.StatusConflict {
+		t.Fatalf("duplicate status = %d; body=%s", dup.Code, dup.Body.String())
+	}
+	var conflict struct {
+		SubscriptionID string `json:"subscription_id"`
+	}
+	_ = json.Unmarshal(dup.Body.Bytes(), &conflict)
+	if conflict.SubscriptionID != sub.ID {
+		t.Errorf("conflict id = %q, want %q", conflict.SubscriptionID, sub.ID)
+	}
+}
+
+func TestTriggerFromInvocation_ScheduleCronOverride(t *testing.T) {
+	srv := newFromInvocationServer(t)
+	rec := postFromInvocation(t, srv, "trig-bot", `{"index":0,"cron":"30 6 * * 2"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var sub trigger.Subscription
+	_ = json.Unmarshal(rec.Body.Bytes(), &sub)
+	if sub.Cron != "30 6 * * 2" {
+		t.Errorf("cron = %q, want the override", sub.Cron)
+	}
+
+	bad := postFromInvocation(t, srv, "trig-bot", `{"index":1,"cron":"* * * * *"}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Errorf("cron on board invocation: status = %d, want 400", bad.Code)
+	}
+}
+
+func TestTriggerFromInvocation_Board(t *testing.T) {
+	srv := newFromInvocationServer(t)
+	rec := postFromInvocation(t, srv, "trig-bot", `{"index":1}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var sub trigger.Subscription
+	_ = json.Unmarshal(rec.Body.Bytes(), &sub)
+	if len(sub.Match.SubjectStates) != 1 || sub.Match.SubjectStates[0] != "ready" {
+		t.Errorf("matcher states = %+v, want [ready]", sub.Match.SubjectStates)
+	}
+	if sub.EffectiveMode() != "board" {
+		t.Errorf("mode = %q, want board", sub.EffectiveMode())
+	}
+}
+
+func TestTriggerFromInvocation_Rejections(t *testing.T) {
+	srv := newFromInvocationServer(t)
+	cases := map[string]struct {
+		bot, body string
+		want      int
+	}{
+		"command kind":  {"trig-bot", `{"index":2}`, http.StatusBadRequest},
+		"out of range":  {"trig-bot", `{"index":9}`, http.StatusBadRequest},
+		"negative":      {"trig-bot", `{"index":-1}`, http.StatusBadRequest},
+		"unknown bot":   {"nope", `{"index":0}`, http.StatusNotFound},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			rec := postFromInvocation(t, srv, tc.bot, tc.body)
+			if rec.Code != tc.want {
+				t.Errorf("status = %d, want %d (body=%s)", rec.Code, tc.want, rec.Body.String())
+			}
+		})
 	}
 }
 
