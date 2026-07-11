@@ -308,8 +308,8 @@ function Contributes({ detail }: { detail: PluginDetailData }) {
 }
 
 // LifecycleSection exposes the manifest's index/refresh commands as one-click
-// runs (super-admin only server-side, mirrored by canManage here) and shows
-// the captured output — including failures and truncation — verbatim.
+// runs (super-admin only server-side, mirrored by canManage here) and streams
+// the command output live — including failures and truncation — verbatim.
 function LifecycleSection({
   name,
   detail,
@@ -321,14 +321,16 @@ function LifecycleSection({
 }) {
   const [running, setRunning] = useState<"index" | "refresh" | null>(null);
   const [result, setResult] = useState<PluginLifecycleResult | null>(null);
+  const [liveOutput, setLiveOutput] = useState("");
   const [err, setErr] = useState<string | null>(null);
 
   const run = async (phase: "index" | "refresh") => {
     setRunning(phase);
     setErr(null);
     setResult(null);
+    setLiveOutput("");
     try {
-      setResult(await runPluginLifecycle(name, phase));
+      setResult(await runPluginLifecycle(name, phase, setLiveOutput));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -391,6 +393,14 @@ function LifecycleSection({
         <InlineBanner tone="danger" title="Lifecycle run failed" layout="inline">
           {err}
         </InlineBanner>
+      )}
+      {running !== null && liveOutput !== "" && (
+        <pre
+          aria-live="polite"
+          className="max-h-64 overflow-auto rounded border border-border-default bg-surface-2 p-2 font-mono text-micro text-fg-default"
+        >
+          {liveOutput}
+        </pre>
       )}
       {result && (
         <div className="space-y-1">

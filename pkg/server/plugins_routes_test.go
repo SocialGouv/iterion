@@ -123,30 +123,61 @@ contributes:
 	workdir := t.TempDir()
 	srv := newPluginServer(t, workdir, "")
 
-	type lcResp struct {
+	// The endpoint streams NDJSON: {"output":…} chunk lines closed by a
+	// {"done":true,…} trailer. Fold a recorded body back into
+	// (concatenated output, trailer).
+	type lcTrailer struct {
+		Done      bool   `json:"done"`
 		Name      string `json:"name"`
 		Phase     string `json:"phase"`
 		OK        bool   `json:"ok"`
-		Output    string `json:"output"`
 		Truncated bool   `json:"truncated"`
 		Error     string `json:"error"`
 	}
+	decodeLifecycleStream := func(t *testing.T, body string) (string, lcTrailer) {
+		t.Helper()
+		var output strings.Builder
+		var trailer lcTrailer
+		sawTrailer := false
+		for _, line := range strings.Split(body, "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var evt struct {
+				Output *string `json:"output"`
+				lcTrailer
+			}
+			if err := json.Unmarshal([]byte(line), &evt); err != nil {
+				t.Fatalf("decode stream line %q: %v", line, err)
+			}
+			if evt.Done {
+				trailer = evt.lcTrailer
+				sawTrailer = true
+			} else if evt.Output != nil {
+				output.WriteString(*evt.Output)
+			}
+		}
+		if !sawTrailer {
+			t.Fatalf("stream ended without a done trailer: %s", body)
+		}
+		return output.String(), trailer
+	}
 
 	// Success: the command runs in WorkDir (marker lands there) and its
-	// stdout is captured.
+	// stdout is streamed.
 	rec := doJSON(t, srv, "POST", "/api/v1/plugins/lc-demo/lifecycle/index", "")
 	if rec.Code != 200 {
 		t.Fatalf("index: code = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	var res lcResp
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-		t.Fatalf("decode: %v", err)
+	if ct := rec.Header().Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Errorf("Content-Type = %q, want application/x-ndjson", ct)
 	}
-	if !res.OK || res.Name != "lc-demo" || res.Phase != "index" || res.Error != "" {
-		t.Errorf("index result = %+v", res)
+	output, trailer := decodeLifecycleStream(t, rec.Body.String())
+	if !trailer.OK || trailer.Name != "lc-demo" || trailer.Phase != "index" || trailer.Error != "" {
+		t.Errorf("index trailer = %+v", trailer)
 	}
-	if !strings.Contains(res.Output, "indexed "+workdir) {
-		t.Errorf("output missing expanded workspace: %q", res.Output)
+	if !strings.Contains(output, "indexed "+workdir) {
+		t.Errorf("output missing expanded workspace: %q", output)
 	}
 	if _, err := os.Stat(filepath.Join(workdir, "lc-marker")); err != nil {
 		t.Errorf("marker not written in WorkDir: %v", err)
@@ -157,15 +188,12 @@ contributes:
 	if rec.Code != 200 {
 		t.Fatalf("refresh: code = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	res = lcResp{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-		t.Fatalf("decode: %v", err)
+	output, trailer = decodeLifecycleStream(t, rec.Body.String())
+	if trailer.OK || trailer.Error == "" {
+		t.Errorf("refresh trailer should fail with an error: %+v", trailer)
 	}
-	if res.OK || res.Error == "" {
-		t.Errorf("refresh result should fail with an error: %+v", res)
-	}
-	if !strings.Contains(res.Output, "boom") {
-		t.Errorf("stderr not captured: %q", res.Output)
+	if !strings.Contains(output, "boom") {
+		t.Errorf("stderr not captured: %q", output)
 	}
 }
 

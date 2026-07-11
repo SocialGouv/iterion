@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -159,31 +158,49 @@ func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // lifecycleOutputCap bounds the subprocess output echoed back to the studio —
-// a runaway indexer must not buffer unbounded bytes into server memory.
+// a runaway indexer must not stream unbounded bytes to the client.
 const lifecycleOutputCap = 64 << 10
 
-// cappedOutputBuffer captures subprocess output up to a fixed cap, then keeps
-// accepting (and discarding) writes so the subprocess never sees a write
-// error. It is passed as BOTH Stdout and Stderr of the lifecycle command;
-// os/exec serializes Writes when the two are the same comparable writer, so
-// no lock is needed.
-type cappedOutputBuffer struct {
-	buf       bytes.Buffer
+// lifecycleStreamWriter turns subprocess output into flushed NDJSON
+// {"output": …} lines so the studio renders progress live, capped at
+// lifecycleOutputCap (beyond: discarded, flagged on the trailer). It is
+// passed as BOTH Stdout and Stderr of the lifecycle command; os/exec
+// serializes Writes when the two are the same comparable writer, so no
+// lock is needed. It never returns a write error, so a client that
+// disconnects mid-stream never kills the subprocess.
+type lifecycleStreamWriter struct {
+	w         http.ResponseWriter
+	flusher   http.Flusher
+	written   int
 	truncated bool
 }
 
-func (b *cappedOutputBuffer) Write(p []byte) (int, error) {
-	if remaining := lifecycleOutputCap - b.buf.Len(); remaining > 0 {
-		if len(p) > remaining {
-			b.buf.Write(p[:remaining])
+func (b *lifecycleStreamWriter) Write(p []byte) (int, error) {
+	if remaining := lifecycleOutputCap - b.written; remaining > 0 {
+		chunk := p
+		if len(chunk) > remaining {
+			chunk = chunk[:remaining]
 			b.truncated = true
-		} else {
-			b.buf.Write(p)
 		}
+		b.written += len(chunk)
+		b.writeLine(map[string]any{"output": string(chunk)})
 	} else if len(p) > 0 {
 		b.truncated = true
 	}
 	return len(p), nil
+}
+
+// writeLine marshals one NDJSON event and flushes it to the client.
+func (b *lifecycleStreamWriter) writeLine(v map[string]any) {
+	line, err := json.Marshal(v)
+	if err != nil {
+		// Maps of strings/bools cannot fail to marshal; guard anyway.
+		return
+	}
+	_, _ = b.w.Write(append(line, '\n'))
+	if b.flusher != nil {
+		b.flusher.Flush()
+	}
 }
 
 // handlePluginLifecycle answers POST /api/v1/plugins/{name}/lifecycle/{phase}
@@ -240,19 +257,29 @@ func (s *Server) handlePluginLifecycle(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin %q has no %q command", name, phase)
 		return
 	}
-	out := &cappedOutputBuffer{}
+	// Stream: each output chunk is an NDJSON {"output":…} line flushed as
+	// it arrives, closed by a {"done":true,…} trailer — the studio renders
+	// progress live instead of waiting on a one-shot blob. Setup errors
+	// above stay plain-JSON 4xx (the client checks res.ok before reading
+	// the stream).
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	out := &lifecycleStreamWriter{w: w, flusher: flusher}
 	runErr := plugin.RunLifecycle(r.Context(), reg, name, phase, s.cfg.WorkDir, out, out)
-	resp := map[string]any{
-		"name":   name,
-		"phase":  phase,
-		"ok":     runErr == nil,
-		"output": out.buf.String(),
+	trailer := map[string]any{
+		"done":  true,
+		"name":  name,
+		"phase": phase,
+		"ok":    runErr == nil,
 	}
 	if out.truncated {
-		resp["truncated"] = true
+		trailer["truncated"] = true
 	}
 	if runErr != nil {
-		resp["error"] = runErr.Error()
+		trailer["error"] = runErr.Error()
 	}
-	s.writeJSONFor(w, r, resp)
+	out.writeLine(trailer)
 }
