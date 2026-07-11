@@ -2047,6 +2047,23 @@ func (m *metricsEmitter) AppendEvent(ctx context.Context, runID string, evt stor
 	return m.inner.AppendEvent(ctx, runID, evt)
 }
 
+// AppendPlanSnapshot forwards plan-snapshot persistence to the wrapped
+// emitter when it implements model.PlanWriter (the Mongo cloud store now
+// does). Without this explicit forward the capture hook's plain
+// `emitter.(PlanWriter)` assertion runs against THIS wrapper — which,
+// lacking the method, would yield nil and silently disable plan capture
+// for every cloud run even once the store supports it. When the inner
+// store is not a PlanWriter (a store without the seam) this is a benign
+// no-op (wrote=false, no error) — identical to today's nil-planSink
+// behaviour, and NOT the loud store-write failure path.
+func (m *metricsEmitter) AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error) {
+	pw, ok := m.inner.(model.PlanWriter)
+	if !ok {
+		return snap, false, nil
+	}
+	return pw.AppendPlanSnapshot(ctx, runID, snap)
+}
+
 func (m *metricsEmitter) observe(evt store.Event) {
 	switch evt.Type {
 	case store.EventLLMRequest:
