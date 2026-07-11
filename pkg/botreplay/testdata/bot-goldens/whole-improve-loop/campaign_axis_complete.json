@@ -1,0 +1,21 @@
+{
+  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, forfait cost). Shape frozen against the bot's campaign_output termination contract (ADR-058 v2). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "bot": "whole-improve-loop",
+  "scenario": "campaign_axis_complete",
+  "node": "campaign",
+  "backend": "claude_code",
+  "model": "claude-opus-4-8",
+  "recorded_at": "2026-07-11T00:00:00Z",
+  "vars": {},
+  "input": {
+    "fail_log": ""
+  },
+  "output": {
+    "axis_complete": true,
+    "commits_this_pass": 3,
+    "sites_remaining": "",
+    "needs_human": false,
+    "human_note": "",
+    "summary": "Quality axis swept: deduplicated the three copies of parseRetryAfter into pkg/internal/httputil (refactor: unify retry-after parsing), removed the dead legacy exporter path (chore: drop unused CSV exporter), simplified the nested error mapping in the runner claim path (refactor: flatten claim error handling); build and tests green before each commit."
+  }
+}
