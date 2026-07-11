@@ -231,6 +231,25 @@ func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
 	return names
 }
 
+// requiredSecretNamesForWorkflow returns the declared secret names that MUST
+// resolve to a non-empty value for the run to proceed: non-`optional` and with
+// no inline literal `value:` (a literal is always "resolved"). These are the
+// names the launch-time required-secret gate checks against the resolver's
+// output.
+func requiredSecretNamesForWorkflow(wf *ir.Workflow) []string {
+	if wf == nil || len(wf.Secrets) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(wf.Secrets))
+	for name, s := range wf.Secrets {
+		if s == nil || s.Optional || strings.TrimSpace(s.Value) != "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
 // appBotLoginForForgeToken returns the github_app bot login (e.g.
 // "iterion-forge-1234[bot]") whose managed secret backs the run's resolved
 // forge push token, or "" when the token is a PAT/OAuth/GitLab token (the
@@ -340,6 +359,21 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		resolved, err := secrets.ResolveGenericWithBindings(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer)
 		if err != nil {
 			return "", fmt.Errorf("cloudpublisher: resolve workflow secrets: %w", err)
+		}
+		// Required-secret launch gate: a non-`optional` declared secret with no
+		// inline value MUST resolve to a non-empty value. If it resolves to
+		// nothing (store secret deleted, no binding, no override) fail the launch
+		// loudly here — never let the runner skip the empty value and run the bot
+		// with the credential unset. `optional: true` secrets are excluded and
+		// keep the runner's skip behaviour.
+		haveValue := make(map[string]bool, len(resolved))
+		for name, r := range resolved {
+			if len(r.Plaintext) > 0 {
+				haveValue[name] = true
+			}
+		}
+		if missing := secrets.UnresolvedRequired(requiredSecretNamesForWorkflow(wf), haveValue); len(missing) > 0 {
+			return "", secrets.RequiredSecretsError(missing, "this team/bot")
 		}
 		now := time.Now().UTC()
 		usedIDs := make([]string, 0, len(resolved))
@@ -488,16 +522,19 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
 	}
-	if err := p.store.SaveRun(ctx, r); err != nil {
-		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
-	}
-
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
-	//     configured" — the runner falls back to env.
+	//     configured" — the runner falls back to env. This runs BEFORE the
+	//     run record is persisted so a required-secret launch failure leaves
+	//     NO run record behind (never a stray queued/running run for a launch
+	//     that could not resolve its mandatory credentials).
 	secretsRef, err := p.resolveAndSealCredentials(ctx, runID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides)
 	if err != nil {
 		return 0, err
+	}
+
+	if err := p.store.SaveRun(ctx, r); err != nil {
+		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 
 	// 2. Build the RunMessage. We marshal the AST inline; T-42 will
