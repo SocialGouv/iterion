@@ -194,9 +194,20 @@ func Scaffold(dir string, s Spec) (Result, error) {
 	}
 	cr := ir.Compile(pr.File)
 	for _, d := range cr.Diagnostics {
-		if d.Severity == ir.SeverityError {
-			return Result{}, fmt.Errorf("botscaffold: generated main.bot does not compile: %s", d.Error())
+		if d.Severity != ir.SeverityError {
+			continue
 		}
+		// C018 (no model/backend and no auto-detectable credential) is an
+		// ENVIRONMENT verdict, not a scaffolding defect: the zero-config
+		// template deliberately omits model/backend so a run auto-detects
+		// the host's credential. A credential-less env (CI, a fresh
+		// machine) would otherwise make Scaffold fail even though the
+		// generated bot is structurally sound — the missing credential is
+		// surfaced later at run/validate time, not here.
+		if d.Code == ir.DiagMissingModelOrBackend {
+			continue
+		}
+		return Result{}, fmt.Errorf("botscaffold: generated main.bot does not compile: %s", d.Error())
 	}
 
 	manifest, err := renderTemplate("manifest.yaml.tmpl", s)
