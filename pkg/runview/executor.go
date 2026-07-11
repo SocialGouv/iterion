@@ -141,6 +141,26 @@ func declaredSecretNames(wf *ir.Workflow) []string {
 	return names
 }
 
+// requiredSecretNames returns the declared secret names that MUST resolve to a
+// non-empty value for the run to proceed: non-`optional` and with no inline
+// literal `value:` (a literal is materialised at exec, never resolved from the
+// store). These feed the launch-time required-secret gate — mirroring the cloud
+// publisher's requiredSecretNamesForWorkflow so a required secret that resolves
+// to nothing fails identically on either launch path. Nil-safe.
+func requiredSecretNames(wf *ir.Workflow) []string {
+	if wf == nil || len(wf.Secrets) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(wf.Secrets))
+	for name, s := range wf.Secrets {
+		if s == nil || s.Optional || strings.TrimSpace(s.Value) != "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
 func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.Workflow == nil {
 		return nil, fmt.Errorf("runview: workflow is required")
@@ -173,6 +193,19 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 			creds, err := secrets.ResolveLocalCredentials(ctx, spec.LocalSecrets, spec.LocalSealer, names)
 			if err != nil {
 				return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
+			}
+			// Required-secret launch gate (parity with the cloud publisher): a
+			// non-`optional` declared secret with no inline value MUST resolve to
+			// a non-empty value. If it resolves to nothing, fail the launch here
+			// rather than running the bot with the credential unset.
+			haveValue := make(map[string]bool, len(creds.Generic))
+			for name, v := range creds.Generic {
+				if v != "" {
+					haveValue[name] = true
+				}
+			}
+			if missing := secrets.UnresolvedRequired(requiredSecretNames(spec.Workflow), haveValue); len(missing) > 0 {
+				return nil, secrets.RequiredSecretsError(missing, "this workspace")
 			}
 			ctx = secrets.WithCredentials(ctx, creds)
 		}

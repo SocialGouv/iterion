@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/prforge"
 )
@@ -214,6 +215,41 @@ func TestGitHubWebhook_BlockForkPRs(t *testing.T) {
 	}
 	if launched != 0 {
 		t.Fatalf("no bot may launch on a blocked fork PR, launched=%d", launched)
+	}
+}
+
+// TestGitHubWebhook_RequiredSecretUnresolvedRecordsLaunchError: when the launch
+// fails because a required workflow secret resolves to nothing, the delivery
+// trail records StatusLaunchError with the failure reason — never a silent
+// degrade. (The launcher stands in for the SubmitLaunch → resolveAndSeal path
+// that produces this error in production.)
+func TestGitHubWebhook_RequiredSecretUnresolvedRecordsLaunchError(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		return "", secrets.RequiredSecretsError([]string{"test_e2e_canary"}, "this team/bot")
+	}
+	cfg, pt := ghConfig(t, s)
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghOpenPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("launch failure should be a 502, got code=%d body=%s", w.Code, w.Body.String())
+	}
+	list, err := s.webhookDeliveries.ListByWebhook(context.Background(), "t1", "ghw", 10)
+	if err != nil {
+		t.Fatalf("ListByWebhook: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("want 1 delivery row, got %d", len(list))
+	}
+	if list[0].Status != webhooks.StatusLaunchError {
+		t.Fatalf("delivery status = %q, want %q", list[0].Status, webhooks.StatusLaunchError)
+	}
+	if !strings.Contains(list[0].Error, "test_e2e_canary") {
+		t.Fatalf("delivery error should name the unresolved secret, got %q", list[0].Error)
+	}
+	if list[0].RunID != "" {
+		t.Fatalf("no run should be recorded on the delivery, got run_id=%q", list[0].RunID)
 	}
 }
 
