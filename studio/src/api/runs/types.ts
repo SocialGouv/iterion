@@ -376,6 +376,10 @@ export interface ListRunsParams {
   // least one node_started for this IR node id. Used by the studio's
   // "this node was touched by N runs" chip on hover/select.
   node?: string;
+  // Bot filters runs to a bundle name (case-insensitive server-side,
+  // matches RunSummary.bundle_name). Powers the bot home's "recent
+  // runs" card. Wire name: ?bot=.
+  bot?: string;
 }
 
 // One repository (project_path) that has runs, with a per-repo count.

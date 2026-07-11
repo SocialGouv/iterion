@@ -79,6 +79,19 @@ export interface Invocation {
     disambiguator?: string;
   };
   schedule?: { suggested_cron?: string; default_vars?: Record<string, string> };
+  board?: InvocationBoard;
+}
+
+/** InvocationBoard mirrors the manifest board: block on a kind=board
+ *  invocation — the card-event filter a one-click trigger subscribes to.
+ *  Absent = the bot is a plain dispatcher target (nothing to subscribe). */
+export interface InvocationBoard {
+  /** Card-event kinds (e.g. "card.moved"). Empty = any. */
+  on?: string[];
+  /** Fire only when the card enters one of these states. */
+  to_states?: string[];
+  /** Fire only when the card carries ALL of these labels. */
+  all_labels?: string[];
 }
 
 /** ForgeRequirements mirrors the manifest `forge:` block — what a bot
@@ -170,6 +183,68 @@ export function setBotOverlay(name: string, enabled: boolean | null): Promise<Bo
   return apiRequest<BotEntryWithSchema>(`${BASE}/${encodeURIComponent(name)}/overlay`, {
     method: "PUT",
     body: JSON.stringify({ enabled }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Builder: create + templates — mirrors pkg/botscaffold (Spec / Template)
+// and pkg/server/bots_create.go.
+// ---------------------------------------------------------------------------
+
+/** BotCreateVar mirrors botscaffold.VarSpec — one workflow var the
+ *  builder declares on the scaffolded bot. */
+export interface BotCreateVar {
+  name: string;
+  type: string;
+  default?: string;
+  description?: string;
+}
+
+/** BotCreateSpec mirrors botscaffold.Spec — the studio builder's wire
+ *  body for POST /api/v1/bots. */
+export interface BotCreateSpec {
+  slug: string;
+  display_name?: string;
+  icon?: string;
+  description?: string;
+  when_to_use?: string;
+  instructions: string;
+  model?: string;
+  backend?: string;
+  skills?: string[];
+  capabilities?: string[];
+  vars?: BotCreateVar[];
+  worktree?: boolean;
+  sandbox?: boolean;
+  permission?: string;
+  max_cost_usd?: number;
+  max_duration?: string;
+  schedule_cron?: string;
+}
+
+/** BotTemplate is one "start from a template" gallery entry
+ *  (GET /api/v1/bots/templates). `spec` is a ready-to-edit BotCreateSpec. */
+export interface BotTemplate {
+  id: string;
+  icon: string;
+  name: string;
+  description: string;
+  spec: BotCreateSpec;
+}
+
+/** listBotTemplates fetches the builder's static template gallery. */
+export async function listBotTemplates(): Promise<BotTemplate[]> {
+  const r = await apiRequest<{ templates: BotTemplate[] }>(`${BASE}/templates`);
+  return r.templates ?? [];
+}
+
+/** createBot scaffolds a new bot bundle into the workspace's bots/
+ *  directory and returns the discovered entry. Local-mode only (403 in
+ *  cloud mode); 409 when the slug already exists. */
+export function createBot(spec: BotCreateSpec): Promise<BotEntryWithSchema> {
+  return apiRequest<BotEntryWithSchema>(BASE, {
+    method: "POST",
+    body: JSON.stringify(spec),
   });
 }
 
