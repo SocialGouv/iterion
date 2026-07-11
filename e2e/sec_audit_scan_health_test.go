@@ -105,6 +105,9 @@ const langsGoJsPython = `["go","js","python"]`
 // repo. Runs the ACTUAL bot command, so a regression in the gate fails here.
 func TestSecAuditSource_ScanHealth_GuardsAgainstFacade(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("python3 not in PATH — required in CI; skipping here would silently drop the scan_health façade guard")
+		}
 		t.Skip("python3 not in PATH — skipping scan_health regression test")
 	}
 

@@ -264,6 +264,9 @@ func TestRules_NoFP_OnExamples(t *testing.T) {
 		t.Fatalf("glob examples: %v", err)
 	}
 	if len(matches) == 0 {
+		if os.Getenv("CI") != "" {
+			t.Fatal("examples directory not reachable — required in CI; skipping here would silently drop the corpus scan")
+		}
 		t.Skip("examples directory not reachable from test working dir; skipping")
 	}
 	// Examples are tutorial workflows: they routinely contain
