@@ -79,6 +79,8 @@ export type { HeaderBannerProps, HeaderBannerTone } from "./HeaderBanner";
 export { Chip } from "./Chip";
 export type { ChipProps } from "./Chip";
 
+export { TagInput } from "./TagInput";
+
 export { StatusBadge } from "./StatusBadge";
 
 export { EffortBar, isEffortLevel } from "./EffortBar";
