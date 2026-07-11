@@ -480,8 +480,12 @@ function IssueCard({
             claimed by {iss.claim}
           </span>
         )}
-        {iss.last_run_id && (() => {
+        {iss.last_run_id && !running && (() => {
           const lastRunId = iss.last_run_id;
+          // "Live" derives from the card's own board state — the local
+          // dispatcher's running view (which has its own chip below) is
+          // absent on the cloud board, where in_progress is the signal.
+          const live = iss.state === "in_progress";
           return (
             <button
               type="button"
@@ -491,12 +495,12 @@ function IssueCard({
               }}
               className="font-mono text-info hover:underline opacity-80"
               title={
-                running
+                live
                   ? `Open the live run on this issue (run ${lastRunId})`
                   : `Open the last run on this issue (run ${lastRunId})`
               }
             >
-              {running ? "▶ live run" : "↪ last run"}
+              {live ? "▶ live run" : "↪ last run"}
             </button>
           );
         })()}

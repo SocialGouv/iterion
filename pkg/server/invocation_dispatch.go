@@ -307,7 +307,10 @@ func boardCardBody(route webhooks.CommandRoute, vars map[string]string, meta web
 	}
 	if m := boardCardMission(route, vars); m != "" {
 		b.WriteString("\n\n")
-		b.WriteString(m)
+		// Bounded: the mission can be a full issue body (~65k chars on
+		// GitHub) and the card body rides every board-list payload; the
+		// canonical text stays in bot_args / the linked issue.
+		b.WriteString(truncate(m, 4000))
 	}
 	return b.String()
 }
