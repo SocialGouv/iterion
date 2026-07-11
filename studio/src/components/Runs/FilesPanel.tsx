@@ -6,7 +6,7 @@ import {
   ReloadIcon,
 } from "@radix-ui/react-icons";
 
-import { EmptyState, IconButton, Spinner, Tooltip } from "@/components/ui";
+import { Button, EmptyState, IconButton, Spinner, Tooltip } from "@/components/ui";
 import { useRunFiles } from "@/hooks/useRunFiles";
 import { useToggleSet } from "@/hooks/useToggleSet";
 import {
@@ -297,13 +297,14 @@ function LargeChangesetHint({
       )}
       {onEditGitignore && (
         <div>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onEditGitignore}
-            className="mt-0.5 inline-flex items-center rounded-md border border-border-default bg-surface-2 px-2 py-0.5 text-caption font-medium text-fg-default hover:bg-surface-3 focus:outline-none"
+            className="mt-0.5"
           >
             Edit .gitignore
-          </button>
+          </Button>
         </div>
       )}
     </div>
