@@ -4,7 +4,7 @@ import { Link, useLocation, useParams } from "wouter";
 import type { BotEntryWithSchema, Invocation } from "@/api/bots";
 import { ApiError } from "@/api/client";
 import { listBindings, type BotSecretBinding } from "@/api/botBindings";
-import { createRun, listRuns, type RunSummary } from "@/api/runs";
+import { listRuns, type RunSummary } from "@/api/runs";
 import {
   listTriggers,
   FeatureUnavailableError,
@@ -13,6 +13,7 @@ import {
 } from "@/api/triggers";
 import { useAuth } from "@/auth/AuthContext";
 import BotMetadataForm from "@/components/Panels/BotMetadataForm";
+import TestRunPane from "@/components/Runs/TestRunPane";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { STATUS_VARIANT, labelForStatus } from "@/components/Runs/runStatusMeta";
 import { literalToString } from "@/components/Runs/launchView/utils";
@@ -119,11 +120,17 @@ export default function BotHomeView() {
 function BotHome({ entry }: { entry: BotEntryWithSchema }) {
   const serverInfo = useServerInfoStore((s) => s.info);
   const launchFile = botLaunchFile(entry);
+  const [testOpen, setTestOpen] = useState(false);
 
-  return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">
+  const main = (
+    <>
       <IdentityHeader entry={entry} />
-      <ActionsRow entry={entry} launchFile={launchFile} />
+      <ActionsRow
+        entry={entry}
+        launchFile={launchFile}
+        testOpen={testOpen}
+        onToggleTest={() => setTestOpen((v) => !v)}
+      />
       {entry.schema_error && (
         <InlineBanner tone="warning" title="Workflow failed to parse">
           {entry.schema_error}
@@ -137,6 +144,27 @@ function BotHome({ entry }: { entry: BotEntryWithSchema }) {
       )}
       <RecentRunsCard botName={entry.name} />
       {serverInfo?.mode === "cloud" && <SecretBindingsCard botName={entry.name} />}
+    </>
+  );
+
+  if (!testOpen || !launchFile) {
+    return <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">{main}</div>;
+  }
+
+  // Test pane open: on xl the pane docks as a sticky right column next
+  // to the existing sections; below xl it stacks as a bottom section.
+  return (
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 xl:flex-row xl:items-start">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 xl:mx-0 xl:min-w-0 xl:flex-1">
+        {main}
+      </div>
+      <div className="w-full xl:sticky xl:top-4 xl:w-[460px] xl:shrink-0">
+        <TestRunPane
+          file={launchFile}
+          vars={entry.vars?.fields ?? []}
+          onClose={() => setTestOpen(false)}
+        />
+      </div>
     </div>
   );
 }
@@ -274,13 +302,15 @@ function IdentityHeader({ entry }: { entry: BotEntryWithSchema }) {
 function ActionsRow({
   entry,
   launchFile,
+  testOpen,
+  onToggleTest,
 }: {
   entry: BotEntryWithSchema;
   launchFile: string | null;
+  testOpen: boolean;
+  onToggleTest: () => void;
 }) {
   const [, setLocation] = useLocation();
-  const addToast = useUIStore((s) => s.addToast);
-  const [testing, setTesting] = useState(false);
 
   const noPathTitle =
     "The server couldn't relativise this bot's path to the workspace — launch it from its own directory instead.";
@@ -294,21 +324,6 @@ function ActionsRow({
     if (!launchFile) return;
     useTabsStore.getState().openTab("editor", { file: launchFile });
     setLocation(`/editor?file=${encodeURIComponent(launchFile)}`);
-  };
-
-  // Test = a contained run: default vars, commits (if any) land on a
-  // storage branch only (merge_into: "none"), straight to the run view.
-  const onTest = async () => {
-    if (!launchFile) return;
-    setTesting(true);
-    try {
-      const res = await createRun({ file_path: launchFile, merge_into: "none" });
-      setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
-    } catch (e) {
-      addToast(e instanceof Error ? e.message : "Test launch failed", "error");
-    } finally {
-      setTesting(false);
-    }
   };
 
   return (
@@ -331,19 +346,23 @@ function ActionsRow({
       >
         Open in editor
       </Button>
+      {/* Test opens the embedded TestRunPane (contained run: commits land
+          on a storage branch only) instead of navigating away. */}
       <Button
-        variant="secondary"
+        variant={testOpen ? "primary" : "secondary"}
         size="sm"
-        onClick={() => void onTest()}
-        disabled={!launchFile || testing}
-        loading={testing}
+        onClick={onToggleTest}
+        disabled={!launchFile}
+        aria-expanded={testOpen}
         title={
           launchFile
-            ? "Launch a contained test run (commits stay on a storage branch — no merge)"
+            ? testOpen
+              ? "Close the test pane"
+              : "Open an embedded test pane (contained run — commits stay on a storage branch, no merge)"
             : noPathTitle
         }
       >
-        {testing ? "Starting…" : "Test"}
+        {testOpen ? "Close test" : "Test"}
       </Button>
     </div>
   );
