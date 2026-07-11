@@ -105,10 +105,21 @@ func IsNetworkError(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
+	// DNS failures typed, not by message: resolver flaps surface as
+	// *net.DNSError (temporary SERVFAIL, timeout, or NXDOMAIN from a
+	// half-broken resolver). NotFound is included deliberately — per the
+	// asymmetry note on networkErrorSignatures, a genuinely-bad host
+	// costs one bounded retry; a resolver blip aborting an overnight run
+	// costs the run.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
 	for _, errno := range []syscall.Errno{
 		syscall.ECONNRESET, syscall.ECONNREFUSED, syscall.ECONNABORTED,
 		syscall.ETIMEDOUT, syscall.EPIPE, syscall.ENETUNREACH,
-		syscall.EHOSTUNREACH, syscall.ENETDOWN,
+		syscall.EHOSTUNREACH, syscall.ENETDOWN, syscall.ENETRESET,
+		syscall.EHOSTDOWN,
 	} {
 		if errors.Is(err, errno) {
 			return true
