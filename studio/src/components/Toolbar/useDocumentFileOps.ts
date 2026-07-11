@@ -33,7 +33,7 @@ export interface UseDocumentFileOpsArgs {
 }
 
 export interface UseDocumentFileOpsResult {
-  // Loading flag for the open/import path. Surfaced as the "Loading…"
+  // Loading flag for the open/import path. Surfaced as the spinner
   // pill in the toolbar.
   loading: boolean;
   // Save-As dialog state — the file-name input draft plus its open
