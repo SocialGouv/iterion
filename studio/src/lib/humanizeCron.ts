@@ -60,8 +60,15 @@ export function humanizeCron(expr: string): string | null {
   const at = `${pad(h)}:${pad(m)}`;
 
   if (dom === "*" && dow === "*") return `daily at ${at}`;
-  // Weekly: single day or a comma list of days.
+  // Weekly: a day range ("1-5"), a single day, or a comma list of days.
   if (dom === "*") {
+    const range = /^([^,-]+)-([^,-]+)$/.exec(dow);
+    if (range) {
+      const from = dayName(range[1] ?? "");
+      const to = dayName(range[2] ?? "");
+      if (from === null || to === null) return null;
+      return `every ${from} to ${to} at ${at}`;
+    }
     const days = dow.split(",").map(dayName);
     if (days.some((d) => d === null)) return null;
     return `every ${days.join(", ")} at ${at}`;
