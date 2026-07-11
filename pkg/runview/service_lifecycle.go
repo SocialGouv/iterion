@@ -118,6 +118,17 @@ func (s *Service) reconcileOrphans() {
 	// ListRuns / LoadRun / UpdateRunStatus calls that follow. The
 	// filesystem store ignores the flag (no tenant scoping there).
 	ctx := store.WithoutTenantFilter(context.Background())
+	// The reap uses LockRun as the liveness probe: grabbing the lock
+	// proves no other process holds the run. That is only meaningful
+	// when the store has a REAL cross-process lock (filesystem flock,
+	// or the runner's NATS-KV lease). The cloud SERVER store has no
+	// lock provider, so LockRun returns a noop that always "succeeds"
+	// — which would make every runner-owned run in `running` look
+	// orphaned and get reaped mid-flight (observed: a 60s tick failing
+	// live cloud runs). When the store can't prove liveness, skip the
+	// reap entirely: a genuinely dead runner is recovered by the NATS
+	// lease expiring + JetStream redelivery, not by the server.
+	canReap := s.store.Capabilities().CrossProcessLock
 	ids, err := s.store.ListRuns(ctx)
 	if err != nil {
 		s.logger.Warn("runview: reconcile: list runs: %v", err)
@@ -139,6 +150,13 @@ func (s *Service) reconcileOrphans() {
 			s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
 		}
 		if r.Status != store.RunStatusRunning {
+			continue
+		}
+		// No liveness authority (cloud server, noop lock): never reap a
+		// runner-owned run — RecoverFinalize above still ran for any
+		// finished worktree run, which is all the server legitimately
+		// needs to do here.
+		if !canReap {
 			continue
 		}
 		// In-process active run: this service owns it — skip before any
