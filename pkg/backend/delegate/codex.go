@@ -58,6 +58,13 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	opts = append(opts, codexsdk.WithSandbox(codexSandboxForTask(task)))
 	opts = append(opts, codexsdk.WithPermissionMode("bypassPermissions"))
 
+	// Forward node-declared input images to the codex CLI as `-i`, enabling
+	// image-to-image (the shorts pipeline uses this for series handoff + the
+	// character-identity anchor). No-op when the node declares no images.
+	if len(task.Images) > 0 {
+		opts = append(opts, codexsdk.WithImages(task.Images...))
+	}
+
 	if b.Command != "" {
 		opts = append(opts, codexsdk.WithCliPath(b.Command))
 	}

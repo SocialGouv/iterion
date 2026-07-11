@@ -314,6 +314,27 @@ agent make_cover:
 
 Other backends ignore `full_access` (they do not impose the codex sandbox).
 
+#### Image inputs (`images:`)
+
+A codex node can receive **input images** for image-to-image via the node-level
+`images:` list. Each entry is a templated path, resolved per run against the
+node's `input`/`vars`/etc. and forwarded to the codex CLI as `-i`. Empty results
+(e.g. an optional reference that doesn't apply this run) are dropped.
+
+```
+agent keyframe:
+  backend: "codex"
+  full_access: true
+  images: ["{{input.prev_frame}}", "{{input.identity_anchor}}"]
+  user: keyframe_prompt
+```
+
+Use it to seed a generation from a prior image (e.g. reusing the previous
+keyframe for visual continuity, or a character-identity anchor). Non-codex
+backends ignore `images:` (claude_code/codex reach launch-time `attachments:`
+by path + the `read_image` tool for vision; native multimodal forwarding is
+claw-only).
+
 ### `claw`
 
 `claw` is in-process and pluralised across providers. It reports

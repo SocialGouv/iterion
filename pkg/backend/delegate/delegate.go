@@ -309,6 +309,12 @@ type Task struct {
 	// by the pipeline author.
 	FullAccess bool
 
+	// Images are node-level input image paths (from the `images:` DSL field,
+	// templated + resolved per run). The codex backend forwards them to the
+	// codex CLI as `-i` for image-to-image — e.g. a previous keyframe reused as
+	// a seed, or a character-identity anchor. Other backends ignore it.
+	Images []string
+
 	// UserContent, when non-empty, replaces UserPrompt for backends
 	// that support multimodal input (claw). The first text block is
 	// expected to carry the resolved prompt; image blocks carry
