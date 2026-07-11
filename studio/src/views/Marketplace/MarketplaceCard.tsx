@@ -89,10 +89,13 @@ export function MarketplaceCard({
           {entry.ref ? `#${entry.ref}` : ""}
         </span>
         {anonymous ? (
-          // Plugin entries have no .botz artifact (the download endpoint
-          // 400s) — offer the CLI install command instead.
+          // Plugins install via the CLI; the .zip download serves
+          // inspect-before-install.
           isPlugin ? (
-            <CopyPluginInstall repoUrl={entry.repo_url} />
+            <span className="flex shrink-0 items-center gap-1.5">
+              <CopyPluginInstall repoUrl={entry.repo_url} />
+              <DownloadBotz slug={entry.slug} kind="plugin" />
+            </span>
           ) : (
             <DownloadBotz slug={entry.slug} />
           )
