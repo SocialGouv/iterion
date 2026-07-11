@@ -301,6 +301,7 @@ type jsonAgentDecl struct {
 	Timeout           string               `json:"timeout,omitempty"`
 	Readonly          bool                 `json:"readonly,omitempty"`
 	FullAccess        bool                 `json:"full_access,omitempty"`
+	Images            []string             `json:"images,omitempty"`
 	Interaction       string               `json:"interaction,omitempty"`
 	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
 	InteractionModel  string               `json:"interaction_model,omitempty"`
@@ -338,6 +339,7 @@ type jsonJudgeDecl struct {
 	Timeout           string               `json:"timeout,omitempty"`
 	Readonly          bool                 `json:"readonly,omitempty"`
 	FullAccess        bool                 `json:"full_access,omitempty"`
+	Images            []string             `json:"images,omitempty"`
 	Interaction       string               `json:"interaction,omitempty"`
 	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
 	InteractionModel  string               `json:"interaction_model,omitempty"`
@@ -1038,6 +1040,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Timeout:           a.Timeout,
 		Readonly:          a.Readonly,
 		FullAccess:        a.FullAccess,
+		Images:            a.Images,
 		Interaction:       interactionModeToStr[a.Interaction],
 		InteractionPrompt: a.InteractionPrompt,
 		InteractionModel:  a.InteractionModel,
@@ -1077,6 +1080,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Timeout:           j.Timeout,
 		Readonly:          j.Readonly,
 		FullAccess:        j.FullAccess,
+		Images:            j.Images,
 		Interaction:       interactionModeToStr[j.Interaction],
 		InteractionPrompt: j.InteractionPrompt,
 		InteractionModel:  j.InteractionModel,
@@ -1546,6 +1550,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Timeout:           ja.Timeout,
 			Readonly:          ja.Readonly,
 			FullAccess:        ja.FullAccess,
+			Images:            ja.Images,
 			Interaction:       interaction,
 			InteractionPrompt: ja.InteractionPrompt,
 			InteractionModel:  ja.InteractionModel,
@@ -1599,6 +1604,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Timeout:           jj.Timeout,
 			Readonly:          jj.Readonly,
 			FullAccess:        jj.FullAccess,
+			Images:            jj.Images,
 			Interaction:       interaction,
 			InteractionPrompt: jj.InteractionPrompt,
 			InteractionModel:  jj.InteractionModel,

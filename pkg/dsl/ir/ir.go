@@ -155,17 +155,18 @@ func (b BaseNode) NodeID() string { return b.ID }
 
 // LLMFields groups fields shared by LLM-capable nodes (Agent, Judge, Router-LLM).
 type LLMFields struct {
-	Model           string // model identifier (env refs already noted)
-	Backend         string // execution backend name (empty = direct LLM call); may contain ${VAR} env refs
-	Provider        string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${VAR} env refs
-	Command         string // per-node CLI binary override, honored by claude_code; may contain ${VAR}
-	SystemPrompt    string // prompt reference name
-	UserPrompt      string // prompt reference name
-	MaxTokens       int    // per-node cap on output tokens (0 = backend default)
-	ReasoningEffort string // reasoning effort level: "low", "medium", "high", "xhigh", "max"
-	Timeout         string // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = no per-node bound; may contain ${VAR} env refs
-	Readonly        bool   // when true, node is not considered mutating for workspace safety
-	FullAccess      bool   // when true, lift the codex backend sandbox to danger-full-access (network + out-of-workspace writes); off by default; other backends ignore it
+	Model           string   // model identifier (env refs already noted)
+	Backend         string   // execution backend name (empty = direct LLM call); may contain ${VAR} env refs
+	Provider        string   // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${VAR} env refs
+	Command         string   // per-node CLI binary override, honored by claude_code; may contain ${VAR}
+	SystemPrompt    string   // prompt reference name
+	UserPrompt      string   // prompt reference name
+	MaxTokens       int      // per-node cap on output tokens (0 = backend default)
+	ReasoningEffort string   // reasoning effort level: "low", "medium", "high", "xhigh", "max"
+	Timeout         string   // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = no per-node bound; may contain ${VAR} env refs
+	Readonly        bool     // when true, node is not considered mutating for workspace safety
+	FullAccess      bool     // when true, lift the codex backend sandbox to danger-full-access (network + out-of-workspace writes); off by default; other backends ignore it
+	Images          []string // node-level `images:` — input image paths (templated) forwarded to the codex backend as `-i` for image-to-image; other backends ignore it
 }
 
 // SchemaFields groups input/output schema references.
