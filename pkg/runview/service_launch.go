@@ -95,13 +95,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// instead of reading from disk — the server pod has no shared
 	// filesystem with the client.
 	if s.publisher != nil {
-		// The runner pod re-compiles the workflow from the wire payload and
-		// applies its own cloud budget ceiling; a launch-time override has
-		// no seam to ride there yet. Reject loudly rather than queue a run
-		// whose caps silently ignore what the caller asked for.
-		if spec.Budget != nil && !spec.Budget.IsZero() {
-			return nil, errors.New("runview: budget overrides are not supported for queued cloud runs yet")
-		}
+		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
+		// the runner applies them after loading the workflow, under its
+		// multitenant cloud ceiling.
 		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 		if err != nil {
 			return nil, err

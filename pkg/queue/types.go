@@ -22,7 +22,11 @@ import (
 // emits an unsupported version).
 //
 // v=3 (2026-06-10): added BotID so cloud runners can qualify structured bot memory.
-const SchemaVersion = 3
+// v=4 (2026-07-11): added Budget so launch-time budget overrides reach the
+// runner instead of being rejected at publish time. The version bump makes a
+// stale runner reject the message loudly rather than silently dropping the
+// caps the caller asked for.
+const SchemaVersion = 4
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -45,6 +49,11 @@ type RunMessage struct {
 	Vars           map[string]any `json:"vars,omitempty"`
 	SecretsRef     string         `json:"secrets_ref,omitempty"`
 	TimeoutSec     int            `json:"timeout_sec,omitempty"`
+	// Budget carries launch-time budget-cap overrides ("non-zero wins,
+	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
+	// applies it after loading the workflow and BEFORE its multitenant
+	// cloud ceiling, so a tenant can only lower the effective caps.
+	Budget         *BudgetOverrides `json:"budget,omitempty"`
 	BackendConfig  BackendConfig  `json:"backend"`
 	Resume         *ResumeSpec    `json:"resume,omitempty"`
 	Trace          TraceContext   `json:"trace"`
@@ -88,6 +97,18 @@ type RunMessage struct {
 	CallbackURL        string `json:"callback_url,omitempty"`
 	CallbackToken      string `json:"callback_token,omitempty"`
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
+}
+
+// BudgetOverrides is the wire mirror of ir.BudgetOverrides (kept local so
+// this schema package stays dependency-free). Each field uses the
+// "non-zero wins, zero inherits" convention; an all-zero value must be
+// published as a nil pointer, not an empty object.
+type BudgetOverrides struct {
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
+	MaxTokens           int     `json:"max_tokens,omitempty"`
+	MaxDuration         string  `json:"max_duration,omitempty"`
+	MaxIterations       int     `json:"max_iterations,omitempty"`
+	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
 }
 
 // IRBackend is the storage backend an IRRef points at.

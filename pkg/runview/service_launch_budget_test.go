@@ -115,38 +115,54 @@ func TestLaunch_RejectsInvalidBudgetDuration(t *testing.T) {
 }
 
 // stubLaunchPublisher satisfies LaunchPublisher so tests can force the
-// cloud-queue branch of Launch without a real NATS/Mongo backend.
-type stubLaunchPublisher struct{}
+// cloud-queue branch of Launch without a real NATS/Mongo backend. It
+// records the last LaunchSpec so tests can assert what was forwarded.
+type stubLaunchPublisher struct {
+	lastSpec *LaunchSpec
+}
 
-func (stubLaunchPublisher) SubmitLaunch(context.Context, string, LaunchSpec, *ir.Workflow, string) (int, error) {
+func (p *stubLaunchPublisher) SubmitLaunch(_ context.Context, _ string, spec LaunchSpec, _ *ir.Workflow, _ string) (int, error) {
+	p.lastSpec = &spec
 	return 1, nil
 }
-func (stubLaunchPublisher) CancelRun(context.Context, string) error { return nil }
-func (stubLaunchPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
+func (p *stubLaunchPublisher) CancelRun(context.Context, string) error { return nil }
+func (p *stubLaunchPublisher) SubmitResume(context.Context, ResumeSpec, *ir.Workflow, string) error {
 	return nil
 }
 
-// TestLaunch_CloudPathRejectsBudgetOverrides pins the "reject, never
-// silently drop" contract on the queued cloud path: a non-zero Budget
-// must fail the launch (the runner pod has no seam to apply it yet).
-func TestLaunch_CloudPathRejectsBudgetOverrides(t *testing.T) {
+// TestLaunch_CloudPathForwardsBudgetOverrides pins the queued-cloud
+// contract: a non-zero Budget rides the LaunchSpec into the publisher
+// (which puts it on queue.RunMessage.Budget for the runner) instead of
+// being rejected — and a malformed one still fails synchronously.
+func TestLaunch_CloudPathForwardsBudgetOverrides(t *testing.T) {
 	dir := t.TempDir()
 	botPath := writeBudgetBot(t, dir)
 
-	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithLaunchPublisher(stubLaunchPublisher{}))
+	pub := &stubLaunchPublisher{}
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()), WithLaunchPublisher(pub))
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	_, err = svc.Launch(context.Background(), LaunchSpec{
+	if _, err := svc.Launch(context.Background(), LaunchSpec{
 		FilePath: botPath,
 		Budget:   &ir.BudgetOverrides{MaxCostUSD: 120},
-	})
-	if err == nil {
-		t.Fatal("cloud-path Launch accepted budget overrides, want explicit rejection")
+	}); err != nil {
+		t.Fatalf("cloud-path Launch with budget overrides: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not supported for queued cloud runs") {
-		t.Errorf("error = %v, want the queued-cloud rejection message", err)
+	if pub.lastSpec == nil || pub.lastSpec.Budget == nil {
+		t.Fatal("publisher did not receive the budget overrides")
+	}
+	if pub.lastSpec.Budget.MaxCostUSD != 120 {
+		t.Errorf("forwarded MaxCostUSD = %v, want 120", pub.lastSpec.Budget.MaxCostUSD)
+	}
+
+	// A malformed override still fails the launch synchronously.
+	if _, err := svc.Launch(context.Background(), LaunchSpec{
+		FilePath: botPath,
+		Budget:   &ir.BudgetOverrides{MaxDuration: "4 hours"},
+	}); err == nil || !strings.Contains(err.Error(), "max_duration") {
+		t.Errorf("malformed budget on cloud path: err = %v, want max_duration validation error", err)
 	}
 
 	// A launch WITHOUT overrides still goes through the publisher.
