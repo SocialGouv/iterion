@@ -5,6 +5,7 @@ import {
   type NativeBoard,
   type NativeIssue,
 } from "@/api/native";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -143,9 +144,9 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
                   <span className="inline-flex items-center gap-1">
                     Bot
                     {bot && (
-                      <span className="text-caption font-mono bg-accent/15 text-accent-text rounded px-1">
+                      <Badge variant="accent" size="sm" className="font-mono">
                         {bot}
-                      </span>
+                      </Badge>
                     )}
                     {botRequiredMissing && (
                       <>

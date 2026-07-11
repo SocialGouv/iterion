@@ -1,5 +1,8 @@
+import { FieldLabel } from "@/components/ui/FieldLabel";
 import { RequiredPill } from "@/lib/varValidation";
 
+// Field pairs the canonical ui/FieldLabel caption with the control
+// below it (the house sibling pattern — see NewTriggerDialog).
 export function Field({
   label,
   children,
@@ -10,12 +13,17 @@ export function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block">
-      <span className="text-xs text-fg-muted mb-1 flex items-baseline gap-2">
+    <div>
+      <FieldLabel>
         {label}
-        {required && <RequiredPill />}
-      </span>
+        {required && (
+          <>
+            {" "}
+            <RequiredPill />
+          </>
+        )}
+      </FieldLabel>
       {children}
-    </label>
+    </div>
   );
 }
