@@ -230,6 +230,28 @@ func TestCodexSandboxForAllowedTools(t *testing.T) {
 	}
 }
 
+func TestCodexSandboxForTask(t *testing.T) {
+	t.Run("full_access opts into danger-full-access", func(t *testing.T) {
+		if got := codexSandboxForTask(Task{FullAccess: true}); got != "danger-full-access" {
+			t.Errorf("FullAccess=true = %q, want danger-full-access", got)
+		}
+	})
+	t.Run("full_access wins over the tool-derived mode", func(t *testing.T) {
+		got := codexSandboxForTask(Task{FullAccess: true, AllowedTools: []string{"Read"}})
+		if got != "danger-full-access" {
+			t.Errorf("= %q, want danger-full-access", got)
+		}
+	})
+	t.Run("without opt-in, stays least-privilege", func(t *testing.T) {
+		if got := codexSandboxForTask(Task{AllowedTools: []string{"Bash"}}); got != "workspace-write" {
+			t.Errorf("Bash without full_access = %q, want workspace-write", got)
+		}
+		if got := codexSandboxForTask(Task{}); got != "read-only" {
+			t.Errorf("empty task = %q, want read-only", got)
+		}
+	})
+}
+
 func TestTruncate(t *testing.T) {
 	tests := []struct {
 		name string
