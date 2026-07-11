@@ -208,7 +208,7 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
 			Timeout:  a.Timeout,
-			Readonly: a.Readonly, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
+			Readonly: a.Readonly, FullAccess: a.FullAccess, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
 			Compress: a.Compress, Permission: a.Permission, Needs: a.Needs,
 		})
@@ -239,7 +239,7 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
 			Timeout:  j.Timeout,
-			Readonly: j.Readonly, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
+			Readonly: j.Readonly, FullAccess: j.FullAccess, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
 			Compress: j.Compress, Permission: j.Permission, Needs: j.Needs,
 		})
@@ -841,6 +841,7 @@ type llmFields struct {
 	ReasoningEffort                     string
 	Timeout                             string
 	Readonly                            bool
+	FullAccess                          bool
 	Interaction                         ast.InteractionMode
 	InteractionPrompt, InteractionModel string
 	Await                               ast.AwaitMode
@@ -911,6 +912,9 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if f.Readonly {
 		writeProp(b, "readonly", "true")
+	}
+	if f.FullAccess {
+		writeProp(b, "full_access", "true")
 	}
 	if f.Interaction != ast.InteractionNone {
 		writeProp(b, "interaction", f.Interaction.String())

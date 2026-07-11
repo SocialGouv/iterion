@@ -55,7 +55,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	// node do its job. bypassPermissions skips user-escalation prompts so
 	// non-interactive runs don't hang; the explicit Sandbox wins over the
 	// permission-mode default via session.go:187.
-	opts = append(opts, codexsdk.WithSandbox(codexSandboxForAllowedTools(task.AllowedTools)))
+	opts = append(opts, codexsdk.WithSandbox(codexSandboxForTask(task)))
 	opts = append(opts, codexsdk.WithPermissionMode("bypassPermissions"))
 
 	if b.Command != "" {
@@ -516,6 +516,21 @@ func codexSandboxForAllowedTools(allowed []string) string {
 		}
 	}
 	return "read-only"
+}
+
+// codexSandboxForTask picks the codex sandbox mode for a task. A node that
+// explicitly opts into full_access gets "danger-full-access" — unrestricted
+// network egress + out-of-workspace writes. This is the ONLY way to give a
+// codex node network access (e.g. a CLI that reaches an external API, such as
+// codex's built-in imagegen). Without the opt-in we fall back to the
+// least-privilege mode derived from the declared tools, so the default stays
+// locked and network egress is always a deliberate, per-node choice made by
+// the pipeline author in the .bot.
+func codexSandboxForTask(task Task) string {
+	if task.FullAccess {
+		return "danger-full-access"
+	}
+	return codexSandboxForAllowedTools(task.AllowedTools)
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.

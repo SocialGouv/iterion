@@ -8,12 +8,19 @@ Iterion surfaces two per-node extended-thinking metrics for LLM nodes:
 
 They appear on four surfaces:
 
-- **Leveled logs** — a `🧠` line per step / per node
-  (`[node#iter/claw] step N thinking: ~T tok, Dms`, or
-  `[node#iter/claude-code] 🧠 thinking: ~T tok, Dms`).
+- **Leveled logs** — a `🧠` block per step / per node. When the thinking
+  **content** was captured, the full reasoning text is logged as a foldable
+  `LogBlock` (`[node#iter/claw] thinking step N (~T tok, Dms):` or
+  `[node#iter/claude-code] thinking ~T tok, Dms:` followed by the
+  `│ `-indented body) — the studio's run-log view renders it collapsed with
+  an expand/unfold toggle, like tool I/O and assistant text. When only the
+  counts are known, the metrics-only line remains
+  (`[node#iter/claw] step N thinking: ~T tok, Dms`).
 - **`events.jsonl`** — `thinking_ms` / `thinking_tokens` keys on
   `llm_step_finished` events, and `_thinking_ms` / `_thinking_tokens` stamped
-  on the node output of `node_finished`.
+  on the node output of `node_finished`. The thinking **text** is log-only
+  by design: events.jsonl stays bounded to small payloads (big bodies live
+  in sidecar blobs), and run.log is the surface that renders it.
 - **Studio** — the run-view `NodeDetailPanel` header (`🧠 ~T tok · Ds`).
 - **`iterion report`** — `Thinking Tokens` / `Thinking Time` rows in the
   metrics table.
@@ -39,17 +46,22 @@ to be exact. It falls back to a chars/4 heuristic if the codec fails to load.
   Iterion attributes the wall-clock gap since the previous stream item to a
   thinking-bearing assistant message — a proxy, not an exact measurement.
 
-## Known limitation — claude_code thinking blocks
+## Model-dependent redaction — claude_code thinking content
 
-The `claude` CLI does not always emit `thinking` content blocks in its
-`stream-json` output (observed: `claude-opus-4-8` at `reasoning_effort: high`
-returned a final answer with usage but **no thinking block**, so iterion
-recorded zero thinking). When no `ThinkingBlock` arrives, claude_code thinking
-metrics stay at zero even though the model did reason internally.
+Whether the thinking **content** is visible depends on the model, not on
+iterion (verified against `claude` CLI 2.1.195 by inspecting the raw
+`stream-json` frames):
 
-This is CLI/stream-shape behaviour, independent of iterion's extraction code
-(which populates the moment a `ThinkingBlock` is present — verified on the claw
-path, where iterion parses the raw SSE). A guaranteed live end-to-end check of
-the **claw** path needs Anthropic API access (`ANTHROPIC_API_KEY`); revisit the
-claude_code emission behaviour and a live claw validation when such a key is
-available.
+- **claude-sonnet-4-6** — the CLI streams `ThinkingBlock`s with the full
+  reasoning text; iterion folds it as the 🧠 LogBlock and counts tokens.
+- **claude-opus-4-8** — the provider redacts thinking client-side: the CLI
+  streams the block with **empty** text and only the encrypted `signature`
+  (even the session transcript and `--include-partial-messages` deltas carry
+  empty text with `estimated_tokens` only). There is no content to display
+  anywhere. Iterion still detects the signed-but-empty block and logs
+  `🧠 thinking: Nms (content withheld by provider)`, accumulating the timing
+  metric; the token metric stays 0 (nothing to re-encode).
+
+The claw path is unaffected by this: it parses the raw SSE, so whenever the
+API returns thinking deltas (Anthropic models via API key, OpenAI reasoning
+summaries via the Responses API) the content is captured.

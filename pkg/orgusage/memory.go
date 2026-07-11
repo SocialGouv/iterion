@@ -48,6 +48,15 @@ func (c *MemoryCounter) AllowRun(_ context.Context, tenantID string, when time.T
 	return DenyNone, nil
 }
 
+func (c *MemoryCounter) ReleaseRun(_ context.Context, tenantID string, when time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if u, ok := c.usage[usageKey(tenantID, when)]; ok && u.runs > 0 {
+		u.runs--
+	}
+	return nil
+}
+
 func (c *MemoryCounter) AddSpend(_ context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

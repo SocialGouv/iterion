@@ -299,6 +299,16 @@ type Task struct {
 	// UserPrompt is the fully resolved user message text.
 	UserPrompt string
 
+	// FullAccess, when true, lifts the codex backend's sandbox to
+	// "danger-full-access" (unrestricted network egress + out-of-workspace
+	// writes) instead of the least-privilege mode derived from AllowedTools.
+	// It is the only way to grant a codex node network access — e.g. a CLI
+	// that reaches an external API such as codex's built-in imagegen. Off by
+	// default; other backends ignore it. Set from the node-level
+	// `full_access:` DSL field, so network is a deliberate, per-node choice
+	// by the pipeline author.
+	FullAccess bool
+
 	// UserContent, when non-empty, replaces UserPrompt for backends
 	// that support multimodal input (claw). The first text block is
 	// expected to carry the resolved prompt; image blocks carry

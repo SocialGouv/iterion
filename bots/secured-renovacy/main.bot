@@ -2245,20 +2245,22 @@ agent discover_outdated:
 ## like `{list: [...]}`) into a uniform survivor list, then applies
 ## the policy.
 ##
-## Inputs flow as raw JSON via the bang-form !input.X template substitution into JS
-## object/array literals — JSON is a strict subset of JS literal
-## syntax, so the substituted text parses verbatim, no jq/shell
-## escape juggling. The standalone source-of-truth lives at
+## Inputs flow via the default {{input.X}} script substitution, which
+## renders every value as a JSON literal — JSON is a strict subset of
+## JS literal syntax, so objects/arrays parse verbatim and strings
+## arrive properly quoted (LLM-authored fields full of quotes/newlines
+## cannot break out of the literal, unlike the raw bang form).
+## The standalone source-of-truth lives at
 ## `bots/secured-renovacy/select-candidate.js` for review.
 tool select_candidate:
   input: select_input
   output: candidate
   language: js
   script: |
-    const packagesRaw = {{!input.packages}};
-    const attemptedRaw = {{!input.attempted}};
-    const scopeStr = "{{!input.scope}}";
-    const maxPackages = {{!input.max_packages}};
+    const packagesRaw = {{input.packages}};
+    const attemptedRaw = {{input.attempted}};
+    const scopeStr = {{input.scope}} || "";
+    const maxPackages = {{input.max_packages}};
 
     // Absorb LLM drift on row-field naming. discover_outdated's
     // schema is loose (`packages: json`), so different models / runs
@@ -2343,7 +2345,7 @@ tool select_candidate:
     // .kind. Otherwise we leave the value as a downstream hint
     // (agents see the verbatim string via {{vars.update_scope}}) and
     // skip the .kind filter to avoid silently dropping entries.
-    const updateScopeStr = "{{!input.update_scope}}";
+    const updateScopeStr = {{input.update_scope}} || "";
     const KIND_KEYWORDS = ["libraries", "languages", "tooling", "devops", "ci_cd"];
     const updateScopeKinds = (function () {
       if (!updateScopeStr) return null; // empty = no filter
@@ -2371,7 +2373,7 @@ tool select_candidate:
     // target as if it were already attempted.
     const fs = require("fs");
     const path = require("path");
-    const workspaceDir = "{{!input.workspace_dir}}" || "";
+    const workspaceDir = {{input.workspace_dir}} || "";
     let lockText = "";
     try {
       if (workspaceDir) {
@@ -3205,8 +3207,8 @@ tool write_audit_md:
 tool bucket_patches:
   language: js
   script: |
-    const raw = {{!input.packages}};
-    const scopeStr = "{{!input.scope}}";
+    const raw = {{input.packages}};
+    const scopeStr = {{input.scope}} || "";
 
     // Normalise discover_outdated's `packages` field. We absorb LLM
     // drift on BOTH the container shape (array / wrap / map-by-name)
@@ -3517,9 +3519,9 @@ printf '{"success":true,"committed":true,"output":"batch committed %s","sha":"%s
 tool bucket_families:
   language: js
   script: |
-    const raw = {{!input.packages}};
-    const scopeStr = "{{!input.scope}}";
-    const attemptedRaw = {{!input.attempted}};
+    const raw = {{input.packages}};
+    const scopeStr = {{input.scope}} || "";
+    const attemptedRaw = {{input.attempted}};
 
     function fieldAlias(row, aliases) {
       if (!row || typeof row !== "object") return undefined;
@@ -3677,9 +3679,9 @@ tool bucket_families:
 tool select_family:
   language: js
   script: |
-    const familiesRaw = {{!input.families}};
-    const attemptedRaw = {{!input.attempted_families}};
-    const workspaceDir = "{{!input.workspace_dir}}" || "";
+    const familiesRaw = {{input.families}};
+    const attemptedRaw = {{input.attempted_families}};
+    const workspaceDir = {{input.workspace_dir}} || "";
 
     const families = Array.isArray(familiesRaw) ? familiesRaw : [];
     const attempted = (attemptedRaw && typeof attemptedRaw === "object") ? attemptedRaw : {};
@@ -3987,11 +3989,11 @@ print(json.dumps({'success': True, 'output': 'family ' + fam + ' reverted'}))
 tool mark_family_attempted:
   language: js
   script: |
-    const familyName = "{{!input.family_name}}";
-    const membersRaw = {{!input.members}};
-    const reason = "{{!input.reason}}";
-    const prevFamilies = {{!input.cumulative_attempted_families}} || {};
-    const prevMembers = {{!input.cumulative_attempted_members}} || {};
+    const familyName = {{input.family_name}} || "";
+    const membersRaw = {{input.members}};
+    const reason = {{input.reason}} || "";
+    const prevFamilies = {{input.cumulative_attempted_families}} || {};
+    const prevMembers = {{input.cumulative_attempted_members}} || {};
 
     const members = Array.isArray(membersRaw) ? membersRaw : [];
 
@@ -4147,7 +4149,7 @@ tool emit_sbom:
 
     const wd = {{input.workspace_dir}};
     const startSha = {{input.start_sha}} || "";
-    const attempted = {{!input.attempted}};
+    const attempted = {{input.attempted}};
     const versionHint = {{input.iterion_version_hint}} || "";
 
     function endSHA() {

@@ -317,7 +317,17 @@ func (b *CLIAgentBackend) runOnce(ctx context.Context, task Task, binary string,
 
 	var cmd *exec.Cmd
 	if task.Sandbox != nil {
-		cmd = task.Sandbox.Command(runCtx, argv, sandbox.ExecOpts{
+		// Record the in-container PID so cancellation/timeout can actually
+		// terminate the agent: killing the host-side `docker exec` client
+		// has no signal path to the exec'd process (same leak class as
+		// native:221edac8 on the claude_code path — the fix there,
+		// pidfile wrapper + explicit in-container kill, applies verbatim).
+		// The wrapper also self-cleans on retry: attempt N kills whatever
+		// attempt N-1 the pidfile still points to.
+		mark := sandboxDelegateMark(task)
+		cleanup := killSandboxDelegate(task.Sandbox, mark, b.Logger)
+		defer cleanup()
+		cmd = task.Sandbox.Command(runCtx, wrapSandboxDelegateArgv(mark, argv), sandbox.ExecOpts{
 			Env:     envSliceToMap(b.Protocol.ResolveEnv, ctx),
 			WorkDir: task.WorkDir,
 			Stdin:   stdin,

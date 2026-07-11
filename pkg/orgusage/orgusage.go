@@ -62,6 +62,11 @@ type Counter interface {
 	// AddSpend accumulates post-hoc LLM cost/token usage for the
 	// month. Never gates — AllowRun enforces the cap pre-launch.
 	AddSpend(ctx context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens int64) error
+	// ReleaseRun undoes one AllowRun admission whose launch was
+	// ultimately abandoned without any run being created (e.g. the
+	// loser of two concurrent duplicate webhook deliveries). Decrements
+	// the month's run counter; a missing month document is a no-op.
+	ReleaseRun(ctx context.Context, tenantID string, when time.Time) error
 	// Usage returns the month's counters for the org. A month with no
 	// activity returns the zero value (Month still filled).
 	Usage(ctx context.Context, tenantID string, when time.Time) (MonthlyUsage, error)

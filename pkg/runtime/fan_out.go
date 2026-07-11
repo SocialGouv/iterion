@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -16,8 +17,19 @@ import (
 // subprocess / abort the stream) return well within this; the bound only
 // matters for a branch wedged in executor.Execute that ignores ctx —
 // without it the collector would block forever on that branch's result.
-// A package var so tests can shorten it.
-var branchCancelGracePeriod = 5 * time.Second
+// A package var so tests can shorten it; operators tune it via
+// ITERION_BRANCH_CANCEL_GRACE (a Go duration, e.g. "30s") when their
+// backends need longer to unwind on cancellation.
+var branchCancelGracePeriod = defaultBranchCancelGracePeriod()
+
+func defaultBranchCancelGracePeriod() time.Duration {
+	if v := os.Getenv("ITERION_BRANCH_CANCEL_GRACE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 5 * time.Second
+}
 
 // ---------------------------------------------------------------------------
 // Fan-out / Join — parallel branch scheduler
@@ -45,7 +57,7 @@ func (e *Engine) execFanOut(ctx context.Context, rs *runState, routerNodeID stri
 	defer cancelBranches()
 
 	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan)
-	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, len(plan.edges), routerNodeID, "fan_out")
+	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "fan_out")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}
@@ -138,6 +150,18 @@ func (e *Engine) planFromEdges(rs *runState, routerNodeID string, fanEdges []*ir
 		parentOutputs:          copyOutputs(rs.outputs),
 		parentArtifacts:        copyOutputs(rs.artifacts),
 	}, nil
+}
+
+// branchIDs lists the branch identifiers this plan will launch, in edge
+// order — the same "branch_<router>_<target>" ids launchBranches assigns.
+// The collector diffs them against the returned results to name abandoned
+// branches.
+func (p fanOutPlan) branchIDs(routerNodeID string) []string {
+	ids := make([]string, 0, len(p.edges))
+	for _, edge := range p.edges {
+		ids = append(ids, fmt.Sprintf("branch_%s_%s", routerNodeID, edge.To))
+	}
+	return ids
 }
 
 // branchSlot is the fan-out semaphore slot held by one branch goroutine. A
@@ -241,13 +265,17 @@ func (e *Engine) launchBranches(branchCtx context.Context, cancelBranches contex
 	return resultsCh
 }
 
-// collectBranches drains `total` branch results. It observes both the parent
-// ctx and the fan-out's internal branchCtx. Parent cancellation is surfaced to
-// the caller as ctx.Err(); internal cancellation (sibling failure, budget trip)
-// only starts the bounded grace drain so the original branch result is preserved.
-// After cancellation it bounds the wait by branchCancelGracePeriod, then
-// abandons any still-running branches (their buffered sends never block).
-func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context, cancelBranches context.CancelFunc, resultsCh <-chan *branchResult, total int, routerNodeID, mode string) ([]*branchResult, error) {
+// collectBranches drains one result per expected branch. It observes both the
+// parent ctx and the fan-out's internal branchCtx. Parent cancellation is
+// surfaced to the caller as ctx.Err(); internal cancellation (sibling failure,
+// budget trip) only starts the bounded grace drain so the original branch
+// result is preserved. After cancellation it bounds the wait by
+// branchCancelGracePeriod, then abandons any still-running branches (their
+// buffered sends never block) — naming each one and persisting a
+// branch_abandoned event so the leak is visible in the run record, not just
+// a process log line.
+func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context, cancelBranches context.CancelFunc, resultsCh <-chan *branchResult, expected []string, rs *runState, routerNodeID, mode string) ([]*branchResult, error) {
+	total := len(expected)
 	results := make([]*branchResult, 0, total)
 	var ctxErr error
 	parentDoneCh := ctx.Done()
@@ -286,13 +314,44 @@ func (e *Engine) collectBranches(ctx context.Context, branchCtx context.Context,
 			branchDoneCh = nil
 			startGrace()
 		case <-graceCh:
-			if abandoned := total - collected; abandoned > 0 && e.logger != nil {
-				e.logger.Warn("%s from %s: abandoning %d branch(es) still running %s after cancellation (wedged in executor.Execute?)", mode, routerNodeID, abandoned, branchCancelGracePeriod)
+			if abandoned := total - collected; abandoned > 0 {
+				e.recordAbandonedBranches(rs, routerNodeID, mode, expected, results)
 			}
 			collected = total
 		}
 	}
 	return results, ctxErr
+}
+
+// recordAbandonedBranches names the branches that never delivered a result
+// and persists one branch_abandoned event per branch. The emit uses a
+// non-cancellable ctx: abandonment happens precisely when the run/fan-out
+// context is already cancelled, and a ctx-sensitive store (Mongo) would
+// otherwise drop the very event that documents the leak.
+func (e *Engine) recordAbandonedBranches(rs *runState, routerNodeID, mode string, expected []string, results []*branchResult) {
+	returned := make(map[string]bool, len(results))
+	for _, r := range results {
+		if r != nil {
+			returned[r.branchID] = true
+		}
+	}
+	emitCtx := context.WithoutCancel(rs.ctx)
+	for _, branchID := range expected {
+		if returned[branchID] {
+			continue
+		}
+		if e.logger != nil {
+			e.logger.Warn("%s from %s: abandoning branch %s still running %s after cancellation (wedged in executor.Execute?)", mode, routerNodeID, branchID, branchCancelGracePeriod)
+		}
+		if err := e.emit(emitCtx, rs.runID, store.EventBranchAbandoned, branchID, map[string]any{
+			"router":       routerNodeID,
+			"mode":         mode,
+			"grace_period": branchCancelGracePeriod.String(),
+			"reason":       "cancelled; still running after the grace period",
+		}); err != nil && e.logger != nil {
+			e.logger.Warn("%s from %s: emit branch_abandoned for %s: %v", mode, routerNodeID, branchID, err)
+		}
+	}
 }
 
 // resolveConvergence picks the node the fan-out continues from and processes

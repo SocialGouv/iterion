@@ -629,6 +629,9 @@ func (c *Dispatcher) releaseClaim(ctx context.Context, issueID, identifier strin
 		!errors.Is(err, tracker.ErrClaimConflict) {
 		c.logger.Warn("dispatcher: release %s: %v", identifier, err)
 	}
+	// Drop the journal entry even on the benign races above — in all of
+	// them the claim is no longer ours to recover at the next boot.
+	c.claims.Remove(issueID)
 }
 
 // stampLastRun records the (run_id, workdir) pair on the tracker

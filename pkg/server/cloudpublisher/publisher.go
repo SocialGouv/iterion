@@ -28,6 +28,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -79,6 +80,19 @@ type Config struct {
 	// attributed to the App bot (the runner can't self-resolve it — see
 	// RunBundle.ForgeAppBotLogin).
 	ForgeConnections forge.ConnectionStore
+	// Identity, when non-nil, lets the publisher resolve a run's team
+	// to its parent org so the RunMessage carries the org id the launch
+	// gate metered the run on. The runner charges LLM spend to that key
+	// — without it (nil, or a pre-backfill org-less team) spend falls
+	// back to the team key and an org-level monthly cost cap can never
+	// accumulate against the org document.
+	Identity TeamResolver
+}
+
+// TeamResolver is the slice of the identity store the publisher needs
+// for org spend attribution.
+type TeamResolver interface {
+	GetTeam(ctx context.Context, id string) (identity.Team, error)
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
@@ -97,12 +111,60 @@ type Publisher struct {
 	sealer         secrets.Sealer
 	oauthForfait   secrets.OAuthStore
 	forgeConns     forge.ConnectionStore
+	identity       TeamResolver
+
+	// orgCache memoizes team → org id so the publish hot path doesn't
+	// add a Mongo read per launch (team/org membership changes are
+	// rare; a 5-minute staleness only delays which usage doc new spend
+	// lands on).
+	orgCacheMu sync.Mutex
+	orgCache   map[string]orgCacheEntry
 
 	// detached tracks fire-and-forget goroutines (e.g. MarkUsed
 	// observability writes) so Drain can wait for them on shutdown
 	// rather than letting orphan Mongo writes pile up against a
 	// pod that's already past the SIGTERM mark.
 	detached sync.WaitGroup
+}
+
+type orgCacheEntry struct {
+	orgID   string
+	expires time.Time
+}
+
+const orgCacheTTL = 5 * time.Minute
+
+// orgIDForTeam mirrors the launch gate's orgForTeam fallback: team →
+// OrgID, "" on any miss (resolver absent, unknown team, org-less
+// pre-backfill team) so the runner charges the tenant key — the same
+// key the gate metered such a launch on.
+func (p *Publisher) orgIDForTeam(ctx context.Context, teamID string) string {
+	if p.identity == nil || teamID == "" {
+		return ""
+	}
+	now := time.Now()
+	p.orgCacheMu.Lock()
+	if e, ok := p.orgCache[teamID]; ok && now.Before(e.expires) {
+		p.orgCacheMu.Unlock()
+		return e.orgID
+	}
+	p.orgCacheMu.Unlock()
+	t, err := p.identity.GetTeam(ctx, teamID)
+	if err != nil {
+		// Not cached: a transient identity-store miss must not pin ""
+		// for the TTL window.
+		if p.logger != nil {
+			p.logger.Warn("cloudpublisher: org resolve for team %s: %v (spend will charge the team key)", teamID, err)
+		}
+		return ""
+	}
+	p.orgCacheMu.Lock()
+	if p.orgCache == nil {
+		p.orgCache = make(map[string]orgCacheEntry)
+	}
+	p.orgCache[teamID] = orgCacheEntry{orgID: t.OrgID, expires: now.Add(orgCacheTTL)}
+	p.orgCacheMu.Unlock()
+	return t.OrgID
 }
 
 // New builds a Publisher.
@@ -137,6 +199,7 @@ func New(cfg Config) (*Publisher, error) {
 		sealer:         cfg.Sealer,
 		oauthForfait:   cfg.OAuthForfait,
 		forgeConns:     cfg.ForgeConnections,
+		identity:       cfg.Identity,
 	}, nil
 }
 
@@ -456,6 +519,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:       tenantID,
+		OrgID:          p.orgIDForTeam(ctx, tenantID),
 		OwnerID:        ownerID,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
@@ -611,8 +675,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
-		// from another team's UI must still target that team's tenant.
+		// from another team's UI must still target that team's tenant —
+		// and the resumed attempt's spend must charge that team's org,
+		// not the resumer's.
 		TenantID: prior.TenantID,
+		OrgID:    p.orgIDForTeam(ctx, prior.TenantID),
 		OwnerID:  prior.OwnerID,
 		// Preserve webhook/cloud source metadata so a resumed runner can
 		// reconstruct the same workspace as the original launch. ProjectPath

@@ -396,7 +396,8 @@ func (s *Server) insertAndLaunchWebhook(
 	// (replays were filtered in step 1), so the quota CAS fires once per
 	// distinct event. A denied event writes a terminal row under a random
 	// key so a later forge retry can launch once the quota resets.
-	if d := s.gateLaunch(ctx); d != nil {
+	adm, d := s.gateLaunch(ctx)
+	if d != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 		s.writeLaunchDenial(w, r, d)
 		return
@@ -422,6 +423,12 @@ func (s *Server) insertAndLaunchWebhook(
 	} else if s.webhookDeliveries != nil {
 		if err := s.webhookDeliveries.Insert(ctx, delivery); err != nil {
 			if errors.Is(err, webhooks.ErrDuplicate) {
+				// Concurrent-duplicate loser: both deliveries passed the
+				// step-1 replay check and both metered a quota unit in
+				// step 2, but only the Insert winner launches. Release
+				// this delivery's unit or every concurrent forge
+				// redelivery over-counts the monthly run quota.
+				adm.rollback(s.logger)
 				// Read back the prior delivery so the duplicate 200
 				// echoes its run_id/delivery_id. A failed read would
 				// otherwise emit a misleading 200 with empty IDs —

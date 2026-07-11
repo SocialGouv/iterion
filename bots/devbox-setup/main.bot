@@ -16,6 +16,9 @@ vars:
   ## Repo to set up. Defaults to the run's project dir.
   workspace_dir: string = "${PROJECT_DIR}"
 
+schema preflight_output:
+  workspace_dir: string
+
 schema detect_output:
   summary:   string
   packages:  json
@@ -65,6 +68,18 @@ prompt detect_user:
   Detect the languages, runtimes, build/test/e2e stack and the Nix packages
   it needs. See [[devbox-setup]] for the manifest→toolchain mapping and the
   playwright-browser / non-Nix-tool notes.
+
+## preflight — deterministic entry node. Its only job is to produce the
+## run's FIRST checkpoint before any claude_code agent runs: a failure on
+## the entry node of a run with no checkpoint is terminal (plain `failed`,
+## nothing to resume), and detect_stack's cold-start is exactly where the
+## sandboxed claude CLI has been observed to hang (see
+## docs/bot-runs/devbox-setup.md). With preflight checkpointed first, a
+## detect_stack hang/timeout leaves a `failed_resumable` run instead.
+compute preflight:
+  output: preflight_output
+  expr:
+    workspace_dir: "vars.workspace_dir"
 
 agent detect_stack:
   backend: "claude_code"
@@ -159,7 +174,7 @@ print(json.dumps({'committed': r.returncode == 0, 'output': (r.stdout + r.stderr
   output: commit_output
 
 workflow devbox_setup:
-  entry: detect_stack
+  entry: preflight
   sandbox:
     image: "ghcr.io/socialgouv/iterion-sandbox-sec:edge"
     user: "1000:1000"
@@ -171,6 +186,7 @@ workflow devbox_setup:
     post_create: "set -e; claude --version >/dev/null 2>&1 || sudo npm install -g --ignore-scripts=false --include=optional @anthropic-ai/claude-code@latest; claude --version >/dev/null 2>&1 || { echo 'claude install verification failed' >&2; exit 1; }"
   worktree: auto
 
+  preflight -> detect_stack
   detect_stack -> generate_devbox with { detected: "{{outputs.detect_stack}}" }
   generate_devbox -> verify_devbox with { workspace_dir: "{{vars.workspace_dir}}" }
   verify_devbox -> commit_devbox with { workspace_dir: "{{vars.workspace_dir}}" }

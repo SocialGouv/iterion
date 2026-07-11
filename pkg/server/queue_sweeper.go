@@ -43,16 +43,43 @@ type runLeaseChecker interface {
 const (
 	// sweepInterval is how often the sweeper scans.
 	sweepInterval = 60 * time.Second
-	// sweepQueuedAfter must exceed MaxDeliver × AckWait (3 × 5m) so a
-	// message still bouncing through redeliveries isn't declared
-	// orphaned mid-flight.
-	sweepQueuedAfter = 20 * time.Minute
+	// sweepQueuedFallback is the queued-staleness floor when the lease
+	// checker can't report the queue's actual redelivery window (tests,
+	// exotic wiring). Must exceed the shipped defaults' MaxDeliver ×
+	// AckWait (8 × 10m) plus margin — a message still legitimately
+	// bouncing through redeliveries (a deep backlog with every runner
+	// busy) never holds a lease, so a too-short cutoff flips it to
+	// failed_resumable mid-flight.
+	sweepQueuedFallback = 90 * time.Minute
+	// sweepQueuedMargin pads the reported redelivery window so the
+	// sweeper never races the final delivery attempt.
+	sweepQueuedMargin = 10 * time.Minute
 	// sweepRunningAfter bounds how long a quiet `running` row may go
 	// without a lease before being flipped. The lease check is the
 	// real signal; the time floor just avoids racing a run between
 	// claim and first heartbeat.
 	sweepRunningAfter = 10 * time.Minute
 )
+
+// redeliveryWindower is the optional lease-checker capability the
+// sweeper derives its queued-staleness cutoff from (implemented by
+// natsq.Conn), so the cutoff tracks operator overrides of
+// MaxDeliver/AckWait instead of drifting from a hardcoded constant.
+type redeliveryWindower interface {
+	RedeliveryWindow() time.Duration
+}
+
+// queuedSweepCutoff returns how long a queued row must have been stale
+// before the sweeper may flip it: the queue's worst-case redelivery
+// window plus margin, or the conservative fallback when unknown.
+func queuedSweepCutoff(leases runLeaseChecker) time.Duration {
+	if rw, ok := leases.(redeliveryWindower); ok {
+		if w := rw.RedeliveryWindow(); w > 0 {
+			return w + sweepQueuedMargin
+		}
+	}
+	return sweepQueuedFallback
+}
 
 // runQueueSweeper loops until ctx is cancelled. Started by
 // ListenAndServe in cloud mode when both the Mongo store and the
@@ -85,7 +112,7 @@ func (s *Server) sweepOrphanRuns(ctx context.Context, lister staleRunLister, lea
 		before   time.Time
 	}
 	passes := []pass{
-		{[]store.RunStatus{store.RunStatusQueued}, now.Add(-sweepQueuedAfter)},
+		{[]store.RunStatus{store.RunStatusQueued}, now.Add(-queuedSweepCutoff(leases))},
 		{[]store.RunStatus{store.RunStatusRunning}, now.Add(-sweepRunningAfter)},
 	}
 	// Platform-level scan — the per-run tenant comes back on each ref

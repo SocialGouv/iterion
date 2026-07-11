@@ -364,7 +364,14 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	// conflict (or any claim error) skips the issue with NO slot allocated and
 	// NO setup worker launched; the post-claim I/O offload below only runs
 	// AFTER a confirmed claim. See ADR-028 Step 4.
+	//
+	// Journal BEFORE Claim: a crash between the two leaves an entry the
+	// boot sweep resolves with an idempotent Release; the reverse order
+	// would leave an unjournalled live claim — exactly the stranding the
+	// journal exists to prevent.
+	c.claims.Record(claimEntry{IssueID: iss.ID, Identifier: iss.Identifier, Marker: c.hostMarker, ClaimedAt: time.Now().UTC()})
 	if err := c.tracker.Claim(ctx, iss.ID, c.hostMarker); err != nil {
+		c.claims.Remove(iss.ID)
 		if errors.Is(err, tracker.ErrClaimConflict) {
 			c.logger.Info("dispatcher: %s already claimed elsewhere, skipping", iss.Identifier)
 			return

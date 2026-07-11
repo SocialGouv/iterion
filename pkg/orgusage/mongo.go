@@ -82,6 +82,20 @@ func (c *MongoCounter) AllowRun(ctx context.Context, tenantID string, when time.
 	return deny, nil
 }
 
+// ReleaseRun mirrors the deny-path rollback in AllowRun: one $inc -1
+// on the month's run counter, no upsert (a TTL-evicted or never-created
+// month document stays absent — decrementing a fresh doc below zero
+// would corrupt the metering).
+func (c *MongoCounter) ReleaseRun(ctx context.Context, tenantID string, when time.Time) error {
+	_, err := c.col.UpdateOne(ctx,
+		bson.M{"_id": usageKey(tenantID, when)},
+		bson.M{"$inc": bson.M{"runs": -1}})
+	if err != nil {
+		return fmt.Errorf("orgusage: release run: %w", err)
+	}
+	return nil
+}
+
 func (c *MongoCounter) AddSpend(ctx context.Context, tenantID string, when time.Time, costUSD float64, inputTokens, outputTokens int64) error {
 	inc := bson.M{}
 	if m := CostToMillis(costUSD); m > 0 {

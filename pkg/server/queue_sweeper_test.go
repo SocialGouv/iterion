@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 )
@@ -27,6 +28,15 @@ type fakeLeases struct{ locked map[string]bool }
 func (f *fakeLeases) IsRunLocked(_ context.Context, runID string) (bool, error) {
 	return f.locked[runID], nil
 }
+
+// fakeWindowedLeases additionally reports a redelivery window, like the
+// real natsq.Conn.
+type fakeWindowedLeases struct {
+	fakeLeases
+	window time.Duration
+}
+
+func (f *fakeWindowedLeases) RedeliveryWindow() time.Duration { return f.window }
 
 type fakeSweepStore struct {
 	store.RunStore
@@ -71,5 +81,29 @@ func TestSweepOrphanRuns(t *testing.T) {
 	}
 	if _, ok := fs.flipped["r-healthy"]; ok {
 		t.Fatal("leased (in-flight) run was flipped — the lease check must protect it")
+	}
+}
+
+func TestQueuedSweepCutoff(t *testing.T) {
+	// Lease checker exposing the queue's redelivery window → window + margin.
+	windowed := &fakeWindowedLeases{window: 80 * time.Minute}
+	if got, want := queuedSweepCutoff(windowed), 90*time.Minute; got != want {
+		t.Fatalf("windowed cutoff = %v, want %v", got, want)
+	}
+	// A zero window (misconfigured queue) must not collapse the cutoff.
+	windowed.window = 0
+	if got := queuedSweepCutoff(windowed); got != sweepQueuedFallback {
+		t.Fatalf("zero-window cutoff = %v, want fallback %v", got, sweepQueuedFallback)
+	}
+	// Plain lease checker (no capability) → conservative fallback.
+	if got := queuedSweepCutoff(&fakeLeases{}); got != sweepQueuedFallback {
+		t.Fatalf("plain cutoff = %v, want fallback %v", got, sweepQueuedFallback)
+	}
+	// The fallback itself must exceed the shipped defaults' redelivery
+	// envelope — this is the drift the derivation exists to prevent
+	// (the old 20m constant silently fell behind a MaxDeliver/AckWait bump).
+	envelope := time.Duration(natsq.DefaultStreamMaxRetry) * natsq.DefaultAckWait
+	if sweepQueuedFallback <= envelope {
+		t.Fatalf("fallback %v does not exceed the default MaxDeliver × AckWait envelope (%v)", sweepQueuedFallback, envelope)
 	}
 }

@@ -366,6 +366,12 @@ type Service struct {
 	// so the HTTP layer can map it to 503 Service Unavailable.
 	draining atomic.Bool
 
+	// reconcileStop ends the periodic orphan-reconcile goroutine (see
+	// startPeriodicReconcile). Closed by Drain and Stop via
+	// reconcileStopOnce so double-teardown is safe.
+	reconcileStop     chan struct{}
+	reconcileStopOnce sync.Once
+
 	// publisher, when non-nil, intercepts Launch/Resume/Cancel and
 	// routes them through the cloud queue. When nil the service runs
 	// the engine in-process (local mode). See LaunchPublisher and
@@ -637,6 +643,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 
 	s.reconcileOrphans()
 	s.reconcileSandboxContainers()
+	s.startPeriodicReconcile()
 	return s, nil
 }
 

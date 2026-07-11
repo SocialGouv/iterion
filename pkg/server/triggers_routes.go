@@ -77,7 +77,7 @@ func (s *Server) handleEmitTrigger(w http.ResponseWriter, r *http.Request) {
 	// webhook path so an authenticated integration can't bypass the
 	// per-org quota / cost cap / rate limit. Fail-open (nil) in local
 	// single-host scope, so this is a no-op there.
-	if d := s.gateLaunch(r.Context()); d != nil {
+	if _, d := s.gateLaunch(r.Context()); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}

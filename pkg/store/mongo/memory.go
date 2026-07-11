@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Cloud MemoryStore: shared-knowledge spaces persisted in Mongo, with
@@ -76,6 +77,7 @@ type MongoMemoryStore struct {
 	spaces *mongo.Collection
 	docs   *mongo.Collection
 	tenant *mongo.Collection
+	logger *iterlog.Logger // nil-safe; wired via WithLogger
 }
 
 var _ knowledge.MemoryStore = (*MongoMemoryStore)(nil)
@@ -86,6 +88,38 @@ func NewMongoMemoryStore(db *mongo.Database) *MongoMemoryStore {
 		spaces: db.Collection(colMemorySpaces),
 		docs:   db.Collection(colMemoryDocs),
 		tenant: db.Collection(colMemoryTenantUsage),
+	}
+}
+
+// WithLogger attaches a logger (compensation-failure visibility) and
+// returns the store for chaining.
+func (s *MongoMemoryStore) WithLogger(l *iterlog.Logger) *MongoMemoryStore {
+	s.logger = l
+	return s
+}
+
+// compensate applies a quota-counter compensation (a rollback after a
+// failed/lost write, or the decrement paired with a delete). The bump
+// itself stays best-effort — the primary operation already succeeded or
+// already has its error — but a FAILED compensation permanently skews
+// used_bytes for the space/org, so it must at least be visible.
+func (s *MongoMemoryStore) compensate(ctx context.Context, spaceID, tenantID string, delta int64, why string) {
+	if delta == 0 {
+		return
+	}
+	// Detached ctx: compensations frequently run on error paths whose
+	// request ctx is already cancelled; skipping them would guarantee
+	// the drift this function exists to prevent.
+	ctx = context.WithoutCancel(ctx)
+	if spaceID != "" {
+		if _, err := s.bumpSpace(ctx, spaceID, delta); err != nil {
+			s.logger.Warn("memory: %s: space %s quota compensation (%+d bytes) failed: %v — used_bytes now drifts by that amount", why, spaceID, delta, err)
+		}
+	}
+	if tenantID != "" {
+		if _, err := s.bumpTenant(ctx, tenantID, delta); err != nil {
+			s.logger.Warn("memory: %s: org %s quota compensation (%+d bytes) failed: %v — used_bytes now drifts by that amount", why, tenantID, delta, err)
+		}
 	}
 }
 
@@ -279,10 +313,7 @@ func (s *MongoMemoryStore) DeleteDocument(ctx context.Context, ref knowledge.Spa
 		return fmt.Errorf("memory: delete doc: %w", err)
 	}
 	if d.Size > 0 {
-		_, _ = s.bumpSpace(ctx, ref.ID(), -d.Size)
-		if ref.TenantID != "" {
-			_, _ = s.bumpTenant(ctx, ref.TenantID, -d.Size)
-		}
+		s.compensate(ctx, ref.ID(), ref.TenantID, -d.Size, "delete doc")
 	}
 	return nil
 }
@@ -353,9 +384,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 		if delta > 0 {
 			ok, err := s.bumpSpace(ctx, spaceID, delta)
 			if err != nil || !ok {
-				if tenantID != "" {
-					_, _ = s.bumpTenant(ctx, tenantID, -delta) // rollback aggregate
-				}
+				s.compensate(ctx, "", tenantID, -delta, "space cap denied") // rollback aggregate
 				if err != nil {
 					return knowledge.DocumentMeta{}, err
 				}
@@ -363,10 +392,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 				return knowledge.DocumentMeta{}, &knowledge.QuotaError{Aggregate: false, Used: used, Delta: delta, Quota: quota}
 			}
 		} else if delta < 0 {
-			_, _ = s.bumpSpace(ctx, spaceID, delta)
-			if tenantID != "" {
-				_, _ = s.bumpTenant(ctx, tenantID, delta)
-			}
+			s.compensate(ctx, spaceID, tenantID, delta, "shrinking write")
 		}
 
 		// 3) compare-and-swap upsert: matches (and replaces) only if the on-disk
@@ -389,12 +415,7 @@ func (s *MongoMemoryStore) WriteDocument(ctx context.Context, ref knowledge.Spac
 
 		// Failed write — roll this attempt's counter bumps back so a retry (or
 		// the returned error) leaves the counters consistent with what is on disk.
-		if delta != 0 {
-			_, _ = s.bumpSpace(ctx, spaceID, -delta)
-			if tenantID != "" {
-				_, _ = s.bumpTenant(ctx, tenantID, -delta)
-			}
-		}
+		s.compensate(ctx, spaceID, tenantID, -delta, "lost CAS write")
 		if mongo.IsDuplicateKeyError(err) {
 			// Lost the CAS: another writer advanced the revision between our
 			// FindOne and our ReplaceOne.

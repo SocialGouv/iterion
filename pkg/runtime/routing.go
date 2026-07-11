@@ -286,7 +286,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
 	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan)
-	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, len(plan.edges), routerNodeID, "llm_router_multi")
+	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "llm_router_multi")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}

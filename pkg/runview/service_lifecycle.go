@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -140,6 +141,14 @@ func (s *Service) reconcileOrphans() {
 		if r.Status != store.RunStatusRunning {
 			continue
 		}
+		// In-process active run: this service owns it — skip before any
+		// lock/PID probing. Matters for the periodic re-scan (the boot
+		// scan predates any active run): without this guard every tick
+		// would re-probe each managed run's flock and re-attempt
+		// RegisterDetached on already-reattached detached runners.
+		if s.manager.Active(id) {
+			continue
+		}
 		// .pid present + PID alive → runner outlived the previous
 		// server lifetime; re-attach. Stale .pid → remove and fall
 		// through to the flock probe. Missing .pid → in-process or
@@ -172,6 +181,66 @@ func (s *Service) reconcileOrphans() {
 		}
 		_ = lock.Unlock()
 	}
+}
+
+// defaultOrphanReconcileInterval is how often the periodic reconcile
+// re-runs the orphan scan after boot. Overridable via
+// ITERION_ORPHAN_RECONCILE_INTERVAL (a Go duration; "0" disables the
+// ticker, keeping only the boot-time scan).
+const defaultOrphanReconcileInterval = 60 * time.Second
+
+func orphanReconcileInterval() time.Duration {
+	v := os.Getenv("ITERION_ORPHAN_RECONCILE_INTERVAL")
+	if v == "" {
+		return defaultOrphanReconcileInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return defaultOrphanReconcileInterval
+	}
+	return d // <= 0 disables
+}
+
+// startPeriodicReconcile re-runs reconcileOrphans on a ticker so a run
+// whose owning process crashes while the service is up (a CLI `iterion
+// run` sharing the store, a killed detached runner) flips to
+// failed/failed_resumable within a minute instead of staying `running`
+// until the next server restart. The scan is idempotent and
+// liveness-gated (flock probe + manager.Active guard), so re-running it
+// against live runs is a no-op. reconcileSandboxContainers is
+// deliberately NOT on the tick — it would round-trip docker every
+// interval; the boot scan plus owner-exit reaping cover containers.
+func (s *Service) startPeriodicReconcile() {
+	interval := orphanReconcileInterval()
+	if interval <= 0 {
+		return
+	}
+	s.reconcileStop = make(chan struct{})
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.reconcileStop:
+				return
+			case <-t.C:
+				if s.draining.Load() {
+					return
+				}
+				s.reconcileOrphans()
+			}
+		}
+	}()
+}
+
+// stopPeriodicReconcile ends the reconcile goroutine. Idempotent —
+// Stop and Drain may both run in one teardown.
+func (s *Service) stopPeriodicReconcile() {
+	s.reconcileStopOnce.Do(func() {
+		if s.reconcileStop != nil {
+			close(s.reconcileStop)
+		}
+	})
 }
 
 // tryReattachByPID handles the .pid path of reconcileOrphans. Returns
@@ -272,6 +341,7 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // publishes EventRunInterrupted and flips each in-flight run to
 // failed_resumable so the next server boot can offer one-click resume.
 func (s *Service) Stop(ctx context.Context) {
+	s.stopPeriodicReconcile()
 	s.manager.Stop(ctx)
 }
 
@@ -296,6 +366,7 @@ func (s *Service) Stop(ctx context.Context) {
 // it returns, the service should not be used to launch new work.
 func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
+	s.stopPeriodicReconcile()
 
 	// Stop the alert manager's stall-poll goroutine. It was started with
 	// context.Background() (so it outlives per-run contexts), so Drain is

@@ -66,29 +66,57 @@ func orValue[T int | float64](team, def T) T {
 	return def
 }
 
+// launchAdmission is the undo handle for a granted (and metered)
+// launch admission. nil (or an admission with no counter) means
+// nothing was metered — fail-open, super-admin, local mode — and
+// rollback is a no-op. Callers that abandon an admitted launch
+// without creating any run (e.g. the loser of two concurrent
+// duplicate webhook deliveries) call rollback so the monthly run
+// counter stays true.
+type launchAdmission struct {
+	counter  orgusage.Counter
+	usageKey string
+	when     time.Time
+}
+
+func (a *launchAdmission) rollback(logger interface{ Warn(string, ...any) }) {
+	if a == nil || a.counter == nil || a.usageKey == "" {
+		return
+	}
+	// Detached ctx, same rationale as AllowRun's deny-path rollback: the
+	// abandoning request may already be cancelled.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	if err := a.counter.ReleaseRun(ctx, a.usageKey, a.when); err != nil && logger != nil {
+		logger.Warn("launch gate: admission rollback for %s: %v (monthly run counter over-counts by one)", a.usageKey, err)
+	}
+}
+
 // gateLaunch is the shared run-launch admission gate: suspend →
 // concurrency → launch rate → monthly cost cap → monthly run quota
 // (the last one is also the metering increment). Called by
 // handleLaunchRun, handleResumeRun and the inbound webhook handlers.
+// On allow it returns the admission handle for the metered increment
+// (nil when nothing was metered).
 //
 // Fail-open on store errors, mirroring the suspend check: quotas are an
 // operator policy, not a hard security boundary — a transient Mongo
 // blip must not wedge every launch. Super-admins bypass entirely.
 // The run-quota increment is the one exception to fail-open being
 // "free": when AllowRun errors the launch proceeds unmetered (logged).
-func (s *Server) gateLaunch(ctx context.Context) *launchDenial {
+func (s *Server) gateLaunch(ctx context.Context) (*launchAdmission, *launchDenial) {
 	id, _ := auth.FromContext(ctx)
 	st := s.authStore()
 	// st == nil is local/filesystem mode (no auth, single operator); a
 	// super-admin bypasses the gate entirely.
 	if st == nil || id.IsSuperAdmin {
-		return nil
+		return nil, nil
 	}
 	if id.TeamID == "" {
 		// A signed-in cloud user with no team (the GitHub submitter tier) has
 		// no workspace to launch into. Deny rather than fail-open, so the
 		// teamless tier can't run unmetered work under the empty tenant.
-		return &launchDenial{
+		return nil, &launchDenial{
 			status: http.StatusForbidden,
 			reason: denyNoWorkspace,
 			detail: "you are not a member of any workspace — ask an admin to add you to a team",
@@ -102,21 +130,21 @@ func (s *Server) gateLaunch(ctx context.Context) *launchDenial {
 		var err error
 		t, err = st.GetTeam(ctx, id.TeamID)
 		if err != nil {
-			return nil // fail-open (see doc comment)
+			return nil, nil // fail-open (see doc comment)
 		}
 	}
 	// The team's parent org owns the monthly budget + the top-level
 	// suspend. Either level being suspended blocks the launch.
 	org := s.orgForTeam(ctx, st, id, t)
 	if !t.CanLaunch() {
-		return &launchDenial{
+		return nil, &launchDenial{
 			status: http.StatusForbidden,
 			reason: denyOrgSuspended,
 			detail: "team cannot launch runs (suspended or read-only)",
 		}
 	}
 	if org.ID != "" && !org.CanLaunch() {
-		return &launchDenial{
+		return nil, &launchDenial{
 			status: http.StatusForbidden,
 			reason: denyOrgSuspended,
 			detail: "org cannot launch runs (suspended or read-only)",
@@ -124,10 +152,10 @@ func (s *Server) gateLaunch(ctx context.Context) *launchDenial {
 	}
 	now := time.Now().UTC()
 	if d := s.gateConcurrency(ctx, t); d != nil {
-		return d
+		return nil, d
 	}
 	if d := s.gateLaunchRate(t); d != nil {
-		return d
+		return nil, d
 	}
 	return s.gateMonthlyCaps(ctx, org, t, now)
 }
@@ -207,9 +235,9 @@ func (s *Server) gateLaunchRate(t identity.Team) *launchDenial {
 // the org couldn't be resolved (pre-backfill row) we fall back to the
 // team id as the metering key + platform defaults, so launches still
 // meter.
-func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identity.Team, now time.Time) *launchDenial {
+func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identity.Team, now time.Time) (*launchAdmission, *launchDenial) {
 	if s.orgUsage == nil {
-		return nil
+		return nil, nil
 	}
 	usageKey := org.ID
 	if usageKey == "" {
@@ -222,25 +250,25 @@ func (s *Server) gateMonthlyCaps(ctx context.Context, org identity.Org, t identi
 		if s.logger != nil {
 			s.logger.Warn("launch gate: run metering for %s: %v (fail-open, launch unmetered)", usageKey, err)
 		}
-		return nil
+		return nil, nil
 	}
 	switch deny {
 	case orgusage.DenyRuns:
-		return &launchDenial{
+		return nil, &launchDenial{
 			status:  http.StatusPaymentRequired,
 			reason:  denyMonthlyRunQuota,
 			detail:  fmt.Sprintf("monthly run quota (%d) exhausted", maxRuns),
 			resetAt: nextMonthStart(now),
 		}
 	case orgusage.DenyCost:
-		return &launchDenial{
+		return nil, &launchDenial{
 			status:  http.StatusPaymentRequired,
 			reason:  denyMonthlyCostCap,
 			detail:  fmt.Sprintf("monthly LLM cost cap ($%.2f) reached", capUSD),
 			resetAt: nextMonthStart(now),
 		}
 	}
-	return nil
+	return &launchAdmission{counter: s.orgUsage, usageKey: usageKey, when: now}, nil
 }
 
 // nextMonthStart is when monthly quotas reset (first instant of the

@@ -79,3 +79,21 @@ func TestMatchesNetworkSignature(t *testing.T) {
 		})
 	}
 }
+
+// TestIsNetworkErrorTypedNotTextual pins the structural layer: typed
+// network errors classify as transient by TYPE, independent of their
+// message — a wording change upstream (or a non-English locale) must not
+// demote a resolver flap or reset to the fatal retry budget.
+func TestIsNetworkErrorTypedNotTextual(t *testing.T) {
+	cases := []error{
+		&net.DNSError{Err: "?", Name: "api.example", IsTemporary: true},
+		&net.DNSError{Err: "?", Name: "api.example", IsNotFound: true},
+		fmt.Errorf("wrapped: %w", syscall.ENETRESET),
+		fmt.Errorf("wrapped: %w", syscall.EHOSTDOWN),
+	}
+	for _, err := range cases {
+		if !IsNetworkError(err) {
+			t.Errorf("IsNetworkError(%T %v) = false, want true (typed classification)", err, err)
+		}
+	}
+}

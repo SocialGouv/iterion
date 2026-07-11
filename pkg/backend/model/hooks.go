@@ -295,7 +295,11 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		data["thinking_ms"] = step.ThinkingMs
 	}
 
-	// Always include response text in persisted events.
+	// Always include response text in persisted events. Thinking text is
+	// deliberately NOT persisted here: it is routinely 10-50 KB per step,
+	// events.jsonl is bounded to small payloads (big bodies live in
+	// sidecar blobs — see runview MaxEventsPerPage), and the run.log
+	// LogBlock below is the surface that renders it.
 	if step.Text != "" {
 		data["response_text"] = iterlog.Truncate(step.Text, maxFieldSize)
 	}
@@ -370,7 +374,15 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		h.logger.Logf(iterlog.LevelDebug, "📊", "[%s#%d/claw] step %d: %d in / %d out tokens",
 			nodeID, step.Iteration, step.Number, step.InputTokens, step.OutputTokens)
 	}
-	if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {
+	// Thinking content folds under its header in the studio log view
+	// (LogBlock), so full reasoning text at INFO doesn't crowd the log.
+	// Metrics-only line kept as fallback when no text was captured.
+	if step.Thinking != "" {
+		h.logger.LogBlock(iterlog.LevelInfo, "🧠",
+			fmt.Sprintf("[%s#%d/claw] thinking step %d (~%d tok, %dms):",
+				nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs),
+			h.red(step.Thinking))
+	} else if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {
 		h.logger.Logf(iterlog.LevelInfo, "🧠", "[%s#%d/claw] step %d thinking: ~%d tok, %dms",
 			nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs)
 	}

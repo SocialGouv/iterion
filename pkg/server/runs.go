@@ -245,7 +245,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Launch admission: suspend → concurrency → rate → cost cap →
 	// monthly run quota (which also meters). Super-admin bypasses.
-	if d := s.gateLaunch(r.Context()); d != nil {
+	if _, d := s.gateLaunch(r.Context()); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
@@ -1140,7 +1140,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	if d := s.gateLaunch(r.Context()); d != nil {
+	if _, d := s.gateLaunch(r.Context()); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}

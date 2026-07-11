@@ -271,7 +271,11 @@ func (e *Engine) execFanOutEach(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Collect results (ctx-aware drain, mirrors execFanOut).
-	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, len(items), routerNodeID, "fan_out_each")
+	expectedIDs := make([]string, len(items))
+	for i := range items {
+		expectedIDs[i] = fmt.Sprintf("branch_%s_%d", routerNodeID, i)
+	}
+	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, expectedIDs, rs, routerNodeID, "fan_out_each")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}

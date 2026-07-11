@@ -116,20 +116,25 @@ vars:
   ## Cap. 3 shard child runs.
   diff_base:           string = ""
   ## deepsec backend (Enhancement 4) — https://github.com/vercel-labs/deepsec.
-  ## When true (DEFAULT), runs `deepsec init/scan/process/export` headlessly
+  ## OPT-IN (default false): deepsec is the run's dominant time/cost sink —
+  ## its `process` step makes LLM calls per candidate batch and has been the
+  ## single-node runaway in live runs (81m of a 90m budget, see
+  ## docs/bot-runs/sec-audit-source.md), with only the per-node deadline as
+  ## backstop. The generic floor (gitleaks/trivy/semgrep) plus per-language
+  ## scanners stay the always-on baseline; enable deepsec deliberately with
+  ## `--var enable_deepsec=true` when the extra framework-aware matchers +
+  ## LLM investigation are worth the budget.
+  ## When enabled, runs `deepsec init/scan/process/export` headlessly
   ## in the target workspace and emits a scanner_output envelope downstream
-  ## triage consumes via json_paths.deepsec, exactly like any other scanner —
-  ## adding deepsec's framework-aware matchers + LLM investigation to the
-  ## candidate set (deepsec_gate routes to run_deepsec_scanner).
+  ## triage consumes via json_paths.deepsec, exactly like any other scanner
+  ## (deepsec_gate routes to run_deepsec_scanner).
   ## Requires deepsec on PATH + Node 22+ in the sandbox image
   ## (sandbox/sec/Dockerfile). run_deepsec_scanner ALWAYS exits 0 and
   ## degrades gracefully when deepsec / Node 22 / network is missing — never
   ## fails the run (the envelope carries an errors[] tail; the report notes
-  ## "deepsec degraded"). Cost: the `process` step makes LLM calls per
-  ## candidate batch, capped by deepsec_process_limit. Set
-  ## `--var enable_deepsec=false` for a leaner, deepsec-free run.
+  ## "deepsec degraded"). LLM cost is capped by deepsec_process_limit.
   ## See skills/scanner-deepsec.md for the field mapping.
-  enable_deepsec:      bool   = true
+  enable_deepsec:      bool   = false
   ## Note: deepsec's CLI does not expose a tier/`--tier` flag (verified
   ## against deepsec packages/deepsec/src/cli.ts v2.0.x — `scan` runs the
   ## full ~110 regex matcher pack; per-run narrowing is via `--matchers

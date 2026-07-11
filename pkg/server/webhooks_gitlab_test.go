@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -514,5 +516,71 @@ func TestGitLabWebhook_FiltersAndRejects(t *testing.T) {
 
 	if calls != 0 {
 		t.Fatalf("no launch should have happened, got %d", calls)
+	}
+}
+
+// raceMissDeliveries simulates the concurrent-duplicate race: the
+// step-1 replay check misses for the first `forcedMisses` lookups (as
+// it does when two deliveries of the same event are in flight at
+// once), then delegates to the real store.
+type raceMissDeliveries struct {
+	webhooks.DeliveryStore
+	forcedMisses int
+}
+
+func (r *raceMissDeliveries) GetByIdempotencyKey(ctx context.Context, key string) (webhooks.Delivery, error) {
+	if r.forcedMisses > 0 {
+		r.forcedMisses--
+		return webhooks.Delivery{}, webhooks.ErrNotFound
+	}
+	return r.DeliveryStore.GetByIdempotencyKey(ctx, key)
+}
+
+// TestGitLabWebhook_ConcurrentDuplicateReleasesQuota reproduces the
+// double-metering race: two deliveries of the same event both pass the
+// step-1 replay check and both charge the monthly run counter, but only
+// the idempotency-insert winner launches. The loser must release its
+// quota unit — the counter ends at exactly one metered run.
+func TestGitLabWebhook_ConcurrentDuplicateReleasesQuota(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeliveries = &raceMissDeliveries{DeliveryStore: webhooks.NewMemoryDeliveryStore(), forcedMisses: 2}
+	counter := orgusage.NewMemoryCounter()
+	s.orgUsage = counter
+	now := time.Now().UTC()
+	if _, err := s.authStore().CreateOrg(context.Background(), identity.Org{ID: "o1", Name: "o1", Slug: "o1", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{ID: "t1", OrgID: "o1", Name: "t1", Slug: "t1", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		return "run-1", nil
+	}
+	cfg := glConfig()
+
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusAccepted {
+		t.Fatalf("first delivery: code=%d body=%s", w1.Code, w1.Body.String())
+	}
+	// Second delivery of the SAME event; its replay check misses (forced),
+	// so it meters, then loses the idempotency insert.
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("duplicate delivery: code=%d body=%s", w2.Code, w2.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w2.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusDuplicate || resp["run_id"] != "run-1" {
+		t.Fatalf("duplicate resp: %v", resp)
+	}
+	// The org's monthly counter must reflect ONE launch, not two.
+	u, err := counter.Usage(context.Background(), "o1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Runs != 1 {
+		t.Fatalf("org monthly runs = %d, want 1 (loser must release its quota unit)", u.Runs)
 	}
 }

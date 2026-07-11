@@ -54,6 +54,9 @@ type LLMStepInfo struct {
 	// in thinking blocks. Both are 0 when the step produced no thinking.
 	ReasoningTokens int
 	ThinkingMs      int
+	// Thinking is the extended-thinking text for this step (empty when the
+	// step produced no thinking).
+	Thinking string
 	// Iteration is the 0-based loop iteration (see LLMRequestInfo.Iteration).
 	Iteration int
 }
@@ -239,6 +242,7 @@ func toLLMStepInfo(step StepResult) LLMStepInfo {
 		CacheWriteTokens: step.Usage.CacheWriteTokens,
 		ReasoningTokens:  step.Usage.ReasoningTokens,
 		ThinkingMs:       step.Usage.ThinkingMs,
+		Thinking:         step.Thinking,
 	}
 }
 

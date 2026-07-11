@@ -182,6 +182,29 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 }
 
 // runState holds the mutable runtime state passed through the execution loop.
+//
+// CONCURRENCY CONTRACT (no mutex by design — ownership, not exclusion):
+// the main execution-loop goroutine is the SINGLE WRITER of every
+// unsynchronized field (outputs, artifacts, loopCounters, vars,
+// costUSDTotal, ...). Parallel fan-out branches never touch them:
+//   - branches receive deep COPIES of outputs/artifacts
+//     (fanOutPlan.parentOutputs via copyOutputs) and write only into
+//     their own branchResult; the merge back into rs happens
+//     mono-thread in processConvergence after collection;
+//   - the explicitly synchronized exceptions are branchLedgerSeq
+//     (atomic), budget (SharedBudget, internal mutex), events
+//     (runEvents, internal mutex) and resourceSemaphores (channels).
+//
+// Two rules keep this sound — breaking either introduces a silent data
+// race the compiler cannot catch:
+//  1. never write an unsynchronized rs field from a branch goroutine;
+//  2. fields branches READ through the resolution scope (loopCounters,
+//     vars, runInputs) must not be mutated by the main loop while a
+//     fan-out is in flight — INCLUDING an abandoned branch that
+//     outlives its fan-out (collectBranches' grace-period escape), so
+//     the constraint extends until the run ends, not just until the
+//     collector returns. TestFanOutAbandonedBranchDoesNotRaceRunState
+//     exercises that window under -race.
 type runState struct {
 	// ctx is the per-run context. Stored on runState (despite the
 	// usual "no context in struct" rule) because helpers.go threads
@@ -284,13 +307,30 @@ type resumeBackendState struct {
 // formatted message describing the origin error. Used on pre-execLoop
 // setup failures where the engine is about to return the same error to
 // the caller — a store-side failure of the status flip itself can't be
-// propagated, so it's logged at warn level instead of being silently
+// propagated, so it's retried then logged instead of being silently
 // dropped (without this, an op error during startup leaves the run
 // stuck in `running` in the UI).
+//
+// The retry exists because this write shares its failure domain with
+// whatever just failed (the store): a transient blip (Mongo hiccup, a
+// ctx already torn down) that broke setup often clears within seconds,
+// and a lost flip costs an operator round trip — or waits for the
+// periodic orphan reconcile. Attempts run on a detached ctx: the run
+// ctx being dead is one of the very triggers that lands here.
 func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
 	msg := fmt.Sprintf("%s: %v", phase, cause)
-	if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, msg); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: failed to record run %s as failed during %s: %v (original cause: %v)", runID, phase, err, cause)
+	writeCtx := context.WithoutCancel(ctx)
+	var err error
+	for attempt, delay := 0, 500*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*4 {
+		if attempt > 0 {
+			time.Sleep(delay)
+		}
+		if err = e.store.UpdateRunStatus(writeCtx, runID, store.RunStatusFailed, msg); err == nil {
+			return
+		}
+	}
+	if e.logger != nil {
+		e.logger.Warn("runtime: failed to record run %s as failed during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, phase, err, cause)
 	}
 }
 
