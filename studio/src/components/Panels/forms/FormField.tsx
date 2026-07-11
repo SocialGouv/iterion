@@ -22,7 +22,34 @@ import {
 import { RefAwareInput, RefAwareTextarea } from "@/components/ui/RefAwareInput";
 import PromptOverlayHighlight from "@/components/ui/PromptOverlayHighlight";
 import type { RefContext } from "@/lib/refCompletion";
+import { softColor } from "@/lib/constants";
 import { Pencil1Icon } from "@radix-ui/react-icons";
+
+interface NodeFormHeaderProps {
+  /** Node-kind color (a runtime CSS-var string from NODE_COLORS). */
+  color: string;
+  icon: ReactNode;
+  label: string;
+}
+
+/**
+ * Colored banner naming the node kind at the top of each node form.
+ * The node-kind colors are runtime values (CSS-var strings), so the
+ * tint and border are inline styles — no static token class exists.
+ */
+export function NodeFormHeader({ color, icon, label }: NodeFormHeaderProps) {
+  return (
+    <div
+      className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
+      style={{ backgroundColor: softColor(color), borderLeft: `3px solid ${color}` }}
+    >
+      <span className="text-base">{icon}</span>
+      <span className="text-xs font-bold uppercase tracking-wide" style={{ color }}>
+        {label}
+      </span>
+    </div>
+  );
+}
 
 interface FieldRowChildArgs {
   /** id to apply to the primary control inside the row. */
