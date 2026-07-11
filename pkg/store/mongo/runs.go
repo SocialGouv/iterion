@@ -91,6 +91,7 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 		{"interactions", s.interactions},
 		{"user_messages", s.userMessages},
 		{"run_gitmeta", s.runGitMeta},
+		{"run_plans", s.runPlans},
 	}
 	for _, c := range children {
 		if _, err := c.coll.DeleteMany(ctx, withTenantFilter(ctx, bson.M{"run_id": id})); err != nil {

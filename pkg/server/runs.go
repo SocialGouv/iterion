@@ -661,10 +661,11 @@ func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListPlans returns the chronological plan snapshots captured for a
-// run — the agents' TodoWrite/todo_write living TODO lists, persisted to
-// runs/<id>/plans/. Ascending seq order (chronological). Returns an empty
-// array (not 404) for a valid run that captured no plans — older runs
-// predate the feature, and cloud stores don't back it — so the studio's
+// run — the agents' TodoWrite/todo_write living TODO lists (filesystem
+// runs/<id>/plans/ or the Mongo run_plans collection in cloud mode).
+// Ascending seq order (chronological). Returns an empty array (not 404)
+// for a valid run that captured no plans — e.g. an agent that never
+// called TodoWrite, or a run predating the feature — so the studio's
 // Plans panel renders a clean empty state. Tenant-scoped like the other
 // run sub-resource handlers (load the run under the caller's context
 // first so the mongo tenant filter rejects cross-tenant requests).
