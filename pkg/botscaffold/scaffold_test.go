@@ -94,7 +94,11 @@ func TestScaffold_SpecMatrix(t *testing.T) {
 			}
 			cr := ir.Compile(pr.File)
 			for _, d := range cr.Diagnostics {
-				if d.Severity == ir.SeverityError {
+				// C018 is environment-dependent (fires only when no LLM
+				// credential is auto-detectable, e.g. CI): the zero-config
+				// template omits model/backend on purpose. Scaffold itself
+				// skips it; the test must too or it re-asserts on a bare CI.
+				if d.Severity == ir.SeverityError && d.Code != ir.DiagMissingModelOrBackend {
 					t.Errorf("compile: %s\n---\n%s", d.Error(), src)
 				}
 			}
