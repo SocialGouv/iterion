@@ -45,19 +45,19 @@ type RunMessage struct {
 	RepoSHA      string          `json:"repo_sha,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
-	BotID          string         `json:"bot_id,omitempty"`
-	Vars           map[string]any `json:"vars,omitempty"`
-	SecretsRef     string         `json:"secrets_ref,omitempty"`
-	TimeoutSec     int            `json:"timeout_sec,omitempty"`
+	BotID      string         `json:"bot_id,omitempty"`
+	Vars       map[string]any `json:"vars,omitempty"`
+	SecretsRef string         `json:"secrets_ref,omitempty"`
+	TimeoutSec int            `json:"timeout_sec,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
 	// cloud ceiling, so a tenant can only lower the effective caps.
 	Budget         *BudgetOverrides `json:"budget,omitempty"`
-	BackendConfig  BackendConfig  `json:"backend"`
-	Resume         *ResumeSpec    `json:"resume,omitempty"`
-	Trace          TraceContext   `json:"trace"`
-	PublishedAtRFC string         `json:"published_at"`
+	BackendConfig  BackendConfig    `json:"backend"`
+	Resume         *ResumeSpec      `json:"resume,omitempty"`
+	Trace          TraceContext     `json:"trace"`
+	PublishedAtRFC string           `json:"published_at"`
 	// TenantID is the team_id the run belongs to. Required in v=2.
 	// Runners verify the loaded run document's tenant_id matches
 	// before claiming the lock; a mismatch is treated as a corrupted
