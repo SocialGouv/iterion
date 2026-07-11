@@ -11,21 +11,40 @@ import (
 	"github.com/SocialGouv/iterion/pkg/git"
 )
 
+// InstallOptions parameterizes InstallWith. Source is a local directory or a
+// git URL (required); Ref pins a branch or tag for a git source; Subpath
+// selects a plugin directory inside the source (for monorepos shipping several
+// plugins).
+type InstallOptions struct {
+	Source  string
+	Ref     string
+	Subpath string
+}
+
 // Install installs a plugin from a local directory or git URL into
-// ~/.iterion/plugins/<name>/ and returns the installed plugin's name. A git URL
-// is shallow-cloned; a local path's plugin.yaml is validated then copied. When
-// the source has no plugin.yaml but ships bare skills (a public skill library),
-// a skills-only manifest is synthesized and persisted into the install dir.
-//
-// Install only places files — it never executes plugin code; the cloned repo's
-// .git metadata is stripped (see copyTree). Both the CLI (`iterion plugin
-// install`) and the HTTP server (POST /api/v1/plugins/install) call this so the
-// behaviour is identical on either surface.
+// ~/.iterion/plugins/<name>/ and returns the installed plugin's name. It is
+// InstallWith with only a source. Both the CLI (`iterion plugin install`) and
+// the HTTP server (POST /api/v1/plugins/install) call this so the behaviour is
+// identical on either surface.
 func Install(ctx context.Context, src string) (string, error) {
+	return InstallWith(ctx, InstallOptions{Source: src})
+}
+
+// InstallWith installs a plugin per opts into ~/.iterion/plugins/<name>/ and
+// returns the installed plugin's name. A git source is shallow-cloned (at
+// opts.Ref when set); a local path's plugin.yaml is validated then copied.
+// When the (sub)source has no plugin.yaml but ships bare skills (a public
+// skill library), a skills-only manifest is synthesized and persisted into the
+// install dir.
+//
+// InstallWith only places files — it never executes plugin code; the cloned
+// repo's .git metadata is stripped (see copyTree).
+func InstallWith(ctx context.Context, opts InstallOptions) (string, error) {
 	reg, err := Load()
 	if err != nil {
 		return "", err
 	}
+	src := opts.Source
 	srcDir := src
 	if isGitURL(src) {
 		parent, terr := os.MkdirTemp("", "iterion-plugin-clone-*")
@@ -38,10 +57,20 @@ func Install(ctx context.Context, src string) (string, error) {
 		// transport guard matters here because the studio install endpoint
 		// clones an operator-supplied URL server-side.
 		dest := filepath.Join(parent, "src")
-		if cerr := git.ShallowClone(ctx, src, "", dest); cerr != nil {
+		if cerr := git.ShallowClone(ctx, src, opts.Ref, dest); cerr != nil {
 			return "", cerr
 		}
 		srcDir = dest
+	} else if opts.Ref != "" {
+		return "", fmt.Errorf("plugin: ref %q given for local source %q (refs apply to git sources only)", opts.Ref, src)
+	}
+	if opts.Subpath != "" {
+		// The subpath is operator/marketplace input; reject anything that would
+		// escape the source root (absolute paths, ".." traversal).
+		if !filepath.IsLocal(opts.Subpath) {
+			return "", fmt.Errorf("plugin: subpath %q escapes the source root", opts.Subpath)
+		}
+		srcDir = filepath.Join(srcDir, opts.Subpath)
 	}
 	var m *Manifest
 	synthesized := false
@@ -52,8 +81,13 @@ func Install(ctx context.Context, src string) (string, error) {
 	} else if os.IsNotExist(rerr) {
 		// No plugin.yaml — treat the source as a public skill library: collect
 		// its bare skills and synthesize a skills-only manifest so it becomes a
-		// first-class, enable/disable-able plugin.
-		if m, err = SynthesizeSkillsManifest(src, srcDir); err != nil {
+		// first-class, enable/disable-able plugin. The name derives from the
+		// subpath when one selected the plugin, else from the source itself.
+		nameSrc := src
+		if opts.Subpath != "" {
+			nameSrc = opts.Subpath
+		}
+		if m, err = SynthesizeSkillsManifest(nameSrc, srcDir); err != nil {
 			return "", err
 		}
 		synthesized = true
