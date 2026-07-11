@@ -6,7 +6,7 @@ import { ChevronDownIcon, MixerHorizontalIcon } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
 import { apiURL } from "@/api/runs";
-import { Checkbox, IconButton, Input, Popover } from "@/components/ui";
+import { Button, Checkbox, IconButton, Input, Popover } from "@/components/ui";
 import { useToggleSet } from "@/hooks/useToggleSet";
 import { clickableRowProps } from "@/lib/a11y";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
@@ -408,8 +408,9 @@ export default function LogLinesView({
             leadingIcon={<span className="text-caption">⌕</span>}
           />
         </div>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => {
             void (async () => {
               try {
@@ -434,7 +435,6 @@ export default function LogLinesView({
               }
             })();
           }}
-          className="text-caption text-fg-subtle hover:text-fg-default underline"
           title={
             isFiltered
               ? "Copy the visible (per-node) log lines to the clipboard"
@@ -442,10 +442,11 @@ export default function LogLinesView({
           }
         >
           copy
-        </button>
+        </Button>
         {!isFiltered && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => {
               void (async () => {
                 try {
@@ -465,38 +466,37 @@ export default function LogLinesView({
                 }
               })();
             }}
-            className="text-caption text-fg-subtle hover:text-fg-default underline"
             title="Save the full run.log to a file"
           >
             download
-          </button>
+          </Button>
         )}
         <Popover
           side="bottom"
           align="end"
           contentClassName="p-1 min-w-[140px]"
           trigger={
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-pressed={activeLevels.size > 0}
               title={
                 activeLevels.size > 0
                   ? `${activeLevels.size} level filter(s) active`
                   : "Filter by level"
               }
-              className={`text-caption px-1.5 py-0.5 rounded border inline-flex items-center gap-1 transition-colors ${
-                activeLevels.size > 0
-                  ? "bg-surface-2 text-fg-default border-accent"
-                  : "bg-surface-1 border-border-default text-fg-subtle hover:text-fg-default"
-              }`}
+              className={
+                activeLevels.size > 0 ? "border-accent" : "text-fg-subtle"
+              }
+              leadingIcon={<MixerHorizontalIcon className="w-3 h-3" />}
             >
-              <MixerHorizontalIcon className="w-3 h-3" />
               Levels
               {activeLevels.size > 0 && (
                 <span className="font-mono text-[9px] px-1 rounded bg-accent/20 text-accent-fg">
                   {activeLevels.size}
                 </span>
               )}
-            </button>
+            </Button>
           }
         >
           <div className="flex flex-col gap-0.5 p-1">
@@ -507,6 +507,7 @@ export default function LogLinesView({
                   key={g.key}
                   type="button"
                   onClick={() => toggleLevel(g.key)}
+                  aria-pressed={isActive}
                   className={`text-micro px-2 py-1 rounded border text-left transition-colors ${
                     isActive
                       ? `bg-surface-2 ${g.cls} border-accent`
@@ -519,13 +520,14 @@ export default function LogLinesView({
               );
             })}
             {activeLevels.size > 0 && (
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={clearActiveLevels}
-                className="text-caption text-fg-subtle hover:text-fg-default mt-1 px-2 py-0.5 text-left"
+                className="mt-1 justify-start"
               >
                 Clear filters
-              </button>
+              </Button>
             )}
           </div>
         </Popover>

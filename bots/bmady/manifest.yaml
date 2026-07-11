@@ -1,5 +1,6 @@
 name: bmady
 display_name: Bmady
+icon: 🎭
 version: 0.1.0
 description: |
   BMAD-METHOD-inspired agile delivery bot. Runs a structured

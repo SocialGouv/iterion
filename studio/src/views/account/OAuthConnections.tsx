@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Textarea";
 import { Input } from "@/components/ui/Input";
 import { useConfirm } from "@/hooks/useConfirm";
-import { EmptyState } from "@/components/ui/EmptyState";
 import { useUIStore } from "@/store/ui";
+import PanelLoading from "@/components/shared/PanelLoading";
 import {
   type OAuthConnection,
   type OAuthKind,
@@ -200,7 +200,7 @@ export default function OAuthConnections({
       )}
 
       {loading ? (
-        <EmptyState message="Loading…" />
+        <PanelLoading />
       ) : (
         <div className="space-y-4">
           {KINDS.map(({ kind, display, filename, hint, browser }) => {

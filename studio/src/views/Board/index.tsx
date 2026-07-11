@@ -5,7 +5,6 @@ import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import DispatcherControlBar from "@/components/shared/DispatcherControlBar";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
-import { Skeleton } from "@/components/ui/Skeleton";
 import { cancelIssue } from "@/api/dispatcher";
 import {
   createIssue,
@@ -40,6 +39,7 @@ import {
   type GroupMode,
   type SortMode,
 } from "./boardShared";
+import { BoardSkeleton } from "./board/BoardSkeleton";
 import { EmptyBoard } from "./board/EmptyBoard";
 import { EmptyBoardBanner } from "./board/EmptyBoardBanner";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -416,23 +416,7 @@ export default function BoardView() {
   });
 
   if (loading) {
-    return (
-      <div
-        className="h-full flex flex-col overflow-hidden"
-        aria-label="Loading board"
-      >
-        <div className="flex-1 flex gap-3 overflow-hidden p-3">
-          {Array.from({ length: 4 }).map((_, c) => (
-            <div key={c} className="flex w-72 shrink-0 flex-col gap-2">
-              <Skeleton className="h-6 w-32" />
-              {Array.from({ length: 3 }).map((__, k) => (
-                <Skeleton key={k} className="h-16 w-full" />
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+    return <BoardSkeleton />;
   }
   if (!board) {
     return <EmptyBoard kind="missing" />;

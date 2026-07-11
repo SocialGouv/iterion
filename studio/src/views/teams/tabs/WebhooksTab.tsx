@@ -51,8 +51,8 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
   // rotate, and delete all flow through `run()`, so the banner shows
   // the most recent failure.
   const { error: err, run } = useAsyncAction();
-  // The list-load is the only flow that should show a tab-wide "Loading…"
-  // empty state. Mutations (toggle/rotate/delete) re-trigger `reload`
+  // The list-load is the only flow that should show a tab-wide loading
+  // state. Mutations (toggle/rotate/delete) re-trigger `reload`
   // but should not blank the table mid-flight.
   const [loading, setLoading] = useState(true);
   const { confirm, dialog: confirmDialog } = useConfirm();

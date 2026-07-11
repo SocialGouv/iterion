@@ -2,7 +2,7 @@ import { useState } from "react";
 import { CaretSortIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 
-import { hasOrgRole, useAuth } from "@/auth/AuthContext";
+import { hasOrgRole, isLocalIdentity, useAuth } from "@/auth/AuthContext";
 import { Popover, PopoverClose } from "@/components/ui/Popover";
 
 // Account + team chip (the avatar menu). Org-level switching lives in the
@@ -35,7 +35,7 @@ export default function UserTeamChip({
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
 
-  const isLocal = user?.id === "dev";
+  const isLocal = isLocalIdentity(user);
   if (isLocal) return null;
 
   const canManageActiveOrg =

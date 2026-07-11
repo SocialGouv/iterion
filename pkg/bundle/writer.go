@@ -76,13 +76,6 @@ func PackDir(srcDir, outPath string) (*PackResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bundle/pack: resolve src %s: %w", srcDir, err)
 	}
-	info, err := os.Stat(absSrc)
-	if err != nil {
-		return nil, fmt.Errorf("bundle/pack: stat %s: %w", absSrc, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("bundle/pack: %s is not a directory", absSrc)
-	}
 
 	// Validate the bundle layout up front (cheap, fail-fast).
 	hasBot := false
@@ -94,6 +87,27 @@ func PackDir(srcDir, outPath string) (*PackResult, error) {
 	}
 	if !hasBot {
 		return nil, fmt.Errorf("bundle/pack: %s contains no main.bot at root", absSrc)
+	}
+
+	return PackTree(absSrc, outPath)
+}
+
+// PackTree is PackDir without the bot-bundle layout requirement: it packs
+// ANY directory tree into the same deterministic ZIP (sorted entries,
+// pinned timestamps, symlinks refused, same skip rules and content hash).
+// Used for non-bot archives — e.g. the marketplace serving a plugin's
+// source tree as a downloadable ZIP.
+func PackTree(srcDir, outPath string) (*PackResult, error) {
+	absSrc, err := filepath.Abs(srcDir)
+	if err != nil {
+		return nil, fmt.Errorf("bundle/pack: resolve src %s: %w", srcDir, err)
+	}
+	info, err := os.Stat(absSrc)
+	if err != nil {
+		return nil, fmt.Errorf("bundle/pack: stat %s: %w", absSrc, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("bundle/pack: %s is not a directory", absSrc)
 	}
 
 	absOut, err := filepath.Abs(outPath)

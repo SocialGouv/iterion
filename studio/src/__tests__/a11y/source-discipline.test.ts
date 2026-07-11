@@ -146,6 +146,50 @@ describe("source discipline", () => {
     expect(hits).toHaveLength(0);
   });
 
+  it("renders loading through BootLoading/MainSpinner/Spinner/Skeleton, not raw Loading… literals", () => {
+    // A rendered "Loading…" literal (JSX text or string value) bypasses the
+    // blessed loading vocabulary — shared/BootLoading (pre-shell boot),
+    // shared/MainSpinner (route Suspense inside the shell), ui/Spinner
+    // (inline section/panel), ui/Skeleton + TableSkeleton (known layout) —
+    // shipping text with no motion affordance and no role=status semantics.
+    // `EmptyState message="Loading…"` is the classic misuse: EmptyState is
+    // for EMPTY content, not a pending fetch.
+    //
+    // Same-line exemption: a visible "Loading…" label is fine when it sits
+    // next to a <Spinner /> on the same line (the canonical spinner+text
+    // composition, e.g. the Toolbar file-loading pill).
+    //
+    // File allowlist (each deliberately keeps the literal):
+    //   - ui/Spinner.tsx — doc comment mentions the literal;
+    //   - shared/BootLoading.tsx, shared/MainSpinner.tsx — the blessed
+    //     compositions themselves (Spinner + <span>Loading…</span>);
+    //   - views/auth/AcceptInvitation.tsx — pre-shell status screens already
+    //     composed as Spinner + text across two lines;
+    //   - views/Skills.tsx — "Loading…" as a textarea placeholder= attribute,
+    //     not a rendered literal.
+    const ALLOW =
+      /\/(ui\/Spinner|shared\/BootLoading|shared\/MainSpinner|views\/auth\/AcceptInvitation|views\/Skills)\.tsx$/;
+    const RE = /(^\s*|>\s*|["'])Loading…/;
+    const hits: string[] = [];
+    for (const [path, src] of files) {
+      if (ALLOW.test(path)) continue;
+      src.split("\n").forEach((line, i) => {
+        // Same-line exemption keys on the JSX element (<Spinner), not
+        // the bare word — a comment or import mentioning Spinner must
+        // not launder a raw literal past the trap.
+        if (RE.test(line) && !line.includes("<Spinner")) {
+          hits.push(`${path}:${i + 1}  ${line.trim().slice(0, 100)}`);
+        }
+      });
+    }
+    if (hits.length) {
+      throw new Error(
+        `raw Loading… literal is banned — use BootLoading, MainSpinner, <Spinner label="…"/>, or Skeleton/TableSkeleton:\n${hits.join("\n")}`,
+      );
+    }
+    expect(hits).toHaveLength(0);
+  });
+
   it("uses the semantic type scale, not text-[Npx] sizes that have a token", () => {
     // 10/11/12/13/14/16px have tokens (text-caption/micro/body/label/title/
     // display). text-[8px]/[9px] are below the scale floor (no token, used in

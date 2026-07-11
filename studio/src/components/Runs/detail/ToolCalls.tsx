@@ -284,6 +284,7 @@ export function ToolPayloadBlock({
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
             className="text-caption text-fg-subtle hover:text-fg-default px-1 py-0.5 rounded hover:bg-surface-2"
           >
             {expanded ? "collapse" : "expand"}
@@ -460,6 +461,7 @@ function ToolCallCard({ call, runId }: { call: ToolCall; runId: string }) {
         <button
           type="button"
           onClick={() => setShowRaw((v) => !v)}
+          aria-pressed={showRaw}
           className="text-caption text-fg-subtle hover:text-fg-default"
         >
           {showRaw ? "hide raw" : "show raw"}

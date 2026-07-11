@@ -1,5 +1,6 @@
 name: devbox-setup
 display_name: Devy
+icon: 🧰
 version: 0.1.0
 description: |
   Bootstraps a reproducible dev environment for a repository. Detects the

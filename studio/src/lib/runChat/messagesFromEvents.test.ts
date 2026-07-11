@@ -218,6 +218,41 @@ describe("runChat messagesFromEvents", () => {
     });
   });
 
+  it("renders an answerable human-question for a recovery pause on an agent node", () => {
+    nextSeq = 1;
+    // Graceful-failure recovery pauses the run on an AGENT node with
+    // acknowledge_recovery guidance. The question must surface as a
+    // pending chat turn — a paused run with no form anywhere in the
+    // console is a dead end for the operator.
+    const out = messagesFromEvents({
+      resolver: irKindResolver(fixtureWorkflow),
+      events: [
+        evt("node_started", { node_id: "explorer" }),
+        evt("human_input_requested", {
+          node_id: "explorer",
+          data: {
+            interaction_id: "run_test_explorer",
+            questions: {
+              acknowledge_recovery:
+                "model provider rejected credentials — re-authenticate, then resume.",
+              last_error: "anthropic: API error 401",
+            },
+          },
+        }),
+      ],
+      snapshot: null,
+    });
+    const question = out.find((m) => m.kind === "human-question");
+    expect(question).toMatchObject({
+      kind: "human-question",
+      id: "run_test_explorer",
+      nodeId: "explorer",
+      status: "pending",
+      prompt:
+        "model provider rejected credentials — re-authenticate, then resume.",
+    });
+  });
+
   it("recovers iteration from nodeIteration fallback when payload omits it", () => {
     nextSeq = 1;
     // Two iterations of the same human node. human_input_requested

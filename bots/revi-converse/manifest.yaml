@@ -1,5 +1,6 @@
 name: revi-converse
 display_name: Revi (converse)
+icon: 💬
 version: 0.1.0
 description: |
   Conversational sibling of Revi (review-pr). Triggered when an

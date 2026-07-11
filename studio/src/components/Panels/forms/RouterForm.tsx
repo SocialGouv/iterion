@@ -13,8 +13,8 @@ import {
   REASONING_EFFORT_HELP,
   REASONING_EFFORT_OPTIONS,
 } from "@/lib/dslOptions";
-import { NODE_COLORS, softColor } from "@/lib/constants";
-import { CommittedTextField, SelectField, TextField, CheckboxField, PromptPickerField } from "./FormField";
+import { NODE_COLORS } from "@/lib/constants";
+import { CommittedTextField, SelectField, TextField, CheckboxField, PromptPickerField, NodeFormHeader } from "./FormField";
 import { ProviderIcon, ProviderLabel } from "@/components/icons/ProviderIcon";
 import { detectProvider } from "@/components/icons/providerDetect";
 
@@ -96,13 +96,7 @@ export default function RouterForm({ decl }: Props) {
 
   return (
     <div className="space-y-1">
-      <div
-        className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
-        style={{ backgroundColor: softColor(headerColor), borderLeft: `3px solid ${headerColor}` }}
-      >
-        <span className="text-base">{"\u{1F504}"}</span>
-        <span className="text-xs font-bold uppercase tracking-wide" style={{ color: headerColor }}>Router</span>
-      </div>
+      <NodeFormHeader color={headerColor} icon={"\u{1F504}"} label="Router" />
       <CommittedTextField
         label="Name"
         value={decl.name}

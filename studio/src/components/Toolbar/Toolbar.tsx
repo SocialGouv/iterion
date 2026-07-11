@@ -203,7 +203,7 @@ export default function Toolbar() {
           </DropdownMenuSub>
           <DropdownMenuSub icon={<RocketIcon />} label="Examples">
             {examplesLoading && examples === null ? (
-              <DropdownMenuItem disabled>Loading…</DropdownMenuItem>
+              <DropdownMenuItem disabled icon={<Spinner size="xs" />}>Loading…</DropdownMenuItem>
             ) : !examples || examples.length === 0 ? (
               <DropdownMenuItem disabled>No examples available</DropdownMenuItem>
             ) : (

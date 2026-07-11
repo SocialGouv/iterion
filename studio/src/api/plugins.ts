@@ -130,13 +130,80 @@ export async function getPluginDetail(name: string): Promise<PluginDetail> {
 
 // runPluginLifecycle runs a plugin's index/refresh manifest command in the
 // server's workspace. Super-admin only server-side; rejected in cloud mode.
+// The response is an NDJSON stream ({"output":…} chunks then a
+// {"done":true,…} trailer); onOutput receives the accumulated output as it
+// arrives so callers can render progress live.
 export async function runPluginLifecycle(
   name: string,
   phase: "index" | "refresh",
+  onOutput?: (output: string) => void,
 ): Promise<PluginLifecycleResult> {
-  return send(`/v1/plugins/${encodeURIComponent(name)}/lifecycle/${phase}`, {
+  const res = await fetch(`${BASE}/v1/plugins/${encodeURIComponent(name)}/lifecycle/${phase}`, {
     method: "POST",
+    credentials: "include",
   });
+  if (!res.ok) {
+    let msg: string | undefined;
+    try {
+      const body = (await res.json()) as unknown;
+      if (body && typeof body === "object") {
+        const env = body as { error?: unknown; message?: unknown };
+        if (typeof env.error === "string") msg = env.error;
+        else if (typeof env.message === "string") msg = env.message;
+      }
+    } catch {
+      // Non-JSON body — fall back to statusText.
+    }
+    throw new Error(msg || res.statusText || `HTTP ${res.status}`);
+  }
+  if (!res.body) {
+    throw new Error("lifecycle: response has no readable body");
+  }
+  interface StreamEvent {
+    output?: string;
+    done?: boolean;
+    ok?: boolean;
+    truncated?: boolean;
+    error?: string;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let output = "";
+  let trailer: StreamEvent | null = null;
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return;
+    const evt = JSON.parse(line) as StreamEvent;
+    if (evt.done) {
+      trailer = evt;
+    } else if (typeof evt.output === "string") {
+      output += evt.output;
+      onOutput?.(output);
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (value) buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      consumeLine(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+    }
+    if (done) break;
+  }
+  consumeLine(buf);
+  if (!trailer) {
+    throw new Error("lifecycle: stream ended without a result trailer");
+  }
+  const end: StreamEvent = trailer;
+  return {
+    name,
+    phase,
+    ok: end.ok === true,
+    output,
+    truncated: end.truncated,
+    error: end.error,
+  };
 }
 
 export async function setPluginEnabled(name: string, enabled: boolean): Promise<void> {

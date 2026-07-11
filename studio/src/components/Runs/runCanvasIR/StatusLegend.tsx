@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+import { IconButton } from "@/components/ui";
+
 import { statusClasses, type UnifiedStatus } from "../runStatusClasses";
 
 // StatusLegend explains the canvas node colour palette. Collapsed by
@@ -25,13 +27,14 @@ export function StatusLegend() {
             <span className="text-caption font-semibold text-fg-default">
               Node colours
             </span>
-            <button
-              type="button"
-              className="text-caption text-fg-subtle hover:text-fg-default"
+            <IconButton
+              label="Hide node-colour legend"
+              size="sm"
+              variant="ghost"
               onClick={() => setOpen(false)}
             >
               ×
-            </button>
+            </IconButton>
           </div>
           <ul className="space-y-0.5">
             {entries.map((e) => {
@@ -49,14 +52,15 @@ export function StatusLegend() {
           </ul>
         </div>
       ) : (
-        <button
-          type="button"
+        <IconButton
+          label="Show node-colour legend"
+          size="sm"
+          variant="secondary"
           onClick={() => setOpen(true)}
-          className="bg-surface-1/90 backdrop-blur border border-border-default rounded h-6 w-6 text-fg-subtle hover:text-fg-default text-xs"
-          title="Show node-colour legend"
+          className="bg-surface-1/90 backdrop-blur"
         >
           ?
-        </button>
+        </IconButton>
       )}
     </div>
   );

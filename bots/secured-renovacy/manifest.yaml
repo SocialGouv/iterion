@@ -1,5 +1,6 @@
 name: secured-renovacy
 display_name: Renovacy
+icon: ⬆️
 version: 0.2.0
 ## 0.2.0 — Phase 2 converted to ADR-058 minimal-framing (SCOPED pass:
 ## Phase 1's per-package pipeline is untouched — its security/CVE/

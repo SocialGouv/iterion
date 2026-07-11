@@ -1,9 +1,13 @@
 import { useServerInfoStore } from "@/store/serverInfo";
-import { EmptyState } from "@/components/ui/EmptyState";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 export default function StorageTab() {
   const info = useServerInfoStore((s) => s.info);
-  if (!info) return <EmptyState message="Loading…" />;
+  if (!info) {
+    return (
+      <PanelLoading />
+    );
+  }
   return (
     <div className="flex flex-col gap-3 p-4 text-sm">
       <div>

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Spinner } from "@/components/ui/Spinner";
 import { Tabs } from "@/components/ui/Tabs";
 import { useConfirm } from "@/hooks/useConfirm";
 import ApiKeysPanel from "./ApiKeys";
@@ -178,7 +179,9 @@ function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
       )}
 
       {links === null ? (
-        <div className="text-xs text-fg-muted">Loading…</div>
+        <div className="text-xs text-fg-muted">
+          <Spinner size="sm" label="Loading identities" />
+        </div>
       ) : links.length === 0 ? (
         <div className="text-xs text-fg-muted">No SSO identities connected yet.</div>
       ) : (

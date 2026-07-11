@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
-import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -184,7 +184,7 @@ function LabelsViewInner() {
         </div>
       )}
 
-      {!labels && <EmptyState message="Loading…" />}
+      {!labels && <TableSkeleton />}
 
       {grouped && grouped.length === 0 && (
         searchQuery ? (

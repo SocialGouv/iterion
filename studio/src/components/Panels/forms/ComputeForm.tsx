@@ -4,10 +4,11 @@ import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import type { ComputeDecl, AwaitMode, ComputeExpr } from "@/api/types";
 import { getAllNodeNames } from "@/lib/defaults";
 import { AWAIT_OPTIONS } from "@/lib/dslOptions";
-import { softColor } from "@/lib/constants";
+import { Button, HelpHint } from "@/components/ui";
 
 import {
   CommittedTextField,
+  NodeFormHeader,
   SelectField,
   SelectFieldWithCreate,
   TextField,
@@ -46,18 +47,7 @@ export default function ComputeForm({ decl }: Props) {
 
   return (
     <div className="space-y-1">
-      <div
-        className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
-        style={{ backgroundColor: softColor(HEADER_COLOR), borderLeft: `3px solid ${HEADER_COLOR}` }}
-      >
-        <span className="text-base">{"\u{03A3}"}</span>
-        <span
-          className="text-xs font-bold uppercase tracking-wide"
-          style={{ color: HEADER_COLOR }}
-        >
-          Compute
-        </span>
-      </div>
+      <NodeFormHeader color={HEADER_COLOR} icon={"\u{03A3}"} label="Compute" />
       <CommittedTextField
         label="Name"
         value={decl.name}
@@ -113,21 +103,17 @@ export default function ComputeForm({ decl }: Props) {
       <div className="border-t border-border-default pt-2 mt-2">
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs text-fg-subtle font-semibold">
-            Expressions{" "}
-            <span
-              className="text-fg-subtle hover:text-fg-muted cursor-help"
-              title="Each entry assigns one output schema field. Expressions can reference vars / input / outputs / artifacts / loop / run namespaces."
-            >
-              ?
-            </span>
+            Expressions
+            <HelpHint text="Each entry assigns one output schema field. Expressions can reference vars / input / outputs / artifacts / loop / run namespaces." />
           </span>
-          <button
-            type="button"
-            className="text-xs text-accent-text hover:text-accent-text"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-accent-text hover:text-accent-text"
             onClick={addExpr}
           >
             + Add
-          </button>
+          </Button>
         </div>
         {decl.expr.length === 0 ? (
           <p className="text-caption text-fg-subtle italic">
@@ -142,13 +128,14 @@ export default function ComputeForm({ decl }: Props) {
               >
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-caption text-fg-subtle font-mono">#{i}</span>
-                  <button
-                    type="button"
-                    className="text-caption text-danger hover:text-danger-fg"
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-danger hover:text-danger-fg"
                     onClick={() => removeExprAt(i)}
                   >
                     Remove
-                  </button>
+                  </Button>
                 </div>
                 {outputSchemaFields.length > 0 ? (
                   <SelectField

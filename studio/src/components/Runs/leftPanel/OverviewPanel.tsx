@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 
-import { EmptyState } from "@/components/ui";
 import { useNow } from "@/hooks/useNow";
 import { useRunMetrics } from "@/hooks/useRunMetrics";
 import { useRunStore } from "@/store/run";
@@ -13,6 +12,7 @@ import { BriefingSection } from "./overview/BriefingSection";
 import { ConfigurationSection } from "./overview/ConfigurationSection";
 import { OutcomeSection } from "./overview/OutcomeSection";
 import { AdvancedSection } from "./overview/AdvancedSection";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface OverviewPanelProps {
   runId: string;
@@ -49,7 +49,9 @@ export default function OverviewPanel({
   const metrics = useRunMetrics(nowMs);
 
   if (!run) {
-    return <EmptyState message="Loading…" />;
+    return (
+      <PanelLoading />
+    );
   }
 
   return (

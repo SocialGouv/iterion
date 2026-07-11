@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { ExternalLinkIcon } from "@radix-ui/react-icons";
 
 import { cancelRun } from "@/api/runs";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { useConfirm } from "@/hooks/useConfirm";
 import type { useWhatsNextSession } from "@/lib/whats-next/useWhatsNextSession";
 
@@ -64,12 +65,14 @@ export default function SessionHeader({
   return (
     <div className="px-4 py-3 border-b border-border-subtle flex items-baseline justify-between gap-3">
       {dialog}
-      <h2 className="text-label font-semibold text-fg-default">
+      <h2 className="text-label font-semibold text-fg-default inline-flex items-baseline gap-2">
         {bot.label}
         {session.runId && (
-          <span className="ml-2 text-caption text-fg-subtle font-mono font-normal">
-            {session.runId}
-          </span>
+          <CopyButton
+            value={session.runId}
+            label="copy run id"
+            className="font-normal"
+          />
         )}
       </h2>
       <div className="flex items-baseline gap-3">

@@ -1001,6 +1001,14 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		return err
 	}
 
+	// Launch-time budget overrides (studio Launch modal / API `budget`
+	// object). Applied BEFORE the cloud ceiling below so a tenant's
+	// override can only lower the effective caps, never pierce the
+	// platform ceiling.
+	if err := applyBudgetOverrides(wf, msg.Budget, r.cfg.Logger); err != nil {
+		return err
+	}
+
 	// Multitenant safeguard: clamp the workflow budget to the platform's hard
 	// ceiling so a tenant's bot — however large its declared budget, and
 	// especially an `as X(unbounded)` loop whose fuel falls back to
@@ -1851,6 +1859,38 @@ func loadWorkflow(msg *queue.RunMessage) (*ir.Workflow, error) {
 		return nil, fmt.Errorf("runner: compile IR: %d diagnostic(s)", len(cr.Diagnostics))
 	}
 	return cr.Workflow, nil
+}
+
+// applyBudgetOverrides folds launch-time budget overrides from the queue
+// message into the loaded workflow ("non-zero wins, zero inherits" — same
+// contract as the CLI flags and the local launch path). Must run before
+// applyCloudBudgetCeiling so the platform ceiling still clamps whatever the
+// tenant asked for. A malformed max_duration fails the run loudly rather
+// than silently running without the cap the caller asked for.
+func applyBudgetOverrides(wf *ir.Workflow, b *queue.BudgetOverrides, logger *iterlog.Logger) error {
+	if wf == nil || b == nil {
+		return nil
+	}
+	o := ir.BudgetOverrides{
+		MaxCostUSD:          b.MaxCostUSD,
+		MaxTokens:           b.MaxTokens,
+		MaxDuration:         b.MaxDuration,
+		MaxIterations:       b.MaxIterations,
+		MaxParallelBranches: b.MaxParallelBranches,
+	}
+	if o.IsZero() {
+		return nil
+	}
+	if err := o.Validate(); err != nil {
+		// The publisher validates at launch; reaching this means a
+		// hand-crafted or corrupted message — same treatment as a tenant
+		// mismatch: corrupted queue entry, fail the run.
+		return fmt.Errorf("runner: launch budget override: %w", err)
+	}
+	ir.ApplyBudgetOverrides(wf, o)
+	logger.Info("runner: launch budget overrides applied (cost=%.2f tokens=%d duration=%q iterations=%d branches=%d)",
+		o.MaxCostUSD, o.MaxTokens, o.MaxDuration, o.MaxIterations, o.MaxParallelBranches)
+	return nil
 }
 
 // applyCloudBudgetCeiling clamps wf.Budget to the platform ceiling read from

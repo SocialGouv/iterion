@@ -1,5 +1,6 @@
 name: review-pr
 display_name: Revi
+icon: 🔎
 version: 0.2.0
 description: |
   Read-only cross-family code reviewer. Reviews the working-tree diff

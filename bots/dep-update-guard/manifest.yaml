@@ -1,5 +1,6 @@
 name: dep-update-guard
 display_name: Vetty
+icon: 💂
 version: 2.0.0
 ## 2.0.0 — ADR-058 calibrated pass. The v1 `validate` agent (an LLM
 ## re-running the build and SELF-REPORTING stable:true) is replaced by
