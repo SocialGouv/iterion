@@ -292,12 +292,13 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		data["thinking_ms"] = step.ThinkingMs
 	}
 
-	// Always include response text in persisted events.
+	// Always include response text in persisted events. Thinking text is
+	// deliberately NOT persisted here: it is routinely 10-50 KB per step,
+	// events.jsonl is bounded to small payloads (big bodies live in
+	// sidecar blobs — see runview MaxEventsPerPage), and the run.log
+	// LogBlock below is the surface that renders it.
 	if step.Text != "" {
 		data["response_text"] = iterlog.Truncate(step.Text, maxFieldSize)
-	}
-	if step.Thinking != "" {
-		data["thinking"] = iterlog.Truncate(step.Thinking, maxFieldSize)
 	}
 
 	// At trace, include tool call details.

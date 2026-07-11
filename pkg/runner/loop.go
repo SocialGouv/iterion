@@ -1519,6 +1519,12 @@ func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) er
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	// Cancellation must reach git's helper processes (git-remote-https
+	// inherits our output pipes — killing only the parent leaves
+	// CombinedOutput blocked on the helper's copy), and WaitDelay is the
+	// final unblock if a helper still holds them after the group kill.
+	hardenGitCancel(cmd)
+	cmd.WaitDelay = 10 * time.Second
 	// Never prompt for credentials (fail fast instead of hanging), and ignore
 	// any host-level git config in the runner image.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")

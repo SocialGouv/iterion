@@ -17,9 +17,10 @@ They appear on four surfaces:
   counts are known, the metrics-only line remains
   (`[node#iter/claw] step N thinking: ~T tok, Dms`).
 - **`events.jsonl`** — `thinking_ms` / `thinking_tokens` keys on
-  `llm_step_finished` events (plus a truncated `thinking` text key on the
-  claw path when content was captured), and `_thinking_ms` /
-  `_thinking_tokens` stamped on the node output of `node_finished`.
+  `llm_step_finished` events, and `_thinking_ms` / `_thinking_tokens` stamped
+  on the node output of `node_finished`. The thinking **text** is log-only
+  by design: events.jsonl stays bounded to small payloads (big bodies live
+  in sidecar blobs), and run.log is the surface that renders it.
 - **Studio** — the run-view `NodeDetailPanel` header (`🧠 ~T tok · Ds`).
 - **`iterion report`** — `Thinking Tokens` / `Thinking Time` rows in the
   metrics table.

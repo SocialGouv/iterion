@@ -10,24 +10,28 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// TestStoreEventHooks_ThinkingFoldsInRunLog proves a step's extended-thinking
-// text reaches both sinks: run.log as a foldable 🧠 LogBlock (header +
-// "│ "-indented body, the shape the studio's LogBlockRow collapses), and the
-// llm_step_finished event as data["thinking"].
-func TestStoreEventHooks_ThinkingFoldsInRunLog(t *testing.T) {
+// newThinkingHooks builds store-backed event hooks whose run.log output is
+// captured in the returned buffer.
+func newThinkingHooks(t *testing.T, runID string) (EventHooks, *bytes.Buffer) {
+	t.Helper()
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	ctx := context.Background()
-	const runID = "run-thinking"
-	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+	if _, err := st.CreateRun(context.Background(), runID, "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-
 	var logBuf bytes.Buffer
 	logger := iterlog.New(iterlog.LevelInfo, &logBuf)
-	hooks := NewStoreEventHooks(ctx, st, runID, logger, nil)
+	return NewStoreEventHooks(context.Background(), st, runID, logger, nil), &logBuf
+}
+
+// TestStoreEventHooks_ThinkingFoldsInRunLog proves a step's extended-thinking
+// text reaches run.log as a foldable 🧠 LogBlock (header + "│ "-indented
+// body, the shape the studio's LogBlockRow collapses). The text is log-only
+// by design — events.jsonl stays bounded to small payloads.
+func TestStoreEventHooks_ThinkingFoldsInRunLog(t *testing.T) {
+	hooks, logBuf := newThinkingHooks(t, "run-thinking")
 
 	const thinking = "Let me reason about this carefully."
 	hooks.OnLLMStepFinish("n1", LLMStepInfo{
@@ -44,41 +48,12 @@ func TestStoreEventHooks_ThinkingFoldsInRunLog(t *testing.T) {
 	if !strings.Contains(out, "│ "+thinking) {
 		t.Errorf("run.log missing folded thinking body (block-indent continuation):\n%s", out)
 	}
-
-	evts, err := st.LoadEvents(ctx, runID)
-	if err != nil {
-		t.Fatalf("LoadEvents: %v", err)
-	}
-	found := false
-	for _, ev := range evts {
-		if ev.Type == store.EventLLMStepFinished {
-			found = true
-			if got, _ := ev.Data["thinking"].(string); got != thinking {
-				t.Errorf("event data[thinking] = %q, want %q", got, thinking)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("no llm_step_finished event persisted")
-	}
 }
 
 // Without thinking text, the metrics-only 🧠 line must remain (fallback for
 // backends that report counts but not content).
 func TestStoreEventHooks_ThinkingMetricsOnlyFallback(t *testing.T) {
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	ctx := context.Background()
-	const runID = "run-thinking-metrics"
-	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
-		t.Fatalf("CreateRun: %v", err)
-	}
-
-	var logBuf bytes.Buffer
-	logger := iterlog.New(iterlog.LevelInfo, &logBuf)
-	hooks := NewStoreEventHooks(ctx, st, runID, logger, nil)
+	hooks, logBuf := newThinkingHooks(t, "run-thinking-metrics")
 
 	hooks.OnLLMStepFinish("n1", LLMStepInfo{Number: 2, ReasoningTokens: 9, ThinkingMs: 50})
 

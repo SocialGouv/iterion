@@ -79,7 +79,7 @@ func reasoningSummaryLevel() string {
 	switch v := os.Getenv("CLAW_OPENAI_REASONING_SUMMARY"); v {
 	case "":
 		return "auto"
-	case "off", "none", "0":
+	case "off":
 		return ""
 	default:
 		return v
@@ -504,11 +504,10 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		outputTokens    int
 	)
 
-	closeText := func(itemID string) bool {
-		if itemID == "" {
-			return true
-		}
-		t := textByItem[itemID]
+	// closeBlock emits content_block_stop for a started, not-yet-closed
+	// block. Shared by the text and reasoning close paths and the
+	// post-loop sweeps so the stop-guard state machine exists once.
+	closeBlock := func(t *pendingText) bool {
 		if t == nil || !t.started || t.closed {
 			return true
 		}
@@ -516,20 +515,24 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		return send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex})
 	}
 
-	// openReasoning starts (once) the "thinking" content block for a
-	// reasoning item and returns it. Emission failure is reported through
-	// the ok result, mirroring send().
-	openReasoning := func(itemID string) (*pendingText, bool) {
-		r, exists := reasonByItem[itemID]
-		if !exists {
-			r = &pendingText{blockIndex: nextBlockIndex}
-			nextBlockIndex++
-			reasonByItem[itemID] = r
+	closeText := func(itemID string) bool {
+		if itemID == "" {
+			return true
 		}
-		if r.started || r.closed {
+		return closeBlock(textByItem[itemID])
+	}
+
+	// openReasoning starts (once) the "thinking" content block for a
+	// reasoning item and returns it. Entries are created only here and
+	// start immediately, so a second call is a pure lookup. Emission
+	// failure is reported through the ok result, mirroring send().
+	openReasoning := func(itemID string) (*pendingText, bool) {
+		if r := reasonByItem[itemID]; r != nil {
 			return r, true
 		}
-		r.started = true
+		r := &pendingText{blockIndex: nextBlockIndex, started: true}
+		nextBlockIndex++
+		reasonByItem[itemID] = r
 		reasonOpenOrder = append(reasonOpenOrder, itemID)
 		return r, send(api.StreamEvent{
 			Type:         api.EventContentBlockStart,
@@ -538,14 +541,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		})
 	}
 
-	closeReasoning := func(itemID string) bool {
-		r := reasonByItem[itemID]
-		if r == nil || !r.started || r.closed {
-			return true
-		}
-		r.closed = true
-		return send(api.StreamEvent{Type: api.EventContentBlockStop, Index: r.blockIndex})
-	}
+	closeReasoning := func(itemID string) bool { return closeBlock(reasonByItem[itemID]) }
 
 	for scanner.Scan() {
 		wd.Touch() // any received line (incl. comments/keepalives) = stream alive
@@ -878,12 +874,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		}
 	}
 	for _, id := range textOpenOrder {
-		t := textByItem[id]
-		if t == nil || !t.started || t.closed {
-			continue
-		}
-		t.closed = true
-		if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex}) {
+		if !closeBlock(textByItem[id]) {
 			return
 		}
 	}
