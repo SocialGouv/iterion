@@ -81,6 +81,7 @@ func (s *Server) handleBotsGet(w http.ResponseWriter, r *http.Request) {
 // history — out of scope).
 type botUpdateRequest struct {
 	DisplayName *string   `json:"display_name,omitempty"`
+	Icon        *string   `json:"icon,omitempty"`
 	Description *string   `json:"description,omitempty"`
 	Author      *string   `json:"author,omitempty"`
 	Version     *string   `json:"version,omitempty"`
@@ -125,6 +126,7 @@ func (s *Server) handleBotsPut(w http.ResponseWriter, r *http.Request) {
 	manifestPath := filepath.Join(entry.Path, "manifest.yaml")
 	patch := bundle.ManifestPatch{
 		DisplayName: req.DisplayName,
+		Icon:        req.Icon,
 		Description: req.Description,
 		Author:      req.Author,
 		Version:     req.Version,

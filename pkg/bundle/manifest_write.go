@@ -28,7 +28,11 @@ import (
 type ManifestPatch struct {
 	Name        *string
 	DisplayName *string
-	Version     *string
+	// Icon sets the manifest's emoji identity; the empty string clears it
+	// while keeping the key. Validated (trim + byte cap) by the
+	// decodeManifest pass WriteManifest runs before committing.
+	Icon    *string
+	Version *string
 	Description *string
 	Author      *string
 	WhenToUse   *string
@@ -91,6 +95,11 @@ func WriteManifest(path string, patch ManifestPatch) (*Manifest, error) {
 	}
 	if patch.DisplayName != nil {
 		if err := setMapField(root, "display_name", *patch.DisplayName, false, ""); err != nil {
+			return nil, err
+		}
+	}
+	if patch.Icon != nil {
+		if err := setMapField(root, "icon", *patch.Icon, false, "display_name"); err != nil {
 			return nil, err
 		}
 	}
