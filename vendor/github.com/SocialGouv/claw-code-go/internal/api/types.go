@@ -294,6 +294,12 @@ type MessageDelta struct {
 // UsageDelta contains token usage info.
 type UsageDelta struct {
 	OutputTokens int `json:"output_tokens"`
+	// OutputTokensDetails carries Anthropic's exact billed breakdown.
+	// ThinkingTokens counts the raw internal reasoning (always the full
+	// amount regardless of thinking.display); 0 when the API omits it.
+	OutputTokensDetails struct {
+		ThinkingTokens int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 // ContentBlockInfo holds info about a starting content block.
