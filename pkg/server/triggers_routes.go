@@ -2,7 +2,9 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +26,109 @@ func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("PUT /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleUpdateTrigger)))
 	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTrigger)))
 	s.mux.Handle("POST /api/v1/triggers/emit", s.requireAuth(http.HandlerFunc(s.handleEmitTrigger)))
+	s.mux.Handle("POST /api/v1/bots/{name}/triggers/from-invocation", s.requireAuth(http.HandlerFunc(s.handleTriggerFromInvocation)))
 }
+
+// triggerFromInvocationReq selects one of the bot's manifest-declared
+// invocations by index. Cron optionally overrides a schedule invocation's
+// suggested_cron (the bot home lets the operator retune before enabling).
+type triggerFromInvocationReq struct {
+	Index int    `json:"index"`
+	Cron  string `json:"cron,omitempty"`
+}
+
+// handleTriggerFromInvocation is the bot home's one-click "enable this
+// trigger": it derives a trigger.Subscription from the bot's manifest
+// invocation via the same From* constructors the provisioning paths use
+// (single source of truth — the derivation never lives client-side).
+// Duplicate protection: an existing bot-home subscription for the same
+// bot+kind is a 409 carrying the existing id.
+func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	entry, ok, err := s.findBot(name)
+	if err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !ok {
+		dispatcher.WriteErr(w, http.StatusNotFound, fmt.Errorf("bots: %q not found", name))
+		return
+	}
+	var req triggerFromInvocationReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Index < 0 || req.Index >= len(entry.Invocations) {
+		dispatcher.WriteErr(w, http.StatusBadRequest,
+			fmt.Errorf("invocation index %d out of range (bot declares %d)", req.Index, len(entry.Invocations)))
+		return
+	}
+	inv := entry.Invocations[req.Index]
+	if req.Cron != "" {
+		if inv.Kind != bundle.InvocationKindSchedule || inv.Schedule == nil {
+			dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("cron override only applies to a schedule invocation"))
+			return
+		}
+		if fields := strings.Fields(req.Cron); len(fields) != 5 {
+			dispatcher.WriteErr(w, http.StatusBadRequest, fmt.Errorf("cron %q must be a 5-field expression", req.Cron))
+			return
+		}
+		schedule := *inv.Schedule
+		schedule.SuggestedCron = req.Cron
+		inv.Schedule = &schedule
+	}
+
+	now := time.Now().UTC()
+	id := uuid.NewString()
+	var (
+		sub     trigger.Subscription
+		derived bool
+	)
+	switch inv.Kind {
+	case bundle.InvocationKindSchedule:
+		sub, derived = trigger.FromScheduleInvocation(id, "", "", entry.Name, botHomeTriggerOrigin, inv, now)
+		if !derived {
+			dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("schedule invocation has no suggested_cron — pass cron explicitly"))
+			return
+		}
+	case bundle.InvocationKindBoard:
+		sub, derived = trigger.FromBoardInvocation(id, "", "", entry.Name, botHomeTriggerOrigin, inv, now)
+		if !derived {
+			dispatcher.WriteErr(w, http.StatusBadRequest,
+				errors.New("board invocation has no board: block — it is a plain dispatcher target, nothing to subscribe"))
+			return
+		}
+	default:
+		dispatcher.WriteErr(w, http.StatusBadRequest,
+			fmt.Errorf("invocation kind %q is not enabled from here — wire it through the forge integration flow", inv.Kind))
+		return
+	}
+
+	existing, err := s.cfg.TriggerStore.ListByBot(r.Context(), "", entry.Name)
+	if err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, e := range existing {
+		if e.Origin == botHomeTriggerOrigin && e.Invocation == sub.Invocation {
+			dispatcher.WriteJSON(w, http.StatusConflict, map[string]any{
+				"error":           fmt.Sprintf("a %s trigger from this bot's manifest already exists", sub.Invocation),
+				"subscription_id": e.ID,
+			})
+			return
+		}
+	}
+	if err := s.cfg.TriggerStore.Create(r.Context(), sub); err != nil {
+		dispatcher.WriteErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	dispatcher.WriteJSON(w, http.StatusCreated, sub)
+}
+
+// botHomeTriggerOrigin marks subscriptions created by the bot home's
+// one-click invocation enablement — the dedup key distinguishing them
+// from hand-authored ("operator") subscriptions.
+const botHomeTriggerOrigin = "bot-home"
 
 // maxEmitVarsBytes caps the cumulative size of the custom-emit Vars map.
 // The endpoint is authenticated, but a buggy/abusive integration could

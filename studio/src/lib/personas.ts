@@ -70,3 +70,18 @@ export function botIdentity(name: string | undefined | null): BotIdentity {
     color: FALLBACK_COLORS[h % FALLBACK_COLORS.length] ?? "text-persona-sky",
   };
 }
+
+/**
+ * botVisual resolves a bot's visual identity from a registry entry.
+ * Emoji precedence: the manifest `icon` (entry.icon, operator-authored)
+ * wins over the built-in BOT_IDENTITY map, which wins over the generic
+ * hash fallback. The accent COLOUR always comes from the persona/hash
+ * path (`botIdentity`) — a manifest icon carries no colour, so the chip
+ * hue stays stable whether or not an icon is set.
+ */
+export function botVisual(entry: { name: string; icon?: string }): BotIdentity {
+  const base = botIdentity(entry.name);
+  const icon = entry.icon?.trim();
+  if (icon) return { emoji: icon, color: base.color };
+  return base;
+}

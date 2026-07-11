@@ -69,6 +69,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 			return nil, fmt.Errorf("branch_name: %w", err)
 		}
 	}
+	// Validate budget overrides up front so a malformed max_duration fails
+	// the launch synchronously instead of being silently dropped by
+	// newSharedBudget. Mirrors pkg/cli/run.go's pre-flight Validate.
+	if spec.Budget != nil {
+		if err := spec.Budget.Validate(); err != nil {
+			return nil, fmt.Errorf("budget: %w", err)
+		}
+	}
 	runID := spec.RunID
 	if runID == "" {
 		generated, err := store.GenerateRunID()
@@ -87,6 +95,13 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// instead of reading from disk — the server pod has no shared
 	// filesystem with the client.
 	if s.publisher != nil {
+		// The runner pod re-compiles the workflow from the wire payload and
+		// applies its own cloud budget ceiling; a launch-time override has
+		// no seam to ride there yet. Reject loudly rather than queue a run
+		// whose caps silently ignore what the caller asked for.
+		if spec.Budget != nil && !spec.Budget.IsZero() {
+			return nil, errors.New("runview: budget overrides are not supported for queued cloud runs yet")
+		}
 		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 		if err != nil {
 			return nil, err
@@ -110,6 +125,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 	if err != nil {
 		return nil, err
+	}
+
+	// Apply budget overrides AFTER compile but BEFORE BuildExecutor — the
+	// executor snapshots Budget at construction, so a later mutation would
+	// be invisible to the model/cost layer. Same ordering contract as the
+	// CLI path (pkg/cli/run.go).
+	if spec.Budget != nil {
+		ir.ApplyBudgetOverrides(wf, *spec.Budget)
 	}
 
 	_, runLogger := s.prepareRunLog(runID)

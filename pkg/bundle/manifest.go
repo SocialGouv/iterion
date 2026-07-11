@@ -15,6 +15,11 @@ import (
 // `Compat` map to avoid forcing a version bump on every new key.
 const CurrentManifestSchema = 1
 
+// maxIconLen caps the manifest `icon:` value. Generous enough for any
+// multi-codepoint emoji sequence (ZWJ families run ~25 bytes) while
+// rejecting prose.
+const maxIconLen = 32
+
 // Manifest is the parsed `manifest.yaml` shipped at the bundle root.
 // All fields are optional except SchemaVersion, which defaults to 1 when
 // omitted (treated as "explicit v1"). Future minor extensions add to
@@ -34,6 +39,13 @@ type Manifest struct {
 	// instantly recognisable by persona, not just by technical name.
 	// Empty falls back to the Name + WorkflowName pair as before.
 	DisplayName string `yaml:"display_name,omitempty"`
+
+	// Icon is a short emoji identity for the bot (e.g. "🦉"), surfaced
+	// on catalog cards, the bot home page, and the launch modal. Kept a
+	// free string (an emoji may be multi-codepoint) but capped at
+	// maxIconLen bytes at parse time so a manifest can't smuggle prose
+	// into it. Empty falls back to the studio's persona/hash identity.
+	Icon string `yaml:"icon,omitempty"`
 
 	// Version is a free-form bundle version string (semver or any
 	// other scheme — the engine does not parse it).
@@ -521,6 +533,13 @@ func LoadManifest(path string) (*Manifest, error) {
 	return decodeManifest(body, path)
 }
 
+// DecodeManifest parses + validates manifest bytes without touching the
+// filesystem — the seam generators (pkg/botscaffold) use to hold their
+// rendered manifest to the same bar as a loaded one before writing it.
+func DecodeManifest(body []byte, srcLabel string) (*Manifest, error) {
+	return decodeManifest(body, srcLabel)
+}
+
 // decodeManifest parses + validates manifest bytes (strict unmarshal,
 // schema version, attachment-path safety). srcLabel names the source in
 // errors. Shared by LoadManifest and WriteManifest's pre-write
@@ -539,6 +558,10 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 			"bundle: manifest schema_version %d not supported by this iterion build (expected %d) — upgrade iterion or downgrade the bundle",
 			m.SchemaVersion, CurrentManifestSchema,
 		)
+	}
+	m.Icon = strings.TrimSpace(m.Icon)
+	if len(m.Icon) > maxIconLen {
+		return nil, fmt.Errorf("bundle: manifest %s: icon %q exceeds %d bytes — expected a short emoji", srcLabel, m.Icon, maxIconLen)
 	}
 	// Every attachment value is later joined to the bundle's attachments/
 	// directory and opened as a file by the runtime. Reject absolute or

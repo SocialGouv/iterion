@@ -68,11 +68,14 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 	return nil
 }
 
-// List returns every entry matching q, sorted by Installs desc, then
-// Slug asc — same shape as JSONStore.List. The viewer's scope/status
-// reach (q.Viewer) is composed into the filter so the database, not the
-// handler, enforces visibility.
+// List returns every entry matching q, ordered per q.Sort (default:
+// Installs desc, then Slug asc) — same shape as JSONStore.List. The
+// viewer's scope/status reach (q.Viewer) is composed into the filter so
+// the database, not the handler, enforces visibility.
 func (s *MongoStore) List(ctx context.Context, q Query) ([]Entry, error) {
+	if err := ValidateSort(q.Sort); err != nil {
+		return nil, err
+	}
 	and := bson.A{}
 	if t := q.Tag; t != "" {
 		and = append(and, bson.M{"tags": t})
@@ -111,9 +114,46 @@ func (s *MongoStore) List(ctx context.Context, q Query) ([]Entry, error) {
 	if len(and) > 0 {
 		filter["$and"] = and
 	}
-	cur, err := s.col.Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "installs", Value: -1}, {Key: "_id", Value: 1}}))
+	if q.Sort == SortName {
+		return s.listSortedByName(ctx, filter)
+	}
+	var sortSpec bson.D
+	switch q.Sort {
+	case SortRecent:
+		sortSpec = bson.D{{Key: "updated_at", Value: -1}, {Key: "_id", Value: 1}}
+	default: // "" | SortPopular
+		sortSpec = bson.D{{Key: "installs", Value: -1}, {Key: "_id", Value: 1}}
+	}
+	cur, err := s.col.Find(ctx, filter, options.Find().SetSort(sortSpec))
 	if err != nil {
 		return nil, fmt.Errorf("marketplace: find: %w", err)
+	}
+	defer cur.Close(ctx)
+	var out []Entry
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("marketplace: decode: %w", err)
+	}
+	return out, nil
+}
+
+// listSortedByName serves SortName via an aggregation: the comparison key
+// is DisplayName-or-Name lowercased (JSONStore.sortNameOf parity), which a
+// plain Find sort spec can't express. Slug (_id) breaks ties.
+func (s *MongoStore) listSortedByName(ctx context.Context, filter bson.M) ([]Entry, error) {
+	displayName := bson.M{"$ifNull": bson.A{"$display_name", ""}}
+	sortName := bson.M{"$toLower": bson.M{"$cond": bson.A{
+		bson.M{"$eq": bson.A{displayName, ""}},
+		"$name",
+		"$display_name",
+	}}}
+	cur, err := s.col.Aggregate(ctx, bson.A{
+		bson.M{"$match": filter},
+		bson.M{"$addFields": bson.M{"_sort_name": sortName}},
+		bson.M{"$sort": bson.D{{Key: "_sort_name", Value: 1}, {Key: "_id", Value: 1}}},
+		bson.M{"$unset": "_sort_name"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marketplace: name-sorted find: %w", err)
 	}
 	defer cur.Close(ctx)
 	var out []Entry
@@ -145,8 +185,11 @@ func (s *MongoStore) Upsert(ctx context.Context, e Entry) error {
 		return errors.New("marketplace: slug required")
 	}
 	set := bson.M{
+		"kind":          string(e.Kind),
+		"categories":    e.Categories,
 		"name":          e.Name,
 		"display_name":  e.DisplayName,
+		"icon":          e.Icon,
 		"description":   e.Description,
 		"author":        e.Author,
 		"tags":          e.Tags,

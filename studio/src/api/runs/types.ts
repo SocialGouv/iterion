@@ -376,6 +376,10 @@ export interface ListRunsParams {
   // least one node_started for this IR node id. Used by the studio's
   // "this node was touched by N runs" chip on hover/select.
   node?: string;
+  // Bot filters runs to a bundle name (case-insensitive server-side,
+  // matches RunSummary.bundle_name). Powers the bot home's "recent
+  // runs" card. Wire name: ?bot=.
+  bot?: string;
 }
 
 // One repository (project_path) that has runs, with a per-repo count.
@@ -541,6 +545,17 @@ export interface CreateRunRequest {
   // pauses for human approval on any tool not allow-listed; "deny" hard-
   // blocks it. See docs/permissions.md.
   permission?: string;
+  // Run-level mono/dual review-topology override ("auto" | "mono" |
+  // "dual") for bots that declare a `review_mode` var. Omitted/"auto"
+  // resolves from the providers detected at launch. See
+  // pkg/reviewtopology.
+  review_mode?: string;
+  // Run-level budget-cap overrides — the HTTP twin of the CLI --max-*
+  // flags. Non-zero fields win over the workflow's `budget:` block;
+  // zero/omitted fields inherit. max_duration is a Go duration string
+  // ("2h", "1h30m"), validated server-side (bad value → 400). Omit the
+  // whole object when nothing is overridden.
+  budget?: RunBudget;
   // Per-node/-group model+backend overrides (Launch dropdowns). Each entry
   // targets nodes by selector (node id, id glob "reviewer_*", or kind
   // keyword "agent"|"judge") and wins over the node's DSL backend:/model:.

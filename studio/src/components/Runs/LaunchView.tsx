@@ -22,6 +22,12 @@ import { defaultStringFor } from "@/components/shared/VarFieldInput";
 import { isVarMissing } from "@/lib/varValidation";
 
 import AttachmentsSection from "./launchView/AttachmentsSection";
+import BudgetSection from "./launchView/BudgetSection";
+import {
+  buildBudgetPayload,
+  emptyBudgetFieldValues,
+  type BudgetFieldValues,
+} from "./launchView/budgetPayload";
 import LaunchBar from "./launchView/LaunchBar";
 import ModelOverridesSection, {
   type LLMNode,
@@ -110,6 +116,19 @@ export default function LaunchView() {
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
+  // Mono/dual review-topology override ("" = auto: resolve from the
+  // providers detected at launch). Only sent when explicitly mono/dual;
+  // ignored by bots that don't declare a `review_mode` var.
+  const [reviewModeOverride, setReviewModeOverride] = useState<string>("");
+  // Per-run budget-cap overrides (cost / tokens / duration / iterations /
+  // parallel branches). Raw input strings; empty = inherit the bot's
+  // `budget:` block. Folded into createRun.budget via buildBudgetPayload.
+  const [budgetFields, setBudgetFields] = useState<BudgetFieldValues>(
+    emptyBudgetFieldValues,
+  );
+  // Opens the collapsible budget-overrides block. Default collapsed —
+  // most runs inherit the bot's budget untouched.
+  const [showBudget, setShowBudget] = useState(false);
   // Per-node model/backend overrides, keyed by node name. Empty fields =
   // inherit the bot's DSL default. Folded into createRun.model_overrides.
   const [modelOverrides, setModelOverrides] = useState<Record<string, NodeOverride>>({});
@@ -373,6 +392,11 @@ export default function LaunchView() {
         backend: backendOverride || undefined,
         compress: compressOverride || undefined,
         permission: permissionOverride || undefined,
+        review_mode:
+          reviewModeOverride && reviewModeOverride !== "auto"
+            ? reviewModeOverride
+            : undefined,
+        budget: buildBudgetPayload(budgetFields),
         model_overrides: (() => {
           const entries = Object.entries(modelOverrides)
             .map(([selector, o]) => ({
@@ -542,10 +566,12 @@ export default function LaunchView() {
               backendOverride={backendOverride}
               compressOverride={compressOverride}
               permissionOverride={permissionOverride}
+              reviewModeOverride={reviewModeOverride}
               backendReport={backendReport}
               onBackendChange={setBackendOverride}
               onCompressChange={setCompressOverride}
               onPermissionChange={setPermissionOverride}
+              onReviewModeChange={setReviewModeOverride}
             />
             <ModelOverridesSection
               nodes={llmNodes}
@@ -556,6 +582,14 @@ export default function LaunchView() {
                   ...prev,
                   [name]: { ...prev[name], ...patch },
                 }))
+              }
+            />
+            <BudgetSection
+              show={showBudget}
+              values={budgetFields}
+              onToggle={() => setShowBudget((v) => !v)}
+              onChange={(patch) =>
+                setBudgetFields((prev) => ({ ...prev, ...patch }))
               }
             />
             <WorktreeFinalizationSection

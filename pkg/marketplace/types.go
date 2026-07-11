@@ -12,6 +12,7 @@ package marketplace
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // Scope controls who may browse an entry once it is approved. The zero
@@ -89,6 +90,10 @@ type Entry struct {
 
 	// DisplayName is the operator-facing label (manifest.display_name).
 	DisplayName string `json:"display_name,omitempty" bson:"display_name,omitempty"`
+
+	// Icon is an optional emoji / short glyph shown on the marketplace
+	// card. Free-form; the studio renders it verbatim.
+	Icon string `json:"icon,omitempty" bson:"icon,omitempty"`
 
 	// Description is the one-line summary shown on the card.
 	Description string `json:"description,omitempty" bson:"description,omitempty"`
@@ -301,10 +306,35 @@ type Query struct {
 	// Kind, when set, restricts the listing to entries of that artifact
 	// kind (bot | plugin), compared via EffectiveKind. Empty = any.
 	Kind Kind
+	// Sort selects the listing order: "" | "popular" | "recent" | "name".
+	// "" means "popular" (installs desc — the historical behavior);
+	// "recent" is UpdatedAt desc; "name" is DisplayName-or-Name asc,
+	// case-insensitive. Callers validate with ValidateSort (unknown → 400).
+	Sort string
 	// Viewer scopes the listing to what the requesting principal may
 	// see (see Visible). The zero value (Enforce false) returns every
 	// entry — the local single-tenant default.
 	Viewer ViewerContext
+}
+
+// Sort values accepted by Query.Sort. The empty string reads as
+// SortPopular (the historical default order).
+const (
+	SortPopular = "popular"
+	SortRecent  = "recent"
+	SortName    = "name"
+)
+
+// ValidateSort rejects an unknown Query.Sort value. HTTP handlers call it
+// on the raw query parameter and surface the error as a 400; the stores
+// also call it so an unvalidated value fails loudly instead of silently
+// falling back to the default order.
+func ValidateSort(s string) error {
+	switch s {
+	case "", SortPopular, SortRecent, SortName:
+		return nil
+	}
+	return fmt.Errorf("marketplace: unknown sort %q (want %s|%s|%s)", s, SortPopular, SortRecent, SortName)
 }
 
 // Store is the marketplace persistence interface. Two implementations

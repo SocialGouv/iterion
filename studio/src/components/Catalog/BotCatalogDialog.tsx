@@ -2,10 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
 import type { BotEntryWithSchema } from "@/api/bots";
-import { installBot, uploadBotBundle } from "@/api/bots";
+import {
+  importBotFromRepo,
+  importBotzFile,
+  importSuccessMessage,
+} from "@/components/Catalog/importActions";
 import { useAuth } from "@/auth/AuthContext";
 import { Button, Dialog, Input } from "@/components/ui";
-import { botIdentity } from "@/lib/personas";
+import { botVisual } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
@@ -60,11 +64,8 @@ export function BotCatalogDialog({
     if (!file) return;
     setUploadingBotz(true);
     try {
-      const res = await uploadBotBundle(file, { force: true });
-      addToast(
-        `Imported ${res.name} (${res.presets} presets, ${res.skills} skills) → ${res.installed_path}`,
-        "success",
-      );
+      const res = await importBotzFile(file);
+      addToast(importSuccessMessage(res), "success");
       await refetch();
     } catch (err) {
       addToast(err instanceof Error ? err.message : "Import failed", "error");
@@ -78,15 +79,8 @@ export function BotCatalogDialog({
     if (!url) return;
     setImporting(true);
     try {
-      const res = await installBot({
-        url,
-        ref: importRef.trim() || undefined,
-        path: importPath.trim() || undefined,
-      });
-      addToast(
-        `Imported ${res.name} (${res.presets} presets, ${res.skills} skills) → ${res.installed_path}`,
-        "success",
-      );
+      const res = await importBotFromRepo({ url, ref: importRef, path: importPath });
+      addToast(importSuccessMessage(res), "success");
       setImportUrl("");
       setImportRef("");
       setImportPath("");
@@ -157,6 +151,16 @@ export function BotCatalogDialog({
             Import a bot from a repository or a <code className="text-fg-default">.botz</code> file
           </h3>
           <div className="flex items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                onOpenChange(false);
+                setLocation("/bots/new");
+              }}
+            >
+              New bot
+            </Button>
             <input
               ref={botzFileRef}
               type="file"
@@ -242,7 +246,7 @@ export function BotCatalogDialog({
         <ul className="space-y-0.5">
           {rows.map((b) => {
             const enabled = b.enabled !== false;
-            const identity = botIdentity(b.name);
+            const identity = botVisual(b);
             const label = b.display_name?.trim();
             const canEdit = bundleMainRel(b) !== null;
             return (
@@ -255,9 +259,17 @@ export function BotCatalogDialog({
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-1.5">
-                    <span className={`truncate text-sm font-medium ${identity.color}`}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onOpenChange(false);
+                        setLocation(`/bots/${encodeURIComponent(b.name)}`);
+                      }}
+                      title={`Open ${label || b.name}'s bot page`}
+                      className={`truncate text-sm font-medium hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent rounded ${identity.color}`}
+                    >
                       {label || b.name}
-                    </span>
+                    </button>
                     {label && (
                       <span className="shrink-0 truncate font-mono text-caption text-fg-subtle">
                         {b.name}

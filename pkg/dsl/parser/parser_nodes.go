@@ -102,6 +102,9 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 		if v := p.parseBool(); v != nil {
 			d.FullAccess = *v
 		}
+	case TokenImages:
+		p.expect(TokenColon)
+		d.Images = p.parseStringList()
 	case TokenMCP:
 		p.backup()
 		d.MCP = p.parseMCPConfigBlock()

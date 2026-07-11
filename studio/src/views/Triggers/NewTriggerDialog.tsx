@@ -45,11 +45,23 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
+  /** Pre-fills the Bot field when opened from a bot-scoped surface (the
+   *  bot home's "Add trigger…"). Omitted = current behaviour (empty). */
+  defaultBotId?: string;
 }
 
-export default function NewTriggerDialog({ open, onOpenChange, onCreated }: Props) {
+export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaultBotId }: Props) {
   const [type, setType] = useState<TriggerType>("board");
-  const [botId, setBotId] = useState("");
+  const [botId, setBotId] = useState(defaultBotId ?? "");
+
+  // Re-seed the bot field each time the dialog opens so a stale edit
+  // from a previous open doesn't leak into a bot-scoped dialog.
+  // Adjust-state-during-render (not an effect) per the React guidance.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open && defaultBotId) setBotId(defaultBotId);
+  }
   const [repo, setRepo] = useState("");
   const [cron, setCron] = useState("0 2 * * *");
   const [kinds, setKinds] = useState("");

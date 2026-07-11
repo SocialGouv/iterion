@@ -461,6 +461,7 @@ type LLMDecl struct {
 	Timeout           string           // per-node wall-clock timeout as a Go duration ("20m", "1200s"); empty = none; may contain ${VAR} env refs
 	Readonly          bool             // when true, node is not considered mutating for workspace safety
 	FullAccess        bool             // when true, lift the codex backend sandbox to danger-full-access (network + out-of-workspace writes); off by default; other backends ignore it
+	Images            []string         // node-level `images:` — input image paths (templated) forwarded to the codex backend as `-i` for image-to-image; other backends ignore it
 	Interaction       InteractionMode  // interaction handling (default none)
 	InteractionPrompt string           // prompt reference guiding LLM for llm_or_human decisions
 	InteractionModel  string           // model for llm/llm_or_human modes (fallback to Model)

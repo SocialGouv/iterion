@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/clock"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -97,6 +98,15 @@ type LaunchSpec struct {
 	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
 	// model_override.go.
 	ModelOverrides []ModelOverrideEntry
+	// Budget carries launch-time budget-cap overrides for the workflow's
+	// `budget:` block — the HTTP equivalent of the CLI --max-cost-usd /
+	// --max-tokens / --max-duration / --max-iterations /
+	// --max-parallel-branches flags. Applied to the compiled workflow after
+	// recipe/preset resolution and before the executor snapshots Budget
+	// (non-zero field wins, zero inherits — see ir.ApplyBudgetOverrides).
+	// The detached path forwards it as the CLI flags; the queued cloud path
+	// does not support it yet and rejects a non-zero Budget explicitly.
+	Budget *ir.BudgetOverrides
 	// ParentRunID, ShardIndex, ShardCount, ShardLabel are set when a
 	// parent run dispatches this as a shard child (see Cap. 3 in
 	// docs/security-bots-distributed.md). The cloudpublisher copies
@@ -275,8 +285,12 @@ type ListFilter struct {
 	Status   store.RunStatus // exact match
 	Workflow string          // exact match on WorkflowName
 	Repo     string          // exact match on ProjectPath (cloud repo slug)
-	Since    time.Time       // UpdatedAt >= Since
-	Limit    int             // 0 = no limit
+	// Bundle filters runs to those whose resolved bundle name (persisted
+	// BundleName, falling back to basename(BundlePath) minus ".botz" —
+	// see resolveBundleName) matches case-insensitively. Wire name: ?bot=.
+	Bundle string
+	Since  time.Time // UpdatedAt >= Since
+	Limit  int       // 0 = no limit
 	// Node filters runs to those whose persisted events include at
 	// least one node_started for this IR node ID. Used by the studio
 	// to surface "this node was touched by N runs" without scanning

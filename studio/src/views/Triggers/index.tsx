@@ -2,57 +2,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button } from "@/components/ui/Button";
-import { Badge } from "@/components/ui/Badge";
-import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Spinner } from "@/components/ui/Spinner";
-import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
-import { useConfirm } from "@/hooks/useConfirm";
-import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { errorMessage } from "@/lib/errorHints";
-import { humanizeCron } from "@/lib/humanizeCron";
 import {
   listTriggers,
-  deleteTrigger,
-  setTriggerEnabled,
   FeatureUnavailableError,
   type TriggerSubscription,
 } from "@/api/triggers";
 import NewTriggerDialog from "./NewTriggerDialog";
-
-// sourceTone maps a trigger source to a Badge tone so the table reads at a
-// glance (board promotes, run chains, schedule/cron, forge observational,
-// custom ingress).
-function sourceLabel(sub: TriggerSubscription): string {
-  const s = sub.match?.sources?.[0];
-  if (s) return s;
-  // Derive from invocation when the matcher doesn't pin a source.
-  return sub.invocation === "schedule" ? "schedule" : sub.invocation === "board" ? "board" : "—";
-}
-
-function matchSummary(sub: TriggerSubscription): string {
-  const m = sub.match ?? {};
-  const parts: string[] = [];
-  if (sub.cron) {
-    const human = humanizeCron(sub.cron);
-    parts.push(`cron ${sub.cron}${human ? ` (${human})` : ""}`);
-  }
-  if (m.kinds?.length) parts.push(m.kinds.join("/"));
-  if (m.subject_states?.length) parts.push(`state ∈ {${m.subject_states.join(",")}}`);
-  if (m.labels?.length) parts.push(`labels ⊇ {${m.labels.join(",")}}`);
-  if (m.actions?.length) parts.push(`action ∈ {${m.actions.join(",")}}`);
-  if (m.authors?.length) parts.push(`author ∈ {${m.authors.join(",")}}`);
-  return parts.join(" · ") || "any";
-}
+import TriggerList from "./TriggerList";
 
 export default function TriggersView() {
   const [subs, setSubs] = useState<TriggerSubscription[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [creating, setCreating] = useState(false);
-  const { confirm, dialog } = useConfirm();
-  const action = useAsyncAction();
 
   const reload = useCallback(async () => {
     try {
@@ -81,29 +47,6 @@ export default function TriggersView() {
     ),
   });
 
-  const onToggle = useCallback(
-    async (sub: TriggerSubscription, enabled: boolean) => {
-      await action.run(() => setTriggerEnabled(sub, enabled));
-      void reload();
-    },
-    [action, reload],
-  );
-
-  const onDelete = useCallback(
-    async (sub: TriggerSubscription) => {
-      const ok = await confirm({
-        title: "Delete trigger",
-        message: `Stop launching ${sub.bot_id} from this ${sub.invocation} trigger?`,
-        confirmLabel: "Delete",
-        confirmVariant: "danger",
-      });
-      if (!ok) return;
-      await action.run(() => deleteTrigger(sub.id));
-      void reload();
-    },
-    [action, confirm, reload],
-  );
-
   const rows = useMemo(() => subs ?? [], [subs]);
 
   if (unavailable) {
@@ -129,11 +72,6 @@ export default function TriggersView() {
           {loadErr}
         </InlineBanner>
       )}
-      {action.error && (
-        <InlineBanner tone="danger" title="Action failed">
-          {action.error}
-        </InlineBanner>
-      )}
 
       {subs === null && !loadErr ? (
         <div className="flex items-center gap-2 p-6 text-sm text-fg-muted">
@@ -150,47 +88,7 @@ export default function TriggersView() {
           }
         />
       ) : (
-        <div className="rounded-[var(--radius-lg)] border border-border-default bg-surface-1 shadow-[var(--shadow-sm)] overflow-hidden">
-          <Table caption="Event-driven trigger subscriptions">
-            <THead className="bg-surface-2">
-              <Th>On</Th>
-              <Th>Source</Th>
-              <Th>Bot</Th>
-              <Th>When</Th>
-              <Th>Mode</Th>
-              <Th>Origin</Th>
-              <Th align="right" srLabel="Actions" />
-            </THead>
-            <TBody>
-              {rows.map((sub) => (
-                <Tr key={sub.id}>
-                  <Td>
-                    <Checkbox
-                      checked={sub.enabled}
-                      onChange={(e) => void onToggle(sub, e.target.checked)}
-                      aria-label={sub.enabled ? "Disable trigger" : "Enable trigger"}
-                    />
-                  </Td>
-                  <Td>
-                    <Badge>{sourceLabel(sub)}</Badge>
-                  </Td>
-                  <Td className="font-medium text-fg-default">
-                    {sub.bot_id}
-                    {sub.repo ? <span className="text-fg-muted"> · {sub.repo}</span> : null}
-                  </Td>
-                  <Td className="text-fg-muted">{matchSummary(sub)}</Td>
-                  <Td className="text-fg-muted">{sub.mode || "direct"}</Td>
-                  <Td className="text-fg-muted">{sub.origin || "operator"}</Td>
-                  <Td align="right">
-                    <Button variant="ghost" size="sm" onClick={() => void onDelete(sub)}>
-                      Delete
-                    </Button>
-                  </Td>
-                </Tr>
-              ))}
-            </TBody>
-          </Table>
-        </div>
+        <TriggerList subs={rows} onChanged={() => void reload()} />
       )}
 
       <NewTriggerDialog
@@ -201,7 +99,6 @@ export default function TriggersView() {
           void reload();
         }}
       />
-      {dialog}
     </div>
   );
 }

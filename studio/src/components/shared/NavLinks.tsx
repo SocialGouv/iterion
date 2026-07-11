@@ -16,6 +16,7 @@ import {
   Link2Icon,
   GearIcon,
   Component1Icon,
+  CubeIcon,
   LockClosedIcon,
   MixIcon,
 } from "@radix-ui/react-icons";
@@ -38,6 +39,7 @@ export type Section =
   | "whatsNext"
   | "editor"
   | "runs"
+  | "bots"
   | "board"
   | "dispatcher"
   | "triggers"
@@ -66,6 +68,7 @@ const BASE_LINKS: LinkDef[] = [
   { section: "whatsNext", href: "/whats-next", label: "What's Next", icon: PaperPlaneIcon },
   { section: "editor", href: "/editor", label: "Editor", icon: Pencil2Icon },
   { section: "runs", href: "/runs", label: "Runs", icon: ListBulletIcon },
+  { section: "bots", href: "/bots", label: "Bots", icon: CubeIcon },
 ];
 
 // deriveSection maps the current path to the highlighted nav entry by
@@ -79,6 +82,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   // in the side nav so the operator's place stays legible even
   // though it's no longer a top-level entry.
   insights: "runs",
+  bots: "bots",
   board: "board",
   dispatcher: "dispatcher",
   triggers: "triggers",

@@ -11,6 +11,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botinstall"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/plugin"
 )
 
 // MarketplaceListOptions configures `iterion marketplace list`.
@@ -18,6 +19,8 @@ type MarketplaceListOptions struct {
 	StoreDir string
 	Text     string
 	Tag      string
+	// Kind filters by artifact kind: "" (any), "bot" or "plugin".
+	Kind string
 }
 
 // MarketplaceSubmitOptions configures `iterion marketplace submit`.
@@ -37,6 +40,23 @@ type MarketplaceInstallOptions struct {
 	Force    bool
 }
 
+// MarketplaceInstallResult is the kind-aware outcome of
+// MarketplaceInstall: Bot is set for bot entries (the .botz install
+// result), Plugin for plugin entries (the installed plugin name).
+type MarketplaceInstallResult struct {
+	Kind   marketplace.Kind
+	Bot    *botinstall.Result
+	Plugin string
+	Entry  *marketplace.Entry
+}
+
+// MarketplaceUninstallOptions configures `iterion marketplace uninstall`.
+type MarketplaceUninstallOptions struct {
+	StoreDir string
+	Slug     string
+	Workdir  string
+}
+
 // marketplaceStoreDir resolves the on-disk marketplace store directory
 // from a --store-dir value (default ".iterion"), mirroring the studio's
 // <store-dir>/marketplace layout so the CLI and the studio share one
@@ -54,16 +74,23 @@ func openMarketplaceStore(storeDir string) (*marketplace.JSONStore, error) {
 
 // MarketplaceList returns the registry entries matching the filters.
 func MarketplaceList(ctx context.Context, opts MarketplaceListOptions) ([]marketplace.Entry, error) {
+	kind := marketplace.Kind(strings.TrimSpace(opts.Kind))
+	switch kind {
+	case "", marketplace.KindBot, marketplace.KindPlugin:
+	default:
+		return nil, fmt.Errorf("unknown kind %q (want %s|%s)", opts.Kind, marketplace.KindBot, marketplace.KindPlugin)
+	}
 	store, err := openMarketplaceStore(opts.StoreDir)
 	if err != nil {
 		return nil, err
 	}
-	return store.List(ctx, marketplace.Query{Text: opts.Text, Tag: opts.Tag})
+	return store.List(ctx, marketplace.Query{Text: opts.Text, Tag: opts.Tag, Kind: kind})
 }
 
-// MarketplaceSubmit validates the source bundle (no install) and indexes
-// it in the local registry, returning the persisted entry. Mirrors the
-// server's POST /api/v1/marketplace/submit business logic.
+// MarketplaceSubmit validates the source (no install), detects its
+// artifact kind (bot bundle or plugin) and indexes it in the local
+// registry, returning the persisted entry. Mirrors the server's
+// POST /api/v1/marketplace/submit business logic.
 func MarketplaceSubmit(ctx context.Context, opts MarketplaceSubmitOptions) (*marketplace.Entry, error) {
 	if strings.TrimSpace(opts.Source) == "" {
 		return nil, fmt.Errorf("a git URL or local path is required")
@@ -72,30 +99,49 @@ func MarketplaceSubmit(ctx context.Context, opts MarketplaceSubmitOptions) (*mar
 	if err != nil {
 		return nil, err
 	}
-	md, err := botinstall.Inspect(ctx, botinstall.Options{Source: opts.Source, Ref: opts.Ref, Path: opts.Path})
+	info, err := marketplace.InspectSource(ctx, opts.Source, opts.Ref, opts.Path)
 	if err != nil {
 		return nil, fmt.Errorf("inspect: %w", err)
 	}
-	slug := botregistry.NormalizeName(md.Name)
-	if slug == "" {
-		return nil, fmt.Errorf("bundle has no name")
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	entry := marketplace.Entry{
-		Slug:        slug,
-		Name:        md.Name,
-		DisplayName: md.DisplayName,
-		Description: md.Description,
-		Author:      md.Author,
-		Tags:        normalizeMarketplaceTags(opts.Tags),
-		RepoURL:     opts.Source,
-		Ref:         opts.Ref,
-		Subpath:     opts.Path,
-		Version:     md.Version,
-		README:      md.README,
-		Presets:     toMarketplacePresets(md.Presets),
-		CreatedAt:   now,
-		UpdatedAt:   now,
+	var entry marketplace.Entry
+	switch info.Kind {
+	case marketplace.KindPlugin:
+		entry = marketplace.EntryFromPlugin(info.Plugin, opts.Source, opts.Ref, opts.Path)
+		entry.Tags = normalizeMarketplaceTags(opts.Tags)
+		entry.CreatedAt = now
+		entry.UpdatedAt = now
+	default: // bot
+		md := info.Bot
+		entry = marketplace.Entry{
+			Slug:        botregistry.NormalizeName(md.Name),
+			Name:        md.Name,
+			DisplayName: md.DisplayName,
+			Description: md.Description,
+			Author:      md.Author,
+			Tags:        normalizeMarketplaceTags(opts.Tags),
+			RepoURL:     opts.Source,
+			Ref:         opts.Ref,
+			Subpath:     opts.Path,
+			Version:     md.Version,
+			README:      md.README,
+			Presets:     toMarketplacePresets(md.Presets),
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+	}
+	slug := entry.Slug
+	if slug == "" {
+		return nil, fmt.Errorf("%s has no name", info.Kind)
+	}
+	// A slug can't change kind through a re-submit (same rule as the
+	// server): a bot slug stays a bot, a plugin slug stays a plugin.
+	existing, exists, err := store.Get(ctx, slug)
+	if err != nil {
+		return nil, err
+	}
+	if exists && marketplace.EffectiveKind(*existing) != marketplace.EffectiveKind(entry) {
+		return nil, fmt.Errorf("slug %q already exists as a %s entry", slug, marketplace.EffectiveKind(*existing))
 	}
 	if err := store.Upsert(ctx, entry); err != nil {
 		return nil, fmt.Errorf("upsert: %w", err)
@@ -110,30 +156,45 @@ func MarketplaceSubmit(ctx context.Context, opts MarketplaceSubmitOptions) (*mar
 	return stored, nil
 }
 
-// MarketplaceInstall resolves the slug and installs the entry's bundle
-// into the workspace, bumping the install counter. Returns the install
-// result and the refreshed entry.
-func MarketplaceInstall(ctx context.Context, opts MarketplaceInstallOptions) (*botinstall.Result, *marketplace.Entry, error) {
+// MarketplaceInstall resolves the slug and installs the entry per its
+// kind — a bot's bundle into the workspace's .botz/, a plugin into
+// ~/.iterion/plugins/ — bumping the install counter. Returns the
+// kind-aware result with the refreshed entry.
+func MarketplaceInstall(ctx context.Context, opts MarketplaceInstallOptions) (*MarketplaceInstallResult, error) {
 	store, err := openMarketplaceStore(opts.StoreDir)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	entry, ok, err := store.Get(ctx, opts.Slug)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if !ok {
-		return nil, nil, fmt.Errorf("marketplace entry %q not found", opts.Slug)
+		return nil, fmt.Errorf("marketplace entry %q not found", opts.Slug)
 	}
-	res, err := botinstall.Install(ctx, botinstall.Options{
-		Source:  entry.RepoURL,
-		Ref:     entry.Ref,
-		Path:    entry.Subpath,
-		Force:   opts.Force,
-		Workdir: opts.Workdir,
-	})
-	if err != nil {
-		return nil, nil, err
+	out := &MarketplaceInstallResult{Kind: marketplace.EffectiveKind(*entry)}
+	if out.Kind == marketplace.KindPlugin {
+		name, err := plugin.InstallWith(ctx, plugin.InstallOptions{
+			Source:  entry.RepoURL,
+			Ref:     entry.Ref,
+			Subpath: entry.Subpath,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out.Plugin = name
+	} else {
+		res, err := botinstall.Install(ctx, botinstall.Options{
+			Source:  entry.RepoURL,
+			Ref:     entry.Ref,
+			Path:    entry.Subpath,
+			Force:   opts.Force,
+			Workdir: opts.Workdir,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out.Bot = res
 	}
 	// Best-effort counter bump — the install already succeeded.
 	_ = store.IncrementInstalls(ctx, opts.Slug)
@@ -141,7 +202,38 @@ func MarketplaceInstall(ctx context.Context, opts MarketplaceInstallOptions) (*b
 	if refreshed == nil {
 		refreshed = entry
 	}
-	return res, refreshed, nil
+	out.Entry = refreshed
+	return out, nil
+}
+
+// MarketplaceUninstall resolves the slug and removes the installed
+// artifact per its kind: a bot's workspace bundle (botinstall.Remove)
+// or an installed plugin (plugin.Uninstall). The registry entry itself
+// is untouched. Returns the entry so callers can echo what was removed.
+func MarketplaceUninstall(ctx context.Context, opts MarketplaceUninstallOptions) (*marketplace.Entry, error) {
+	store, err := openMarketplaceStore(opts.StoreDir)
+	if err != nil {
+		return nil, err
+	}
+	entry, ok, err := store.Get(ctx, opts.Slug)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("marketplace entry %q not found", opts.Slug)
+	}
+	// Both kinds install under the manifest name (entry.Name), not the
+	// registry slug.
+	if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
+		if err := plugin.Uninstall(entry.Name); err != nil {
+			return nil, err
+		}
+		return entry, nil
+	}
+	if err := botinstall.Remove(ctx, botinstall.Options{Name: entry.Name, Workdir: opts.Workdir}); err != nil {
+		return nil, err
+	}
+	return entry, nil
 }
 
 // marketplaceSeedPaths resolves the workspace-relative bundle roots to

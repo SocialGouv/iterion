@@ -102,10 +102,13 @@ func (s *JSONStore) writeLocked() error {
 	return nil
 }
 
-// List returns every entry matching q, sorted by Installs desc, then
-// Slug asc for deterministic output. A zero-value Query returns every
-// entry.
+// List returns every entry matching q, ordered per q.Sort (default:
+// Installs desc), with Slug asc as the tie-break for deterministic
+// output. A zero-value Query returns every entry.
 func (s *JSONStore) List(_ context.Context, q Query) ([]Entry, error) {
+	if err := ValidateSort(q.Sort); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	text := strings.ToLower(strings.TrimSpace(q.Text))
@@ -123,13 +126,43 @@ func (s *JSONStore) List(_ context.Context, q Query) ([]Entry, error) {
 		}
 		out = append(out, cloneEntry(e))
 	}
+	sortEntries(out, q.Sort)
+	return out, nil
+}
+
+// sortEntries orders a listing in place per the (validated) sort mode:
+// popular (default) = Installs desc, recent = UpdatedAt desc, name =
+// DisplayName-or-Name asc case-insensitive. Slug asc breaks every tie so
+// output stays deterministic.
+func sortEntries(out []Entry, mode string) {
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Installs != out[j].Installs {
-			return out[i].Installs > out[j].Installs
+		switch mode {
+		case SortRecent:
+			if out[i].UpdatedAt != out[j].UpdatedAt {
+				return out[i].UpdatedAt > out[j].UpdatedAt
+			}
+		case SortName:
+			a, b := sortNameOf(out[i]), sortNameOf(out[j])
+			if a != b {
+				return a < b
+			}
+		default: // "" | SortPopular
+			if out[i].Installs != out[j].Installs {
+				return out[i].Installs > out[j].Installs
+			}
 		}
 		return out[i].Slug < out[j].Slug
 	})
-	return out, nil
+}
+
+// sortNameOf is the case-folded label the name sort compares: DisplayName
+// when set, else Name.
+func sortNameOf(e Entry) string {
+	n := e.DisplayName
+	if n == "" {
+		n = e.Name
+	}
+	return strings.ToLower(n)
 }
 
 func (s *JSONStore) Get(_ context.Context, slug string) (*Entry, bool, error) {
@@ -285,6 +318,9 @@ func cloneEntry(in Entry) Entry {
 	out := in
 	if in.Tags != nil {
 		out.Tags = append([]string(nil), in.Tags...)
+	}
+	if in.Categories != nil {
+		out.Categories = append([]string(nil), in.Categories...)
 	}
 	if in.Presets != nil {
 		out.Presets = make([]EntryPreset, len(in.Presets))
