@@ -533,6 +533,13 @@ func LoadManifest(path string) (*Manifest, error) {
 	return decodeManifest(body, path)
 }
 
+// DecodeManifest parses + validates manifest bytes without touching the
+// filesystem — the seam generators (pkg/botscaffold) use to hold their
+// rendered manifest to the same bar as a loaded one before writing it.
+func DecodeManifest(body []byte, srcLabel string) (*Manifest, error) {
+	return decodeManifest(body, srcLabel)
+}
+
 // decodeManifest parses + validates manifest bytes (strict unmarshal,
 // schema version, attachment-path safety). srcLabel names the source in
 // errors. Shared by LoadManifest and WriteManifest's pre-write

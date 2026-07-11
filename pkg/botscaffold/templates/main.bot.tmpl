@@ -1,0 +1,79 @@
+## {{if .DisplayName}}{{.DisplayName}}{{else}}{{.Slug}}{{end}} — created with the studio bot builder.
+## One adaptive agent carries the whole mission; add structure only when
+## a deterministic gate needs it (docs/workflow_authoring_pitfalls.md).
+## DSL reference: docs/grammar/ · bundles: docs/bundles.md
+{{if .Vars}}
+vars:
+{{- range .Vars}}
+{{- if .Description}}
+  ## {{.Description}}
+{{- end}}
+  {{.Name}}: {{.Type}} = {{varValue .}}
+{{- end}}
+{{end}}
+schema mission_report:
+  ## The agent's structured wrap-up — what it did and whether the
+  ## mission is complete. Honest reporting: under-reporting only costs
+  ## a re-run, over-reporting lands the gap right back here.
+  summary: string
+  mission_complete: bool
+
+prompt mission:
+{{indent 2 .Instructions}}
+{{- if .Vars}}
+
+  Inputs for this run:
+{{- range .Vars}}
+  - {{.Name}}: {{"{{"}}vars.{{.Name}}{{"}}"}}
+{{- end}}
+{{- end}}
+
+prompt kickoff:
+  Carry out your mission now. Work end-to-end: investigate, act, and
+  verify before reporting. Set mission_complete=true only when the
+  mission is genuinely done.
+
+agent campaign:
+{{- if .Backend}}
+  backend: {{quote .Backend}}
+{{- end}}
+{{- if .Model}}
+  model: {{quote .Model}}
+{{- end}}
+  input: mission_report
+  output: mission_report
+  system: mission
+  user: kickoff
+{{- if .Skills}}
+  skills: [{{range $i, $s := .Skills}}{{if $i}}, {{end}}{{quote $s}}{{end}}]
+{{- end}}
+{{- if .Capabilities}}
+  capabilities: [{{range $i, $c := .Capabilities}}{{if $i}}, {{end}}{{$c}}{{end}}]
+{{- end}}
+
+workflow {{.WorkflowName}}:
+  entry: campaign
+{{- if .Worktree}}
+  ## Isolate the run in a git worktree; commits land on a persistent
+  ## branch and fast-forward your checked-out branch on success.
+  worktree: auto
+{{- end}}
+{{- if .Sandbox}}
+  ## Container isolation (devcontainer.json when present, else the
+  ## published iterion-sandbox image).
+  sandbox: auto
+{{- end}}
+{{- if .Permission}}
+  ## Tool-permission gate (docs/permissions.md).
+  permission: {{.Permission}}
+{{- end}}
+{{- if or .MaxCostUSD .MaxDuration}}
+  budget:
+{{- if .MaxCostUSD}}
+    max_cost_usd: {{.MaxCostUSD}}
+{{- end}}
+{{- if .MaxDuration}}
+    max_duration: {{quote .MaxDuration}}
+{{- end}}
+{{- end}}
+  campaign -> done

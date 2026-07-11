@@ -1,0 +1,26 @@
+name: {{.Slug}}
+{{- if .DisplayName}}
+display_name: {{quote .DisplayName}}
+{{- end}}
+{{- if .Icon}}
+icon: {{quote .Icon}}
+{{- end}}
+version: 0.1.0
+{{- if .Description}}
+description: {{quote .Description}}
+{{- end}}
+{{- if .WhenToUse}}
+# when_to_use is the orchestrator-facing "use when" guidance — Nexie
+# reads it (via the generated bot catalog) to route tasks to this bot.
+when_to_use: {{quote .WhenToUse}}
+{{- end}}
+enabled: true
+schema_version: 1
+{{- if .ScheduleCron}}
+# Typed routing contract: the studio bot home offers a one-click
+# schedule trigger from this suggested cron (the operator confirms).
+invocations:
+  - kind: schedule
+    schedule:
+      suggested_cron: {{quote .ScheduleCron}}
+{{- end}}
