@@ -160,13 +160,14 @@ export default function MergeConflictView({
     return (
       <div className="shrink-0 border-t border-border-default px-3 py-2 text-micro text-danger-fg bg-danger-soft">
         {error}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => void refresh()}
-          className="ml-2 underline"
+          className="ml-2"
         >
           Retry
-        </button>
+        </Button>
       </div>
     );
   }
@@ -311,6 +312,7 @@ function ConflictFileCard({
         <button
           type="button"
           onClick={onToggle}
+          aria-expanded={!collapsed}
           className="font-mono text-micro text-fg-default hover:underline"
         >
           {collapsed ? "▸" : "▾"} {file.path}
