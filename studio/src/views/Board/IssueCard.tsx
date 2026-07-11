@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { GitBranch } from "lucide-react";
 
+import { Badge } from "@/components/ui/Badge";
 import { formatRelative } from "@/lib/format";
 import { clickableRowProps } from "@/lib/a11y";
 import type { DispatchSkipView, RetryView, RunningView } from "@/api/dispatcher";
@@ -122,9 +123,9 @@ export function IssueCard({
           {iss.title}
         </span>
         {iss.priority && iss.priority > 0 ? (
-          <span className="text-caption px-1.5 py-0.5 rounded bg-warning-soft text-warning-fg">
+          <Badge variant="warning" size="sm" title={`Priority ${iss.priority} (P1 = highest)`}>
             P{iss.priority}
-          </span>
+          </Badge>
         ) : null}
       </div>
       {pinnedFields.length > 0 && (
@@ -169,24 +170,27 @@ export function IssueCard({
             );
           })}
           {iss.labels.length > MAX_CARD_LABELS && (
-            <span
-              className="text-caption px-1.5 py-0.5 rounded bg-surface-2 text-fg-subtle"
+            <Badge
+              variant="neutral"
+              size="sm"
               title={iss.labels.slice(MAX_CARD_LABELS).join(", ")}
             >
               +{iss.labels.length - MAX_CARD_LABELS}
-            </span>
+            </Badge>
           )}
         </div>
       )}
       <div className="mt-1 flex items-center gap-2 text-caption text-fg-muted flex-wrap">
         <code className="opacity-70">{shortID(iss.id)}</code>
         {iss.bot && (
-          <span
-            className="font-mono bg-accent/15 text-accent-text rounded px-1 py-0.5"
+          <Badge
+            variant="accent"
+            size="sm"
+            className="font-mono"
             title={`Will dispatch via ${iss.bot} (overrides dispatcher config)`}
           >
             🤖 {iss.bot}
-          </span>
+          </Badge>
         )}
         {iss.assignee && <span>@{iss.assignee}</span>}
         {iss.claim && (
@@ -222,15 +226,19 @@ export function IssueCard({
           );
         })()}
         {iss.external?.repo && (
-          <span
-            className="inline-flex items-center gap-0.5 rounded bg-surface-2 px-1 py-0.5 text-fg-subtle max-w-40 truncate"
+          <Badge
+            variant="neutral"
+            size="sm"
+            className="max-w-40 overflow-hidden"
+            leadingIcon={
+              <GitBranch className="h-3 w-3 shrink-0 opacity-70" aria-hidden="true" />
+            }
             title={`${iss.external.provider} · ${iss.external.repo}${
               iss.external.number ? ` #${iss.external.number}` : ""
             }`}
           >
-            <GitBranch className="h-3 w-3 shrink-0 opacity-70" aria-hidden="true" />
             <span className="truncate">{iss.external.repo}</span>
-          </span>
+          </Badge>
         )}
         {iss.updated_at && (
           <span className="text-fg-subtle" title={iss.updated_at}>
@@ -263,6 +271,7 @@ export function IssueCard({
             )}
           </button>
           <button
+            type="button"
             className="rounded border border-success/40 px-1.5 py-0.5 text-caption hover:bg-success-soft"
             onClick={(e) => {
               e.stopPropagation();
