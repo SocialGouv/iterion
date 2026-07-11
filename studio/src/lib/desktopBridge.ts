@@ -326,7 +326,7 @@ export async function getDesktopWsBase(path: string): Promise<string | null> {
   // URL; fall back to ?t=<token> when no ticket is available. Tickets are
   // single-use, so this mints a fresh one per dial. A mint failure degrades to
   // the token rather than breaking the connection.
-  let ticket = "";
+  let ticket: string;
   try {
     ticket = await desktop.getWsTicket();
   } catch {
