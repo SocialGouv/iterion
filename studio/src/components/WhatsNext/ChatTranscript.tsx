@@ -85,13 +85,32 @@ export default function ChatTranscript({
     return () => obs.disconnect();
   }, []);
 
+  // An ask_user pause's prompt IS the agent's final narration text, so
+  // the transcript would show the same paragraph twice: once as the
+  // narration row, once as Nexie's question bubble. Keep the bubble
+  // (it carries the answer affordance) and hide the narration twin.
+  const hiddenIds = new Set<string>();
+  messages.forEach((m, i) => {
+    if (m.kind !== "human-question" || !m.prompt) return;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = messages[j];
+      if (!prev) break;
+      if (prev.kind === "assistant-text") {
+        if (prev.text.trim() === m.prompt.trim()) hiddenIds.add(prev.id);
+        break;
+      }
+      if (prev.kind === "human-question" || prev.kind === "user-message") break;
+    }
+  });
+  const visible = messages.filter((m) => !hiddenIds.has(m.id));
+
   return (
     <div
       ref={scrollContainerRef}
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-3 space-y-4"
     >
-      {messages.map((m) => (
+      {visible.map((m) => (
         <MessageRow
           key={m.id}
           message={m}
