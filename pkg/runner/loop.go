@@ -1487,9 +1487,34 @@ func extractRepoHost(repoURL string) (string, error) {
 	return host, nil
 }
 
+// gitOpTimeout bounds a single runner-side git subprocess. Without it a
+// clone/fetch against a wedged remote hangs on the run ctx alone — and a
+// run launched without --timeout has NO deadline, so the git subprocess
+// pins the MaxAckPending=1 runner pod indefinitely while the heartbeat
+// keeps the lease alive (the heartbeat proves the pod lives, not that
+// the clone progresses). GIT_TERMINAL_PROMPT=0 covers the credential
+// prompt, not a stalled TCP transfer. Override with
+// ITERION_RUNNER_GIT_TIMEOUT (a Go duration; <= 0 disables).
+var gitOpTimeout = defaultGitOpTimeout()
+
+func defaultGitOpTimeout() time.Duration {
+	if v := os.Getenv("ITERION_RUNNER_GIT_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d // <= 0 disables the bound
+		}
+	}
+	return 15 * time.Minute
+}
+
 // runGit runs a git subprocess, redacting tok from any error output so an
-// authed clone URL never leaks into logs.
+// authed clone URL never leaks into logs. Each invocation is bounded by
+// gitOpTimeout on top of the caller's ctx.
 func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) error {
+	if gitOpTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
@@ -1503,6 +1528,9 @@ func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) er
 		if tok != "" {
 			detail = strings.ReplaceAll(detail, tok, "***")
 			shown = strings.ReplaceAll(shown, tok, "***")
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && gitOpTimeout > 0 {
+			return fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
 		}
 		return fmt.Errorf("git %s: %w: %s", shown, err, detail)
 	}
