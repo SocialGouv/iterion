@@ -60,6 +60,10 @@ func (s *Server) routes() {
 	// gate as install (super-admin; handler adds safe-origin + local-mode-only).
 	s.mux.Handle("POST /api/v1/plugins/{name}/lifecycle/{phase}", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginLifecycle)))
 	s.mux.HandleFunc("GET /api/v1/bots", s.handleBotsList)
+	// Bot creation (studio builder) — scaffolds a bundle into the
+	// workspace bots/ dir; the literal /templates route wins over {name}.
+	s.mux.HandleFunc("POST /api/v1/bots", s.handleBotCreate)
+	s.mux.HandleFunc("GET /api/v1/bots/templates", s.handleBotTemplates)
 	s.mux.HandleFunc("POST /api/v1/bots/install", s.handleBotInstall)
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)
 	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
