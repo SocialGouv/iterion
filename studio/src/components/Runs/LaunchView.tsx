@@ -464,12 +464,17 @@ export default function LaunchView() {
     left: (
       <>
         <span className="text-xs font-semibold text-fg-muted">Launch run</span>
-        <span
-          className="text-xs text-fg-subtle font-mono truncate max-w-md"
-          title={filePath || "Unsaved workflow"}
-        >
-          {filePath || "Unsaved workflow"}
-        </span>
+        {/* "Unsaved workflow" only when there IS a workflow (in-memory
+            doc without a file). With nothing to launch at all, a
+            subtitle would contradict the empty state below. */}
+        {(filePath || doc) && (
+          <span
+            className="text-xs text-fg-subtle font-mono truncate max-w-md"
+            title={filePath || "Unsaved workflow"}
+          >
+            {filePath || "Unsaved workflow"}
+          </span>
+        )}
       </>
     ),
     right: (
