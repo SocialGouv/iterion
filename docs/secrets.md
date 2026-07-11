@@ -112,10 +112,19 @@ depend on the parent directory already existing in the sandbox image.
 
 #### `optional: true`
 
-By default a declared file secret with no resolved value (no `value:`
-expr, no host env, no stored/bound secret) is a hard run error. Mark it
-`optional: true` to skip the mount silently instead — for a bot that
-only needs the credential on *some* runs:
+By default a declared secret with no resolved value (no `value:` expr,
+no host env, no stored/bound secret) is a **hard launch error** — the
+launch fails loudly, naming the secret (`secret "x" is declared required
+by the workflow but resolves to nothing …`), and **no run record is
+created**. The gate runs at launch on both paths — the cloud publisher
+(`resolveAndSealCredentials`, before the run is persisted) and the local
+/ in-process path (`runview.BuildExecutor`) — so a required credential
+that resolves to nothing can never let a bot proceed unauthenticated
+(push with no token, call an API with no key). A webhook-triggered launch
+records the failure as `StatusLaunchError` on its delivery trail.
+
+Mark a secret `optional: true` to skip it silently instead — for a bot
+that only needs the credential on *some* runs:
 
 ```iter
 secrets:
