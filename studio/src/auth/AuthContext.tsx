@@ -7,7 +7,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import BootLoading from "@/components/shared/BootLoading";
 import { apiBase } from "@/lib/scope";
 import {
   ApiError,
@@ -26,7 +25,11 @@ import {
 } from "@/api/auth";
 
 interface AuthState {
-  status: "loading" | "anonymous" | "authenticated";
+  // "unreachable" = the server itself can't be reached (network error /
+  // 5xx on the public /server/info probe) — distinct from "anonymous"
+  // (server reachable, no session) so the gate can show a retry screen
+  // instead of bouncing a local-mode operator to a sign-in form.
+  status: "loading" | "anonymous" | "authenticated" | "unreachable";
   user: UserView | null;
   // orgs is the user's full org→teams tree. teams/activeTeam are derived
   // from the ACTIVE org so existing consumers keep working unchanged.
@@ -59,6 +62,9 @@ interface AuthCtx extends AuthState {
   // Re-fetch /auth/me — used after a flow that mutates membership
   // server-side (accept invitation, admin promotion).
   reloadIdentity: () => Promise<void>;
+  // Re-run the full bootstrap (probe + identity) — the retry path of
+  // the "server unreachable" screen.
+  retryConnection: () => Promise<void>;
 }
 
 const Ctx = createContext<AuthCtx | null>(null);
@@ -75,18 +81,22 @@ const initial: AuthState = {
 
 const BASE_URL = apiBase().replace(/\/$/, "");
 
-// probeAuthRequired hits the unauthenticated /api/server/info to
-// learn whether the deployment requires sign-in. Local / desktop
-// returns auth_required=false and we render the studio as a
-// synthetic super-admin so the no-login UX is preserved.
-async function probeAuthRequired(): Promise<boolean> {
+// probeAuth hits the unauthenticated /api/server/info to learn whether
+// the deployment requires sign-in. Local / desktop returns
+// auth_required=false and we render the studio as a synthetic
+// super-admin so the no-login UX is preserved. A network failure or a
+// 5xx means the server itself is down — surfaced as "unreachable" so
+// the gate never mistakes an offline backend for an auth wall.
+async function probeAuth(): Promise<"required" | "not_required" | "unreachable"> {
   try {
     const res = await fetch(`${BASE_URL}/server/info`, { credentials: "include" });
-    if (!res.ok) return true;
-    const body = (await res.json()) as { auth_required?: boolean };
-    return body.auth_required !== false;
+    if (res.ok) {
+      const body = (await res.json()) as { auth_required?: boolean };
+      return body.auth_required !== false ? "required" : "not_required";
+    }
+    return res.status >= 500 ? "unreachable" : "required";
   } catch {
-    return true;
+    return "unreachable";
   }
 }
 
@@ -133,7 +143,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(initial);
 
   const bootstrap = useCallback(async () => {
-    if (!(await probeAuthRequired())) {
+    const probe = await probeAuth();
+    if (probe === "unreachable") {
+      setState({ ...initial, status: "unreachable" });
+      return;
+    }
+    if (probe === "not_required") {
       setState(localIdentity);
       return;
     }
@@ -155,6 +170,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
       }
     }
+    // Every getMe attempt failed on a network error (server went down
+    // between the probe and here) — that's unreachable, not anonymous.
+    if (lastErr && !(lastErr instanceof ApiError)) {
+      setState({ ...initial, status: "unreachable" });
+      return;
+    }
     if (lastErr instanceof ApiError && lastErr.status !== 401) {
       setState({ ...initial, status: "anonymous" });
       return;
@@ -163,8 +184,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const r = await apiRefresh();
       setState((prev) => applyResponse(prev, r));
       return;
-    } catch {
-      setState({ ...initial, status: "anonymous" });
+    } catch (err) {
+      setState({
+        ...initial,
+        status: err instanceof ApiError ? "anonymous" : "unreachable",
+      });
     }
   }, []);
 
@@ -218,8 +242,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       selectOrg,
       selectTeam,
       reloadIdentity,
+      retryConnection: bootstrap,
     };
-  }, [state, signIn, signOut, selectOrg, selectTeam, reloadIdentity]);
+  }, [state, signIn, signOut, selectOrg, selectTeam, reloadIdentity, bootstrap]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -230,17 +255,12 @@ export function useAuth(): AuthCtx {
   return v;
 }
 
-// RequireAuth wraps children and renders <fallback/> when the user
-// is unauthenticated. Used at the routing level to gate the studio.
-export function RequireAuth({ children, fallback }: { children: ReactNode; fallback: ReactNode }) {
-  const { status } = useAuth();
-  if (status === "loading") {
-    return <BootLoading />;
-  }
-  if (status === "anonymous") {
-    return <>{fallback}</>;
-  }
-  return <>{children}</>;
+// isLocalIdentity reports whether user is the synthetic local-mode
+// principal (auth disabled server-side, see localIdentity above).
+// Consumers use it to hide cloud-only account chrome in local mode —
+// keep the sentinel knowledge here rather than re-hardcoding "dev".
+export function isLocalIdentity(user: UserView | null | undefined): boolean {
+  return user?.id === localIdentity.user?.id;
 }
 
 // RequireRole: nested gate that checks an active-team role. Renders

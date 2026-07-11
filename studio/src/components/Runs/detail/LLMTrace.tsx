@@ -120,6 +120,7 @@ function LLMStepCard({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
         className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-2 rounded-t"
       >
         <span className="text-caption font-mono text-fg-subtle">

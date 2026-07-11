@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
+import BootLoading from "@/components/shared/BootLoading";
 import { desktop, isCloudConnection, onDesktopEvent, type Project } from "@/lib/desktopBridge";
 import { DesktopEvent } from "@/lib/desktopEvents";
 import { showRunAlertNotification, type RunAlertPayload } from "@/lib/desktopNotify";
@@ -172,14 +173,14 @@ export default function WorkspaceShell() {
   // Still probing first-run — hold on a neutral loader so the empty workspace
   // ("No connection open") never flashes before the initial pane opens.
   if (firstRunPending === null) {
-    return <div className="h-screen flex items-center justify-center bg-surface-0 text-fg-muted">Loading…</div>;
+    return <BootLoading />;
   }
 
   // First-run onboarding takes the whole window (native bindings live in this
   // main frame, so the wizard runs here, not in a pane).
   if (firstRunPending) {
     return (
-      <Suspense fallback={<div className="h-screen flex items-center justify-center text-fg-muted">Loading…</div>}>
+      <Suspense fallback={<BootLoading />}>
         <Welcome
           onComplete={() => {
             setFirstRunPending(false);

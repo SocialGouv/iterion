@@ -64,7 +64,12 @@ export function BannerProgressLine({
         </>
       )}
       {retryCount > 0 && (
-        <span className="ml-2 inline-flex items-center gap-1 text-warning-fg">
+        <span
+          className="ml-2 inline-flex items-center gap-1 text-warning-fg"
+          // The line truncates; the title keeps the full error one
+          // hover away.
+          title={progress.latestRetryError}
+        >
           ↻ <span className="font-mono">{retryCount}</span> {retryNoun}
           {progress.latestRetryError && (
             <span className="text-fg-subtle"> — {progress.latestRetryError}</span>

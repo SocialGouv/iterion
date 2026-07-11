@@ -2938,7 +2938,8 @@ export interface paths {
         /** GET /api/v1/bots */
         get: operations["getV1Bots"];
         put?: never;
-        post?: never;
+        /** POST /api/v1/bots */
+        post: operations["postV1Bots"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2956,6 +2957,23 @@ export interface paths {
         put?: never;
         /** POST /api/v1/bots/install */
         post: operations["postV1BotsInstall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/bots/templates */
+        get: operations["getV1BotsTemplates"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3012,6 +3030,25 @@ export interface paths {
         /** PUT /api/v1/bots/{name}/overlay */
         put: operations["putV1BotsByNameOverlay"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bots/{name}/triggers/from-invocation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/bots/{name}/triggers/from-invocation */
+        post: operations["postV1BotsByNameTriggersFromInvocation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3259,7 +3296,8 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /** GET /api/v1/plugins/{name} */
+        get: operations["getV1PluginsByName"];
         put?: never;
         post?: never;
         /** DELETE /api/v1/plugins/{name} */
@@ -3320,6 +3358,26 @@ export interface paths {
         put?: never;
         /** POST /api/v1/plugins/{name}/enable */
         post: operations["postV1PluginsByNameEnable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plugins/{name}/lifecycle/{phase}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                phase: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/plugins/{name}/lifecycle/{phase} */
+        post: operations["postV1PluginsByNameLifecycleByPhase"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7650,7 +7708,43 @@ export interface operations {
             };
         };
     };
+    postV1Bots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     postV1BotsInstall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getV1BotsTemplates: {
         parameters: {
             query?: never;
             header?: never;
@@ -7727,6 +7821,26 @@ export interface operations {
         };
     };
     putV1BotsByNameOverlay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1BotsByNameTriggersFromInvocation: {
         parameters: {
             query?: never;
             header?: never;
@@ -8010,6 +8124,26 @@ export interface operations {
             };
         };
     };
+    getV1PluginsByName: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     deleteV1PluginsByName: {
         parameters: {
             query?: never;
@@ -8076,6 +8210,27 @@ export interface operations {
             header?: never;
             path: {
                 name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1PluginsByNameLifecycleByPhase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                phase: string;
             };
             cookie?: never;
         };

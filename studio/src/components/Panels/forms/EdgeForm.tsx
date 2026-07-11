@@ -4,7 +4,8 @@ import type { Edge, WhenClause, LoopClause, WithEntry } from "@/api/types";
 import { TextField, NumberField, CheckboxField, SelectField, CommittedTextField } from "./FormField";
 import type { RefContext } from "@/lib/refCompletion";
 import { useConfirm } from "@/hooks/useConfirm";
-import { HelpHint, Tooltip } from "@/components/ui";
+import { Button, HelpHint, IconButton, Tooltip } from "@/components/ui";
+import { Cross2Icon } from "@radix-ui/react-icons";
 
 interface Props {
   edge: Edge;
@@ -97,29 +98,31 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs text-fg-subtle font-semibold">When Condition <HelpHint text="Boolean field from the source node's output schema. Controls whether this edge is followed." /></span>
           {!when ? (
-            <button
-              className="text-xs text-accent-text hover:text-accent-text"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-accent-text hover:text-accent-text"
               onClick={() => setWhen({ condition: "", negated: false })}
             >
               + Add
-            </button>
+            </Button>
           ) : (
-            <button
-              className="text-xs text-danger hover:text-danger-fg"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-danger hover:text-danger-fg"
               onClick={() => setWhen(undefined)}
             >
               Remove
-            </button>
+            </Button>
           )}
         </div>
         {when && (
           <>
-            <div className="flex gap-2 text-xs">
-              <button
-                type="button"
-                className={`px-2 py-0.5 rounded ${
-                  !when.expr ? "bg-accent text-fg-onAccent" : "bg-surface-2 hover:bg-surface-3"
-                }`}
+            <div className="flex gap-2">
+              <Button
+                variant={!when.expr ? "primary" : "secondary"}
+                size="sm"
                 onClick={() =>
                   setWhen({
                     condition: when.condition ?? "",
@@ -128,17 +131,15 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
                 }
               >
                 Field
-              </button>
+              </Button>
               <Tooltip content="Switch to a raw boolean expression (e.g. approved && loop.l.previous_output.x)">
-                <button
-                  type="button"
-                  className={`px-2 py-0.5 rounded ${
-                    when.expr ? "bg-accent text-fg-onAccent" : "bg-surface-2 hover:bg-surface-3"
-                  }`}
+                <Button
+                  variant={when.expr ? "primary" : "secondary"}
+                  size="sm"
                   onClick={() => setWhen({ expr: when.expr ?? "" })}
                 >
                   Expression
-                </button>
+                </Button>
               </Tooltip>
             </div>
             {when.expr !== undefined ? (
@@ -190,19 +191,23 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs text-fg-subtle font-semibold">Loop <HelpHint text="Creates a named loop through this edge, repeating up to max_iterations times. Use {{outputs.node.history}} to access previous iterations." /></span>
           {!loop ? (
-            <button
-              className="text-xs text-accent-text hover:text-accent-text"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-accent-text hover:text-accent-text"
               onClick={() => setLoop({ name: "", max_iterations: 3 })}
             >
               + Add
-            </button>
+            </Button>
           ) : (
-            <button
-              className="text-xs text-danger hover:text-danger-fg"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-danger hover:text-danger-fg"
               onClick={() => setLoop(undefined)}
             >
               Remove
-            </button>
+            </Button>
           )}
         </div>
         {loop && (
@@ -246,12 +251,14 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
       <div className="border-t border-border-default pt-2">
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs text-fg-subtle font-semibold">With (data mapping) <HelpHint text="Map data to the target node's input fields. Use {{outputs.node.field}}, {{vars.name}}, or {{artifacts.name}} as values." /></span>
-          <button
-            className="text-xs text-accent-text hover:text-accent-text"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-accent-text hover:text-accent-text"
             onClick={() => setWith([...withEntries, { key: "", value: "" }])}
           >
             + Add
-          </button>
+          </Button>
         </div>
         {withEntries.map((entry, i) => (
           <WithEntryRow
@@ -268,8 +275,10 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
 
       {/* Delete edge */}
       <div className="border-t border-border-default pt-2">
-        <button
-          className="w-full bg-danger-soft hover:bg-danger text-danger-fg text-xs py-1 rounded"
+        <Button
+          variant="danger"
+          size="sm"
+          className="w-full"
           onClick={async () => {
             const ok = await confirm({
               title: "Delete this edge?",
@@ -282,7 +291,7 @@ export default function EdgeForm({ edge, edgeIndex, workflowName }: Props) {
           }}
         >
           Delete Edge
-        </button>
+        </Button>
       </div>
       {confirmDialog}
     </div>
@@ -329,15 +338,18 @@ function WithEntryRow({
             validate={(v) => (!v.trim() ? "Key cannot be empty" : null)}
           />
         </div>
-        <button
-          className="text-danger hover:text-danger-fg text-xs pb-2"
+        <IconButton
+          variant="danger"
+          size="sm"
+          label="Remove mapping"
+          className="mb-2 shrink-0"
           onClick={() => {
             const next = withEntries.filter((_, j) => j !== index);
             setWith(next.length > 0 ? next : undefined);
           }}
         >
-          x
-        </button>
+          <Cross2Icon />
+        </IconButton>
       </div>
       <TextField
         label="Value"

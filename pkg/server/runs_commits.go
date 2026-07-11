@@ -71,12 +71,13 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		if !errors.Is(logErr, gitlib.ErrNotGitRepo) {
+		if !errors.Is(logErr, gitlib.ErrNotGitRepo) && !errors.Is(logErr, gitlib.ErrUnknownRevision) {
 			s.httpErrorFor(w, r, http.StatusInternalServerError, "git log: %v", logErr)
 			return
 		}
-		// Fall through on ErrNotGitRepo (worktree dir exists but is no
-		// longer a git checkout — same shape as removed worktree).
+		// Fall through on ErrNotGitRepo / unknown revision (worktree dir
+		// exists but is no longer a usable checkout of this history —
+		// same shape as removed worktree).
 	}
 
 	// Persisted-metadata fallback: a cloud run's worktree lives in the
@@ -100,6 +101,17 @@ func (s *Server) handleListRunCommits(w http.ResponseWriter, r *http.Request) {
 				HeadCommit:           final,
 				DefaultSquashMessage: runtime.BuildSquashMessageFromCommits(repo, final, runtime.RunDisplayName(run), commits),
 				Available:            true,
+			})
+			return
+		}
+		// A pruned storage branch / gc'd base commit is an expected
+		// end-of-life state for an old run, not a server fault: render
+		// the structured empty-state instead of a 500 with git stderr.
+		if errors.Is(logErr, gitlib.ErrNotGitRepo) || errors.Is(logErr, gitlib.ErrUnknownRevision) {
+			s.writeJSONFor(w, r, runCommitsResponse{
+				Commits:   []gitlib.CommitInfo{},
+				Available: false,
+				Reason:    "history_unavailable",
 			})
 			return
 		}

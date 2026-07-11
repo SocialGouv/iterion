@@ -1,5 +1,6 @@
 name: supply-shield
 display_name: Shieldy
+icon: ⛓️
 version: 0.1.0
 description: |
   Global supply-chain MALWARE shield. PR / push-driven, diff-scoped

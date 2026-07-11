@@ -64,7 +64,10 @@ export function MarketplaceDetail({
           <span className="mr-auto text-caption text-fg-subtle">
             {anonymous ? (
               isPlugin ? (
-                <>Copy the CLI command, or sign in to install.</>
+                <>
+                  Copy the CLI command, download the source{" "}
+                  <code className="text-fg-default">.zip</code>, or sign in to install.
+                </>
               ) : (
                 <>
                   Download the <code className="text-fg-default">.botz</code> bundle, or sign in to install.
@@ -82,7 +85,10 @@ export function MarketplaceDetail({
           </span>
           {anonymous ? (
             isPlugin ? (
-              <CopyPluginInstall repoUrl={entry.repo_url} />
+              <span className="flex shrink-0 items-center gap-1.5">
+                <CopyPluginInstall repoUrl={entry.repo_url} />
+                <DownloadBotz slug={entry.slug} kind="plugin" />
+              </span>
             ) : (
               <DownloadBotz slug={entry.slug} />
             )

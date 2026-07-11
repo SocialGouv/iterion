@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"mime/multipart"
@@ -533,7 +534,7 @@ func TestMarketplace_PluginInstallNeedsNoWorkdir(t *testing.T) {
 	}
 }
 
-func TestMarketplace_DownloadRejectsPluginKind(t *testing.T) {
+func TestMarketplace_DownloadPluginServesSourceZip(t *testing.T) {
 	repo := t.TempDir()
 	writePluginFixtureDir(t, repo, "my-plugin")
 	srv := newMarketplaceServer(t, t.TempDir())
@@ -542,11 +543,29 @@ func TestMarketplace_DownloadRejectsPluginKind(t *testing.T) {
 		t.Fatalf("submit = %d; %s", rec.Code, rec.Body.String())
 	}
 	rec := doJSON(t, srv, http.MethodGet, "/api/v1/marketplace/bots/my-plugin/download", "")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("download plugin = %d, want 400; %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download plugin = %d, want 200; %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "plugin entry") {
-		t.Errorf("error message = %s", rec.Body.String())
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "my-plugin.zip") {
+		t.Errorf("Content-Disposition = %q, want my-plugin.zip", cd)
+	}
+	body := rec.Body.Bytes()
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("body is not a valid zip: %v", err)
+	}
+	hasManifest := false
+	for _, f := range zr.File {
+		if f.Name == "plugin.yaml" {
+			hasManifest = true
+		}
+	}
+	if !hasManifest {
+		var names []string
+		for _, f := range zr.File {
+			names = append(names, f.Name)
+		}
+		t.Errorf("zip is missing plugin.yaml at root; entries: %v", names)
 	}
 }
 

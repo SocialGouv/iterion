@@ -1,5 +1,6 @@
 name: feature-gap-fill
 display_name: Fini
+icon: 🧩
 version: 2.0.0
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). Replaces the
 ## v1 staged pipeline (survey_existing → plan → act → simplify → alternating

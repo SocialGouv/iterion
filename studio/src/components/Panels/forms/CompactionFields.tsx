@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import type { CompactionBlock } from "@/api/types";
+import { HelpHint } from "@/components/ui";
 import { NumberField } from "./FormField";
 
 interface Props {
@@ -34,7 +35,8 @@ export default function CompactionFields({ value, onChange }: Props) {
   return (
     <details className="border-t border-border-default pt-2 mt-2">
       <summary className="cursor-pointer text-xs text-fg-subtle font-semibold mb-1">
-        Compaction <span className="text-fg-subtle">?</span>
+        Compaction
+        <HelpHint text="Session compaction settings. Empty fields inherit the workflow default (or the engine baseline)." />
       </summary>
       <div className="pl-2">
         <NumberField

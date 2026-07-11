@@ -12,6 +12,7 @@ import {
 } from "@/api/usage";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Tooltip } from "@/components/ui/Tooltip";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface Props {
   orgID: string;
@@ -56,7 +57,9 @@ export default function UsageTab({ orgID }: Props) {
     );
   }
   if (!usage) {
-    return <EmptyState message="Loading…" />;
+    return (
+      <PanelLoading />
+    );
   }
 
   return (

@@ -59,6 +59,7 @@ export function FilterChips({
               key={c.key}
               type="button"
               onClick={() => onToggle(c.key)}
+              aria-pressed={isActive}
               className={`text-caption px-2 py-0.5 rounded border transition-colors bg-surface-1/90 backdrop-blur ${
                 c.tone
               } ${

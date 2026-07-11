@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { Button, Dialog } from "@/components/ui";
+import { Button, Dialog, Spinner } from "@/components/ui";
 import {
   getRunFileContent,
   saveRunFileContent,
@@ -139,7 +139,7 @@ export default function FileEditDialog({
           </div>
         ) : loading || !meta ? (
           <div className="flex flex-1 items-center justify-center text-sm text-fg-subtle">
-            Loading…
+            <Spinner size="sm" label="Loading file" />
           </div>
         ) : binary ? (
           <div className="flex flex-1 items-center justify-center text-sm text-fg-subtle">

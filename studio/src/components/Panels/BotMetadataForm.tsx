@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { BotEntryWithSchema, BotPatch } from "@/api/bots";
 import { CheckboxField, TagListField, TextField } from "@/components/Panels/forms/FormField";
@@ -7,6 +7,8 @@ import { EmojiPicker } from "@/components/ui/EmojiPicker";
 import { botIdentity } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
 import { useUIStore } from "@/store/ui";
+
+const AUTO_SAVE_DELAY_MS = 800;
 
 interface Draft {
   display_name: string;
@@ -32,13 +34,31 @@ function toDraft(b: BotEntryWithSchema): Draft {
   };
 }
 
+function toPatch(d: Draft): BotPatch {
+  return {
+    display_name: d.display_name.trim(),
+    description: d.description,
+    when_to_use: d.when_to_use,
+    triggers: d.triggers,
+    author: d.author.trim(),
+    version: d.version.trim(),
+    icon: d.icon.trim(),
+    enabled: d.enabled,
+  };
+}
+
 /**
  * BotMetadataForm is the Inspector "Bot" tab — edits a bundle's
  * manifest.yaml (persona, description, the Nexie-facing "when to use",
  * triggers, author/version, and the catalog default). Mounted with
- * `key={bot.name}` so switching files re-seeds the draft; dirty state is
- * computed against the live entry, so a successful save (which refreshes
- * the bots store) clears it.
+ * `key={bot.name}` so switching files re-seeds the draft.
+ *
+ * Edits AUTO-SAVE, debounced: a change schedules a PUT after a short
+ * pause; a failed save keeps the draft and shows the error inline (a
+ * later edit retries). Until the user touches a field the draft follows
+ * outside updates to the entry (e.g. the bot-home header icon picker),
+ * so autosave can never revert a change made elsewhere. A pending edit
+ * is flushed when the form unmounts.
  *
  * The catalog checkbox writes the manifest DEFAULT; a workspace overlay
  * (set via the Catalog manager) can override it locally — surfaced as a
@@ -49,6 +69,8 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
   const addToast = useUIStore((s) => s.addToast);
   const [draft, setDraft] = useState<Draft>(() => toDraft(bot));
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
 
   const baseline = useMemo(() => toDraft(bot), [bot]);
   const dirty = useMemo(
@@ -57,31 +79,78 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
   );
   const overlayDiffers = bot.enabled !== bot.manifest_enabled;
 
-  const update = <K extends keyof Draft>(k: K, v: Draft[K]) =>
-    setDraft((d) => ({ ...d, [k]: v }));
+  // touched = the user edited since the last acknowledged save; while
+  // false the draft tracks outside changes to the entry instead of
+  // fighting them.
+  const touchedRef = useRef(false);
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+  // Last patch acknowledged by the server (or errored — no auto-retry
+  // until the user edits again, the error stays visible instead).
+  const settledPatchRef = useRef<string | null>(null);
+  const pendingRef = useRef<BotPatch | null>(null);
 
-  const onSave = async () => {
+  useEffect(() => {
+    if (!touchedRef.current) setDraft(baseline);
+  }, [baseline]);
+
+  const update = <K extends keyof Draft>(k: K, v: Draft[K]) => {
+    touchedRef.current = true;
+    setDraft((d) => ({ ...d, [k]: v }));
+  };
+
+  const doSave = async (patch: BotPatch) => {
     setSaving(true);
-    const patch: BotPatch = {
-      display_name: draft.display_name.trim(),
-      description: draft.description,
-      when_to_use: draft.when_to_use,
-      triggers: draft.triggers,
-      author: draft.author.trim(),
-      version: draft.version.trim(),
-      icon: draft.icon.trim(),
-      enabled: draft.enabled,
-    };
+    setSaveError(null);
+    setSavedFlash(false);
     try {
-      const updated = await saveBot(bot.name, patch);
-      setDraft(toDraft(updated));
-      addToast(`Saved ${updated.display_name?.trim() || updated.name}`, "success");
+      await saveBot(bot.name, patch);
+      settledPatchRef.current = JSON.stringify(patch);
+      if (JSON.stringify(toPatch(draftRef.current)) === settledPatchRef.current) {
+        touchedRef.current = false;
+      }
+      setSavedFlash(true);
     } catch (e) {
-      addToast(e instanceof Error ? e.message : "Failed to save bot metadata", "error");
+      settledPatchRef.current = JSON.stringify(patch);
+      setSaveError(e instanceof Error ? e.message : "Failed to save bot metadata");
     } finally {
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    const patch = toPatch(draft);
+    const json = JSON.stringify(patch);
+    if (json === JSON.stringify(toPatch(baseline)) || json === settledPatchRef.current) {
+      pendingRef.current = null;
+      return;
+    }
+    pendingRef.current = patch;
+    const t = window.setTimeout(() => {
+      pendingRef.current = null;
+      void doSave(patch);
+    }, AUTO_SAVE_DELAY_MS);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, baseline]);
+
+  // Flush a still-debouncing edit on unmount (tab switch, navigation).
+  useEffect(
+    () => () => {
+      const pending = pendingRef.current;
+      if (!pending) return;
+      saveBot(bot.name, pending).catch((e) => {
+        addToast(
+          e instanceof Error ? e.message : "Failed to save bot metadata",
+          "error",
+        );
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   return (
     <div className="h-full overflow-y-auto p-3">
@@ -171,17 +240,18 @@ export default function BotMetadataForm({ bot }: { bot: BotEntryWithSchema }) {
         )}
       </div>
 
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={!dirty || saving}
-          loading={saving}
-          onClick={onSave}
-        >
-          {saving ? "Saving…" : "Save changes"}
-        </Button>
-        {dirty && !saving && <span className="text-caption text-warning">Unsaved changes</span>}
+      <div className="mt-3 flex items-center gap-2" aria-live="polite">
+        {saveError ? (
+          <span className="text-caption text-danger">
+            Save failed: {saveError} — your edits are kept; change a field to retry.
+          </span>
+        ) : saving ? (
+          <span className="text-caption text-fg-muted">Saving…</span>
+        ) : dirty ? (
+          <span className="text-caption text-fg-muted">Autosaving…</span>
+        ) : savedFlash ? (
+          <span className="text-caption text-success">Saved</span>
+        ) : null}
       </div>
 
       {bot.forge && <ForgeAccessSection forge={bot.forge} />}

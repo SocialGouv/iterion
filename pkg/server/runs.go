@@ -341,19 +341,11 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	if budget != nil {
 		// Validate max_duration at admission so the caller gets a 400
 		// with the offending value instead of a launch-time failure.
+		// Cloud mode forwards the overrides on queue.RunMessage.Budget;
+		// the runner applies them under its multitenant ceiling.
 		if err := budget.Validate(); err != nil {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid budget: %v", err)
 			span.SetStatus(codes.Error, "invalid budget")
-			return
-		}
-		// The queued cloud path has no seam to apply a launch-time budget
-		// override yet (the runner pod recompiles + applies its own
-		// ceiling). Reject explicitly — never silently drop a cap the
-		// caller asked for. The service double-checks on its publisher
-		// path; this admission check gives the clearer 400.
-		if s.cfg.Mode == "cloud" {
-			s.httpErrorFor(w, r, http.StatusBadRequest, "budget overrides are not supported for queued cloud runs yet")
-			span.SetStatus(codes.Error, "budget override on cloud path")
 			return
 		}
 	}

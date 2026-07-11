@@ -1,5 +1,6 @@
 name: supply-shield-cve
 display_name: Vulny
+icon: 🚨
 version: 0.1.0
 description: |
   Global supply-chain CVE shield. PR / push-driven, diff-scoped CVE

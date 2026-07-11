@@ -1,5 +1,6 @@
 name: adr-rechallenge
 display_name: ReArchi
+icon: ⚖️
 version: 0.1.0
 description: |
   Human-in-the-loop ADR re-challenge. Loads an ADR + the current code,

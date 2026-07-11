@@ -44,6 +44,17 @@ describe("humanizeCron", () => {
     expect(humanizeCron("0 8 * * 7")).toBe("every Sunday at 08:00");
   });
 
+  it("renders a weekly day range", () => {
+    expect(humanizeCron("0 7 * * 1-5")).toBe("every Monday to Friday at 07:00");
+    expect(humanizeCron("30 18 * * mon-fri")).toBe("every Monday to Friday at 18:30");
+    expect(humanizeCron("0 9 * * 6-7")).toBe("every Saturday to Sunday at 09:00");
+  });
+
+  it("returns null for a malformed day range", () => {
+    expect(humanizeCron("0 7 * * 1-funday")).toBeNull();
+    expect(humanizeCron("0 7 * * 1-5-6")).toBeNull();
+  });
+
   it("renders a weekly comma list of days", () => {
     expect(humanizeCron("0 9 * * 1,3,5")).toBe(
       "every Monday, Wednesday, Friday at 09:00",
@@ -69,7 +80,6 @@ describe("humanizeCron", () => {
     ["0 3 * jan *", "month name"],
     ["0-30 3 * * *", "minute range"],
     ["0 9-17 * * *", "hour range"],
-    ["0 3 * * 1-5", "day-of-week range"],
     ["0,30 3 * * *", "minute comma list"],
     ["0 3 1 * 1", "both day-of-month and day-of-week set"],
     ["0 3 32 * *", "day-of-month out of range"],

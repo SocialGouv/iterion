@@ -254,6 +254,35 @@ func Fetch(ctx context.Context, opts Options) (dir string, cleanup func(), err e
 	return botDir, rcleanup, nil
 }
 
+// FetchRaw resolves opts.Source like Fetch but skips the bot-bundle
+// discovery/validation: it returns the raw source tree, narrowed to
+// opts.Path when set. It is the materialization step behind the
+// marketplace download of non-bot entries (plugins, whose layout
+// bundle.OpenDir would reject). Same read-only contract as Fetch: never
+// mutate the returned directory.
+func FetchRaw(ctx context.Context, opts Options) (dir string, cleanup func(), err error) {
+	if strings.TrimSpace(opts.Source) == "" {
+		return "", func() {}, fmt.Errorf("a git URL or local path is required")
+	}
+	url, ref := splitSourceRef(opts.Source)
+	if opts.Ref != "" {
+		ref = opts.Ref
+	}
+	repoRoot, rcleanup, err := resolveRepoRoot(ctx, url, ref)
+	if err != nil {
+		return "", func() {}, err
+	}
+	dir = repoRoot
+	if p := strings.TrimSpace(opts.Path); p != "" {
+		dir, err = resolveSubdir(repoRoot, p)
+		if err != nil {
+			rcleanup()
+			return "", func() {}, err
+		}
+	}
+	return dir, rcleanup, nil
+}
+
 // splitSourceRef splits "url#ref" into (url, ref). A '#' whose prefix is an
 // existing local directory is treated as part of the path, not a ref marker.
 func splitSourceRef(src string) (url, ref string) {

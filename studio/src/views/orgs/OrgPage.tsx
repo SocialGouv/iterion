@@ -8,6 +8,7 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Spinner } from "@/components/ui/Spinner";
 import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { Tabs } from "@/components/ui/Tabs";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -385,7 +386,13 @@ function OrgBilling({ orgID }: { orgID: string }) {
       </InlineBanner>
     );
   }
-  if (!usage) return <div className="text-sm text-fg-muted">Loading…</div>;
+  if (!usage) {
+    return (
+      <div className="text-sm text-fg-muted">
+        <Spinner size="sm" label="Loading usage" />
+      </div>
+    );
+  }
 
   const rows: Array<[string, string]> = [
     ["Monthly run quota", usage.monthly_run_quota ? String(usage.monthly_run_quota) : "unlimited"],

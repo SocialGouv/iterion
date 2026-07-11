@@ -8,18 +8,48 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { Checkbox } from "@/components/ui/Checkbox";
-import { FieldLabel } from "@/components/ui/FieldLabel";
-import { HelpHint } from "@/components/ui/HelpHint";
+import {
+  Button,
+  Checkbox,
+  FieldLabel,
+  HelpHint,
+  IconButton,
+  Input,
+  Select,
+  TagInput,
+  Textarea,
+} from "@/components/ui";
 import { RefAwareInput, RefAwareTextarea } from "@/components/ui/RefAwareInput";
 import PromptOverlayHighlight from "@/components/ui/PromptOverlayHighlight";
-import { Input } from "@/components/ui/Input";
-import { Select } from "@/components/ui/Select";
-import { Textarea } from "@/components/ui/Textarea";
 import type { RefContext } from "@/lib/refCompletion";
+import { softColor } from "@/lib/constants";
 import { Pencil1Icon } from "@radix-ui/react-icons";
 
-const labelClass = "block text-xs text-fg-subtle mb-1";
+interface NodeFormHeaderProps {
+  /** Node-kind color (a runtime CSS-var string from NODE_COLORS). */
+  color: string;
+  icon: ReactNode;
+  label: string;
+}
+
+/**
+ * Colored banner naming the node kind at the top of each node form.
+ * The node-kind colors are runtime values (CSS-var strings), so the
+ * tint and border are inline styles — no static token class exists.
+ */
+export function NodeFormHeader({ color, icon, label }: NodeFormHeaderProps) {
+  return (
+    <div
+      className="flex items-center gap-2 px-2 py-1.5 rounded mb-2 -mx-1"
+      style={{ backgroundColor: softColor(color), borderLeft: `3px solid ${color}` }}
+    >
+      <span className="text-base">{icon}</span>
+      <span className="text-xs font-bold uppercase tracking-wide" style={{ color }}>
+        {label}
+      </span>
+    </div>
+  );
+}
 
 interface FieldRowChildArgs {
   /** id to apply to the primary control inside the row. */
@@ -44,7 +74,7 @@ interface FieldRowProps {
  * pipe `inputId` and `describedBy` through; the FieldRow renders the
  * <p role="alert"> automatically.
  */
-function FieldRow({
+export function FieldRow({
   label,
   help,
   error,
@@ -216,19 +246,20 @@ export function CommittedTextField({ label, value, onChange, onCommit, validate,
             placeholder={placeholder}
           />
           {isDirty && (
-            <button
-              type="button"
-              className="bg-accent hover:bg-accent-hover text-fg-onAccent text-xs px-1.5 rounded shrink-0"
+            <IconButton
+              variant="primary"
+              size="sm"
+              label="Confirm edit"
+              tooltip="Confirm"
+              className="shrink-0 text-xs"
               onMouseDown={(e) => {
                 e.preventDefault(); // prevent blur before commit
                 commit();
                 (document.activeElement as HTMLInputElement)?.blur();
               }}
-              title="Confirm"
-              aria-label="Confirm edit"
             >
               &#x2713;
-            </button>
+            </IconButton>
           )}
         </div>
       )}
@@ -328,9 +359,10 @@ export function SelectFieldWithCreate({ label, value, onChange, options, allowEm
               </option>
             ))}
           </Select>
-          <button
-            type="button"
-            className="bg-success hover:bg-success/90 text-xs px-1.5 rounded shrink-0"
+          <Button
+            variant="success"
+            size="sm"
+            className="shrink-0"
             onClick={() => {
               const newName = onCreate();
               onChange(newName);
@@ -339,7 +371,7 @@ export function SelectFieldWithCreate({ label, value, onChange, options, allowEm
             aria-label={`Create new ${label.toLowerCase()}`}
           >
             +
-          </button>
+          </Button>
         </div>
       )}
     </FieldRow>
@@ -378,62 +410,11 @@ interface TagListFieldProps {
 }
 
 export function TagListField({ label, values, onChange, placeholder = "Add..." }: TagListFieldProps) {
-  const [input, setInput] = useState("");
-
-  const addTag = useCallback(() => {
-    const v = input.trim();
-    if (v && !values.includes(v)) {
-      onChange([...values, v]);
-    }
-    setInput("");
-  }, [input, values, onChange]);
-
-  const onKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        addTag();
-      }
-    },
-    [addTag],
-  );
-
   return (
-    <div className="mb-2">
-      <label className={labelClass}>{label}</label>
-      <div className="flex flex-wrap gap-1 mb-1">
-        {values.map((v) => (
-          <span key={v} className="bg-surface-2 text-xs px-2 py-0.5 rounded flex items-center gap-1">
-            {v}
-            <button
-              type="button"
-              aria-label={`Remove ${v}`}
-              className="text-fg-subtle hover:text-fg-default"
-              onClick={() => onChange(values.filter((x) => x !== v))}
-            >
-              x
-            </button>
-          </span>
-        ))}
-      </div>
-      <div className="flex gap-1">
-        <Input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={placeholder}
-        />
-        <button
-          type="button"
-          aria-label="Add"
-          className="bg-surface-2 hover:bg-surface-3 text-xs px-2 rounded"
-          onClick={addTag}
-        >
-          +
-        </button>
-      </div>
-    </div>
+    <FieldRow label={label}>
+      {/* Generous cap: tool-policy patterns can be long; never truncate a rule. */}
+      <TagInput value={values} onChange={onChange} placeholder={placeholder} maxTagLength={512} />
+    </FieldRow>
   );
 }
 
@@ -504,19 +485,21 @@ export function PromptPickerField({
                 </option>
               ))}
             </Select>
-            <button
-              type="button"
-              className="bg-surface-2 hover:bg-surface-3 text-xs px-1.5 rounded shrink-0 inline-flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+            <IconButton
+              variant="secondary"
+              size="sm"
+              label={value ? `Edit prompt ${value}` : "Edit prompt"}
+              tooltip={value ? `Edit prompt "${value}"` : "Select a prompt to edit"}
+              className="shrink-0"
               onClick={() => value && onEdit(value)}
               disabled={!value}
-              title={value ? `Edit prompt "${value}"` : "Select a prompt to edit"}
-              aria-label={value ? `Edit prompt ${value}` : "Edit prompt"}
             >
               <Pencil1Icon />
-            </button>
-            <button
-              type="button"
-              className="bg-success hover:bg-success/90 text-xs px-1.5 rounded shrink-0"
+            </IconButton>
+            <Button
+              variant="success"
+              size="sm"
+              className="shrink-0"
               onClick={() => {
                 const newName = onCreate();
                 onChange(newName);
@@ -526,7 +509,7 @@ export function PromptPickerField({
               aria-label={`Create new ${label.toLowerCase()}`}
             >
               +
-            </button>
+            </Button>
           </div>
           {value && body && (
             <button
@@ -562,7 +545,7 @@ interface MultiSelectFieldProps {
 export function MultiSelectField({ label, values, onChange, options }: MultiSelectFieldProps) {
   return (
     <div className="mb-2">
-      <label className={labelClass}>{label}</label>
+      <FieldLabel>{label}</FieldLabel>
       <div className="flex flex-col gap-1 max-h-32 overflow-y-auto bg-surface-1 border border-border-strong rounded p-1">
         {options.map((opt) => (
           <label key={opt} className="flex items-center gap-2 text-xs text-fg-muted px-1 hover:bg-surface-2 rounded cursor-pointer">

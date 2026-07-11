@@ -463,11 +463,12 @@ tasks:
       - ./{{.BINARY}} diagram {{.CLI_ARGS}}
 
   check:
-    desc: Run all checks (lint + test + golden replay)
+    desc: Run all checks (lint + test + golden replay + studio)
     cmds:
       - task: lint
       - task: test
       - task: test:goldens
+      - task: studio:check
 
   studio:build:
     desc: Build the studio frontend
@@ -498,6 +499,34 @@ tasks:
     generates:
       - ../pkg/server/static/index.html
       - ../pkg/server/static/assets/**
+
+  studio:lint:
+    desc: Lint the studio frontend (eslint)
+    dir: studio
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - corepack pnpm exec eslint .
+
+  studio:typecheck:
+    desc: Typecheck the studio frontend (tsc -b)
+    dir: studio
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - corepack pnpm exec tsc -b
+
+  studio:test:
+    desc: Run the studio frontend unit tests (vitest)
+    dir: studio
+    cmds:
+      - corepack pnpm install --prefer-offline
+      - corepack pnpm exec vitest run
+
+  studio:check:
+    desc: Lint + typecheck + test the studio frontend
+    cmds:
+      - task: studio:lint
+      - task: studio:typecheck
+      - task: studio:test
 
   openapi:gen:
     desc: Regenerate the OpenAPI spec (openapi.json) + studio TS types (schema.ts) from code

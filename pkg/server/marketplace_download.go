@@ -70,12 +70,6 @@ func (s *Server) handleMarketplaceDownload(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusNotFound, "marketplace: %q not found", slug)
 		return
 	}
-	// A plugin has no .botz form; it installs via the plugin pipeline.
-	if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: %q is a plugin entry — install it with `iterion plugin install %s`", slug, entry.RepoURL)
-		return
-	}
-
 	src := strings.TrimSpace(entry.RepoURL)
 	if src == "" {
 		// Upload-sourced entries park their bytes in BundleRef, a backend
@@ -84,13 +78,21 @@ func (s *Server) handleMarketplaceDownload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	botzPath, err := s.materializeBotz(r, *entry)
+	// Bots pack as installable .botz bundles; plugins as a plain source
+	// ZIP (they install via `iterion plugin install`, the download is the
+	// inspect-before-install / archive path).
+	filename := slug + ".botz"
+	if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
+		filename = slug + ".zip"
+	}
+
+	archivePath, err := s.materializeArchive(r, *entry, filename)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadGateway, "marketplace: build bundle: %v", err)
 		return
 	}
 
-	f, err := os.Open(botzPath)
+	f, err := os.Open(archivePath)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "marketplace: open bundle: %v", err)
 		return
@@ -102,18 +104,20 @@ func (s *Server) handleMarketplaceDownload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", slug+".botz"))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	// http.ServeContent sets Content-Length, handles Range + If-Modified.
-	http.ServeContent(w, r, slug+".botz", info.ModTime(), f)
+	http.ServeContent(w, r, filename, info.ModTime(), f)
 }
 
-// materializeBotz returns the filesystem path of a packed `.botz` for the
-// entry, building it (and caching it) on first request. The cache key is
-// the entry's identity + version + source coordinates, so a re-published
-// version (or a moved repo) busts the cache. An entry with no version
-// (e.g. a manifest that omits it) is packed fresh every time — correctness
-// over the cache hit.
-func (s *Server) materializeBotz(r *http.Request, entry marketplace.Entry) (string, error) {
+// materializeArchive returns the filesystem path of a packed archive for
+// the entry — an installable `.botz` for bots (bundle layout validated),
+// a plain source ZIP for plugins — building it (and caching it) on first
+// request. The cache key is the entry's identity + version + source
+// coordinates, so a re-published version (or a moved repo) busts the
+// cache. An entry with no version (e.g. a manifest that omits it) is
+// packed fresh every time — correctness over the cache hit.
+func (s *Server) materializeArchive(r *http.Request, entry marketplace.Entry, filename string) (string, error) {
+	isPlugin := marketplace.EffectiveKind(entry) == marketplace.KindPlugin
 	cacheable := strings.TrimSpace(entry.Version) != ""
 	keyRaw := strings.Join([]string{entry.Slug, entry.Version, entry.RepoURL, entry.Ref, entry.Subpath}, "\x00")
 	sum := sha256.Sum256([]byte(keyRaw))
@@ -128,15 +132,22 @@ func (s *Server) materializeBotz(r *http.Request, entry marketplace.Entry) (stri
 	lock.Lock()
 	defer lock.Unlock()
 
-	cachePath := filepath.Join(root, key+".botz")
+	cachePath := filepath.Join(root, key+filepath.Ext(filename))
 	if cacheable {
 		if _, statErr := os.Stat(cachePath); statErr == nil {
 			return cachePath, nil
 		}
 	}
 
-	// Materialize the bundle dir (git clone or local builtin path) read-only.
-	dir, cleanup, err := botinstall.Fetch(r.Context(), botinstall.Options{
+	// Materialize the source dir (git clone or local builtin path)
+	// read-only. Bots go through the bundle discovery + validation;
+	// plugins take the raw tree (their layout is plugin.yaml, which
+	// bundle.OpenDir would reject).
+	fetch := botinstall.Fetch
+	if isPlugin {
+		fetch = botinstall.FetchRaw
+	}
+	dir, cleanup, err := fetch(r.Context(), botinstall.Options{
 		Source: entry.RepoURL,
 		Ref:    entry.Ref,
 		Path:   entry.Subpath,
@@ -146,12 +157,16 @@ func (s *Server) materializeBotz(r *http.Request, entry marketplace.Entry) (stri
 	}
 	defer cleanup()
 
-	// Pack into a unique temp file first (PackDir refuses an existing
+	// Pack into a unique temp file first (the packers refuse an existing
 	// outPath), then rename into place so a concurrent reader never sees a
 	// half-written archive.
 	tmpOut := filepath.Join(root, key+".tmp-"+randSuffixFromKey(key, entry.UpdatedAt))
 	_ = os.Remove(tmpOut)
-	if _, err := bundle.PackDir(dir, tmpOut); err != nil {
+	pack := bundle.PackDir
+	if isPlugin {
+		pack = bundle.PackTree
+	}
+	if _, err := pack(dir, tmpOut); err != nil {
 		_ = os.Remove(tmpOut)
 		return "", err
 	}

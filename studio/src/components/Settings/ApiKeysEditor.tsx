@@ -6,6 +6,7 @@ import { Badge, Button, EmptyState, Input } from "@/components/ui";
 
 import { desktop, type SecretStatus } from "@/lib/desktopBridge";
 import { useConfirm } from "@/hooks/useConfirm";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 // ApiKeysEditor never displays secret values — only stored / not-stored /
 // shadowed-by-env status, plus an input for entering or replacing the
@@ -29,7 +30,7 @@ export default function ApiKeysEditor() {
     return fetchError ? (
       <EmptyState message={<span className="text-danger">{fetchError}</span>} />
     ) : (
-      <EmptyState message="Loading…" />
+      <PanelLoading />
     );
   }
 

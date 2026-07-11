@@ -11,7 +11,7 @@ import {
   ReaderIcon,
 } from "@radix-ui/react-icons";
 
-import { IconButton, Tabs, Tooltip } from "@/components/ui";
+import { IconButton, Tabs } from "@/components/ui";
 import { readEnumFlag, writeStringFlag } from "@/lib/localStorageFlag";
 import type { RunFile, RunFilesMode, RunHeader } from "@/api/runs";
 
@@ -266,15 +266,8 @@ function RailButton({
   children: ReactNode;
 }) {
   return (
-    <Tooltip content={label}>
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label={label}
-        className="relative inline-flex h-7 w-7 items-center justify-center rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg-default"
-      >
-        {children}
-      </button>
-    </Tooltip>
+    <IconButton label={label} size="sm" variant="ghost" onClick={onClick}>
+      {children}
+    </IconButton>
   );
 }

@@ -534,12 +534,15 @@ function processEvent(
           : undefined;
       // ask_user pauses live on AGENT nodes (the agent called the
       // ask_user tool mid-turn, questions carry `ask_user_response`).
-      // They must surface as chat turns too — previously only
-      // human-kind nodes did, leaving agent questions invisible in
-      // the transcript.
+      // Recovery pauses do too (graceful-failure asks the operator to
+      // acknowledge before a retry, questions carry
+      // `acknowledge_recovery`). EVERY human_input_requested blocks
+      // the run on operator input, so every one must surface as an
+      // answerable chat turn — filtering to human-kind nodes left
+      // agent-node pauses invisible: a paused run with no form
+      // anywhere in the console.
       const isAskUser = !!questions && "ask_user_response" in questions;
       const kind = resolver.kind(nodeId);
-      if (kind !== "human" && !isAskUser) break;
 
       // The runtime omits `iteration` from human_input_requested
       // event payloads today — only node_started carries it. Without
@@ -548,14 +551,17 @@ function processEvent(
       // it, and the user sees the answered iter-0 bubble (no form)
       // instead of the new pending iter-1 form.
       const iter = nodeIteration.get(nodeId) ?? iterationOf(evt);
-      // ask_user turns key on the interaction id: one agent turn can
-      // pause several times (…_1, …_2 suffixes engine-side), and the
-      // nodeId:iter key would dedupe every pause after the first.
+      // Agent-node pauses (ask_user, recovery) key on the interaction
+      // id: one agent turn can pause several times (…_1, …_2 suffixes
+      // engine-side), and the nodeId:iter key would dedupe every pause
+      // after the first. Human nodes keep the nodeId:iter key so a
+      // revise loop's turns stay distinct.
       const interactionId =
         typeof evt.data?.interaction_id === "string" && evt.data.interaction_id
           ? (evt.data.interaction_id as string)
           : undefined;
-      const key = isAskUser && interactionId ? interactionId : humanId(nodeId, iter);
+      const key =
+        kind !== "human" && interactionId ? interactionId : humanId(nodeId, iter);
       if (humanIdx.has(key)) break; // dedupe replay
       const hints = resolver.humanRenderHints?.(nodeId);
       // The runtime resolves a human node's `instructions:` prompt against
@@ -596,12 +602,23 @@ function processEvent(
         isAskUser && typeof questions?.ask_user_response === "string"
           ? (questions.ask_user_response as string)
           : undefined;
+      // Recovery pause: the acknowledge_recovery value is the
+      // operator-facing guidance ("re-authenticate, then resume…").
+      const recoveryPrompt =
+        typeof questions?.acknowledge_recovery === "string"
+          ? (questions.acknowledge_recovery as string)
+          : undefined;
       const idx = out.length;
       out.push({
         kind: "human-question",
         id: key,
         nodeId,
-        prompt: hints?.prompt ?? instructions ?? askUserPrompt ?? "Reply to continue.",
+        prompt:
+          hints?.prompt ??
+          instructions ??
+          askUserPrompt ??
+          recoveryPrompt ??
+          "Reply to continue.",
         status: "pending",
         actions: hints?.actions,
         quickActions: hints?.quickActions,

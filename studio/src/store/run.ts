@@ -677,7 +677,7 @@ export function createRunStore() {
 
       let nextText = log.text + appendText;
       let nextStart = log.start;
-      let nextByte = Math.max(log.nextByte, incomingEndByte);
+      const nextByte = Math.max(log.nextByte, incomingEndByte);
       // Trim the retained window by BYTES (both constants are byte counts).
       const totalBytes = utf8Len(nextText);
       if (totalBytes > MAX_LOG_BYTES) {

@@ -26,6 +26,7 @@ import { ErrorNotice } from "@/components/shared/ErrorNotice";
 
 import CommitDetailDialog from "./CommitDetailDialog";
 import MergeConflictView from "./MergeConflictView";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface CommitsPanelProps {
   runId: string;
@@ -87,7 +88,7 @@ export default function CommitsPanel({
           />
         ) : !data ? (
           loading ? (
-            <EmptyState message="Loading…" />
+            <PanelLoading />
           ) : (
             <EmptyState message="" />
           )
@@ -462,23 +463,25 @@ function SquashMessageEditor({
           Commit message
         </span>
         {isEditing ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onReset}
             disabled={disabled}
-            className="inline-flex items-center gap-1 text-caption text-fg-subtle hover:text-fg-default disabled:opacity-50"
+            leadingIcon={<ResetIcon />}
           >
-            <ResetIcon /> Reset
-          </button>
+            Reset
+          </Button>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onStartEdit}
             disabled={disabled || !previewText}
-            className="inline-flex items-center gap-1 text-caption text-fg-subtle hover:text-fg-default disabled:opacity-50"
+            leadingIcon={<Pencil1Icon />}
           >
-            <Pencil1Icon /> Edit
-          </button>
+            Edit
+          </Button>
         )}
       </div>
       {isEditing ? (
@@ -651,6 +654,8 @@ function reasonLabel(reason: string | undefined): string {
       return "Run has no recorded base commit — cannot compute commit list";
     case "not_git_repo":
       return "Not a git repository";
+    case "history_unavailable":
+      return "Run history is no longer in this repo — the storage branch or base commit was pruned, or lives in another checkout";
     default:
       return reason ?? "Commits unavailable";
   }

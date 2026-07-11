@@ -31,7 +31,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
-import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { TagInput } from "@/components/ui/TagInput";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
@@ -155,7 +155,7 @@ function FieldsViewInner() {
         </div>
       )}
 
-      {!board && <EmptyState message="Loading…" />}
+      {!board && <TableSkeleton />}
 
       {board && fields.length === 0 && (
         <EmptyState

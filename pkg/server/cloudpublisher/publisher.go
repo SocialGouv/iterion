@@ -539,6 +539,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoURL: spec.RepoURL,
 		RepoSHA: spec.RepoRef,
 		BotID:   spec.BotID,
+		Budget:  budgetForWire(spec.Budget),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		// Best-effort: roll the run doc back to failed so the studio
@@ -832,6 +833,22 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 		}()
 		fn()
 	}()
+}
+
+// budgetForWire converts launch-time budget overrides to their queue wire
+// mirror. Nil (or all-zero) overrides publish as nil so old payload diffs
+// stay byte-identical and the runner's nil-check stays meaningful.
+func budgetForWire(o *ir.BudgetOverrides) *queue.BudgetOverrides {
+	if o == nil || o.IsZero() {
+		return nil
+	}
+	return &queue.BudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+	}
 }
 
 // varsAsAny upgrades a string-keyed map to interface{} so the wire

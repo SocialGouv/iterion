@@ -1,5 +1,6 @@
 name: sec-audit-deps
 display_name: Depsy
+icon: 📦
 version: 0.1.0
 description: |
   Universal supply-chain malware auditor. Enumerates installed

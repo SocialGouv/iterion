@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { Artifact, ArtifactSummary } from "@/api/runs";
 import { getArtifact } from "@/api/runs";
-import { CopyButton, Select } from "@/components/ui";
+import { CopyButton, Select, Spinner } from "@/components/ui";
 
 interface Props {
   runId: string;
@@ -321,12 +321,20 @@ export default function ArtifactDiff({ runId, nodeId, versions }: Props) {
               <CopyButton value={JSON.stringify(toBody.data, null, 2)} />
             </div>
           )}
-          <pre className="bg-surface-2 rounded p-2 text-caption font-mono whitespace-pre-wrap break-all max-h-[60vh] overflow-auto">
-            {toBody ? JSON.stringify(toBody.data, null, 2) : "Loading…"}
-          </pre>
+          {toBody ? (
+            <pre className="bg-surface-2 rounded p-2 text-caption font-mono whitespace-pre-wrap break-all max-h-[60vh] overflow-auto">
+              {JSON.stringify(toBody.data, null, 2)}
+            </pre>
+          ) : (
+            <div className="flex items-center justify-center rounded bg-surface-2 p-4">
+              <Spinner size="sm" label="Loading artifact" />
+            </div>
+          )}
         </div>
       ) : !diff ? (
-        <div className="text-fg-subtle text-caption">Loading diff…</div>
+        <div className="flex items-center gap-1.5 text-fg-subtle text-caption">
+          <Spinner size="xs" /> Loading diff…
+        </div>
       ) : (
         <pre className="rounded font-mono text-caption max-h-[60vh] overflow-auto border border-border-default">
           {diff.map((line, i) => (
