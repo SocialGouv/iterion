@@ -4,10 +4,12 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
-// Dev-server proxy target: the Go editor backend.
+// Dev-server proxy target: the Go editor backend. Overridable via
+// ITERION_STUDIO_BACKEND so a second dev instance (e.g. from a worktree)
+// can proxy to a backend on a non-default port.
 // The matching origin header value the Go server's loopback allowlist
 // will accept (rewritten on every proxied request below).
-const TARGET = "http://localhost:4891";
+const TARGET = process.env.ITERION_STUDIO_BACKEND ?? "http://localhost:4891";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
