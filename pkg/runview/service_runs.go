@@ -199,6 +199,9 @@ func matchesFilter(r *store.Run, f ListFilter) bool {
 	if f.Repo != "" && r.ProjectPath != f.Repo {
 		return false
 	}
+	if f.Bundle != "" && !strings.EqualFold(resolveBundleName(r.BundleName, r.BundlePath), f.Bundle) {
+		return false
+	}
 	if !f.Since.IsZero() && r.UpdatedAt.Before(f.Since) {
 		return false
 	}

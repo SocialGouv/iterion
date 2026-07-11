@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -73,6 +74,10 @@ type detachedSpec struct {
 	Timeout    time.Duration
 	MergeInto  string // worktree finalization, Launch only
 	BranchName string // worktree finalization, Launch only
+	// Budget forwards launch-time budget overrides as the CLI's
+	// --max-* flags, so the detached runner applies the same caps the
+	// in-process path would. Launch only; nil = no override.
+	Budget *ir.BudgetOverrides
 }
 
 // buildRunnerCmd assembles the exec.Cmd for a detached-runner
@@ -91,6 +96,23 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		}
 		if spec.BranchName != "" {
 			args = append(args, "--branch-name", spec.BranchName)
+		}
+		if b := spec.Budget; b != nil {
+			if b.MaxCostUSD > 0 {
+				args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
+			}
+			if b.MaxTokens > 0 {
+				args = append(args, "--max-tokens", strconv.Itoa(b.MaxTokens))
+			}
+			if b.MaxDuration != "" {
+				args = append(args, "--max-duration", b.MaxDuration)
+			}
+			if b.MaxIterations > 0 {
+				args = append(args, "--max-iterations", strconv.Itoa(b.MaxIterations))
+			}
+			if b.MaxParallelBranches > 0 {
+				args = append(args, "--max-parallel-branches", strconv.Itoa(b.MaxParallelBranches))
+			}
 		}
 	case runnerCommandResume:
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
@@ -275,6 +297,7 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		Timeout:    spec.Timeout,
 		MergeInto:  spec.MergeInto,
 		BranchName: spec.BranchName,
+		Budget:     spec.Budget,
 	})
 	if err != nil {
 		// The doc was pre-created above; without a runner it would sit
