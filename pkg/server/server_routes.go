@@ -44,6 +44,7 @@ func (s *Server) routes() {
 	// args form per bot. Read-only, gated by the same auth middleware
 	// as the rest of /api/* (the wrapper at line ~427 wraps the mux).
 	s.mux.HandleFunc("GET /api/v1/plugins", s.handlePluginsList)
+	s.mux.HandleFunc("GET /api/v1/plugins/{name}", s.handlePluginDetail)
 	s.mux.HandleFunc("POST /api/v1/plugins/{name}/enable", s.handlePluginEnable(true))
 	s.mux.HandleFunc("POST /api/v1/plugins/{name}/disable", s.handlePluginEnable(false))
 	// install/uninstall mutate the shared plugin tree (clone an arbitrary
@@ -55,6 +56,9 @@ func (s *Server) routes() {
 	// config write can carry secrets and is instance-global, so it's super-admin
 	// gated too (operator-open in local/dev mode).
 	s.mux.Handle("PUT /api/v1/plugins/{name}/config", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginConfig)))
+	// lifecycle executes manifest shell in the workspace, so it takes the same
+	// gate as install (super-admin; handler adds safe-origin + local-mode-only).
+	s.mux.Handle("POST /api/v1/plugins/{name}/lifecycle/{phase}", s.requireSuperAdmin(http.HandlerFunc(s.handlePluginLifecycle)))
 	s.mux.HandleFunc("GET /api/v1/bots", s.handleBotsList)
 	s.mux.HandleFunc("POST /api/v1/bots/install", s.handleBotInstall)
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -129,4 +130,129 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	view, _ := reg.ViewFor(name)
 	s.writeJSONFor(w, r, view)
+}
+
+// handlePluginDetail answers GET /api/v1/plugins/{name} — the full detail
+// projection of one plugin (README, rewriters, MCP servers, mirrored files,
+// hook commands, lifecycle). Read-only, same open access as the list route.
+func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin name required")
+		return
+	}
+	reg, err := plugin.Load()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if _, ok := reg.Get(name); !ok {
+		s.httpErrorFor(w, r, http.StatusNotFound, "plugin %q not found", name)
+		return
+	}
+	detail, err := reg.DetailFor(name)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	s.writeJSONFor(w, r, detail)
+}
+
+// lifecycleOutputCap bounds the subprocess output echoed back to the studio —
+// a runaway indexer must not buffer unbounded bytes into server memory.
+const lifecycleOutputCap = 64 << 10
+
+// cappedOutputBuffer captures subprocess output up to a fixed cap, then keeps
+// accepting (and discarding) writes so the subprocess never sees a write
+// error. It is passed as BOTH Stdout and Stderr of the lifecycle command;
+// os/exec serializes Writes when the two are the same comparable writer, so
+// no lock is needed.
+type cappedOutputBuffer struct {
+	buf       bytes.Buffer
+	truncated bool
+}
+
+func (b *cappedOutputBuffer) Write(p []byte) (int, error) {
+	if remaining := lifecycleOutputCap - b.buf.Len(); remaining > 0 {
+		if len(p) > remaining {
+			b.buf.Write(p[:remaining])
+			b.truncated = true
+		} else {
+			b.buf.Write(p)
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+// handlePluginLifecycle answers POST /api/v1/plugins/{name}/lifecycle/{phase}
+// (phase: index|refresh) — runs the plugin's manifest lifecycle command in the
+// server's workspace. Local-mode only (the command is arbitrary manifest shell
+// executed server-side) and super-admin gated via the route wrapper. Setup
+// problems (unknown plugin, no lifecycle block, empty phase command) are 4xx;
+// a command that RAN and failed is a 200 with ok:false so the studio can show
+// the captured output either way.
+func (s *Server) handlePluginLifecycle(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.cfg.Mode == "cloud" {
+		s.httpErrorFor(w, r, http.StatusForbidden, "plugin lifecycle is not available in cloud mode")
+		return
+	}
+	if s.cfg.WorkDir == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "no workspace configured: the lifecycle command executes in the workspace")
+		return
+	}
+	phase := r.PathValue("phase")
+	if phase != "index" && phase != "refresh" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "unknown lifecycle phase %q (want index|refresh)", phase)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin name required")
+		return
+	}
+	reg, err := plugin.Load()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	p, ok := reg.Get(name)
+	if !ok {
+		s.httpErrorFor(w, r, http.StatusNotFound, "plugin %q not found", name)
+		return
+	}
+	// Validate the manifest declares this phase BEFORE running, so setup
+	// errors surface as 4xx instead of a false "command failed" result.
+	lc := p.Manifest.Contributes.Lifecycle
+	if lc == nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin %q has no lifecycle commands", name)
+		return
+	}
+	cmd := lc.Index
+	if phase == "refresh" {
+		cmd = lc.Refresh
+	}
+	if strings.TrimSpace(cmd) == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin %q has no %q command", name, phase)
+		return
+	}
+	out := &cappedOutputBuffer{}
+	runErr := plugin.RunLifecycle(r.Context(), reg, name, phase, s.cfg.WorkDir, out, out)
+	resp := map[string]any{
+		"name":   name,
+		"phase":  phase,
+		"ok":     runErr == nil,
+		"output": out.buf.String(),
+	}
+	if out.truncated {
+		resp["truncated"] = true
+	}
+	if runErr != nil {
+		resp["error"] = runErr.Error()
+	}
+	s.writeJSONFor(w, r, resp)
 }
