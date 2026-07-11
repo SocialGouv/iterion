@@ -70,6 +70,11 @@ func (s *Server) handleMarketplaceDownload(w http.ResponseWriter, r *http.Reques
 		s.httpErrorFor(w, r, http.StatusNotFound, "marketplace: %q not found", slug)
 		return
 	}
+	// A plugin has no .botz form; it installs via the plugin pipeline.
+	if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: %q is a plugin entry — install it with `iterion plugin install %s`", slug, entry.RepoURL)
+		return
+	}
 
 	src := strings.TrimSpace(entry.RepoURL)
 	if src == "" {

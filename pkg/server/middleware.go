@@ -105,11 +105,23 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// isSuperAdmin reports whether the request carries a platform
+// super-admin identity. Local DisableAuth mode always passes — that is
+// the same outcome requireAuth produces there (it synthesizes a
+// super-admin identity for every request), stated directly so the
+// predicate holds even when a caller sits outside the auth middleware.
+func (s *Server) isSuperAdmin(r *http.Request) bool {
+	if s.cfg.DisableAuth {
+		return true
+	}
+	id, _ := auth.FromContext(r.Context())
+	return id.IsSuperAdmin
+}
+
 // requireSuperAdmin wraps next, allowing only platform super-admins.
 func (s *Server) requireSuperAdmin(next http.Handler) http.Handler {
 	return s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, _ := auth.FromContext(r.Context())
-		if !id.IsSuperAdmin {
+		if !s.isSuperAdmin(r) {
 			httpError(w, http.StatusForbidden, "super-admin only")
 			return
 		}
