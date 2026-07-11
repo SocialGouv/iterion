@@ -191,10 +191,7 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 	if existing, err := store.List(native.ListFilter{Labels: []string{label}}); err == nil && len(existing) > 0 {
 		return // already materialised for this comment
 	}
-	title := route.BotID
-	if sn := strings.TrimSpace(vars["scope_notes"]); sn != "" {
-		title = route.BotID + " — " + firstLine(sn)
-	}
+	title := boardCardTitle(route, vars)
 	botArgs := map[string]string{}
 	if route.ArgsVar != "" {
 		if v, ok := vars[route.ArgsVar]; ok && v != "" {
@@ -251,8 +248,7 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 			botArgs[boardSecretOverridesKey] = string(raw)
 		}
 	}
-	body := fmt.Sprintf("Triggered by a /%s-style command on %s/%s.\n\n%s",
-		route.BotID, meta.ProjectPath, meta.SubjectID, strings.TrimSpace(vars["scope_notes"]))
+	body := boardCardBody(route, vars, meta)
 	if _, err := store.Create(native.Issue{
 		Title:    truncate(title, 120),
 		Body:     body,
@@ -264,6 +260,59 @@ func (s *Server) ensureBoardCard(ctx context.Context, cfg webhooks.Config, route
 	}); err != nil && s.logger != nil {
 		s.logger.Warn("webhooks: board card create failed (tenant=%s bot=%s): %v", cfg.TenantID, route.BotID, err)
 	}
+}
+
+// boardCardMission returns the human-readable "what was the bot asked to do"
+// text for a board card, from what the trigger actually put in the launch vars:
+// an explicit `scope_notes` when set (the slash-command path stamps it), else
+// the route's args var (the issue-labeled path puts the issue title+body there
+// under `feature_prompt`). Empty when neither is populated.
+func boardCardMission(route webhooks.CommandRoute, vars map[string]string) string {
+	if sn := strings.TrimSpace(vars["scope_notes"]); sn != "" {
+		return sn
+	}
+	if route.ArgsVar != "" {
+		if v := strings.TrimSpace(vars[route.ArgsVar]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// boardCardTitle derives the card title from the mission's first line so a
+// labeled issue's card is titled by the issue (not just the bot id), falling
+// back to the bare bot id when no mission text is available.
+func boardCardTitle(route webhooks.CommandRoute, vars map[string]string) string {
+	if m := boardCardMission(route, vars); m != "" {
+		return route.BotID + " — " + firstLine(m)
+	}
+	return route.BotID
+}
+
+// boardCardBody composes the card body from what is actually available: a
+// markdown link to the triggering subject (issue/MR) when its URL is known,
+// then the mission text so the operator can read WHAT the bot was asked to do
+// and click through to the source. When no subject URL is available it falls
+// back to a provenance trigger line so the card is never bodyless.
+func boardCardBody(route webhooks.CommandRoute, vars map[string]string, meta webhookEventMeta) string {
+	var b strings.Builder
+	if meta.SubjectURL != "" {
+		label := strings.TrimSpace(strings.TrimSuffix(meta.ProjectPath+"/"+meta.SubjectID, "/"))
+		if label == "" {
+			label = meta.SubjectURL
+		}
+		fmt.Fprintf(&b, "[%s](%s)", label, meta.SubjectURL)
+	} else {
+		fmt.Fprintf(&b, "Triggered by a /%s-style command on %s/%s.", route.BotID, meta.ProjectPath, meta.SubjectID)
+	}
+	if m := boardCardMission(route, vars); m != "" {
+		b.WriteString("\n\n")
+		// Bounded: the mission can be a full issue body (~65k chars on
+		// GitHub) and the card body rides every board-list payload; the
+		// canonical text stays in bot_args / the linked issue.
+		b.WriteString(truncate(m, 4000))
+	}
+	return b.String()
 }
 
 func firstLine(s string) string {
