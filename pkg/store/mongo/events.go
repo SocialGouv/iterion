@@ -108,46 +108,70 @@ func backoffOrCancel(ctx context.Context, attempt int) error {
 	}
 }
 
-// allocSeq is the FindOneAndUpdate $inc pattern from plan §D.3. The
-// pre-image's next_seq is the seq we'll use; the post-image's
-// next_seq is what the next caller will see.
+// allocSeq is the FindOneAndUpdate $inc pattern from plan §D.3, over the
+// events counter (`next_seq`). See allocSeqField for the compound-key and
+// backfill semantics shared with allocPlanSeq.
+func (s *Store) allocSeq(ctx context.Context, runID string) (int64, error) {
+	return s.allocSeqField(ctx, runID, "next_seq")
+}
+
+// allocPlanSeq is the plan-snapshot twin of allocSeq: a per-run monotonic
+// counter for run_plans, keyed on the SAME {tenant_id, run_id} counter
+// document but a distinct `next_plan_seq` field, so plan seqs advance
+// independently of event seqs (both start at 0 per run). Replaces the
+// former max-read+retry allocation, giving plans the same clean
+// counter-backed seq-0 handling events already had.
+func (s *Store) allocPlanSeq(ctx context.Context, runID string) (int64, error) {
+	return s.allocSeqField(ctx, runID, "next_plan_seq")
+}
+
+// allocSeqField is the shared FindOneAndUpdate $inc counter behind
+// allocSeq / allocPlanSeq. The pre-image's field value is the seq we'll
+// use; the post-image's is what the next caller sees. field lets one
+// counter document hold several independent monotonic sequences.
 //
 // The _id is a {tenant_id, run_id} compound. Keying on run_id alone
 // would let two tenants that happened to mint the same run_id (NewRunID
 // uses time + crockford32 + 6 random chars — collision rare but not
 // impossible across millions of runs) share a seq counter and stamp
-// duplicate seq values on each other's events.
+// duplicate seq values on each other's documents.
 //
 // Backfill: existing documents with the plain-string _id keep working
-// through the ErrNoDocuments path — the first allocSeq on the compound
-// key creates a fresh counter starting at 0, which is correct as long
-// as the legacy run is no longer emitting events. For runs that are
-// still actively writing, the migration tool needs to copy the
-// next_seq value across; see scripts/migrate/run-seq-tenant-backfill.go.
-func (s *Store) allocSeq(ctx context.Context, runID string) (int64, error) {
+// through the ErrNoDocuments path — the first alloc on the compound key
+// creates a fresh counter starting at 0, which is correct as long as the
+// legacy run is no longer writing. A counter document created by the
+// sibling sequence (e.g. next_seq present, next_plan_seq absent) also
+// starts the new field at 0 via the absent-field path below. For runs
+// still actively writing, the migration tool copies the value across;
+// see scripts/migrate/run-seq-tenant-backfill.go.
+func (s *Store) allocSeqField(ctx context.Context, runID, field string) (int64, error) {
 	tenantID, _ := store.TenantFromContext(ctx)
 	res := s.runSeq.FindOneAndUpdate(
 		ctx,
 		bson.M{"_id": bson.M{"tenant_id": tenantID, "run_id": runID}},
-		bson.M{"$inc": bson.M{"next_seq": 1}},
+		bson.M{"$inc": bson.M{field: 1}},
 		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.Before),
 	)
 	if err := res.Err(); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			// Pre-image absent: the upsert just created the document
-			// with next_seq=1 (the $inc applied to the implicit zero).
+			// with field=1 (the $inc applied to the implicit zero).
 			// Our seq is therefore 0 (the value before the increment).
 			return 0, nil
 		}
 		return 0, fmt.Errorf("store/mongo: alloc seq %s: %w", runID, err)
 	}
-	var doc struct {
-		NextSeq int64 `bson:"next_seq"`
-	}
-	if err := res.Decode(&doc); err != nil {
+	raw, err := res.Raw()
+	if err != nil {
 		return 0, fmt.Errorf("store/mongo: decode seq %s: %w", runID, err)
 	}
-	return doc.NextSeq, nil
+	// Field may be absent when the counter document was created by a
+	// sibling sequence (e.g. events' next_seq exists but this is the
+	// first plan snapshot for the run): absent → 0.
+	if v, ok := raw.Lookup(field).AsInt64OK(); ok {
+		return v, nil
+	}
+	return 0, nil
 }
 
 // LoadEvents returns every event for the run in seq-ascending order.

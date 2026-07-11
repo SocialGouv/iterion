@@ -114,6 +114,40 @@ func TestPlanStore_AppendListDedupe(t *testing.T) {
 	}
 }
 
+// TestPlanStore_SeqIndependentOfEvents locks in the counter design: plan
+// snapshots draw their seq from allocPlanSeq (the `next_plan_seq` field of
+// the shared {tenant_id, run_id} counter document), independently of the
+// event seq counter (`next_seq`). Interleaving event appends must not
+// perturb the plan sequence — both start at 0 per run and advance on their
+// own.
+func TestPlanStore_SeqIndependentOfEvents(t *testing.T) {
+	s := newPlanTestStore(t)
+	ctx := store.WithIdentity(context.Background(), "t1", "u1")
+	const runID = "run-plan-indep"
+
+	// Burn some event seqs first (next_seq → 3); plan seqs must ignore them.
+	for i := 0; i < 3; i++ {
+		if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}); err != nil {
+			t.Fatalf("append event %d: %v", i, err)
+		}
+	}
+
+	// Distinct snapshots interleaved with more events: plan seqs are 0,1,2.
+	for want := 0; want < 3; want++ {
+		snap := planSnap("n", want, store.PlanTodo{Content: "step", Status: "s", ActiveForm: string(rune('a' + want))})
+		got, wrote, err := s.AppendPlanSnapshot(ctx, runID, snap)
+		if err != nil {
+			t.Fatalf("append plan %d: %v", want, err)
+		}
+		if !wrote || got.Seq != want {
+			t.Errorf("plan append %d: wrote=%v seq=%d, want true/%d (independent of event seq)", want, wrote, got.Seq, want)
+		}
+		if _, err := s.AppendEvent(ctx, runID, store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}); err != nil {
+			t.Fatalf("interleave event %d: %v", want, err)
+		}
+	}
+}
+
 // TestPlanStore_TenantScoping locks in that a snapshot written under one
 // tenant is invisible to another — the same tenant filter run_gitmeta
 // carries — while an empty (local) context sees only untenanted docs.
