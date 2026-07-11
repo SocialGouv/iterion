@@ -75,10 +75,10 @@ func TestBotCreate_Rejections(t *testing.T) {
 		body string
 		want int
 	}{
-		"duplicate":     {`{"slug":"taken","instructions":"x"}`, http.StatusConflict},
-		"bad slug":      {`{"slug":"Bad Slug","instructions":"x"}`, http.StatusBadRequest},
-		"no mission":    {`{"slug":"empty-bot"}`, http.StatusBadRequest},
-		"invalid json":  {`{`, http.StatusBadRequest},
+		"duplicate":    {`{"slug":"taken","instructions":"x"}`, http.StatusConflict},
+		"bad slug":     {`{"slug":"Bad Slug","instructions":"x"}`, http.StatusBadRequest},
+		"no mission":   {`{"slug":"empty-bot"}`, http.StatusBadRequest},
+		"invalid json": {`{`, http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

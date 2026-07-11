@@ -207,10 +207,10 @@ func TestTriggerFromInvocation_Rejections(t *testing.T) {
 		bot, body string
 		want      int
 	}{
-		"command kind":  {"trig-bot", `{"index":2}`, http.StatusBadRequest},
-		"out of range":  {"trig-bot", `{"index":9}`, http.StatusBadRequest},
-		"negative":      {"trig-bot", `{"index":-1}`, http.StatusBadRequest},
-		"unknown bot":   {"nope", `{"index":0}`, http.StatusNotFound},
+		"command kind": {"trig-bot", `{"index":2}`, http.StatusBadRequest},
+		"out of range": {"trig-bot", `{"index":9}`, http.StatusBadRequest},
+		"negative":     {"trig-bot", `{"index":-1}`, http.StatusBadRequest},
+		"unknown bot":  {"nope", `{"index":0}`, http.StatusNotFound},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
