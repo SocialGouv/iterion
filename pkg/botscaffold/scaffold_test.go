@@ -43,11 +43,11 @@ func TestScaffold_Minimal(t *testing.T) {
 // generated main.bot through the runtime's own parse+compile pipeline.
 func TestScaffold_SpecMatrix(t *testing.T) {
 	full := Spec{
-		Slug:        "full-bot",
-		DisplayName: "Full Bot",
-		Icon:        "🦉",
-		Description: "Everything on.",
-		WhenToUse:   "Use when testing the scaffolder.",
+		Slug:         "full-bot",
+		DisplayName:  "Full Bot",
+		Icon:         "🦉",
+		Description:  "Everything on.",
+		WhenToUse:    "Use when testing the scaffolder.",
 		Instructions: "Multi-line mission.\n\nWith a blank line and {{vars.topic}} reference.",
 		Model:        "anthropic/claude-opus-4-8",
 		Backend:      "claude_code",

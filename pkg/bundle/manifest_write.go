@@ -31,8 +31,8 @@ type ManifestPatch struct {
 	// Icon sets the manifest's emoji identity; the empty string clears it
 	// while keeping the key. Validated (trim + byte cap) by the
 	// decodeManifest pass WriteManifest runs before committing.
-	Icon    *string
-	Version *string
+	Icon        *string
+	Version     *string
 	Description *string
 	Author      *string
 	WhenToUse   *string
