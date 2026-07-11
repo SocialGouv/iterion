@@ -500,13 +500,18 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	}
 
 	// Resolve node-level image inputs (templated paths) so the codex backend can
-	// forward them as `-i` for image-to-image. Empty/whitespace results (an
-	// optional ref that didn't apply this run) are dropped.
+	// forward them as `-i` for image-to-image. An optional reference that didn't
+	// apply this run is dropped: either the resolved path is empty/whitespace, or
+	// the ref was unresolvable (absent input key) and resolveTemplate left the
+	// verbatim "{{...}}" marker — forwarding that to codex as `-i {{...}}` would
+	// be a bogus path, so treat a still-unresolved template as "no image".
 	var resolvedImages []string
 	for _, tmpl := range f.images {
-		if p := strings.TrimSpace(e.resolveTemplate(tmpl, input, td)); p != "" {
-			resolvedImages = append(resolvedImages, p)
+		p := strings.TrimSpace(e.resolveTemplate(tmpl, input, td))
+		if p == "" || strings.Contains(p, "{{") {
+			continue
 		}
+		resolvedImages = append(resolvedImages, p)
 	}
 
 	task := delegate.Task{
