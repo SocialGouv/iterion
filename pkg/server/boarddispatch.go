@@ -188,6 +188,23 @@ func liftBoardLaunchContext(botArgs map[string]string) boardLaunchContext {
 	return lc
 }
 
+// stampCardLastRun records the launched run on the tenant's board card via the
+// same SetLastRun seam the local dispatcher uses, resolved through CloudBoardFor
+// (the Mongo-backed store in cloud, a native store in tests). Best-effort: a
+// stamp failure never fails the run — the card simply lacks its live-run link.
+func (s *Server) stampCardLastRun(tenant, cardID, runID string) {
+	if s.cfg.CloudBoardFor == nil || runID == "" {
+		return
+	}
+	store := s.cfg.CloudBoardFor(tenant)
+	if store == nil {
+		return
+	}
+	if err := store.SetLastRun(cardID, runID, ""); err != nil && s.logger != nil {
+		s.logger.Warn("board dispatcher: stamp run %s on card %s/%s: %v", runID, tenant, cardID, err)
+	}
+}
+
 func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
 	if s.runs == nil {
 		return errors.New("run service unavailable")
@@ -220,6 +237,11 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 		return err
 	}
 	runID := res.RunID
+	// Stamp the launched run onto the card immediately (not after the run
+	// terminates) so the studio can link the LIVE run while it executes. The
+	// local dispatcher already does this via SetLastRun; the cloud coordinator
+	// launches through runs.Launch and must stamp the same seam itself.
+	s.stampCardLastRun(tenant, iss.ID, runID)
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
