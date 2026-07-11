@@ -533,10 +533,22 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 	// Extended-thinking metrics: the provider bills thinking inside
 	// output_tokens with no breakdown, so re-encode the thinking text for an
 	// approximate count; time is the gap since the previous stream item.
-	var turnThinking string
+	//
+	// Some models redact thinking client-side (observed: claude-opus-4-8 —
+	// the CLI streams the block with empty text and only the encrypted
+	// signature). A signed-but-empty block still proves the model reasoned,
+	// so surface the timing instead of dropping every trace.
+	var (
+		turnThinking     string
+		redactedThinking bool
+	)
 	for _, block := range m.Message.Content {
-		if tk, ok := block.(*claudesdk.ThinkingBlock); ok && tk.Thinking != "" {
-			turnThinking += tk.Thinking
+		if tk, ok := block.(*claudesdk.ThinkingBlock); ok {
+			if tk.Thinking != "" {
+				turnThinking += tk.Thinking
+			} else if tk.Signature != "" {
+				redactedThinking = true
+			}
 		}
 	}
 	if turnThinking != "" {
@@ -549,6 +561,10 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 		b.Logger.LogBlock(iterlog.LevelInfo, "🧠",
 			fmt.Sprintf("[%s#%d/claude-code] thinking ~%d tok, %dms:", task.NodeID, task.Iteration, tokens, ms),
 			turnThinking)
+	} else if redactedThinking {
+		ms := int(time.Since(lastItemTime) / time.Millisecond)
+		meta.thinkingMs += ms
+		b.Logger.Info("[%s#%d/claude-code] 🧠 thinking: %dms (content withheld by provider)", task.NodeID, task.Iteration, ms)
 	}
 	// Capture the latest non-empty text block — the final assistant message
 	// is the model's intended answer (and where it puts the JSON).
