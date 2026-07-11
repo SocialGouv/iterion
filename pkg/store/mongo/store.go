@@ -263,19 +263,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 	}
 	if eventsTTLDays > 0 {
-		// MongoDB requires the TTL to be on a top-level date field.
-		// Plan §D.2 names this `ts`. expireAfterSeconds is an int32, so a very
-		// large TTL (> ~24855 days) would overflow the cast to a negative
-		// value; clamp to int32 max (~68 years) instead.
-		secs := int64(eventsTTLDays) * 86400
-		const maxTTLSeconds = int64(1<<31 - 1)
-		if secs > maxTTLSeconds {
-			secs = maxTTLSeconds
-		}
-		eventIdx = append(eventIdx, mongo.IndexModel{
-			Keys:    bson.D{{Key: "ts", Value: 1}},
-			Options: options.Index().SetName("events_ttl").SetExpireAfterSeconds(int32(secs)),
-		})
+		eventIdx = append(eventIdx, ttlIndexModel("events_ttl", eventsTTLDays))
 	}
 	_, err = s.events.Indexes().CreateMany(ctx, eventIdx)
 	if err != nil && !mongoutil.IsIndexConflict(err) {
@@ -292,15 +280,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "offset", Value: 1}}, Options: options.Index().SetName("tenant_run_offset").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 	}
 	if eventsTTLDays > 0 {
-		secs := int64(eventsTTLDays) * 86400
-		const maxTTLSeconds = int64(1<<31 - 1)
-		if secs > maxTTLSeconds {
-			secs = maxTTLSeconds
-		}
-		runLogIdx = append(runLogIdx, mongo.IndexModel{
-			Keys:    bson.D{{Key: "ts", Value: 1}},
-			Options: options.Index().SetName("run_logs_ttl").SetExpireAfterSeconds(int32(secs)),
-		})
+		runLogIdx = append(runLogIdx, ttlIndexModel("run_logs_ttl", eventsTTLDays))
 	}
 	if _, err := s.runLogs.Indexes().CreateMany(ctx, runLogIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_logs indexes: %w", err)
@@ -339,14 +319,38 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	// run_plans: many docs per run (one per captured plan snapshot),
 	// uniquely keyed by (run_id, seq) — the race safety net when parallel
 	// branches fire TodoWrite concurrently. (tenant_id, run_id, seq)
-	// accelerates the tenant-scoped chronological listing.
-	_, err = s.runPlans.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	// accelerates the tenant-scoped chronological listing. Plan snapshots
+	// are a derived observability stream of the run, just like events and
+	// run_logs, so they share the same retention knob (eventsTTLDays) on
+	// their top-level `ts` date field.
+	runPlanIdx := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
-	})
-	if err != nil && !mongoutil.IsIndexConflict(err) {
+	}
+	if eventsTTLDays > 0 {
+		runPlanIdx = append(runPlanIdx, ttlIndexModel("run_plans_ttl", eventsTTLDays))
+	}
+	if _, err := s.runPlans.Indexes().CreateMany(ctx, runPlanIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_plans indexes: %w", err)
 	}
 
 	return nil
+}
+
+// ttlIndexModel builds a MongoDB TTL index on the top-level `ts` date
+// field expiring documents after ttlDays. Shared by the derived
+// observability streams (events, run_logs, run_plans) which retain on
+// the same eventsTTLDays knob. expireAfterSeconds is an int32, so a very
+// large TTL (> ~24855 days) would overflow the cast to a negative value;
+// clamp to int32 max (~68 years) instead.
+func ttlIndexModel(name string, ttlDays int) mongo.IndexModel {
+	secs := int64(ttlDays) * 86400
+	const maxTTLSeconds = int64(1<<31 - 1)
+	if secs > maxTTLSeconds {
+		secs = maxTTLSeconds
+	}
+	return mongo.IndexModel{
+		Keys:    bson.D{{Key: "ts", Value: 1}},
+		Options: options.Index().SetName(name).SetExpireAfterSeconds(int32(secs)),
+	}
 }
