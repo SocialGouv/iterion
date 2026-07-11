@@ -298,3 +298,58 @@ func TestSubmitLaunch_RequiredSecretUnresolved_NoRunRecord(t *testing.T) {
 		t.Fatalf("no message should be published, got %d", len(published))
 	}
 }
+
+// TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus pins the
+// resume mirror of the launch gate: when the required secret vanished
+// between the failure and the resume, the gate must fire BEFORE the
+// queued flip — a stranded `queued` run is never claimed (nothing was
+// published) and no longer resumable from the studio.
+func TestSubmitResume_RequiredSecretUnresolved_KeepsResumableStatus(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	var published []*queue.RunMessage
+	p := &Publisher{
+		store:          st,
+		genericSecrets: secrets.NewMemoryGenericSecretStore(),
+		runSecrets:     secrets.NewMemoryRunSecretsStore(),
+		sealer:         sealer,
+		publishRun: func(_ context.Context, msg *queue.RunMessage) error {
+			published = append(published, msg)
+			return nil
+		},
+	}
+	ctx := store.WithIdentity(context.Background(), "team", "alice")
+	// A failed-resumable run on record, as a real resume would find it.
+	if err := st.SaveRun(ctx, &store.Run{ID: "run-resume", TenantID: "team", OwnerID: "alice", Status: store.RunStatusFailedResumable}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	wf := &ir.Workflow{Name: "canary", Secrets: map[string]*ir.Secret{
+		"test_e2e_canary": {As: "file"},
+	}}
+	spec := runview.ResumeSpec{
+		RunID:    "run-resume",
+		FilePath: "canary.bot",
+		Source:   "workflow canary:\n  start -> done\n",
+	}
+	if err := p.SubmitResume(ctx, spec, wf, "hash"); err == nil {
+		t.Fatal("expected SubmitResume to fail for an unresolved required secret")
+	} else if !strings.Contains(err.Error(), "test_e2e_canary") {
+		t.Fatalf("error should name the secret, got %q", err.Error())
+	}
+	run, err := st.LoadRun(ctx, "run-resume")
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if run.Status != store.RunStatusFailedResumable {
+		t.Fatalf("run status = %s, want failed_resumable (must stay resumable, not stranded queued)", run.Status)
+	}
+	if len(published) != 0 {
+		t.Fatalf("no message should be published, got %d", len(published))
+	}
+}

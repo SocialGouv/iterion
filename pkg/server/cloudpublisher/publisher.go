@@ -680,21 +680,26 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
 	priorStatus := prior.Status
-	// Flip status to queued so the runner doesn't short-circuit on the
-	// cooperative-cancel check + so the studio's QueueDepthBar reflects
-	// the in-flight resume.
-	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
-		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
-	}
-	// Re-resolve credentials for the resume publication. Keys may have
-	// rotated between launch and resume; using the prior run's secrets ref
-	// blindly would inject stale plaintext. Preserve the launching BotID so
-	// bot-secret bindings remain durable across pause/failure/TTL republishes.
+	// Re-resolve credentials BEFORE flipping the status: a resolution
+	// failure (store error, or the required-secret gate — e.g. the secret
+	// was deleted between the failure and the resume) must leave the run
+	// in its prior RESUMABLE status. Flipping first would strand it in
+	// queued: never claimed (nothing published), and no longer resumable
+	// from the studio. Keys may have rotated between launch and resume;
+	// using the prior run's secrets ref blindly would inject stale
+	// plaintext. Preserve the launching BotID so bot-secret bindings
+	// remain durable across pause/failure/TTL republishes.
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	secretsRef, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides)
 	if secretsErr != nil {
 		return secretsErr
+	}
+	// Flip status to queued so the runner doesn't short-circuit on the
+	// cooperative-cancel check + so the studio's QueueDepthBar reflects
+	// the in-flight resume.
+	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
+		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
 	msg := &queue.RunMessage{
 		V:            queue.SchemaVersion,
