@@ -269,9 +269,14 @@ export function Column({
             onShowRetryDetails={() => onOpenCard(iss)}
           />
         ))}
-        {issues.length === 0 && (
-          <div className="text-xs text-fg-muted text-center py-4">drop here</div>
-        )}
+        {issues.length === 0 &&
+          // The "drop here" affordance only makes sense mid-drag; an idle
+          // empty column shows a muted placeholder instead.
+          (dragOver ? (
+            <div className="text-xs text-accent-text text-center py-4">Drop here</div>
+          ) : (
+            <div className="text-xs text-fg-subtle text-center py-4">No issues</div>
+          ))}
       </div>
     </div>
   );

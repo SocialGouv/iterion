@@ -123,7 +123,11 @@ export function IssueCard({
           {iss.title}
         </span>
         {iss.priority && iss.priority > 0 ? (
-          <Badge variant="warning" size="sm" title={`Priority ${iss.priority} (P1 = highest)`}>
+          <Badge
+            variant="warning"
+            size="sm"
+            title={`Priority ${iss.priority} — higher numbers sort first`}
+          >
             P{iss.priority}
           </Badge>
         ) : null}

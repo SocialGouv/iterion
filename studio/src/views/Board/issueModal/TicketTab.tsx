@@ -68,7 +68,8 @@ export function TicketTab({
         <MarkdownPreview
           value={body}
           onChange={setBody}
-          rows={5}
+          rows={12}
+          editorClassName="max-h-[50vh]"
           placeholder="Add context, repro steps, or notes…"
         />
       </Field>
@@ -93,12 +94,17 @@ export function TicketTab({
             </p>
           )}
         </Field>
-        <Field label="Priority">
+        <Field
+          label="Priority"
+          help="Higher numbers rank higher — columns sort by priority descending (presets go up to P30). 0 = unprioritized."
+        >
           <Input
             type="number"
             value={priority}
             onChange={(e) => setPriority(parseInt(e.target.value || "0", 10))}
             size="md"
+            leadingIcon={<span className="text-xs font-medium">P</span>}
+            title="Priority — higher numbers sort first; 0 = unprioritized"
           />
         </Field>
       </div>

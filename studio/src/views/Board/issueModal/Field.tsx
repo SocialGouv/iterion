@@ -7,14 +7,17 @@ export function Field({
   label,
   children,
   required,
+  help,
 }: {
   label: string;
   required?: boolean;
+  // Optional help text, surfaced as FieldLabel's `?` affordance.
+  help?: string;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <FieldLabel>
+      <FieldLabel help={help}>
         {label}
         {required && (
           <>

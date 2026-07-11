@@ -220,14 +220,16 @@ export default function IssueModal({ board, initial, onSubmit, onClose, onDelete
                 ▶ Let's go
               </Button>
             )}
+            {onDispatch && onDelete && (
+              <span className="h-4 w-px bg-border-default" aria-hidden="true" />
+            )}
             {onDelete && (
               <Button
                 type="button"
-                variant="ghost"
+                variant="danger"
                 size="sm"
                 onClick={onDelete}
                 disabled={submitAction.busy}
-                className="text-danger hover:text-danger"
               >
                 Delete
               </Button>
