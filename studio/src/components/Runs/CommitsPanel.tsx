@@ -465,23 +465,25 @@ function SquashMessageEditor({
           Commit message
         </span>
         {isEditing ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onReset}
             disabled={disabled}
-            className="inline-flex items-center gap-1 text-caption text-fg-subtle hover:text-fg-default disabled:opacity-50"
+            leadingIcon={<ResetIcon />}
           >
-            <ResetIcon /> Reset
-          </button>
+            Reset
+          </Button>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onStartEdit}
             disabled={disabled || !previewText}
-            className="inline-flex items-center gap-1 text-caption text-fg-subtle hover:text-fg-default disabled:opacity-50"
+            leadingIcon={<Pencil1Icon />}
           >
-            <Pencil1Icon /> Edit
-          </button>
+            Edit
+          </Button>
         )}
       </div>
       {isEditing ? (
