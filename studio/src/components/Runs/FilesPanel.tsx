@@ -232,7 +232,10 @@ export default function FilesPanel({
           </div>
         )}
       </div>
-      {data?.work_dir && (
+      {/* No footer when the file list itself is unavailable — a lone
+          "Committed in this run" under an unavailable-state message
+          reads like a broken section. */}
+      {data?.work_dir && data.available && (
         <footer className="border-t border-border-default px-2 py-1 text-caption text-fg-subtle truncate">
           <Tooltip content={footerTooltip(data, mode)}>
             <span className="truncate block">{footerLabel(data, mode)}</span>
@@ -592,7 +595,7 @@ function reasonLabel(reason: string | undefined): string {
     case "no_workdir":
       return "No working directory recorded for this run";
     case "not_git_repo":
-      return "Not a git repository";
+      return "Run workspace no longer exists — the worktree was removed or is not a git checkout";
     case "no_baseline":
       return "This run has no base commit — branch diff unavailable";
     case "worktree_gone":

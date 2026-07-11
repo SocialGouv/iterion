@@ -18,6 +18,15 @@ import type { RunStatus } from "@/api/runs";
 
 export type ChatDock = "closed" | "floating" | "docked-right";
 
+// openedDock picks the presentation when the panel OPENS from closed:
+// on narrow viewports the floating panel would cover most of the canvas
+// and the bottom tab bar, so it opens docked instead. An explicit dock
+// choice the user makes afterwards is persisted by the caller and wins
+// on subsequent opens-from-closed only via this same width check.
+function openedDock(): ChatDock {
+  return window.innerWidth <= 1024 ? "docked-right" : "floating";
+}
+
 interface Props {
   runId: string;
   dock: ChatDock;
@@ -47,7 +56,7 @@ export default function FloatingChatPanel({
       <ClosedBubble
         runId={runId}
         status={status}
-        onOpen={() => onDockChange("floating")}
+        onOpen={() => onDockChange(openedDock())}
       />
     );
   }
@@ -282,7 +291,7 @@ function useAutoExpandOnPause(
     if (lastReactedRef.current === status) return;
     lastReactedRef.current = status;
     if (dockRef.current === "closed") {
-      onDockChangeRef.current("floating");
+      onDockChangeRef.current(openedDock());
     }
   }, [status]);
 }
