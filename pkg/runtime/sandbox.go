@@ -221,6 +221,23 @@ type SandboxParams struct {
 	BoardMCPHandler http.Handler
 }
 
+// workflowMaxDurationSeconds returns the workflow budget's max_duration
+// as whole seconds (0 = unbounded / unset / unparseable). Drivers that
+// can self-terminate a leaked sandbox (kubernetes → activeDeadlineSeconds)
+// consume it via [sandbox.RunInfo.MaxDurationSeconds]. Mirrors the
+// env-expansion the shared budget applies so a `${VAR:-2h}` form resolves
+// identically.
+func workflowMaxDurationSeconds(wf *ir.Workflow) int64 {
+	if wf == nil || wf.Budget == nil || wf.Budget.MaxDuration == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(ir.ExpandEnvWithDefault(wf.Budget.MaxDuration))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return int64(d.Seconds())
+}
+
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
 // active sandbox spec, or (nil, nil) when no sandbox is requested.
 //
@@ -347,11 +364,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	}
 
 	info := sandbox.RunInfo{
-		RunID:         p.RunID,
-		FriendlyName:  p.FriendlyName,
-		WorkspacePath: p.WorkspacePath,
-		ProxyEndpoint: proxyEndpoint,
-		ProxyCACert:   proxyCACert,
+		RunID:              p.RunID,
+		FriendlyName:       p.FriendlyName,
+		WorkspacePath:      p.WorkspacePath,
+		ProxyEndpoint:      proxyEndpoint,
+		ProxyCACert:        proxyCACert,
+		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)

@@ -30,6 +30,10 @@ type NetworkPolicyInput struct {
 	// (any port) so the sibling can reach the proxy regardless of
 	// which port the proxy ended up bound to.
 	RunnerPodIP string
+	// Owner, when valid, is stamped as the policy's ownerReferences so
+	// the cluster cascade-GCs it with its owner (the runner pod). See
+	// ADR-068.
+	Owner *OwnerReference
 }
 
 // BuildNetworkPolicy renders a JSON NetworkPolicy resource that scopes
@@ -59,14 +63,17 @@ func BuildNetworkPolicy(in NetworkPolicyInput) ([]byte, error) {
 		labels[LabelRunName] = in.FriendlyName
 	}
 
+	meta := map[string]any{
+		"name":      in.Name,
+		"namespace": in.Namespace,
+		"labels":    labels,
+	}
+	withOwner(meta, in.Owner)
+
 	policy := map[string]any{
 		"apiVersion": "networking.k8s.io/v1",
 		"kind":       "NetworkPolicy",
-		"metadata": map[string]any{
-			"name":      in.Name,
-			"namespace": in.Namespace,
-			"labels":    labels,
-		},
+		"metadata":   meta,
 		"spec": map[string]any{
 			"podSelector": map[string]any{
 				"matchLabels": map[string]any{
