@@ -14,12 +14,12 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
-// mongoLogTerminalPollInterval bounds how often a log subscription
+// mongoTerminalPollInterval bounds how often a log OR event subscription
 // re-reads the run document to detect a terminal status — the Mongo
 // twin of FileSource's run.json poll (the run executes on a runner pod;
 // the server has no in-process completion signal). Swappable for a
 // runs-collection change stream later without contract change.
-var mongoLogTerminalPollInterval = 5 * time.Second
+var mongoTerminalPollInterval = 5 * time.Second
 
 // runLogChunkDoc mirrors the run_logs document shape written by
 // pkg/store/mongo (runLogDoc) — the fields the stream reads.
@@ -83,7 +83,7 @@ func (m *MongoSource) streamLogsOnce(ctx context.Context, runID string, from int
 
 	var isTerminal atomic.Bool
 	go func() {
-		t := time.NewTicker(mongoLogTerminalPollInterval)
+		t := time.NewTicker(mongoTerminalPollInterval)
 		defer t.Stop()
 		for {
 			select {

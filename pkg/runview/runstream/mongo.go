@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -100,18 +101,46 @@ func (m *MongoSource) runEvents(ctx context.Context, runID string, fromSeq int64
 	reconnectLoop(ctx, func(delay time.Duration, err error) {
 		pipe.Warn(fmt.Errorf("runstream/mongo: events stream (will reconnect in %s): %w", delay, err))
 	}, func() (bool, error) {
-		nextSeq, err := m.streamEventsOnce(ctx, runID, fromSeq, pipe)
+		nextSeq, terminal, err := m.streamEventsOnce(ctx, runID, fromSeq, pipe)
 		fromSeq = nextSeq
-		return err == nil, err // nil error = clean ctx-cancelled exit
+		// terminal → stop and let Finish close the channel (WS emits
+		// `terminated`); a nil err (clean ctx-cancel) also stops in
+		// reconnectLoop; a non-nil err retries with backoff.
+		return terminal, err
 	})
 }
 
 // streamEventsOnce runs one open-watch-first attempt: change stream
 // (seq >= fromSeq) opened before the backfill Find, then the stream is
-// pumped with a seq <= maxBackfilled dedup. Returns the seq the next
-// attempt should resume from (last delivered + 1). A nil error means
-// ctx was cancelled cleanly; non-nil means backoff + reconnect.
-func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSeq int64, pipe EventPipe) (int64, error) {
+// pumped with a seq <= maxBackfilled dedup. A side poller watches the
+// run's status and cancels the round on a terminal flip; the caller
+// then gets terminal=true after this round's final backfill (events
+// persisted before the flip must ship before the channel closes — the
+// event twin of streamLogsOnce). Returns the seq the next attempt should
+// resume from (last delivered + 1). A nil error with terminal=false
+// means ctx was cancelled cleanly; non-nil means backoff + reconnect.
+func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSeq int64, pipe EventPipe) (nextSeq int64, terminal bool, err error) {
+	roundCtx, cancelRound := context.WithCancel(ctx)
+	defer cancelRound()
+
+	var isTerminal atomic.Bool
+	go func() {
+		t := time.NewTicker(mongoTerminalPollInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-roundCtx.Done():
+				return
+			case <-t.C:
+				if m.runIsTerminal(roundCtx, runID) {
+					isTerminal.Store(true)
+					cancelRound()
+					return
+				}
+			}
+		}
+	}()
+
 	matchExpr := bson.M{
 		"operationType":       "insert",
 		"fullDocument.run_id": runID,
@@ -125,34 +154,34 @@ func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSe
 		matchExpr["fullDocument.tenant_id"] = tenantID
 	}
 	pipeline := mongo.Pipeline{bson.D{{Key: "$match", Value: matchExpr}}}
-	stream, err := m.events.Watch(ctx, pipeline, options.ChangeStream().SetFullDocument(options.UpdateLookup))
-	if err != nil {
-		return fromSeq, fmt.Errorf("open change stream: %w", err)
+	stream, werr := m.events.Watch(roundCtx, pipeline, options.ChangeStream().SetFullDocument(options.UpdateLookup))
+	if werr != nil {
+		return fromSeq, isTerminal.Load(), fmt.Errorf("open change stream: %w", werr)
 	}
 	defer stream.Close(ctx)
 
-	maxSeq, err := m.backfillEvents(ctx, runID, fromSeq, pipe)
-	if err != nil {
+	maxSeq, berr := m.backfillEvents(roundCtx, runID, fromSeq, pipe)
+	if berr != nil && !errors.Is(berr, context.Canceled) {
 		// Whatever was shipped is accounted for in maxSeq; resume past it.
-		return maxSeq + 1, fmt.Errorf("backfill: %w", err)
+		return maxSeq + 1, isTerminal.Load(), fmt.Errorf("backfill: %w", berr)
 	}
 
-	for stream.Next(ctx) {
+	for stream.Next(roundCtx) {
 		var doc struct {
 			FullDocument store.Event `bson:"fullDocument"`
 		}
-		if err := stream.Decode(&doc); err != nil {
+		if derr := stream.Decode(&doc); derr != nil {
 			// A single bad doc is not fatal — log and continue rather
 			// than tearing down the whole stream.
-			pipe.Warn(fmt.Errorf("runstream/mongo: decode change: %w", err))
+			pipe.Warn(fmt.Errorf("runstream/mongo: decode change: %w", derr))
 			continue
 		}
 		if doc.FullDocument.Seq <= maxSeq {
 			continue // overlap with the backfill window
 		}
 		evt := doc.FullDocument
-		if !pipe.Ship(ctx, []*store.Event{&evt}) {
-			return maxSeq + 1, nil
+		if !pipe.Ship(roundCtx, []*store.Event{&evt}) {
+			return maxSeq + 1, false, nil
 		}
 		maxSeq = evt.Seq
 		// Lag is wall-clock latency from event creation (set by the
@@ -162,11 +191,20 @@ func (m *MongoSource) streamEventsOnce(ctx context.Context, runID string, fromSe
 			m.metrics.MongoChangeStreamLagS.Set(time.Since(evt.Timestamp).Seconds())
 		}
 	}
-	if err := stream.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return maxSeq + 1, err
+	if isTerminal.Load() {
+		// Final backfill on the PARENT ctx (the round ctx is cancelled):
+		// events persisted before the terminal flip must ship before the
+		// channel closes.
+		if d, ferr := m.backfillEvents(ctx, runID, maxSeq+1, pipe); ferr == nil {
+			maxSeq = d
+		}
+		return maxSeq + 1, true, nil
+	}
+	if serr := stream.Err(); serr != nil && !errors.Is(serr, context.Canceled) {
+		return maxSeq + 1, false, serr
 	}
 	// Stream exited cleanly — usually means ctx was cancelled.
-	return maxSeq + 1, nil
+	return maxSeq + 1, false, nil
 }
 
 // backfillEvents drains the events collection for runID, seq >= fromSeq,

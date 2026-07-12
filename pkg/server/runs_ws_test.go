@@ -84,6 +84,29 @@ func TestRunsWS_PingElicitsPong(t *testing.T) {
 	}
 }
 
+// TestRunsWS_TerminatedRunEmitsEventTerminated guards the event-stream
+// terminal signal for an external/dispatcher run (a run not produced in
+// this process — seedRun persists it without a manager launch). Such a
+// run never gets a broker CloseRun, so before the fix the live tail
+// blocked forever and the WS never emitted `terminated`, leaving the
+// client stuck on "running". Subscribing to an already-finished run must
+// now close the event stream promptly.
+func TestRunsWS_TerminatedRunEmitsEventTerminated(t *testing.T) {
+	srv, hs := newTestServer(t)
+	seedRun(t, srv, "run-term", "wf", store.RunStatusFinished)
+
+	c := dialRunWS(t, hs, "run-term")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribe})
+	_ = readEnvelope(t, c, wsTypeSnapshot)
+
+	// The finished run is not Active → the svcSource terminal pre-check
+	// fires immediately and ends the stream → terminated.
+	env := readEnvelopeWithin(t, c, 6*time.Second, wsTypeEvent, wsTypeEventBatch, wsTypeTerminated)
+	if env.Type != wsTypeTerminated {
+		t.Fatalf("Type = %q, want terminated", env.Type)
+	}
+}
+
 func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 	srv, hs := newTestServer(t)
 	// Create the run with an empty event stream so the snapshot is
