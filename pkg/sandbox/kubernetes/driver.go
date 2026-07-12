@@ -494,7 +494,12 @@ func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
 	if !updated {
 		return nil, fmt.Errorf("kubernetes: refresh: no mounted file secret %q", name)
 	}
-	manifest, err := BuildSecretFilesSecret(r.namespace, r.secretFilesSecretName, r.info.RunID, r.info.FriendlyName, r.secretFiles)
+	// Re-apply with the SAME ownerReference the Secret was created with
+	// (runnerPodOwner is idempotent — it reads the downward-API env), or the
+	// refresh would strip the ownerReference and defeat the orphan-GC cascade
+	// (ADR-070). The two features (mid-run refresh + ownerReference GC) touch
+	// the same manifest and must agree.
+	manifest, err := BuildSecretFilesSecret(r.namespace, r.secretFilesSecretName, r.info.RunID, r.info.FriendlyName, r.secretFiles, runnerPodOwner())
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes: refresh file secret %s: build: %w", name, err)
 	}
