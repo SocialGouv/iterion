@@ -279,8 +279,8 @@ func toLLMCompactInfo(info CompactInfo) LLMCompactInfo {
 // intentionally NOT marshalled here — the marshal is O(N) in
 // conversation length and only the runtime hook that writes to a
 // TurnStore actually needs the bytes. Callers that need them call
-// MarshalConversation on the info; callers that don't (cloud stores
-// without TurnStore, observability-only consumers) skip the cost.
+// MarshalConversation on the info; callers that don't (stores without a
+// TurnStore, observability-only consumers) skip the cost.
 func toLLMTurnCaptureInfo(info TurnCaptureInfo) LLMTurnCaptureInfo {
 	calls := make([]ToolCallEntry, len(info.Result.ToolCalls))
 	for i, tc := range info.Result.ToolCalls {

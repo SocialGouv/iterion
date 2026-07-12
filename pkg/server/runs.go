@@ -649,7 +649,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // Errors:
 //   - 400 missing id/toolUseID/kind or kind not in {input,output}
 //   - 404 blob not found (call never produced one — i.e. fit inline)
-//   - 503 store doesn't satisfy ToolBlobStore (cloud mode today)
+//   - 503 store doesn't satisfy ToolBlobStore (both filesystem and Mongo do)
 func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	toolUseID := r.PathValue("toolUseID")
