@@ -67,7 +67,7 @@ describe("LastRunSection answer-from-board affordance", () => {
     fireEvent.click(submit);
 
     await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(1));
-    const [runId, body] = resumeRun.mock.calls[0];
+    const [runId, body] = resumeRun.mock.calls[0]!;
     expect(runId).toBe("r1");
     expect(body.answers).toEqual({ decision: "yes" });
     // Critical: the editor buffer must NOT leak in as the resume source.

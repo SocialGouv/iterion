@@ -10,9 +10,11 @@ import (
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
-// emitRunCompletion publishes a run-completion trigger.Event when a run reaches
-// a terminal state — the "runned by iterion" source that lets a finished or
-// failed run fire downstream runs (pipelines, on-failure escalation). It is a
+// emitRunOutcome publishes a run-outcome trigger.Event when a run leaves the
+// engine — the "runned by iterion" source that lets a finished/failed run fire
+// downstream runs (pipelines, on-failure escalation) and a paused run mark its
+// board card "awaiting input". The kind spans terminal outcomes
+// (run.finished/failed/cancelled) AND the non-terminal run.paused. It is a
 // best-effort no-op unless an event publisher is wired, and never blocks the
 // run goroutine on a slow consumer (the bus fan-out is itself lossy).
 //
@@ -20,7 +22,7 @@ import (
 // status to the run record, re-read here to enrich the event with repo/bot for
 // matching and templating). A load failure still emits the bare event so a
 // downstream subscription keyed only on source/kind/bot still fires.
-func (s *Service) emitRunCompletion(runID string, bodyErr error) {
+func (s *Service) emitRunOutcome(runID string, bodyErr error) {
 	if s.eventPublisher == nil {
 		return
 	}
@@ -51,14 +53,14 @@ func (s *Service) emitRunCompletion(runID string, bodyErr error) {
 		}
 		// Trust the persisted status over the derived kind when it is
 		// unambiguous (the engine is the source of truth).
-		switch r.Status {
-		case store.RunStatusFinished:
+		switch {
+		case r.Status == store.RunStatusFinished:
 			kind = trigger.KindRunFinished
-		case store.RunStatusFailed, store.RunStatusFailedResumable:
+		case r.Status == store.RunStatusFailed, r.Status == store.RunStatusFailedResumable:
 			kind = trigger.KindRunFailed
-		case store.RunStatusCancelled:
+		case r.Status == store.RunStatusCancelled:
 			kind = trigger.KindRunCancelled
-		case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		case r.Status.IsPaused():
 			kind = trigger.KindRunPaused
 		}
 		// A paused run carries the node + pending interaction on its

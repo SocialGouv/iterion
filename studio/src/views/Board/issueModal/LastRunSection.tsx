@@ -5,6 +5,7 @@ import { Link } from "wouter";
 import BranchDiffModal from "@/components/Runs/BranchDiffModal";
 import PauseForm from "@/components/Runs/PauseForm";
 import { getRun } from "@/api/runs";
+import { rehydratePendingHumanInput } from "@/store/run/reducer";
 import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
 
@@ -13,27 +14,27 @@ import { CopyButton } from "@/components/ui/CopyButton";
 // operator can respond to a paused pipeline directly from the board
 // instead of detouring through the run console (issue #125, point 4).
 //
-// It reuses PauseForm verbatim: the paused questions live on the run
-// checkpoint (store.Checkpoint.InteractionQuestions, surfaced through the
-// snapshot's opaque checkpoint index signature), the same data PauseForm
-// consumes in the run console. sourceOverride={null} is load-bearing: the
-// operator isn't editing this run's workflow here, so the resume must
-// carry NO source and let the server fall back to the run's persisted
-// FilePath (passing the editor buffer would resume an unrelated workflow).
+// It reuses PauseForm verbatim, decoding the paused node's questions with
+// the shared rehydratePendingHumanInput (which runtime-narrows the opaque
+// run checkpoint and gates on paused_waiting_human) — the same helper the
+// run console uses to rebuild the pause panel after a reload.
+// sourceOverride={null} is load-bearing: the operator isn't editing this
+// run's workflow here, so the resume must carry NO source and let the
+// server fall back to the run's persisted FilePath (passing the editor
+// buffer would resume an unrelated workflow).
 function AwaitingInput({ runID }: { runID: string }) {
   const { data, refetch } = useQuery({
     queryKey: ["board-last-run", runID],
     queryFn: ({ signal }) => getRun(runID, { signal }),
-    // Poll gently: a parked run flips to running on resume and back if it
-    // re-pauses; a light refetch keeps the affordance honest without a WS.
-    refetchInterval: 5000,
+    // Poll only while genuinely paused: one fetch to learn the status, then
+    // a light refetch that stops once the run resumes/terminates (a parked
+    // run flips to running on answer). `enabled` can't gate this — the first
+    // fetch is what reveals the status.
+    refetchInterval: (q) =>
+      q.state.data?.run?.status === "paused_waiting_human" ? 5000 : false,
   });
-  const run = data?.run;
-  const paused =
-    run?.status === "paused_waiting_human" || run?.status === "paused_operator";
-  if (!paused) return null;
-  const questions =
-    (run?.checkpoint?.interaction_questions as Record<string, unknown> | undefined) ?? {};
+  const pending = data ? rehydratePendingHumanInput(data) : null;
+  if (!pending) return null;
   return (
     <div className="rounded border border-warning/40 bg-warning-soft p-2 space-y-2">
       <div className="text-micro uppercase tracking-wide text-warning-fg">
@@ -41,7 +42,7 @@ function AwaitingInput({ runID }: { runID: string }) {
       </div>
       <PauseForm
         runId={runID}
-        questions={questions}
+        questions={pending.questions ?? {}}
         sourceOverride={null}
         onSubmitted={() => void refetch()}
       />

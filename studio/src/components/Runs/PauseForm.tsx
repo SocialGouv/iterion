@@ -97,7 +97,7 @@ export default function PauseForm({
   // undefined so the resume carries no source and the server falls back to
   // the run's persisted FilePath.
   const resolvedSource =
-    sourceOverride !== undefined ? (sourceOverride ?? undefined) : (currentSource ?? undefined);
+    (sourceOverride !== undefined ? sourceOverride : currentSource) ?? undefined;
 
   const onChange = (name: string, next: string) => {
     setValues((prev) => ({ ...prev, [name]: next }));

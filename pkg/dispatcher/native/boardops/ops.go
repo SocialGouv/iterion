@@ -271,11 +271,11 @@ func Call(store native.BoardStore, caps Capabilities, name string, rawArgs json.
 
 func doCreate(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
-		Title    string         `json:"title"`
-		Body     string         `json:"body"`
-		State    string         `json:"state"`
-		Labels   []string       `json:"labels"`
-		Priority int            `json:"priority"`
+		Title    string            `json:"title"`
+		Body     string            `json:"body"`
+		State    string            `json:"state"`
+		Labels   []string          `json:"labels"`
+		Priority int               `json:"priority"`
 		Assignee string            `json:"assignee"`
 		Blockers []string          `json:"blockers"`
 		Fields   map[string]any    `json:"fields"`
