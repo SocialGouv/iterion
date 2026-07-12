@@ -162,13 +162,82 @@ func TestMongoSource_EventsNoBoundaryGap(t *testing.T) {
 	}
 }
 
+// TestMongoSource_EventsReplayTailTerminal: backfill, live change-stream
+// tail, and stream close (after a final backfill) when the run flips
+// terminal — the event twin of TestMongoSource_LogsReplayTailTerminal.
+// Before the fix the event change stream had no terminal poll, so it
+// pumped forever and the WS never emitted `terminated`.
+func TestMongoSource_EventsReplayTailTerminal(t *testing.T) {
+	prev := mongoTerminalPollInterval
+	mongoTerminalPollInterval = 150 * time.Millisecond
+	t.Cleanup(func() { mongoTerminalPollInterval = prev })
+
+	st, src, ctx := newMongoFixture(t)
+	const runID = "m-events-terminal"
+	if _, err := st.CreateRun(ctx, runID, "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	appendMongoEvent(t, ctx, st, runID, "seeded")
+
+	sub, err := src.SubscribeEvents(ctx, runID, 0)
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+	defer sub.Close()
+
+	// Backfill delivers the seeded event.
+	drainMongoEvents(t, sub, 1, 15*time.Second)
+
+	// A live event through the change stream.
+	appendMongoEvent(t, ctx, st, runID, "live")
+	drainMongoEvents(t, sub, 1, 15*time.Second)
+
+	// Persist a final event, then flip terminal → final backfill (the
+	// racing event included) → close.
+	appendMongoEvent(t, ctx, st, runID, "final")
+	if err := st.UpdateRunStatus(ctx, runID, store.RunStatusFinished, ""); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+	// The stream must deliver the final event (if not already tailed) and
+	// then close within a few poll ticks.
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case _, ok := <-sub.Events():
+			if !ok {
+				return // channel closed → WS emits terminated
+			}
+		case <-deadline:
+			t.Fatal("timeout: event stream did not close after terminal flip")
+		}
+	}
+}
+
+// drainMongoEvents reads at least n events (across batches) or fails.
+func drainMongoEvents(t *testing.T, sub EventSubscription, n int, timeout time.Duration) {
+	t.Helper()
+	got := 0
+	deadline := time.After(timeout)
+	for got < n {
+		select {
+		case batch, ok := <-sub.Events():
+			if !ok {
+				t.Fatalf("stream closed early after %d events, want %d", got, n)
+			}
+			got += len(batch)
+		case <-deadline:
+			t.Fatalf("timeout after %d events, want %d", got, n)
+		}
+	}
+}
+
 // TestMongoSource_LogsReplayTailTerminal: mid-chunk from_offset
 // backfill, live change-stream tail, and stream close (after a final
 // drain) when the run flips terminal.
 func TestMongoSource_LogsReplayTailTerminal(t *testing.T) {
-	prev := mongoLogTerminalPollInterval
-	mongoLogTerminalPollInterval = 150 * time.Millisecond
-	t.Cleanup(func() { mongoLogTerminalPollInterval = prev })
+	prev := mongoTerminalPollInterval
+	mongoTerminalPollInterval = 150 * time.Millisecond
+	t.Cleanup(func() { mongoTerminalPollInterval = prev })
 
 	st, src, ctx := newMongoFixture(t)
 	const runID = "m-logs"

@@ -1265,6 +1265,13 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	// run ctx — so a cancelled/timed-out run still persists its final view
 	// (mirrors the run-log writer's flush-ctx rationale).
 	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	// Capture per-file diff content (before/after) into the snapshot while the
+	// clone still exists, so the server pod can serve /files/diff and
+	// /commits/{sha}/diff for this run once the worktree is gone. Bounded:
+	// small diffs inline, large ones offloaded to the blob backend, anything
+	// past the budget dropped (Truncated). Best-effort — the metadata is the
+	// contract; diff content is an enrichment.
+	store.PopulateRunDiffs(idCtx, msg.RunID, workDir, meta, store.AsRunDiffBlobStore(r.cfg.Store))
 	if err := gs.SaveRunGitMeta(idCtx, msg.RunID, meta); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: persist git meta: %v", msg.RunID, err)
 	}
