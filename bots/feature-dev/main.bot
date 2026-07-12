@@ -334,6 +334,63 @@ prompt verify_user:
   skill). Do NOT change code; the deterministic gate runs your script and the
   campaign fixes any red on the next pass.
 
+## ─── Adversarial in-loop review prompts ─────────────────────────────
+
+prompt review_system:
+  You are an adversarial code reviewer running as a stage INSIDE the
+  build loop, BEFORE the work becomes a pull request. Your job is to catch
+  the defects that compile and pass tests but still ship a real bug — so
+  the human reviewer downstream finds nothing. You make NO code changes;
+  you report findings the campaign fixes on its next pass.
+
+  Read the `code-review-invariants` skill FIRST. It is the checklist: the
+  six recurring classes of cross-cutting defect (sibling-consistency,
+  lifecycle parity for new persistent state, isolation/scoping parity,
+  authority gates on background mutators, provable claims, loud failure).
+
+  Procedure:
+    1. If `build_passed` is false, the tree is mid-implementation — return
+       `clean: true` with empty findings immediately (the build failure is
+       handled by the deterministic gate; do not review a broken tree).
+    2. Determine the base: `git merge-base HEAD <base_ref or the repo
+       default branch>`. Review the run's own work: `git diff <base>..HEAD`
+       and `git diff --stat <base>..HEAD` for the whole footprint.
+    3. For each new/changed unit, walk the invariant checklist. For a
+       suspected violation, VERIFY it against the code (open the sibling,
+       confirm the boundary is really absent) before reporting — a false
+       finding wastes a whole pass.
+    4. `prior_findings` carries what you flagged on the previous pass. Do
+       NOT re-raise a prior finding unless the current diff still shows it
+       unaddressed. If the campaign fixed it, it is resolved.
+
+  Blocking bar — be disciplined, this loop must converge:
+    - Block (`clean: false`) ONLY on a HIGH-CONFIDENCE defect in the six
+      invariant classes: a real correctness, security/isolation, lifecycle,
+      authority, false-claim, or silent-failure bug you have verified in
+      the code.
+    - Do NOT block on style, naming, preference, test coverage, or
+      "could be nicer". A diff that introduces no new persistent state, no
+      new access path, no background mutator, no over-claim, and stays
+      consistent with its siblings is CLEAN — say so. Do not invent work
+      to look thorough. Under-flagging a nit is free; a false block costs a
+      whole campaign pass.
+
+  Output: `clean` (true when nothing blocking), and `findings` — when not
+  clean, a specific, actionable list (file:line, which invariant, why it is
+  a real bug, what the fix is), so the campaign fixes it directly. Empty
+  when clean.
+
+prompt review_user:
+  Review the working tree at {{vars.workspace_dir}}.
+  Base hint: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+
+  Findings you raised last pass (do not re-raise unless still unaddressed):
+  {{input.prior_findings}}
+
+  Adversarially review this run's diff against the `code-review-invariants`
+  checklist. Return clean=true if nothing high-confidence is wrong; else
+  return specific, actionable findings for the campaign to fix.
+
 ## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
 
 prompt finalize_mr_system:
@@ -428,11 +485,25 @@ schema verify_probe_state:
   reason: string
 
 ## gate is the deterministic continuation decision. converged = the tree is
-## green AND the campaign reported the feature fully shipped. fail_log relays
-## the real build failure to the campaign on a RED pass (empty when green).
+## green AND the campaign reported the feature fully shipped AND the
+## adversarial review is clean. fail_log relays the real build failure OR the
+## review findings to the campaign (empty when green + clean).
 schema gate_state:
   converged: bool
   fail_log: string
+
+## review is the in-loop adversarial self-review (ADR: push the downstream
+## review INTO the loop so the PR ships pre-refined). clean=true when the
+## diff has no high-confidence invariant violation; findings carries the
+## specific, actionable defects the campaign must fix next pass.
+schema review_input:
+  base_ref: string
+  build_passed: bool
+  prior_findings: string
+
+schema review_output:
+  clean: bool
+  findings: string
 
 schema mr_gate_output:
   open_mr: bool
@@ -573,18 +644,38 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 "`
   output: verify_result
 
-## gate — the deterministic continuation decision. Reads the real gate result
-## (outputs.verify_run.passed) AND the campaign's termination output
-## (outputs.campaign.feature_complete), both fresh in the loop BODY (the same
-## discipline whole_improve_loop's gate uses to read the loop-head safely).
-## converged = green AND the feature is fully shipped. On a RED pass fail_log
-## carries the real build failure to the campaign; empty when green. No LLM,
-## no shell.
+## review — adversarial in-loop self-review (readonly). Runs after the
+## deterministic build gate; reads the code-review-invariants skill and the
+## run's own diff, and blocks convergence ONLY on a high-confidence defect
+## in the six invariant classes. This is the refinement the downstream
+## reviewer would otherwise do — moved INTO the loop so the PR ships clean.
+## claude_code (full read/git toolset), readonly so it cannot mutate;
+## session: fresh. Convergent by design: light no-op on a red build, strict
+## no-re-raise, blocks only verified real bugs (see review_system).
+agent review:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  session: fresh
+  readonly: true
+
+## gate — the deterministic continuation decision. Reads the build result
+## (outputs.verify_run.passed), the campaign's termination output
+## (outputs.campaign.feature_complete), AND the adversarial review verdict
+## (outputs.review.clean), all fresh in the loop BODY (the same discipline
+## whole_improve_loop's gate uses to read the loop-head safely).
+## converged = green AND fully shipped AND review-clean. fail_log carries the
+## real build failure (RED build) or the review findings (green but dirty) to
+## the campaign; empty when green + clean. No LLM, no shell.
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.campaign.feature_complete"
-    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
+    converged: "outputs.verify_run.passed && outputs.campaign.feature_complete && outputs.review.clean"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
 
 ## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
 ## edges use the C012-exhaustive simple form. No LLM, no shell.
@@ -715,7 +806,14 @@ workflow feature_dev:
   verify_probe -> verify_run when fresh
   verify_probe -> verify_build when not fresh
   verify_build -> verify_run
-  verify_run -> gate
+  ## After the deterministic build gate, the adversarial review inspects the
+  ## run's diff (the refinement pass moved in-loop), then the gate decides.
+  verify_run -> review with {
+    base_ref:       "{{vars.mr_base}}",
+    build_passed:   "{{outputs.verify_run.passed}}",
+    prior_findings: "{{outputs.gate.fail_log}}"
+  }
+  review -> gate
 
   ## Converged (green AND the campaign reports the feature fully shipped) →
   ## ship what is banked (optional MR, else finish).
