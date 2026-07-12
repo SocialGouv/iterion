@@ -356,6 +356,14 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   }
 
   const active = snapshot.run.status === "running";
+  // The inline Monaco file-editor writes back to the run's on-disk
+  // worktree; that endpoint 409s when the worktree is gone (a cloud run's
+  // worktree lives on the runner pod; a finalized/gc'd local run's is torn
+  // down). Gate every editor entry point on the server-computed flag so an
+  // Edit affordance is simply absent rather than error-on-click. When
+  // unavailable the file rows still open the read-only diff dialog.
+  const canEditFiles = snapshot.run.worktree_available === true;
+  const onEditFile = canEditFiles ? handleEditFile : undefined;
   // Drive the EventLog filter from the canvas/detail selection so a
   // click on a node implicitly narrows the event stream.
   const eventLogSelection = detailExec?.execution_id ?? null;
@@ -562,7 +570,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
           width={leftWidth}
           onResize={onLeftResize}
           onSelectFile={handleSelectFile}
-          onEditFile={handleEditFile}
+          onEditFile={onEditFile}
           onMergeComplete={refreshSnapshot}
           onJumpToFailed={handleJumpToFailed}
         />
@@ -580,7 +588,7 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
           file={diffFile}
           mode={diffMode}
           onClose={closeDiff}
-          onEdit={handleEditFile}
+          onEdit={onEditFile}
         />
         <FileEditDialog
           runId={runId}

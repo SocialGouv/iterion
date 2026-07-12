@@ -209,7 +209,7 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 			Mode:      requested,
 			Files:     []gitlib.FileStatus{},
 			Available: false,
-			Reason:    "worktree_gone",
+			Reason:    unavailableReason(run, "worktree_gone"),
 		})
 		return
 	}
@@ -233,8 +233,28 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		Worktree:  run.Worktree,
 		Files:     []gitlib.FileStatus{},
 		Available: false,
-		Reason:    "not_git_repo",
+		Reason:    unavailableReason(run, "not_git_repo"),
 	})
+}
+
+// unavailableReason picks the reason for a files listing that couldn't be
+// resolved. A cloud run's worktree lives on the runner pod and its
+// branch-range gitmeta is only recorded at finalize, so while the run is
+// still ongoing this server pod has neither the worktree nor a snapshot —
+// the panel would otherwise render "not a git repository" / "worktree
+// cleaned up", both of which misdescribe a run that simply hasn't produced
+// its files yet. For a non-terminal run we return "building" so the studio
+// shows a "available when the run finishes" empty state instead. Terminal
+// runs fall back to the caller's concrete reason (the worktree really is
+// gone).
+func unavailableReason(run *store.Run, terminalReason string) string {
+	// Only "building" when the worktree directory is genuinely absent from
+	// this pod (the cloud runner owns it) — a present-but-non-git directory
+	// is a real not_git_repo even mid-run, not a not-yet-produced listing.
+	if !run.Status.IsTerminal() && !dirExists(run.WorkDir) {
+		return "building"
+	}
+	return terminalReason
 }
 
 // servePersistedFiles serves the modified-files list from the run's

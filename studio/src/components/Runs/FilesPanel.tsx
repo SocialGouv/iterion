@@ -599,6 +599,8 @@ function reasonLabel(reason: string | undefined): string {
       return "This run has no base commit — branch diff unavailable";
     case "worktree_gone":
       return "Worktree was cleaned up after the run finished. Showing branch view.";
+    case "building":
+      return "Building — the modified-files list becomes available when the run finishes. (A cloud run's changes are recorded at finalize.)";
     default:
       return reason ?? "Files unavailable";
   }
