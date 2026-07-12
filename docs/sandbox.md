@@ -553,7 +553,7 @@ Architecture:
   `origin`) so the sandboxed bot can commit and push.
 - Cleanup deletes the pod (and its emptyDir) on run exit.
 
-#### Orphan garbage collection (ADR-068)
+#### Orphan garbage collection (ADR-070)
 
 `Run.Cleanup` fires only on a graceful engine exit. A runner pod
 SIGKILLed / OOM-killed / node-evicted mid-run never runs it, so its
@@ -589,7 +589,12 @@ TTL. Three cooperating mechanisms GC them without relying on `Cleanup`:
   authority** (off on the lock-less cloud server) and liveness-first, so it
   never reaps a live run's sandbox. It targets all three kinds explicitly
   because they are owned by the runner pod, not the sandbox pod (so
-  deleting the pod does not cascade the Secrets/NetworkPolicy).
+  deleting the pod does not cascade the Secrets/NetworkPolicy). Because it
+  is gated off on the lock-less cloud server (and the cloud runner runs no
+  `runview.Service`), in **managed cloud** the reaper does not fire: a
+  container OOM/SIGKILL where the runner pod survives leaves the sandbox
+  Secret until the next runner-pod deletion. Wiring the reaper into the
+  runner claim-loop (NATS-lease liveness) is the follow-up that closes this.
 
 Security defaults applied to every sibling pod:
 

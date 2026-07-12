@@ -220,7 +220,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 
 	// Best-effort cascade-GC owner (the runner pod) + a bounded lifetime,
 	// so a runner killed mid-run before Cleanup fires doesn't leak the pod
-	// or its plaintext-credential Secret indefinitely (ADR-068). Both
+	// or its plaintext-credential Secret indefinitely (ADR-070). Both
 	// degrade gracefully: owner nil when the downward API isn't wired,
 	// deadline 0 when the run has no duration budget — the label reaper is
 	// the backstop for either.
@@ -512,7 +512,7 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 // are non-fatal for the engine: a pod leaked because Cleanup never
 // fired (runner killed mid-run) is bounded by spec.activeDeadlineSeconds,
 // cascade-GC'd when the runner pod is deleted (ownerReference), and swept
-// by the label reaper (ReapOrphanResources) — see ADR-068.
+// by the label reaper (ReapOrphanResources) — see ADR-070.
 func (r *Run) Cleanup(_ context.Context) error {
 	r.mu.Lock()
 	if r.cleaned {

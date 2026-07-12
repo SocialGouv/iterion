@@ -1,4 +1,4 @@
-# ADR-068 — Garbage-collect orphaned kubernetes sandbox pods and their plaintext-credential Secrets
+# ADR-070 — Garbage-collect orphaned kubernetes sandbox pods and their plaintext-credential Secrets
 
 - Status: accepted
 - Date: 2026-07-12
@@ -88,24 +88,37 @@ firing:
    from the store. Wired into the runview service at boot and on the
    periodic reconcile tick, **gated on `store.Capabilities().CrossProcessLock`**
    and reusing the liveness-first `sandboxContainerReapable` predicate — so a
-   lock-less cloud server sharing a namespace with live runner pods can never
-   reap an in-flight run's sandbox. It runs on the tick (unlike the docker
-   reaper, which is boot-only) because a runner OOM-killed while the server
-   stays up leaks a plaintext-credential Secret that boot-only reaping would
-   miss until the next restart.
+   lock-less store can never reap an in-flight run's sandbox.
+
+   **Scope of this reaper (important):** it only runs where the `runview.Service`
+   has lock authority — i.e. the *self-hosted filesystem-store-in-k8s* topology.
+   In **managed cloud** the runview server runs on the lock-less Mongo store
+   (`CrossProcessLock == false`), so the gate skips it, and the cloud *runner*
+   (which does have lock authority, via its NATS lease) does not construct a
+   `runview.Service` at all — so the tick reaper does **not** fire in managed
+   cloud. There, orphan GC currently relies on the `ownerReference` cascade,
+   which fires only when the **runner pod object is deleted** (rollout, drain,
+   scale-down) — NOT when a container is OOM-killed and restarted in place
+   (the pod UID survives, so nothing cascades). Wiring the reaper into the
+   runner claim-loop with NATS-lease liveness is the follow-up that closes the
+   managed-cloud OOM-with-surviving-pod window (tracked separately).
 
 The docker driver path is untouched.
 
 ## Consequences
 
 - A killed runner's sandbox pod + both Secrets + NetworkPolicy are GC'd by
-  the cluster within a bounded window with no manual `kubectl delete`:
-  immediately on runner-pod deletion (ownerReference cascade), and
-  otherwise by the reaper's boot/periodic sweep once the run is terminal.
-  `activeDeadlineSeconds` bounds the pod's compute consumption in the
-  meantime.
-- No plaintext-credential Secret outlives its run once either the reaper
-  runs or the runner pod is deleted.
+  the cluster on runner-pod deletion (ownerReference cascade), and — in the
+  self-hosted-store-in-k8s topology — by the reaper's boot/periodic sweep
+  once the run is terminal. `activeDeadlineSeconds` bounds the pod's compute
+  consumption in the meantime (it fails the pod, but does not delete the pod
+  or its Secrets — that is the cascade's / reaper's job).
+- **Managed-cloud residual (known, tracked):** on a container OOM/SIGKILL
+  where the runner *pod* survives, the ownerReference does not cascade and
+  the tick reaper does not run (see Decision 3 scope), so the
+  plaintext-credential Secret persists until the next runner-pod deletion
+  (a rollout). Closing this needs the reaper wired into the runner
+  claim-loop — a follow-up.
 - The ownerReference is best-effort: a cluster whose Helm chart does not
   wire the downward-API env vars gets `activeDeadlineSeconds` + the reaper
   only, which still satisfy the acceptance bar (bounded window, no manual

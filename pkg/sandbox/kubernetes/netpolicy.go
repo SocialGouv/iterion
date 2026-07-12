@@ -32,7 +32,7 @@ type NetworkPolicyInput struct {
 	RunnerPodIP string
 	// Owner, when valid, is stamped as the policy's ownerReferences so
 	// the cluster cascade-GCs it with its owner (the runner pod). See
-	// ADR-068.
+	// ADR-070.
 	Owner *OwnerReference
 }
 

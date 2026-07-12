@@ -39,7 +39,7 @@ const ComponentSandboxRun = "sandbox-run"
 // plaintext-credential-at-rest window without waiting for the label
 // reaper. It is best-effort: when the downward API isn't wired the owner
 // is nil and the run relies on activeDeadlineSeconds + the label reaper
-// (defence in depth). See ADR-068.
+// (defence in depth). See ADR-070.
 type OwnerReference struct {
 	APIVersion string
 	Kind       string
@@ -114,7 +114,7 @@ type PodManifestInput struct {
 	// Owner, when valid, is stamped as the pod's metadata.ownerReferences
 	// so the cluster cascade-GCs the sandbox pod when the owner (the
 	// runner pod) is deleted. Best-effort — nil when the downward API
-	// isn't wired. See ADR-068.
+	// isn't wired. See ADR-070.
 	Owner *OwnerReference
 
 	// ActiveDeadlineSeconds, when > 0, bounds the sandbox pod's wall-clock
@@ -122,7 +122,7 @@ type PodManifestInput struct {
 	// exceeds this, so a leaked pod (runner SIGKILLed/OOM-killed mid-run,
 	// Cleanup never fired) stops consuming compute deterministically
 	// rather than idling as `sleep infinity` forever. Derived from the
-	// run's max_duration + a margin (see driver.go). See ADR-068.
+	// run's max_duration + a margin (see driver.go). See ADR-070.
 	ActiveDeadlineSeconds int64
 }
 
