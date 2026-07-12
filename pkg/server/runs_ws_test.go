@@ -63,6 +63,27 @@ func TestRunsWS_SubscribeReceivesSnapshot(t *testing.T) {
 	}
 }
 
+// TestRunsWS_PingElicitsPong guards the application-level heartbeat the
+// client's dead-socket watchdog depends on: a client `ping` envelope must
+// come back as a `pong`. The browser's automatic control-frame pong is
+// invisible to JS, so this JSON-layer reply is the only liveness signal
+// the SPA can observe on an idle-but-alive run.
+func TestRunsWS_PingElicitsPong(t *testing.T) {
+	srv, hs := newTestServer(t)
+	seedRun(t, srv, "run-ping", "wf", store.RunStatusRunning)
+
+	c := dialRunWS(t, hs, "run-ping")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypePing, AckID: "hb-1"})
+
+	env := readEnvelope(t, c, wsTypePong)
+	if env.Type != wsTypePong {
+		t.Fatalf("Type = %q, want pong", env.Type)
+	}
+	if env.AckID != "hb-1" {
+		t.Errorf("AckID = %q, want hb-1 (echoed)", env.AckID)
+	}
+}
+
 func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 	srv, hs := newTestServer(t)
 	// Create the run with an empty event stream so the snapshot is

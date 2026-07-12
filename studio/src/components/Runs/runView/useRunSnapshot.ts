@@ -3,8 +3,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { is404 } from "@/api/client";
 import { getRun, getRunWithRetry } from "@/api/runs";
 import { errorMessage } from "@/lib/errorHints";
-import { useRunStore } from "@/store/run";
+import { useRunStore, useRunStoreInstance } from "@/store/run";
 import { useUIStore } from "@/store/ui";
+
+// Low-frequency REST safety net for the open run's status. The WS is the
+// primary channel, but two backend gaps leave the status pill stuck on
+// "running" with a perfectly healthy socket: cloud (mongo change-stream)
+// and external/dispatcher (events.jsonl tail) runs never emit a
+// `terminated` frame nor close the event stream on completion, so a
+// missed terminal event is never corrected over the wire. This poll
+// re-fetches run.json when the run LOOKS live but stalled (no event for
+// SNAPSHOT_POLL_STALE_MS) or the socket is down — applySnapshot's
+// last_seq stale-guard makes a redundant fetch a no-op, so it can only
+// correct, never regress. Idle during healthy streaming (fresh events
+// keep the stale clock reset) — it fires only on an actual stall.
+const SNAPSHOT_POLL_MS = 12_000;
+const SNAPSHOT_POLL_STALE_MS = 45_000;
 
 // useRunSnapshot owns the run-console's REST snapshot fetch + event-
 // history hydration on run open. Both have non-trivial retry/abort
@@ -115,6 +129,29 @@ export function useRunSnapshot(runId: string | null): RunSnapshotHandle {
       .then(applySnapshot)
       .catch(() => undefined);
   }, [runId, applySnapshot]);
+
+  // Status safety-net poll (see the SNAPSHOT_POLL_* rationale above).
+  const store = useRunStoreInstance();
+  useEffect(() => {
+    if (!runId) return;
+    const id = setInterval(() => {
+      const st = store.getState();
+      const status = st.snapshot?.run.status;
+      // Only a run we still expect to produce events; a settled run
+      // (terminal, paused, resumable) has nothing to correct here.
+      if (status !== "running") return;
+      const evs = st.events;
+      const lastTs = evs.length
+        ? Date.parse(evs[evs.length - 1]!.timestamp)
+        : 0;
+      const eventsStale =
+        lastTs > 0 && Date.now() - lastTs > SNAPSHOT_POLL_STALE_MS;
+      const wsDown = st.wsState !== "open";
+      if (!eventsStale && !wsDown) return;
+      getRun(runId).then(applySnapshot).catch(() => undefined);
+    }, SNAPSHOT_POLL_MS);
+    return () => clearInterval(id);
+  }, [runId, store, applySnapshot]);
 
   return { loadFailed, handleRetryLoad, refreshSnapshot };
 }
