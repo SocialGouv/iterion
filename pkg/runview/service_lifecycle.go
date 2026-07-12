@@ -23,6 +23,16 @@ import (
 // Safe to call when docker/podman isn't installed: dockersandbox.Detect
 // returns an error which we swallow as "nothing to reconcile."
 func (s *Service) reconcileSandboxContainers() {
+	// Same liveness-authority guard as reconcileOrphans (b7b63f723): the
+	// reap probes LockRun to decide "owner gone", but a store with no real
+	// cross-process lock (the cloud server's noop lock) always "succeeds"
+	// the probe — so without this a server sharing a store with docker
+	// runners on one host could force-remove live sandbox containers.
+	// Today this is masked (cloud servers have no docker daemon, so Detect
+	// below no-ops), but gate it explicitly so the two reapers can't drift.
+	if !s.store.Capabilities().CrossProcessLock {
+		return
+	}
 	rt, err := dockersandbox.Detect()
 	if err != nil {
 		return
@@ -146,8 +156,16 @@ func (s *Service) reconcileOrphans() {
 		// for every run scanned. Without this, a SIGTERM landing during
 		// the ~50ms window between status=finished and SaveRun(final_*)
 		// leaves the run forever stuck with no merge UI affordance.
-		if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil {
-			s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
+		//
+		// Only when this service has liveness authority: the cloud server
+		// (noop lock) owns no worktree — the finalize runs on the runner
+		// pod. Calling it here reads a WorkDir/RepoRoot absent on the
+		// server pod, doing pointless git work + logging a spurious
+		// "cannot read worktree HEAD" every tick per finished run.
+		if canReap {
+			if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil {
+				s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
+			}
 		}
 		if r.Status != store.RunStatusRunning {
 			continue

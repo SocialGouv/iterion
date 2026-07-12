@@ -135,10 +135,28 @@ func testDeleteRun(t *testing.T, s store.RunStore) {
 		if _, err := s.AppendEvent(ctx, id, store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}); err != nil {
 			t.Fatalf("AppendEvent %s: %v", id, err)
 		}
+		// Also write a run-log chunk so DeleteRun's cleanup of the
+		// run_logs collection is exercised (it was omitted from the Mongo
+		// children list — the run's raw log lived on until its TTL).
+		if ls := store.AsRunLogStore(s); ls != nil {
+			if err := ls.AppendRunLog(ctx, id, 0, []byte("log-"+id)); err != nil {
+				t.Fatalf("AppendRunLog %s: %v", id, err)
+			}
+		}
 	}
 
 	if err := s.DeleteRun(ctx, "run_del"); err != nil {
 		t.Fatalf("DeleteRun: %v", err)
+	}
+	// The deleted run's log chunks must be gone too (not just its record).
+	if ls := store.AsRunLogStore(s); ls != nil {
+		if n, err := ls.RunLogSize(ctx, "run_del"); err != nil || n != 0 {
+			t.Errorf("RunLogSize(run_del) after delete = %d, %v; want 0, nil", n, err)
+		}
+		// Sibling's log survives.
+		if n, _ := ls.RunLogSize(ctx, "run_keep"); n == 0 {
+			t.Errorf("sibling run_keep log wiped by deleting run_del")
+		}
 	}
 	if _, err := s.LoadRun(ctx, "run_del"); err == nil {
 		t.Error("LoadRun after delete: want error, got nil")
