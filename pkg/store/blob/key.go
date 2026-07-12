@@ -59,3 +59,32 @@ func attachmentRunPrefix(runID string) (string, error) {
 	}
 	return fmt.Sprintf("attachments/%s/", runID), nil
 }
+
+// toolBlobKey builds the canonical S3 key for a per-tool-call I/O body.
+// Format: tools/<run_id>/<tool_use_id>/<kind>, where kind ∈
+// {input,output}. Mirrors the filesystem store's
+// runs/<id>/tools/<toolUseID>/<kind> layout so `migrate to-cloud` can
+// copy bytes across without rewriting paths. kind is validated by the
+// caller (store layer) before this point; it is still sanitised here as
+// a path component so a malformed value can never escape the prefix.
+func toolBlobKey(runID, toolUseID, kind string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	if err := store.SanitizePathComponent("tool_use_id", toolUseID); err != nil {
+		return "", fmt.Errorf("blob: invalid tool_use_id: %w", err)
+	}
+	if kind != "input" && kind != "output" {
+		return "", fmt.Errorf("blob: tool blob kind must be input|output, got %q", kind)
+	}
+	return fmt.Sprintf("tools/%s/%s/%s", runID, toolUseID, kind), nil
+}
+
+// toolBlobRunPrefix is the S3 key prefix containing every tool blob for
+// a run. Trailing slash guards against matching `tools/<runID>-other/`.
+func toolBlobRunPrefix(runID string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	return fmt.Sprintf("tools/%s/", runID), nil
+}

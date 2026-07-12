@@ -82,6 +82,26 @@ type Client interface {
 	// `attachments/<runID>/` in a single sweep. Best-effort: partial
 	// failures must be logged but should not break sweepers.
 	DeleteRunAttachments(ctx context.Context, runID string) error
+
+	// PutToolBlob uploads a per-tool-call I/O body under
+	// `tools/<runID>/<toolUseID>/<kind>` (kind ∈ {input,output}).
+	// Idempotent: re-PUTting the same key replaces the bytes. Backs the
+	// cloud ToolBlobStore twin — large tool outputs that exceed the
+	// inline event preview threshold live here, not in Mongo (they can
+	// exceed the 16 MiB BSON document ceiling).
+	PutToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) error
+
+	// GetToolBlobRange returns up to `limit` bytes starting at `offset`
+	// (limit==0 → all from offset), the full object size, and eof=true
+	// when offset+len(data) >= total. offset past the end yields
+	// (nil, total, true, nil). Returns ErrArtifactNotFound when the blob
+	// is absent so the store layer can map it to an os.ErrNotExist for
+	// the paginated HTTP surface.
+	GetToolBlobRange(ctx context.Context, runID, toolUseID, kind string, offset, limit int64) (data []byte, total int64, eof bool, err error)
+
+	// DeleteRunToolBlobs removes every blob under `tools/<runID>/` in a
+	// single sweep. Best-effort, mirroring DeleteRunAttachments.
+	DeleteRunToolBlobs(ctx context.Context, runID string) error
 }
 
 // AttachmentMeta describes the bytes returned by GetAttachment as
@@ -136,4 +156,18 @@ func AttachmentKey(runID, name, filename string) (string, error) {
 // Returns an error when runID fails sanitisation.
 func AttachmentRunPrefix(runID string) (string, error) {
 	return attachmentRunPrefix(runID)
+}
+
+// ToolBlobKey returns the canonical layout key for a per-tool-call I/O
+// body: `tools/<run_id>/<tool_use_id>/<kind>` (kind ∈ {input,output}).
+// Same shape as the filesystem backend's runs/<id>/tools/… so migration
+// tooling copies bytes across without rewriting paths.
+func ToolBlobKey(runID, toolUseID, kind string) (string, error) {
+	return toolBlobKey(runID, toolUseID, kind)
+}
+
+// ToolBlobRunPrefix is the S3 key prefix that contains every tool blob
+// for a run. Used by DeleteRunToolBlobs and retention sweepers.
+func ToolBlobRunPrefix(runID string) (string, error) {
+	return toolBlobRunPrefix(runID)
 }

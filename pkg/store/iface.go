@@ -219,8 +219,11 @@ func AsRunFilesStore(s RunStore) RunFilesStore {
 // rest from the server's paginated endpoint on demand.
 //
 // Filesystem stores satisfy it (`<root>/runs/<id>/tools/<toolUseID>/{input,output}`).
-// Cloud (Mongo) stores currently do NOT — the hooks layer falls back to
-// inline-only persistence when this interface is not implemented.
+// The Mongo (cloud) store also satisfies it, backed by the S3 blob client
+// at `tools/<runID>/<toolUseID>/<kind>` (tool bodies can exceed the 16 MiB
+// BSON ceiling, so they live in S3, not Mongo) — see
+// pkg/store/mongo/toolblobs.go. The hooks layer still falls back to
+// inline-only persistence for any store that does NOT implement it.
 type ToolBlobStore interface {
 	// WriteToolBlob writes body under runs/<id>/tools/<toolUseID>/<kind>.
 	// kind ∈ {"input", "output"}. Returns the total byte size written.

@@ -2165,6 +2165,22 @@ func (m *metricsEmitter) WriteTurn(ctx context.Context, t *store.TurnCheckpoint)
 	return tw.WriteTurn(ctx, t)
 }
 
+// WriteToolBlob forwards per-tool-call I/O sidecar persistence to the
+// wrapped emitter when it implements model.ToolBlobWriter (the Mongo
+// cloud store now does). Same rationale as WriteTurn: the capture hook's
+// `emitter.(ToolBlobWriter)` assertion runs against THIS wrapper, so
+// without the forward large tool outputs would silently fall back to the
+// capped inline preview for every cloud run. When the inner store is not
+// a ToolBlobWriter this signals "no sidecar" the same way a nil
+// blobSink does — persistToolPayload then keeps the capped inline body.
+func (m *metricsEmitter) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
+	bw, ok := m.inner.(model.ToolBlobWriter)
+	if !ok {
+		return 0, fmt.Errorf("runner: inner store does not persist tool blobs")
+	}
+	return bw.WriteToolBlob(ctx, runID, toolUseID, kind, body)
+}
+
 func (m *metricsEmitter) observe(evt store.Event) {
 	switch evt.Type {
 	case store.EventLLMRequest:

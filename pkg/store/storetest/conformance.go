@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -61,6 +62,90 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
+	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
+}
+
+// testToolBlobStore exercises the optional ToolBlobStore surface (large
+// per-tool-call I/O bodies served paginated to the studio Tools tab) when
+// the backend implements it: write/read round-trip, offset+limit windows,
+// eof semantics, past-the-end reads, kind validation, the os.ErrNotExist
+// contract for a missing blob, and DeleteRun cleanup. Skipped otherwise.
+func testToolBlobStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	tbs := store.AsToolBlobStore(s)
+	if tbs == nil {
+		t.Skip("backend does not implement ToolBlobStore")
+	}
+	ctx := testCtx()
+	const runID = "run_toolblob"
+	const tuid = "toolu_123"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Missing blob → os.ErrNotExist-compatible error, size 0. (eof is
+	// meaningless on the error path and differs across backends, so it is
+	// not asserted here.)
+	if _, total, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0); !errors.Is(err, os.ErrNotExist) || total != 0 {
+		t.Errorf("ReadToolBlob(missing) = total %d err %v; want 0, os.ErrNotExist", total, err)
+	}
+
+	// Kind validation rejects anything but input|output.
+	if _, err := tbs.WriteToolBlob(ctx, runID, tuid, "bogus", []byte("x")); err == nil {
+		t.Errorf("WriteToolBlob(bad kind): expected error")
+	}
+	if _, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "bogus", 0, 0); err == nil {
+		t.Errorf("ReadToolBlob(bad kind): expected error")
+	}
+
+	// Write input + output bodies.
+	const output = "hello world"
+	if n, err := tbs.WriteToolBlob(ctx, runID, tuid, "output", []byte(output)); err != nil || n != int64(len(output)) {
+		t.Fatalf("WriteToolBlob(output) = %d, %v; want %d, nil", n, err, len(output))
+	}
+	if _, err := tbs.WriteToolBlob(ctx, runID, tuid, "input", []byte("the input")); err != nil {
+		t.Fatalf("WriteToolBlob(input): %v", err)
+	}
+
+	// Full read.
+	data, total, eof, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0)
+	if err != nil || string(data) != output || total != int64(len(output)) || !eof {
+		t.Fatalf("ReadToolBlob(all) = %q total %d eof %v err %v; want %q,%d,true", data, total, eof, err, output, len(output))
+	}
+	// Windowed read in the middle (not at eof).
+	data, total, eof, err = tbs.ReadToolBlob(ctx, runID, tuid, "output", 4, 5)
+	if err != nil || string(data) != "o wor" || total != int64(len(output)) || eof {
+		t.Fatalf("ReadToolBlob(4,5) = %q total %d eof %v err %v; want %q,%d,false", data, total, eof, err, "o wor", len(output))
+	}
+	// From-offset to end.
+	data, _, eof, err = tbs.ReadToolBlob(ctx, runID, tuid, "output", 6, 0)
+	if err != nil || string(data) != "world" || !eof {
+		t.Fatalf("ReadToolBlob(6,0) = %q eof %v err %v; want %q,true", data, eof, err, "world")
+	}
+	// Past-the-end.
+	if data, _, eof, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 99, 0); err != nil || len(data) != 0 || !eof {
+		t.Fatalf("ReadToolBlob(past end) = %q eof %v err %v; want empty,true,nil", data, eof, err)
+	}
+	// input is independent from output.
+	if data, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "input", 0, 0); err != nil || string(data) != "the input" {
+		t.Errorf("ReadToolBlob(input) = %q, %v; want %q", data, err, "the input")
+	}
+
+	// Idempotent overwrite.
+	if _, err := tbs.WriteToolBlob(ctx, runID, tuid, "output", []byte("replaced")); err != nil {
+		t.Fatalf("WriteToolBlob(overwrite): %v", err)
+	}
+	if data, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0); err != nil || string(data) != "replaced" {
+		t.Errorf("after overwrite = %q, %v; want %q", data, err, "replaced")
+	}
+
+	// DeleteRun sweeps the tool blobs too.
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ReadToolBlob after DeleteRun = %v; want os.ErrNotExist", err)
+	}
 }
 
 // testTurnStore exercises the optional TurnStore surface (per-LLM-turn

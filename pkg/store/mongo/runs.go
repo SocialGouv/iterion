@@ -82,6 +82,9 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	if err := s.blob.DeleteRunAttachments(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete attachments %s: %w", id, err)
 	}
+	if err := s.blob.DeleteRunToolBlobs(ctx, id); err != nil {
+		return fmt.Errorf("store/mongo: blob delete tool blobs %s: %w", id, err)
+	}
 	children := []struct {
 		name string
 		coll *mongo.Collection

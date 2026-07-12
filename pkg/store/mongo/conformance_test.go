@@ -200,3 +200,51 @@ func (b *inMemoryBlob) DeleteRunAttachments(_ context.Context, runID string) err
 	}
 	return nil
 }
+
+func (b *inMemoryBlob) PutToolBlob(_ context.Context, runID, toolUseID, kind string, body []byte) error {
+	key, err := blob.ToolBlobKey(runID, toolUseID, kind)
+	if err != nil {
+		return err
+	}
+	b.data[key] = append([]byte{}, body...)
+	return nil
+}
+
+func (b *inMemoryBlob) GetToolBlobRange(_ context.Context, runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
+	key, err := blob.ToolBlobKey(runID, toolUseID, kind)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	body, ok := b.data[key]
+	if !ok {
+		return nil, 0, false, blob.ErrArtifactNotFound
+	}
+	total := int64(len(body))
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return nil, total, true, nil
+	}
+	readLen := total - offset
+	if limit > 0 && limit < readLen {
+		readLen = limit
+	}
+	out := make([]byte, readLen)
+	copy(out, body[offset:offset+readLen])
+	eof := offset+readLen >= total
+	return out, total, eof, nil
+}
+
+func (b *inMemoryBlob) DeleteRunToolBlobs(_ context.Context, runID string) error {
+	prefix, err := blob.ToolBlobRunPrefix(runID)
+	if err != nil {
+		return err
+	}
+	for k := range b.data {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(b.data, k)
+		}
+	}
+	return nil
+}
