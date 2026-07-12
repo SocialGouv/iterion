@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	dockersandbox "github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	k8ssandbox "github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -48,6 +49,44 @@ func (s *Service) reconcileSandboxContainers() {
 	}
 	if len(reaped) > 0 {
 		s.logger.Info("runview: reaped %d orphan sandbox container(s)", len(reaped))
+	}
+}
+
+// reconcileSandboxK8sResources force-deletes iterion-managed kubernetes
+// sandbox resources (pod + CA/file-secrets Secret + NetworkPolicy) whose
+// owning run has reached a terminal status or vanished from the store.
+// The kubernetes counterpart to reconcileSandboxContainers: a runner pod
+// SIGKILLed / OOM-killed / node-evicted mid-run never runs Run.Cleanup,
+// so its sandbox footprint — including the Secret holding plaintext BYOK/
+// forge credentials — leaks with no TTL. The self-terminating manifest
+// (ownerReference + activeDeadlineSeconds) covers the runner-pod-deleted
+// and idle-forever cases; this sweep closes the rest.
+//
+// Gated on the SAME cross-process-lock authority as the docker reaper: a
+// store with a noop lock (the lock-less cloud server) always "succeeds"
+// the liveness probe, so without this gate a server sharing a namespace
+// with live runner pods could reap an in-flight run's sandbox. Safe when
+// not in-cluster: kubernetes.Detect returns an error we swallow.
+func (s *Service) reconcileSandboxK8sResources() {
+	if !s.store.Capabilities().CrossProcessLock {
+		return
+	}
+	_, namespace, err := k8ssandbox.Detect()
+	if err != nil {
+		return // not an in-cluster runner — nothing to reconcile
+	}
+	// Boot-time admin scan: peek at runs across tenants to decide whether
+	// their kubernetes leftovers should be reaped. Reuses the exact same
+	// reapability predicate as the docker reaper (liveness-first).
+	ctx := store.WithoutTenantFilter(context.Background())
+	reaped, err := k8ssandbox.ReapOrphanResources(ctx, namespace, func(runID string) bool {
+		return s.sandboxContainerReapable(ctx, runID)
+	})
+	if err != nil {
+		s.logger.Warn("runview: reap orphan k8s sandbox resources: %v", err)
+	}
+	if len(reaped) > 0 {
+		s.logger.Info("runview: reaped %d orphan k8s sandbox resource(s)", len(reaped))
 	}
 }
 
@@ -246,6 +285,13 @@ func orphanReconcileInterval() time.Duration {
 // against live runs is a no-op. reconcileSandboxContainers is
 // deliberately NOT on the tick — it would round-trip docker every
 // interval; the boot scan plus owner-exit reaping cover containers.
+//
+// reconcileSandboxK8sResources IS on the tick, unlike its docker peer: a
+// runner pod OOM-killed / node-evicted while THIS server stays up leaks a
+// sandbox pod + its plaintext-credential Secret that boot-only reaping
+// wouldn't catch until the next restart. It stays cheap and safe — the
+// same lock-authority gate (off on the lock-less cloud server) and
+// liveness-first predicate as the boot scan, no-op when not in-cluster.
 func (s *Service) startPeriodicReconcile() {
 	interval := orphanReconcileInterval()
 	if interval <= 0 {
@@ -264,6 +310,7 @@ func (s *Service) startPeriodicReconcile() {
 					return
 				}
 				s.reconcileOrphans()
+				s.reconcileSandboxK8sResources()
 			}
 		}
 	}()
