@@ -48,6 +48,14 @@ const (
 	// stream — a UI can keep its log panel rendered with the final
 	// content while the events panel transitions to "completed".
 	wsTypeLogTerminated = "log_terminated"
+	// wsTypePong answers a client wsTypePing. It is the JS-observable
+	// liveness proof the browser's automatic control-frame pong is NOT:
+	// the WebSocket API never surfaces server ping frames to onmessage,
+	// so an idle-but-alive run produces zero client-visible traffic and
+	// a half-open socket (peer vanished without FIN) is never noticed.
+	// The client's application-level heartbeat pings and watches for
+	// this pong to detect a dead connection and force a reconnect.
+	wsTypePong = "pong"
 )
 
 // Client→server message types.
@@ -66,6 +74,10 @@ const (
 	// wsTypeCancelQueuedMessage cancels a message that has not yet
 	// been delivered. Payload is wsCancelQueuedMessageRequest.
 	wsTypeCancelQueuedMessage = "cancel_queued_message"
+	// wsTypePing is the client's application-level heartbeat. The server
+	// answers with wsTypePong (see wsTypePong for why the WS control-frame
+	// ping/pong is insufficient for client-side liveness detection).
+	wsTypePing = "ping"
 )
 
 type wsSubscribeRequest struct {
@@ -354,6 +366,11 @@ func (c *runConn) dispatch(env runWSEnvelope) {
 		c.handleQueueMessage(env)
 	case wsTypeCancelQueuedMessage:
 		c.handleCancelQueuedMessage(env)
+	case wsTypePing:
+		// Application-level heartbeat: reply immediately so the client's
+		// watchdog sees JS-observable inbound traffic and knows the
+		// connection is alive. Stateless — echoes the ack_id if present.
+		c.sendEnvelope(wsTypePong, map[string]string{}, env.AckID)
 	default:
 		c.sendError("unknown_type", "unknown message type: "+env.Type, env.AckID)
 	}

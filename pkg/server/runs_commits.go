@@ -291,6 +291,11 @@ func (s *Server) handleGetRunCommitFileDiff(w http.ResponseWriter, r *http.Reque
 	}
 	repo, info, ok := s.resolveRunCommit(run, rawSHA)
 	if !ok {
+		// Cloud fallback: no live/finalized repo, but the runner recorded this
+		// commit's per-file before/after content before its clone vanished.
+		if s.servePersistedCommitFileDiff(w, r, run, rawSHA, path) {
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "commit not in run range")
 		return
 	}
@@ -300,6 +305,44 @@ func (s *Server) handleGetRunCommitFileDiff(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.writeJSONFor(w, r, payload)
+}
+
+// servePersistedCommitFileDiff serves one file's per-commit diff from the run's
+// persisted git-metadata snapshot. Returns true when it handled the response.
+// The SHA is matched against the recorded commit range (full or abbreviated,
+// via equalSHA) so a cloud run cannot leak content outside its own history —
+// the same in-range guard resolveRunCommit enforces on the live path.
+func (s *Server) servePersistedCommitFileDiff(w http.ResponseWriter, r *http.Request, run *store.Run, rawSHA, path string) bool {
+	gs := store.AsRunGitMetaStore(s.runs.RunStore())
+	if gs == nil {
+		return false
+	}
+	meta, err := gs.LoadRunGitMeta(r.Context(), run.ID)
+	if err != nil {
+		s.logger.Warn("run %s: load git metadata (commit file diff): %v", run.ID, err)
+		return false
+	}
+	if meta == nil {
+		return false
+	}
+	var perPath map[string]*store.RunFileDiff
+	for sha, m := range meta.CommitFileDiffs {
+		if equalSHA(sha, rawSHA) {
+			perPath = m
+			break
+		}
+	}
+	if perPath == nil {
+		return false
+	}
+	fd := perPath[path]
+	if fd == nil {
+		return false
+	}
+	bs := store.AsRunDiffBlobStore(s.runs.RunStore())
+	payload := store.ResolveRunFileDiff(r.Context(), bs, run.ID, fd)
+	s.writeJSONFor(w, r, payload)
+	return true
 }
 
 // persistedCommitDetail builds a commit-detail response from the run's

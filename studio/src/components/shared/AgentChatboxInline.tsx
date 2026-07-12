@@ -17,6 +17,7 @@ import {
   useRunStore,
   type QueuedUserMessage,
 } from "@/store/run";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 
 interface Props {
@@ -58,6 +59,10 @@ export default function AgentChatboxInline({
   const messages = useRunStore((s) => s.queuedMessages);
   const setQueuedMessages = useRunStore((s) => s.setQueuedMessages);
   const chatEnterSubmits = useUIStore((s) => s.chatEnterSubmits);
+  // Cloud runs resolve their bundle on the runner pod, so the skill
+  // catalog endpoint returns empty on this server pod — the picker would
+  // otherwise silently vanish. Signal the cloud gap explicitly instead.
+  const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   // Draft lives in the run store so the WhatsNextView swap between
   // AgentChatbox and the HumanChatTurn footer (which unmounts this
   // component when the bot raises a question) doesn't discard the
@@ -212,7 +217,7 @@ export default function AgentChatboxInline({
           className="flex-1 text-body"
         />
         <div className="flex flex-col items-stretch gap-1 self-end">
-          {skillCatalog.length > 0 && (
+          {skillCatalog.length > 0 ? (
             <Button
               variant="ghost"
               size="sm"
@@ -223,6 +228,22 @@ export default function AgentChatboxInline({
               <PlusIcon className="mr-1 h-3 w-3" />
               Skill
             </Button>
+          ) : (
+            isCloud && (
+              // Empty catalog on a cloud server: the bundle (and its
+              // skills) live on the runner pod, unreachable from here.
+              // Render a disabled affordance with a reason rather than
+              // nothing, so the gap reads as "cloud limitation" not "bug".
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled
+                title="Skills aren't available for cloud runs — the bundle is resolved on the runner pod, not this server."
+              >
+                <PlusIcon className="mr-1 h-3 w-3" />
+                No skills
+              </Button>
+            )
           )}
           <Button
             variant="primary"

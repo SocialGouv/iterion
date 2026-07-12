@@ -51,6 +51,22 @@ interface LogChunkPayload {
   total?: number;
 }
 
+// Application-level heartbeat. The browser auto-answers server WS ping
+// FRAMES but never surfaces them to JS, so an idle-but-alive run yields
+// zero observable inbound traffic and a half-open socket (peer vanished
+// without a FIN — laptop sleep, wifi switch, proxy/NAT idle-drop) is
+// never noticed: onclose never fires, no reconnect is scheduled, the
+// status pill stays "running" forever. We therefore ping at the JSON-
+// envelope layer and watch for ANY inbound frame (event/ack/pong) to
+// prove liveness; if none arrives within HEARTBEAT_STALE_MS we force a
+// reconnect. HEARTBEAT_STALE_MS tolerates one missed ping plus margin.
+const HEARTBEAT_MS = 20_000;
+const HEARTBEAT_STALE_MS = 45_000;
+
+// Terminal statuses never emit further events, so we stop the heartbeat
+// once the run reaches one (pinging a finished run is pointless churn).
+const TERMINAL_RUN_STATUSES = new Set(["finished", "failed", "cancelled"]);
+
 /** Imperative handle returned by useRunWebSocket — call send() for cancel
  *  and answer commands; the connection lifecycle is managed by the hook.
  *  The log helpers are opt-in: the panel that wants live log output calls
@@ -72,6 +88,12 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelay = useRef(1000);
   const aliveRef = useRef(false);
+  // Timestamp (ms) of the last inbound frame — updated on every
+  // onmessage. The heartbeat watchdog compares against it to detect a
+  // silently-dead socket. Bumped on connect so a fresh socket starts
+  // with a clean clock.
+  const lastInboundAtRef = useRef(0);
+  const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   // Track whether we asked for log streaming on this connection so a
   // reconnect can re-subscribe automatically — symmetric with the
   // event from_seq replay below. Reset on runId change.
@@ -184,6 +206,9 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       ws.onopen = () => {
         setWsState("open");
         reconnectDelay.current = 1000;
+        // Fresh socket → reset the liveness clock and arm the heartbeat.
+        lastInboundAtRef.current = Date.now();
+        startHeartbeat();
 
         // Resume from the highest seq the store has actually consumed.
         // We can't use snapshot.last_seq alone: the REST `getRun` call in
@@ -234,6 +259,9 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       };
 
       ws.onmessage = (msgEv) => {
+        // ANY inbound frame proves the connection is alive — record it
+        // before parsing so a malformed payload still counts as liveness.
+        lastInboundAtRef.current = Date.now();
         try {
           const env = JSON.parse(msgEv.data) as WsEnvelope;
           switch (env.type) {
@@ -277,10 +305,15 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
             case "log_terminated":
               markLogTerminated();
               break;
+            case "pong":
+              // Heartbeat reply — liveness already recorded above.
+              break;
             case "terminated":
               // The run reached a terminal status; the broker has
               // closed the channel. We keep the socket open; the
-              // server-side will eventually close it too.
+              // server-side will eventually close it too. Stop the
+              // heartbeat — a finished run needs no liveness probing.
+              stopHeartbeat();
               setWsState("closed");
               break;
             case "error":
@@ -338,10 +371,101 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
       }, reconnectDelay.current);
     };
 
+    const runIsTerminal = () => {
+      const status = runStoreRef.current.getState().snapshot?.run.status;
+      return status != null && TERMINAL_RUN_STATUSES.has(status);
+    };
+
+    const stopHeartbeat = () => {
+      if (heartbeatTimer.current) {
+        clearInterval(heartbeatTimer.current);
+        heartbeatTimer.current = null;
+      }
+    };
+
+    // forceReconnect tears down the current socket and dials a fresh one
+    // WITHOUT waiting for onclose. On a half-open socket ws.close() may
+    // not fire onclose for minutes (or ever), so the watchdog and the
+    // visibility/online listeners can't route recovery through the normal
+    // onclose→scheduleReconnect path — they must redial directly.
+    const forceReconnect = () => {
+      if (!aliveRef.current || runIsTerminal()) return;
+      stopHeartbeat();
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+        reconnectTimer.current = null;
+      }
+      const stale = wsRef.current;
+      if (stale) {
+        // Detach handlers so the doomed socket's late onclose can't
+        // schedule a competing reconnect against the new one.
+        stale.onopen = null;
+        stale.onmessage = null;
+        stale.onerror = null;
+        stale.onclose = null;
+        try {
+          stale.close();
+        } catch {
+          // already closing/closed
+        }
+        wsRef.current = null;
+      }
+      reconnectDelay.current = 1000;
+      setWsState("reconnecting");
+      void connect();
+    };
+
+    const startHeartbeat = () => {
+      stopHeartbeat();
+      heartbeatTimer.current = setInterval(() => {
+        if (!aliveRef.current) return;
+        // Nothing to probe on a finished run — stand the heartbeat down.
+        if (runIsTerminal()) {
+          stopHeartbeat();
+          return;
+        }
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return; // onclose owns this
+        // No inbound frame for too long → the socket is dead even though
+        // the browser never surfaced a close. Redial.
+        if (Date.now() - lastInboundAtRef.current > HEARTBEAT_STALE_MS) {
+          forceReconnect();
+          return;
+        }
+        try {
+          ws.send(JSON.stringify({ type: "ping" } satisfies WsEnvelope));
+        } catch {
+          // send raced a close — let the next tick's readyState guard or
+          // the watchdog handle it.
+        }
+      }, HEARTBEAT_MS);
+    };
+
+    // Proactive recovery on the two events that most often coincide with
+    // a silently-dropped socket: the tab regaining focus (laptop wake,
+    // app switch) and the network coming back. Both fire long before the
+    // ~45s watchdog would, so recovery feels instant. We only redial when
+    // the connection actually looks stale/down and the run is still live.
+    const revalidate = () => {
+      if (!aliveRef.current || runIsTerminal()) return;
+      const wsDown = runStoreRef.current.getState().wsState !== "open";
+      const stale = Date.now() - lastInboundAtRef.current > HEARTBEAT_MS;
+      if (wsDown || stale) forceReconnect();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") revalidate();
+    };
+    const onOnline = () => revalidate();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+
     void connect();
 
     return () => {
       aliveRef.current = false;
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+      stopHeartbeat();
       // Drain any events buffered for the next microtask so we don't
       // lose them when React unmounts the hook before the flush fires.
       flushEvents();
