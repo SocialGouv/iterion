@@ -28,6 +28,9 @@ func seedCloudRunWithGitMeta(t *testing.T, srv *Server, runID string, meta *stor
 	// live git path is skipped and the persisted fallback must take over.
 	r.WorkDir = "/nonexistent/cloud/runner/clone/" + runID
 	r.Worktree = false
+	// Git meta is recorded at finalize, so a run carrying it is terminal —
+	// distinguishes the finalized fallback from a still-"building" cloud run.
+	r.Status = store.RunStatusFinished
 	if err := st.SaveRun(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}

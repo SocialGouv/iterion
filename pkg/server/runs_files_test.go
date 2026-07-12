@@ -397,6 +397,7 @@ func TestRunFiles_ModeUncommittedAfterFinalization(t *testing.T) {
 	r.WorkDir = "/nonexistent/host/worktree"
 	r.RepoRoot = "/nonexistent/host"
 	r.Worktree = true
+	r.Status = store.RunStatusFinished
 	r.BaseCommit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	r.FinalCommit = "feedfacefeedfacefeedfacefeedfacefeedface"
 	if err := st.SaveRun(context.Background(), r); err != nil {
@@ -414,6 +415,47 @@ func TestRunFiles_ModeUncommittedAfterFinalization(t *testing.T) {
 	}
 	if out.Reason != "worktree_gone" {
 		t.Errorf("Reason: want worktree_gone, got %q", out.Reason)
+	}
+}
+
+// TestRunFiles_BuildingWhileRunning covers the live cloud run whose
+// worktree lives on the runner pod and whose branch-range gitmeta isn't
+// recorded until finalize: this server pod has neither, so the listing is
+// unavailable — but because the run is still ongoing the reason is
+// "building" (not "not_git_repo"/"worktree_gone"), so the studio shows a
+// "available when the run finishes" empty state instead of an error.
+func TestRunFiles_BuildingWhileRunning(t *testing.T) {
+	srv, hs := newTestServer(t)
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := st.CreateRun(context.Background(), "cloud-live", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.WorkDir = "/nonexistent/runner/pod/worktree"
+	r.Worktree = true
+	r.Status = store.RunStatusRunning
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default mode (combined) and branch both resolve to "building" while
+	// the run is non-terminal.
+	for _, mode := range []string{"", "combined", "branch"} {
+		resp, err := http.Get(hs.URL + "/api/runs/cloud-live/files?mode=" + mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out runFilesResponse
+		decodeJSONResp(t, resp, &out)
+		if out.Available {
+			t.Errorf("mode=%q: Available should be false", mode)
+		}
+		if out.Reason != "building" {
+			t.Errorf("mode=%q: Reason: want building, got %q", mode, out.Reason)
+		}
 	}
 }
 
@@ -594,6 +636,7 @@ func TestRunFiles_ModeCombined_WorktreeGone(t *testing.T) {
 	r.WorkDir = "/nonexistent/host/worktree"
 	r.RepoRoot = "/nonexistent/host"
 	r.Worktree = true
+	r.Status = store.RunStatusFinished
 	r.BaseCommit = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	r.FinalCommit = "feedfacefeedfacefeedfacefeedfacefeedface"
 	if err := st.SaveRun(context.Background(), r); err != nil {
