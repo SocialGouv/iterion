@@ -88,6 +88,20 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            # Downward API: the runner pod's own name + uid, stamped as the
+            # ownerReference on every per-run sandbox resource (pod, both
+            # Secrets, NetworkPolicy) so the cluster cascade-GCs them when
+            # this runner pod is deleted — closing the
+            # plaintext-credential-at-rest leak for a runner killed mid-run
+            # (ADR-068 / pkg/sandbox/kubernetes runnerPodOwner).
+            - name: ITERION_RUNNER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ITERION_RUNNER_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
             {{- end }}
             {{- if .Values.runner.cache.enabled }}
             # Point Go's module + build caches at the shared RWX volume so a

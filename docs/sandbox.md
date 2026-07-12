@@ -553,6 +553,44 @@ Architecture:
   `origin`) so the sandboxed bot can commit and push.
 - Cleanup deletes the pod (and its emptyDir) on run exit.
 
+#### Orphan garbage collection (ADR-068)
+
+`Run.Cleanup` fires only on a graceful engine exit. A runner pod
+SIGKILLed / OOM-killed / node-evicted mid-run never runs it, so its
+sandbox pod, both Secrets — including the one holding **plaintext BYOK/
+forge credentials** — and the NetworkPolicy would otherwise leak with no
+TTL. Three cooperating mechanisms GC them without relying on `Cleanup`:
+
+- **`spec.activeDeadlineSeconds`** on the sandbox pod, derived from the
+  run's `max_duration` + a 30-minute margin. A leaked pod self-fails once
+  it passes the deadline instead of idling on `sleep infinity` forever.
+  Runs with no `max_duration` budget get no deadline (the reaper is the
+  backstop there).
+- **`ownerReference` → the runner pod** on every per-run resource (pod,
+  both Secrets, NetworkPolicy), read best-effort from the downward-API env
+  vars `ITERION_RUNNER_POD_NAME` / `ITERION_RUNNER_POD_UID`. When a runner
+  pod is removed (rollout, drain, scale-down) the cluster cascade-GCs its
+  whole sandbox footprint — closing the plaintext-credential-at-rest
+  window — with no reaper round-trip. Wire them in the Helm chart via:
+
+  ```yaml
+  env:
+    - name: ITERION_RUNNER_POD_NAME
+      valueFrom: {fieldRef: {fieldPath: metadata.name}}
+    - name: ITERION_RUNNER_POD_UID
+      valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+  ```
+
+  When unset, the pod keeps `activeDeadlineSeconds` + the reaper only.
+- **A labelled-resource reaper** (`ReapOrphanResources`, the kubernetes
+  peer of the docker `ReapOrphanContainers`) sweeps managed pods, Secrets
+  and NetworkPolicies whose owning run is terminal/absent, at boot and on
+  the periodic reconcile tick. It is **gated on cross-process-lock
+  authority** (off on the lock-less cloud server) and liveness-first, so it
+  never reaps a live run's sandbox. It targets all three kinds explicitly
+  because they are owned by the runner pod, not the sandbox pod (so
+  deleting the pod does not cascade the Secrets/NetworkPolicy).
+
 Security defaults applied to every sibling pod:
 
 | Setting                          | Value                              |
@@ -567,8 +605,11 @@ Security defaults applied to every sibling pod:
 
 RBAC: the chart provisions a `Role` (namespace-scoped, NOT
 ClusterRole) granting the runner `pods:get/list/watch/create/delete`,
-`pods/exec:create/get`, `pods/log:get/list`, `pods/status:get`.
-Enable via:
+`pods/exec:create/get`, `pods/log:get/list`, `pods/status:get`, plus
+`secrets` and `networkpolicies` (`networking.k8s.io`)
+`get/list/create/delete` (create/delete for the per-run CA + file-secrets
+Secrets and NetworkPolicy; **`list` is required by the orphan reaper** —
+see "Orphan garbage collection" above). Enable via:
 
 ```yaml
 # values-prod.yaml
