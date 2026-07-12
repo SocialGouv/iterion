@@ -98,3 +98,41 @@ func TestRunFiles_ScratchToS3Bridge(t *testing.T) {
 		t.Errorf("server ListRunFiles(post-delete) = %v, %v; want empty", files, err)
 	}
 }
+
+// TestUploadRunFiles_SkipsOversized proves the per-file memory cap: a file
+// larger than the store's cap is skipped (not read into RAM / not
+// uploaded), while smaller siblings still land — best-effort, so one
+// runaway tool output can't OOM the runner or drop the whole upload.
+func TestUploadRunFiles_SkipsOversized(t *testing.T) {
+	ctx := context.Background()
+	b := newInMemoryBlob()
+	runner := &Store{blob: b, runFilesScratch: t.TempDir(), maxAttachmentBytes: 8}
+
+	const runID = "run_cap"
+	dir, err := runner.EnsureRunFilesDir(ctx, runID)
+	if err != nil {
+		t.Fatalf("EnsureRunFilesDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "small.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatalf("write small.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "huge.bin"), make([]byte, 64), 0o644); err != nil {
+		t.Fatalf("write huge.bin: %v", err)
+	}
+
+	n, err := runner.UploadRunFiles(ctx, runID)
+	if err != nil {
+		t.Fatalf("UploadRunFiles: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("UploadRunFiles count = %d; want 1 (oversized skipped)", n)
+	}
+	server := &Store{blob: b}
+	files, err := server.ListRunFiles(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListRunFiles: %v", err)
+	}
+	if len(files) != 1 || files[0].Path != "small.md" {
+		t.Errorf("ListRunFiles = %+v; want only small.md", files)
+	}
+}

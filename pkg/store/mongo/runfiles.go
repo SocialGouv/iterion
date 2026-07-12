@@ -105,6 +105,21 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 		if relErr != nil {
 			return relErr
 		}
+		// Bound per-file memory the same way WriteAttachment does: the
+		// whole body is read into RAM before the S3 PUT, so an oversized
+		// tool-produced file could OOM the runner pod. Skip (best-effort,
+		// don't fail the whole upload — the small artifacts still land)
+		// and log, mirroring the attachment cap's OOM rationale.
+		maxBytes := s.maxAttachmentBytes
+		if maxBytes <= 0 {
+			maxBytes = defaultMaxAttachmentBytes
+		}
+		if fi, statErr := d.Info(); statErr == nil && fi.Size() > maxBytes {
+			if s.logger != nil {
+				s.logger.Warn("store/mongo: run %s: skipping artifact file %q (%d bytes > %d-byte cap)", runID, rel, fi.Size(), maxBytes)
+			}
+			return nil
+		}
 		body, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return fmt.Errorf("read %s: %w", rel, readErr)
