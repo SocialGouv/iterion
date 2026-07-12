@@ -130,10 +130,15 @@ func (s *Store) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
 }
 
 // LoadTurn implements store.TurnStore: the turn at exact
-// (node_id, loop_iter, turn_index), or ErrTurnNotFound.
+// (node_id, loop_iter, turn_index), or ErrTurnNotFound. The inline
+// messages blob is projected out (like the other readers) — LoadTurn
+// never surfaces it, so pulling it over the wire only to discard it in
+// toCheckpoint would waste bandwidth; callers fetch it via
+// LoadTurnMessages.
 func (s *Store) LoadTurn(ctx context.Context, runID, nodeID string, loopIter, turn int) (*store.TurnCheckpoint, error) {
 	var doc runTurnDoc
-	err := s.runTurns.FindOne(ctx, turnKeyFilter(ctx, runID, nodeID, loopIter, turn)).Decode(&doc)
+	opts := options.FindOne().SetProjection(bson.M{"messages": 0})
+	err := s.runTurns.FindOne(ctx, turnKeyFilter(ctx, runID, nodeID, loopIter, turn), opts).Decode(&doc)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, fmt.Errorf("%w: run=%s node=%s iter=%d turn=%d", store.ErrTurnNotFound, runID, nodeID, loopIter, turn)
