@@ -122,8 +122,48 @@ func (s *Server) forgeIntegrationForTenant(w http.ResponseWriter, r *http.Reques
 // forge → board sync (one-way; the source is the forge)
 // ---------------------------------------------------------------------------
 
+// SyncForgeIssuesToBoard mirrors one repo's forge issues into a native board.
+// It is store- and cloud-agnostic — it takes an already-resolved issue client
+// + board — so the cloud per-team sync and a (future) self-hosted single-store
+// import share ONE implementation. Forge is the source of truth (one-way);
+// pull requests are skipped (they surface via the card PR panel). Cards land in
+// the first non-terminal column on create and refresh in place on update; see
+// upsertForgeCard for the column policy. Returns per-issue create/update counts.
+//
+// The high-water mark (LastSyncedAt) is the caller's concern — it is the only
+// piece that differs between the cloud integration store and a self-hosted
+// entry point, so it stays out of this pure core.
+func SyncForgeIssuesToBoard(ctx context.Context, ic forge.IssueClient, provider forge.Provider, connID, repo string, board native.BoardStore, since time.Time) (created, updated int, err error) {
+	issues, err := ic.ListIssues(ctx, repo, forge.IssueListOptions{
+		State: "all", Since: since, PerPage: 100,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("list issues: %w", err)
+	}
+	b := board.Board()
+	openCol := defaultOpenColumn(b)
+	doneCol := terminalColumn(b)
+	for _, is := range issues {
+		if is.IsPullRequest {
+			continue // the board syncs ISSUES; PRs surface via the card PR panel
+		}
+		c, u, e := upsertForgeCard(board, b, openCol, doneCol, provider, connID, repo, is)
+		if e != nil {
+			if err == nil {
+				err = e
+			}
+			continue
+		}
+		created += c
+		updated += u
+	}
+	return created, updated, err
+}
+
 // syncOneIntegration mirrors one repo's forge issues into the team board and
-// stamps the integration's LastSyncedAt high-water mark. It is the unit both
+// stamps the integration's LastSyncedAt high-water mark. It is the cloud
+// wrapper around SyncForgeIssuesToBoard: it resolves the connection → issue
+// client → team board, then persists the high-water mark. It is the unit both
 // the manual "Sync now" endpoint and the periodic worker call.
 func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge.RepoIntegration) (created, updated int, err error) {
 	conn, err := s.forgeConnections.Get(ctx, ri.ConnectionID)
@@ -142,29 +182,10 @@ func (s *Server) syncOneIntegration(ctx context.Context, teamID string, ri forge
 	if board == nil {
 		return 0, 0, errors.New("no board for team")
 	}
-	issues, err := ic.ListIssues(ctx, ri.RepoFullName, forge.IssueListOptions{
-		State: "all", Since: ri.LastSyncedAt, PerPage: 100,
-	})
-	if err != nil {
-		return 0, 0, fmt.Errorf("list issues: %w", err)
-	}
-	b := board.Board()
-	openCol := defaultOpenColumn(b)
-	doneCol := terminalColumn(b)
-	for _, is := range issues {
-		if is.IsPullRequest {
-			continue // the board syncs ISSUES; PRs surface via the card PR panel
-		}
-		c, u, e := upsertForgeCard(board, b, openCol, doneCol, conn.Provider, ri.ConnectionID, ri.RepoFullName, is)
-		if e != nil {
-			if err == nil {
-				err = e
-			}
-			continue
-		}
-		created += c
-		updated += u
-	}
+	created, updated, err = SyncForgeIssuesToBoard(ctx, ic, conn.Provider, ri.ConnectionID, ri.RepoFullName, board, ri.LastSyncedAt)
+	// Advance the high-water mark unconditionally (mirrors the prior
+	// behaviour): a partial-failure sync still records progress on the
+	// issues it did upsert.
 	ri.LastSyncedAt = time.Now().UTC()
 	if uerr := s.forgeIntegrations.Update(ctx, ri); uerr != nil && err == nil {
 		err = uerr
