@@ -241,6 +241,13 @@ export interface RunHeader {
   // whether to render at all.
   work_dir?: string;
   worktree?: boolean;
+  // True when work_dir still exists on the server's filesystem — i.e. the
+  // inline file editor + live diff surfaces can be served without a 409.
+  // False for a cloud run (worktree on the runner pod) and a finalized/
+  // gc'd local run (worktree torn down). The RunView gates its Monaco
+  // file-editor affordances on this so an Edit click never 409s. Absent
+  // (undefined) on pre-feature snapshots — treated as unavailable.
+  worktree_available?: boolean;
   // Worktree finalization summary; empty for non-worktree runs or
   // runs that never reached a clean exit.
   final_commit?: string;
@@ -692,8 +699,13 @@ export type RunFilesMode = "uncommitted" | "branch" | "combined" | "";
 
 // Mirror of server.runFilesResponse. `available` is the gate: when
 // false, `reason` is one of "no_workdir" | "not_git_repo" |
-// "no_baseline" | "worktree_gone" and the studio renders an empty-
-// state instead of a file list.
+// "no_baseline" | "worktree_gone" | "building" and the studio renders
+// an empty-state instead of a file list.
+//
+// `building` is a live run whose worktree/branch-range gitmeta this
+// server pod can't yet see (a cloud run's worktree lives on the runner
+// pod; its gitmeta is only recorded at finalize) — the panel shows an
+// "available when the run finishes" hint rather than an error.
 //
 // `live` distinguishes the source: true when files come from a
 // still-existing worktree (uncommitted or live branch range), false
@@ -712,6 +724,7 @@ export interface RunFiles {
     | "not_git_repo"
     | "no_baseline"
     | "worktree_gone"
+    | "building"
     | string;
 }
 
