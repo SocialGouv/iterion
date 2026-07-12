@@ -510,14 +510,31 @@ func (r *Run) RefreshSecretFile(_ context.Context, name string, value []byte) er
 	// Single-file bind mount: the container has the inode pinned, so we
 	// must rewrite in place (a rename would swap the inode). The file was
 	// created 0o400, and the owner cannot open a read-only file for
-	// writing, so widen to 0o600 for the truncating write then restore
-	// 0o400. A small token is a single write syscall, so a concurrent
-	// reader sees old-or-new, never a splice.
+	// writing, so widen to 0o600 for the write then restore 0o400.
+	//
+	// Do NOT use os.WriteFile: its O_TRUNC zeroes the file BEFORE writing,
+	// so a concurrent in-container `cat` in that window reads an empty
+	// token. Instead open without O_TRUNC, write the new value at offset
+	// 0 (one write(2) syscall for a small token — a reader sees old-or-new
+	// bytes, not empty), then Truncate to the new length to drop any
+	// trailing bytes when the value shrank.
 	if err := os.Chmod(loc.hostPath, 0o600); err != nil {
 		return fmt.Errorf("docker driver: refresh file secret %s: chmod: %w", name, err)
 	}
-	if err := os.WriteFile(loc.hostPath, value, 0o600); err != nil {
+	f, err := os.OpenFile(loc.hostPath, os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("docker driver: refresh file secret %s: open: %w", name, err)
+	}
+	if _, err := f.WriteAt(value, 0); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("docker driver: refresh file secret %s: write: %w", name, err)
+	}
+	if err := f.Truncate(int64(len(value))); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("docker driver: refresh file secret %s: truncate: %w", name, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("docker driver: refresh file secret %s: close: %w", name, err)
 	}
 	if err := os.Chmod(loc.hostPath, 0o400); err != nil {
 		return fmt.Errorf("docker driver: refresh file secret %s: restore perm: %w", name, err)

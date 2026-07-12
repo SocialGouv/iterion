@@ -1,4 +1,4 @@
-# ADR-068 — Mid-run file-secret refresh for sandboxed runs
+# ADR-069 — Mid-run file-secret refresh for sandboxed runs
 
 - Status: accepted
 - Date: 2026-07-12

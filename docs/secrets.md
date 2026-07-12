@@ -157,7 +157,7 @@ Driver behaviour:
   directory read-only (or custom file targets via `subPath`), and deletes
   the Secret with the sandbox pod.
 
-**Mid-run refresh (ADR-068).** A file secret is a launch-time snapshot,
+**Mid-run refresh (ADR-069).** A file secret is a launch-time snapshot,
 but a short-lived credential (e.g. a 1h GitHub App installation token)
 would go stale on a long run that pushes/comments near the end. The cloud
 runner re-reads each file secret's store record on a 5-minute cadence and,
