@@ -355,6 +355,56 @@ prompt verify_user:
 
 ## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
 
+prompt review_system:
+  You are an adversarial code reviewer running as a stage INSIDE the branch
+  loop, BEFORE the work is pushed back / opened as an MR. Your job is to
+  catch the defects that compile and pass tests but still ship a real bug —
+  so the human reviewer downstream finds nothing. You make NO code changes;
+  you report findings the campaign fixes on its next pass.
+
+  Read the `code-review-invariants` skill FIRST. It is the checklist: the
+  six recurring classes of cross-cutting defect (sibling-consistency,
+  lifecycle parity for new persistent state, isolation/scoping parity,
+  authority gates on background mutators, provable claims, loud failure).
+
+  Procedure:
+    1. If `build_passed` is false, the tree is mid-implementation — return
+       `clean: true` with empty findings immediately (the build failure is
+       handled by the deterministic gate; do not review a broken tree).
+    2. Review the branch's own work: `git diff $(git merge-base <base_ref or
+       the repo default branch> HEAD)` and the matching `--stat` for the
+       whole footprint.
+    3. For each new/changed unit, walk the invariant checklist. VERIFY a
+       suspected violation against the code (open the sibling, confirm the
+       boundary is really absent) before reporting — a false finding wastes
+       a whole pass.
+    4. `prior_findings` carries what you flagged last pass. Do NOT re-raise
+       unless the current diff still shows it unaddressed.
+
+  Blocking bar — be disciplined, this loop must converge:
+    - Block (`clean: false`) ONLY on a HIGH-CONFIDENCE defect in the six
+      invariant classes: a real correctness, security/isolation, lifecycle,
+      authority, false-claim, or silent-failure bug you have verified.
+    - Do NOT block on style, naming, preference, or "could be nicer". A diff
+      with no new persistent state, no new access path, no background
+      mutator, no over-claim, consistent with siblings, is CLEAN — say so.
+      A false block costs a whole campaign pass; under-flagging a nit is free.
+
+  Output: `clean` (true when nothing blocking) and `findings` (when not
+  clean: specific, actionable — file:line, which invariant, why it is a real
+  bug, the fix). Empty when clean.
+
+prompt review_user:
+  Review the working tree at {{vars.workspace_dir}}.
+  Base: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+
+  Findings you raised last pass (do not re-raise unless still unaddressed):
+  {{input.prior_findings}}
+
+  Adversarially review this branch's diff against the `code-review-invariants`
+  checklist. Return clean=true if nothing high-confidence is wrong; else
+  return specific, actionable findings for the campaign to fix.
+
 prompt finalize_mr_system:
   You finalize a converged branch-improvement run by opening ONE merge/pull
   request for the SERIES of per-pass commits this run produced, then
@@ -480,6 +530,17 @@ schema verify_probe_state:
 schema gate_state:
   converged: bool
   fail_log: string
+
+## review is the in-loop adversarial self-review (ADR: push the downstream
+## review INTO the loop so the pushed-back branch ships pre-refined).
+schema review_input:
+  base_ref: string
+  build_passed: bool
+  prior_findings: string
+
+schema review_output:
+  clean: bool
+  findings: string
 
 schema mr_gate_output:
   open_mr: bool
@@ -641,11 +702,27 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## converged = green AND the branch diff is clean. On a RED pass fail_log
 ## carries the real build failure to the campaign; empty when green. No LLM,
 ## no shell.
+## review — adversarial in-loop self-review (readonly). Runs after the
+## deterministic build gate; reads the code-review-invariants skill and the
+## branch diff, and blocks convergence ONLY on a high-confidence defect in
+## the six invariant classes. The downstream reviewer's job, moved into the
+## loop so the pushed-back branch ships clean. claude_code (read/git), readonly.
+agent review:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  session: fresh
+  readonly: true
+
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.campaign.branch_clean"
-    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
+    converged: "outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
 
 ## mr_gate routes the post-convergence tail into at most ONE of two
 ## mutually-exclusive booleans (the unconditional edge to done is the C012
@@ -849,7 +926,13 @@ workflow branch_improve_loop:
   verify_probe -> verify_run when fresh
   verify_probe -> verify_build when not fresh
   verify_build -> verify_run
-  verify_run -> gate
+  ## In-loop adversarial review of the branch diff before the gate decides.
+  verify_run -> review with {
+    base_ref:       "{{vars.base_ref}}",
+    build_passed:   "{{outputs.verify_run.passed}}",
+    prior_findings: "{{outputs.gate.fail_log}}"
+  }
+  review -> gate
 
   ## Converged (green AND the campaign reports the branch diff clean) → ship
   ## what is banked (optional MR, else finish).
