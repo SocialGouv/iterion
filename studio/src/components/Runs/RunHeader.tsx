@@ -30,6 +30,7 @@ import FinalizationRow from "./runHeader/FinalizationRow";
 import ForkedFromRow from "./runHeader/ForkedFromRow";
 import NotesRow from "./runHeader/NotesRow";
 import RunNameEditor from "./runHeader/RunNameEditor";
+import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
 import { cancelTooltip } from "./runHeader/cancelTooltip";
@@ -366,6 +367,8 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
         {run.backends_used && run.backends_used.length > 0 && (
           <BackendsUsedRow backends={run.backends_used} />
         )}
+        {/* Row 4: operator-assigned filter/group tags (chips). */}
+        <RunTagsRow runId={run.id} />
       </div>
       {error && (
         <InlineBanner

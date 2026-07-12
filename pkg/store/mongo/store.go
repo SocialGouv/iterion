@@ -47,6 +47,7 @@ const (
 	colRunPlans     = "run_plans"
 	colRunNotes     = "run_notes"
 	colRunTurns     = "run_turns"
+	colRunTags      = "run_tags"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -109,6 +110,7 @@ type Store struct {
 	runPlans           *mongo.Collection
 	runNotes           *mongo.Collection
 	runTurns           *mongo.Collection
+	runTags            *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -180,6 +182,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runPlans:           db.Collection(colRunPlans),
 		runNotes:           db.Collection(colRunNotes),
 		runTurns:           db.Collection(colRunTurns),
+		runTags:            db.Collection(colRunTags),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
@@ -390,6 +393,19 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	}
 	if _, err := s.runTurns.Indexes().CreateMany(ctx, runTurnIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_turns indexes: %w", err)
+	}
+
+	// run_tags: one doc per run, keyed uniquely by run_id (a whole-list
+	// overwrite on every PUT). Operator-assigned filter/group labels are
+	// durable metadata, NOT a derived observability stream, so — like
+	// run_gitmeta — they carry NO TTL: a tagged run keeps its tags for as
+	// long as the run document survives.
+	_, err = s.runTags.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "run_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("run_id_unique"),
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_tags index: %w", err)
 	}
 
 	return nil
