@@ -130,6 +130,52 @@ func TestStreamSource_AlertBypassesDedup(t *testing.T) {
 	}
 }
 
+// TestStreamSource_EventsTerminalClosesStream: an external/dispatcher
+// run (not Active in this process) never gets a broker CloseRun. When it
+// flips terminal mid-stream, the svcSource terminal poll must flush the
+// final events and close the subscription — the signal the WS layer
+// turns into `terminated`. Before the fix the tail blocked forever.
+func TestStreamSource_EventsTerminalClosesStream(t *testing.T) {
+	prev := svcEventTerminalPollInterval
+	svcEventTerminalPollInterval = 100 * time.Millisecond
+	t.Cleanup(func() { svcEventTerminalPollInterval = prev })
+
+	svc, _ := newStreamTestService(t)
+	const runID = "run-evt-terminal"
+	seedStreamRun(t, svc, runID, 2) // running run, seq 0,1
+
+	sub, err := svc.StreamSource().SubscribeEvents(context.Background(), runID, 0)
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+	defer sub.Close()
+	drainEventBatches(t, sub, nil, 5*time.Second, func(evs []*store.Event) bool { return len(evs) >= 2 })
+
+	// Persist a final event, then flip the run terminal WITHOUT any
+	// broker CloseRun (the external-run reality). The poll must catch the
+	// terminal status, replay the straggler, and close the channel.
+	if _, err := svc.store.AppendEvent(context.Background(), runID,
+		store.Event{Type: store.EventRunFinished, RunID: runID}); err != nil {
+		t.Fatalf("AppendEvent final: %v", err)
+	}
+	if err := svc.store.UpdateRunStatus(context.Background(), runID, store.RunStatusFinished, ""); err != nil {
+		t.Fatalf("UpdateRunStatus: %v", err)
+	}
+
+	// The Events channel must close (stream over) within a few poll ticks.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-sub.Events():
+			if !ok {
+				return // channel closed → terminated will be emitted by the WS
+			}
+		case <-deadline:
+			t.Fatal("timeout: event stream did not close after terminal flip")
+		}
+	}
+}
+
 // TestStreamSource_CloseReleasesTailer: closing the last subscription
 // must tear down the on-demand events.jsonl tailer (refcount to zero,
 // map entry removed) and unregister the broker subscriber.

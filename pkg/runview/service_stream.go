@@ -3,10 +3,21 @@ package runview
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// svcEventTerminalPollInterval bounds how often an external/dispatcher
+// run's event subscription re-reads run.json to detect a terminal
+// status. Runs produced in THIS process close their broker channel via
+// broker.CloseRun; runs produced elsewhere (external `iterion run`,
+// dispatcher-spawned) never do, so without this poll the live tail would
+// block forever on a finished run and the WS would never emit
+// `terminated`. The FS twin of MongoSource's runIsTerminal poll and
+// FileSource.tailUntilTerminal. A var so tests can tighten it.
+var svcEventTerminalPollInterval = 5 * time.Second
 
 // This file exposes the ADR-053 streaming seam on the Service: one
 // runstream.Source for the primary store, whatever the mode. Cloud mode
@@ -79,9 +90,32 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 			return
 		}
 
-		// Phase 2 — live broker tail. The channel closes at run
-		// completion (broker.CloseRun), which closes this subscription;
-		// the WS layer translates that into its terminated envelope.
+		// External/dispatcher runs (release != nil, i.e. !s.Active) never
+		// get a broker CloseRun — the in-process observer that would call
+		// it lives in another process. Without a terminal signal the tail
+		// below blocks forever on a finished run and the WS never emits
+		// `terminated`. Poll run.json and, on a terminal status (already
+		// terminal at subscribe time, or a mid-stream flip), do a final
+		// store replay to flush any events the tailer bridge hasn't
+		// delivered yet, then end the stream. In-process runs (release ==
+		// nil) close via broker.CloseRun as before.
+		external := release != nil
+		if external {
+			if newMax, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
+				maxReplayed = newMax
+				return
+			}
+		}
+		var termC <-chan time.Time
+		if external {
+			tk := time.NewTicker(svcEventTerminalPollInterval)
+			defer tk.Stop()
+			termC = tk.C
+		}
+
+		// Phase 2 — live broker tail. For in-process runs the channel
+		// closes at run completion (broker.CloseRun); for external runs
+		// the terminal poll above ends it.
 		for {
 			select {
 			case <-ctx.Done():
@@ -101,11 +135,33 @@ func (v *svcSource) SubscribeEvents(ctx context.Context, runID string, fromSeq i
 				if ev.Seq > maxReplayed {
 					maxReplayed = ev.Seq
 				}
+			case <-termC:
+				if newMax, done := s.eventTerminalCatchUp(ctx, runID, maxReplayed, sub); done {
+					maxReplayed = newMax
+					return
+				}
 			}
 		}
 	}()
 
 	return sub, nil
+}
+
+// eventTerminalCatchUp reports whether runID has reached a terminal
+// status; when it has, it replays events persisted past maxReplayed
+// (stragglers the live broker bridge may not have delivered yet) so the
+// terminal event is never lost before the stream closes. Returns the
+// advanced high-water seq and whether the run is terminal (done=true →
+// the caller ends the subscription, which the WS turns into `terminated`).
+func (s *Service) eventTerminalCatchUp(ctx context.Context, runID string, maxReplayed int64, sub runstream.EventPipe) (int64, bool) {
+	run, err := s.LoadRun(runID)
+	if err != nil || !run.Status.IsTerminal() {
+		return maxReplayed, false
+	}
+	if d, rerr := runstream.ReplayEvents(ctx, s.store, runID, maxReplayed+1, sub); rerr == nil {
+		maxReplayed = d
+	}
+	return maxReplayed, true
 }
 
 // SubscribeLogs delivers log bytes from fromOffset. Local resolution

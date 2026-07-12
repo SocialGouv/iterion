@@ -9,6 +9,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +104,15 @@ type RunHeader struct {
 	WorkDir string `json:"work_dir,omitempty"`
 	// Worktree is true when WorkDir was created by `worktree: auto`.
 	Worktree bool `json:"worktree,omitempty"`
+	// WorktreeAvailable is true when WorkDir still exists on THIS server's
+	// filesystem — i.e. the inline file-editor + uncommitted/live diff
+	// surfaces can be served without a 409. It is false for a cloud run
+	// (whose worktree lives on the runner pod) and for a finalized/gc'd
+	// local run (whose worktree was torn down). The studio gates the
+	// Monaco file-editor affordances on it so the operator never clicks an
+	// Edit button that then 409s. Mirrors the /files/content endpoint's own
+	// gate (resolveRunWorktreePath).
+	WorktreeAvailable bool `json:"worktree_available"`
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). The studio uses these to
 	// surface the persistent branch and FF status in the run header.
@@ -1008,6 +1018,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Checkpoint:        r.Checkpoint,
 		WorkDir:           r.WorkDir,
 		Worktree:          r.Worktree,
+		WorktreeAvailable: worktreeAvailable(r.WorkDir),
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
 		FinalBranchError:  r.FinalBranchError,
@@ -1029,6 +1040,20 @@ func headerFromRun(r *store.Run) RunHeader {
 		h.CurrentRunStart = &ts
 	}
 	return h
+}
+
+// worktreeAvailable reports whether dir exists and is a directory on this
+// server's filesystem. Empty dir (pre-feature runs, or runs with no
+// recorded WorkDir) and absent/removed paths both yield false. This is the
+// single signal the studio keys its inline file-editor affordances off of;
+// it deliberately mirrors the /files/content endpoint's own gate so the
+// UI's affordance and the endpoint's 409 stay in lockstep.
+func worktreeAvailable(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
 }
 
 // BuildSnapshot is the cold-read convenience: load run.json + events
