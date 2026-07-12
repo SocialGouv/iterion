@@ -210,7 +210,7 @@ Run 'docker run --help' for more information
 
 func TestAppendSecretFileMountArgsMountsDefaultDirOnce(t *testing.T) {
 	tempDirs := []string{}
-	args, err := appendSecretFileMountArgs([]string{"run"}, []sandbox.SecretFileMount{
+	args, locs, err := appendSecretFileMountArgs([]string{"run"}, []sandbox.SecretFileMount{
 		{Name: "kubeconfig", MountPath: "/run/iterion/secrets/kubeconfig", Value: []byte("one")},
 		{Name: "nested", MountPath: "/run/iterion/secrets/nested/token", Value: []byte("two")},
 	}, &tempDirs)
@@ -234,11 +234,19 @@ func TestAppendSecretFileMountArgsMountsDefaultDirOnce(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(tempDirs[0], "nested", "token")); err != nil || string(got) != "two" {
 		t.Fatalf("nested secret file = %q / %v", got, err)
 	}
+	// Both default-dir secrets must be recorded as dir-mounted host paths
+	// so RefreshSecretFile can rewrite them mid-run.
+	for _, name := range []string{"kubeconfig", "nested"} {
+		loc, ok := locs[name]
+		if !ok || !loc.dirMounted || loc.hostPath == "" {
+			t.Fatalf("loc[%q] = %+v, want dir-mounted host path", name, loc)
+		}
+	}
 }
 
 func TestAppendSecretFileMountArgsMountsCustomFileDirectly(t *testing.T) {
 	tempDirs := []string{}
-	args, err := appendSecretFileMountArgs([]string{"run"}, []sandbox.SecretFileMount{
+	args, locs, err := appendSecretFileMountArgs([]string{"run"}, []sandbox.SecretFileMount{
 		{Name: "kubeconfig", MountPath: "/root/.kube/config", Value: []byte("payload")},
 	}, &tempDirs)
 	defer cleanupTempDirs(tempDirs)
@@ -255,16 +263,69 @@ func TestAppendSecretFileMountArgsMountsCustomFileDirectly(t *testing.T) {
 	if !strings.Contains(mounts[0], "target=/root/.kube/config,readonly") {
 		t.Fatalf("custom mount target mismatch: %s", mounts[0])
 	}
+	// A custom absolute mount_path is a single-FILE bind mount, recorded
+	// not-dir-mounted so RefreshSecretFile rewrites it in place.
+	if loc, ok := locs["kubeconfig"]; !ok || loc.dirMounted || loc.hostPath == "" {
+		t.Fatalf("loc[kubeconfig] = %+v, want single-file host path", loc)
+	}
 }
 
 func TestAppendSecretFileMountArgsRejectsDirtyPath(t *testing.T) {
 	tempDirs := []string{}
-	_, err := appendSecretFileMountArgs(nil, []sandbox.SecretFileMount{
+	_, _, err := appendSecretFileMountArgs(nil, []sandbox.SecretFileMount{
 		{Name: "bad", MountPath: "/run/iterion/secrets/../bad", Value: []byte("payload")},
 	}, &tempDirs)
 	defer cleanupTempDirs(tempDirs)
 	if err == nil {
 		t.Fatal("expected dirty mount_path to fail")
+	}
+}
+
+// TestRefreshSecretFileRewritesBothMountShapes pins the mid-run refresh:
+// a rotated token must reach the host bind-mount source for BOTH the
+// default directory mount (atomic rename) and a single-file custom mount
+// (in-place rewrite through the 0o400 read-only bit), and an unknown
+// secret name is an error.
+func TestRefreshSecretFileRewritesBothMountShapes(t *testing.T) {
+	tempDirs := []string{}
+	_, locs, err := appendSecretFileMountArgs(nil, []sandbox.SecretFileMount{
+		{Name: "forge_token", MountPath: "/run/iterion/secrets/forge_token", Value: []byte("token-v1")},
+		{Name: "kubeconfig", MountPath: "/root/.kube/config", Value: []byte("kube-v1")},
+	}, &tempDirs)
+	defer cleanupTempDirs(tempDirs)
+	if err != nil {
+		t.Fatalf("appendSecretFileMountArgs: %v", err)
+	}
+	r := &Run{secretFiles: locs}
+	ctx := context.Background()
+
+	if err := r.RefreshSecretFile(ctx, "forge_token", []byte("token-v2")); err != nil {
+		t.Fatalf("refresh dir-mounted: %v", err)
+	}
+	if got, _ := os.ReadFile(locs["forge_token"].hostPath); string(got) != "token-v2" {
+		t.Fatalf("dir-mounted secret = %q, want token-v2", got)
+	}
+
+	if err := r.RefreshSecretFile(ctx, "kubeconfig", []byte("kube-v2")); err != nil {
+		t.Fatalf("refresh single-file: %v", err)
+	}
+	if got, _ := os.ReadFile(locs["kubeconfig"].hostPath); string(got) != "kube-v2" {
+		t.Fatalf("single-file secret = %q, want kube-v2", got)
+	}
+	// Perm restored to read-only after the in-place rewrite.
+	if fi, _ := os.Stat(locs["kubeconfig"].hostPath); fi.Mode().Perm() != 0o400 {
+		t.Fatalf("single-file perm = %v, want 0400", fi.Mode().Perm())
+	}
+	// A second in-place rewrite must still succeed (perm was restored).
+	if err := r.RefreshSecretFile(ctx, "kubeconfig", []byte("kube-v3")); err != nil {
+		t.Fatalf("second refresh single-file: %v", err)
+	}
+
+	if err := r.RefreshSecretFile(ctx, "nope", []byte("x")); err == nil {
+		t.Fatal("refresh of unknown secret must error")
+	}
+	if err := r.RefreshSecretFile(ctx, "forge_token", nil); err == nil {
+		t.Fatal("refresh with empty value must error")
 	}
 }
 
