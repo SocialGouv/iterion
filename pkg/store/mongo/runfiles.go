@@ -63,6 +63,15 @@ func (s *Store) EnsureRunFilesDir(_ context.Context, runID string) (string, erro
 // produced nothing) is (0, nil). Called by the runner post-run, on a
 // background ctx carrying the run's tenant, so a cancelled run still
 // flushes what it produced.
+//
+// On a clean upload the scratch dir is removed: the durable copy now
+// lives in S3 (the read source the server pod serves from), so the
+// runner-local tree is redundant. Without this a long-lived runner pod —
+// which claims many runs over its lifetime — would accumulate one scratch
+// dir per run under <TempDir>/iterion-runfiles forever, since DeleteRun's
+// scratch sweep runs on the SERVER store (which has no scratch), never on
+// the runner. A failed upload keeps the dir so the bytes aren't lost to a
+// transient S3 error.
 func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 	if err := store.SanitizePathComponent("run ID", runID); err != nil {
 		return 0, err
@@ -109,6 +118,10 @@ func (s *Store) UploadRunFiles(ctx context.Context, runID string) (int, error) {
 	if walkErr != nil {
 		return uploaded, fmt.Errorf("store/mongo: upload run files %s: %w", runID, walkErr)
 	}
+	// Durable copies are in S3 now; drop the redundant runner-local tree
+	// so it can't accumulate on a long-lived runner pod. Best-effort — a
+	// removal failure must not turn a successful upload into an error.
+	_ = os.RemoveAll(root)
 	return uploaded, nil
 }
 

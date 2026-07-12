@@ -52,6 +52,13 @@ func TestRunFiles_ScratchToS3Bridge(t *testing.T) {
 		t.Fatalf("UploadRunFiles count = %d; want 2", n)
 	}
 
+	// A clean upload drops the redundant runner-local scratch dir so it
+	// can't accumulate on a long-lived runner pod (DeleteRun's scratch
+	// sweep runs on the SERVER store, never here).
+	if _, err := os.Stat(runner.runFilesScratchDir(runID)); !os.IsNotExist(err) {
+		t.Errorf("scratch dir after successful upload: Stat err = %v; want IsNotExist", err)
+	}
+
 	// Server now serves both files from S3, sorted.
 	files, err := server.ListRunFiles(ctx, runID)
 	if err != nil {
