@@ -90,3 +90,16 @@ happened) — metadata first, content best-effort.
 - The `RunGitMetaStore` seam is the extension point for the deferred
   diff-content work and for any future consumer (e.g. a report generator)
   that needs a run's git activity without a worktree.
+
+### Update 2026-07-12 — the still-running gap gets a "building" empty state
+
+This ADR closes the gap for a *finished* cloud run (the snapshot is written
+at finalize by `recordRunGitMeta`). While a cloud run is still **running**,
+neither the worktree nor the snapshot exists on the server pod, so the
+files handler fell through to `not_git_repo` / `worktree_gone` — the very
+error states this ADR set out to replace, just at a different point in the
+lifecycle. `handleListRunFiles` now returns reason **`building`** for a
+non-terminal run whose worktree dir is absent (`unavailableReason`), and
+the studio `FilesPanel` renders an "available when the run finishes" hint
+instead. So the panel reads coherently across the whole cloud lifecycle:
+*building* while running → the persisted snapshot once finalized.
