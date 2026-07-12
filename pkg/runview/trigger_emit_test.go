@@ -38,6 +38,11 @@ func TestEmitRunCompletionKinds(t *testing.T) {
 		{"finished", "run-1", nil, trigger.KindRunFinished},
 		{"failed", "run-2", errors.New("boom"), trigger.KindRunFailed},
 		{"cancelled", "run-3", runtime.ErrRunCancelled, trigger.KindRunCancelled},
+		// A pause must NOT be mislabeled run.failed. With no persisted run the
+		// enrich switch can't run, so this asserts the load-resilient
+		// bodyErr-branch fix specifically.
+		{"paused_human", "run-4", runtime.ErrRunPaused, trigger.KindRunPaused},
+		{"paused_operator", "run-5", runtime.ErrRunPausedOperator, trigger.KindRunPaused},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

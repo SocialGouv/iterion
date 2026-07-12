@@ -24,16 +24,23 @@ func (s *Service) emitRunCompletion(runID string, bodyErr error) {
 	if s.eventPublisher == nil {
 		return
 	}
+	// A pause is NOT a terminal failure. Match it BEFORE the bodyErr!=nil arm
+	// so a run that suspends on a human node (ErrRunPaused) or an operator
+	// soft-pause (ErrRunPausedOperator) emits run.paused, not run.failed. This
+	// is load-failure-resilient: it holds even when the persisted-status enrich
+	// below can't read the run.
 	kind := trigger.KindRunFinished
 	switch {
 	case errors.Is(bodyErr, runtime.ErrRunCancelled):
 		kind = trigger.KindRunCancelled
+	case errors.Is(bodyErr, runtime.ErrRunPaused), errors.Is(bodyErr, runtime.ErrRunPausedOperator):
+		kind = trigger.KindRunPaused
 	case bodyErr != nil:
 		kind = trigger.KindRunFailed
 	}
 
 	fctx := store.WithoutTenantFilter(context.Background())
-	var repo, botID, status, name string
+	var repo, botID, status, name, nodeID, interactionID string
 	if r, err := s.store.LoadRun(fctx, runID); err == nil && r != nil {
 		repo = r.ProjectPath
 		botID = r.BotID
@@ -42,8 +49,8 @@ func (s *Service) emitRunCompletion(runID string, bodyErr error) {
 		if name == "" {
 			name = r.WorkflowName
 		}
-		// Trust the persisted terminal status over the derived kind when it
-		// is unambiguous (the engine is the source of truth).
+		// Trust the persisted status over the derived kind when it is
+		// unambiguous (the engine is the source of truth).
 		switch r.Status {
 		case store.RunStatusFinished:
 			kind = trigger.KindRunFinished
@@ -51,9 +58,25 @@ func (s *Service) emitRunCompletion(runID string, bodyErr error) {
 			kind = trigger.KindRunFailed
 		case store.RunStatusCancelled:
 			kind = trigger.KindRunCancelled
+		case store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+			kind = trigger.KindRunPaused
+		}
+		// A paused run carries the node + pending interaction on its
+		// checkpoint; surface both so a board projection can pinpoint the
+		// paused node and render the answer affordance.
+		if r.Checkpoint != nil {
+			nodeID = r.Checkpoint.NodeID
+			interactionID = r.Checkpoint.InteractionID
 		}
 	}
 
+	payload := map[string]any{"bot_id": botID, "status": status, "run_id": runID}
+	if nodeID != "" {
+		payload["node_id"] = nodeID
+	}
+	if interactionID != "" {
+		payload["interaction_id"] = interactionID
+	}
 	ev := trigger.Event{
 		ID:         "run:" + runID,
 		Source:     trigger.SourceRun,
@@ -61,7 +84,7 @@ func (s *Service) emitRunCompletion(runID string, bodyErr error) {
 		Repo:       repo,
 		Subject:    trigger.Subject{Type: "run", ID: runID, Title: name, State: status},
 		Actor:      botID,
-		Payload:    map[string]any{"bot_id": botID, "status": status, "run_id": runID},
+		Payload:    payload,
 		OccurredAt: time.Now().UTC(),
 	}
 	_ = s.eventPublisher.Publish(fctx, ev)
