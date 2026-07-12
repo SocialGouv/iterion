@@ -759,6 +759,36 @@ func TestSnapshotReducer_WorktreeFinalizationFieldsPropagate(t *testing.T) {
 	}
 }
 
+func TestSnapshotReducer_WorktreeAvailableReflectsOnDiskDir(t *testing.T) {
+	// The studio gates its inline file-editor affordances on
+	// WorktreeAvailable so a click can never 409. It must be true for a
+	// worktree that exists on this server's disk (a live local run) and
+	// false for one that doesn't (a cloud run's runner-pod worktree, or a
+	// finalized/gc'd local run).
+	live := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		workDir string
+		want    bool
+	}{
+		{"on-disk worktree", live, true},
+		{"absent worktree", "/nonexistent/runner/pod/worktree", false},
+		{"empty workdir", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewSnapshotBuilder(&store.Run{
+				ID:       "r",
+				Status:   store.RunStatusRunning,
+				WorkDir:  tc.workDir,
+				Worktree: true,
+			}).Snapshot().Run
+			if h.WorktreeAvailable != tc.want {
+				t.Errorf("WorktreeAvailable = %v, want %v", h.WorktreeAvailable, tc.want)
+			}
+		})
+	}
+}
+
 func TestSnapshotReducer_TimerSetRunPreservesCounters(t *testing.T) {
 	// SetRun is invoked on terminal-event paths to refresh the header
 	// from run.json. It must not clobber the accumulated active
