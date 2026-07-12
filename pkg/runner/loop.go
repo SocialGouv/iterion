@@ -49,6 +49,7 @@ import (
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/secure/httpdial"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -1162,6 +1163,21 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// sandbox block, so the run executes directly in the runner pod.
 		runtime.WithSandboxOverride(r.cfg.SandboxOverride),
 	}
+	// Sandboxed counterpart of the no-sandbox file-secret refresh above: a
+	// `sandbox: auto` run mounts file secrets as a launch-time snapshot
+	// (docker bind-mount / k8s Secret), so the in-pod loop never starts and
+	// a long run would push/comment with a dead token (#99, still open for
+	// the common cloud path). Register an observer that, once the sandbox
+	// Run is live, drives a refresh loop rewriting the in-container secret
+	// when the store record rotates. No-op when the run has no refreshable
+	// file secrets or the driver can't refresh.
+	if refs := r.sandboxFileSecretRefs(ctx, wf); refs != nil {
+		sbRefreshCtx, stopSbRefresh := context.WithCancel(ctx)
+		defer stopSbRefresh()
+		if obs := r.sandboxSecretRefreshObserver(sbRefreshCtx, msg.TenantID, refs); obs != nil {
+			engineOpts = append(engineOpts, runtime.WithSandboxRunObserver(obs))
+		}
+	}
 	// Bundle skills: a bot-qualified run mirrors its bundle's skills/ into
 	// <workspace>/.claude/skills exactly like a local `iterion run
 	// bots/<bot>` does (the engine's mirrorBundleSkills reads the bundle).
@@ -1661,23 +1677,29 @@ func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, re
 
 // refreshFileSecretsOnce is one tick of refreshFileSecretsLoop: re-read every
 // ref'd file secret and atomically rewrite the ones whose store value moved.
+// readFreshSecret re-reads and unseals a generic-secret record by id
+// under the tenant scope. Bounded, tenant-scoped; never logs the value.
+// Shared by the no-sandbox (refreshFileSecretsOnce) and sandboxed
+// (refreshSandboxFileSecretsOnce) mid-run refresh paths.
+func (r *Runner) readFreshSecret(ctx context.Context, tenantID, id string) ([]byte, error) {
+	rctx, cancel := context.WithTimeout(store.WithTenant(ctx, tenantID), 15*time.Second)
+	defer cancel()
+	rec, err := r.cfg.GenericSecrets.Get(rctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return secrets.OpenGenericSecret(r.cfg.Sealer, rec.ID, rec.SealedSecret)
+}
+
 func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, refs, files, last map[string]string) {
 	for name, path := range files {
 		id := refs[name]
 		if id == "" {
 			continue // snapshot-only secret (no store ref) — nothing to refresh
 		}
-		// Bounded, tenant-scoped read; the loop ctx dies with the run.
-		rctx, cancel := context.WithTimeout(store.WithTenant(ctx, tenantID), 15*time.Second)
-		rec, err := r.cfg.GenericSecrets.Get(rctx, id)
-		cancel()
+		val, err := r.readFreshSecret(ctx, tenantID, id)
 		if err != nil {
 			r.cfg.Logger.Warn("runner: refresh file secret %q (ref %s): %v", name, id, err)
-			continue
-		}
-		val, err := secrets.OpenGenericSecret(r.cfg.Sealer, rec.ID, rec.SealedSecret)
-		if err != nil {
-			r.cfg.Logger.Warn("runner: refresh file secret %q: unseal: %v", name, err)
 			continue
 		}
 		if len(val) == 0 || string(val) == last[name] {
@@ -1696,6 +1718,98 @@ func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, re
 		}
 		last[name] = string(val)
 		r.cfg.Logger.Info("runner: refreshed file secret %q from store (rotation picked up)", name)
+	}
+}
+
+// sandboxFileSecretRefs returns the file secrets of wf that carry a store
+// ref in the run's credentials — the ones a mid-run refresh can rewrite.
+// Nil when the store/creds/refs are absent or no file secret is
+// refreshable. Shared shape with the no-sandbox refresher's refs map
+// (name → generic-secret id).
+func (r *Runner) sandboxFileSecretRefs(ctx context.Context, wf *ir.Workflow) map[string]string {
+	if wf == nil || len(wf.Secrets) == 0 || r.cfg.GenericSecrets == nil {
+		return nil
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok || len(creds.GenericRefs) == 0 {
+		return nil
+	}
+	refs := map[string]string{}
+	for name, s := range wf.Secrets {
+		if !s.IsFile() {
+			continue
+		}
+		if id := creds.GenericRefs[name]; id != "" {
+			refs[name] = id
+		}
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return refs
+}
+
+// sandboxSecretRefreshObserver returns a runtime sandbox-run observer
+// that starts the sandboxed mid-run file-secret refresh loop once the
+// container is live — the sandboxed counterpart to refreshFileSecretsLoop
+// (#99 covered only the no-sandbox in-pod path, so a long `sandbox: auto`
+// run that pushes/comments after ~1h used a dead token). Returns nil when
+// the run has no refreshable file secrets, so the engine hook is a no-op.
+//
+// refreshCtx must be a context the caller cancels when the run ends (the
+// loop exits on it); the observer only spawns the goroutine.
+func (r *Runner) sandboxSecretRefreshObserver(refreshCtx context.Context, tenantID string, refs map[string]string) func(sandbox.Run) {
+	if len(refs) == 0 {
+		return nil
+	}
+	return func(run sandbox.Run) {
+		refresher, ok := run.(sandbox.SecretFileRefresher)
+		if !ok {
+			r.cfg.Logger.Warn("runner: sandbox driver %q does not support mid-run secret refresh; a long run may push with a stale token", run.Driver())
+			return
+		}
+		go r.refreshSandboxFileSecretsLoop(refreshCtx, tenantID, refs, refresher)
+	}
+}
+
+// refreshSandboxFileSecretsLoop re-reads each refreshable file secret's
+// store record on a fixed cadence and, when the value rotated, hands it
+// to the sandbox driver's SecretFileRefresher to propagate into the
+// running container. Mirrors refreshFileSecretsLoop; failures are logged
+// (never the value) and retried next tick.
+func (r *Runner) refreshSandboxFileSecretsLoop(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher) {
+	tick := time.NewTicker(fileSecretRefreshInterval)
+	defer tick.Stop()
+	last := map[string]string{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		r.refreshSandboxFileSecretsOnce(ctx, tenantID, refs, refresher, last)
+	}
+}
+
+// refreshSandboxFileSecretsOnce is one tick of
+// refreshSandboxFileSecretsLoop: re-read every ref'd file secret and push
+// the ones whose store value moved into the sandbox.
+func (r *Runner) refreshSandboxFileSecretsOnce(ctx context.Context, tenantID string, refs map[string]string, refresher sandbox.SecretFileRefresher, last map[string]string) {
+	for name, id := range refs {
+		val, err := r.readFreshSecret(ctx, tenantID, id)
+		if err != nil {
+			r.cfg.Logger.Warn("runner: refresh sandboxed file secret %q (ref %s): %v", name, id, err)
+			continue
+		}
+		if len(val) == 0 || string(val) == last[name] {
+			continue
+		}
+		if err := refresher.RefreshSecretFile(ctx, name, val); err != nil {
+			r.cfg.Logger.Warn("runner: refresh sandboxed file secret %q: %v", name, err)
+			continue
+		}
+		last[name] = string(val)
+		r.cfg.Logger.Info("runner: refreshed sandboxed file secret %q into the container (rotation picked up)", name)
 	}
 }
 

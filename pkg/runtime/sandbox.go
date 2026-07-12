@@ -1205,6 +1205,13 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
 		}
+		// Hand the live Run to the host observer (cloud runner) so it can
+		// start mid-run file-secret refresh against the driver's
+		// SecretFileRefresher. Must not block — the runner spawns its
+		// refresh loop on a goroutine keyed to the run ctx.
+		if e.sandboxRunObserver != nil {
+			e.sandboxRunObserver(active.run)
+		}
 		// C082: hand the per-run board MCP endpoint to the executor so it
 		// can wire Task.BoardHTTPEndpoint/BoardRunToken for sandboxed
 		// board-cap nodes. Empty when no listener started (no handler /

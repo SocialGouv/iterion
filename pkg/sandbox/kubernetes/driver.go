@@ -266,6 +266,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		info:                  info,
 		caSecretName:          caSecretName,
 		secretFilesSecretName: secretFilesSecretName,
+		secretFiles:           append([]sandbox.SecretFileMount(nil), p.spec.SecretFiles...),
 	}
 
 	// V2-5: synthesise a per-run NetworkPolicy when the proxy is
@@ -371,12 +372,74 @@ type Run struct {
 	// secrets. Empty when the workflow declares no file secrets.
 	secretFilesSecretName string
 
+	// secretFiles is the current (post-refresh) ordered snapshot of the
+	// mounted file secrets. RefreshSecretFile re-applies the whole Secret
+	// with one value updated; keeping the snapshot means a later refresh
+	// of a DIFFERENT key doesn't revert this one to its launch value. The
+	// slice order is preserved so the indexed Secret keys (secret-<i>-...)
+	// stay stable and the projected-volume item mapping still resolves.
+	// Guarded by mu.
+	secretFiles []sandbox.SecretFileMount
+
 	mu      sync.Mutex
 	cleaned bool
 }
 
 // Driver returns "kubernetes".
 func (r *Run) Driver() string { return "kubernetes" }
+
+// RefreshSecretFile re-applies the per-run file-secrets Secret with the
+// named key's value updated, so a rotated short-lived token reaches the
+// mounted projected volume. Implements [sandbox.SecretFileRefresher].
+//
+// The value is never logged. kubelet propagates a Secret update to a
+// projected-volume mount within ~1 minute — well inside the refresh
+// cadence and a token's lifetime. NOTE: this covers the DEFAULT
+// directory-mounted secrets (`/run/iterion/secrets/*`); a secret with a
+// custom absolute mount_path is projected via `subPath`, which kubelet
+// does NOT auto-update — such a secret keeps its launch value. The Secret
+// itself is still refreshed here; only the subPath projection is stale.
+func (r *Run) RefreshSecretFile(ctx context.Context, name string, value []byte) error {
+	manifest, err := r.renderRefreshedSecret(name, value)
+	if err != nil {
+		return err
+	}
+	if err := applyManifest(ctx, r.namespace, manifest); err != nil {
+		return fmt.Errorf("kubernetes: refresh file secret %s: apply: %w", name, err)
+	}
+	return nil
+}
+
+// renderRefreshedSecret updates the in-memory snapshot with the named
+// key's new value and returns the re-rendered Secret manifest. Split out
+// from RefreshSecretFile (which then applies it) so the snapshot/render
+// logic is testable without a live kubectl.
+func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
+	if len(value) == 0 {
+		return nil, fmt.Errorf("kubernetes: refresh file secret %s: empty value", name)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.secretFilesSecretName == "" {
+		return nil, fmt.Errorf("kubernetes: refresh: run has no file-secrets Secret")
+	}
+	updated := false
+	for i := range r.secretFiles {
+		if r.secretFiles[i].Name == name {
+			r.secretFiles[i].Value = value
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		return nil, fmt.Errorf("kubernetes: refresh: no mounted file secret %q", name)
+	}
+	manifest, err := BuildSecretFilesSecret(r.namespace, r.secretFilesSecretName, r.info.RunID, r.info.FriendlyName, r.secretFiles)
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes: refresh file secret %s: build: %w", name, err)
+	}
+	return manifest, nil
+}
 
 // Command returns an *exec.Cmd that, when started, runs cmd inside
 // the sandbox pod via `kubectl exec`. Stdin/Stdout/Stderr on the

@@ -157,6 +157,20 @@ Driver behaviour:
   directory read-only (or custom file targets via `subPath`), and deletes
   the Secret with the sandbox pod.
 
+**Mid-run refresh (ADR-069).** A file secret is a launch-time snapshot,
+but a short-lived credential (e.g. a 1h GitHub App installation token)
+would go stale on a long run that pushes/comments near the end. The cloud
+runner re-reads each file secret's store record on a 5-minute cadence and,
+when it rotated, propagates the fresh value into the running sandbox —
+docker rewrites the bind-mount source file, kubernetes re-applies the
+Secret (kubelet refreshes the projected volume within ~1min). This covers
+the default directory-mounted secrets on both drivers. **Caveat:** a
+kubernetes secret with a custom absolute `mount_path` is projected via
+`subPath`, which kubelet does *not* auto-update, so that projection stays
+at its launch value until pod restart; put refreshable tokens under the
+default `/run/iterion/secrets` directory. Reads are tenant-scoped and the
+value is never logged.
+
 Cloud setup API:
 
 - `GET/POST /api/me/secrets`
