@@ -74,6 +74,12 @@ fetching or persisting the actual patch bytes is left as a follow-on
 (bounded persistence like the run-log chunks, or a forge fetch when a push
 happened) — metadata first, content best-effort.
 
+> 2026-07-12: the diff-content follow-on shipped — see
+> [ADR-068](068-persist-run-diff-content-for-cloud-panels.md). It persists
+> per-file before/after content into the same `RunGitMeta` snapshot (inline,
+> blob-offloaded, or truncated within a byte budget), so cloud file/commit
+> diff clicks resolve instead of 409/404-ing.
+
 ## Consequences
 
 - A finished (or failed/paused) cloud run whose runner pod is gone renders

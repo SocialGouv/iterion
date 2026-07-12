@@ -20,14 +20,17 @@ import (
 // embedded gitlib types keep the wire shape identical to the live git
 // path, so the HTTP handlers serve persisted and live data uniformly.
 type runGitMetaDoc struct {
-	TenantID    string                         `bson:"tenant_id,omitempty"`
-	RunID       string                         `bson:"run_id"`
-	BaseCommit  string                         `bson:"base_commit,omitempty"`
-	HeadCommit  string                         `bson:"head_commit,omitempty"`
-	Commits     []gitlib.CommitInfo            `bson:"commits"`
-	Files       []gitlib.FileStatus            `bson:"files"`
-	CommitFiles map[string][]gitlib.FileStatus `bson:"commit_files,omitempty"`
-	UpdatedAt   time.Time                      `bson:"updated_at"`
+	TenantID        string                                   `bson:"tenant_id,omitempty"`
+	RunID           string                                   `bson:"run_id"`
+	BaseCommit      string                                   `bson:"base_commit,omitempty"`
+	HeadCommit      string                                   `bson:"head_commit,omitempty"`
+	Commits         []gitlib.CommitInfo                      `bson:"commits"`
+	Files           []gitlib.FileStatus                      `bson:"files"`
+	CommitFiles     map[string][]gitlib.FileStatus           `bson:"commit_files,omitempty"`
+	FileDiffs       map[string]*store.RunFileDiff            `bson:"file_diffs,omitempty"`
+	CommitFileDiffs map[string]map[string]*store.RunFileDiff `bson:"commit_file_diffs,omitempty"`
+	DiffsTruncated  bool                                     `bson:"diffs_truncated,omitempty"`
+	UpdatedAt       time.Time                                `bson:"updated_at"`
 }
 
 // SaveRunGitMeta implements store.RunGitMetaStore: upsert the whole
@@ -41,13 +44,16 @@ func (s *Store) SaveRunGitMeta(ctx context.Context, runID string, meta *store.Ru
 		meta.UpdatedAt = time.Now().UTC()
 	}
 	doc := runGitMetaDoc{
-		RunID:       runID,
-		BaseCommit:  meta.BaseCommit,
-		HeadCommit:  meta.HeadCommit,
-		Commits:     meta.Commits,
-		Files:       meta.Files,
-		CommitFiles: meta.CommitFiles,
-		UpdatedAt:   meta.UpdatedAt,
+		RunID:           runID,
+		BaseCommit:      meta.BaseCommit,
+		HeadCommit:      meta.HeadCommit,
+		Commits:         meta.Commits,
+		Files:           meta.Files,
+		CommitFiles:     meta.CommitFiles,
+		FileDiffs:       meta.FileDiffs,
+		CommitFileDiffs: meta.CommitFileDiffs,
+		DiffsTruncated:  meta.DiffsTruncated,
+		UpdatedAt:       meta.UpdatedAt,
 	}
 	if id, ok := store.TenantFromContext(ctx); ok {
 		doc.TenantID = id
@@ -71,11 +77,14 @@ func (s *Store) LoadRunGitMeta(ctx context.Context, runID string) (*store.RunGit
 		return nil, fmt.Errorf("store/mongo: load git meta %s: %w", runID, err)
 	}
 	return &store.RunGitMeta{
-		BaseCommit:  doc.BaseCommit,
-		HeadCommit:  doc.HeadCommit,
-		Commits:     doc.Commits,
-		Files:       doc.Files,
-		CommitFiles: doc.CommitFiles,
-		UpdatedAt:   doc.UpdatedAt,
+		BaseCommit:      doc.BaseCommit,
+		HeadCommit:      doc.HeadCommit,
+		Commits:         doc.Commits,
+		Files:           doc.Files,
+		CommitFiles:     doc.CommitFiles,
+		FileDiffs:       doc.FileDiffs,
+		CommitFileDiffs: doc.CommitFileDiffs,
+		DiffsTruncated:  doc.DiffsTruncated,
+		UpdatedAt:       doc.UpdatedAt,
 	}, nil
 }

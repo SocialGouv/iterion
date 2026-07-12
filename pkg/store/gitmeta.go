@@ -49,6 +49,22 @@ type RunGitMeta struct {
 	// endpoint works without a repo. Optional — a metadata-only recording
 	// may omit it.
 	CommitFiles map[string][]gitlib.FileStatus `json:"commit_files,omitempty" bson:"commit_files,omitempty"`
+	// FileDiffs maps a modified-file path (from Files) to its persisted
+	// base..head diff content — the before/after the studio's Monaco
+	// DiffEditor renders when the worktree is gone. Populated best-effort
+	// within a size budget (see PopulateRunDiffs); a path absent here has
+	// no persisted diff (the panel row still renders, the diff click
+	// degrades). Optional — a metadata-only recording omits it.
+	FileDiffs map[string]*RunFileDiff `json:"file_diffs,omitempty" bson:"file_diffs,omitempty"`
+	// CommitFileDiffs maps a commit's full SHA to a per-path diff of the
+	// content that commit introduced (parallel to CommitFiles). Serves the
+	// per-commit file-diff endpoint without a repo. Optional.
+	CommitFileDiffs map[string]map[string]*RunFileDiff `json:"commit_file_diffs,omitempty" bson:"commit_file_diffs,omitempty"`
+	// DiffsTruncated is set when the diff-content budget was exhausted and
+	// one or more files' content was dropped (their RunFileDiff carries
+	// Truncated=true). The studio surfaces a banner so a partial capture
+	// never reads as complete.
+	DiffsTruncated bool `json:"diffs_truncated,omitempty" bson:"diffs_truncated,omitempty"`
 	// UpdatedAt is when this snapshot was recorded.
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
 }

@@ -730,13 +730,18 @@ export interface RunFiles {
 
 // Mirror of pkg/git.DiffPayload. before/after are nil for added/deleted
 // files respectively; binary suppresses both contents so the UI can
-// substitute a "binary file" placeholder. Status is not part of the
-// payload — the caller passes it through from the prior /files listing.
+// substitute a "binary file" placeholder. oversized suppresses both
+// contents when a side exceeds the diff read cap OR (for a persisted
+// cloud diff) the content was dropped past the persistence budget — the
+// UI substitutes a "too large to display" placeholder. Status is not part
+// of the payload — the caller passes it through from the prior /files
+// listing.
 export interface RunFileDiff {
   path: string;
   before: string | null;
   after: string | null;
   binary: boolean;
+  oversized?: boolean;
 }
 
 // Mirror of server.runFileContentResponse. Raw file contents from the run's
