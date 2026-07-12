@@ -19,6 +19,13 @@ interface Props {
   // Optional one-line description that the agent surfaced on pause
   // (e.g. "Awaiting your approval to merge"). Comes from event data.
   message?: string;
+  // Overrides the workflow source sent with the resume. Run-console
+  // callers omit it and the editor buffer (currentSource) is used. The
+  // board caller passes `null` to send NO source — the operator isn't
+  // editing this run's workflow, so the server must fall back to the
+  // run's persisted FilePath instead of resuming against an unrelated
+  // editor buffer.
+  sourceOverride?: string | null;
   onSubmitted?: () => void;
 }
 
@@ -54,7 +61,13 @@ function briefInput(input?: Record<string, unknown>): string {
   }
 }
 
-export default function PauseForm({ runId, questions, message, onSubmitted }: Props) {
+export default function PauseForm({
+  runId,
+  questions,
+  message,
+  sourceOverride,
+  onSubmitted,
+}: Props) {
   const marker = useMemo(() => permissionMarker(questions ?? {}), [questions]);
   const options = useMemo(() => askUserOptions(questions ?? {}), [questions]);
   // Reserved (underscore) keys are runtime plumbing (options payload,
@@ -80,6 +93,11 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const currentSource = useDocumentStore((s) => s.currentSource);
+  // An explicit prop (including null) wins over the editor buffer; null →
+  // undefined so the resume carries no source and the server falls back to
+  // the run's persisted FilePath.
+  const resolvedSource =
+    sourceOverride !== undefined ? (sourceOverride ?? undefined) : (currentSource ?? undefined);
 
   const onChange = (name: string, next: string) => {
     setValues((prev) => ({ ...prev, [name]: next }));
@@ -92,7 +110,7 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
       // The runtime accepts a generic answers map; values are passed
       // through to the resumed node's inputs. Strings are the safest
       // common type for an ad-hoc pause UI.
-      await resumeRun(runId, { answers: values, source: currentSource ?? undefined });
+      await resumeRun(runId, { answers: values, source: resolvedSource });
       onSubmitted?.();
     } catch (e) {
       setError(errorMessage(e));
@@ -111,7 +129,7 @@ export default function PauseForm({ runId, questions, message, onSubmitted }: Pr
     try {
       await resumeRun(runId, {
         answers: { [ASK_USER_KEY]: decision },
-        source: currentSource ?? undefined,
+        source: resolvedSource,
       });
       onSubmitted?.();
     } catch (e) {
