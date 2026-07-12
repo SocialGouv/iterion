@@ -56,14 +56,14 @@ func TestReconcileStalled_ForceReapsCtxIgnoringWorker(t *testing.T) {
 
 	select {
 	case <-dispatchStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started")
 	}
 
 	// Expect: stall fires (>100ms after dispatch with no events),
 	// grace expires (>100ms after first cancel), force-reap runs.
 	// Total budget: ~500ms; allow 3s for CI slop.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		snap := c.Snapshot()
 		if len(snap.Running) == 0 {

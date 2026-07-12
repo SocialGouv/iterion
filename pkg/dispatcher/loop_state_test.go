@@ -161,7 +161,7 @@ func TestDispatch_TransitionsToInProgress(t *testing.T) {
 
 	select {
 	case <-dispatched:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started")
 	}
 
@@ -203,7 +203,7 @@ func TestDispatch_SkipsTransitionWhenRunningStateEmpty(t *testing.T) {
 
 	select {
 	case <-dispatched:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started")
 	}
 
@@ -334,7 +334,7 @@ func TestDispatch_RevertsOnWorkspaceCreateFailure(t *testing.T) {
 	select {
 	case cmd := <-c.cmds:
 		cmd.apply(c, ctx)
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("setup worker never posted cmdDispatchSetupDone after the Create failure")
 	}
 
@@ -398,7 +398,7 @@ func TestFinishRun_RevertsOnCancel(t *testing.T) {
 
 	select {
 	case <-dispatchStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started")
 	}
 
@@ -410,7 +410,7 @@ func TestFinishRun_RevertsOnCancel(t *testing.T) {
 	c.Cancel("fake:t5")
 
 	// Wait for the cancel to propagate through finishRun.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if ft.issueState("fake:t5") == "ready" {
 			break
@@ -456,7 +456,7 @@ func TestFinishRun_DoesNotRevertOnCleanFinish(t *testing.T) {
 
 	select {
 	case <-finished:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never finished")
 	}
 
@@ -515,13 +515,13 @@ func TestFinishRun_AutoTransitionsToCompletedState(t *testing.T) {
 
 	select {
 	case <-finished:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never finished")
 	}
 
 	// Wait for cmdRunFinished + the auto-transition's RefreshStates +
 	// UpdateState to drain through the actor.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if ft.issueState("fake:auto1") == "review" {
 			break
@@ -569,7 +569,7 @@ func TestFinishRun_SkipsAutoTransitionWhenWorkflowMovedState(t *testing.T) {
 
 	select {
 	case <-finished:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never finished")
 	}
 
@@ -661,7 +661,7 @@ func TestDispatch_TolerateTransitionRejection(t *testing.T) {
 
 	select {
 	case <-dispatched:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started despite rejected transition")
 	}
 

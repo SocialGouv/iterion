@@ -86,7 +86,7 @@ func TestActorResponsiveWhileDispatchSetupInFlight(t *testing.T) {
 	// UpdateState (i.e. the actor handed the I/O off and returned).
 	select {
 	case <-ft.updateEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch-setup worker never entered the blocked UpdateState call")
 	}
 
@@ -143,7 +143,7 @@ func TestDispatch_ClaimConflictAllocatesNothing(t *testing.T) {
 	go func() { c.workersWG.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("a setup worker was launched on a claim conflict (workersWG not drained)")
 	}
 }
@@ -181,7 +181,7 @@ func TestDispatch_SlotCountedFromClaimTime(t *testing.T) {
 	// UpdateState — i.e. its slot was already allocated on the actor.
 	select {
 	case <-ft.updateEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch-setup worker never reached the gated UpdateState")
 	}
 

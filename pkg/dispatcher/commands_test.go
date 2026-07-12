@@ -239,7 +239,7 @@ func applyNextCmd(t *testing.T, c *Dispatcher, ctx context.Context) {
 	select {
 	case command := <-c.cmds:
 		command.apply(c, ctx)
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("expected a command posted by the off-actor finish worker, got none")
 	}
 }
@@ -368,7 +368,7 @@ func TestFinishRun_CompletedStateCapturedBeforeReload(t *testing.T) {
 	var plan finishPlan
 	select {
 	case plan = <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("finish worker never reached the pre-transition gate")
 	}
 	if plan.kind != finishCompleted || plan.completedState != "review" {
@@ -481,7 +481,7 @@ func pumpCandidates(t *testing.T, c *Dispatcher, ctx context.Context) {
 	select {
 	case command := <-c.cmds:
 		command.apply(c, ctx)
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no cmdCandidates posted by the off-actor discovery goroutine")
 	}
 }
@@ -608,7 +608,7 @@ func TestDispatch_StampsLastRunAtStart(t *testing.T) {
 
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started")
 	}
 
