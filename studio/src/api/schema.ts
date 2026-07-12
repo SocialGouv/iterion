@@ -2140,6 +2140,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/notes */
+        get: operations["getRunsByIdNotes"];
+        put?: never;
+        /** POST /api/runs/{id}/notes */
+        post: operations["postRunsByIdNotes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/pause": {
         parameters: {
             query?: never;
@@ -6498,6 +6518,46 @@ export interface operations {
         };
     };
     postRunsByIdMergeConflictsResolveWithAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdNotes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdNotes: {
         parameters: {
             query?: never;
             header?: never;
