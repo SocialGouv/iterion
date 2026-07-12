@@ -49,6 +49,14 @@ const (
 	// perFileInlineDiffBytes is the combined before+after size a file may
 	// carry inline in the RunGitMeta document.
 	perFileInlineDiffBytes = 128 << 10 // 128 KiB
+	// maxInlineRunDiffBytes bounds the CUMULATIVE inline content across a run
+	// so the single RunGitMeta document stays well under Mongo's 16 MiB BSON
+	// ceiling — the per-file inline cap alone does not, since a run touching
+	// thousands of sub-128 KiB files would otherwise pile ~48 MiB of inline
+	// content into one document and fail the ReplaceOne (losing the whole
+	// snapshot, including the commit/file lists). Once this is exhausted,
+	// further content is offloaded to a blob instead of inlined.
+	maxInlineRunDiffBytes = 12 << 20 // 12 MiB
 	// perFileBlobDiffBytes caps a file offloaded to a blob. gitlib already
 	// caps each side at 5 MiB (Oversized past that), so ~12 MiB comfortably
 	// covers any two in-range sides that carry content.
@@ -106,7 +114,7 @@ func PopulateRunDiffs(ctx context.Context, runID, repoDir string, meta *RunGitMe
 	if meta == nil || meta.BaseCommit == "" || meta.BaseCommit == meta.HeadCommit {
 		return
 	}
-	b := &diffBudget{remaining: totalRunDiffBytes}
+	b := &diffBudget{remaining: totalRunDiffBytes, inlineRemaining: maxInlineRunDiffBytes}
 
 	// Range diffs (base..head) — one entry per modified file.
 	if len(meta.Files) > 0 {
@@ -147,9 +155,12 @@ func PopulateRunDiffs(ctx context.Context, runID, repoDir string, meta *RunGitMe
 
 // diffBudget tracks the shared inline+offload byte budget across a run's
 // diffs, deciding per file whether to keep content inline, offload it, or drop
-// it (Truncated).
+// it (Truncated). remaining bounds the whole run (inline + offloaded);
+// inlineRemaining separately bounds the inline slice that lands in the single
+// RunGitMeta document so it stays under Mongo's BSON ceiling.
 type diffBudget struct {
-	remaining int
+	remaining       int
+	inlineRemaining int
 }
 
 // store converts a live gitlib.DiffPayload into a persisted RunFileDiff,
@@ -166,13 +177,16 @@ func (b *diffBudget) store(ctx context.Context, sink RunDiffBlobStore, runID, re
 		meta.DiffsTruncated = true
 		return fd
 	}
-	if size <= perFileInlineDiffBytes {
+	if size <= perFileInlineDiffBytes && size <= b.inlineRemaining {
 		fd.Before = p.Before
 		fd.After = p.After
 		b.remaining -= size
+		b.inlineRemaining -= size
 		return fd
 	}
-	// Large but within the blob cap: offload the {before,after} JSON.
+	// Too large for the per-file inline cap, or the cumulative inline budget
+	// is spent (keeping the RunGitMeta document under Mongo's BSON ceiling):
+	// offload the {before,after} JSON to a blob.
 	if sink == nil {
 		fd.Truncated = true
 		meta.DiffsTruncated = true

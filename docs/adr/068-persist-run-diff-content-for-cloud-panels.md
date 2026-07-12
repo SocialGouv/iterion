@@ -52,9 +52,12 @@ sides is real — a vendor bump touches thousands of files):
    studio renders "File too large to display" rather than empty panes or an
    error.
 
-The total budget is the real bound on Mongo-document and S3 growth; the 16 MiB
-BSON ceiling is protected because only inline (≤128 KiB/file) content lives in
-the document — everything larger is a blob reference.
+The total budget is the real bound on Mongo-document and S3 growth. The 16 MiB
+BSON ceiling is protected by a *cumulative* inline cap (12 MiB across the run,
+not merely 128 KiB/file): once it is spent, further sub-128 KiB files are
+offloaded to blobs too, so a run touching thousands of small files can never
+pile its inline content past the document limit — everything above the inline
+budget is a blob reference.
 
 **Producer / consumer split mirrors ADR-067.** The runner's
 `recordRunGitMeta` calls `store.PopulateRunDiffs` (reusing `gitlib.DiffBetween`

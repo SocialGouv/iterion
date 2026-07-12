@@ -113,6 +113,55 @@ func TestPopulateRunDiffs_BudgetTruncates(t *testing.T) {
 	}
 }
 
+// A sub-per-file-cap diff that overflows the cumulative inline budget must be
+// offloaded to a blob (not inlined), so the RunGitMeta document stays under
+// Mongo's 16 MiB BSON ceiling even for a run of many small files.
+func TestDiffBudget_CumulativeInlineOffloads(t *testing.T) {
+	ctx := context.Background()
+	sink := newMemDiffBlobStore()
+	// inlineRemaining smaller than the per-file inline cap forces the overflow
+	// path while the file itself is well under perFileInlineDiffBytes.
+	b := &diffBudget{remaining: totalRunDiffBytes, inlineRemaining: 10}
+	big := strings.Repeat("x", 1<<10) // 1 KiB — under the 128 KiB per-file cap
+	p := gitlib.DiffPayload{Path: "a.txt", After: &big}
+	meta := &RunGitMeta{BaseCommit: "a", HeadCommit: "b"}
+
+	fd := b.store(ctx, sink, "run-y", diffBlobRef("range", "a.txt"), p, meta)
+	if fd.Truncated {
+		t.Fatalf("file offloaded should not be Truncated: %+v", fd)
+	}
+	if fd.BlobRef == "" {
+		t.Fatalf("inline-budget overflow should offload to a blob, got inline: %+v", fd)
+	}
+	if fd.Before != nil || fd.After != nil {
+		t.Errorf("offloaded file must carry no inline content: %+v", fd)
+	}
+	// The blob round-trips back to the original payload.
+	rp := ResolveRunFileDiff(ctx, sink, "run-y", fd)
+	if rp.After == nil || *rp.After != big {
+		t.Errorf("resolved offloaded diff lost content: %+v", rp)
+	}
+}
+
+// memDiffBlobStore is an in-memory RunDiffBlobStore for exercising the offload
+// path without a filesystem/mongo backend.
+type memDiffBlobStore struct{ m map[string][]byte }
+
+func newMemDiffBlobStore() *memDiffBlobStore { return &memDiffBlobStore{m: map[string][]byte{}} }
+
+func (s *memDiffBlobStore) PutRunDiffBlob(_ context.Context, runID, ref string, body []byte) error {
+	s.m[runID+"/"+ref] = append([]byte(nil), body...)
+	return nil
+}
+
+func (s *memDiffBlobStore) GetRunDiffBlob(_ context.Context, runID, ref string) ([]byte, error) {
+	b, ok := s.m[runID+"/"+ref]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return b, nil
+}
+
 func TestFilesystemRunDiffBlob_RoundTrip(t *testing.T) {
 	s := tmpStore(t)
 	ctx := context.Background()
