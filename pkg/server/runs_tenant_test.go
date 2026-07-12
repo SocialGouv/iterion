@@ -58,6 +58,8 @@ func TestRunEndpointsRejectCrossTenant(t *testing.T) {
 		{"pause", http.MethodPost, "/api/runs/run-1/pause", srv.handlePauseRun, map[string]string{"id": "run-1"}},
 		{"log", http.MethodGet, "/api/runs/run-1/log", srv.handleGetRunLog, map[string]string{"id": "run-1"}},
 		{"toolblob", http.MethodGet, "/api/runs/run-1/tools/tu-1/input", srv.handleGetToolBlob, map[string]string{"id": "run-1", "toolUseID": "tu-1", "kind": "input"}},
+		{"artifact-files-list", http.MethodGet, "/api/runs/run-1/artifact-files", srv.handleListArtifactFiles, map[string]string{"id": "run-1"}},
+		{"artifact-file-get", http.MethodGet, "/api/runs/run-1/artifact-files/report.md", srv.handleGetArtifactFile, map[string]string{"id": "run-1", "path": "report.md"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
