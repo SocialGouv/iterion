@@ -11,6 +11,20 @@ import (
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// fakeRefresher records the values pushed to the sandbox so a test can
+// assert the sandboxed refresh path propagates a rotation exactly once.
+type fakeRefresher struct {
+	got map[string][]string
+}
+
+func (f *fakeRefresher) RefreshSecretFile(_ context.Context, name string, value []byte) error {
+	if f.got == nil {
+		f.got = map[string][]string{}
+	}
+	f.got[name] = append(f.got[name], string(value))
+	return nil
+}
+
 // tenantAssertingGenericStore fails any Get whose ctx carries no tenant —
 // the same discipline the Mongo store enforces in production.
 type tenantAssertingGenericStore struct {
@@ -96,5 +110,59 @@ func TestRefreshFileSecretsOnce_RewritesRotatedValue(t *testing.T) {
 	r.refreshFileSecretsOnce(context.Background(), "team-1", map[string]string{}, map[string]string{"other": orphan}, map[string]string{})
 	if got, _ := os.ReadFile(orphan); string(got) != "keep" {
 		t.Fatalf("ref-less secret rewritten: %q", got)
+	}
+}
+
+// TestRefreshSandboxFileSecretsOnce_PushesRotationToDriver pins the
+// SANDBOXED mid-run refresh (#99 extended): a rotated store record is
+// handed to the sandbox driver's SecretFileRefresher exactly once, and an
+// unchanged record is not re-pushed.
+func TestRefreshSandboxFileSecretsOnce_PushesRotationToDriver(t *testing.T) {
+	sealer, err := secrets.NewAESGCMSealerFromBase64("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := &tenantAssertingGenericStore{MemoryGenericSecretStore: secrets.NewMemoryGenericSecretStore(), t: t}
+	id := secrets.NewGenericSecretID()
+	sealed, err := secrets.SealGenericSecret(sealer, id, []byte("token-v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tctx := store.WithTenant(context.Background(), "team-1")
+	if err := mem.Create(tctx, secrets.GenericSecret{ID: id, TenantID: "team-1", ScopeTeamID: "team-1", Name: "forge_token", SealedSecret: sealed}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{cfg: Config{
+		Logger:         iterlog.New(iterlog.LevelError, os.Stderr),
+		Sealer:         sealer,
+		GenericSecrets: mem,
+	}}
+	refs := map[string]string{"forge_token": id}
+	fake := &fakeRefresher{}
+	last := map[string]string{}
+
+	// First tick reads v1 and pushes it once.
+	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last)
+	if got := fake.got["forge_token"]; len(got) != 1 || got[0] != "token-v1" {
+		t.Fatalf("first push = %v, want [token-v1]", got)
+	}
+	// Unchanged store value → no re-push.
+	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last)
+	if got := fake.got["forge_token"]; len(got) != 1 {
+		t.Fatalf("unchanged value re-pushed: %v", got)
+	}
+
+	// Rotate the store record → the new value is pushed to the driver.
+	sealed2, err := secrets.SealGenericSecret(sealer, id, []byte("token-v2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.Update(tctx, secrets.GenericSecret{ID: id, TenantID: "team-1", ScopeTeamID: "team-1", Name: "forge_token", SealedSecret: sealed2}); err != nil {
+		t.Fatal(err)
+	}
+	r.refreshSandboxFileSecretsOnce(context.Background(), "team-1", refs, fake, last)
+	if got := fake.got["forge_token"]; len(got) != 2 || got[1] != "token-v2" {
+		t.Fatalf("after rotation, pushes = %v, want [...token-v2]", got)
 	}
 }
