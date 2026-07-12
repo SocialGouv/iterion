@@ -107,6 +107,7 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 		{"user_messages", s.userMessages},
 		{"run_gitmeta", s.runGitMeta},
 		{"run_plans", s.runPlans},
+		{"run_notes", s.runNotes},
 		{"run_turns", s.runTurns},
 		{"run_logs", s.runLogs},
 	}
