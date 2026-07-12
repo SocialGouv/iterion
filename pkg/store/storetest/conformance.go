@@ -15,7 +15,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +65,108 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
 	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
+	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
+}
+
+// testRunFilesStore exercises the optional RunFilesStore surface
+// (tool-produced files — run reports, SBOMs — surfaced in the studio
+// Artifacts panel) when the backend implements it. It writes files into
+// the EnsureRunFilesDir scratch dir, then — for backends whose write
+// target differs from their read source (Mongo: scratch→S3) — bridges via
+// the RunFilesUploader before reading back. The filesystem backend needs
+// no bridge (its scratch dir IS the read source), so the same assertions
+// hold on both. Covers list ordering, nested paths, open round-trip,
+// traversal rejection, and DeleteRun cleanup. Skipped otherwise.
+func testRunFilesStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rfs := store.AsRunFilesStore(s)
+	if rfs == nil {
+		t.Skip("backend does not implement RunFilesStore")
+	}
+	ctx := testCtx()
+	const runID = "run_files"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Empty run: no files, open of a nonexistent path errors.
+	if files, err := rfs.ListRunFiles(ctx, runID); err != nil || len(files) != 0 {
+		t.Errorf("ListRunFiles(empty) = %v, %v; want empty, nil", files, err)
+	}
+	if _, _, err := rfs.OpenRunFile(ctx, runID, "nope.md"); err == nil {
+		t.Errorf("OpenRunFile(missing): expected error")
+	}
+
+	// Write two files (one nested) into the scratch dir.
+	dir, err := rfs.EnsureRunFilesDir(ctx, runID)
+	if err != nil {
+		t.Fatalf("EnsureRunFilesDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte("# Report\n"), 0o644); err != nil {
+		t.Fatalf("write report.md: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "sbom.json"), []byte(`{"ok":true}`), 0o644); err != nil {
+		t.Fatalf("write sbom.json: %v", err)
+	}
+
+	// Bridge scratch→durable when the backend needs it (cloud). No-op for
+	// the filesystem backend (scratch dir is already the read source).
+	if up := store.AsRunFilesUploader(s); up != nil {
+		n, err := up.UploadRunFiles(ctx, runID)
+		if err != nil {
+			t.Fatalf("UploadRunFiles: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("UploadRunFiles count = %d; want 2", n)
+		}
+	}
+
+	// List returns both, sorted by path.
+	files, err := rfs.ListRunFiles(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListRunFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("ListRunFiles count = %d; want 2 (%+v)", len(files), files)
+	}
+	if files[0].Path != "report.md" || files[1].Path != "sub/sbom.json" {
+		t.Errorf("ListRunFiles paths = %q, %q; want report.md, sub/sbom.json", files[0].Path, files[1].Path)
+	}
+	if files[0].Size != int64(len("# Report\n")) {
+		t.Errorf("report.md size = %d; want %d", files[0].Size, len("# Report\n"))
+	}
+
+	// Open round-trip on the nested file.
+	rc, info, err := rfs.OpenRunFile(ctx, runID, "sub/sbom.json")
+	if err != nil {
+		t.Fatalf("OpenRunFile(sub/sbom.json): %v", err)
+	}
+	body, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(body) != `{"ok":true}` {
+		t.Errorf("OpenRunFile body = %q; want %q", body, `{"ok":true}`)
+	}
+	if info.Path != "sub/sbom.json" {
+		t.Errorf("OpenRunFile info.Path = %q; want sub/sbom.json", info.Path)
+	}
+
+	// Traversal + absolute paths are rejected (mapped to a not-found error).
+	for _, bad := range []string{"../escape", "/etc/passwd", "sub/../../escape"} {
+		if _, _, err := rfs.OpenRunFile(ctx, runID, bad); err == nil {
+			t.Errorf("OpenRunFile(%q): expected rejection", bad)
+		}
+	}
+
+	// DeleteRun sweeps the artifact files.
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if files, err := rfs.ListRunFiles(ctx, runID); err != nil || len(files) != 0 {
+		t.Errorf("ListRunFiles after DeleteRun = %v, %v; want empty, nil", files, err)
+	}
 }
 
 // testToolBlobStore exercises the optional ToolBlobStore surface (large

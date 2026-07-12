@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -84,6 +85,17 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	}
 	if err := s.blob.DeleteRunToolBlobs(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete tool blobs %s: %w", id, err)
+	}
+	if err := s.blob.DeleteRunFiles(ctx, id); err != nil {
+		return fmt.Errorf("store/mongo: blob delete run files %s: %w", id, err)
+	}
+	// Also sweep the runner-local scratch dir if this store owns one (a
+	// runner-side store; server-side stores leave runFilesScratch empty
+	// so the join is harmless but the tree never exists).
+	if s.runFilesScratch != "" {
+		if err := os.RemoveAll(s.runFilesScratchDir(id)); err != nil {
+			return fmt.Errorf("store/mongo: remove run files scratch %s: %w", id, err)
+		}
 	}
 	children := []struct {
 		name string

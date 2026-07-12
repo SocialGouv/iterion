@@ -570,5 +570,148 @@ func (c *S3Client) DeleteRunToolBlobs(ctx context.Context, runID string) error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Tool-produced artifact files (cloud RunFilesStore twin)
+// ---------------------------------------------------------------------------
+
+// PutRunFile uploads one artifact file under runfiles/<runID>/<relPath>.
+// Idempotent.
+func (c *S3Client) PutRunFile(ctx context.Context, runID, relPath, contentType string, body []byte) error {
+	key, err := runFileKey(runID, relPath)
+	if err != nil {
+		return err
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	_, err = c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(c.bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(body),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return fmt.Errorf("blob: put run file %s: %w", key, err)
+	}
+	return nil
+}
+
+// ListRunFiles enumerates artifact files under runfiles/<runID>/,
+// returning area-relative paths. Empty slice (no error) when none.
+func (c *S3Client) ListRunFiles(ctx context.Context, runID string) ([]RunFileObject, error) {
+	prefix, err := runFileRunPrefix(runID)
+	if err != nil {
+		return nil, err
+	}
+	var out []RunFileObject
+	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for pager.HasMorePages() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("blob: list run files %s: %w", prefix, err)
+		}
+		for _, obj := range page.Contents {
+			if obj.Key == nil {
+				continue
+			}
+			rel := strings.TrimPrefix(*obj.Key, prefix)
+			if rel == "" {
+				continue
+			}
+			info := RunFileObject{Path: rel}
+			if obj.Size != nil {
+				info.Size = *obj.Size
+			}
+			if obj.LastModified != nil {
+				info.ModifiedAt = obj.LastModified.UTC()
+			}
+			out = append(out, info)
+		}
+	}
+	return out, nil
+}
+
+// GetRunFile streams one artifact file. Callers must Close. Returns
+// ErrArtifactNotFound when the key is absent.
+func (c *S3Client) GetRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, RunFileObject, error) {
+	key, err := runFileKey(runID, relPath)
+	if err != nil {
+		return nil, RunFileObject{}, err
+	}
+	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return nil, RunFileObject{}, fmt.Errorf("%w: %s", ErrArtifactNotFound, key)
+		}
+		return nil, RunFileObject{}, fmt.Errorf("blob: get run file %s: %w", key, err)
+	}
+	// relPath was validated by runFileKey; report the cleaned prefix-
+	// relative path so callers get a stable, area-relative value.
+	rel := strings.TrimPrefix(key, fmt.Sprintf("runfiles/%s/", runID))
+	info := RunFileObject{Path: rel}
+	if out.ContentLength != nil {
+		info.Size = *out.ContentLength
+	}
+	if out.LastModified != nil {
+		info.ModifiedAt = out.LastModified.UTC()
+	}
+	return out.Body, info, nil
+}
+
+// DeleteRunFiles sweeps every blob under runfiles/<runID>/. Mirrors
+// DeleteRunAttachments' batched, best-effort semantics.
+func (c *S3Client) DeleteRunFiles(ctx context.Context, runID string) error {
+	prefix, err := runFileRunPrefix(runID)
+	if err != nil {
+		return err
+	}
+
+	var collected []error
+	pager := s3.NewListObjectsV2Paginator(c.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(c.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for pager.HasMorePages() {
+		if err := ctx.Err(); err != nil {
+			collected = append(collected, err)
+			break
+		}
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			collected = append(collected, fmt.Errorf("blob: list %s page: %w", prefix, err))
+			continue
+		}
+		if len(page.Contents) == 0 {
+			continue
+		}
+		ids := make([]types.ObjectIdentifier, 0, len(page.Contents))
+		for _, obj := range page.Contents {
+			if obj.Key == nil {
+				continue
+			}
+			ids = append(ids, types.ObjectIdentifier{Key: obj.Key})
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if _, err := c.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(c.bucket),
+			Delete: &types.Delete{Objects: ids, Quiet: aws.Bool(true)},
+		}); err != nil {
+			collected = append(collected, fmt.Errorf("blob: delete run file page under %s: %w", prefix, err))
+		}
+	}
+	if len(collected) > 0 {
+		return errors.Join(collected...)
+	}
+	return nil
+}
+
 // Compile-time assertion that *S3Client implements Client.
 var _ Client = (*S3Client)(nil)

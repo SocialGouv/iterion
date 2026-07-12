@@ -164,11 +164,16 @@ func AsPIDStore(s RunStore) PIDStore {
 // panel + the /api/runs/<id>/artifact-files endpoints.
 //
 // FilesystemRunStore implements it because it owns a real on-disk
-// runs/<id>/ tree. Cloud stores currently do NOT implement it: the
-// sandbox runs on a different machine from the Mongo/S3 backend, so
-// the tool can't write directly to a shared mount; cloud-mode artifact-
-// files would need an S3-backed scratch area + a sandbox-side uploader.
-// AsRunFilesStore returns nil for stores that don't implement this
+// runs/<id>/ tree — its EnsureRunFilesDir directory IS the read source.
+//
+// The Mongo (cloud) store also implements it, but its WRITE target and
+// READ source differ: EnsureRunFilesDir returns a runner-local scratch
+// dir (bind-mounted into the sandbox on the runner pod), while
+// ListRunFiles/OpenRunFile read from the S3 blob backend the server pod
+// serves. The runner bridges the two after the run via the optional
+// RunFilesUploader seam (UploadRunFiles walks the scratch dir → S3). So
+// cloud artifact files become visible at run completion, not streamed
+// live. AsRunFilesStore returns nil for stores that don't implement this
 // interface — callers MUST nil-check.
 type RunFilesStore interface {
 	// EnsureRunFilesDir creates the per-run files area if missing
@@ -200,14 +205,43 @@ type RunFileInfo struct {
 }
 
 // AsRunFilesStore returns s as RunFilesStore when the backend supports
-// per-run file artifacts, or nil otherwise. Filesystem stores satisfy
-// it; cloud (Mongo) stores currently do not.
+// per-run file artifacts, or nil otherwise. Filesystem and Mongo (cloud)
+// stores both satisfy it; third-party stores may not.
 func AsRunFilesStore(s RunStore) RunFilesStore {
 	if s == nil {
 		return nil
 	}
 	f, _ := s.(RunFilesStore)
 	return f
+}
+
+// RunFilesUploader is an optional companion to RunFilesStore implemented
+// only by stores whose EnsureRunFilesDir WRITE target differs from their
+// ListRunFiles/OpenRunFile READ source. The Mongo store's scratch dir
+// lives on the runner pod's local disk (the sandbox bind-mount source);
+// after the run the runner calls UploadRunFiles to copy the produced
+// files to the durable S3 read source the server pod serves from.
+//
+// FilesystemRunStore does NOT implement it — its scratch dir already IS
+// the read source, so no bridge is needed. Callers MUST nil-check via
+// AsRunFilesUploader (a nil return means "no bridge required").
+type RunFilesUploader interface {
+	// UploadRunFiles copies every file under the run's local scratch dir
+	// to the durable read backend, returning the count uploaded. A run
+	// that produced no files (or has no scratch dir) returns (0, nil).
+	// Idempotent: re-uploading replaces the prior bytes.
+	UploadRunFiles(ctx context.Context, runID string) (int, error)
+}
+
+// AsRunFilesUploader returns s as RunFilesUploader when the backend needs
+// a scratch→durable bridge for artifact files, or nil otherwise (the
+// common case — filesystem stores serve straight from the scratch dir).
+func AsRunFilesUploader(s RunStore) RunFilesUploader {
+	if s == nil {
+		return nil
+	}
+	u, _ := s.(RunFilesUploader)
+	return u
 }
 
 // ToolBlobStore is an optional interface implemented by stores that

@@ -102,6 +102,35 @@ type Client interface {
 	// DeleteRunToolBlobs removes every blob under `tools/<runID>/` in a
 	// single sweep. Best-effort, mirroring DeleteRunAttachments.
 	DeleteRunToolBlobs(ctx context.Context, runID string) error
+
+	// PutRunFile uploads a tool-produced artifact file (run report, SBOM,
+	// …) under `runfiles/<runID>/<relPath>`. relPath may contain nested
+	// segments. Idempotent. Backs the cloud RunFilesStore twin: the runner
+	// walks its local scratch dir post-run and PUTs each file here so the
+	// server pod can serve them.
+	PutRunFile(ctx context.Context, runID, relPath, contentType string, body []byte) error
+
+	// ListRunFiles enumerates every artifact file under
+	// `runfiles/<runID>/` as area-relative paths. Empty slice (no error)
+	// when the run produced none.
+	ListRunFiles(ctx context.Context, runID string) ([]RunFileObject, error)
+
+	// GetRunFile streams one artifact file. Callers must Close the reader.
+	// Returns ErrArtifactNotFound when the (runID, relPath) is absent.
+	GetRunFile(ctx context.Context, runID, relPath string) (io.ReadCloser, RunFileObject, error)
+
+	// DeleteRunFiles removes every blob under `runfiles/<runID>/` in a
+	// single sweep. Best-effort, mirroring DeleteRunAttachments.
+	DeleteRunFiles(ctx context.Context, runID string) error
+}
+
+// RunFileObject is the metadata the blob backend reports for one
+// tool-produced artifact file. Path is area-relative (never absolute,
+// never leading "/"), matching store.RunFileInfo.Path.
+type RunFileObject struct {
+	Path       string
+	Size       int64
+	ModifiedAt time.Time
 }
 
 // AttachmentMeta describes the bytes returned by GetAttachment as
@@ -170,4 +199,17 @@ func ToolBlobKey(runID, toolUseID, kind string) (string, error) {
 // for a run. Used by DeleteRunToolBlobs and retention sweepers.
 func ToolBlobRunPrefix(runID string) (string, error) {
 	return toolBlobRunPrefix(runID)
+}
+
+// RunFileKey returns the canonical layout key for a tool-produced
+// artifact file: `runfiles/<run_id>/<rel_path>`. rel_path may be
+// multi-segment; each segment is sanitised and traversal is rejected.
+func RunFileKey(runID, relPath string) (string, error) {
+	return runFileKey(runID, relPath)
+}
+
+// RunFileRunPrefix is the S3 key prefix that contains every artifact
+// file for a run. Used by DeleteRunFiles and retention sweepers.
+func RunFileRunPrefix(runID string) (string, error) {
+	return runFileRunPrefix(runID)
 }

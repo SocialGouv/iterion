@@ -2,6 +2,7 @@ package blob
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -87,4 +88,54 @@ func toolBlobRunPrefix(runID string) (string, error) {
 		return "", fmt.Errorf("blob: invalid run_id: %w", err)
 	}
 	return fmt.Sprintf("tools/%s/", runID), nil
+}
+
+// runFileKey builds the canonical S3 key for a tool-produced artifact
+// file: runfiles/<run_id>/<rel_path>. Unlike the other blobs, rel_path
+// is a MULTI-segment path (tools may drop nested dirs, e.g.
+// "renovacy/dbug-1.0-to-1.7.md"), so each segment is sanitised
+// independently and traversal ("..", absolute, empty) is rejected — the
+// same containment invariant the filesystem store's OpenRunFile enforces
+// via its openat walk, applied here to the flat S3 key space.
+func runFileKey(runID, relPath string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	clean, err := sanitizeRunFileRelPath(relPath)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("runfiles/%s/%s", runID, clean), nil
+}
+
+// runFileRunPrefix is the S3 key prefix containing every artifact file
+// for a run. Trailing slash guards against matching `runfiles/<runID>-x/`.
+func runFileRunPrefix(runID string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	return fmt.Sprintf("runfiles/%s/", runID), nil
+}
+
+// sanitizeRunFileRelPath validates a slash-separated relative path and
+// returns its cleaned form. Rejects absolute paths, empty input, and any
+// "." / ".." / empty / backslash-bearing segment, then sanitises each
+// segment against the standard path-component invariant.
+func sanitizeRunFileRelPath(relPath string) (string, error) {
+	slashPath := strings.ReplaceAll(relPath, "\\", "/")
+	if slashPath == "" || strings.HasPrefix(slashPath, "/") {
+		return "", fmt.Errorf("blob: invalid run file path %q", relPath)
+	}
+	segments := strings.Split(slashPath, "/")
+	clean := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("blob: invalid run file path %q", relPath)
+		}
+		if err := store.SanitizePathComponent("run_file_segment", seg); err != nil {
+			return "", fmt.Errorf("blob: invalid run file path %q: %w", relPath, err)
+		}
+		clean = append(clean, seg)
+	}
+	return strings.Join(clean, "/"), nil
 }

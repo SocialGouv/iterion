@@ -12,6 +12,8 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -60,6 +62,12 @@ type Config struct {
 	// uploader can't push the runner pod into OOM by streaming an
 	// arbitrarily large body.
 	MaxAttachmentBytes int64
+	// RunFilesScratchDir is the runner-local base directory under which
+	// EnsureRunFilesDir creates per-run artifact-file scratch areas
+	// (bind-mounted into the sandbox). Empty applies the default
+	// (<os.TempDir>/iterion-runfiles). Only the runner pod writes here;
+	// the server pod reads the uploaded copies from S3.
+	RunFilesScratchDir string
 }
 
 // defaultMaxAttachmentBytes matches the documented upload cap on the
@@ -107,6 +115,11 @@ type Store struct {
 	// logPositionFn stamps Event.LogOffset at AppendEvent time from the
 	// runner's per-run log writer total (the cloud twin of the
 	// filesystem store's hook). nil disables stamping. See runlogs.go.
+	// runFilesScratch is the runner-local base dir under which
+	// EnsureRunFilesDir creates per-run artifact-file scratch areas
+	// (see runfiles.go). Empty on a server-only store — it never writes.
+	runFilesScratch string
+
 	logPositionMu sync.Mutex
 	logPositionFn store.LogPositionFn
 	// activeDurationFn stamps Event.ActiveMs at AppendEvent time from the
@@ -147,6 +160,10 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if maxAttach <= 0 {
 		maxAttach = defaultMaxAttachmentBytes
 	}
+	scratch := cfg.RunFilesScratchDir
+	if scratch == "" {
+		scratch = filepath.Join(os.TempDir(), "iterion-runfiles")
+	}
 	db := cli.Database(cfg.Database)
 	s := &Store{
 		client:             cli,
@@ -164,6 +181,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
 		maxAttachmentBytes: maxAttach,
+		runFilesScratch:    scratch,
 	}
 	if err := s.EnsureSchema(ctx, cfg.EventsTTLDays); err != nil {
 		_ = cli.Disconnect(context.Background())

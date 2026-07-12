@@ -248,3 +248,53 @@ func (b *inMemoryBlob) DeleteRunToolBlobs(_ context.Context, runID string) error
 	}
 	return nil
 }
+
+func (b *inMemoryBlob) PutRunFile(_ context.Context, runID, relPath, _ string, body []byte) error {
+	key, err := blob.RunFileKey(runID, relPath)
+	if err != nil {
+		return err
+	}
+	b.data[key] = append([]byte{}, body...)
+	return nil
+}
+
+func (b *inMemoryBlob) ListRunFiles(_ context.Context, runID string) ([]blob.RunFileObject, error) {
+	prefix, err := blob.RunFileRunPrefix(runID)
+	if err != nil {
+		return nil, err
+	}
+	var out []blob.RunFileObject
+	for k, v := range b.data {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			out = append(out, blob.RunFileObject{Path: k[len(prefix):], Size: int64(len(v))})
+		}
+	}
+	return out, nil
+}
+
+func (b *inMemoryBlob) GetRunFile(_ context.Context, runID, relPath string) (io.ReadCloser, blob.RunFileObject, error) {
+	key, err := blob.RunFileKey(runID, relPath)
+	if err != nil {
+		return nil, blob.RunFileObject{}, err
+	}
+	body, ok := b.data[key]
+	if !ok {
+		return nil, blob.RunFileObject{}, blob.ErrArtifactNotFound
+	}
+	prefix, _ := blob.RunFileRunPrefix(runID)
+	rc := io.NopCloser(bytes.NewReader(body))
+	return rc, blob.RunFileObject{Path: key[len(prefix):], Size: int64(len(body))}, nil
+}
+
+func (b *inMemoryBlob) DeleteRunFiles(_ context.Context, runID string) error {
+	prefix, err := blob.RunFileRunPrefix(runID)
+	if err != nil {
+		return err
+	}
+	for k := range b.data {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			delete(b.data, k)
+		}
+	}
+	return nil
+}
