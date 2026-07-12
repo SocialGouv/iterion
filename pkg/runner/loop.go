@@ -2148,6 +2148,23 @@ func (m *metricsEmitter) AppendPlanSnapshot(ctx context.Context, runID string, s
 	return pw.AppendPlanSnapshot(ctx, runID, snap)
 }
 
+// WriteTurn forwards per-LLM-turn checkpoint persistence to the wrapped
+// emitter when it implements model.TurnWriter (the Mongo cloud store now
+// does). Same rationale as AppendPlanSnapshot: without this explicit
+// forward the capture hook's `emitter.(TurnWriter)` assertion runs against
+// THIS wrapper — which, lacking the method, would yield nil and silently
+// disable per-turn capture for every cloud run (breaking the studio
+// timeline + fork-from-turn) even once the store supports it. When the
+// inner store is not a TurnWriter this is a benign no-op (nil error),
+// matching today's nil-turnSink skip behaviour.
+func (m *metricsEmitter) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
+	tw, ok := m.inner.(model.TurnWriter)
+	if !ok {
+		return nil
+	}
+	return tw.WriteTurn(ctx, t)
+}
+
 func (m *metricsEmitter) observe(evt store.Event) {
 	switch evt.Type {
 	case store.EventLLMRequest:

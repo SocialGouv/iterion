@@ -12,7 +12,9 @@
 package storetest
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -58,6 +60,128 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
+	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
+}
+
+// testTurnStore exercises the optional TurnStore surface (per-LLM-turn
+// checkpoints backing the fork-from-here + per-node timeline features)
+// when the backend implements it: write/load round-trip, ListTurns
+// ordering, LatestTurn across loop iterations, LoadTurnAtIndex resolving
+// on the highest iteration that has the turn, the messages sidecar, and
+// the ErrTurnNotFound cases. Skipped for backends without the seam.
+func testTurnStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ts := store.AsTurnStore(s)
+	if ts == nil {
+		t.Skip("backend does not implement TurnStore")
+	}
+	ctx := testCtx()
+	const runID = "run_turns"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Missing turn → ErrTurnNotFound on every lookup shape.
+	if _, err := ts.LoadTurn(ctx, runID, "impl", 0, 0); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LoadTurn(missing) = %v; want ErrTurnNotFound", err)
+	}
+	if _, err := ts.LatestTurn(ctx, runID, "impl"); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LatestTurn(missing) = %v; want ErrTurnNotFound", err)
+	}
+	if _, err := ts.LoadTurnAtIndex(ctx, runID, "impl", 3); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LoadTurnAtIndex(missing) = %v; want ErrTurnNotFound", err)
+	}
+	// ListTurns on an empty node is an empty slice, not an error.
+	if turns, err := ts.ListTurns(ctx, runID, "impl", 0); err != nil || len(turns) != 0 {
+		t.Errorf("ListTurns(empty) = %v, %v; want empty, nil", turns, err)
+	}
+
+	// Write a small ladder: node "impl" iter 0 turns {0,1,2}, iter 1 turn {0}.
+	writes := []*store.TurnCheckpoint{
+		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 0, Backend: "claw", Model: "m", FinishReason: "tool_use"},
+		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 1, Backend: "claw"},
+		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 2, Backend: "claw", SessionID: "sess-abc",
+			Messages: []byte(`[{"role":"user","content":"hi"}]`)},
+		{RunID: runID, NodeID: "impl", LoopIter: 1, TurnIndex: 0, Backend: "claw"},
+	}
+	for _, w := range writes {
+		if err := ts.WriteTurn(ctx, w); err != nil {
+			t.Fatalf("WriteTurn(%s/%d/%d): %v", w.NodeID, w.LoopIter, w.TurnIndex, err)
+		}
+	}
+
+	// LoadTurn round-trip.
+	got, err := ts.LoadTurn(ctx, runID, "impl", 0, 0)
+	if err != nil {
+		t.Fatalf("LoadTurn(0,0): %v", err)
+	}
+	if got.Backend != "claw" || got.Model != "m" || got.FinishReason != "tool_use" {
+		t.Errorf("LoadTurn(0,0) fields: %+v", got)
+	}
+
+	// ListTurns returns iter-0 turns in ascending TurnIndex order.
+	list, err := ts.ListTurns(ctx, runID, "impl", 0)
+	if err != nil {
+		t.Fatalf("ListTurns: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("ListTurns count: got %d want 3", len(list))
+	}
+	for i, tc := range list {
+		if tc.TurnIndex != i {
+			t.Errorf("ListTurns[%d].TurnIndex = %d want %d", i, tc.TurnIndex, i)
+		}
+	}
+
+	// LatestTurn picks (highest loop_iter=1, its highest turn_index=0).
+	latest, err := ts.LatestTurn(ctx, runID, "impl")
+	if err != nil {
+		t.Fatalf("LatestTurn: %v", err)
+	}
+	if latest.LoopIter != 1 || latest.TurnIndex != 0 {
+		t.Errorf("LatestTurn = iter %d turn %d; want iter 1 turn 0", latest.LoopIter, latest.TurnIndex)
+	}
+
+	// LoadTurnAtIndex(2) resolves on iter 0 (only iter with turn 2).
+	at2, err := ts.LoadTurnAtIndex(ctx, runID, "impl", 2)
+	if err != nil {
+		t.Fatalf("LoadTurnAtIndex(2): %v", err)
+	}
+	if at2.LoopIter != 0 || at2.TurnIndex != 2 {
+		t.Errorf("LoadTurnAtIndex(2) = iter %d turn %d; want iter 0 turn 2", at2.LoopIter, at2.TurnIndex)
+	}
+	if at2.SessionID != "sess-abc" {
+		t.Errorf("LoadTurnAtIndex(2).SessionID = %q; want sess-abc", at2.SessionID)
+	}
+
+	// Messages sidecar: present for the turn that carried one, not-found
+	// for one that didn't.
+	msgs, err := ts.LoadTurnMessages(ctx, runID, "impl", 0, 2)
+	if err != nil {
+		t.Fatalf("LoadTurnMessages(0,2): %v", err)
+	}
+	if !bytes.Equal(msgs, []byte(`[{"role":"user","content":"hi"}]`)) {
+		t.Errorf("LoadTurnMessages(0,2) = %q; want the persisted blob", msgs)
+	}
+	if _, err := ts.LoadTurnMessages(ctx, runID, "impl", 0, 0); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LoadTurnMessages(no blob) = %v; want ErrTurnNotFound", err)
+	}
+
+	// WriteTurn is an idempotent overwrite on the same key.
+	if err := ts.WriteTurn(ctx, &store.TurnCheckpoint{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 0, Backend: "claw", Model: "m2"}); err != nil {
+		t.Fatalf("WriteTurn(overwrite): %v", err)
+	}
+	if got, err := ts.LoadTurn(ctx, runID, "impl", 0, 0); err != nil || got.Model != "m2" {
+		t.Errorf("after overwrite LoadTurn(0,0).Model = %v (err %v); want m2", got, err)
+	}
+
+	// DeleteRun sweeps the turns too.
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, err := ts.LatestTurn(ctx, runID, "impl"); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LatestTurn after DeleteRun = %v; want ErrTurnNotFound", err)
+	}
 }
 
 // testRunLogStore exercises the optional RunLogStore surface (ADR-053)

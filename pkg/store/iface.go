@@ -287,10 +287,12 @@ func AsRunLogStore(s RunStore) RunLogStore {
 //
 // FilesystemRunStore satisfies it (writes under
 // runs/<id>/turns/<node>/<iter>/<turn>.json plus a per-node
-// index.json for fast O(1) "latest turn" lookups). Cloud (Mongo)
-// stores currently do NOT — turn capture is local-only until cloud
-// runners gain a turn-replication path (cloud-ready plan §F). Callers
-// MUST nil-check via AsTurnStore.
+// index.json for fast O(1) "latest turn" lookups). The Mongo (cloud)
+// store also satisfies it via the tenant-stamped, TTL-parity
+// `run_turns` collection (one doc per (run_id, node_id, loop_iter,
+// turn_index), messages blob inline), so fork-from-turn + the per-node
+// timeline work identically in cloud (see pkg/store/mongo/turns.go).
+// Callers MUST still nil-check via AsTurnStore for third-party stores.
 type TurnStore interface {
 	// WriteTurn persists a TurnCheckpoint under
 	// runs/<runID>/turns/<NodeID>/<LoopIter>/<TurnIndex>.json. The
