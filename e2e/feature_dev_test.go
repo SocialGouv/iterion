@@ -68,6 +68,12 @@ func stubFeatureDevCampaign(exec *scenarioExecutor, st *featureDevState) {
 	exec.on("verify_run", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
+	// The in-loop adversarial review stubs clean by default so a
+	// green+complete pass converges; the review-blocks path is exercised
+	// by its own test.
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"clean": true, "findings": "", "_tokens": 1}, nil
+	})
 	// available=true keeps the opt-in MR path reachable (finalize_mr fires
 	// when open_mr=true); the probe only runs behind the open_mr gate.
 	exec.on("forge_auth_probe", func(_ map[string]any) (map[string]any, error) {
@@ -108,6 +114,46 @@ func TestVibeFeatureDev_ConvergesFirstPass(t *testing.T) {
 	}
 	if exec.wasCalled("finalize_mr") {
 		t.Errorf("finalize_mr fired with open_mr=false — the MR path must be opt-in")
+	}
+}
+
+// TestVibeFeatureDev_ReviewBlocksThenConverges pins the in-loop adversarial
+// review wiring: pass 1 is green + feature_complete, but the review returns
+// clean=false (a real invariant defect), so the gate does NOT converge and
+// loops back to the campaign; pass 2 the review is clean and it converges.
+// Two campaign passes — the review is a genuine convergence gate, not decorative.
+func TestVibeFeatureDev_ReviewBlocksThenConverges(t *testing.T) {
+	wf := compileFixtureStubSafe(t, "feature-dev/main.bot")
+	exec := newScenarioExecutor()
+	st := &featureDevState{completeBy: 1} // campaign claims complete every pass
+	stubFeatureDevCampaign(exec, st)
+	// Override the review stub: dirty on pass 1, clean on pass 2.
+	var reviewCalls int
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		reviewCalls++
+		if reviewCalls == 1 {
+			return map[string]any{"clean": false, "findings": "handler X skips the tenant gate its sibling has", "_tokens": 1}, nil
+		}
+		return map[string]any{"clean": true, "findings": "", "_tokens": 1}, nil
+	})
+
+	s := tmpStore(t)
+	eng := runtime.New(wf, s, exec)
+	if err := eng.Run(context.Background(), "run-fd-review", nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, err := s.LoadRun(context.Background(), "run-fd-review")
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if run.Status != store.RunStatusFinished {
+		t.Fatalf("status = %s, want %s", run.Status, store.RunStatusFinished)
+	}
+	if got := exec.callCount("campaign"); got != 2 {
+		t.Errorf("campaign called %d times, want 2 (review blocks pass 1, clean pass 2)", got)
+	}
+	if reviewCalls != 2 {
+		t.Errorf("review called %d times, want 2", reviewCalls)
 	}
 }
 
