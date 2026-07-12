@@ -69,6 +69,12 @@ func stubBranchCampaign(exec *scenarioExecutor, st *branchCampaignState) {
 	exec.on("verify_run", func(_ map[string]any) (map[string]any, error) {
 		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
+	// The in-loop adversarial review stubs clean by default so a
+	// green+complete pass converges; the review-blocks path is exercised
+	// by its own test.
+	exec.on("review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"clean": true, "findings": "", "_tokens": 1}, nil
+	})
 	// available=true keeps the opt-in MR path reachable (finalize_mr fires
 	// when open_mr=true); the probe only runs behind the open_mr gate.
 	exec.on("forge_auth_probe", func(_ map[string]any) (map[string]any, error) {
