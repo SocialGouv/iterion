@@ -12,6 +12,8 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -43,6 +45,7 @@ const (
 	colUserMessages = "user_messages"
 	colRunGitMeta   = "run_gitmeta"
 	colRunPlans     = "run_plans"
+	colRunTurns     = "run_turns"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -59,6 +62,12 @@ type Config struct {
 	// uploader can't push the runner pod into OOM by streaming an
 	// arbitrarily large body.
 	MaxAttachmentBytes int64
+	// RunFilesScratchDir is the runner-local base directory under which
+	// EnsureRunFilesDir creates per-run artifact-file scratch areas
+	// (bind-mounted into the sandbox). Empty applies the default
+	// (<os.TempDir>/iterion-runfiles). Only the runner pod writes here;
+	// the server pod reads the uploaded copies from S3.
+	RunFilesScratchDir string
 }
 
 // defaultMaxAttachmentBytes matches the documented upload cap on the
@@ -97,6 +106,7 @@ type Store struct {
 	userMessages       *mongo.Collection
 	runGitMeta         *mongo.Collection
 	runPlans           *mongo.Collection
+	runTurns           *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -105,6 +115,11 @@ type Store struct {
 	// logPositionFn stamps Event.LogOffset at AppendEvent time from the
 	// runner's per-run log writer total (the cloud twin of the
 	// filesystem store's hook). nil disables stamping. See runlogs.go.
+	// runFilesScratch is the runner-local base dir under which
+	// EnsureRunFilesDir creates per-run artifact-file scratch areas
+	// (see runfiles.go). Empty on a server-only store — it never writes.
+	runFilesScratch string
+
 	logPositionMu sync.Mutex
 	logPositionFn store.LogPositionFn
 	// activeDurationFn stamps Event.ActiveMs at AppendEvent time from the
@@ -145,6 +160,10 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if maxAttach <= 0 {
 		maxAttach = defaultMaxAttachmentBytes
 	}
+	scratch := cfg.RunFilesScratchDir
+	if scratch == "" {
+		scratch = filepath.Join(os.TempDir(), "iterion-runfiles")
+	}
 	db := cli.Database(cfg.Database)
 	s := &Store{
 		client:             cli,
@@ -157,10 +176,12 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		userMessages:       db.Collection(colUserMessages),
 		runGitMeta:         db.Collection(colRunGitMeta),
 		runPlans:           db.Collection(colRunPlans),
+		runTurns:           db.Collection(colRunTurns),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
 		maxAttachmentBytes: maxAttach,
+		runFilesScratch:    scratch,
 	}
 	if err := s.EnsureSchema(ctx, cfg.EventsTTLDays); err != nil {
 		_ = cli.Disconnect(context.Background())
@@ -332,6 +353,26 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	}
 	if _, err := s.runPlans.Indexes().CreateMany(ctx, runPlanIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_plans indexes: %w", err)
+	}
+
+	// run_turns: many docs per run (one per captured LLM turn), uniquely
+	// keyed by (run_id, node_id, loop_iter, turn_index) — the idempotent-
+	// overwrite key WriteTurn upserts on (the cloud twin of the filesystem
+	// store's runs/<id>/turns/<node>/<iter>/<turn>.json). The compound
+	// (tenant_id, run_id, node_id, loop_iter, turn_index) accelerates the
+	// tenant-scoped per-node listing + LatestTurn/LoadTurnAtIndex sorts.
+	// Turn checkpoints are a derived observability stream of the run, like
+	// events/run_logs/run_plans, so they share the same retention knob
+	// (eventsTTLDays) on their top-level `ts` date field.
+	runTurnIdx := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "node_id", Value: 1}, {Key: "loop_iter", Value: 1}, {Key: "turn_index", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_node_iter_turn_unique")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "node_id", Value: 1}, {Key: "loop_iter", Value: 1}, {Key: "turn_index", Value: 1}}, Options: options.Index().SetName("tenant_run_node_iter_turn").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+	}
+	if eventsTTLDays > 0 {
+		runTurnIdx = append(runTurnIdx, ttlIndexModel("run_turns_ttl", eventsTTLDays))
+	}
+	if _, err := s.runTurns.Indexes().CreateMany(ctx, runTurnIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_turns indexes: %w", err)
 	}
 
 	return nil

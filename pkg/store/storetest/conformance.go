@@ -12,7 +12,12 @@
 package storetest
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -58,6 +63,314 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
+	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
+	t.Run("ToolBlobStore", func(t *testing.T) { testToolBlobStore(t, factory(t)) })
+	t.Run("RunFilesStore", func(t *testing.T) { testRunFilesStore(t, factory(t)) })
+}
+
+// testRunFilesStore exercises the optional RunFilesStore surface
+// (tool-produced files — run reports, SBOMs — surfaced in the studio
+// Artifacts panel) when the backend implements it. It writes files into
+// the EnsureRunFilesDir scratch dir, then — for backends whose write
+// target differs from their read source (Mongo: scratch→S3) — bridges via
+// the RunFilesUploader before reading back. The filesystem backend needs
+// no bridge (its scratch dir IS the read source), so the same assertions
+// hold on both. Covers list ordering, nested paths, open round-trip,
+// traversal rejection, and DeleteRun cleanup. Skipped otherwise.
+func testRunFilesStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	rfs := store.AsRunFilesStore(s)
+	if rfs == nil {
+		t.Skip("backend does not implement RunFilesStore")
+	}
+	ctx := testCtx()
+	const runID = "run_files"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Empty run: no files, open of a nonexistent path errors.
+	if files, err := rfs.ListRunFiles(ctx, runID); err != nil || len(files) != 0 {
+		t.Errorf("ListRunFiles(empty) = %v, %v; want empty, nil", files, err)
+	}
+	if _, _, err := rfs.OpenRunFile(ctx, runID, "nope.md"); err == nil {
+		t.Errorf("OpenRunFile(missing): expected error")
+	}
+
+	// Write two files (one nested) into the scratch dir.
+	dir, err := rfs.EnsureRunFilesDir(ctx, runID)
+	if err != nil {
+		t.Fatalf("EnsureRunFilesDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte("# Report\n"), 0o644); err != nil {
+		t.Fatalf("write report.md: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "sbom.json"), []byte(`{"ok":true}`), 0o644); err != nil {
+		t.Fatalf("write sbom.json: %v", err)
+	}
+
+	// Bridge scratch→durable when the backend needs it (cloud). No-op for
+	// the filesystem backend (scratch dir is already the read source).
+	if up := store.AsRunFilesUploader(s); up != nil {
+		n, err := up.UploadRunFiles(ctx, runID)
+		if err != nil {
+			t.Fatalf("UploadRunFiles: %v", err)
+		}
+		if n != 2 {
+			t.Errorf("UploadRunFiles count = %d; want 2", n)
+		}
+	}
+
+	// List returns both, sorted by path.
+	files, err := rfs.ListRunFiles(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListRunFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("ListRunFiles count = %d; want 2 (%+v)", len(files), files)
+	}
+	if files[0].Path != "report.md" || files[1].Path != "sub/sbom.json" {
+		t.Errorf("ListRunFiles paths = %q, %q; want report.md, sub/sbom.json", files[0].Path, files[1].Path)
+	}
+	if files[0].Size != int64(len("# Report\n")) {
+		t.Errorf("report.md size = %d; want %d", files[0].Size, len("# Report\n"))
+	}
+
+	// Open round-trip on the nested file.
+	rc, info, err := rfs.OpenRunFile(ctx, runID, "sub/sbom.json")
+	if err != nil {
+		t.Fatalf("OpenRunFile(sub/sbom.json): %v", err)
+	}
+	body, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(body) != `{"ok":true}` {
+		t.Errorf("OpenRunFile body = %q; want %q", body, `{"ok":true}`)
+	}
+	if info.Path != "sub/sbom.json" {
+		t.Errorf("OpenRunFile info.Path = %q; want sub/sbom.json", info.Path)
+	}
+
+	// Traversal + absolute paths are rejected (mapped to a not-found error).
+	for _, bad := range []string{"../escape", "/etc/passwd", "sub/../../escape"} {
+		if _, _, err := rfs.OpenRunFile(ctx, runID, bad); err == nil {
+			t.Errorf("OpenRunFile(%q): expected rejection", bad)
+		}
+	}
+
+	// DeleteRun sweeps the artifact files.
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if files, err := rfs.ListRunFiles(ctx, runID); err != nil || len(files) != 0 {
+		t.Errorf("ListRunFiles after DeleteRun = %v, %v; want empty, nil", files, err)
+	}
+}
+
+// testToolBlobStore exercises the optional ToolBlobStore surface (large
+// per-tool-call I/O bodies served paginated to the studio Tools tab) when
+// the backend implements it: write/read round-trip, offset+limit windows,
+// eof semantics, past-the-end reads, kind validation, the os.ErrNotExist
+// contract for a missing blob, and DeleteRun cleanup. Skipped otherwise.
+func testToolBlobStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	tbs := store.AsToolBlobStore(s)
+	if tbs == nil {
+		t.Skip("backend does not implement ToolBlobStore")
+	}
+	ctx := testCtx()
+	const runID = "run_toolblob"
+	const tuid = "toolu_123"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Missing blob → os.ErrNotExist-compatible error, size 0. (eof is
+	// meaningless on the error path and differs across backends, so it is
+	// not asserted here.)
+	if _, total, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0); !errors.Is(err, os.ErrNotExist) || total != 0 {
+		t.Errorf("ReadToolBlob(missing) = total %d err %v; want 0, os.ErrNotExist", total, err)
+	}
+
+	// Kind validation rejects anything but input|output.
+	if _, err := tbs.WriteToolBlob(ctx, runID, tuid, "bogus", []byte("x")); err == nil {
+		t.Errorf("WriteToolBlob(bad kind): expected error")
+	}
+	if _, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "bogus", 0, 0); err == nil {
+		t.Errorf("ReadToolBlob(bad kind): expected error")
+	}
+
+	// Write input + output bodies.
+	const output = "hello world"
+	if n, err := tbs.WriteToolBlob(ctx, runID, tuid, "output", []byte(output)); err != nil || n != int64(len(output)) {
+		t.Fatalf("WriteToolBlob(output) = %d, %v; want %d, nil", n, err, len(output))
+	}
+	if _, err := tbs.WriteToolBlob(ctx, runID, tuid, "input", []byte("the input")); err != nil {
+		t.Fatalf("WriteToolBlob(input): %v", err)
+	}
+
+	// Full read.
+	data, total, eof, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0)
+	if err != nil || string(data) != output || total != int64(len(output)) || !eof {
+		t.Fatalf("ReadToolBlob(all) = %q total %d eof %v err %v; want %q,%d,true", data, total, eof, err, output, len(output))
+	}
+	// Windowed read in the middle (not at eof).
+	data, total, eof, err = tbs.ReadToolBlob(ctx, runID, tuid, "output", 4, 5)
+	if err != nil || string(data) != "o wor" || total != int64(len(output)) || eof {
+		t.Fatalf("ReadToolBlob(4,5) = %q total %d eof %v err %v; want %q,%d,false", data, total, eof, err, "o wor", len(output))
+	}
+	// From-offset to end.
+	data, _, eof, err = tbs.ReadToolBlob(ctx, runID, tuid, "output", 6, 0)
+	if err != nil || string(data) != "world" || !eof {
+		t.Fatalf("ReadToolBlob(6,0) = %q eof %v err %v; want %q,true", data, eof, err, "world")
+	}
+	// Past-the-end.
+	if data, _, eof, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 99, 0); err != nil || len(data) != 0 || !eof {
+		t.Fatalf("ReadToolBlob(past end) = %q eof %v err %v; want empty,true,nil", data, eof, err)
+	}
+	// input is independent from output.
+	if data, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "input", 0, 0); err != nil || string(data) != "the input" {
+		t.Errorf("ReadToolBlob(input) = %q, %v; want %q", data, err, "the input")
+	}
+
+	// Idempotent overwrite.
+	if _, err := tbs.WriteToolBlob(ctx, runID, tuid, "output", []byte("replaced")); err != nil {
+		t.Fatalf("WriteToolBlob(overwrite): %v", err)
+	}
+	if data, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0); err != nil || string(data) != "replaced" {
+		t.Errorf("after overwrite = %q, %v; want %q", data, err, "replaced")
+	}
+
+	// DeleteRun sweeps the tool blobs too.
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, _, _, err := tbs.ReadToolBlob(ctx, runID, tuid, "output", 0, 0); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ReadToolBlob after DeleteRun = %v; want os.ErrNotExist", err)
+	}
+}
+
+// testTurnStore exercises the optional TurnStore surface (per-LLM-turn
+// checkpoints backing the fork-from-here + per-node timeline features)
+// when the backend implements it: write/load round-trip, ListTurns
+// ordering, LatestTurn across loop iterations, LoadTurnAtIndex resolving
+// on the highest iteration that has the turn, the messages sidecar, and
+// the ErrTurnNotFound cases. Skipped for backends without the seam.
+func testTurnStore(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ts := store.AsTurnStore(s)
+	if ts == nil {
+		t.Skip("backend does not implement TurnStore")
+	}
+	ctx := testCtx()
+	const runID = "run_turns"
+	if _, err := s.CreateRun(ctx, runID, "demo", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	// Missing turn → ErrTurnNotFound on every lookup shape.
+	if _, err := ts.LoadTurn(ctx, runID, "impl", 0, 0); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LoadTurn(missing) = %v; want ErrTurnNotFound", err)
+	}
+	if _, err := ts.LatestTurn(ctx, runID, "impl"); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LatestTurn(missing) = %v; want ErrTurnNotFound", err)
+	}
+	if _, err := ts.LoadTurnAtIndex(ctx, runID, "impl", 3); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LoadTurnAtIndex(missing) = %v; want ErrTurnNotFound", err)
+	}
+	// ListTurns on an empty node is an empty slice, not an error.
+	if turns, err := ts.ListTurns(ctx, runID, "impl", 0); err != nil || len(turns) != 0 {
+		t.Errorf("ListTurns(empty) = %v, %v; want empty, nil", turns, err)
+	}
+
+	// Write a small ladder: node "impl" iter 0 turns {0,1,2}, iter 1 turn {0}.
+	writes := []*store.TurnCheckpoint{
+		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 0, Backend: "claw", Model: "m", FinishReason: "tool_use"},
+		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 1, Backend: "claw"},
+		{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 2, Backend: "claw", SessionID: "sess-abc",
+			Messages: []byte(`[{"role":"user","content":"hi"}]`)},
+		{RunID: runID, NodeID: "impl", LoopIter: 1, TurnIndex: 0, Backend: "claw"},
+	}
+	for _, w := range writes {
+		if err := ts.WriteTurn(ctx, w); err != nil {
+			t.Fatalf("WriteTurn(%s/%d/%d): %v", w.NodeID, w.LoopIter, w.TurnIndex, err)
+		}
+	}
+
+	// LoadTurn round-trip.
+	got, err := ts.LoadTurn(ctx, runID, "impl", 0, 0)
+	if err != nil {
+		t.Fatalf("LoadTurn(0,0): %v", err)
+	}
+	if got.Backend != "claw" || got.Model != "m" || got.FinishReason != "tool_use" {
+		t.Errorf("LoadTurn(0,0) fields: %+v", got)
+	}
+
+	// ListTurns returns iter-0 turns in ascending TurnIndex order.
+	list, err := ts.ListTurns(ctx, runID, "impl", 0)
+	if err != nil {
+		t.Fatalf("ListTurns: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("ListTurns count: got %d want 3", len(list))
+	}
+	for i, tc := range list {
+		if tc.TurnIndex != i {
+			t.Errorf("ListTurns[%d].TurnIndex = %d want %d", i, tc.TurnIndex, i)
+		}
+	}
+
+	// LatestTurn picks (highest loop_iter=1, its highest turn_index=0).
+	latest, err := ts.LatestTurn(ctx, runID, "impl")
+	if err != nil {
+		t.Fatalf("LatestTurn: %v", err)
+	}
+	if latest.LoopIter != 1 || latest.TurnIndex != 0 {
+		t.Errorf("LatestTurn = iter %d turn %d; want iter 1 turn 0", latest.LoopIter, latest.TurnIndex)
+	}
+
+	// LoadTurnAtIndex(2) resolves on iter 0 (only iter with turn 2).
+	at2, err := ts.LoadTurnAtIndex(ctx, runID, "impl", 2)
+	if err != nil {
+		t.Fatalf("LoadTurnAtIndex(2): %v", err)
+	}
+	if at2.LoopIter != 0 || at2.TurnIndex != 2 {
+		t.Errorf("LoadTurnAtIndex(2) = iter %d turn %d; want iter 0 turn 2", at2.LoopIter, at2.TurnIndex)
+	}
+	if at2.SessionID != "sess-abc" {
+		t.Errorf("LoadTurnAtIndex(2).SessionID = %q; want sess-abc", at2.SessionID)
+	}
+
+	// Messages sidecar: present for the turn that carried one, not-found
+	// for one that didn't.
+	msgs, err := ts.LoadTurnMessages(ctx, runID, "impl", 0, 2)
+	if err != nil {
+		t.Fatalf("LoadTurnMessages(0,2): %v", err)
+	}
+	if !bytes.Equal(msgs, []byte(`[{"role":"user","content":"hi"}]`)) {
+		t.Errorf("LoadTurnMessages(0,2) = %q; want the persisted blob", msgs)
+	}
+	if _, err := ts.LoadTurnMessages(ctx, runID, "impl", 0, 0); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LoadTurnMessages(no blob) = %v; want ErrTurnNotFound", err)
+	}
+
+	// WriteTurn is an idempotent overwrite on the same key.
+	if err := ts.WriteTurn(ctx, &store.TurnCheckpoint{RunID: runID, NodeID: "impl", LoopIter: 0, TurnIndex: 0, Backend: "claw", Model: "m2"}); err != nil {
+		t.Fatalf("WriteTurn(overwrite): %v", err)
+	}
+	if got, err := ts.LoadTurn(ctx, runID, "impl", 0, 0); err != nil || got.Model != "m2" {
+		t.Errorf("after overwrite LoadTurn(0,0).Model = %v (err %v); want m2", got, err)
+	}
+
+	// DeleteRun sweeps the turns too.
+	if err := s.DeleteRun(ctx, runID); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	if _, err := ts.LatestTurn(ctx, runID, "impl"); !errors.Is(err, store.ErrTurnNotFound) {
+		t.Errorf("LatestTurn after DeleteRun = %v; want ErrTurnNotFound", err)
+	}
 }
 
 // testRunLogStore exercises the optional RunLogStore surface (ADR-053)

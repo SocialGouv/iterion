@@ -1222,6 +1222,13 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		r.recordRunGitMeta(ctx, msg, workDir, gitBase)
 	}
 
+	// Upload any tool-produced artifact files (run reports, SBOMs) from
+	// the runner-local scratch dir to the durable read backend (S3), so
+	// the server pod's Artifacts panel can serve them for this finished
+	// run. Best-effort: a recording failure must never change the run's
+	// outcome. No-op for stores that don't need the bridge.
+	r.uploadRunFiles(ctx, msg)
+
 	// Delete the sealed credentials bundle only on a terminal-clean
 	// outcome (success, or paused-for-resume). On every Nak-for-
 	// redelivery path — a transient/generic engine error, or a
@@ -1283,6 +1290,31 @@ func (r *Runner) recordRunGitMeta(ctx context.Context, msg *queue.RunMessage, wo
 	store.PopulateRunDiffs(idCtx, msg.RunID, workDir, meta, store.AsRunDiffBlobStore(r.cfg.Store))
 	if err := gs.SaveRunGitMeta(idCtx, msg.RunID, meta); err != nil {
 		r.cfg.Logger.Warn("runner: run %s: persist git meta: %v", msg.RunID, err)
+	}
+}
+
+// uploadRunFiles copies the run's tool-produced artifact files from the
+// runner-local scratch dir to the durable read backend (the Mongo store's
+// S3 bridge). The server pod, which never saw this runner's disk, then
+// serves them from the artifact-files panel. Best-effort: a store without
+// the RunFilesUploader seam (filesystem dev store) no-ops cleanly, and an
+// upload failure is logged, never fatal — the run's outcome is already
+// decided. Runs on a background ctx carrying the run's tenant identity so
+// a cancelled/timed-out run still flushes what it produced (mirrors
+// recordRunGitMeta).
+func (r *Runner) uploadRunFiles(_ context.Context, msg *queue.RunMessage) {
+	up := store.AsRunFilesUploader(r.cfg.Store)
+	if up == nil {
+		return
+	}
+	idCtx := store.WithIdentity(context.Background(), msg.TenantID, msg.OwnerID)
+	n, err := up.UploadRunFiles(idCtx, msg.RunID)
+	if err != nil {
+		r.cfg.Logger.Warn("runner: run %s: upload artifact files: %v", msg.RunID, err)
+		return
+	}
+	if n > 0 {
+		r.cfg.Logger.Info("runner: run %s: uploaded %d artifact file(s)", msg.RunID, n)
 	}
 }
 
@@ -2267,6 +2299,39 @@ func (m *metricsEmitter) AppendPlanSnapshot(ctx context.Context, runID string, s
 		return snap, false, nil
 	}
 	return pw.AppendPlanSnapshot(ctx, runID, snap)
+}
+
+// WriteTurn forwards per-LLM-turn checkpoint persistence to the wrapped
+// emitter when it implements model.TurnWriter (the Mongo cloud store now
+// does). Same rationale as AppendPlanSnapshot: without this explicit
+// forward the capture hook's `emitter.(TurnWriter)` assertion runs against
+// THIS wrapper — which, lacking the method, would yield nil and silently
+// disable per-turn capture for every cloud run (breaking the studio
+// timeline + fork-from-turn) even once the store supports it. When the
+// inner store is not a TurnWriter this is a benign no-op (nil error),
+// matching today's nil-turnSink skip behaviour.
+func (m *metricsEmitter) WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error {
+	tw, ok := m.inner.(model.TurnWriter)
+	if !ok {
+		return nil
+	}
+	return tw.WriteTurn(ctx, t)
+}
+
+// WriteToolBlob forwards per-tool-call I/O sidecar persistence to the
+// wrapped emitter when it implements model.ToolBlobWriter (the Mongo
+// cloud store now does). Same rationale as WriteTurn: the capture hook's
+// `emitter.(ToolBlobWriter)` assertion runs against THIS wrapper, so
+// without the forward large tool outputs would silently fall back to the
+// capped inline preview for every cloud run. When the inner store is not
+// a ToolBlobWriter this signals "no sidecar" the same way a nil
+// blobSink does — persistToolPayload then keeps the capped inline body.
+func (m *metricsEmitter) WriteToolBlob(ctx context.Context, runID, toolUseID, kind string, body []byte) (int64, error) {
+	bw, ok := m.inner.(model.ToolBlobWriter)
+	if !ok {
+		return 0, fmt.Errorf("runner: inner store does not persist tool blobs")
+	}
+	return bw.WriteToolBlob(ctx, runID, toolUseID, kind, body)
 }
 
 func (m *metricsEmitter) observe(evt store.Event) {

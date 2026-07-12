@@ -208,9 +208,9 @@ func (s *Service) ListPlanSnapshotsCtx(ctx context.Context, runID string) ([]sto
 // wrapping os.ErrNotExist when the blob doesn't exist.
 //
 // Returns a clear "unavailable" error when the store doesn't satisfy
-// ToolBlobStore (cloud mode today — the hooks layer falls back to
-// inline-only persistence in that case, so the studio doesn't issue
-// the fetch).
+// ToolBlobStore. Both the filesystem and Mongo (cloud) stores satisfy it;
+// for any store that does not, the hooks layer falls back to inline-only
+// persistence, so the studio doesn't issue the fetch.
 func (s *Service) ReadToolBlob(runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
 	return s.ReadToolBlobCtx(context.Background(), runID, toolUseID, kind, offset, limit)
 }

@@ -369,5 +369,22 @@ func (nopBlob) PresignAttachment(context.Context, string, string, string, time.D
 }
 func (nopBlob) DeleteAttachment(context.Context, string, string, string) error { return nil }
 func (nopBlob) DeleteRunAttachments(context.Context, string) error             { return nil }
+func (nopBlob) PutToolBlob(context.Context, string, string, string, []byte) error {
+	return nil
+}
+func (nopBlob) GetToolBlobRange(context.Context, string, string, string, int64, int64) ([]byte, int64, bool, error) {
+	return nil, 0, false, blob.ErrArtifactNotFound
+}
+func (nopBlob) DeleteRunToolBlobs(context.Context, string) error { return nil }
+func (nopBlob) PutRunFile(context.Context, string, string, string, []byte) error {
+	return nil
+}
+func (nopBlob) ListRunFiles(context.Context, string) ([]blob.RunFileObject, error) {
+	return nil, nil
+}
+func (nopBlob) GetRunFile(context.Context, string, string) (io.ReadCloser, blob.RunFileObject, error) {
+	return nil, blob.RunFileObject{}, blob.ErrArtifactNotFound
+}
+func (nopBlob) DeleteRunFiles(context.Context, string) error { return nil }
 
 var _ blob.Client = nopBlob{}

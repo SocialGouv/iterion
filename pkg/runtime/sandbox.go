@@ -1149,9 +1149,12 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
 	}
 	// Pre-create the per-run artifact-files directory so the bind mount
-	// has a source to point at. RunFilesStore is filesystem-only — when
-	// the store doesn't satisfy it (cloud / Mongo), runFilesHost stays
-	// empty and resolveAndStartSandbox skips the mount silently. Errors
+	// has a source to point at. Both the filesystem store and the Mongo
+	// (cloud) store satisfy RunFilesStore — the filesystem store's dir IS
+	// the read source, while the Mongo store returns a runner-local
+	// scratch dir it later bridges to S3 (see pkg/store/mongo/runfiles.go).
+	// A store that doesn't satisfy the interface leaves runFilesHost empty
+	// and resolveAndStartSandbox skips the mount silently. Errors
 	// from EnsureRunFilesDir are logged but not fatal: the worst case is
 	// in-sandbox tools see ITERION_ARTIFACT_FILES_DIR unset and either
 	// fall back to a tmpdir or skip writing — far less disruptive than

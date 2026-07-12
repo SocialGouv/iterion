@@ -649,7 +649,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // Errors:
 //   - 400 missing id/toolUseID/kind or kind not in {input,output}
 //   - 404 blob not found (call never produced one — i.e. fit inline)
-//   - 503 store doesn't satisfy ToolBlobStore (cloud mode today)
+//   - 503 store doesn't satisfy ToolBlobStore (both filesystem and Mongo do)
 func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	toolUseID := r.PathValue("toolUseID")
@@ -753,6 +753,14 @@ func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// Tenant gate: the S3 read path keys on runID only (no tenant prefix),
+	// so cross-tenant isolation MUST be enforced here by loading the run
+	// under the caller's tenant ctx first — mirrors handleGetToolBlob.
+	// Without it a caller could list another team's artifact files.
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
 	files, err := s.runs.ListArtifactFilesCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list artifact files: %v", err)
@@ -775,6 +783,11 @@ func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 	relPath := r.PathValue("path")
 	if id == "" || relPath == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or file path")
+		return
+	}
+	// Tenant gate before the tenant-blind S3 read (see handleListArtifactFiles).
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "artifact file not found")
 		return
 	}
 	rc, info, err := s.runs.OpenArtifactFileCtx(r.Context(), id, relPath)

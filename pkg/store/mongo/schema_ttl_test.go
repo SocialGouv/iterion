@@ -105,3 +105,39 @@ func TestEnsureSchema_RunPlansTTLDisabled(t *testing.T) {
 		t.Errorf("run_plans_ttl present with EventsTTLDays=0; TTL should be disabled")
 	}
 }
+
+// TestEnsureSchema_RunTurnsTTL is the TurnStore twin of the run_plans TTL
+// test: per-LLM-turn checkpoints are an N-docs-per-run derived stream too,
+// so run_turns must carry a TTL on `ts` with the same expireAfterSeconds
+// as its sibling streams — a deleted run leaves no orphaned turns lingering
+// past the events retention window.
+func TestEnsureSchema_RunTurnsTTL(t *testing.T) {
+	const ttlDays = 7
+	s := newTTLTestStore(t, ttlDays)
+	wantSecs := int32(ttlDays * 86400)
+
+	got, ok := ttlSeconds(t, s.runTurns, "run_turns_ttl")
+	if !ok {
+		t.Fatalf("run_turns has no run_turns_ttl index after EnsureSchema")
+	}
+	if got != wantSecs {
+		t.Errorf("run_turns_ttl expireAfterSeconds = %d, want %d", got, wantSecs)
+	}
+	// Parity with events (both retain on the same eventsTTLDays knob).
+	sibSecs, sibOK := ttlSeconds(t, s.events, "events_ttl")
+	if !sibOK {
+		t.Fatalf("events_ttl missing after EnsureSchema")
+	}
+	if sibSecs != got {
+		t.Errorf("events_ttl expireAfterSeconds = %d, want %d (parity with run_turns_ttl)", sibSecs, got)
+	}
+}
+
+// TestEnsureSchema_RunTurnsTTLDisabled: EventsTTLDays==0 leaves run_turns
+// with no TTL index.
+func TestEnsureSchema_RunTurnsTTLDisabled(t *testing.T) {
+	s := newTTLTestStore(t, 0)
+	if _, ok := ttlSeconds(t, s.runTurns, "run_turns_ttl"); ok {
+		t.Errorf("run_turns_ttl present with EventsTTLDays=0; TTL should be disabled")
+	}
+}
