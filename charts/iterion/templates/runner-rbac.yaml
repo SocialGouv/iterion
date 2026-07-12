@@ -43,12 +43,15 @@ rules:
   # `as: file` secrets (forge_token, …) and another for the egress proxy's
   # TLS-inspection CA, mounts them into the sandbox pod, then deletes them on
   # cleanup (pkg/sandbox/kubernetes/driver.go BuildSecretFilesSecret + caInjection).
-  # `kubectl apply` does get→create/patch on the NAMED per-run Secret; no
-  # list/watch (the driver never enumerates Secrets — least privilege on a
-  # sensitive resource).
+  # `kubectl apply` does get→create/patch on the NAMED per-run Secret.
+  # `list` is required by the orphan reaper (ADR-068): a runner killed
+  # mid-run never runs cleanup, so ReapOrphanResources lists managed
+  # Secrets by the iterion.io/managed label and deletes those whose run is
+  # terminal — closing the plaintext-credential-at-rest leak. The list is
+  # label-scoped and still namespace-bound by the Role.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   # V2-5: per-run NetworkPolicy synthesis. Enforcement requires a
   # NetworkPolicy-aware CNI (Calico, Cilium, weave-net, kube-router…);
   # without one the resource still applies but is silently ignored.

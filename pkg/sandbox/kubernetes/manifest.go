@@ -27,6 +27,68 @@ const (
 // orchestrates) and the netproxy pod (V2).
 const ComponentSandboxRun = "sandbox-run"
 
+// OwnerReference identifies the k8s object that owns a per-run resource
+// (sandbox pod, CA/file-secrets Secret, NetworkPolicy). Setting it makes
+// the cluster garbage-collect the resource when the owner is deleted
+// (cascade GC), independent of iterion's own Cleanup path.
+//
+// iterion sets the owner to the RUNNER pod (read from the downward-API
+// env vars in the driver): when a runner pod is removed by a deployment
+// rollout, node drain or scale-down, k8s takes all of its sandbox pods,
+// Secrets and NetworkPolicies with it — closing the
+// plaintext-credential-at-rest window without waiting for the label
+// reaper. It is best-effort: when the downward API isn't wired the owner
+// is nil and the run relies on activeDeadlineSeconds + the label reaper
+// (defence in depth). See ADR-070.
+type OwnerReference struct {
+	APIVersion string
+	Kind       string
+	Name       string
+	UID        string
+}
+
+// valid reports whether the owner carries the two fields k8s requires to
+// establish an ownerReference (name + uid). A nil or partial owner is
+// treated as "no owner" so callers can pass it unconditionally.
+func (o *OwnerReference) valid() bool {
+	return o != nil && o.Name != "" && o.UID != ""
+}
+
+// ownerReferencesJSON renders the metadata.ownerReferences list for a
+// valid owner, or nil to omit the field entirely. Deliberately a plain
+// (non-controller) reference: cascade GC deletes dependents on owner
+// deletion regardless of the controller flag, and omitting
+// controller/blockOwnerDeletion avoids needing extra RBAC on the owner.
+func ownerReferencesJSON(o *OwnerReference) []any {
+	if !o.valid() {
+		return nil
+	}
+	apiVersion := o.APIVersion
+	if apiVersion == "" {
+		apiVersion = "v1"
+	}
+	kind := o.Kind
+	if kind == "" {
+		kind = "Pod"
+	}
+	return []any{
+		map[string]any{
+			"apiVersion": apiVersion,
+			"kind":       kind,
+			"name":       o.Name,
+			"uid":        o.UID,
+		},
+	}
+}
+
+// withOwner stamps ownerReferences onto a metadata map when the owner is
+// valid. No-op otherwise, so builders call it unconditionally.
+func withOwner(meta map[string]any, o *OwnerReference) {
+	if refs := ownerReferencesJSON(o); refs != nil {
+		meta["ownerReferences"] = refs
+	}
+}
+
 // PodManifestInput is the surface the runtime layer hands to
 // [BuildPodManifest]. Encapsulating the call avoids passing the
 // whole Spec + RunInfo + namespace tuple down through helpers.
@@ -48,6 +110,20 @@ type PodManifestInput struct {
 	// Secret holding runtime-materialised workflow file secrets. The pod
 	// mounts each Secret key read-only at its requested in-sandbox path.
 	SecretFilesSecretName string
+
+	// Owner, when valid, is stamped as the pod's metadata.ownerReferences
+	// so the cluster cascade-GCs the sandbox pod when the owner (the
+	// runner pod) is deleted. Best-effort — nil when the downward API
+	// isn't wired. See ADR-070.
+	Owner *OwnerReference
+
+	// ActiveDeadlineSeconds, when > 0, bounds the sandbox pod's wall-clock
+	// lifetime (spec.activeDeadlineSeconds): kubelet fails the pod once it
+	// exceeds this, so a leaked pod (runner SIGKILLed/OOM-killed mid-run,
+	// Cleanup never fired) stops consuming compute deterministically
+	// rather than idling as `sleep infinity` forever. Derived from the
+	// run's max_duration + a margin (see driver.go). See ADR-070.
+	ActiveDeadlineSeconds int64
 }
 
 // caSecretKey is the Secret data key + projected filename for the egress
@@ -116,6 +192,13 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 		labels[LabelRunName] = in.FriendlyName
 	}
 
+	podMeta := map[string]any{
+		"name":      in.Name,
+		"namespace": in.Namespace,
+		"labels":    labels,
+	}
+	withOwner(podMeta, in.Owner)
+
 	// Build env list. ProxyEndpoint takes precedence over the spec's
 	// own env if it sets HTTPS_PROXY — the engine-managed proxy is
 	// the security boundary and shouldn't be silently overridden.
@@ -179,36 +262,39 @@ func BuildPodManifest(in PodManifestInput) ([]byte, error) {
 	volumes = append(volumes, secretFileVolumes...)
 	volumes = append(volumes, caVolumes...)
 
+	podSpec := map[string]any{
+		"restartPolicy":                "Never",
+		"automountServiceAccountToken": false,
+		"securityContext": map[string]any{
+			"runAsNonRoot":   true,
+			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+			"fsGroup":        1000,
+		},
+		"containers": []any{
+			map[string]any{
+				"name":            "workload",
+				"image":           in.Spec.Image,
+				"imagePullPolicy": pullPolicyForImage(in.Spec.Image),
+				"command":         []any{"sleep", "infinity"},
+				"workingDir":      workspace,
+				"env":             envSlice,
+				"securityContext": defaultContainerSecurityContext(in.Spec.User),
+				"volumeMounts":    volumeMounts,
+			},
+		},
+		"volumes": volumes,
+	}
+	// Bound the pod's lifetime so a leaked pod self-fails instead of
+	// idling forever (runner killed mid-run before Cleanup fired).
+	if in.ActiveDeadlineSeconds > 0 {
+		podSpec["activeDeadlineSeconds"] = in.ActiveDeadlineSeconds
+	}
+
 	pod := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Pod",
-		"metadata": map[string]any{
-			"name":      in.Name,
-			"namespace": in.Namespace,
-			"labels":    labels,
-		},
-		"spec": map[string]any{
-			"restartPolicy":                "Never",
-			"automountServiceAccountToken": false,
-			"securityContext": map[string]any{
-				"runAsNonRoot":   true,
-				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
-				"fsGroup":        1000,
-			},
-			"containers": []any{
-				map[string]any{
-					"name":            "workload",
-					"image":           in.Spec.Image,
-					"imagePullPolicy": pullPolicyForImage(in.Spec.Image),
-					"command":         []any{"sleep", "infinity"},
-					"workingDir":      workspace,
-					"env":             envSlice,
-					"securityContext": defaultContainerSecurityContext(in.Spec.User),
-					"volumeMounts":    volumeMounts,
-				},
-			},
-			"volumes": volumes,
-		},
+		"metadata":   podMeta,
+		"spec":       podSpec,
 	}
 
 	return json.MarshalIndent(pod, "", "  ")
@@ -317,7 +403,7 @@ func caInjection(secretName string, envSlice *[]any) (volumes, volumeMounts []an
 // TLS-inspection CA (the public CA cert only — the private key never
 // leaves the runner). Applied by the driver before the pod so the pod
 // can mount it. The data is the PEM, base64-encoded under caSecretKey.
-func BuildCASecret(namespace, name, runID, friendlyName string, caPEM []byte) ([]byte, error) {
+func BuildCASecret(namespace, name, runID, friendlyName string, caPEM []byte, owner *OwnerReference) ([]byte, error) {
 	if namespace == "" || name == "" {
 		return nil, fmt.Errorf("kubernetes: CA secret namespace and name are required")
 	}
@@ -329,15 +415,17 @@ func BuildCASecret(namespace, name, runID, friendlyName string, caPEM []byte) ([
 	if friendlyName != "" {
 		labels[LabelRunName] = friendlyName
 	}
+	meta := map[string]any{
+		"name":      name,
+		"namespace": namespace,
+		"labels":    labels,
+	}
+	withOwner(meta, owner)
 	secret := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Secret",
-		"metadata": map[string]any{
-			"name":      name,
-			"namespace": namespace,
-			"labels":    labels,
-		},
-		"type": "Opaque",
+		"metadata":   meta,
+		"type":       "Opaque",
 		"data": map[string]any{
 			caSecretKey: base64.StdEncoding.EncodeToString(caPEM),
 		},
@@ -349,7 +437,7 @@ func BuildCASecret(namespace, name, runID, friendlyName string, caPEM []byte) ([
 // runtime-materialised file secrets. Values are base64-encoded under
 // deterministic keys shared with BuildPodManifest; callers must never log
 // the returned manifest because it contains plaintext-equivalent data.
-func BuildSecretFilesSecret(namespace, name, runID, friendlyName string, files []sandbox.SecretFileMount) ([]byte, error) {
+func BuildSecretFilesSecret(namespace, name, runID, friendlyName string, files []sandbox.SecretFileMount, owner *OwnerReference) ([]byte, error) {
 	if namespace == "" || name == "" {
 		return nil, fmt.Errorf("kubernetes: file secret namespace and name are required")
 	}
@@ -368,16 +456,18 @@ func BuildSecretFilesSecret(namespace, name, runID, friendlyName string, files [
 		}
 		data[secretFileKey(i, sf.Name)] = base64.StdEncoding.EncodeToString(sf.Value)
 	}
+	meta := map[string]any{
+		"name":      name,
+		"namespace": namespace,
+		"labels":    labels,
+	}
+	withOwner(meta, owner)
 	secret := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Secret",
-		"metadata": map[string]any{
-			"name":      name,
-			"namespace": namespace,
-			"labels":    labels,
-		},
-		"type": "Opaque",
-		"data": data,
+		"metadata":   meta,
+		"type":       "Opaque",
+		"data":       data,
 	}
 	return json.MarshalIndent(secret, "", "  ")
 }

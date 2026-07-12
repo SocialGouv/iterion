@@ -263,6 +263,14 @@ type RunInfo struct {
 	// populates this; Phase 0 leaves it empty.
 	ProxyEndpoint string
 
+	// MaxDurationSeconds is the run's budgeted wall-clock cap in seconds
+	// (0 = unbounded). Drivers that can bound a sandbox's lifetime use it
+	// to self-terminate a leaked sandbox — the kubernetes driver derives
+	// spec.activeDeadlineSeconds from it (plus a margin) so a pod orphaned
+	// by a runner killed mid-run stops consuming resources. Drivers that
+	// can't (docker relies on the label reaper) ignore it.
+	MaxDurationSeconds int64
+
 	// ProxyCACert, if non-empty, is the PEM of the per-run egress CA the
 	// proxy uses in TLS-inspection mode (Layer 2 secret substitution).
 	// Drivers must make in-container clients trust it: write it to a path

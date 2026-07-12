@@ -657,6 +657,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 
 	s.reconcileOrphans()
 	s.reconcileSandboxContainers()
+	s.reconcileSandboxK8sResources()
 	s.startPeriodicReconcile()
 	return s, nil
 }
