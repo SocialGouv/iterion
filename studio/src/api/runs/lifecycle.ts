@@ -120,3 +120,30 @@ export async function renameRun(
     body: JSON.stringify({ name }),
   });
 }
+
+// getRunTags lists a run's operator-assigned filter/group tags (chips in
+// the run header). Returns an empty array for a run with none.
+export async function getRunTags(runId: string): Promise<string[]> {
+  const res = await request<{ tags: string[] }>(
+    `/runs/${encodeURIComponent(runId)}/tags`,
+  );
+  return res.tags ?? [];
+}
+
+// setRunTags replaces a run's FULL tag set (whole-list overwrite, not a
+// merge). The server normalizes (trim/dedup) and enforces limits (max 32
+// chars per tag, max 20 tags) — an over-limit list is a 400. Returns the
+// normalized set the server persisted.
+export async function setRunTags(
+  runId: string,
+  tags: string[],
+): Promise<string[]> {
+  const res = await request<{ tags: string[] }>(
+    `/runs/${encodeURIComponent(runId)}/tags`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ tags }),
+    },
+  );
+  return res.tags ?? [];
+}

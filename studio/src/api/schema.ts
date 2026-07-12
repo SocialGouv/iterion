@@ -2351,6 +2351,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/tags */
+        get: operations["getRunsByIdTags"];
+        /** PUT /api/runs/{id}/tags */
+        put: operations["putRunsByIdTags"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/tools/{toolUseID}/{kind}": {
         parameters: {
             query?: never;
@@ -6759,6 +6779,46 @@ export interface operations {
         };
     };
     getRunsByIdSkills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdTags: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putRunsByIdTags: {
         parameters: {
             query?: never;
             header?: never;

@@ -3647,6 +3647,42 @@
         }
       ]
     },
+    "/api/runs/{id}/tags": {
+      "get": {
+        "operationId": "getRunsByIdTags",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/tags",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putRunsByIdTags",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/runs/{id}/tags",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{id}/tools/{toolUseID}/{kind}": {
       "get": {
         "operationId": "getRunsByIdToolsByToolUseIDByKind",

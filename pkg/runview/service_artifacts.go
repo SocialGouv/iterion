@@ -236,6 +236,38 @@ func (s *Service) AddRunNoteCtx(ctx context.Context, runID, author, body string)
 	return ns.AppendRunNote(ctx, runID, store.RunNote{Author: author, Body: body})
 }
 
+// GetRunTagsCtx returns the run's operator-assigned tags (filter/group
+// chips shown in the studio run header). Returns an empty slice — never
+// nil — when the store doesn't satisfy RunTagStore or the run has none, so
+// the HTTP surface serves a clean empty list without leaking the backend
+// choice, mirroring ListPlanSnapshotsCtx.
+func (s *Service) GetRunTagsCtx(ctx context.Context, runID string) ([]string, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	ts := store.AsRunTagStore(s.store)
+	if ts == nil {
+		return []string{}, nil
+	}
+	return ts.GetRunTags(ctx, runID)
+}
+
+// SetRunTagsCtx replaces the run's full tag set. tags must already be
+// normalized (see store.NormalizeTags). Returns a clear "unavailable"
+// error when the store doesn't persist tags — both the filesystem and
+// Mongo stores satisfy RunTagStore, so this only fires for a degenerate
+// store, which the PUT handler maps to a 500.
+func (s *Service) SetRunTagsCtx(ctx context.Context, runID string, tags []string) error {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return err
+	}
+	ts := store.AsRunTagStore(s.store)
+	if ts == nil {
+		return fmt.Errorf("runview: run tags unavailable for this store")
+	}
+	return ts.SetRunTags(ctx, runID, tags)
+}
+
 // ReadToolBlob streams a slice of a tool's stored I/O body (sidecar
 // blob written by the hooks layer when the call exceeded the inline
 // threshold). offset is the byte offset to start at; limit caps the
