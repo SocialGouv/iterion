@@ -3363,6 +3363,42 @@
         ]
       }
     },
+    "/api/runs/{id}/notes": {
+      "get": {
+        "operationId": "getRunsByIdNotes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/notes",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdNotes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/notes",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{id}/pause": {
       "parameters": [
         {

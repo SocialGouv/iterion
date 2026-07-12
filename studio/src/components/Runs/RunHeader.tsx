@@ -28,6 +28,7 @@ import BotChip from "./runHeader/BotChip";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
 import FinalizationRow from "./runHeader/FinalizationRow";
 import ForkedFromRow from "./runHeader/ForkedFromRow";
+import NotesRow from "./runHeader/NotesRow";
 import RunNameEditor from "./runHeader/RunNameEditor";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
@@ -381,6 +382,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       {run.forked_from && <ForkedFromRow run={run} />}
       {run.source?.issue_id && <SourceTicketRow source={run.source} />}
       <ErrorHintRow run={run} onResume={() => setResumeOpen(true)} />
+      <NotesRow runId={run.id} />
 
       {canResume && (
         <ResumeDialog

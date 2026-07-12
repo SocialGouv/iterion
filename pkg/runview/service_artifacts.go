@@ -200,6 +200,42 @@ func (s *Service) ListPlanSnapshotsCtx(ctx context.Context, runID string) ([]sto
 	return ps.ListPlanSnapshots(ctx, runID)
 }
 
+// ListRunNotesCtx returns the run's freeform operator notes in
+// chronological order (filesystem runs/<id>/notes/ or the Mongo
+// run_notes collection). Returns nil when the store doesn't satisfy
+// RunNoteStore so the HTTP handler surfaces a clean empty list without
+// leaking the backend choice — mirroring ListPlanSnapshotsCtx.
+func (s *Service) ListRunNotesCtx(ctx context.Context, runID string) ([]store.RunNote, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	ns := store.AsRunNoteStore(s.store)
+	if ns == nil {
+		return nil, nil
+	}
+	return ns.ListRunNotes(ctx, runID)
+}
+
+// AddRunNoteCtx appends a freeform operator note (author + body) to the
+// run and returns the persisted note with its seq + timestamp populated.
+// author may be empty (the handler defaults it from the caller identity).
+// Returns an error when the store doesn't back the note seam so the
+// caller can surface a clear "not supported" rather than silently
+// dropping the note.
+func (s *Service) AddRunNoteCtx(ctx context.Context, runID, author, body string) (store.RunNote, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return store.RunNote{}, err
+	}
+	if strings.TrimSpace(body) == "" {
+		return store.RunNote{}, fmt.Errorf("runview: note body is required")
+	}
+	ns := store.AsRunNoteStore(s.store)
+	if ns == nil {
+		return store.RunNote{}, fmt.Errorf("runview: this store does not support run notes")
+	}
+	return ns.AppendRunNote(ctx, runID, store.RunNote{Author: author, Body: body})
+}
+
 // ReadToolBlob streams a slice of a tool's stored I/O body (sidecar
 // blob written by the hooks layer when the call exceeded the inline
 // threshold). offset is the byte offset to start at; limit caps the

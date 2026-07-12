@@ -503,6 +503,17 @@ export interface PlanSnapshot {
   todos: PlanTodo[];
 }
 
+// RunNote is one freeform operator note attached to a run — the durable
+// annotations a team leaves ("flaky, re-ran", "root cause was X"). Served
+// by GET /api/runs/:id/notes in ascending seq (chronological) order;
+// created by POST /api/runs/:id/notes. Immutable once created.
+export interface RunNote {
+  seq: number;
+  author: string;
+  body: string;
+  ts: string;
+}
+
 // DownloadOutcome describes what happened on the save side. `cancelled`
 // is desktop-only — it fires when the user dismisses the native save
 // dialog. In browser mode the SPA can't observe the user's choice

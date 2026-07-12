@@ -45,6 +45,7 @@ const (
 	colUserMessages = "user_messages"
 	colRunGitMeta   = "run_gitmeta"
 	colRunPlans     = "run_plans"
+	colRunNotes     = "run_notes"
 	colRunTurns     = "run_turns"
 )
 
@@ -106,6 +107,7 @@ type Store struct {
 	userMessages       *mongo.Collection
 	runGitMeta         *mongo.Collection
 	runPlans           *mongo.Collection
+	runNotes           *mongo.Collection
 	runTurns           *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
@@ -176,6 +178,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		userMessages:       db.Collection(colUserMessages),
 		runGitMeta:         db.Collection(colRunGitMeta),
 		runPlans:           db.Collection(colRunPlans),
+		runNotes:           db.Collection(colRunNotes),
 		runTurns:           db.Collection(colRunTurns),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
@@ -353,6 +356,20 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 	}
 	if _, err := s.runPlans.Indexes().CreateMany(ctx, runPlanIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_plans indexes: %w", err)
+	}
+
+	// run_notes: many docs per run (one per operator note), uniquely keyed
+	// by (run_id, seq) — the race safety net when two operators annotate the
+	// same run concurrently. (tenant_id, run_id, seq) accelerates the
+	// tenant-scoped chronological listing. Notes are durable run annotations,
+	// not a derived observability stream, so — unlike events/run_logs/
+	// run_plans — they carry NO TTL and persist for the life of the run.
+	runNoteIdx := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+	}
+	if _, err := s.runNotes.Indexes().CreateMany(ctx, runNoteIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_notes indexes: %w", err)
 	}
 
 	// run_turns: many docs per run (one per captured LLM turn), uniquely

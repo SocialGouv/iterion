@@ -6,6 +6,7 @@ export * from "./runs/types";
 export * from "./runs/listing";
 export * from "./runs/snapshot";
 export * from "./runs/artifacts";
+export * from "./runs/notes";
 export * from "./runs/lifecycle";
 export * from "./runs/files";
 export * from "./runs/commits";
