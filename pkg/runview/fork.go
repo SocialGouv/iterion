@@ -74,7 +74,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 	}
 	turnStore := store.AsTurnStore(s.store)
 	if turnStore == nil {
-		return nil, fmt.Errorf("runview: fork: backend store does not support turn checkpoints (cloud stores not yet supported)")
+		return nil, fmt.Errorf("runview: fork: backend store does not support turn checkpoints")
 	}
 	var turn *store.TurnCheckpoint
 	if spec.TurnIndex < 0 {
