@@ -386,13 +386,9 @@ func (s *Server) handleGetRunFileDiff(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
-	if run.WorkDir == "" {
-		s.httpErrorFor(w, r, http.StatusConflict, "run has no working directory recorded")
-		return
-	}
 
 	// Live-worktree path.
-	if dirExists(run.WorkDir) {
+	if run.WorkDir != "" && dirExists(run.WorkDir) {
 		effective := requested
 		if effective == "" {
 			effective = modeUncommitted
@@ -413,6 +409,15 @@ func (s *Server) handleGetRunFileDiff(w http.ResponseWriter, r *http.Request) {
 		// Fall through on ErrNotGitRepo.
 	}
 
+	// Persisted-metadata fallback: a cloud run's worktree lives in the runner
+	// pod and is gone by the time this server pod serves the diff. The runner
+	// recorded per-file before/after content into the store (PopulateRunDiffs);
+	// serve it. The snapshot is the committed base..head range, so a strict
+	// `uncommitted` request has no persisted answer and falls through to 409.
+	if requested != modeUncommitted && s.servePersistedFileDiff(w, r, run, path) {
+		return
+	}
+
 	// Finalized-run path: contents from blob refs in the main repo.
 	if base, final, repo, ok := s.historicalRefs(run); ok {
 		payload, diffErr := gitlib.DiffBetween(repo, base, final, path)
@@ -424,7 +429,40 @@ func (s *Server) handleGetRunFileDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if run.WorkDir == "" {
+		s.httpErrorFor(w, r, http.StatusConflict, "run has no working directory recorded")
+		return
+	}
 	s.httpErrorFor(w, r, http.StatusConflict, "working directory is not a git repository")
+}
+
+// servePersistedFileDiff serves one file's base..head diff from the run's
+// persisted git-metadata snapshot. Returns true when it handled the response.
+// This is the cloud fallback for a diff click on a run whose worktree is gone:
+// the runner recorded the before/after content (inline or blob-offloaded) into
+// the store. A path with no persisted diff returns false so the caller can try
+// the historical path / 409, keeping the "no answer" contract explicit.
+func (s *Server) servePersistedFileDiff(w http.ResponseWriter, r *http.Request, run *store.Run, path string) bool {
+	gs := store.AsRunGitMetaStore(s.runs.RunStore())
+	if gs == nil {
+		return false
+	}
+	meta, err := gs.LoadRunGitMeta(r.Context(), run.ID)
+	if err != nil {
+		s.logger.Warn("run %s: load git metadata (file diff): %v", run.ID, err)
+		return false
+	}
+	if meta == nil {
+		return false
+	}
+	fd := meta.FileDiffs[path]
+	if fd == nil {
+		return false
+	}
+	bs := store.AsRunDiffBlobStore(s.runs.RunStore())
+	payload := store.ResolveRunFileDiff(r.Context(), bs, run.ID, fd)
+	s.writeJSONFor(w, r, payload)
+	return true
 }
 
 // liveDiff selects between the uncommitted (`git status` family) and the
