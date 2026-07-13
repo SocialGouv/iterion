@@ -119,6 +119,69 @@ const ghTicketPR = `{
   "sender": {"login": "alice"}
 }`
 
+// ghDequeuedPR: a PR ejected from the merge queue for a conflict → the
+// auto-heal path dispatches Billy to rebase+resolve+repush.
+const ghDequeuedPR = `{
+  "action": "dequeued", "number": 9, "reason": "MERGE_CONFLICT",
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 9, "title": "Add subtract", "body": "Implements subtraction.",
+    "html_url": "https://github.com/acme/widgets/pull/9", "state": "open",
+    "head": {"ref": "feat/subtract", "sha": "aaa111", "repo": {"full_name": "acme/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
+  "sender": {"login": "alice"}
+}`
+
+// TestGitHubWebhook_DequeuedPRAutoHeals: a merge-queue ejection for a conflict
+// dispatches Billy to reconcile the branch with the base + re-enter the queue.
+func TestGitHubWebhook_DequeuedPRAutoHeals(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var gotBot, gotRef string
+	var gotVars map[string]string
+	s.webhookLaunchBot = func(_ context.Context, botID string, vars map[string]string, _, repoRef, _ string, _, _ map[string]string) (string, error) {
+		gotBot, gotVars, gotRef = botID, vars, repoRef
+		return "run-heal", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghDequeuedPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotBot != "branch-improve-loop" {
+		t.Fatalf("dequeued PR must auto-heal via Billy, got %q", gotBot)
+	}
+	if gotVars["open_mr"] != "false" || gotVars["push_branch"] != "feat/subtract" || gotVars["base_ref"] != "main" {
+		t.Fatalf("heal vars wrong: %v", gotVars)
+	}
+	if gotRef != "feat/subtract" {
+		t.Fatalf("heal must check out the PR head branch, got %q", gotRef)
+	}
+	if !strings.Contains(gotVars["scope_notes"], "ejected from the merge queue") || !strings.Contains(gotVars["scope_notes"], "MERGE_CONFLICT") {
+		t.Fatalf("heal mission must state the queue-eject reason: %q", gotVars["scope_notes"])
+	}
+}
+
+// TestGitHubWebhook_DequeuedNonHealableReasonIgnored: a dequeue for a
+// non-fixable reason (manual dequeue / queue reset) launches nothing.
+func TestGitHubWebhook_DequeuedNonHealableReasonIgnored(t *testing.T) {
+	s := newWebhookTestServer(t)
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+	body := `{"action":"dequeued","number":9,"reason":"DEQUEUED_MANUALLY","repository":{"id":42,"full_name":"acme/widgets","clone_url":"https://github.com/acme/widgets.git"},"pull_request":{"number":9,"title":"x","state":"open","html_url":"u","head":{"ref":"b","sha":"s","repo":{"full_name":"acme/widgets"}},"base":{"ref":"main","repo":{"full_name":"acme/widgets"}}},"sender":{"login":"alice"}}`
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), body, prforge.EventHeaderPullRequest, pt))
+	if launched != 0 {
+		t.Fatalf("a non-healable dequeue must launch nothing, launched=%d", launched)
+	}
+}
+
 // ghForkTicketPR: same ticket link but head.repo is a FORK → the guard keeps it
 // on the reviewer path.
 const ghForkTicketPR = `{
