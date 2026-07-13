@@ -56,6 +56,28 @@ A single plugin may contribute several kinds (repo-falcon ships `mcp_servers` +
   default for a plugin with no recorded preference is its manifest
   `default_enabled`. (`$ITERION_HOME` overrides the home dir.)
 
+### Env-based enablement & config (cloud / headless)
+
+`~/.iterion/plugins.yaml` is per-machine and ephemeral in a cloud runner pod,
+so enablement can also be driven by **immutable env** — set once on the
+runtime (e.g. a Helm chart's `config.extraEnv`), no persistent file needed.
+Env wins over both stored state and `default_enabled`:
+
+| Env var | Effect |
+|---------|--------|
+| `ITERION_PLUGINS_ENABLE=a,b` | force-enable these plugins (comma/space list) |
+| `ITERION_PLUGINS_DISABLE=c`  | force-disable (wins over enable for the same name) |
+| `ITERION_PLUGIN_<NAME>_<KEY>=v` | set config value `<key>` for `<name>` (highest precedence over defaults + stored values) |
+
+`<NAME>`/`<KEY>` are upper-cased with `-` → `_`. Example — enable the
+`firecrawl` MCP plugin and point it at a self-hosted instance, entirely from
+env:
+
+```sh
+ITERION_PLUGINS_ENABLE=firecrawl
+ITERION_PLUGIN_FIRECRAWL_API_URL=http://iterion-firecrawl:3002
+```
+
 ## Manifest reference (`plugin.yaml`)
 
 ```yaml
