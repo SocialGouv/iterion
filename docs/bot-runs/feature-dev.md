@@ -1,5 +1,54 @@
 # Featurly — `feature-dev` run bilans
 
+## 2026-07-12 — #125 "board as pipeline projection" delivered by Featurly dogfood (3 cloud waves + 2 manual)
+
+- Status: **validated — full #125 vision shipped & deployed.** The board-as-pipeline
+  vision (ADR-071, additive) was implemented end-to-end mostly by Featurly's own
+  cloud runs, dispatched from GitHub issues labelled `implement` + `forfait-run`
+  (org OAuth forfait). #125 is CLOSED; 11 vision PRs merged onto `main` @ `:edge`.
+- Versions: bot feature-dev v2 (ADR-058 campaign) · iterion `:edge` (this session's
+  fixes) · cloud runner on ovh-prod.
+- Method: issue → `webhooks_common.go` featureDevBotID routes `implement` to Featurly →
+  board card → cloud coordinator launches campaign → back-linked PR. Each wave's specs
+  were authored as precise file:line + plan; Featurly implemented, tested, sometimes
+  above spec.
+- Value produced (what Featurly shipped, merge-worthy):
+  - Wave 1: **#152** `iterion issue import` (self-hosted forge→board sync, T6) ·
+    **#153** board grouped/scoped by bot (pipeline lens) · **#154** card run-history
+    (`Issue.Runs[]`).
+  - Wave 2: **#160** persisted bot filter (`View.Bot`) · **#161** per-card ⏸ Awaiting-input
+    badge (denormalized) · **#162** run-tree reverse queries + shard-tuple projection (T4b) ·
+    **#159** forge GitHub-App 422 → mark connection degraded, stop the re-mint loop.
+  - Wave 3: **#169** render the run tree (shard/fork children) in run console + card (T4b).
+- Manual pieces (I finished these 2; the prod forfait credit ran out mid-campaign):
+  **#173** the generic "Awaiting input" *column* (dispatcher parks a paused card there:
+  `board.go` state + `commands.go`/`boarddispatch.go` routing + studio colour) ·
+  **#174** the verify-build codegen-gate skill fix (below).
+- Dogfood-found engine bugs (fixed same session):
+  1. **PauseForm vs HumanPromptForm** — answer-from-board rendered checkpoint context
+     vars, not output-schema fields → resume would route to fail. Fixed to reuse
+     `HumanPromptForm` (**#134**).
+  2. **WS "disconnected" banner on paused runs** — broker closes the stream on pause →
+     spurious banner + reconnect loop. Gated the banner on `running|queued` (**#144**).
+  3. **verify-build didn't run codegen gates** (→ **#167/#174**): the skill *already*
+     had §1b ("mirror CI's openapi:check / chart drift"), but its example `verify.sh`
+     showed only build+test, and agents copy the example — so #159/#162 shipped OpenAPI
+     drift CI caught. Fix: put `<regen> && git diff --exit-code` in the example, make §1b
+     imperative, unify the 2 skill variants across all 9 bots. Deterministic
+     `verify_run`-level enforcement noted as a follow-up.
+  4. **runner-restart drains in-flight cloud runs** — `rollout restart deploy/iterion-runner`
+     during a deploy requeued live Wave-2 runs. Operational lesson saved to memory; deploy
+     only `deploy/iterion`, never `-runner`.
+- Findings / misses: Featurly is reliable **when the spec is precise** (file:line + a
+  plan) — correct, tested, occasionally above spec. It does NOT self-discover a repo's
+  codegen freshness gate unless the skill's *copyable example* carries it (#174 is the fix
+  for exactly that). Two deferred #125 tensions (T4 ticket↔runs 1:N tree, T6 self-hosted
+  forge import) both landed in this campaign (#154/#162/#169 and #152).
+- Lessons for next run: (a) hand Featurly the gate commands in the skill example, not just
+  in prose; (b) contain forfait spend — a long multi-wave campaign can deplete org credit
+  mid-flight (finish stragglers from a credited local session); (c) `--merge-into none` +
+  `post_to_board=false` on every dogfood launch kept the operator's tree clean.
+
 ## 2026-07-09 — first CLOUD runs: label an issue → implement → open a PR (runs 019f4590 / 019f45dd / 019f45f6)
 
 - Status: **validated end-to-end on prod.** Labeling a GitHub issue `implement`
