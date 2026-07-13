@@ -8,6 +8,7 @@ import { getRun } from "@/api/runs";
 import { rehydratePendingHumanInput } from "@/store/run/reducer";
 import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
+import type { RunRef } from "@/api/native";
 
 // AwaitingInput reads the stamped last run and, when it is paused on a
 // human node, renders the answer affordance inline on the card — so an
@@ -60,33 +61,19 @@ function AwaitingInput({ runID }: { runID: string }) {
   );
 }
 
-// LastRunSection renders a compact "Last run" panel inside the
-// Ticket tab when the dispatcher has stamped a run on the issue.
-// Surfaces:
-//   - An inline answer affordance when the run is paused on a human node.
-//   - A wouter Link to the run console at /runs/<id>.
-//   - The worktree path with copy-to-clipboard and vscode:// links
-//     so the operator can pivot from the kanban card into a diff
-//     inspector without leaving the studio.
+// RunPanel renders one run's surfaces (paused answer affordance, run
+// console link, branch diff, worktree links). It is the single-run unit
+// the run-history list repeats — and the same body the back-compat
+// single-last-run fallback renders.
 //
-// Renders nothing when neither runID nor workdir is set; callers
-// gate the mount on that condition too.
-export function LastRunSection({
-  runID,
-  workdir,
-}: {
-  runID?: string;
-  workdir?: string;
-}) {
+// Renders nothing when neither runID nor workdir is set.
+function RunPanel({ runID, workdir }: { runID?: string; workdir?: string }) {
   const [diffOpen, setDiffOpen] = useState(false);
   if (!runID && !workdir) return null;
   const runLabel = runID ? runID.slice(0, 12) : "";
   return (
-    <div className="rounded border border-border-default bg-surface-1 p-2 space-y-1.5">
+    <div className="space-y-1.5">
       {runID && <AwaitingInput runID={runID} />}
-      <div className="text-micro uppercase tracking-wide text-fg-subtle">
-        Last run
-      </div>
       {runID && (
         <div className="flex items-center gap-1.5 text-xs">
           <span className="text-fg-muted">Run:</span>
@@ -134,6 +121,51 @@ export function LastRunSection({
             VS Code
           </a>
         </div>
+      )}
+    </div>
+  );
+}
+
+// LastRunSection renders the issue's run history inside the Ticket tab.
+// When `runs` has entries it renders them as a LIST (newest-last, one
+// RunPanel per row) so an operator sees every run that touched the card,
+// with the paused-run answer affordance live on each. When `runs` is
+// absent (records written before run history was tracked) it falls back
+// to the single last-run pointer (runID/workdir).
+//
+// Renders nothing when there is no history and no single-run pointer;
+// callers gate the mount on that condition too.
+export function LastRunSection({
+  runID,
+  workdir,
+  runs,
+}: {
+  runID?: string;
+  workdir?: string;
+  runs?: RunRef[];
+}) {
+  const hasHistory = runs != null && runs.length > 0;
+  if (!hasHistory && !runID && !workdir) return null;
+  return (
+    <div className="rounded border border-border-default bg-surface-1 p-2 space-y-1.5">
+      <div className="text-micro uppercase tracking-wide text-fg-subtle">
+        {hasHistory && runs.length > 1 ? "Run history" : "Last run"}
+      </div>
+      {hasHistory ? (
+        <div className="space-y-2">
+          {runs.map((r, i) => (
+            <div
+              key={r.run_id || i}
+              className={
+                i > 0 ? "border-t border-border-default pt-2" : undefined
+              }
+            >
+              <RunPanel runID={r.run_id} workdir={r.workdir} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <RunPanel runID={runID} workdir={workdir} />
       )}
     </div>
   );

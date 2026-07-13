@@ -107,3 +107,82 @@ describe("LastRunSection answer-from-board affordance", () => {
     expect(screen.queryByText(/Awaiting input/i)).toBeNull();
   });
 });
+
+describe("LastRunSection run history list", () => {
+  function renderHistory(runs: { run_id: string; workdir?: string; at: string }[]) {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={qc}>
+        <LastRunSection runs={runs} />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("renders one panel per run, newest-last, with a link to each run", async () => {
+    getRun.mockResolvedValue({
+      run: { id: "x", status: "finished", checkpoint: {} },
+      executions: [],
+      last_seq: 0,
+    });
+    renderHistory([
+      { run_id: "run-aaaaaaaa", workdir: "/tmp/wd-1", at: "2026-07-13T10:00:00Z" },
+      { run_id: "run-bbbbbbbb", workdir: "/tmp/wd-2", at: "2026-07-13T11:00:00Z" },
+    ]);
+    // Header switches to "Run history" when there is more than one run.
+    await waitFor(() => expect(screen.getByText(/Run history/i)).toBeTruthy());
+    // Both runs are linked to their run console (order preserved: newest-last).
+    const runLinks = screen
+      .getAllByRole("link")
+      .filter((el) => el.getAttribute("href")?.startsWith("/runs/"));
+    expect(runLinks.length).toBe(2);
+    expect(runLinks[0]?.getAttribute("href")).toContain("run-aaaaaaaa");
+    expect(runLinks[1]?.getAttribute("href")).toContain("run-bbbbbbbb");
+    // Both worktrees surface.
+    expect(screen.getByText("/tmp/wd-1")).toBeTruthy();
+    expect(screen.getByText("/tmp/wd-2")).toBeTruthy();
+  });
+
+  it("keeps the awaiting-input affordance working for a paused run in the list", async () => {
+    getRun.mockImplementation((id: string) =>
+      Promise.resolve({
+        run: {
+          id,
+          status: id === "run-paused0" ? "paused_waiting_human" : "finished",
+          checkpoint:
+            id === "run-paused0"
+              ? { node_id: "approval", interaction_id: "run-paused0_approval" }
+              : {},
+        },
+        executions: [],
+        last_seq: 0,
+      }),
+    );
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "approval",
+          output_schema: [
+            { name: "environment", type: "string", enum_values: ["staging", "production"] },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
+    renderHistory([
+      { run_id: "run-done0000", at: "2026-07-13T10:00:00Z" },
+      { run_id: "run-paused0", at: "2026-07-13T11:00:00Z" },
+    ]);
+    // The paused run in the list still surfaces its schema-driven answer form
+    // (the node's output-schema enum options render, proving the affordance
+    // is live for a paused run nested inside the history list).
+    await waitFor(() =>
+      expect(screen.getAllByText(/Awaiting input/i).length).toBeGreaterThan(0),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText(/staging/i).length).toBeGreaterThan(0),
+    );
+    expect(screen.getAllByText(/production/i).length).toBeGreaterThan(0);
+  });
+});

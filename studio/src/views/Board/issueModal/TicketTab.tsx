@@ -125,12 +125,14 @@ export function TicketTab({
         </Field>
       </div>
 
-      {initial && (initial.last_run_id || initial.last_workdir) && (
-        <LastRunSection
-          runID={initial.last_run_id}
-          workdir={initial.last_workdir}
-        />
-      )}
+      {initial &&
+        (initial.runs?.length || initial.last_run_id || initial.last_workdir) && (
+          <LastRunSection
+            runID={initial.last_run_id}
+            workdir={initial.last_workdir}
+            runs={initial.runs}
+          />
+        )}
 
       {initial && <PullRequestsSection issue={initial} />}
 
