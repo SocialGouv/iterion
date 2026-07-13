@@ -59,3 +59,27 @@ func TestViewsPersist(t *testing.T) {
 		t.Fatalf("view did not persist: %+v", views)
 	}
 }
+
+// A saved View round-trips its Bot filter through persistence, so an
+// operator can save "the X pipeline" lens and restore it after reopen.
+func TestViewBotFilterPersists(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.SaveView(View{Name: "Featurly pipeline", Bot: "feature-dev"}); err != nil {
+		t.Fatalf("SaveView: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	views := s2.Board().Views
+	if len(views) != 1 || views[0].Bot != "feature-dev" {
+		t.Fatalf("view bot filter did not persist: %+v", views)
+	}
+}

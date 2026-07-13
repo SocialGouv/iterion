@@ -85,6 +85,9 @@ export interface NativeView {
   search?: string;
   labels?: string[];
   assignee?: string;
+  // bot scopes the view to a single bot (NativeIssue.bot) — a persisted
+  // filter for saving "the X pipeline" lens. Additive to group_by="bot".
+  bot?: string;
   sort?: string;
   group_by?: string;
 }

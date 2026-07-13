@@ -58,8 +58,12 @@ type View struct {
 	Search   string   `json:"search,omitempty"`
 	Labels   []string `json:"labels,omitempty"`
 	Assignee string   `json:"assignee,omitempty"`
-	Sort     string   `json:"sort,omitempty"`
-	GroupBy  string   `json:"group_by,omitempty"`
+	// Bot scopes the view to a single bot (Issue.Bot). Additive to the
+	// group-by-bot swimlane lens: this is a persisted FILTER, so an
+	// operator can save "the X pipeline" as a saved View.
+	Bot     string `json:"bot,omitempty"`
+	Sort    string `json:"sort,omitempty"`
+	GroupBy string `json:"group_by,omitempty"`
 }
 
 // Board is the kanban configuration: ordered states + custom field schema
