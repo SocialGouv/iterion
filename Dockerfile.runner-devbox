@@ -38,6 +38,18 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
+# Pre-install the firecrawl MCP server (shipped `firecrawl` builtin plugin) so
+# the runtime `npx -y firecrawl-mcp@<ver>` starts INSTANTLY from the warm global
+# install instead of downloading on a cold pod. A cold `npx` download races the
+# MCP tools/list discovery → the server answers with [] before its tools
+# register → the plugin's `mcp.firecrawl.*` wildcard resolves to nothing.
+# Baking it in makes discovery deterministic. The version is PINNED (supply-
+# chain: never resolve a moving `latest` at build OR run time) and MUST match
+# pkg/plugin/builtin/firecrawl/plugin.yaml's `npx` arg so runtime reuses this
+# exact global install instead of fetching another version.
+ARG FIRECRAWL_MCP_VERSION=3.22.3
+RUN npm install -g "firecrawl-mcp@${FIRECRAWL_MCP_VERSION}" && npm cache clean --force
+
 # gh + glab (Revi posts reviews from the runner pod) + kubectl (parity with the
 # base runner image; also used by the k8s sandbox driver if ever enabled).
 ARG GLAB_VERSION=1.102.0
