@@ -240,7 +240,7 @@ an operator clicking "add") uses the **same** contract:
 - **A pipeline feeding the board (6b).** A run-completion `run.finished`
   trigger event chains a downstream launch (`serviceLauncher` /
   `NativeBoardEffect`) that can create the next card.
-- **Forge import (6a, self-hosted).** `SyncForgeIssuesToBoard`
+- **Forge import (6a, self-hosted).** `syncForgeIssuesToBoard`
   ([board_forge.go](../pkg/server/board_forge.go)) is the store-agnostic core
   that mirrors a repo's forge issues into a native board — one-way, forge is
   the source of truth, cards land in the first column on create and refresh in

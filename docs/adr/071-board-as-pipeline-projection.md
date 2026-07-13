@@ -83,7 +83,7 @@ needs input" the same way `board_source` bridges board→run.
 | T3 | Dynamic per-run interactions → fixed columns | **Decided (D2):** one "awaiting input" column, per-card pause state. |
 | T5 | Which seam to answer from? | **Decided (D3):** `Resume` (not `QueueMessage`) + a `run.paused` signal. |
 | T4 | Project the parent/child/shards tree onto cards | **Open.** Needs a ticket↔runs **1:N** model; today it is a single `LastRunID` pointer and the tree lives only in `pkg/queue`. A follow-on. |
-| T6 | Is the board the source of truth for forge ingestion (self-hosted), or a mirror? | **Decided: mirror.** Generalize the cloud forge→board sync to self-hosted (`SyncForgeIssuesToBoard`); the forge stays authoritative. |
+| T6 | Is the board the source of truth for forge ingestion (self-hosted), or a mirror? | **Decided: mirror.** Generalize the cloud forge→board sync to self-hosted (`syncForgeIssuesToBoard`); the forge stays authoritative. |
 
 ## First increment (shipped with this ADR)
 
@@ -105,7 +105,7 @@ A short-term slice on existing seams, independent of the open tensions:
 - **Unified "feed the first column"** — the canonical ingest contract
   (`POST /issues` with no `state` → first column, PAT `iap_`) is documented,
   and the forge→board sync core is extracted store-agnostic
-  (`SyncForgeIssuesToBoard`) so a self-hosted import can reuse it.
+  (`syncForgeIssuesToBoard`) so a self-hosted import can reuse it.
 
 ## Consequences
 
@@ -116,7 +116,7 @@ A short-term slice on existing seams, independent of the open tensions:
 - **Deferred** (open tensions, follow-ons): the ticket↔runs 1:N history and
   parent/child/shards tree projection (T4); the self-hosted forge-import entry
   point (a forge client + repo→board mapping without a cloud integration
-  store) that wires `SyncForgeIssuesToBoard` (T6); a board-wide per-card
+  store) that wires `syncForgeIssuesToBoard` (T6); a board-wide per-card
   "awaiting input" badge (needs a denormalized `awaiting_input` signal on the
   issue to avoid an N+1 run fetch on every board render); and moving a parked
   dispatched run's card into the "awaiting input" column on pause.

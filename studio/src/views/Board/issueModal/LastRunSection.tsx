@@ -26,14 +26,22 @@ function AwaitingInput({ runID }: { runID: string }) {
   const { data, refetch } = useQuery({
     queryKey: ["board-last-run", runID],
     queryFn: ({ signal }) => getRun(runID, { signal }),
-    // Poll only while genuinely paused: one fetch to learn the status, then
-    // a light refetch that stops once the run resumes/terminates (a parked
-    // run flips to running on answer). `enabled` can't gate this — the first
-    // fetch is what reveals the status.
-    refetchInterval: (q) =>
-      q.state.data?.run?.status === "paused_waiting_human" ? 5000 : false,
+    // Poll while the run can still transition into (or back out of) a pause,
+    // stopping once it is terminal. A resume flips a paused card to running
+    // and a later human node re-pauses it — polling through 'running'/'queued'
+    // keeps the affordance live without reopening the modal. `enabled` can't
+    // gate this; the first fetch is what reveals the status.
+    refetchInterval: (q) => {
+      const s = q.state.data?.run?.status;
+      return s === "running" ||
+        s === "queued" ||
+        s === "paused_waiting_human" ||
+        s === "paused_operator"
+        ? 5000
+        : false;
+    },
   });
-  const pending = data ? rehydratePendingHumanInput(data) : null;
+  const pending = data?.run ? rehydratePendingHumanInput(data) : null;
   if (!pending) return null;
   return (
     <div className="rounded border border-warning/40 bg-warning-soft p-2 space-y-2">

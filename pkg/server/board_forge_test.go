@@ -137,7 +137,7 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 		{Number: 3, Title: "old bug", State: "closed"},
 	}}
 
-	created, updated, err := SyncForgeIssuesToBoard(
+	created, updated, err := syncForgeIssuesToBoard(
 		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
@@ -158,7 +158,7 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 	}
 
 	// Re-sync = idempotent upsert, not duplication.
-	created, updated, err = SyncForgeIssuesToBoard(
+	created, updated, err = syncForgeIssuesToBoard(
 		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{})
 	if err != nil {
 		t.Fatalf("re-sync: %v", err)
@@ -168,6 +168,9 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 	}
 	if all, _ := board.List(native.ListFilter{}); len(all) != 2 {
 		t.Fatalf("re-sync duplicated cards: got %d, want 2", len(all))
+	}
+	if ic.calls != 2 {
+		t.Fatalf("ListIssues called %d times, want 2 (one per sync)", ic.calls)
 	}
 }
 
