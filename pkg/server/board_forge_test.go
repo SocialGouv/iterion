@@ -1,11 +1,37 @@
 package server
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 )
+
+// fakeIssueClient is a minimal forge.IssueClient whose ListIssues returns a
+// canned set; the other methods are unused by SyncForgeIssuesToBoard.
+type fakeIssueClient struct {
+	issues []forge.IssueRef
+	calls  int
+}
+
+func (f *fakeIssueClient) ListIssues(context.Context, string, forge.IssueListOptions) ([]forge.IssueRef, error) {
+	f.calls++
+	return f.issues, nil
+}
+func (f *fakeIssueClient) GetIssue(context.Context, string, int) (forge.IssueRef, error) {
+	return forge.IssueRef{}, nil
+}
+func (f *fakeIssueClient) CreateIssue(context.Context, string, forge.NewIssue) (forge.IssueRef, error) {
+	return forge.IssueRef{}, nil
+}
+func (f *fakeIssueClient) UpdateIssue(context.Context, string, int, forge.IssuePatch) (forge.IssueRef, error) {
+	return forge.IssueRef{}, nil
+}
+func (f *fakeIssueClient) CommentIssue(context.Context, string, int, string) (forge.CommentRef, error) {
+	return forge.CommentRef{}, nil
+}
 
 // newTestBoard returns a fresh filesystem board store with the default layout
 // (inbox … done[terminal]).
@@ -95,6 +121,56 @@ func TestUpsertForgeCard_CreateUpdateIdempotent(t *testing.T) {
 	all, _ := board.List(native.ListFilter{})
 	if len(all) != 1 {
 		t.Errorf("expected exactly 1 card after idempotent upserts, got %d", len(all))
+	}
+}
+
+// TestSyncForgeIssuesToBoard_StoreAgnostic exercises the extracted pure core
+// against a fake issue client + a local native store — the shape a self-hosted
+// import (no cloud integration store) would use. Asserts open issues land in
+// the first column, PRs are skipped, and a re-sync upserts (no duplicates).
+func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
+	board := newTestBoard(t)
+	openCol := defaultOpenColumn(board.Board())
+	ic := &fakeIssueClient{issues: []forge.IssueRef{
+		{Number: 1, Title: "add metrics", State: "open", Labels: []string{"feat"}},
+		{Number: 2, Title: "a PR, skipped", State: "open", IsPullRequest: true},
+		{Number: 3, Title: "old bug", State: "closed"},
+	}}
+
+	created, updated, err := syncForgeIssuesToBoard(
+		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if created != 2 || updated != 0 {
+		t.Fatalf("first sync created=%d updated=%d, want 2/0 (PR skipped)", created, updated)
+	}
+	all, _ := board.List(native.ListFilter{})
+	if len(all) != 2 {
+		t.Fatalf("expected 2 cards (PR excluded), got %d", len(all))
+	}
+	openCard, err := board.Get(forgeCardID(forge.ProviderGitHub, "org/api", 1))
+	if err != nil {
+		t.Fatalf("get open card: %v", err)
+	}
+	if openCard.State != openCol {
+		t.Errorf("open issue landed in %q, want first column %q", openCard.State, openCol)
+	}
+
+	// Re-sync = idempotent upsert, not duplication.
+	created, updated, err = syncForgeIssuesToBoard(
+		context.Background(), ic, forge.ProviderGitHub, "conn1", "org/api", board, time.Time{})
+	if err != nil {
+		t.Fatalf("re-sync: %v", err)
+	}
+	if created != 0 || updated != 2 {
+		t.Fatalf("re-sync created=%d updated=%d, want 0/2", created, updated)
+	}
+	if all, _ := board.List(native.ListFilter{}); len(all) != 2 {
+		t.Fatalf("re-sync duplicated cards: got %d, want 2", len(all))
+	}
+	if ic.calls != 2 {
+		t.Fatalf("ListIssues called %d times, want 2 (one per sync)", ic.calls)
 	}
 }
 

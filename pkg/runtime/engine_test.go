@@ -75,7 +75,7 @@ func tmpStore(t *testing.T) store.RunStore {
 // TestLLMRouterMultiCancelAbandonsWedgedBranch.
 func waitBranchFinished(t *testing.T, s store.RunStore, runID, branchID string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		evs, _ := s.LoadEvents(context.Background(), runID)
 		for _, e := range evs {

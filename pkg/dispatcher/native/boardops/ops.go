@@ -124,7 +124,9 @@ var allTools = []Tool{
             "priority":{"type":"integer","description":"Higher = more important. Default 0."},
             "assignee":{"type":"string","description":"Bot or user handle this issue is assigned to."},
             "blockers":{"type":"array","items":{"type":"string"},"description":"IDs of issues that must be terminal before this one is eligible."},
-            "fields":{"type":"object","description":"Custom board fields (validated against board schema)."}
+            "fields":{"type":"object","description":"Custom board fields (validated against board schema)."},
+            "bot":{"type":"string","description":"CANONICAL bot that runs this issue when the dispatcher picks it up (e.g. feature-dev). The dispatcher routes by bot first, else assignee."},
+            "bot_args":{"type":"object","additionalProperties":{"type":"string"},"description":"Per-ticket workflow var overrides (--var key=value) applied at launch."}
           },
           "required":["title"]
         }`),
@@ -269,14 +271,16 @@ func Call(store native.BoardStore, caps Capabilities, name string, rawArgs json.
 
 func doCreate(store native.BoardStore, raw json.RawMessage) (json.RawMessage, error) {
 	var args struct {
-		Title    string         `json:"title"`
-		Body     string         `json:"body"`
-		State    string         `json:"state"`
-		Labels   []string       `json:"labels"`
-		Priority int            `json:"priority"`
-		Assignee string         `json:"assignee"`
-		Blockers []string       `json:"blockers"`
-		Fields   map[string]any `json:"fields"`
+		Title    string            `json:"title"`
+		Body     string            `json:"body"`
+		State    string            `json:"state"`
+		Labels   []string          `json:"labels"`
+		Priority int               `json:"priority"`
+		Assignee string            `json:"assignee"`
+		Blockers []string          `json:"blockers"`
+		Fields   map[string]any    `json:"fields"`
+		Bot      string            `json:"bot"`
+		BotArgs  map[string]string `json:"bot_args"`
 	}
 	if err := unmarshalArgs(raw, &args); err != nil {
 		return nil, err
@@ -293,6 +297,8 @@ func doCreate(store native.BoardStore, raw json.RawMessage) (json.RawMessage, er
 		Assignee: args.Assignee,
 		Blockers: args.Blockers,
 		Fields:   args.Fields,
+		Bot:      args.Bot,
+		BotArgs:  args.BotArgs,
 	})
 	if err != nil {
 		return nil, err

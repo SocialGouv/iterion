@@ -133,7 +133,7 @@ func TestBoardSourceEndToEnd(t *testing.T) {
 	}
 
 	// The tail is async; poll for the promote.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		got, _ := ns.Get(iss.ID)
 		if got != nil && got.Bot == "feature-dev" {

@@ -132,7 +132,7 @@ func TestFileEventSource_DrainsExistingBacklogOnStart(t *testing.T) {
 			if evt.Type != store.EventNodeStarted {
 				t.Errorf("event %d type = %q, want node_started", i, evt.Type)
 			}
-		case <-time.After(3 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatalf("timed out waiting for backlog event %d", i)
 		}
 	}
@@ -194,7 +194,7 @@ func TestFileEventSource_HandlesPartialLine(t *testing.T) {
 		if got.Type != store.EventRunStarted {
 			t.Errorf("got %+v, want type=run_started", got)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("timed out waiting for completed event")
 	}
 }

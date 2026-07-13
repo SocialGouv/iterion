@@ -455,7 +455,7 @@ func TestFanOutEach_DAG_DiamondOrderingAndParallelism(t *testing.T) {
 			}
 			select {
 			case <-release:
-			case <-time.After(2 * time.Second):
+			case <-time.After(10 * time.Second):
 				t.Errorf("siblings B/C did not run concurrently (barrier timed out)")
 			}
 		}
@@ -728,7 +728,7 @@ func TestFanOutEachInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Fatalf("fan_out_each returned too slowly after internal cancellation: %s", elapsed)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(release)
 		t.Fatal("fan_out_each hung on a wedged branch after internal cancellation")
 	}

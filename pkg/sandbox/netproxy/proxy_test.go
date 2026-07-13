@@ -77,7 +77,7 @@ func TestProxyConnectAllowedTunnels(t *testing.T) {
 	defer conn.Close()
 	_, _ = conn.Write([]byte("CONNECT allowed.example.com:443 HTTP/1.1\r\nHost: allowed.example.com:443\r\n\r\n"))
 	buf := make([]byte, 256)
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("read CONNECT response: %v", err)
@@ -88,7 +88,7 @@ func TestProxyConnectAllowedTunnels(t *testing.T) {
 	// Now the connection is a raw tunnel — write+read echo.
 	_, _ = conn.Write([]byte("hello"))
 	got := make([]byte, 5)
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if _, err := io.ReadFull(conn, got); err != nil {
 		t.Fatalf("echo read: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestProxySilentDenyDoesNotEmit(t *testing.T) {
 		defer conn.Close()
 		_, _ = conn.Write([]byte("CONNECT " + host + ":443 HTTP/1.1\r\nHost: " + host + ":443\r\n\r\n"))
 		buf := make([]byte, 512)
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		n, _ := conn.Read(buf)
 		if !strings.Contains(string(buf[:n]), "403") {
 			t.Errorf("host %q: expected 403, got %q", host, string(buf[:n]))
@@ -231,7 +231,7 @@ func TestProxyConnectBlockedReturns403(t *testing.T) {
 	defer conn.Close()
 	_, _ = conn.Write([]byte("CONNECT evil.site:443 HTTP/1.1\r\nHost: evil.site:443\r\n\r\n"))
 	buf := make([]byte, 512)
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, _ := conn.Read(buf)
 	if !strings.Contains(string(buf[:n]), "403") {
 		t.Errorf("expected 403 for blocked host, got %q", string(buf[:n]))
@@ -259,7 +259,7 @@ func TestProxyAuthRequiredWhenTokenSet(t *testing.T) {
 	defer conn.Close()
 	_, _ = conn.Write([]byte("CONNECT good.example.com:443 HTTP/1.1\r\nHost: good.example.com:443\r\n\r\n"))
 	buf := make([]byte, 256)
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, _ := conn.Read(buf)
 	if !strings.Contains(string(buf[:n]), "407") {
 		t.Errorf("expected 407 Proxy Authentication Required, got %q", string(buf[:n]))

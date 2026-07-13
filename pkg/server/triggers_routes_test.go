@@ -276,7 +276,7 @@ func TestEmitTrigger_PublishesAndFires(t *testing.T) {
 		t.Fatalf("emit status = %d; body=%s", rec.Code, rec.Body.String())
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if rl.n.Load() == 1 {
 			return

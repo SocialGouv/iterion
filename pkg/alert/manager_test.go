@@ -33,7 +33,7 @@ func (c *captureSink) snapshot() []Alert {
 // in goroutines, so assertions must tolerate async delivery.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

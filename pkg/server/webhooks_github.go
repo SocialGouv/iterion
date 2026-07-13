@@ -95,6 +95,36 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
+	// Merge-queue auto-heal: a PR ejected from the queue for a conflict or a
+	// combined-build failure (`dequeued` with a healable reason) is
+	// dispatched to the branch-improvement bot (Billy) to rebase on the base,
+	// resolve the conflict / fix the combined break, and push so it re-enters
+	// the queue — closing the loop the queue opens (it DETECTS the break; the
+	// bot REPAIRS it, no human). Same-repo + allowlist + bot-permitted only;
+	// the per-(PR,head-sha) idempotency bounds a heal to one attempt per head
+	// (Billy's push advances the head, so a re-eject re-heals the NEW state,
+	// and Billy's own convergence + the author allowlist bound the loop).
+	if p.NeedsAutoHeal() {
+		if !webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||
+			!webhooks.MatchAuthor(cfg.AuthorAllowlist, p.SenderLogin) ||
+			!cfg.AllowsBot(branchImproveBotID) {
+			s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "auto-heal not permitted (project/author/bot)")
+			writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
+			return
+		}
+		healIdem := knowledge.ChecksumHex([]byte(fmt.Sprintf("heal|%s|%s|%s|%d|%s", cfg.TenantID, cfg.ID, p.ProjectPath, p.PRNumber, p.HeadSHA)))
+		mission := fmt.Sprintf(
+			"This PR was ejected from the merge queue (reason: %s). Rebase the branch on `%s`, "+
+				"resolve any conflicts, and fix whatever breaks the build when the branch is combined "+
+				"with the current `%s` (a compile break, a stale generated file, a test broken by an "+
+				"interleaved merge). Keep the PR's own change intact; only reconcile it with the new base. "+
+				"Push so the PR can re-enter the merge queue.\n\n%s",
+			p.DequeueReason, p.TargetBranch, p.TargetBranch, strings.TrimSpace(p.Title+"\n\n"+p.Description))
+		healVars := branchImproveVars(p.TargetBranch, p.SourceBranch, p.PRURL, mission, false, cfg.LaunchVars)
+		s.insertAndLaunchWebhook(ctx, w, r, cfg, meta, healIdem, branchImproveBotID, healVars, p.CloneURL, p.SourceBranch, payloadHash, srcIP)
+		return
+	}
+
 	if !p.IsReviewable() ||
 		!webhooks.MatchEvent(cfg.EventAllowlist, "pull_request", "pull_request") ||
 		!webhooks.MatchProject(cfg.ProjectAllowlist, p.ProjectPath) ||

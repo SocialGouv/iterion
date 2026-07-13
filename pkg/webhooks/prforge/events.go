@@ -18,8 +18,12 @@ const EventHeaderPullRequest = "pull_request"
 // decode. Field names follow the wire's camelCase pattern; the shape is
 // identical between GitHub and Forgejo/Gitea for the fields we read.
 type PullRequestEvent struct {
-	Action      string      `json:"action"`
-	Number      int64       `json:"number"`
+	Action string `json:"action"`
+	Number int64  `json:"number"`
+	// Reason is set on a `dequeued` action — why the PR left the merge
+	// queue (e.g. "MERGE_CONFLICT", "CI_FAILURE", "INVALID_MERGE_COMMIT").
+	// Empty for every other action.
+	Reason      string      `json:"reason"`
 	Repository  Repository  `json:"repository"`
 	PullRequest PullRequest `json:"pull_request"`
 	Sender      Sender      `json:"sender"`

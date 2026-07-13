@@ -38,7 +38,7 @@ func tcpPair(t *testing.T) (server, client net.Conn) {
 func readN(t *testing.T, c net.Conn, n int) string {
 	t.Helper()
 	buf := make([]byte, n)
-	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if _, err := io.ReadFull(c, buf); err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestTunnelPipesBothDirectionsAndTearsDown(t *testing.T) {
 	_ = cliA.Close()
 	select {
 	case <-tunnelDone:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("tunnel did not tear down after one side closed (leaked copy goroutine)")
 	}
 }

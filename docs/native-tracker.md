@@ -165,6 +165,9 @@ one of:
 
 - the REST API (`POST` / `PATCH` `/api/v1/native/issues` with
   `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`),
+- the board MCP / claw tools (`create_issue` and `set_bot` both accept
+  `bot` / `bot_args`, so a bot with the `board.create` / `board.assign`
+  capability can pin routing at create time),
 - a direct `native.Store.Create` / `Update` call from Go,
 - or rely on the dispatcher-side `assignee_workflows:` /
   `assignee_dispatch:` mappings keyed on `--assignee` (see
@@ -218,6 +221,32 @@ as a local kanban for:
 - **Lightweight personal queue.** Replace a sticky-note `TODO.md`
   with something that survives reflows, accepts custom fields, and
   speaks JSON.
+
+## Feeding the first column (the canonical ingest contract)
+
+The board's leftmost column is the single, canonical entry point for new
+work — whatever puts a card there (CI, an API caller, another pipeline, or
+an operator clicking "add") uses the **same** contract:
+
+- **`POST /api/v1/native/issues` with no `state`.** `Store.Create` defaults
+  an empty `state` to the board's first column
+  ([store.go](../pkg/dispatcher/native/store.go) — `in.State = States[0].Name`),
+  so an ingester never needs to know the column's name. The body may carry
+  `bot` / `bot_args` to pin the pipeline that will run the card (parity across
+  REST, the MCP `create_issue` boardop, and claw's `mcp.iterion_board.create`).
+  Authenticate a machine caller with a `iap_` PAT (see *Programmatic access*).
+- **CI / external API (6a).** A CI job POSTs a finding straight onto the
+  first column — no dispatcher required.
+- **A pipeline feeding the board (6b).** A run-completion `run.finished`
+  trigger event chains a downstream launch (`serviceLauncher` /
+  `NativeBoardEffect`) that can create the next card.
+- **Forge import (6a, self-hosted).** `syncForgeIssuesToBoard`
+  ([board_forge.go](../pkg/server/board_forge.go)) is the store-agnostic core
+  that mirrors a repo's forge issues into a native board — one-way, forge is
+  the source of truth, cards land in the first column on create and refresh in
+  place on update. It is wired for cloud today; the self-hosted entry point
+  (resolving a forge client + repo→board mapping without a cloud integration
+  store) is a follow-on (see ADR-071).
 
 ## Programmatic access
 
