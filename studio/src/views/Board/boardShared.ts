@@ -44,6 +44,7 @@ export const BASE_GROUP_OPTIONS: { value: GroupMode; label: string }[] = [
   { value: "assignee", label: "Assignee" },
   { value: "label", label: "Label" },
   { value: "priority", label: "Priority" },
+  { value: "bot", label: "Bot" },
 ];
 
 // Sentinel lane key for issues with no value for the grouping dimension
