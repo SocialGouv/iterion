@@ -585,16 +585,26 @@ TTL. Three cooperating mechanisms GC them without relying on `Cleanup`:
 - **A labelled-resource reaper** (`ReapOrphanResources`, the kubernetes
   peer of the docker `ReapOrphanContainers`) sweeps managed pods, Secrets
   and NetworkPolicies whose owning run is terminal/absent, at boot and on
-  the periodic reconcile tick. It is **gated on cross-process-lock
-  authority** (off on the lock-less cloud server) and liveness-first, so it
-  never reaps a live run's sandbox. It targets all three kinds explicitly
-  because they are owned by the runner pod, not the sandbox pod (so
-  deleting the pod does not cascade the Secrets/NetworkPolicy). Because it
-  is gated off on the lock-less cloud server (and the cloud runner runs no
-  `runview.Service`), in **managed cloud** the reaper does not fire: a
-  container OOM/SIGKILL where the runner pod survives leaves the sandbox
-  Secret until the next runner-pod deletion. Wiring the reaper into the
-  runner claim-loop (NATS-lease liveness) is the follow-up that closes this.
+  a periodic tick. It targets all three kinds explicitly because they are
+  owned by the runner pod, not the sandbox pod (so deleting the pod does
+  not cascade the Secrets/NetworkPolicy). It is liveness-first, so it never
+  reaps a live run's sandbox, and runs in **two homes**:
+  - **Self-hosted (filesystem store in k8s)** — in the `runview.Service`
+    at boot + reconcile tick, gated on cross-process-lock authority (the
+    flock), off on the lock-less cloud server.
+  - **Managed cloud** — in the **runner** claim-loop
+    ([pkg/runner/reaper.go](../pkg/runner/reaper.go)), boot + a ticker.
+    The cloud server is lock-less (gate off) and the cloud runner runs no
+    `runview.Service`, so the runner is where the reaper lives in cloud. Its
+    liveness authority is the runner's **NATS KV lease** (`IsRunLocked`, the
+    signal the queue sweeper trusts): a run still leased by any runner is
+    skipped, and a terminal/absent run with no lease is reaped — so a healthy
+    **sibling** runner reaps a dead runner's orphaned sandbox within one tick.
+    This closes the OOM-with-surviving-pod window the `ownerReference` cascade
+    misses (the cascade only fires on runner-pod *deletion*; an in-place
+    container OOM/SIGKILL keeps the pod UID, so nothing cascades — the
+    plaintext-credential Secret would otherwise leak until the next rollout).
+    Cadence: `ITERION_SANDBOX_REAP_INTERVAL` (default 60s; `0` = boot scan only).
 
 Security defaults applied to every sibling pod:
 

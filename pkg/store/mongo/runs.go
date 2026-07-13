@@ -52,7 +52,7 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 // schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	r, err := mongoutil.FindOne[store.Run](ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}),
-		fmt.Errorf("store/mongo: run %s not found", id),
+		fmt.Errorf("store/mongo: run %s not found: %w", id, store.ErrRunNotFound),
 		fmt.Sprintf("store/mongo: load run %s", id))
 	if err != nil {
 		return nil, err

@@ -90,41 +90,74 @@ firing:
    and reusing the liveness-first `sandboxContainerReapable` predicate — so a
    lock-less store can never reap an in-flight run's sandbox.
 
-   **Scope of this reaper (important):** it only runs where the `runview.Service`
-   has lock authority — i.e. the *self-hosted filesystem-store-in-k8s* topology.
-   In **managed cloud** the runview server runs on the lock-less Mongo store
-   (`CrossProcessLock == false`), so the gate skips it, and the cloud *runner*
-   (which does have lock authority, via its NATS lease) does not construct a
-   `runview.Service` at all — so the tick reaper does **not** fire in managed
-   cloud. There, orphan GC currently relies on the `ownerReference` cascade,
-   which fires only when the **runner pod object is deleted** (rollout, drain,
-   scale-down) — NOT when a container is OOM-killed and restarted in place
-   (the pod UID survives, so nothing cascades). Wiring the reaper into the
-   runner claim-loop with NATS-lease liveness is the follow-up that closes the
-   managed-cloud OOM-with-surviving-pod window (tracked separately).
+   **Two homes for this reaper:**
+   - **Self-hosted filesystem-store-in-k8s** — wired into the `runview.Service`
+     at boot and on the periodic reconcile tick, gated on
+     `store.Capabilities().CrossProcessLock` (the filesystem flock is the
+     liveness authority) and reusing the `sandboxContainerReapable` predicate.
+   - **Managed cloud** — wired into the **runner** claim-loop
+     ([pkg/runner/reaper.go](../../pkg/runner/reaper.go)), boot + a ticker over
+     the runner loop's lifetime. The managed-cloud runview server runs on the
+     lock-less Mongo store (`CrossProcessLock == false`), so its gate skips the
+     reaper, and the cloud runner never constructs a `runview.Service` — so the
+     runview reaper never fires in cloud. The runner IS in-cluster and DOES have
+     liveness authority via its **NATS KV lease**, so its reap predicate
+     (`sandboxResourceReapable`) is liveness-first on `IsRunLocked` — the exact
+     signal the queue sweeper already trusts — with the store status as a
+     backstop (reap only when the lease is absent AND the run is terminal or
+     gone). A healthy **sibling** runner thus reaps a dead runner's orphaned
+     sandbox on the next tick. This closes the OOM-with-surviving-pod window the
+     `ownerReference` cascade misses: the cascade fires only on runner-pod
+     **deletion** (rollout, drain, scale-down), NOT on an in-place container
+     OOM/SIGKILL restart (the pod UID survives, so nothing cascades).
+
+   The runner reaper is off when not in-cluster (`kubernetes.Detect` fails) and
+   when the runner has no NATS connection (the lease is the authority). Reap
+   cadence is `ITERION_SANDBOX_REAP_INTERVAL` (default 60s; `0` keeps only the
+   boot scan).
 
 The docker driver path is untouched.
 
 ## Consequences
 
 - A killed runner's sandbox pod + both Secrets + NetworkPolicy are GC'd by
-  the cluster on runner-pod deletion (ownerReference cascade), and — in the
-  self-hosted-store-in-k8s topology — by the reaper's boot/periodic sweep
-  once the run is terminal. `activeDeadlineSeconds` bounds the pod's compute
-  consumption in the meantime (it fails the pod, but does not delete the pod
-  or its Secrets — that is the cascade's / reaper's job).
-- **Managed-cloud residual (known, tracked):** on a container OOM/SIGKILL
-  where the runner *pod* survives, the ownerReference does not cascade and
-  the tick reaper does not run (see Decision 3 scope), so the
-  plaintext-credential Secret persists until the next runner-pod deletion
-  (a rollout). Closing this needs the reaper wired into the runner
-  claim-loop — a follow-up.
+  the cluster on runner-pod deletion (ownerReference cascade), and — in every
+  topology — by a reaper's boot/periodic sweep once the run is terminal (the
+  `runview.Service` reaper self-hosted, the runner reaper in managed cloud).
+  `activeDeadlineSeconds` bounds the pod's compute consumption in the meantime
+  (it fails the pod, but does not delete the pod or its Secrets — that is the
+  cascade's / reaper's job).
+- **Managed-cloud OOM-with-surviving-pod is now closed** (was tracked as a
+  residual): the runner reaper fires on a container OOM/SIGKILL where the
+  runner *pod* survives — a sibling runner deletes the orphaned sandbox pod +
+  both Secrets + NetworkPolicy within one tick, so the plaintext-credential
+  Secret no longer persists until the next runner-pod deletion.
 - The ownerReference is best-effort: a cluster whose Helm chart does not
   wire the downward-API env vars gets `activeDeadlineSeconds` + the reaper
   only, which still satisfy the acceptance bar (bounded window, no manual
   prune). The env-var seam is the documented upgrade to full cascade GC.
-- The reaper is off on the lock-less cloud server (by the same gate that
-  protects the run and docker reapers), so in a multi-tenant cloud the
-  cascade-on-runner-deletion + `activeDeadlineSeconds` do the work, and a
-  future in-cluster controller/CronJob can adopt `ReapOrphanResources`
-  behind its own lease if a server-side sweep is ever wanted.
+- The reaper is off on the lock-less cloud *server* (by the same gate that
+  protects the run and docker reapers) — but ON in the cloud *runner*, which
+  has its own NATS-lease liveness authority. So in a multi-tenant cloud the
+  runner reaper + cascade-on-runner-deletion + `activeDeadlineSeconds` do the
+  work; a future in-cluster controller/CronJob can still adopt
+  `ReapOrphanResources` behind its own lease if a server-side sweep is ever
+  wanted.
+
+## 2026-07-13 — reap predicate fails safe on a transient store error
+
+The store-status backstop originally collapsed **any** `LoadRun` error into
+"the run is gone → reap". That is wrong for a *transient* error (Mongo outage,
+decode failure, context deadline): NATS KV and Mongo are independent, so a
+lease-absent run hitting a Mongo blip would be force-deleted mid-flight —
+sandbox pod **plus its plaintext-credential Secret and NetworkPolicy** — the
+exact leak this ADR closes, re-opened as a data-destruction bug. It also
+inverted the fail-safe direction the lease check two lines up already takes
+("unknown liveness → keep") and the sibling `runview.sandboxContainerReapable`.
+
+Fix: a shared `store.ErrRunNotFound` sentinel wrapped by both the Mongo and
+filesystem `LoadRun` not-found paths. The reap predicate now reaps only on a
+provable `errors.Is(err, store.ErrRunNotFound)` and **keeps** (fail safe,
+retry next tick) on any other error — so "gone" means *provably* gone, never
+"the store didn't answer". Only when the lease is absent AND the store proves
+the run terminal-or-not-found is a sandbox reaped.

@@ -570,6 +570,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	if r.cfg.Metrics != nil {
 		go r.pollPending(loopCtx)
 	}
+	// K8s sandbox reaper (ADR-070): at boot + on a ticker, a healthy
+	// runner force-deletes the orphaned sandbox pod + both Secrets +
+	// NetworkPolicy of any run no longer held by a NATS lease. This is
+	// the managed-cloud counterpart to the runview.Service reaper, which
+	// never fires in the cloud (lock-less store + no runview.Service) —
+	// closing the OOM-with-surviving-pod plaintext-credential leak that
+	// the ownerReference cascade misses (the pod UID survives a container
+	// restart). No-op when not in-cluster / no NATS. See reaper.go.
+	go r.runSandboxReaper(loopCtx)
 	// Stamp Event.LogOffset from the per-run log writer on stores that
 	// support the hook (mongo + filesystem both do) — the cloud twin of
 	// the runview Service wiring, powering per-node log slicing.
