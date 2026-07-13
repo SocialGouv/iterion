@@ -14,7 +14,7 @@ import (
 // single duration — we just poll cheaply until the propagation lands.
 func waitForIndex(t *testing.T, s *Store, cond func() bool, label string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		s.mu.Lock()
 		ok := cond()

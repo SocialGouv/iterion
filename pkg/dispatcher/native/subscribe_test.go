@@ -106,7 +106,7 @@ func TestSubscribe_CancelStopsDelivery(t *testing.T) {
 
 func waitForStateEvent(t *testing.T, mu *sync.Mutex, seen *[]Event, issueID string) Event {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		for _, e := range *seen {

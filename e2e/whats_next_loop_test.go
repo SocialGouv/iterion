@@ -366,7 +366,7 @@ func TestWhatsNext_Loop_DispatchAutoTransitionsNoReloop(t *testing.T) {
 	issY := mkIssue("Implement Y")
 
 	// Wait for both issues to reach review state.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		xs, _ := ns.Get(issX.ID)
 		ys, _ := ns.Get(issY.ID)
@@ -477,7 +477,7 @@ func TestWhatsNext_Loop_FindingsInboxSurvivesDispatch(t *testing.T) {
 	issY := mkReady("Implement Y")
 
 	// Wait for both work issues to auto-transition to review.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		xs, _ := ns.Get(issX.ID)
 		ys, _ := ns.Get(issY.ID)

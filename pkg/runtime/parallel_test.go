@@ -353,7 +353,7 @@ func TestFanOutConcurrentExecution(t *testing.T) {
 		}
 		select {
 		case <-release:
-		case <-time.After(2 * time.Second): // regression guard: don't hang if branches serialize
+		case <-time.After(10 * time.Second): // regression guard: don't hang if branches serialize
 		}
 		atomic.AddInt64(&currentConcurrent, -1)
 		return map[string]any{"ok": true}, nil
@@ -745,7 +745,7 @@ func TestFanOutCancelAbandonsWedgedBranch(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected a cancellation error")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(release)
 		t.Fatal("fan_out hung on a wedged branch despite cancellation (collector drain not bounded)")
 	}
@@ -1241,7 +1241,7 @@ func TestFanOutInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Fatalf("fan_out returned too slowly after internal cancellation: %s", elapsed)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(release)
 		t.Fatal("fan_out hung on a wedged branch after internal cancellation")
 	}

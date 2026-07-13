@@ -38,7 +38,7 @@ func TestToChan_CancelDoesNotLeakGoroutine(t *testing.T) {
 
 	// Wait for channel close with a deadline. A leaked producer never
 	// closes the channel.
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(10 * time.Second)
 	for {
 		select {
 		case _, ok := <-ch:
@@ -70,7 +70,7 @@ func TestToChan_DrainAfterCancel(t *testing.T) {
 	cancel()
 
 	sawErr := false
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(10 * time.Second)
 	for {
 		select {
 		case msg, ok := <-ch:

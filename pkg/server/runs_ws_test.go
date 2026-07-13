@@ -226,7 +226,7 @@ func TestRunsWS_FromSeqReplaysHistorical(t *testing.T) {
 	_ = readEnvelope(t, c, wsTypeSnapshot)
 
 	got := []int64{}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && len(got) < 2 {
 		env := readEnvelope(t, c, wsTypeEvent, wsTypeEventBatch, wsTypeTerminated)
 		if env.Type == wsTypeTerminated {

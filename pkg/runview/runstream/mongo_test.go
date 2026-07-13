@@ -339,7 +339,7 @@ func TestMongoSource_TenantScopingIsolatesStreams(t *testing.T) {
 		if ok && len(batch) > 0 {
 			t.Fatalf("tenant A received tenant B's events: %+v", batch)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		// Quiet — correct.
 	}
 }

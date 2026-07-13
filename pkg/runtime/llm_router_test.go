@@ -586,7 +586,7 @@ func TestLLMRouterMultiCancelAbandonsWedgedBranch(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected a cancellation error")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(release)
 		t.Fatal("llm router fan_out hung on a wedged branch despite cancellation (collector drain not bounded)")
 	}

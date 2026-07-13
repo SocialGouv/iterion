@@ -104,7 +104,7 @@ agent a:
 	if err := os.WriteFile(p, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	future := time.Now().Add(2 * time.Second)
+	future := time.Now().Add(10 * time.Second)
 	if err := os.Chtimes(p, future, future); err != nil {
 		t.Fatal(err)
 	}

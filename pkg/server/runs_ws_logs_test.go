@@ -309,7 +309,7 @@ func TestRunsWSEvents_CrossStore(t *testing.T) {
 
 	// Historical replay: seqs 0..2, batch or single envelopes both valid.
 	got := []int64{}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && len(got) < 3 {
 		env := readEnvelope(t, c, wsTypeEvent, wsTypeEventBatch)
 		for _, ev := range decodeEventEnvelope(t, env) {

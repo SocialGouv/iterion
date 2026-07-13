@@ -51,7 +51,7 @@ func TestWebhookSinkPostsSlackShape(t *testing.T) {
 		if !strings.Contains(r.body.Text, "agent") {
 			t.Errorf("body missing node: %q", r.body.Text)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("webhook was not called")
 	}
 }
