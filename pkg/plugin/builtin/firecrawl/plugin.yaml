@@ -30,6 +30,7 @@ contributes:
       # runner reuses its warm pre-installed global instead of downloading.
       args:
         - -y
+        # renovate: datasource=npm depName=firecrawl-mcp versioning=npm
         - firecrawl-mcp@3.22.3
       env:
         FIRECRAWL_API_URL: "{{config.api_url}}"

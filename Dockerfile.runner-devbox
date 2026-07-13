@@ -47,6 +47,7 @@ RUN apt-get update \
 # chain: never resolve a moving `latest` at build OR run time) and MUST match
 # pkg/plugin/builtin/firecrawl/plugin.yaml's `npx` arg so runtime reuses this
 # exact global install instead of fetching another version.
+# renovate: datasource=npm depName=firecrawl-mcp versioning=npm
 ARG FIRECRAWL_MCP_VERSION=3.22.3
 RUN npm install -g "firecrawl-mcp@${FIRECRAWL_MCP_VERSION}" && npm cache clean --force
 
