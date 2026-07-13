@@ -207,6 +207,33 @@ func TestSetBot_SetsBotFieldNotAssignee(t *testing.T) {
 	}
 }
 
+func TestCreateIssue_SetsBotAndBotArgs(t *testing.T) {
+	s := newStore(t)
+	caps := NewCapabilities("board.create")
+	// The MCP create_issue must reach parity with REST POST /issues, which
+	// already accepts bot/bot_args: a board-fed pipeline needs its bot pinned
+	// at create time, without a follow-up set_bot round trip.
+	res, err := Call(s, caps, "create_issue", json.RawMessage(
+		`{"title":"Ship feature","bot":"feature-dev","bot_args":{"feature_prompt":"add X"}}`))
+	if err != nil {
+		t.Fatalf("create_issue: %v", err)
+	}
+	var iss native.Issue
+	if err := json.Unmarshal(res, &iss); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(iss.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Bot != "feature-dev" {
+		t.Errorf("Bot = %q, want feature-dev", got.Bot)
+	}
+	if got.BotArgs["feature_prompt"] != "add X" {
+		t.Errorf("BotArgs = %+v, want feature_prompt=add X", got.BotArgs)
+	}
+}
+
 func TestSetBot_RequiresAssignCapability(t *testing.T) {
 	s := newStore(t)
 	// Only board.read granted → set_bot (needs board.assign) must be denied.

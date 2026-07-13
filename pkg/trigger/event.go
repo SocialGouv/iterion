@@ -54,6 +54,13 @@ const (
 	KindRunFinished  = "run.finished"
 	KindRunFailed    = "run.failed"
 	KindRunCancelled = "run.cancelled"
+	// KindRunPaused fires when a run suspends waiting for a human answer
+	// (paused_waiting_human) or an operator soft-pause (paused_operator). It
+	// is NOT a terminal kind: the run holds a valid checkpoint plus a pending
+	// interaction and re-enters the graph on resume. A board projection keys
+	// off this to mark a card "awaiting input"; Payload carries node_id +
+	// interaction_id so a consumer can pinpoint the paused node.
+	KindRunPaused = "run.paused"
 )
 
 // Reserved Payload keys.
