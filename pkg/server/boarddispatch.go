@@ -205,6 +205,24 @@ func (s *Server) stampCardLastRun(tenant, cardID, runID string) {
 	}
 }
 
+// setCardAwaitingInput denormalizes the pause hint onto the tenant's board
+// card via the same CloudBoardFor seam as stampCardLastRun, so the studio
+// grid can badge a paused card without an N+1 run fetch. Best-effort: a
+// write failure never fails the run. It is a HINT — the modal's answer
+// affordance still keys off getRun(last_run_id).status.
+func (s *Server) setCardAwaitingInput(tenant, cardID string, v bool) {
+	if s.cfg.CloudBoardFor == nil {
+		return
+	}
+	store := s.cfg.CloudBoardFor(tenant)
+	if store == nil {
+		return
+	}
+	if err := store.SetAwaitingInput(cardID, v); err != nil && s.logger != nil {
+		s.logger.Warn("board dispatcher: set awaiting-input=%v on card %s/%s: %v", v, tenant, cardID, err)
+	}
+}
+
 func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
 	if s.runs == nil {
 		return errors.New("run service unavailable")
@@ -242,6 +260,9 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	// local dispatcher already does this via SetLastRun; the cloud coordinator
 	// launches through runs.Launch and must stamp the same seam itself.
 	s.stampCardLastRun(tenant, iss.ID, runID)
+	// A fresh dispatch supersedes any prior pause — clear the denormalized
+	// awaiting-input badge so the card doesn't show a stale ⏸.
+	s.setCardAwaitingInput(tenant, iss.ID, false)
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -253,7 +274,10 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 				return fmt.Errorf("run %s ended %s", runID, st)
 			case st.IsPaused():
 				// Parked on a human/operator gate — stop waiting; the card
-				// goes to blocked and the operator resumes the run.
+				// goes to blocked and the operator resumes the run. Denormalize
+				// the pause hint so the grid can badge the card without a
+				// per-run fetch.
+				s.setCardAwaitingInput(tenant, iss.ID, true)
 				return fmt.Errorf("run %s paused (%s)", runID, st)
 			}
 		}
