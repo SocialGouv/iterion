@@ -434,6 +434,13 @@ func (s *FilesystemRunStore) loadRunRaw(id string) (*Run, error) {
 	p := s.runJSONPath(id)
 	data, err := os.ReadFile(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// Wrap the shared sentinel (alongside the underlying
+			// os.ErrNotExist the ReadFile error already carries) so callers
+			// can distinguish genuine absence from a transient read failure
+			// via errors.Is(err, ErrRunNotFound) — see ErrRunNotFound.
+			return nil, fmt.Errorf("store: load run %s: %w: %w", id, ErrRunNotFound, err)
+		}
 		return nil, fmt.Errorf("store: load run %s: %w", id, err)
 	}
 	var r Run

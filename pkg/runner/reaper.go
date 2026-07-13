@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"time"
 
@@ -136,14 +137,20 @@ func (r *Runner) sandboxResourceReapable(ctx context.Context, runID string) bool
 //     fail safe; retry next tick).
 //
 // Then a store-status BACKSTOP (the lease is already known absent):
-//   - run record absent from the store   → reap (terminal-or-gone).
-//   - status terminal                    → reap.
-//   - status running / paused            → SKIP (the store still thinks
+//   - run record provably absent          → reap (terminal-or-gone).
+//   - status terminal                     → reap.
+//   - status running / paused             → SKIP (the store still thinks
 //     the run is active; the lease is momentarily absent — e.g. between
 //     claim and first heartbeat, or a brief KV blip. Reap only when
 //     BOTH signals agree the run is dead; the queue sweeper flips a
 //     genuinely-orphaned stale-running row to failed_resumable, and the
 //     next tick then reaps it).
+//   - store LOOKUP ERRORED (transient)     → SKIP (unknown store status
+//     is NOT proof of death — a store outage / decode failure / context
+//     deadline must never be read as "the run is gone", or a live run's
+//     sandbox + credential Secret would be force-deleted mid-flight on a
+//     store blip. Only a provable not-found — store.ErrRunNotFound — is
+//     absence; every other error fails safe like the lease check does).
 func sandboxResourceReapable(ctx context.Context, leases runLeaseChecker, loader runLoader, runID string) bool {
 	if runID == "" {
 		return true // managed resource with no run owner → orphan
@@ -157,7 +164,10 @@ func sandboxResourceReapable(ctx context.Context, leases runLeaseChecker, loader
 	}
 	run, err := loader.LoadRun(ctx, runID)
 	if err != nil {
-		return true // no lease + absent from store → orphan, reap
+		if errors.Is(err, store.ErrRunNotFound) {
+			return true // no lease + provably gone from store → orphan, reap
+		}
+		return false // transient store error → unknown status → fail safe, keep
 	}
 	return run.Status.IsTerminal()
 }

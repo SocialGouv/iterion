@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -21,15 +22,22 @@ func (f fakeLeaseChecker) IsRunLocked(_ context.Context, runID string) (bool, er
 	return f.locked[runID], nil
 }
 
-// fakeRunLoader is an in-memory runLoader.
+// fakeRunLoader is an in-memory runLoader. When loadErr is set it is
+// returned for every lookup (used to exercise the transient-error path);
+// otherwise a missing run yields the store.ErrRunNotFound sentinel so the
+// reap predicate can distinguish genuine absence from a store blip.
 type fakeRunLoader struct {
-	runs map[string]*store.Run
+	runs    map[string]*store.Run
+	loadErr error
 }
 
 func (f fakeRunLoader) LoadRun(_ context.Context, runID string) (*store.Run, error) {
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
 	r, ok := f.runs[runID]
 	if !ok {
-		return nil, errors.New("run not found")
+		return nil, fmt.Errorf("store: run %s: %w", runID, store.ErrRunNotFound)
 	}
 	return r, nil
 }
@@ -69,11 +77,18 @@ func TestSandboxResourceReapable(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "no lease + absent from store → reap",
+			name:   "no lease + provably absent from store → reap",
 			runID:  rid,
 			leases: fakeLeaseChecker{},
-			loader: fakeRunLoader{runs: map[string]*store.Run{}},
+			loader: fakeRunLoader{runs: map[string]*store.Run{}}, // yields ErrRunNotFound
 			want:   true,
+		},
+		{
+			name:   "no lease + transient store error → fail safe → keep",
+			runID:  rid,
+			leases: fakeLeaseChecker{},
+			loader: fakeRunLoader{loadErr: errors.New("mongo: connection reset")},
+			want:   false,
 		},
 		{
 			name:   "no lease + terminal (finished) → reap",

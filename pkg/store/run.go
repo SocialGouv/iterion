@@ -2,9 +2,22 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"time"
 )
+
+// ErrRunNotFound is the sentinel every RunStore.LoadRun implementation
+// wraps when the requested run genuinely does not exist — as opposed to
+// a transient store failure (outage, decode error, context deadline).
+// Callers that must distinguish "the run is gone" from "the store is
+// momentarily unreachable" test with errors.Is(err, ErrRunNotFound); a
+// bare (unwrapped) error is treated as unknown/transient and must NOT be
+// read as absence. The k8s sandbox reaper relies on this: it may only
+// force-delete a run's sandbox + credential Secret when the run is
+// provably gone, never on a store blip. The filesystem store additionally
+// wraps os.ErrNotExist, so errors.Is(err, os.ErrNotExist) also holds there.
+var ErrRunNotFound = errors.New("store: run not found")
 
 // ---------------------------------------------------------------------------
 // RunStatus — lifecycle state of a run
