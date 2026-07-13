@@ -57,6 +57,9 @@
           "status": {
             "type": "string"
           },
+          "status_reason": {
+            "type": "string"
+          },
           "tenant_id": {
             "type": "string"
           },
