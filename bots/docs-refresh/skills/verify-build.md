@@ -57,6 +57,39 @@ Prefer the **fast** path: compile the whole module (a compile error is the
 common breakage) + run the unit tests. Skip slow integration / e2e / live
 suites unless they are the only tests the repo has.
 
+## 1b. Include the repo's codegen-freshness / drift checks
+
+Build + test green does NOT mean CI is green. Many repos commit **generated
+artifacts** — an OpenAPI/Swagger spec + generated client types, protobuf/gRPC
+stubs, generated mocks, a Helm chart version pinned to a package file — and
+enforce in CI that the committed copy matches a fresh regeneration
+(`regenerate && git diff --exit-code`). A change that adds an API route, a
+proto message, or a schema field but forgets to regenerate ships **green
+build + red CI** — exactly the drift the downstream reviewer/CI catches that
+you should catch here instead.
+
+So your `verify.sh` **must** mirror CI's gates, not just build+test — a build+test-only
+`verify.sh` is the single most common way an autonomous change ships green-locally /
+red-in-CI. This is not optional whenever the repo commits generated artifacts:
+
+- **Read the CI config** (`.github/workflows/*.yml`, `.gitlab-ci.yml`,
+  `.circleci/`) and include every gate it enforces — especially steps named
+  *drift*, *generate*, *codegen*, *check*, *fmt*, *lint*, *tidy/verify*.
+- **Grep the task runner** for freshness targets: `Taskfile.yml`/`Makefile`
+  entries like `*:gen` / `*:generate` / `*:check` / `openapi:check` /
+  `proto:check`. When a `check`/`verify` umbrella target exists that bundles
+  lint + test + drift, prefer it — it is the repo's own definition of "CI
+  green".
+- The pattern to add for each committed-generated artifact:
+  `<the repo's regen command> && git diff --exit-code -- <the generated
+  paths>` — a non-empty diff means stale, which is a real red.
+
+If you changed code that feeds a generator (a new HTTP route, a new exported
+type in a schema-bearing package), regenerating and committing the output is
+part of the work — the gate is here to force it. (iterion specifically:
+`task openapi:check` + the helm chart drift check are CI gates; a new
+`/api/...` route needs `task openapi:gen` committed.)
+
 ## 2. Write the verify script to the scratch dir
 
 Write an executable POSIX-sh script at the exact `verify.sh` path your task
@@ -71,10 +104,19 @@ non-zero on any failure**. Example
 set -e
 devbox run -- task build
 devbox run -- task test
+# Codegen-freshness gate (§1b) — regenerate the repo's committed derived
+# artifacts, then fail if the tree drifted. Adapt the regen command(s) to the
+# repo (grep the task runner for *:gen / *:generate); omit this block only when
+# the repo commits NO generated artifacts. `git diff --exit-code` (no paths)
+# catches drift in whatever the regen wrote.
+devbox run -- task openapi:gen      # ← the repo's own regen target(s)
+git diff --exit-code || { echo "codegen drift — regenerate + commit the output" >&2; exit 1; }
 ```
 
 The deterministic gate re-runs **this** script and gates the commit on its real
-exit code — so it must genuinely pass, not merely look plausible.
+exit code — so it must genuinely pass, not merely look plausible. A `verify.sh`
+that omits the §1b regen step when the repo has generated artifacts is the
+canonical way a change lands green-locally / red-in-CI.
 
 ## 3. Run it, and fix what the just-applied changes broke
 
