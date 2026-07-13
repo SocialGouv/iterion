@@ -606,7 +606,7 @@ func (s *Server) resolveForgeToken(ctx context.Context, cfg webhooks.Config, bot
 		return "", nil
 	}
 	ctx = store.WithTenant(ctx, cfg.TenantID)
-	res, err := secrets.ResolveGenericWithBindings(ctx, s.genericSecrets, s.botBindings, cfg.TenantID, "", botID, []string{"forge_token"}, cfg.SecretOverrides, s.sealer)
+	res, err := secrets.ResolveGenericWithBindings(ctx, s.genericSecrets, s.botBindings, cfg.TenantID, "", botID, []string{"forge_token"}, cfg.SecretOverrides, s.sealer, s.logger)
 	if err != nil {
 		return "", err
 	}

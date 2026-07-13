@@ -356,7 +356,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 	// value means "resolve a stored secret of the same name" for this run.
 	if p.genericSecrets != nil && wf != nil && len(wf.Secrets) > 0 {
 		names := genericSecretNamesForWorkflow(wf)
-		resolved, err := secrets.ResolveGenericWithBindings(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer)
+		resolved, err := secrets.ResolveGenericWithBindings(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer, p.logger)
 		if err != nil {
 			return "", fmt.Errorf("cloudpublisher: resolve workflow secrets: %w", err)
 		}
@@ -379,6 +379,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		usedIDs := make([]string, 0, len(resolved))
 		for name, r := range resolved {
 			if len(r.Plaintext) == 0 {
+				// Resolved to a metadata-only record with no plaintext (e.g. a
+				// nil-sealer resolution). Skip it — but trace the drop so an
+				// operator debugging a missing credential isn't left grepping
+				// for nothing. Required secrets are already gated loudly above.
+				if p.logger != nil {
+					p.logger.Debug("cloudpublisher: generic secret %q resolved with empty plaintext (scope=%s) — not injected", name, r.SourceScope)
+				}
 				continue
 			}
 			bundle.GenericSecrets[name] = string(r.Plaintext)

@@ -54,7 +54,7 @@ func TestFileStore_RoundTripSealedAndResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	res, err := ResolveGeneric(ctx, st2, LocalScopeTeam, "", []string{"GITHUB_TOKEN"}, sealer)
+	res, err := ResolveGeneric(ctx, st2, LocalScopeTeam, "", []string{"GITHUB_TOKEN"}, sealer, nil)
 	if err != nil {
 		t.Fatalf("ResolveGeneric: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestLayered_ProjectOverridesGlobal(t *testing.T) {
 
 	layered := NewLayeredGenericSecretStore(global, project)
 
-	res, err := ResolveGeneric(ctx, layered, LocalScopeTeam, "", []string{"SHARED", "GLOBAL_ONLY"}, sealer)
+	res, err := ResolveGeneric(ctx, layered, LocalScopeTeam, "", []string{"SHARED", "GLOBAL_ONLY"}, sealer, nil)
 	if err != nil {
 		t.Fatalf("ResolveGeneric: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestResolveLocalCredentials(t *testing.T) {
 	ctx := context.Background()
 	_ = st.Create(ctx, sealedRec(t, sealer, "API_KEY", "sk_live_abcd1234", "api.example.com"))
 
-	creds, err := ResolveLocalCredentials(ctx, st, sealer, []string{"API_KEY", "MISSING"})
+	creds, err := ResolveLocalCredentials(ctx, st, sealer, []string{"API_KEY", "MISSING"}, nil)
 	if err != nil {
 		t.Fatalf("ResolveLocalCredentials: %v", err)
 	}
