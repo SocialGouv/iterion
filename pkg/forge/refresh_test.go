@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -187,6 +188,67 @@ func TestRefreshWorker_UnauthorizedMarksNeedsReauth(t *testing.T) {
 	pt, _ := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret)
 	if string(pt) != "old-access" {
 		t.Errorf("managed secret should be untouched on revoke, got %q", string(pt))
+	}
+}
+
+// countingRefresher records how many times Refresh is invoked so a test can
+// assert the worker stops re-minting a terminally-failed connection.
+type countingRefresher struct {
+	calls *int
+	err   error
+}
+
+func (c countingRefresher) Refresh(context.Context, Connection, string) (RefreshedToken, error) {
+	*c.calls++
+	return RefreshedToken{}, c.err
+}
+
+// A 422 "permissions not granted" is a PERMANENT config mismatch: the worker
+// must mark the connection degraded (with an actionable reason) and STOP
+// re-minting it every tick, rather than returning an error that re-logs each
+// cycle. Mirrors the ErrUnauthorized → needs_reauth test.
+func TestRefreshWorker_PermissionsNotGrantedMarksDegradedAndStops(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := secrets.NewMemoryGenericSecretStore()
+	now := time.Unix(1700000000, 0).UTC()
+	_, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
+
+	calls := 0
+	w := &RefreshWorker{
+		Connections: connStore, Secrets: secStore, Sealer: sealer,
+		Now: func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher {
+			return countingRefresher{calls: &calls, err: fmt.Errorf("mint: %w", ErrPermissionsNotGranted)}
+		},
+	}
+	// First tick: mint 422s → mark degraded, swallowed (no worker error).
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce should swallow the terminal degrade, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("first tick Refresh calls = %d, want 1", calls)
+	}
+	conn, _ := connStore.Get(context.Background(), "conn-oauth")
+	if conn.Status != StatusDegraded {
+		t.Errorf("status = %q, want degraded", conn.Status)
+	}
+	if conn.StatusReason == "" {
+		t.Error("StatusReason must record the actionable remediation once")
+	}
+	// managed secret untouched on a degrade (same as revoke).
+	gs, _ := secStore.Get(context.Background(), secID)
+	pt, _ := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret)
+	if string(pt) != "old-access" {
+		t.Errorf("managed secret should be untouched on degrade, got %q", string(pt))
+	}
+	// Second tick: the still-expired connection is re-scanned, but a degraded
+	// connection must NOT be re-minted — no additional Refresh call, no re-log.
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("degraded connection re-minted: Refresh calls = %d, want 1 (stop re-minting)", calls)
 	}
 }
 
