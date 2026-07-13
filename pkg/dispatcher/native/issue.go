@@ -36,9 +36,15 @@ type Issue struct {
 	// when `worktree: auto` was used, the run's git worktree path.
 	// The studio exposes it as a copy-to-clipboard / vscode://file
 	// link so the operator can inspect the diff manually.
-	LastWorkdir string    `json:"last_workdir,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	LastWorkdir string `json:"last_workdir,omitempty"`
+	// Runs is the append-only history of dispatcher-spawned runs that
+	// processed this issue, newest-last. LastRunID/LastWorkdir remain the
+	// single overwritten pointer to the most-recent run for back-compat;
+	// Runs is the full history the studio renders as a list. Deduped by
+	// RunID (see AppendRunRef). Absent on records written before T4a.
+	Runs      []RunRef  `json:"runs,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 	// External links this card to an issue on an external forge — set when
 	// the card is mirrored FROM a forge (one-way forge→board sync) or pushed
 	// TO one (push-to-forge). It is metadata: the card's column stays
@@ -49,6 +55,32 @@ type Issue struct {
 	// IssueModal, and — once the comment-trigger wiring lands — to carry
 	// operator `/command` requests and the resulting MR/PR back-links.
 	Comments []Comment `json:"comments,omitempty"`
+}
+
+// RunRef is one entry in an issue's run history (Issue.Runs). RunID is
+// the dispatcher-spawned run id; Workdir is the absolute path it executed
+// in (per-issue workspace or a `worktree: auto` git worktree); At is when
+// the run was stamped onto the card.
+type RunRef struct {
+	RunID   string    `json:"run_id"`
+	Workdir string    `json:"workdir,omitempty"`
+	At      time.Time `json:"at"`
+}
+
+// AppendRunRef dedup-appends a run onto an issue's history keyed on RunID:
+// if runID is already present its Workdir/At are updated in place; otherwise
+// a new RunRef is appended (newest-last). Shared by both the native and
+// boardmongo SetLastRun implementations so the append semantics stay
+// identical across stores. Growth is uncapped by design.
+func AppendRunRef(runs []RunRef, runID, workdir string, at time.Time) []RunRef {
+	for i := range runs {
+		if runs[i].RunID == runID {
+			runs[i].Workdir = workdir
+			runs[i].At = at
+			return runs
+		}
+	}
+	return append(runs, RunRef{RunID: runID, Workdir: workdir, At: at})
 }
 
 // ExternalRef links a board card to an issue on an external forge. Set by

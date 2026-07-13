@@ -364,9 +364,11 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 	if iss.LastRunID == runID && iss.LastWorkdir == workdir {
 		return nil
 	}
+	now := time.Now().UTC()
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
-	iss.UpdatedAt = time.Now().UTC()
+	iss.Runs = native.AppendRunRef(iss.Runs, runID, workdir, now)
+	iss.UpdatedAt = now
 	if err := s.replace(ctx, iss); err != nil {
 		return err
 	}

@@ -886,6 +886,9 @@ func cloneIssue(in *Issue) *Issue {
 	if in.Comments != nil {
 		c.Comments = append([]Comment(nil), in.Comments...)
 	}
+	if in.Runs != nil {
+		c.Runs = append([]RunRef(nil), in.Runs...)
+	}
 	return &c
 }
 
@@ -1124,9 +1127,11 @@ func (s *Store) SetLastRun(id, runID, workdir string) (err error) {
 	if iss.LastRunID == runID && iss.LastWorkdir == workdir {
 		return nil
 	}
+	now := time.Now().UTC()
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
-	iss.UpdatedAt = time.Now().UTC()
+	iss.Runs = AppendRunRef(iss.Runs, runID, workdir, now)
+	iss.UpdatedAt = now
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}

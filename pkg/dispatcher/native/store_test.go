@@ -439,6 +439,54 @@ func TestAddCommentPersistsAndEmits(t *testing.T) {
 	}
 }
 
+func TestSetLastRunAppendsRunHistory(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
+
+	// Two different run ids → two RunRefs, newest-last.
+	if err := s.SetLastRun(iss.ID, "run-1", "/tmp/wd-1"); err != nil {
+		t.Fatalf("SetLastRun run-1: %v", err)
+	}
+	if err := s.SetLastRun(iss.ID, "run-2", "/tmp/wd-2"); err != nil {
+		t.Fatalf("SetLastRun run-2: %v", err)
+	}
+	got, _ := s.Get(iss.ID)
+	if len(got.Runs) != 2 {
+		t.Fatalf("expected 2 run refs, got %d: %+v", len(got.Runs), got.Runs)
+	}
+	if got.Runs[0].RunID != "run-1" || got.Runs[1].RunID != "run-2" {
+		t.Fatalf("run history not newest-last: %+v", got.Runs)
+	}
+	if got.Runs[1].Workdir != "/tmp/wd-2" {
+		t.Fatalf("workdir not captured: %+v", got.Runs[1])
+	}
+	if got.Runs[0].At.IsZero() {
+		t.Fatalf("At not stamped: %+v", got.Runs[0])
+	}
+
+	// Same run id again with a new workdir → still 2 refs, updated in place.
+	if err := s.SetLastRun(iss.ID, "run-1", "/tmp/wd-1-moved"); err != nil {
+		t.Fatalf("SetLastRun run-1 again: %v", err)
+	}
+	got2, _ := s.Get(iss.ID)
+	if len(got2.Runs) != 2 {
+		t.Fatalf("re-stamping same run id must not append, got %d: %+v", len(got2.Runs), got2.Runs)
+	}
+	if got2.Runs[0].RunID != "run-1" || got2.Runs[0].Workdir != "/tmp/wd-1-moved" {
+		t.Fatalf("dedup-update failed: %+v", got2.Runs)
+	}
+
+	// History survives reopen (field is tagged / persisted).
+	s2, err := NewStore(s.root)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	got3, _ := s2.Get(iss.ID)
+	if len(got3.Runs) != 2 || got3.Runs[1].RunID != "run-2" {
+		t.Fatalf("reopen lost run history: %+v", got3.Runs)
+	}
+}
+
 func TestSetLastRunUnknownIssue(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.SetLastRun("native:nope", "run-x", "/tmp/x"); !errors.Is(err, tracker.ErrNotFound) {

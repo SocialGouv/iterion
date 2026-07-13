@@ -103,12 +103,27 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("Release unclaimed no-op: %v", err)
 	}
 
-	// SetLastRun.
+	// SetLastRun stamps the single pointer AND appends dedup'd run history.
 	if err := store.SetLastRun(created.ID, "run-1", "/tmp/wd"); err != nil {
 		t.Errorf("SetLastRun: %v", err)
 	}
 	if got, _ := store.Get(created.ID); got.LastRunID != "run-1" {
 		t.Errorf("SetLastRun not persisted: %+v", got)
+	}
+	// A second, distinct run id appends a second RunRef (newest-last).
+	if err := store.SetLastRun(created.ID, "run-2", "/tmp/wd2"); err != nil {
+		t.Errorf("SetLastRun run-2: %v", err)
+	}
+	if got, _ := store.Get(created.ID); len(got.Runs) != 2 ||
+		got.Runs[0].RunID != "run-1" || got.Runs[1].RunID != "run-2" {
+		t.Errorf("run history not appended newest-last: %+v", got.Runs)
+	}
+	// Re-stamping an existing run id updates it in place, no growth.
+	if err := store.SetLastRun(created.ID, "run-1", "/tmp/wd-moved"); err != nil {
+		t.Errorf("SetLastRun run-1 re-stamp: %v", err)
+	}
+	if got, _ := store.Get(created.ID); len(got.Runs) != 2 || got.Runs[0].Workdir != "/tmp/wd-moved" {
+		t.Errorf("run history dedup-update failed: %+v", got.Runs)
 	}
 
 	// List: filter by state + assignee; sort by priority.
