@@ -113,32 +113,7 @@ func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, erro
 		if f.Node != "" && !runTouchedNode(ctx, s.store, r.ID, f.Node) {
 			continue
 		}
-		out = append(out, RunSummary{
-			ID:                r.ID,
-			Name:              r.Name,
-			WorkflowName:      r.WorkflowName,
-			BundleName:        resolveBundleName(r.BundleName, r.BundlePath),
-			BundleDisplayName: r.BundleDisplayName,
-			SourceKind:        deriveSourceKind(r),
-			Status:            r.Status,
-			FilePath:          r.FilePath,
-			CreatedAt:         r.CreatedAt,
-			UpdatedAt:         r.UpdatedAt,
-			FinishedAt:        r.FinishedAt,
-			Error:             r.Error,
-			Active:            s.manager.Active(r.ID),
-			FinalCommit:       r.FinalCommit,
-			FinalBranch:       r.FinalBranch,
-			FinalBranchError:  r.FinalBranchError,
-			MergedInto:        r.MergedInto,
-			MergedCommit:      r.MergedCommit,
-			MergeStrategy:     r.MergeStrategy,
-			MergeStatus:       r.MergeStatus,
-			AutoMerge:         r.AutoMerge,
-			WorkDir:           r.WorkDir,
-			RepoRoot:          r.RepoRoot,
-			ProjectPath:       r.ProjectPath,
-		})
+		out = append(out, s.summarize(r))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
@@ -147,6 +122,67 @@ func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, erro
 		out = out[:f.Limit]
 	}
 	return out, nil
+}
+
+// ListChildren returns the summaries of every run whose ParentRunID is
+// parentRunID — a run's shard/child subtree (T4b, refs #125), ordered by
+// created_at ascending (the store guarantees the ordering). Propagates
+// the caller's ctx so the mongo tenant filter applies. A run that fails
+// to load is skipped rather than failing the whole listing.
+func (s *Service) ListChildren(ctx context.Context, parentRunID string) ([]RunSummary, error) {
+	ids, err := s.store.ListChildRuns(ctx, parentRunID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunSummary, 0, len(ids))
+	for _, id := range ids {
+		r, err := s.store.LoadRun(ctx, id)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("runview: skip child run %s: %v", id, err)
+			}
+			continue
+		}
+		out = append(out, s.summarize(r))
+	}
+	return out, nil
+}
+
+// summarize projects a persisted Run into the lightweight RunSummary
+// shape the run list + children endpoint return. Shared so every
+// listing surface carries the same derived fields (source-kind
+// classification, shard tuple, active flag).
+func (s *Service) summarize(r *store.Run) RunSummary {
+	return RunSummary{
+		ID:                r.ID,
+		Name:              r.Name,
+		WorkflowName:      r.WorkflowName,
+		BundleName:        resolveBundleName(r.BundleName, r.BundlePath),
+		BundleDisplayName: r.BundleDisplayName,
+		SourceKind:        deriveSourceKind(r),
+		Status:            r.Status,
+		FilePath:          r.FilePath,
+		CreatedAt:         r.CreatedAt,
+		UpdatedAt:         r.UpdatedAt,
+		FinishedAt:        r.FinishedAt,
+		Error:             r.Error,
+		Active:            s.manager.Active(r.ID),
+		FinalCommit:       r.FinalCommit,
+		FinalBranch:       r.FinalBranch,
+		FinalBranchError:  r.FinalBranchError,
+		MergedInto:        r.MergedInto,
+		MergedCommit:      r.MergedCommit,
+		MergeStrategy:     r.MergeStrategy,
+		MergeStatus:       r.MergeStatus,
+		AutoMerge:         r.AutoMerge,
+		WorkDir:           r.WorkDir,
+		RepoRoot:          r.RepoRoot,
+		ProjectPath:       r.ProjectPath,
+		ParentRunID:       r.ParentRunID,
+		ShardIndex:        r.ShardIndex,
+		ShardCount:        r.ShardCount,
+		ShardLabel:        r.ShardLabel,
+	}
 }
 
 // deriveSourceKind classifies how a run was triggered, for list grouping /

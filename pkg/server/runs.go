@@ -51,6 +51,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/attachments/{name}/url", s.handlePresignAttachment)
 	s.mux.HandleFunc("GET /api/server/info", s.handleServerInfo)
 	s.mux.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
+	s.mux.HandleFunc("GET /api/runs/{id}/children", s.handleListRunChildren)
 	s.mux.HandleFunc("GET /api/runs/{id}/events", s.handleGetRunEvents)
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts", s.handleListAllArtifacts)
@@ -498,6 +499,24 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSONFor(w, r, snap)
+}
+
+// handleListRunChildren returns the shard/child subtree of a run — every
+// run whose ParentRunID equals {id}, ordered by created_at ascending
+// (T4b, refs #125). The tree UI that renders these under a run is a
+// separate follow-up; this endpoint is the data source.
+func (s *Server) handleListRunChildren(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	children, err := s.runs.ListChildren(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list run children: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, map[string]any{"runs": children})
 }
 
 func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
