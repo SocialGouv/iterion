@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -55,5 +56,44 @@ func TestPinHostInHostsFile_Guards(t *testing.T) {
 	// Unwritable/missing path → error (caller proceeds best-effort).
 	if _, err := pinHostInHostsFile(filepath.Join(t.TempDir(), "nope", "hosts"), "h", net.ParseIP("1.1.1.1")); err == nil {
 		t.Error("want error for unreadable hosts path")
+	}
+}
+
+// TestPinUnavailable_ClassifiesPermissionDenied covers the demoted (info-once)
+// path: a permission-denied error — the permanent condition on a non-root
+// runner writing kubelet-managed /etc/hosts — is "expected", while any other
+// failure keeps warning per-clone.
+func TestPinUnavailable_ClassifiesPermissionDenied(t *testing.T) {
+	// A read/missing error is NOT the expected non-writable case.
+	if pinUnavailable(fmt.Errorf("ssrf-pin: read /etc/hosts: %w", os.ErrNotExist)) {
+		t.Error("missing-file error should not be classified as expected pin-unavailable")
+	}
+	// A permission-denied write IS the expected case → info-once, not warn.
+	if !pinUnavailable(fmt.Errorf("ssrf-pin: write /etc/hosts: %w", os.ErrPermission)) {
+		t.Error("permission-denied write should be classified as expected pin-unavailable")
+	}
+	if pinUnavailable(nil) {
+		t.Error("nil error should not be classified as pin-unavailable")
+	}
+
+	// End-to-end: a real permission-denied from pinHostInHostsFile flows
+	// through the classifier. Skip when running as root (bypasses file perms).
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses file permissions")
+	}
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	if err := os.WriteFile(hosts, []byte("127.0.0.1 localhost\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hosts, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	_, err := pinHostInHostsFile(hosts, "github.com", net.ParseIP("140.82.112.3"))
+	if err == nil {
+		t.Fatal("expected write error on read-only hosts file")
+	}
+	if !pinUnavailable(err) {
+		t.Errorf("read-only hosts write should classify as expected pin-unavailable; got: %v", err)
 	}
 }
