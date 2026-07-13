@@ -15,9 +15,14 @@ const (
 	StateBacklog    = "backlog"
 	StateReady      = "ready"
 	StateInProgress = "in_progress"
-	StateReview     = "review"
-	StateDone       = "done"
-	StateBlocked    = "blocked"
+	// StateAwaitingInput holds a dispatched card whose run paused waiting for
+	// a human answer (paused_waiting_human). Non-eligible (the dispatcher
+	// never re-picks it) and non-terminal (the run resumes on answer). The
+	// column-level expression of the per-card AwaitingInput badge.
+	StateAwaitingInput = "awaiting_input"
+	StateReview        = "review"
+	StateDone          = "done"
+	StateBlocked       = "blocked"
 )
 
 // FieldType enumerates the supported custom-field value kinds.
@@ -95,6 +100,7 @@ func DefaultBoard() *Board {
 			{Name: StateBacklog, Display: "Backlog"},
 			{Name: StateReady, Display: "Ready", Eligible: true},
 			{Name: StateInProgress, Display: "In progress", Eligible: true},
+			{Name: StateAwaitingInput, Display: "Awaiting input"},
 			{Name: StateReview, Display: "Review"},
 			{Name: StateDone, Display: "Done", Terminal: true},
 			{Name: StateBlocked, Display: "Blocked", Terminal: true},

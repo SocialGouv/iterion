@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -162,6 +163,22 @@ func TestBoardDispatcher_FailedRunMovesToBlocked(t *testing.T) {
 	d.wg.Wait()
 	if f.states["native:1"] != native.StateBlocked {
 		t.Errorf("failed run should move card to blocked, got %q", f.states["native:1"])
+	}
+}
+
+func TestBoardDispatcher_PausedRunMovesToAwaitingInput(t *testing.T) {
+	f := newFakeBoardCoord(readyCard("native:1", "feature-dev"))
+	// A process func that signals a pause (errCardPaused) rather than a failure.
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		return fmt.Errorf("run r1 paused (paused_waiting_human): %w", errCardPaused)
+	}, "replica-A", 4, nil)
+	d.tick(context.Background())
+	d.wg.Wait()
+	if f.states["native:1"] != native.StateAwaitingInput {
+		t.Errorf("paused run should move card to awaiting_input, got %q", f.states["native:1"])
+	}
+	if len(f.claimed) != 0 {
+		t.Errorf("card should be released after a pause: %v", f.claimed)
 	}
 }
 
