@@ -143,3 +143,21 @@ The docker driver path is untouched.
   work; a future in-cluster controller/CronJob can still adopt
   `ReapOrphanResources` behind its own lease if a server-side sweep is ever
   wanted.
+
+## 2026-07-13 — reap predicate fails safe on a transient store error
+
+The store-status backstop originally collapsed **any** `LoadRun` error into
+"the run is gone → reap". That is wrong for a *transient* error (Mongo outage,
+decode failure, context deadline): NATS KV and Mongo are independent, so a
+lease-absent run hitting a Mongo blip would be force-deleted mid-flight —
+sandbox pod **plus its plaintext-credential Secret and NetworkPolicy** — the
+exact leak this ADR closes, re-opened as a data-destruction bug. It also
+inverted the fail-safe direction the lease check two lines up already takes
+("unknown liveness → keep") and the sibling `runview.sandboxContainerReapable`.
+
+Fix: a shared `store.ErrRunNotFound` sentinel wrapped by both the Mongo and
+filesystem `LoadRun` not-found paths. The reap predicate now reaps only on a
+provable `errors.Is(err, store.ErrRunNotFound)` and **keeps** (fail safe,
+retry next tick) on any other error — so "gone" means *provably* gone, never
+"the store didn't answer". Only when the lease is absent AND the store proves
+the run terminal-or-not-found is a sandbox reaped.
