@@ -120,3 +120,25 @@ A short-term slice on existing seams, independent of the open tensions:
   "awaiting input" badge (needs a denormalized `awaiting_input` signal on the
   issue to avoid an N+1 run fetch on every board render); and moving a parked
   dispatched run's card into the "awaiting input" column on pause.
+
+## Addendum (2026-07-13) — T6 self-hosted forge-import entry point shipped
+
+The T6 follow-on deferred above (a forge client + repo→board mapping without a
+cloud integration store) has landed as **`iterion issue import`**
+([issue.go](../../pkg/cli/issue.go)) backed by the exported
+`server.ImportForgeIssues` ([board_forge.go](../../pkg/server/board_forge.go)).
+
+- **Reuses the core verbatim.** `ImportForgeIssues` is a thin
+  construct-then-delegate shim: it builds the `forge.IssueClient` via the same
+  provider switch as `forgeAdminForToken` (kept DRY in one place), then calls
+  the unchanged `syncForgeIssuesToBoard`. No sync logic is forked; the cloud
+  path is untouched.
+- **No integration store.** The self-hosted caller has no persisted
+  `forge.Connection`, so the connection id is empty — the deterministic card id
+  keys on `provider:repo#number` alone, and the high-water mark (`--since`) is
+  the operator's concern, passed per-invocation (the ADR's "the high-water mark
+  is the caller's concern" is what let the pure core stay reusable here).
+- **Secrets discipline.** The forge token is read only from the env var named by
+  `--token-env`, never a flag value.
+
+This closes T6's self-hosted arm; the deeper T4 tree projection remains open.
