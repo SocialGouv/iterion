@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -16,12 +17,42 @@ func (r *Registry) EffectiveConfig(name string) map[string]string {
 			if f.Default != "" {
 				out[f.Key] = f.Default
 			}
+			// Highest precedence: an env override ITERION_PLUGIN_<NAME>_<KEY>.
+			// This is the cloud/headless path — the operator (or the Helm
+			// chart) sets plugin config via immutable env instead of the
+			// per-pod-ephemeral plugins.yaml. Only declared keys are read.
+			if v, ok := pluginConfigEnv(name, f.Key); ok {
+				out[f.Key] = v
+			}
 		}
 	}
 	for k, v := range r.config[name] {
+		// Operator-stored values overlay defaults, but a declared env
+		// override still wins (set above and re-asserted here so a stored
+		// value can't shadow the immutable env).
+		if envV, ok := pluginConfigEnv(name, k); ok {
+			out[k] = envV
+			continue
+		}
 		out[k] = v
 	}
 	return out
+}
+
+// pluginConfigEnv reads the env override for one plugin config key:
+// ITERION_PLUGIN_<NAME>_<KEY>, upper-cased with '-' → '_'. Returns the raw
+// value and whether the env var is set (empty-but-set is honoured, e.g. to
+// blank a defaulted URL). E.g. plugin "firecrawl" key "api_url" →
+// ITERION_PLUGIN_FIRECRAWL_API_URL.
+func pluginConfigEnv(name, key string) (string, bool) {
+	env := "ITERION_PLUGIN_" + envToken(name) + "_" + envToken(key)
+	return os.LookupEnv(env)
+}
+
+// envToken upper-cases and replaces '-' with '_' so kebab plugin/config names
+// map to a legal env-var segment.
+func envToken(s string) string {
+	return strings.ToUpper(strings.ReplaceAll(s, "-", "_"))
 }
 
 // StoredConfig returns a copy of the operator-set values for a plugin (no

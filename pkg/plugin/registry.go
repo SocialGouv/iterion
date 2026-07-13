@@ -212,16 +212,40 @@ func (r *Registry) loadInstalled() {
 }
 
 func (r *Registry) resolveEnabled() {
+	enableEnv := envNameSet("ITERION_PLUGINS_ENABLE")
+	disableEnv := envNameSet("ITERION_PLUGINS_DISABLE")
 	for _, p := range r.plugins {
 		if v, ok := r.state[p.Name()]; ok {
 			p.Enabled = v
 		} else {
 			p.Enabled = p.Manifest.DefaultEnabled
 		}
+		// Env overrides win over both stored state and default_enabled — the
+		// cloud/headless path where the operator (or Helm chart) toggles a
+		// builtin via immutable env instead of the per-pod-ephemeral
+		// plugins.yaml. Disable wins over enable when a name is in both.
+		if enableEnv[p.Name()] {
+			p.Enabled = true
+		}
+		if disableEnv[p.Name()] {
+			p.Enabled = false
+		}
 	}
 	sort.SliceStable(r.plugins, func(i, j int) bool {
 		return r.plugins[i].Name() < r.plugins[j].Name()
 	})
+}
+
+// envNameSet parses a comma/space-separated env var into a set of plugin
+// names (trimmed, empties dropped). Used by ITERION_PLUGINS_ENABLE/DISABLE.
+func envNameSet(env string) map[string]bool {
+	out := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(os.Getenv(env), func(r rune) bool { return r == ',' || r == ' ' }) {
+		if t := strings.TrimSpace(tok); t != "" {
+			out[t] = true
+		}
+	}
+	return out
 }
 
 // Get returns the plugin with the given name.
