@@ -28,6 +28,7 @@ import BotChip from "./runHeader/BotChip";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
 import FinalizationRow from "./runHeader/FinalizationRow";
 import ForkedFromRow from "./runHeader/ForkedFromRow";
+import RunChildrenPanel from "./runHeader/RunChildrenPanel";
 import NotesRow from "./runHeader/NotesRow";
 import RunNameEditor from "./runHeader/RunNameEditor";
 import RunTagsRow from "./runHeader/RunTagsRow";
@@ -396,6 +397,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
       )}
       {showFinalization && <FinalizationRow run={run} />}
       {run.forked_from && <ForkedFromRow run={run} />}
+      <RunChildrenPanel run={run} />
       {run.source?.issue_id && <SourceTicketRow source={run.source} />}
       <ErrorHintRow run={run} onResume={() => setResumeOpen(true)} />
       <NotesRow runId={run.id} />
