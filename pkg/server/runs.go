@@ -511,6 +511,18 @@ func (s *Server) handleListRunChildren(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	if xs, _, err := s.resolveCrossStore(r); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	} else if xs != nil {
+		children, err := runview.BuildChildrenFromStore(r.Context(), xs, id)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "list run children from cross-store: %v", err)
+			return
+		}
+		s.writeJSONFor(w, r, map[string]any{"runs": children})
+		return
+	}
 	children, err := s.runs.ListChildren(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list run children: %v", err)

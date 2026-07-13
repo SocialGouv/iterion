@@ -153,6 +153,15 @@ func (s *Service) ListChildren(ctx context.Context, parentRunID string) ([]RunSu
 // listing surface carries the same derived fields (source-kind
 // classification, shard tuple, active flag).
 func (s *Service) summarize(r *store.Run) RunSummary {
+	return summarizeRun(r, s.manager.Active(r.ID))
+}
+
+// summarizeRun is the manager-free core of summarize: it projects a
+// persisted Run into a RunSummary given a precomputed active flag. Shared
+// by the Service (which knows liveness via its manager) and the cross-store
+// read path (BuildChildrenFromStore, where runs are owned by another daemon
+// and thus never active in this process).
+func summarizeRun(r *store.Run, active bool) RunSummary {
 	return RunSummary{
 		ID:                r.ID,
 		Name:              r.Name,
@@ -166,7 +175,7 @@ func (s *Service) summarize(r *store.Run) RunSummary {
 		UpdatedAt:         r.UpdatedAt,
 		FinishedAt:        r.FinishedAt,
 		Error:             r.Error,
-		Active:            s.manager.Active(r.ID),
+		Active:            active,
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
 		FinalBranchError:  r.FinalBranchError,
@@ -183,6 +192,27 @@ func (s *Service) summarize(r *store.Run) RunSummary {
 		ShardCount:        r.ShardCount,
 		ShardLabel:        r.ShardLabel,
 	}
+}
+
+// BuildChildrenFromStore returns the shard/child subtree of a run read
+// directly off an arbitrary store — the cross-store (?store=) counterpart
+// to Service.ListChildren. Runs owned by another daemon are never active in
+// this process, so their summaries carry Active=false. A child that fails to
+// load is skipped rather than failing the whole listing.
+func BuildChildrenFromStore(ctx context.Context, s store.RunStore, parentRunID string) ([]RunSummary, error) {
+	ids, err := s.ListChildRuns(ctx, parentRunID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunSummary, 0, len(ids))
+	for _, id := range ids {
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			continue
+		}
+		out = append(out, summarizeRun(r, false))
+	}
+	return out, nil
 }
 
 // deriveSourceKind classifies how a run was triggered, for list grouping /
