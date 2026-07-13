@@ -244,9 +244,31 @@ an operator clicking "add") uses the **same** contract:
   ([board_forge.go](../pkg/server/board_forge.go)) is the store-agnostic core
   that mirrors a repo's forge issues into a native board — one-way, forge is
   the source of truth, cards land in the first column on create and refresh in
-  place on update. It is wired for cloud today; the self-hosted entry point
-  (resolving a forge client + repo→board mapping without a cloud integration
-  store) is a follow-on (see ADR-071).
+  place on update (see ADR-071). The self-hosted entry point is
+  **`iterion issue import`**, which builds the forge client for you and drives
+  that same core against a local board:
+
+  ```sh
+  # github.com (base URL defaults to the github.com API):
+  GH_TOKEN=ghp_… iterion issue import \
+    --forge github --repo owner/name --token-env GH_TOKEN
+
+  # a self-hosted forgejo/gitlab (base URL is required):
+  FORGE_TOKEN=… iterion issue import \
+    --forge forgejo --repo owner/name \
+    --base-url https://forge.example.com --token-env FORGE_TOKEN \
+    --since 2026-07-01T00:00:00Z   # optional; empty = full re-sync
+  ```
+
+  The token is read **only** from the named env var (`--token-env`), never a
+  flag value. Pull requests are skipped; open issues land in the first column,
+  closed ones in the terminal column. The import is **idempotent** — re-running
+  upserts existing cards (keyed by a deterministic `native:<uuid>` derived from
+  `provider:repo#number`) instead of duplicating them, so it doubles as an
+  incremental `--since` sync. The command prints `created` / `updated` counts
+  (`--json` for machine output). The exported Go wrapper is
+  `server.ImportForgeIssues`, which keeps the forge-client provider switch in
+  one place.
 
 ## Programmatic access
 
