@@ -3684,6 +3684,7 @@ export interface components {
             provider: string;
             scopes?: string[];
             status: string;
+            status_reason?: string;
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;

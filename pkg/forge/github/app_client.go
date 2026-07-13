@@ -123,7 +123,17 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		// … installation", or an ungranted permission). Surfacing it turns an
 		// opaque "HTTP 422" into an actionable message instead of masking the
 		// root cause (erreurs-explicites).
-		return "", time.Time{}, mintTokenErr(resp)
+		err := mintTokenErr(resp)
+		// A 422 whose body reports the requested permissions are NOT GRANTED is
+		// a permanent config mismatch (the install was approved with a narrower
+		// permission set than iterion now requests). Classify it as the terminal
+		// forge.ErrPermissionsNotGranted so the refresh worker marks the
+		// connection degraded and stops re-minting it every tick, while keeping
+		// GitHub's own actionable message in the wrapped error.
+		if resp.StatusCode == http.StatusUnprocessableEntity && isPermissionsNotGranted(err) {
+			return "", time.Time{}, fmt.Errorf("%w: %w", forge.ErrPermissionsNotGranted, err)
+		}
+		return "", time.Time{}, err
 	}
 	var out struct {
 		Token     string `json:"token"`
@@ -170,6 +180,19 @@ func mintTokenErr(resp *http.Response) error {
 		}
 	}
 	return fmt.Errorf("%w: %s", base, detail)
+}
+
+// isPermissionsNotGranted reports whether a mint error's message matches
+// GitHub's "The permissions requested are not granted to this installation"
+// 422 body — the permanent permission-mismatch signal (distinct from the
+// "repository does not exist" 422). Matched on the already-surfaced message so
+// it survives mintTokenErr's message/errors[] extraction.
+func isPermissionsNotGranted(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "permissions") && strings.Contains(msg, "not granted")
 }
 
 // AppClient is a forge.Admin for one GitHub-App installation. It mints +

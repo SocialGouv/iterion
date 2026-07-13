@@ -68,6 +68,15 @@ const (
 	StatusActive      ConnectionStatus = "active"
 	StatusNeedsReauth ConnectionStatus = "needs_reauth" // refresh failed; operator must reconnect
 	StatusRevoked     ConnectionStatus = "revoked"      // token rejected by the forge (401)
+	// StatusDegraded marks a connection whose token mint fails on a
+	// PERMANENT configuration mismatch (a GitHub-App install approved with a
+	// narrower permission set than iterion now requests → HTTP 422
+	// "permissions not granted"). Unlike a transient failure this can never
+	// self-heal by retrying, so the refresh worker stops re-minting it each
+	// tick and records the actionable reason on StatusReason. Cleared back to
+	// StatusActive by a successful reconnect/re-provision (same lifecycle as
+	// StatusRevoked).
+	StatusDegraded ConnectionStatus = "degraded"
 )
 
 // Connection is a team's authenticated link to one forge account. The
@@ -98,6 +107,12 @@ type Connection struct {
 	AppSlug        string `bson:"app_slug,omitempty" json:"app_slug,omitempty"`
 
 	Status ConnectionStatus `bson:"status" json:"status"`
+
+	// StatusReason is a human-readable explanation for a non-active Status
+	// (e.g. which permission a degraded GitHub-App install is missing and
+	// that an org admin must re-approve or remove the connection). Surfaced
+	// to the operator so the fix is actionable; cleared on reconnect.
+	StatusReason string `bson:"status_reason,omitempty" json:"status_reason,omitempty"`
 
 	// SealedPayload holds the token blob (access/refresh/PAT + expiry),
 	// sealed via secrets.Sealer with AAD "forge_conn:<ID>". Never serialised.
@@ -205,4 +220,13 @@ var (
 	// (revoked / expired). The refresh worker flips the connection to
 	// StatusRevoked on this.
 	ErrUnauthorized = errors.New("forge: credential rejected")
+	// ErrPermissionsNotGranted is returned when minting a GitHub-App
+	// installation token fails with a PERMANENT permission mismatch — the
+	// installation was approved with a narrower permission set than iterion
+	// now requests (HTTP 422 "The permissions requested are not granted to
+	// this installation"). It is terminal: retrying every refresh cycle can
+	// never self-heal, so the worker flips the connection to StatusDegraded
+	// (an org admin must re-approve the install with the updated permissions,
+	// or the connection should be removed) instead of re-minting each tick.
+	ErrPermissionsNotGranted = errors.New("forge: installation permissions not granted")
 )
