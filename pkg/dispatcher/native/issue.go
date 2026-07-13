@@ -31,6 +31,17 @@ type Issue struct {
 	// regardless of success/failure so the operator can always
 	// pivot from the kanban card to the run console / diff inspector.
 	LastRunID string `json:"last_run_id,omitempty"`
+	// AwaitingInput is a denormalized best-effort HINT that the issue's
+	// most recent dispatcher-spawned run parked on a human/operator gate
+	// and is waiting for an answer. It lets the studio render a per-card
+	// "⏸ Awaiting input" badge on the board grid WITHOUT an N+1 run
+	// fetch. The dispatcher sets it true when a run parks on pause and
+	// clears it on the paths it controls (clean terminal finish,
+	// re-dispatch). It is NOT authoritative — the IssueModal's answer
+	// affordance still keys off getRun(last_run_id).status; a stale flag
+	// (e.g. after a console-only resume the dispatcher never observed) is
+	// corrected at the next card touch.
+	AwaitingInput bool `json:"awaiting_input,omitempty"`
 	// LastWorkdir is the absolute filesystem path the last run
 	// executed in — either the per-issue dispatcher workspace or,
 	// when `worktree: auto` was used, the run's git worktree path.

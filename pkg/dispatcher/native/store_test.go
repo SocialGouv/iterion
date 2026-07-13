@@ -389,6 +389,64 @@ func TestSetLastRunWritesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSetAwaitingInputWritesAndIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
+
+	countEvents := func() int {
+		n := 0
+		_ = s.ScanEvents(func(e *Event) bool {
+			if e.Type == EvtIssueUpdated && e.IssueID == iss.ID {
+				n++
+			}
+			return true
+		})
+		return n
+	}
+
+	// Set true → flag persisted, one event.
+	if err := s.SetAwaitingInput(iss.ID, true); err != nil {
+		t.Fatalf("SetAwaitingInput(true): %v", err)
+	}
+	if got, _ := s.Get(iss.ID); !got.AwaitingInput {
+		t.Fatalf("awaiting_input not set: %+v", got)
+	}
+	if got := countEvents(); got != 1 {
+		t.Fatalf("first SetAwaitingInput should emit one event, got %d", got)
+	}
+
+	// Idempotent: same value → no new event.
+	if err := s.SetAwaitingInput(iss.ID, true); err != nil {
+		t.Fatalf("idempotent SetAwaitingInput: %v", err)
+	}
+	if got := countEvents(); got != 1 {
+		t.Fatalf("idempotent call should not emit a new event, got %d", got)
+	}
+
+	// Clear false → flag cleared, fresh event.
+	if err := s.SetAwaitingInput(iss.ID, false); err != nil {
+		t.Fatalf("SetAwaitingInput(false): %v", err)
+	}
+	if got, _ := s.Get(iss.ID); got.AwaitingInput {
+		t.Fatalf("awaiting_input not cleared: %+v", got)
+	}
+	if got := countEvents(); got != 2 {
+		t.Fatalf("clear should add one event, got %d", got)
+	}
+
+	// Round-trips through reopen — confirms the field is tagged.
+	if err := s.SetAwaitingInput(iss.ID, true); err != nil {
+		t.Fatalf("SetAwaitingInput(true) again: %v", err)
+	}
+	s2, err := NewStore(s.root)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got, _ := s2.Get(iss.ID); !got.AwaitingInput {
+		t.Fatalf("reopen lost awaiting_input flag: %+v", got)
+	}
+}
+
 func TestAddCommentPersistsAndEmits(t *testing.T) {
 	s := newTestStore(t)
 	iss, _ := s.Create(Issue{Title: "x", State: "ready"})

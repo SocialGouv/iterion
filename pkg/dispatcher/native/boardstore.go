@@ -27,6 +27,10 @@ type BoardStore interface {
 	Claim(id, marker string) error
 	Release(id, marker string) error
 	SetLastRun(id, runID, workdir string) error
+	// SetAwaitingInput denormalizes onto the issue whether its most recent
+	// run parked awaiting human/operator input, so the board grid can badge
+	// the card without a per-run fetch. A best-effort HINT (see Issue.AwaitingInput).
+	SetAwaitingInput(id string, v bool) error
 
 	// AddComment appends a note to the issue's discussion thread and
 	// returns the updated issue plus the created comment.

@@ -126,6 +126,21 @@ func runBoardStoreSuite(t *testing.T, store native.BoardStore) {
 		t.Errorf("run history dedup-update failed: %+v", got.Runs)
 	}
 
+	// SetAwaitingInput denormalizes the pause hint onto the card; set true,
+	// clear false, with parity to the native store (idempotent, tagged).
+	if err := store.SetAwaitingInput(created.ID, true); err != nil {
+		t.Errorf("SetAwaitingInput(true): %v", err)
+	}
+	if got, _ := store.Get(created.ID); !got.AwaitingInput {
+		t.Errorf("SetAwaitingInput(true) not persisted: %+v", got)
+	}
+	if err := store.SetAwaitingInput(created.ID, false); err != nil {
+		t.Errorf("SetAwaitingInput(false): %v", err)
+	}
+	if got, _ := store.Get(created.ID); got.AwaitingInput {
+		t.Errorf("SetAwaitingInput(false) not cleared: %+v", got)
+	}
+
 	// List: filter by state + assignee; sort by priority.
 	_, _ = store.Create(native.Issue{Title: "second", State: native.StateReady, Priority: 9})
 	ready, err := store.List(native.ListFilter{States: []string{native.StateReady}})

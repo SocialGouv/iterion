@@ -139,6 +139,15 @@ func (a *Adapter) SetLastRun(id, runID, workdir string) error {
 	return a.store.SetLastRun(id, runID, workdir)
 }
 
+// SetAwaitingInput passes through to the underlying store so the
+// dispatcher's optional-interface type assertion (setAwaitingInput in
+// commands.go) resolves — without this pass-through the seam falls
+// through silently and no card ever gets its awaiting-input badge (the
+// SetLastRun regression above, avoided here).
+func (a *Adapter) SetAwaitingInput(id string, v bool) error {
+	return a.store.SetAwaitingInput(id, v)
+}
+
 // LastRunForIssue returns the runID of the most recent dispatch on
 // this issue. Empty when the issue has never been dispatched (or the
 // issue does not exist). Used by the dispatcher's resume path as a

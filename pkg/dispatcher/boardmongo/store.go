@@ -375,6 +375,28 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})
 }
 
+// SetAwaitingInput denormalizes onto the issue whether its most recent
+// run parked awaiting human/operator input (see native.Issue.AwaitingInput).
+// Idempotent — setting the flag to its current value is a no-op. Mirrors
+// SetLastRun: read → set → replace → bump UpdatedAt → emit EvtIssueUpdated.
+func (s *Store) SetAwaitingInput(id string, v bool) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if iss.AwaitingInput == v {
+		return nil
+	}
+	iss.AwaitingInput = v
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.replace(ctx, iss); err != nil {
+		return err
+	}
+	return s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id, Payload: map[string]any{"awaiting_input": v}})
+}
+
 // AddComment appends a note to the issue's discussion thread and returns
 // the updated issue plus the created comment.
 func (s *Store) AddComment(id, author, body string) (*native.Issue, *native.Comment, error) {
