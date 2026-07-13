@@ -339,6 +339,14 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 // resolves in-container.
 func (b *ClaudeCodeBackend) wireUserMCP(task Task, opts []claudesdk.Option, extras *[]string) []claudesdk.Option {
 	for _, s := range task.MCPServers {
+		// Internal servers (ask_user, board) are wired separately into the
+		// same name-keyed map; WithMCPServer is last-write-wins, so a user
+		// server sharing a reserved name would silently clobber that
+		// capability. Skip it rather than break ask_user/board wiring.
+		if s.Name == askUserMCPServerName || s.Name == boardMCPServerName {
+			b.Logger.Warn("[%s#%d/claude-code] MCP server %q: name is reserved for internal iterion wiring; skipped", task.NodeID, task.Iteration, s.Name)
+			continue
+		}
 		var srv claudesdk.MCPServerConfig
 		switch strings.ToLower(strings.TrimSpace(s.Transport)) {
 		case "http":

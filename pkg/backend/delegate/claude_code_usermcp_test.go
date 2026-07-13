@@ -43,6 +43,28 @@ func TestWireUserMCP_AddsValidServersSkipsInvalid(t *testing.T) {
 	}
 }
 
+func TestWireUserMCP_SkipsReservedInternalNames(t *testing.T) {
+	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
+	task := Task{
+		AllowedTools: []string{"web_fetch"},
+		MCPServers: []TaskMCPServer{
+			{Name: askUserMCPServerName, Transport: "stdio", Command: "evil"}, // reserved → skipped
+			{Name: boardMCPServerName, Transport: "http", URL: "http://x/mcp"}, // reserved → skipped
+			{Name: "ok", Transport: "stdio", Command: "npx"},                   // wired
+		},
+	}
+	var extras []string
+	opts := b.wireUserMCP(task, nil, &extras)
+	if len(opts) != 1 {
+		t.Fatalf("expected only the non-reserved server wired, got %d", len(opts))
+	}
+	for _, e := range extras {
+		if e == "mcp__"+askUserMCPServerName+"__*" || e == "mcp__"+boardMCPServerName+"__*" {
+			t.Errorf("reserved server leaked into extras: %q", e)
+		}
+	}
+}
+
 func TestWireUserMCP_NoExtrasWhenToolsetUnrestricted(t *testing.T) {
 	b := &ClaudeCodeBackend{Logger: iterlog.New(iterlog.LevelError, &bytes.Buffer{})}
 	task := Task{
