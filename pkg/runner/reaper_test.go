@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
+	"time"
 
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -144,5 +147,33 @@ func TestSandboxReapInterval_EnvOverride(t *testing.T) {
 	t.Setenv("ITERION_SANDBOX_REAP_INTERVAL", "0")
 	if got := sandboxReapInterval(); got != 0 {
 		t.Fatalf("sandboxReapInterval() = %v, want 0 (disables ticker)", got)
+	}
+}
+
+// TestRunSandboxReaper_DisabledWhenIsolationBoundary pins that a runner
+// whose ITERION_SANDBOX_OVERRIDE=none (it is itself the isolation boundary,
+// so it never spawns sandbox pods) short-circuits the reaper immediately:
+// no boot scan, no ticker. Otherwise the reaper would poll a namespace it
+// has no pods RBAC for and log a Forbidden warn on every tick. The gate
+// returning promptly (rather than blocking on the ticker loop) is the
+// observable proof.
+func TestRunSandboxReaper_DisabledWhenIsolationBoundary(t *testing.T) {
+	// A non-zero interval so that, absent the gate, runSandboxReaper would
+	// enter its ticker loop and block until ctx is cancelled.
+	t.Setenv("ITERION_SANDBOX_REAP_INTERVAL", "60s")
+	r := &Runner{cfg: Config{
+		SandboxOverride: "none",
+		Logger:          iterlog.New(iterlog.LevelError, io.Discard),
+	}}
+	done := make(chan struct{})
+	go func() {
+		r.runSandboxReaper(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+		// Gate worked: returned without touching NATS/Detect or the ticker.
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSandboxReaper did not return with SandboxOverride=none — the reaper must be disabled when the runner is the isolation boundary")
 	}
 }
