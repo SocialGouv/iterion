@@ -14,6 +14,7 @@ func strptr(s string) *string { return &s }
 // called StructuredOutput) must fall through to the result-text path.
 func TestParseSDKOutput(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"echoed":{"type":"string"}},"required":["echoed"]}`)
+	multiSchema := json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"]}`)
 
 	tests := []struct {
 		name         string
@@ -53,10 +54,17 @@ func TestParseSDKOutput(t *testing.T) {
 			wantKey:    "echoed", wantVal: "FENCED", wantFallback: false,
 		},
 		{
-			name:       "plain text with schema wraps as fallback",
+			name:       "plain text with single-string schema wraps under that field (valid)",
 			resultText: strptr("just some prose, no json"),
 			structured: nil,
 			schema:     schema,
+			wantKey:    "echoed", wantVal: "just some prose, no json", wantFallback: false,
+		},
+		{
+			name:       "plain text with multi-field schema wraps as fallback",
+			resultText: strptr("just some prose, no json"),
+			structured: nil,
+			schema:     multiSchema,
 			wantKey:    "text", wantVal: "just some prose, no json", wantFallback: true,
 		},
 		{

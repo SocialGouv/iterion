@@ -55,13 +55,46 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 			}
 		}
 
-		// Fallback: wrap raw text.
+		// Fallback: wrap raw text. If the output schema expects exactly one
+		// required field of type "string" (e.g. shell_result {result}), a
+		// text-only backend — kimi, or any CLI agent that cannot emit a
+		// JSON-schema-shaped result like claude_code/codex do — satisfies it
+		// by placing its final text in that field. Treat this as a VALID
+		// result (fallback=false), not a validation failure. Multi-field or
+		// non-string schemas still require real JSON and keep the {"text":…}
+		// fallback so the retry path can ask the model for structured output.
+		if field := singleRequiredStringField(outputSchema); field != "" {
+			return map[string]any{field: text}, rawLen, false
+		}
 		output = map[string]any{"text": text}
 		fb := len(outputSchema) > 0
 		return output, rawLen, fb
 	}
 
 	return map[string]any{}, 0, false
+}
+
+// singleRequiredStringField returns the name of the schema's sole required
+// field when that field is of type "string", or "" otherwise. Lets a
+// text-output backend satisfy a single-string-field schema (e.g. shell_result)
+// by wrapping its final text under that field.
+func singleRequiredStringField(outputSchema json.RawMessage) string {
+	if len(outputSchema) == 0 {
+		return ""
+	}
+	var s struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(outputSchema, &s) != nil || len(s.Required) != 1 {
+		return ""
+	}
+	if prop, ok := s.Properties[s.Required[0]]; ok && prop.Type == "string" {
+		return s.Required[0]
+	}
+	return ""
 }
 
 // validateWorkDir checks that workDir resolves to a path within baseDir.
