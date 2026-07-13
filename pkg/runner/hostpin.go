@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -41,6 +42,17 @@ func pinHostInHostsFile(hostsPath, host string, ip net.IP) (func(), error) {
 		return nil, fmt.Errorf("ssrf-pin: write %s: %w", hostsPath, err)
 	}
 	return func() { removeHostsPinLine(hostsPath, pinLine) }, nil
+}
+
+// pinUnavailable reports whether a pinHostInHostsFile error is the expected,
+// permanent "hosts file not writable" condition rather than an unexpected
+// failure on a writable file. On Kubernetes /etc/hosts is a kubelet-managed
+// bind-mount owned by root, so a non-root runner (uid != 0) can structurally
+// never write it — a permission-denied error is expected on every clone and
+// must be logged once at info, not per-clone at warn. Any other failure
+// (writable file, write still failed) is unexpected and keeps warning.
+func pinUnavailable(err error) bool {
+	return errors.Is(err, os.ErrPermission)
 }
 
 // removeHostsPinLine drops the exact pin line this run added, leaving every

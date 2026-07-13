@@ -477,6 +477,12 @@ type Runner struct {
 	// writer, in processOne after construction). See runlog_writer.go.
 	runEnginesMu sync.Mutex
 	runEngines   map[string]*runtime.Engine
+
+	// ssrfPinUnavailableOnce demotes the expected, permanent "hosts file not
+	// writable" SSRF IP-pin condition (non-root runner + kubelet-managed
+	// /etc/hosts) to a single info log for the runner's lifetime, instead of a
+	// per-clone warn that trains operators to ignore warns. See prepareRepoWorkspace.
+	ssrfPinUnavailableOnce sync.Once
 }
 
 type inFlight struct {
@@ -1357,7 +1363,9 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// alone can't close (it resolves but git re-resolves at connect time):
 	//   (a) DNS rebinding — pin the validated public IP for the host in
 	//       /etc/hosts so git resolves to the SAME address we just checked.
-	//       Best-effort: needs a writable /etc/hosts (warn + proceed otherwise).
+	//       Best-effort: needs a writable /etc/hosts. On a non-root runner it
+	//       is kubelet-owned and unwritable — expected, so we log once at info
+	//       and proceed (unexpected failures still warn per-clone).
 	//   (b) HTTP 302 → internal — disabled per git invocation below
 	//       (http.followRedirects=false); the clone URL is already canonical https.
 	// The pod-level egress NetworkPolicy (block RFC1918/metadata) remains the
@@ -1366,7 +1374,16 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	if host, herr := extractRepoHost(msg.RepoURL); herr == nil && pinnedIP != nil {
 		if restore, perr := pinHostInHostsFile(runnerHostsFile, host, pinnedIP); perr == nil {
 			defer restore()
+		} else if pinUnavailable(perr) {
+			// Expected & permanent on a non-root runner: /etc/hosts is a
+			// kubelet-managed bind-mount owned by root, so the pin can never
+			// land here. Log ONCE at info — the pre-check + pod egress
+			// NetworkPolicy is the authoritative control.
+			r.ssrfPinUnavailableOnce.Do(func() {
+				r.cfg.Logger.Info("runner: SSRF IP-pin unavailable on this runner: %s not writable (non-root); pre-check + pod egress policy is the control (%v)", runnerHostsFile, perr)
+			})
 		} else {
+			// Unexpected: writable file but the write still failed. Keep warning per-clone.
 			r.cfg.Logger.Warn("runner: SSRF IP-pin skipped for %s→%s (%v); relying on pre-check + pod egress policy", host, pinnedIP, perr)
 		}
 	}
