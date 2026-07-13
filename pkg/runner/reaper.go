@@ -69,7 +69,18 @@ type runLoader interface {
 // a ticker for as long as the runner loop lives. No-op when the runner
 // is not in-cluster (kubernetes.Detect fails) or has no NATS connection
 // (the lease is the liveness authority). Started by Run.
+//
+// Also a no-op when this runner is itself the isolation boundary
+// (ITERION_SANDBOX_OVERRIDE=none): that CLI-strength override forbids any
+// workflow from activating the k8s sandbox driver, so the runner never
+// spawns a sibling sandbox pod — there is nothing to reap, and firing the
+// reaper would only surface a permission error (the runner SA isn't granted
+// pods RBAC when the sandbox is disabled) on every tick.
 func (r *Runner) runSandboxReaper(ctx context.Context) {
+	if r.cfg.SandboxOverride == "none" {
+		r.cfg.Logger.Info("runner: k8s sandbox reaper disabled — runner is the isolation boundary (ITERION_SANDBOX_OVERRIDE=none), no sandbox pods to reap")
+		return
+	}
 	interval := sandboxReapInterval()
 	// Boot-time reap: catch a sibling that died before THIS runner booted.
 	r.reapOrphanSandboxResources(ctx)
