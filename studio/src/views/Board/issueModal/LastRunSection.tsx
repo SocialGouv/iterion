@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 
 import BranchDiffModal from "@/components/Runs/BranchDiffModal";
-import PauseForm from "@/components/Runs/PauseForm";
+import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
 import { getRun } from "@/api/runs";
 import { rehydratePendingHumanInput } from "@/store/run/reducer";
 import { Button } from "@/components/ui/Button";
@@ -14,14 +14,15 @@ import { CopyButton } from "@/components/ui/CopyButton";
 // operator can respond to a paused pipeline directly from the board
 // instead of detouring through the run console (issue #125, point 4).
 //
-// It reuses PauseForm verbatim, decoding the paused node's questions with
-// the shared rehydratePendingHumanInput (which runtime-narrows the opaque
-// run checkpoint and gates on paused_waiting_human) — the same helper the
-// run console uses to rebuild the pause panel after a reload.
-// sourceOverride={null} is load-bearing: the operator isn't editing this
-// run's workflow here, so the resume must carry NO source and let the
-// server fall back to the run's persisted FilePath (passing the editor
-// buffer would resume an unrelated workflow).
+// It reuses HumanPromptForm — the SAME schema-driven form the run console
+// renders — so a paused human node's real answer fields (its output
+// schema: enums, checkboxes, text) show, not the checkpoint's context
+// vars. rehydratePendingHumanInput (shared, runtime-narrows the opaque
+// checkpoint, gates on paused_waiting_human) yields the paused node id +
+// questions map the form needs. sourceOverride={null} sends NO source so
+// the server resumes against the run's persisted FilePath (the operator
+// isn't editing this run's workflow); onResumed refetches the board view
+// instead of the run-console WS machinery.
 function AwaitingInput({ runID }: { runID: string }) {
   const { data, refetch } = useQuery({
     queryKey: ["board-last-run", runID],
@@ -42,17 +43,18 @@ function AwaitingInput({ runID }: { runID: string }) {
     },
   });
   const pending = data?.run ? rehydratePendingHumanInput(data) : null;
-  if (!pending) return null;
+  if (!pending || !pending.node_id) return null;
   return (
     <div className="rounded border border-warning/40 bg-warning-soft p-2 space-y-2">
       <div className="text-micro uppercase tracking-wide text-warning-fg">
         ⏸ Awaiting input
       </div>
-      <PauseForm
+      <HumanPromptForm
         runId={runID}
+        nodeId={pending.node_id}
         questions={pending.questions ?? {}}
         sourceOverride={null}
-        onSubmitted={() => void refetch()}
+        onResumed={() => void refetch()}
       />
     </div>
   );

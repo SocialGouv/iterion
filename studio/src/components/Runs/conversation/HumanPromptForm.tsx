@@ -24,6 +24,16 @@ interface Props {
   // typing a reply. Only meaningful on free-text-only turns. Default
   // = ["skip", "idk"]; pass empty to suppress.
   quickActions?: ReadonlyArray<"skip" | "idk" | "later">;
+  // Overrides the workflow source sent with the resume. Run-console
+  // callers omit it and the editor buffer (currentSource) is used; a
+  // board caller (answering a paused card, not editing this run's
+  // workflow) passes `null` to send NO source so the server falls back
+  // to the run's persisted FilePath.
+  sourceOverride?: string | null;
+  // Called after a successful resume INSTEAD of the run-console WS
+  // machinery (reconnect / snapshot resync). A board caller passes this
+  // to refetch its own view; when omitted the run-console behaviour runs.
+  onResumed?: () => void;
 }
 
 // HumanPromptForm renders the inline form for a pending human-pause
@@ -42,6 +52,8 @@ export default function HumanPromptForm({
   nodeId,
   questions,
   quickActions = ["skip", "idk"],
+  sourceOverride,
+  onResumed,
 }: Props) {
   const setRunStatus = useRunStore((s) => s.setRunStatus);
   const requestWsReconnect = useRunStore((s) => s.requestWsReconnect);
@@ -50,6 +62,10 @@ export default function HumanPromptForm({
     (s) => s.resyncEventsAfterResume,
   );
   const currentSource = useDocumentStore((s) => s.currentSource);
+  // Explicit prop (incl. null) wins over the editor buffer; null → no
+  // source on the resume (server uses the run's persisted FilePath).
+  const resolvedSource =
+    (sourceOverride !== undefined ? sourceOverride : currentSource) ?? undefined;
 
   const { fields, loading, staleHash } = useHumanNodeSchema(runId, nodeId);
 
@@ -116,9 +132,15 @@ export default function HumanPromptForm({
     try {
       await resumeRun(runId, {
         answers,
-        source: currentSource ?? undefined,
+        source: resolvedSource,
       });
       setSubmitted(true);
+      // A board caller isn't viewing this run's canvas — skip the
+      // run-console WS machinery entirely and let it refetch its view.
+      if (onResumed) {
+        onResumed();
+        return;
+      }
       setRunStatus("running");
       // The broker dropped this run's subscribers when the prior pass
       // hit paused_waiting_human; without a fresh dial the resumed
@@ -230,9 +252,11 @@ export default function HumanPromptForm({
         <PauseForm
           runId={runId}
           questions={questions}
+          sourceOverride={sourceOverride}
           onSubmitted={() => {
             setSubmitted(true);
-            setRunStatus("running");
+            if (onResumed) onResumed();
+            else setRunStatus("running");
           }}
         />
       ) : (

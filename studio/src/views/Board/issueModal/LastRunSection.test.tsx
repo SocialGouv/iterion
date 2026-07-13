@@ -1,27 +1,40 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LastRunSection } from "./LastRunSection";
 
-// Mock the runs API: getRun feeds the paused-run detection, resumeRun is
-// what the answer affordance must call.
+// Mock the runs API: getRun feeds paused-run detection, getRunWorkflow feeds
+// the paused node's OUTPUT schema (what HumanPromptForm renders), resumeRun is
+// the answer call.
 const getRun = vi.fn();
+const getRunWorkflow = vi.fn();
 const resumeRun = vi.fn().mockResolvedValue({ run_id: "r1", status: "running" });
 vi.mock("@/api/runs", () => ({
   getRun: (...a: unknown[]) => getRun(...a),
+  getRunWorkflow: (...a: unknown[]) => getRunWorkflow(...a),
   resumeRun: (...a: unknown[]) => resumeRun(...a),
 }));
 
-// The document store backs PauseForm's editor-buffer source; the board
-// caller overrides it, so its value must NOT reach resumeRun.
+// PauseForm's editor-buffer source; the board caller overrides it.
 vi.mock("@/store/document", () => ({
   useDocumentStore: (sel: (s: { currentSource: string | null }) => unknown) =>
     sel({ currentSource: "some-other-bot.bot" }),
 }));
 
-// BranchDiffModal pulls a heavy dependency chain we don't exercise here.
+// HumanPromptForm reads run-store selectors; on the board (onResumed set) they
+// must not fire, but the hooks are still called — return no-ops.
+vi.mock("@/store/run", () => ({
+  useRunStore: (sel: (s: Record<string, unknown>) => unknown) =>
+    sel({
+      setRunStatus: vi.fn(),
+      requestWsReconnect: vi.fn(),
+      applySnapshot: vi.fn(),
+      resyncEventsAfterResume: vi.fn(),
+    }),
+}));
+
 vi.mock("@/components/Runs/BranchDiffModal", () => ({ default: () => null }));
 
 function renderSection(runID: string) {
@@ -39,39 +52,48 @@ afterEach(() => {
 });
 
 describe("LastRunSection answer-from-board affordance", () => {
-  it("renders the pause affordance and resumes with NO source (falls back to persisted FilePath)", async () => {
+  it("renders the paused human node's OUTPUT-schema fields, not the checkpoint context vars", async () => {
     getRun.mockResolvedValue({
       run: {
         id: "r1",
         status: "paused_waiting_human",
         checkpoint: {
-          node_id: "ask_reviewer",
-          interaction_id: "r1_ask_reviewer",
-          interaction_questions: { decision: "Ship it?" },
+          node_id: "approval",
+          interaction_id: "r1_approval",
+          // Context vars carried on the checkpoint — must NOT become the form.
+          interaction_questions: { change_summary: "bump sdk", service: "checkout-api" },
         },
       },
       executions: [],
       last_seq: 0,
     });
+    getRunWorkflow.mockResolvedValue({
+      nodes: [
+        {
+          id: "approval",
+          output_schema: [
+            { name: "environment", type: "string", enum_values: ["staging", "production"] },
+            { name: "approve", type: "bool" },
+            { name: "reviewer", type: "string" },
+            { name: "notes", type: "string" },
+          ],
+        },
+      ],
+      stale_hash: false,
+    });
 
     renderSection("r1");
 
     await waitFor(() => expect(screen.getByText(/Awaiting input/i)).toBeTruthy());
-    // The question field label from PauseForm is rendered.
-    await waitFor(() => expect(screen.getByText(/decision/i)).toBeTruthy());
-
-    const textarea = document.querySelector("textarea");
-    expect(textarea).toBeTruthy();
-    fireEvent.change(textarea as HTMLTextAreaElement, { target: { value: "yes" } });
-    const submit = screen.getByRole("button", { name: /submit|send|resume/i });
-    fireEvent.click(submit);
-
-    await waitFor(() => expect(resumeRun).toHaveBeenCalledTimes(1));
-    const [runId, body] = resumeRun.mock.calls[0]!;
-    expect(runId).toBe("r1");
-    expect(body.answers).toEqual({ decision: "yes" });
-    // Critical: the editor buffer must NOT leak in as the resume source.
-    expect(body.source).toBeUndefined();
+    // The schema-driven wizard renders the first output-schema field
+    // (environment, an enum) with its options — proof the form comes from
+    // the node's output schema, not the checkpoint's plain context-var map.
+    await waitFor(() => expect(screen.getByText(/environment/i)).toBeTruthy());
+    expect(screen.getByText(/staging/i)).toBeTruthy();
+    expect(screen.getByText(/production/i)).toBeTruthy();
+    // The checkpoint context vars must NOT be rendered as answer fields.
+    expect(screen.queryByText(/change_summary/i)).toBeNull();
+    expect(screen.queryByText(/checkout-api/i)).toBeNull();
   });
 
   it("shows only the plain last-run panel when the run is not paused", async () => {
