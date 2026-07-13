@@ -157,6 +157,18 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 			return creds.APIKey(secrets.Provider(provider))
 		}, true
 	})
+	// Per-run OAuth-forfait dirs (codex / claude_code) the runner materialised
+	// at claim time. Lets the in-process claw model factory consume a tenant's
+	// resolved OpenAI ChatGPT-forfait in cloud mode (no ~/.codex on the pod).
+	model.SetOAuthDirLookup(func(ctx context.Context) (func(string) string, bool) {
+		creds, ok := secrets.CredentialsFromContext(ctx)
+		if !ok {
+			return nil, false
+		}
+		return func(kind string) string {
+			return creds.OAuthDir(kind)
+		}, true
+	})
 
 	// Shared knowledge memory persists in the tenant's document store
 	// (not the pod's ephemeral disk) so it survives across runs/pods.

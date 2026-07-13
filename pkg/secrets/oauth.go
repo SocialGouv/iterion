@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -183,6 +184,24 @@ func CodexAuthJSONPath() string {
 		return ""
 	}
 	return filepath.Join(home, ".codex", "auth.json")
+}
+
+// LoadCodexCredentialsFrom reads and parses Codex CLI's auth.json from an
+// EXPLICIT CODEX_HOME-shaped directory (`<dir>/auth.json`), rather than the
+// process's default location. This is the cloud path: the runner materialises
+// a tenant's resolved codex OAuth-forfait into a per-run temp dir
+// (Credentials.OAuthDir("codex")), and the in-process claw model factory reads
+// it from there instead of the pod's (empty) ~/.codex. Empty dir → error.
+func LoadCodexCredentialsFrom(dir string) (CodexCredentialsView, error) {
+	if strings.TrimSpace(dir) == "" {
+		return CodexCredentialsView{}, fmt.Errorf("secrets: empty codex credentials dir")
+	}
+	path := filepath.Join(dir, "auth.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CodexCredentialsView{}, fmt.Errorf("secrets: read %s: %w", path, err)
+	}
+	return ParseCodexView(data)
 }
 
 // LoadCodexCredentialsFromDisk reads and parses Codex CLI's auth.json from
