@@ -1104,6 +1104,15 @@ committed, PR-reviewable record. Index + template:
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
 - **version.yml** — conventional changelog via release-it, version from `package.json`
 
+**`main` is protected by a merge queue** (ruleset "main protected — merge
+queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which
+rebuilds each on `main` + earlier-queued PRs and merges only if that combined
+tree is green — closing the semantic inter-PR conflict class (two PRs green
+apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
+push / `--squash` without `--auto`). Required checks: `test`, `race`,
+`vendor-check`, `mongo-conformance`. Full details + revert command:
+[docs/merge-policy.md](docs/merge-policy.md).
+
 ## Conventions
 
 - No external linter beyond `go fmt` and `go vet`
