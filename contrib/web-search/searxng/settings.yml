@@ -1,0 +1,25 @@
+# SearXNG settings for the iterion sovereign web-search tier.
+#
+# The one line that matters for iterion: search.formats includes `json`.
+# Without it, SearXNG answers /search?format=json with HTTP 403 and claw's
+# web_search surfaces an explicit error (see docs/web-search.md).
+#
+# `use_default_settings: true` inherits SearXNG's full engine catalogue; the
+# keys below only override what iterion needs for a local, programmatic,
+# unauthenticated instance.
+use_default_settings: true
+
+server:
+  # Overridden at runtime by the SEARXNG_SECRET env (see docker-compose).
+  secret_key: "change-me-in-.env"
+  # The limiter/bot-detection blocks programmatic clients; off for a
+  # private local/self-hosted instance behind your own network boundary.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # REQUIRED for iterion: expose the JSON API.
+  formats:
+    - html
+    - json

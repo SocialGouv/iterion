@@ -1,0 +1,120 @@
+# Sovereign web-search stack for iterion (tier 2 + tier 3).
+#
+#   Tier 2 — SearXNG only (light, ~1 container). Powers claw's web_search on
+#            both backends. Bring up just this:
+#              docker compose up -d searxng
+#            then point iterion at it:
+#              export SEARXNG_URL=http://localhost:8080
+#
+#   Tier 3 — Firecrawl (JS render / crawl / extract), pointed at the same
+#            SearXNG for its own search. Heavier (redis + rabbitmq + postgres
+#            + playwright). Enable with the firecrawl profile:
+#              docker compose --profile firecrawl up -d
+#            then enable the iterion plugin:
+#              iterion plugin enable firecrawl
+#              iterion plugin config firecrawl api_url=http://localhost:3002
+#
+# See README.md for the full walkthrough and the infra/prod notes.
+
+name: iterion-web-search
+
+services:
+  # ---- Tier 2: SearXNG (sovereign metasearch) --------------------------
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-please-change-this-local-secret}
+      SEARXNG_BASE_URL: http://localhost:${SEARXNG_PORT:-8080}/
+    networks:
+      - websearch
+    logging:
+      driver: "json-file"
+      options: { max-size: "5m", max-file: "2" }
+
+  # ---- Tier 3: Firecrawl (opt-in via `--profile firecrawl`) ------------
+  # Image-based (no local build). Firecrawl's `search` delegates to the
+  # SearXNG above via SEARXNG_ENDPOINT — one instance serves both tiers.
+  redis:
+    image: redis:alpine
+    profiles: ["firecrawl"]
+    command: redis-server --bind 0.0.0.0
+    networks: [websearch]
+    logging:
+      driver: "json-file"
+      options: { max-size: "5m", max-file: "2" }
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    profiles: ["firecrawl"]
+    command: rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [websearch]
+    logging:
+      driver: "json-file"
+      options: { max-size: "5m", max-file: "2" }
+
+  nuq-postgres:
+    image: ghcr.io/firecrawl/nuq-postgres:latest
+    profiles: ["firecrawl"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    networks: [websearch]
+    logging:
+      driver: "json-file"
+      options: { max-size: "5m", max-file: "2" }
+
+  playwright-service:
+    image: ghcr.io/firecrawl/playwright-service:latest
+    profiles: ["firecrawl"]
+    environment:
+      PORT: 3000
+    networks: [websearch]
+    logging:
+      driver: "json-file"
+      options: { max-size: "5m", max-file: "2" }
+
+  firecrawl:
+    image: ghcr.io/firecrawl/firecrawl:latest
+    profiles: ["firecrawl"]
+    depends_on:
+      redis: { condition: service_started }
+      playwright-service: { condition: service_started }
+      rabbitmq: { condition: service_healthy }
+    environment:
+      HOST: "0.0.0.0"
+      PORT: ${FIRECRAWL_PORT:-3002}
+      REDIS_URL: redis://redis:6379
+      REDIS_RATE_LIMIT_URL: redis://redis:6379
+      PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+      POSTGRES_HOST: nuq-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      USE_DB_AUTHENTICATION: "false"
+      NUQ_RABBITMQ_URL: amqp://rabbitmq:5672
+      # The sovereign wiring: Firecrawl's own search goes through SearXNG.
+      SEARXNG_ENDPOINT: http://searxng:8080
+      ENV: local
+    ports:
+      - "${FIRECRAWL_PORT:-3002}:${FIRECRAWL_PORT:-3002}"
+    networks: [websearch]
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+
+networks:
+  websearch:
+    driver: bridge
