@@ -636,6 +636,10 @@ func (c *Dispatcher) buildRunningEntry(iss tracker.Issue, runID string, attempt 
 	// workspace path; the finish-time stamp later upgrades it to the
 	// resolved worktree path.
 	c.stampLastRun(iss.ID, entry)
+	// A fresh dispatch (incl. a re-dispatch of a previously-parked issue)
+	// supersedes any prior pause — clear the denormalized awaiting-input
+	// badge so the card doesn't show a stale ⏸ while the new run executes.
+	c.setAwaitingInput(iss.ID, false)
 	return entry
 }
 

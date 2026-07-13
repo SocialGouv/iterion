@@ -396,6 +396,7 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	// it degrades to a single fresh re-run that re-parks at the same point.
 	if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
 		c.stampLastRun(issueID, r)
+		c.setAwaitingInput(issueID, true)
 		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — left claimed and in-progress, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
 		c.fireSnapshot()
 		return
@@ -436,6 +437,9 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	}
 	switch {
 	case err == nil:
+		// A clean terminal run is no longer awaiting input — clear the
+		// denormalized board badge (best-effort HINT; see setAwaitingInput).
+		c.setAwaitingInput(issueID, false)
 		// Honesty guard: a "clean" finish with no commit produced nothing
 		// directly mergeable, yet the transition below still moves the
 		// issue to CompletedState (default "review") — where an operator
@@ -659,6 +663,30 @@ func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
 	}
 	if err := setter.SetLastRun(issueID, r.RunID, workdir); err != nil {
 		c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
+	}
+}
+
+// setAwaitingInput denormalizes the pause-hint flag onto the tracker
+// issue so the board grid can badge the card without an N+1 run fetch.
+// Only native trackers implement SetAwaitingInput — external trackers
+// (github, forgejo) silently skip via the failed type-assertion, same
+// as stampLastRun. Best-effort: a write failure is logged at warn and
+// does not derail the pause/finish/dispatch path.
+//
+// Set true when a run parks on pause; cleared false on the paths the
+// dispatcher controls (clean terminal finish, re-dispatch). It is a
+// HINT — a console-only resume the dispatcher never observes leaves the
+// flag stale until the next card touch corrects it; the modal's
+// authoritative check stays getRun(last_run_id).status.
+func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
+	setter, ok := c.tracker.(interface {
+		SetAwaitingInput(id string, v bool) error
+	})
+	if !ok {
+		return
+	}
+	if err := setter.SetAwaitingInput(issueID, v); err != nil {
+		c.logger.Warn("dispatcher: set awaiting-input=%v on %s: %v", v, issueID, err)
 	}
 }
 

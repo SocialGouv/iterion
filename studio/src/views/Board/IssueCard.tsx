@@ -229,6 +229,15 @@ export function IssueCard({
             </button>
           );
         })()}
+        {iss.awaiting_input && !running && (
+          <Badge
+            variant="warning"
+            size="sm"
+            title="This issue's most recent run is paused waiting for input — open the card to answer and resume. (Denormalized hint; verified against the run when you open it.)"
+          >
+            ⏸ Awaiting input
+          </Badge>
+        )}
         {iss.external?.repo && (
           <Badge
             variant="neutral"

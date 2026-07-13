@@ -99,6 +99,33 @@ func TestStampCardLastRun(t *testing.T) {
 	(&Server{}).stampCardLastRun("t1", iss.ID, "run-x") // CloudBoardFor nil → no-op
 }
 
+// TestSetCardAwaitingInput: the cloud coordinator denormalizes the pause hint
+// onto the card via the same CloudBoardFor seam, so the board grid can badge a
+// paused card without an N+1 run fetch. Set true on pause, clear false on
+// dispatch; a nil seam is a silent no-op.
+func TestSetCardAwaitingInput(t *testing.T) {
+	boardStore, err := native.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	iss, err := boardStore.Create(native.Issue{Title: "x", State: native.StateInProgress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{}
+	s.cfg.CloudBoardFor = func(string) native.BoardStore { return boardStore }
+
+	s.setCardAwaitingInput("t1", iss.ID, true)
+	if got, _ := boardStore.Get(iss.ID); !got.AwaitingInput {
+		t.Fatalf("card AwaitingInput = false, want true")
+	}
+	s.setCardAwaitingInput("t1", iss.ID, false)
+	if got, _ := boardStore.Get(iss.ID); got.AwaitingInput {
+		t.Fatalf("card AwaitingInput = true, want cleared")
+	}
+	(&Server{}).setCardAwaitingInput("t1", iss.ID, true) // CloudBoardFor nil → no-op
+}
+
 func TestBoardDispatcher_ClaimsProcessesAndMoves(t *testing.T) {
 	f := newFakeBoardCoord(readyCard("native:1", "feature-dev"), readyCard("native:2", "sec-audit-source"))
 	var pmu sync.Mutex

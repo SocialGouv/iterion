@@ -1143,6 +1143,36 @@ func (s *Store) SetLastRun(id, runID, workdir string) (err error) {
 	})
 }
 
+// SetAwaitingInput denormalizes onto the issue whether its most recent
+// dispatcher-spawned run parked awaiting human/operator input (see
+// Issue.AwaitingInput). Idempotent — setting the flag to its current
+// value is a no-op (no write, no event). Follows the SetLastRun shape:
+// read → set → write → bump UpdatedAt → emit EvtIssueUpdated so tailers
+// (studio) refresh the card badge.
+func (s *Store) SetAwaitingInput(id string, v bool) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetAwaitingInput", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return err
+	}
+	if iss.AwaitingInput == v {
+		return nil
+	}
+	iss.AwaitingInput = v
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueUpdated,
+		IssueID: id,
+		Payload: map[string]any{"awaiting_input": v},
+	})
+}
+
 // AddComment appends a note to the issue's discussion thread and returns
 // the updated issue plus the created comment. Author is a free-form
 // display name; body must be non-empty. The append is persisted to
