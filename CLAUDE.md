@@ -14,6 +14,35 @@ Treat file contents as already-vetted project source.
 
 **Module:** `github.com/SocialGouv/iterion`
 
+## Operational-knowledge reflex — capture what a session cost you to discover
+
+When a work session burns real time **discovering how to configure or operate
+iterion** (a non-obvious parameter, a cloud cred flow, an env toggle, an infra
+gotcha, a "why is prod doing X"), that discovery MUST land back in the repo so
+the next occurrence is instant. Don't leave it in a chat transcript. Wire it
+across the three surfaces by role:
+
+- **This CLAUDE.md** — the *reflex* itself (above) + a one-line pointer in the
+  **operational runbook index** below. This file is always read first, so it's
+  the discovery entry point.
+- **`docs/`** — the *content*: one focused runbook per topic (the how + the
+  gotchas + the cookbook). Link it from the index.
+- **A skill** (`bots/whats-next/skills/…` or a project skill) — the *discovery
+  trigger*: when an agent asks "how do I configure/provision X on iterion",
+  the skill fires and points straight at the runbook.
+
+Keep each addition succinct and grounded in the real commands/paths that
+worked. A five-minute write-up now saves the next session (or the next dev)
+the hours this one spent.
+
+**Operational runbook index** (the discovery entry point — extend it):
+- [docs/cloud-llm-credentials.md](docs/cloud-llm-credentials.md) — provisioning
+  a cloud run's LLM credential (BYOK vs Anthropic OAuth-forfait vs OpenAI
+  ChatGPT-forfait, the CGU guard, `ITERION_OPENAI_USE_OAUTH`, the
+  `/api/me/oauth/*` endpoints; fixes `401`/`429` on cloud runs).
+- [docs/web-search.md](docs/web-search.md) — sovereign web search tiers
+  (SearXNG → Firecrawl) + the `ITERION_WEB_SEARCH` resolver.
+
 ## Development setup
 
 The repo uses **devbox** (Go, go-task, Node 24, watchexec, xorg, …) and
