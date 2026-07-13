@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -7,14 +7,16 @@ import { LastRunSection } from "./LastRunSection";
 
 // Mock the runs API: getRun feeds paused-run detection, getRunWorkflow feeds
 // the paused node's OUTPUT schema (what HumanPromptForm renders), resumeRun is
-// the answer call.
+// the answer call, getRunChildren feeds the per-row children disclosure.
 const getRun = vi.fn();
 const getRunWorkflow = vi.fn();
 const resumeRun = vi.fn().mockResolvedValue({ run_id: "r1", status: "running" });
+const getRunChildren = vi.fn().mockResolvedValue([]);
 vi.mock("@/api/runs", () => ({
   getRun: (...a: unknown[]) => getRun(...a),
   getRunWorkflow: (...a: unknown[]) => getRunWorkflow(...a),
   resumeRun: (...a: unknown[]) => resumeRun(...a),
+  getRunChildren: (...a: unknown[]) => getRunChildren(...a),
 }));
 
 // PauseForm's editor-buffer source; the board caller overrides it.
@@ -105,6 +107,41 @@ describe("LastRunSection answer-from-board affordance", () => {
     renderSection("r1");
     await waitFor(() => expect(screen.getByText(/Last run/i)).toBeTruthy());
     expect(screen.queryByText(/Awaiting input/i)).toBeNull();
+  });
+});
+
+describe("LastRunSection children disclosure (lazy)", () => {
+  it("fetches children only on expand, then lists them with links", async () => {
+    getRun.mockResolvedValue({
+      run: { id: "r1", status: "finished", checkpoint: {} },
+      executions: [],
+      last_seq: 0,
+    });
+    getRunChildren.mockResolvedValue([
+      {
+        id: "child-aaaaaaaa",
+        workflow_name: "fan-out",
+        status: "finished",
+        created_at: "2026-07-13T10:01:00Z",
+        updated_at: "2026-07-13T10:05:00Z",
+        active: false,
+        shard_count: 2,
+      },
+    ]);
+
+    renderSection("r1");
+    // Collapsed by default → no children request (guards against N+1).
+    await waitFor(() => expect(screen.getByText(/▸ Children/)).toBeTruthy());
+    expect(getRunChildren).not.toHaveBeenCalled();
+
+    // Expanding fires the single fetch and lists the child.
+    fireEvent.click(screen.getByText(/▸ Children/));
+    await waitFor(() => expect(getRunChildren).toHaveBeenCalledWith("r1"));
+    await waitFor(() => expect(screen.getByText("#1/2")).toBeTruthy());
+    const link = screen
+      .getAllByRole("link")
+      .find((el) => el.getAttribute("href")?.includes("child-aaaaaaaa"));
+    expect(link).toBeTruthy();
   });
 });
 

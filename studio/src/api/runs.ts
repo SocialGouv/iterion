@@ -12,3 +12,4 @@ export * from "./runs/files";
 export * from "./runs/commits";
 export * from "./runs/conflicts";
 export * from "./runs/uploads";
+export * from "./runs/children";
