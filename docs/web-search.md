@@ -113,13 +113,19 @@ Firecrawl's `search` (tier 3).
 - **claude_code** has its own native `WebSearch` / `WebFetch` (Claude Code
   CLI). A `claude_code` node that leaves `tools:` unset inherits them for
   free. If it restricts `tools:`, list `WebSearch` / `WebFetch` explicitly.
-- **External MCP servers (Firecrawl, custom SearXNG MCP) are resolved into
-  tools only for the `claw` backend.** iterion does not forward
-  user-declared `mcp_server` / plugin MCP configs to the claude_code or codex
-  CLIs (only the internal `ask_user` + board servers are wired there). On
-  claude_code, rely on its native web tools; the Firecrawl tier is claw-only.
-  Forwarding user MCP servers to the claude CLI via `--mcp-config` is a
-  possible future enhancement.
+- **External MCP servers (Firecrawl, custom SearXNG MCP) are forwarded to
+  BOTH backends.** The `claw` backend resolves them into tools in-process;
+  the `claude_code` backend forwards the node's active `mcp_server` / plugin
+  MCP configs to the agent CLI via `--mcp-config`
+  ([wireUserMCP](../pkg/backend/delegate/claude_code_hooks.go)). This is
+  purely additive — iterion never passes `--tools`, so claude_code keeps its
+  full native toolset (**WebSearch/WebFetch stay on by default**) and simply
+  gains the Firecrawl tools on top. codex is unchanged (no MCP wiring).
+- One caveat for claude_code stdio MCP servers: a `command:` that is a host
+  path won't resolve inside a sandboxed container (same limitation as the
+  internal ask_user/board stdio servers). Prefer an `http`/`sse` server for
+  sandboxed runs; a self-hosted Firecrawl MCP over HTTP is reachable from
+  inside the container.
 
 `web_fetch` (claw) and the tier resolution above are unrelated to Anthropic's
 server-side `web_search_*` / `web_fetch_*` tool types — claw does not pass

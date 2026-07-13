@@ -618,6 +618,14 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		task.HasTools = true // claw needs the tool loop active for ask_user
 	}
 
+	// CLI backends (claude_code) can't resolve MCP tools in-process, so the
+	// node's active user/plugin MCP servers are forwarded to the agent CLI
+	// verbatim (delegate.wireUserMCP → --mcp-config). Additive only: it never
+	// passes --tools, so native WebSearch/WebFetch stay on by default.
+	if backendName == delegate.BackendClaudeCode && len(f.activeMCPServers) > 0 && e.mcpManager != nil {
+		task.MCPServers = e.resolveTaskMCPServers(f.activeMCPServers)
+	}
+
 	e.applySessionContinuity(&task, f, input)
 	applyResumeContinuity(&task, input)
 

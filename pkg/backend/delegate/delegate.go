@@ -246,6 +246,20 @@ type ToolDef struct {
 	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
 }
 
+// TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
+// Task.MCPServers for CLI backends to forward to the agent CLI. It mirrors
+// the runtime mcp.ServerConfig / claudesdk MCP server shape (stdio uses
+// Command/Args/Env; http/sse use URL/Headers).
+type TaskMCPServer struct {
+	Name      string
+	Transport string // "stdio" | "http" | "sse" (empty → stdio)
+	Command   string
+	Args      []string
+	URL       string
+	Headers   map[string]string
+	Env       map[string]string
+}
+
 // MemorySpec opts the node into the iterion workspace memory
 // tree (under ~/.iterion/projects/<encoded>/memory/<Scope>/).
 // Honored by backends that maintain their own session history (claw).
@@ -367,6 +381,17 @@ type Task struct {
 	// ToolDefs provides full tool definitions for backends that manage tool
 	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef
+
+	// MCPServers are the user/plugin-declared MCP servers active for this
+	// node (from the workflow `mcp_server` decls, project .mcp.json, and
+	// enabled plugins' mcp_servers contributions). CLI backends
+	// (claude_code) forward them to the agent CLI via --mcp-config so
+	// their tools are available ALONGSIDE — never replacing — the native
+	// toolset (WebSearch/WebFetch stay on by default). The claw backend
+	// does NOT read this: it resolves the same servers into ToolDefs
+	// in-process via the MCP manager. Internal servers (ask_user, board)
+	// are wired separately by each backend and are absent here.
+	MCPServers []TaskMCPServer
 
 	// OutputSchema is the JSON Schema for the expected structured output.
 	// Nil means free-form text output.

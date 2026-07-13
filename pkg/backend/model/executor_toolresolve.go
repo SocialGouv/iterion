@@ -49,6 +49,38 @@ func (e *ClawExecutor) resolveToolsForNode(ctx context.Context, node ir.Node, na
 	return tools, nil
 }
 
+// resolveTaskMCPServers projects the node's active MCP server names into
+// the transport-agnostic delegate.TaskMCPServer shape that CLI backends
+// (claude_code) forward to the agent CLI. Unknown names (not in the MCP
+// manager's resolved catalog) are skipped — the manager holds only
+// user/plugin servers, so internal ones (ask_user, board) are naturally
+// absent. Auth-bearing http/sse servers are forwarded by URL+Headers; the
+// OAuth broker path (claw-only in-process resolution) is not replicated
+// here, so a server needing dynamic bearer refresh should carry a static
+// header instead.
+func (e *ClawExecutor) resolveTaskMCPServers(names []string) []delegate.TaskMCPServer {
+	if e.mcpManager == nil {
+		return nil
+	}
+	var out []delegate.TaskMCPServer
+	for _, name := range names {
+		cfg, ok := e.mcpManager.ServerConfig(name)
+		if !ok || cfg == nil {
+			continue
+		}
+		out = append(out, delegate.TaskMCPServer{
+			Name:      cfg.Name,
+			Transport: string(cfg.Transport),
+			Command:   cfg.Command,
+			Args:      append([]string(nil), cfg.Args...),
+			URL:       cfg.URL,
+			Headers:   cfg.Headers,
+			Env:       cfg.Env,
+		})
+	}
+	return out
+}
+
 // expandWildcards replaces wildcard entries ("mcp.<server>.*") with the
 // concrete tool names discovered from that MCP server.
 func (e *ClawExecutor) expandWildcards(ctx context.Context, node ir.Node, names []string) ([]string, error) {
