@@ -278,6 +278,15 @@ type RunSummary struct {
 	// by the server (Mongo aggregation), not persisted on the run doc.
 	// See cloud-ready plan §F (T-03, T-31).
 	QueuePosition *int `json:"queue_position,omitempty"`
+	// Run-tree shard tuple (T4b, refs #125): the child←parent edge plus
+	// the shard coordinates mirrored from the queue message. Empty for a
+	// top-level (non-sharded) run. Carried so the run list / children
+	// endpoint can project a run's shard/child subtree without a per-run
+	// fetch. See store.Run.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	ShardIndex  int    `json:"shard_index,omitempty"`
+	ShardCount  int    `json:"shard_count,omitempty"`
+	ShardLabel  string `json:"shard_label,omitempty"`
 }
 
 // ListFilter scopes a List request. Empty fields mean no filter.

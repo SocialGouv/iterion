@@ -47,6 +47,18 @@ type RunStore interface {
 	SaveRun(ctx context.Context, r *Run) error
 	ListRuns(ctx context.Context) ([]string, error)
 
+	// Run-tree reverse queries (T4b, refs #125). Both project run ids
+	// only, sorted by created_at ascending (oldest first), and return
+	// an empty slice (no error) when nothing matches.
+	//
+	// ListRunsBySourceIssue returns every run whose Source.IssueID equals
+	// issueID — the card←run reverse edge, i.e. every run a native-kanban
+	// card triggered. ListChildRuns returns every run whose ParentRunID
+	// equals parentRunID — a run's shard/child subtree (child points UP
+	// via ParentRunID; there is no children list on the parent).
+	ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error)
+	ListChildRuns(ctx context.Context, parentRunID string) ([]string, error)
+
 	// Watch subscriptions (MVP3b) — the set of native-kanban issue IDs
 	// this run is subscribed to. Concurrency-safe read-modify-write of
 	// Run.WatchedIssueIDs (parallel branches' onNodeFinished hooks and

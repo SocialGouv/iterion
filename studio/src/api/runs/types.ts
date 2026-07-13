@@ -98,6 +98,16 @@ export interface RunSummary {
   // "manual"; the UI must treat empty as "manual" — see
   // runSourceMeta.normalizeSourceKind.
   source_kind?: RunSourceKind;
+  // Run-tree shard tuple (T4b, refs #125): the child←parent edge plus
+  // the shard coordinates mirrored from the queue message. parent_run_id
+  // points at the run that spawned this shard/child; the shard_* fields
+  // describe its slot in the parent's fan-out. All absent for a
+  // top-level (non-sharded) run. Lets the run list / children endpoint
+  // project a run's shard/child subtree client-side.
+  parent_run_id?: string;
+  shard_index?: number;
+  shard_count?: number;
+  shard_label?: string;
 }
 
 export type MergeStrategy = "squash" | "merge";
@@ -290,6 +300,15 @@ export interface RunHeader {
   // Today only dispatcher runs populate it, carrying the back-reference
   // to the kanban issue so the RunHeader can link back to /board.
   source?: RunSource;
+  // Run-tree shard tuple (T4b, refs #125): parent_run_id points UP at the
+  // run that spawned this shard/child; shard_index/shard_count/shard_label
+  // describe this run's slot in its parent's fan-out (mirrored from the
+  // queue message). All absent for a top-level (non-sharded) run. The
+  // tree/shard-grid UI that renders these is a separate follow-up.
+  parent_run_id?: string;
+  shard_index?: number;
+  shard_count?: number;
+  shard_label?: string;
   // watched_issue_ids is the server-authoritative set of native-kanban
   // issue IDs this run subscribed to (MVP3b). The whats-next WatchPanel
   // reads it as the primary watch-list source; absent for legacy runs

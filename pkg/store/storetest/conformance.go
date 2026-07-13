@@ -61,6 +61,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("CapabilitiesReported", func(t *testing.T) { testCapabilitiesReported(t, factory(t)) })
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
+	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -556,6 +557,114 @@ func testWatchedIssues(t *testing.T, s store.RunStore) {
 	if len(got) != 0 {
 		t.Errorf("after remove all: got %v want empty", got)
 	}
+}
+
+// testReverseTreeQueries exercises the run-tree reverse indexes
+// (T4b, refs #125): ListRunsBySourceIssue projects the card←run edge
+// (Source.IssueID), ListChildRuns projects a run's shard/child subtree
+// (ParentRunID). Both must return exactly the matching ids, in
+// created_at-ascending order, and nothing else.
+func testReverseTreeQueries(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	// saveTree creates a run then stamps its tree edges + a controlled
+	// CreatedAt (so ordering is deterministic across backends) via
+	// SaveRun.
+	saveTree := func(id, issueID, parentID string, createdAt time.Time) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		if issueID != "" {
+			r.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: issueID}
+		}
+		r.ParentRunID = parentID
+		r.CreatedAt = createdAt
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	// Two runs off issue "native:card-A" (b then a, so we can assert the
+	// query re-sorts by created_at ascending → [a_run, b_run]).
+	saveTree("a_run", "native:card-A", "", base.Add(1*time.Minute))
+	saveTree("b_run", "native:card-A", "", base.Add(2*time.Minute))
+	// One run off a different card.
+	saveTree("c_run", "native:card-B", "", base.Add(3*time.Minute))
+	// A shard subtree under parent "a_run": two children + one unrelated.
+	saveTree("shard_0", "", "a_run", base.Add(4*time.Minute))
+	saveTree("shard_1", "", "a_run", base.Add(5*time.Minute))
+	saveTree("orphan", "", "z_missing_parent", base.Add(6*time.Minute))
+
+	t.Run("BySourceIssue", func(t *testing.T) {
+		got, err := s.ListRunsBySourceIssue(ctx, "native:card-A")
+		if err != nil {
+			t.Fatalf("ListRunsBySourceIssue: %v", err)
+		}
+		if want := []string{"a_run", "b_run"}; !sameOrderedSlice(got, want) {
+			t.Errorf("ListRunsBySourceIssue(card-A) = %v, want %v", got, want)
+		}
+
+		got, err = s.ListRunsBySourceIssue(ctx, "native:card-B")
+		if err != nil {
+			t.Fatalf("ListRunsBySourceIssue B: %v", err)
+		}
+		if want := []string{"c_run"}; !sameOrderedSlice(got, want) {
+			t.Errorf("ListRunsBySourceIssue(card-B) = %v, want %v", got, want)
+		}
+
+		// Unknown issue + empty arg → empty, never nil-panic, never error.
+		for _, q := range []string{"native:card-none", ""} {
+			got, err = s.ListRunsBySourceIssue(ctx, q)
+			if err != nil {
+				t.Fatalf("ListRunsBySourceIssue(%q): %v", q, err)
+			}
+			if len(got) != 0 {
+				t.Errorf("ListRunsBySourceIssue(%q) = %v, want empty", q, got)
+			}
+		}
+	})
+
+	t.Run("ChildRuns", func(t *testing.T) {
+		got, err := s.ListChildRuns(ctx, "a_run")
+		if err != nil {
+			t.Fatalf("ListChildRuns: %v", err)
+		}
+		if want := []string{"shard_0", "shard_1"}; !sameOrderedSlice(got, want) {
+			t.Errorf("ListChildRuns(a_run) = %v, want %v", got, want)
+		}
+
+		// A parent with no children (b_run) + empty arg → empty.
+		for _, q := range []string{"b_run", ""} {
+			got, err = s.ListChildRuns(ctx, q)
+			if err != nil {
+				t.Fatalf("ListChildRuns(%q): %v", q, err)
+			}
+			if len(got) != 0 {
+				t.Errorf("ListChildRuns(%q) = %v, want empty", q, got)
+			}
+		}
+	})
+}
+
+// sameOrderedSlice reports whether got and want are element-wise equal
+// in the SAME order (the reverse-tree queries guarantee created_at
+// ascending, so ordering is part of the contract).
+func sameOrderedSlice(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // sameSet reports whether got and want contain the same elements,

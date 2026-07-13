@@ -235,6 +235,58 @@ func (s *Store) ListRuns(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// ListRunsBySourceIssue returns the ids of runs whose source.issue_id
+// equals issueID (the card←run reverse edge), sorted by created_at
+// ascending. Indexed by (tenant_id, source.issue_id, created_at); tenant
+// scope is enforced when ctx carries a tenant_id. Refs #125 (T4b).
+func (s *Store) ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error) {
+	if issueID == "" {
+		return []string{}, nil
+	}
+	return s.listRunIDsBy(ctx, bson.M{"source.issue_id": issueID}, "list runs by source issue")
+}
+
+// ListChildRuns returns the ids of runs whose parent_run_id equals
+// parentRunID (a run's shard/child subtree), sorted by created_at
+// ascending. Indexed by (tenant_id, parent_run_id, created_at); tenant
+// scope is enforced when ctx carries a tenant_id. Refs #125 (T4b).
+func (s *Store) ListChildRuns(ctx context.Context, parentRunID string) ([]string, error) {
+	if parentRunID == "" {
+		return []string{}, nil
+	}
+	return s.listRunIDsBy(ctx, bson.M{"parent_run_id": parentRunID}, "list child runs")
+}
+
+// listRunIDsBy runs an indexed Find over the runs collection with the
+// given (tenant-wrapped) filter, projecting _id and sorting by
+// created_at ascending. Shared by the reverse-tree queries.
+func (s *Store) listRunIDsBy(ctx context.Context, filter bson.M, what string) ([]string, error) {
+	cur, err := s.runs.Find(
+		ctx,
+		withTenantFilter(ctx, filter),
+		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: %s: %w", what, err)
+	}
+	defer cur.Close(ctx)
+
+	ids := []string{}
+	for cur.Next(ctx) {
+		var doc struct {
+			ID string `bson:"_id"`
+		}
+		if err := cur.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("store/mongo: decode run id: %w", err)
+		}
+		ids = append(ids, doc.ID)
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("store/mongo: cursor: %w", err)
+	}
+	return ids, nil
+}
+
 // StaleRunRef identifies one run the orphan sweeper should examine:
 // id + tenant (the sweeper re-stamps per-run tenant ctx for the CAS
 // status flip).

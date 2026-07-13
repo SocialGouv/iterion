@@ -147,6 +147,16 @@ type RunHeader struct {
 	// RunHeader reads it to render a link back to the kanban ticket
 	// that triggered the dispatch.
 	Source *store.RunSource `json:"source,omitempty"`
+	// Run-tree shard tuple (T4b, refs #125): the child←parent edge plus
+	// the shard coordinates mirrored from the queue message. ParentRunID
+	// points UP at the run that spawned this shard/child; ShardIndex /
+	// ShardCount / ShardLabel describe this run's slot in its parent's
+	// fan-out. All empty for a top-level (non-sharded) run. The studio
+	// projects these to render a run's shard/child subtree.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	ShardIndex  int    `json:"shard_index,omitempty"`
+	ShardCount  int    `json:"shard_count,omitempty"`
+	ShardLabel  string `json:"shard_label,omitempty"`
 	// WatchedIssueIDs is the server-authoritative set of native-kanban
 	// issue IDs this run subscribed to (MVP3b). The studio's whats-next
 	// WatchPanel reads it as the primary watch-list source, falling back
@@ -1028,6 +1038,10 @@ func headerFromRun(r *store.Run) RunHeader {
 		MergeStatus:       r.MergeStatus,
 		AutoMerge:         r.AutoMerge,
 		Source:            r.Source,
+		ParentRunID:       r.ParentRunID,
+		ShardIndex:        r.ShardIndex,
+		ShardCount:        r.ShardCount,
+		ShardLabel:        r.ShardLabel,
 		WatchedIssueIDs:   r.WatchedIssueIDs,
 	}
 	// Bootstrap fallback: when the run is already running but the WS

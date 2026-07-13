@@ -708,6 +708,68 @@ func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// ListRunsBySourceIssue returns the ids of runs whose Source.IssueID
+// equals issueID (the card←run reverse edge), sorted by created_at
+// ascending. At local scale we scan ListRuns + LoadRun each and filter
+// — mirroring how the other fs-side filters work (runview.List) — since
+// the filesystem store has no secondary index. Runs that fail to load
+// are skipped rather than failing the whole query.
+func (s *FilesystemRunStore) ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error) {
+	if issueID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.Source != nil && r.Source.IssueID == issueID
+	})
+}
+
+// ListChildRuns returns the ids of runs whose ParentRunID equals
+// parentRunID (a run's shard/child subtree), sorted by created_at
+// ascending. Same scan-and-filter strategy as ListRunsBySourceIssue.
+func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID string) ([]string, error) {
+	if parentRunID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.ParentRunID == parentRunID
+	})
+}
+
+// filterRunsSorted scans every run, keeps those matching pred, and
+// returns their ids sorted by CreatedAt ascending. Shared by the
+// fs-side reverse-tree queries.
+func (s *FilesystemRunStore) filterRunsSorted(ctx context.Context, pred func(*Run) bool) ([]string, error) {
+	ids, err := s.ListRuns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type match struct {
+		id string
+		at time.Time
+	}
+	var matches []match
+	for _, id := range ids {
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("store: skip run %s during reverse-query scan: %v", id, err)
+			}
+			continue
+		}
+		if pred(r) {
+			matches = append(matches, match{id: r.ID, at: r.CreatedAt})
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		return matches[i].at.Before(matches[j].at)
+	})
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m.id)
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
