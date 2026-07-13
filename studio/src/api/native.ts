@@ -39,6 +39,11 @@ export interface NativeIssue {
    *  per-issue dispatcher workspace. Surfaced in the IssueModal as a
    *  copy/vscode link so operators can inspect the diff manually. */
   last_workdir?: string;
+  /** Append-only run history (mirrors Go's `runs`), newest-last, deduped by
+   *  run_id. The full history the Ticket tab renders as a list;
+   *  last_run_id/last_workdir remain the single-pointer back-compat view.
+   *  Absent on records written before run history was tracked. */
+  runs?: RunRef[];
   /** Typed forge linkage (mirrors Go's `external`). Present once a card is
    *  pushed to / synced from a forge. This is the canonical source of truth
    *  for the card's PR/CI panel + push semantics (replaces the legacy
@@ -46,6 +51,13 @@ export interface NativeIssue {
   external?: ExternalLink;
   created_at: string;
   updated_at: string;
+}
+
+// RunRef is one entry in an issue's run history (mirrors Go's native.RunRef).
+export interface RunRef {
+  run_id: string;
+  workdir?: string;
+  at: string;
 }
 
 // ExternalLink is a card's typed link to a forge issue/PR. `url` and `state`
