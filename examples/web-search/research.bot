@@ -1,0 +1,44 @@
+## Tier-2 web search with claw's web_search tool.
+##
+## web_search resolves its backend from the environment at run time:
+##   SEARXNG_URL (or SEARXNG_ENDPOINT) -> a self-hosted SearXNG instance
+##   else BRAVE_API_KEY                -> the Brave Search API
+##   else                              -> DuckDuckGo Lite (scrape)
+##
+## The tool is registered when ITERION_WEB_SEARCH=on, or (default `auto`)
+## when any of those backends is configured. See docs/web-search.md.
+
+vars:
+  topic: string = "the SearXNG metasearch engine"
+
+prompt researcher_system:
+  You are a web researcher. Use web_search to find relevant sources for
+  the topic, then web_fetch the most promising URLs to read their
+  content. Summarize the findings and cite every source URL you used.
+
+prompt researcher_user:
+  Research this topic and produce a sourced summary: {{vars.topic}}
+
+schema researcher_output:
+  summary: string
+  sources: string[]
+
+agent researcher:
+  backend: "claw"
+  model: "anthropic/claude-sonnet-4-6"
+  system: researcher_system
+  user: researcher_user
+  output: researcher_output
+  tools: [web_search, web_fetch]
+  tool_max_steps: 8
+  session: fresh
+
+workflow main:
+  entry: researcher
+
+  budget:
+    max_duration: "5m"
+    max_cost_usd: 2
+    max_tokens: 100000
+
+  researcher -> done
