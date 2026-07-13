@@ -2951,6 +2951,30 @@
         ]
       }
     },
+    "/api/runs/{id}/children": {
+      "get": {
+        "operationId": "getRunsByIdChildren",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/children",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/runs/{id}/commit-and-finalize": {
       "parameters": [
         {
