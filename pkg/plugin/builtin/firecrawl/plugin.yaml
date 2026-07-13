@@ -25,9 +25,13 @@ contributes:
     - name: firecrawl
       transport: stdio
       command: npx
+      # Version PINNED (supply-chain: never resolve a moving `latest`). Must
+      # match Dockerfile.runner-devbox's FIRECRAWL_MCP_VERSION so the cloud
+      # runner reuses its warm pre-installed global instead of downloading.
       args:
         - -y
-        - firecrawl-mcp
+        # renovate: datasource=npm depName=firecrawl-mcp versioning=npm
+        - firecrawl-mcp@3.22.3
       env:
         FIRECRAWL_API_URL: "{{config.api_url}}"
         FIRECRAWL_API_KEY: "{{config.api_key}}"
