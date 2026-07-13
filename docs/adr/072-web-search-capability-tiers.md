@@ -81,12 +81,14 @@ Load-bearing decisions:
 
 - Standing up a SearXNG container (JSON format enabled) is all it takes
   to give claw agents sovereign search under the default `auto` mode.
-- **Firecrawl/MCP web tools are claw-only.** iterion does not forward
-  user-declared MCP servers to the claude_code/codex CLIs (only the
-  internal `ask_user` + board servers), so on claude_code the search path
-  is its native `WebSearch`/`WebFetch`. Forwarding user MCP servers to
-  the claude CLI via `--mcp-config` is a deferred follow-on that would
-  close this gap and make the ladder backend-symmetric.
+- **Firecrawl/MCP web tools reach both backends.** claw resolves them
+  in-process; claude_code forwards the node's active user/plugin MCP
+  servers to the agent CLI via `--mcp-config` (`wireUserMCP`), purely
+  additively — no `--tools` is passed, so claude_code keeps its native
+  `WebSearch`/`WebFetch` on by default and gains Firecrawl on top. codex
+  is unchanged. Caveat: a stdio server whose `command:` is a host path
+  won't resolve inside a sandbox container (same as the internal
+  ask_user/board stdio servers) — use an http/sse server there.
 - A SearXNG instance must have the `json` output format enabled; absence
   surfaces as an explicit HTTP-403 error, not a silent empty result
   (per the erreurs-explicites principle).

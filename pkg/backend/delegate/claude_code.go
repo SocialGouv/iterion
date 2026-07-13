@@ -360,6 +360,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	opts = installMaterializeSecretsHook(task, opts)
 	opts = installRewriteHook(task, opts)
 	opts = b.wireBoardMCP(task, opts, &extraAllowedTools)
+	opts = b.wireUserMCP(task, opts, &extraAllowedTools)
 
 	// Watch capabilities (watch.subscribe / watch.unsubscribe) are wired for
 	// the claw backend only so far — the claude_code stdio (__mcp-watch) and
