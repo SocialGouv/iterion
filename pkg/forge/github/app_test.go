@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -127,6 +128,61 @@ func TestMintInstallationToken_422SurfacesGitHubMessage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not exist or is not accessible") {
 		t.Errorf("error must surface GitHub's message, got: %v", err)
+	}
+}
+
+// A 422 whose body reports the requested permissions are NOT GRANTED is a
+// PERMANENT config mismatch (the install was approved with a narrower
+// permission set than iterion now requests). It must classify as the terminal
+// forge.ErrPermissionsNotGranted — so the refresh worker marks the connection
+// degraded instead of re-minting it every tick — while still surfacing GitHub's
+// actionable message.
+func TestMintInstallationToken_422PermissionsNotGranted(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": "The permissions requested are not granted to this installation.",
+		})
+	}))
+	defer srv.Close()
+	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr}
+	_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Unix(1700000000, 0),
+		&InstallationTokenOptions{Permissions: RuntimeInstallationPermissions()})
+	if err == nil {
+		t.Fatal("expected error on 422")
+	}
+	if !errors.Is(err, forge.ErrPermissionsNotGranted) {
+		t.Errorf("422 permissions-not-granted → %v, want ErrPermissionsNotGranted", err)
+	}
+	if errors.Is(err, forge.ErrUnauthorized) {
+		t.Errorf("must NOT classify as ErrUnauthorized (that path markRevokes): %v", err)
+	}
+	// GitHub's actionable message is preserved in the wrapped error.
+	if !strings.Contains(err.Error(), "not granted to this installation") {
+		t.Errorf("error must surface GitHub's message, got: %v", err)
+	}
+}
+
+// A 422 for a DIFFERENT reason (repository not accessible) must NOT be
+// misclassified as the terminal permission mismatch — it stays a plain error.
+func TestMintInstallationToken_422OtherStaysPlain(t *testing.T) {
+	pemStr, _ := testKeyPEM(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": "There is at least one repository that does not exist or is not accessible to the owner.",
+		})
+	}))
+	defer srv.Close()
+	cfg := AppConfig{AppID: 42, PrivateKeyPEM: pemStr}
+	_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, cfg, 99, time.Unix(1700000000, 0),
+		&InstallationTokenOptions{Repositories: []string{"gone"}})
+	if err == nil {
+		t.Fatal("expected error on 422")
+	}
+	if errors.Is(err, forge.ErrPermissionsNotGranted) {
+		t.Errorf("a non-permission 422 must stay a plain error, got ErrPermissionsNotGranted: %v", err)
 	}
 }
 
