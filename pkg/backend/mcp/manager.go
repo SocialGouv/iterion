@@ -351,7 +351,14 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 		if listErr != nil {
 			return false, fmt.Errorf("mcp: discover tools for %q: %w", server, listErr)
 		}
-		if m.cache != nil {
+		// NEVER cache an empty tool list. An `npx -y <pkg>` stdio server can
+		// answer tools/list before it finishes registering its tools on a cold
+		// pod (the package is still downloading/initialising), returning [].
+		// Persisting that to the disk cache poisons EVERY later run on the pod
+		// (fast cache hit → 0 tools forever). Skipping the write lets the next
+		// run — with a warm npx cache — rediscover the real tools. A server
+		// that genuinely exposes no tools simply re-lists (cheap) each time.
+		if m.cache != nil && len(toolsList) > 0 {
 			_ = m.cache.Set(server, state.cfg, toolsList) // best-effort
 		}
 	}
