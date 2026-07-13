@@ -190,7 +190,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.LocalSecrets != nil && spec.LocalSealer != nil {
 		if _, already := secrets.CredentialsFromContext(ctx); !already {
 			names := declaredSecretNames(spec.Workflow)
-			creds, err := secrets.ResolveLocalCredentials(ctx, spec.LocalSecrets, spec.LocalSealer, names)
+			creds, err := secrets.ResolveLocalCredentials(ctx, spec.LocalSecrets, spec.LocalSealer, names, spec.Logger)
 			if err != nil {
 				return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
 			}

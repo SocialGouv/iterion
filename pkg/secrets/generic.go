@@ -15,6 +15,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -77,6 +78,7 @@ func ResolveGeneric(
 	teamID, userID string,
 	names []string,
 	sealer Sealer,
+	logger *iterlog.Logger,
 ) (map[string]GenericResolution, error) {
 	if secretStore == nil {
 		return map[string]GenericResolution{}, nil
@@ -106,17 +108,29 @@ func ResolveGeneric(
 		}
 	}
 	out := make(map[string]GenericResolution, len(want))
+	candidates := make(map[string]bool, len(want))
 	for _, s := range visible {
 		if !want[s.Name] {
 			continue
 		}
+		candidates[s.Name] = true
 		if _, exists := out[s.Name]; exists {
 			continue
 		}
-		r, ok := buildGenericResolution(s, sealer, userID)
+		r, ok := buildGenericResolution(s, sealer, userID, logger)
 		if ok {
 			out[s.Name] = r
 		}
+	}
+	// Expected fall-through: a requested name with no stored secret at all.
+	// Debug (not warn) — a run may legitimately declare an optional secret the
+	// team never configured. Names that HAD a candidate but dropped on unseal
+	// are already warned by buildGenericResolution, so don't double-log them.
+	for name := range want {
+		if _, ok := out[name]; ok || candidates[name] {
+			continue
+		}
+		logger.Debug("secrets: no generic secret named %q visible for team=%s — leaving credential unset", name, teamID)
 	}
 	return out, nil
 }
@@ -131,7 +145,7 @@ func genericSecretRank(s GenericSecret, currentUserID string) int {
 	return 99
 }
 
-func buildGenericResolution(s GenericSecret, sealer Sealer, currentUserID string) (GenericResolution, bool) {
+func buildGenericResolution(s GenericSecret, sealer Sealer, currentUserID string, logger *iterlog.Logger) (GenericResolution, bool) {
 	scope := "team"
 	if currentUserID != "" && s.ScopeUserID == currentUserID {
 		scope = "user"
@@ -150,6 +164,11 @@ func buildGenericResolution(s GenericSecret, sealer Sealer, currentUserID string
 	}
 	pt, err := OpenGenericSecret(sealer, s.ID, s.SealedSecret)
 	if err != nil {
+		// Erreurs-explicites: a sealed blob that EXISTS but won't open is an
+		// unexpected failure (corrupt store, wrong/rotated master key). Warn —
+		// naming the secret's name + id + reason, never the value — so an
+		// operator whose credential silently vanished has something to grep.
+		logger.Warn("secrets: generic secret %q (id=%s) failed to unseal — credential dropped: %v", s.Name, s.ID, err)
 		return GenericResolution{}, false
 	}
 	r.Plaintext = pt
