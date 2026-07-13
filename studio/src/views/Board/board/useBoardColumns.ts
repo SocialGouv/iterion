@@ -12,6 +12,7 @@ export interface UseBoardColumnsResult {
   flatIssueIds: string[];
   allLabels: string[];
   allAssignees: string[];
+  allBots: string[];
 }
 
 // Composes the post-filter / per-column derived data for the board:
@@ -24,6 +25,7 @@ export function useBoardColumns({
   searchQuery,
   labelFilter,
   assigneeFilter,
+  botFilter,
   sortMode,
 }: {
   board: NativeBoard | null;
@@ -31,21 +33,25 @@ export function useBoardColumns({
   searchQuery: string;
   labelFilter: ReadonlySet<string>;
   assigneeFilter: string;
+  botFilter: string;
   sortMode: SortMode;
 }): UseBoardColumnsResult {
   // Distinct values exposed in the filter dropdowns. Derived from the
   // current issues list so the dropdowns track what the user actually
   // sees — including labels created on the fly by bots.
-  const { allLabels, allAssignees } = useMemo(() => {
+  const { allLabels, allAssignees, allBots } = useMemo(() => {
     const labels = new Set<string>();
     const assignees = new Set<string>();
+    const bots = new Set<string>();
     for (const iss of issues) {
       for (const l of iss.labels ?? []) labels.add(l);
       if (iss.assignee) assignees.add(iss.assignee);
+      if (iss.bot) bots.add(iss.bot);
     }
     return {
       allLabels: Array.from(labels).sort(),
       allAssignees: Array.from(assignees).sort(),
+      allBots: Array.from(bots).sort(),
     };
   }, [issues]);
 
@@ -58,7 +64,8 @@ export function useBoardColumns({
     const q = searchQuery.trim().toLowerCase();
     const labels = labelFilter;
     const assignee = assigneeFilter.trim();
-    if (!q && labels.size === 0 && !assignee) return issues;
+    const bot = botFilter.trim();
+    if (!q && labels.size === 0 && !assignee && !bot) return issues;
     return issues.filter((iss) => {
       if (q) {
         const hay =
@@ -72,9 +79,10 @@ export function useBoardColumns({
         }
       }
       if (assignee && iss.assignee !== assignee) return false;
+      if (bot && iss.bot !== bot) return false;
       return true;
     });
-  }, [issues, searchQuery, labelFilter, assigneeFilter]);
+  }, [issues, searchQuery, labelFilter, assigneeFilter, botFilter]);
 
   // Group filtered issues by state for column rendering. Issues whose
   // state does not appear on the board land in an "unmapped" bucket so
@@ -115,5 +123,6 @@ export function useBoardColumns({
     flatIssueIds,
     allLabels,
     allAssignees,
+    allBots,
   };
 }
