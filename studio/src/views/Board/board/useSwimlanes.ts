@@ -39,6 +39,9 @@ function laneKeysFor(iss: NativeIssue, groupMode: GroupMode): string[] {
   if (groupMode === GROUP_MODE_REPO) {
     return [iss.external?.repo || LANE_NONE];
   }
+  if (groupMode === "bot") {
+    return [iss.bot || LANE_NONE];
+  }
   const fieldName = fieldNameFromGroupMode(groupMode);
   if (fieldName) {
     const v = iss.fields?.[fieldName];
@@ -54,6 +57,7 @@ function laneLabel(key: string, groupMode: GroupMode): string {
     if (groupMode === "assignee") return "Unassigned";
     if (groupMode === "label") return "No label";
     if (groupMode === GROUP_MODE_REPO) return "No repository";
+    if (groupMode === "bot") return "No bot";
     return "—";
   }
   if (groupMode === "assignee") return `@${key}`;
