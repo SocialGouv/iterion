@@ -4,9 +4,10 @@
 //  1. Publisher — ensure the JetStream stream exists, then publish a
 //     queue.RunMessage onto `iterion.queue.runs` with `Nats-Msg-Id =
 //     run_id` so JetStream itself dedups republishes.
-//  2. Consumer  — subscribe to the durable `iterion-runners`
-//     pull-consumer with AckWait=5min and MaxAckPending=1 so a single
-//     runner pod can only have one in-flight run at a time.
+//  2. Consumer  — subscribe to the SHARED durable `iterion-runners`
+//     pull-consumer with AckWait=10min and MaxAckPending=DefaultMaxAckPending
+//     as a fleet-wide in-flight ceiling; each pod holds one in-flight run
+//     via its serial fetch loop, so pod count (KEDA) is the real capacity.
 //  3. KV        — distributed lease bucket `iterion-run-locks` keyed
 //     on run_id with TTL=60s; the runner refreshes the lease via the
 //     CAS write while it owns the run (T-26 bridges this to
@@ -73,6 +74,16 @@ const (
 	// redelivery; 10 min also covers a cold devbox/Nix first-run before the
 	// first heartbeat lands.
 	DefaultAckWait = 10 * time.Minute
+	// DefaultMaxAckPending caps how many runs can be in-flight (delivered but
+	// unacked) at once across the whole fleet on the shared durable pull
+	// consumer. It MUST be ≥ the max runner-pod count KEDA scales to, or it
+	// silently re-caps global parallelism below the pool size (the historic
+	// value of 1 pinned the entire fleet to a single concurrent run — every
+	// scaled-up pod sat idle). Set generously: actual parallelism is bounded
+	// by the number of pods calling Fetch (each holds one in-flight run via
+	// its serial loop), so a high ceiling just removes the artificial cap and
+	// lets KEDA autoscaling be the real capacity lever, as intended.
+	DefaultMaxAckPending = 256
 )
 
 // Config carries the connection settings for the cloud queue.
@@ -86,9 +97,12 @@ type Config struct {
 	DLQMaxAge    time.Duration // default 7d
 	MaxDeliver   int           // default DefaultStreamMaxRetry (8)
 	AckWait      time.Duration // default DefaultAckWait (10m)
-	LockTTL      time.Duration // default 60s
-	MaxPayload   int           // default 0 → use server's negotiated MaxPayload
-	Logger       *iterlog.Logger
+	// MaxAckPending caps fleet-wide in-flight (delivered-unacked) runs on the
+	// shared consumer; 0 → DefaultMaxAckPending. Keep ≥ max runner pods.
+	MaxAckPending int
+	LockTTL       time.Duration // default 60s
+	MaxPayload    int           // default 0 → use server's negotiated MaxPayload
+	Logger        *iterlog.Logger
 }
 
 // Conn is the wired NATS layer. The publisher + consumer both consume
@@ -383,16 +397,21 @@ type Consumer struct {
 }
 
 // NewConsumer creates / updates the durable consumer on the runs
-// stream. AckWait + MaxAckPending=1 enforce one-in-flight-per-runner
-// without coordinating outside JetStream itself; OptStartPolicy=All
-// means a fresh consumer replays from the earliest pending message
-// (matters when a stale pod is replaced).
+// stream. Every runner pod binds the SAME durable (shared pull consumer),
+// so MaxAckPending is a FLEET-WIDE in-flight cap, not per-pod: it must stay
+// ≥ the pod count or it re-caps global parallelism (it was pinned to 1,
+// which serialised the whole fleet to one concurrent run). Actual
+// parallelism = pods each holding one in-flight run via Fetch, elastic
+// under KEDA; MaxAckPending is only the ceiling. DeliverAllPolicy means a
+// fresh consumer replays from the earliest pending message (matters when a
+// stale pod is replaced). CreateOrUpdate applies the current MaxAckPending
+// to the existing durable, so a deploy lifts the cap on the live consumer.
 func (c *Conn) NewConsumer(ctx context.Context) (*Consumer, error) {
 	cons, err := c.js.CreateOrUpdateConsumer(ctx, c.cfg.StreamName, jetstream.ConsumerConfig{
 		Durable:       c.cfg.ConsumerName,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		AckWait:       c.cfg.AckWait,
-		MaxAckPending: 1,
+		MaxAckPending: c.cfg.MaxAckPending,
 		MaxDeliver:    c.cfg.MaxDeliver,
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 		FilterSubject: SubjectRuns,
@@ -553,6 +572,9 @@ func applyDefaults(c Config) Config {
 	}
 	if c.AckWait == 0 {
 		c.AckWait = DefaultAckWait
+	}
+	if c.MaxAckPending == 0 {
+		c.MaxAckPending = DefaultMaxAckPending
 	}
 	if c.LockTTL == 0 {
 		c.LockTTL = DefaultLockTTL
