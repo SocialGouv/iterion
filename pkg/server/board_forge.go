@@ -35,14 +35,21 @@ func ImportForgeIssues(ctx context.Context, provider forge.Provider, baseURL, to
 	if baseURL == "" {
 		baseURL = forge.DefaultBaseURL(provider)
 	}
+	// A dedicated client with a request timeout — http.DefaultClient has none,
+	// so a hung/slow self-hosted forge would block the import indefinitely (the
+	// CLI passes a context.Background() with no deadline). No SSRF guard here:
+	// unlike the server path, the operator supplies their own base URL on their
+	// own machine, and strict host-pinning would reject the very LAN/self-hosted
+	// forges this command exists to import from.
+	httpClient := &http.Client{Timeout: 30 * time.Second}
 	var admin forge.Admin
 	switch provider {
 	case forge.ProviderGitLab:
-		admin = forgegitlab.New(http.DefaultClient, baseURL, token)
+		admin = forgegitlab.New(httpClient, baseURL, token)
 	case forge.ProviderGitHub:
-		admin = forgegithub.New(http.DefaultClient, baseURL, token)
+		admin = forgegithub.New(httpClient, baseURL, token)
 	case forge.ProviderForgejo:
-		admin = forgeforgejo.New(http.DefaultClient, baseURL, token)
+		admin = forgeforgejo.New(httpClient, baseURL, token)
 	default:
 		return 0, 0, fmt.Errorf("forge: provider %q is not yet supported", provider)
 	}
