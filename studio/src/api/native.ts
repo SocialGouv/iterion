@@ -39,6 +39,12 @@ export interface NativeIssue {
    *  per-issue dispatcher workspace. Surfaced in the IssueModal as a
    *  copy/vscode link so operators can inspect the diff manually. */
   last_workdir?: string;
+  /** Denormalized best-effort HINT that the issue's most recent run parked
+   *  awaiting human/operator input. Lets the board grid render a per-card
+   *  "⏸ Awaiting input" badge WITHOUT an N+1 run fetch. Not authoritative —
+   *  the IssueModal's answer affordance still keys off the run status; a
+   *  stale flag is corrected at the next card touch. */
+  awaiting_input?: boolean;
   /** Append-only run history (mirrors Go's `runs`), newest-last, deduped by
    *  run_id. The full history the Ticket tab renders as a list;
    *  last_run_id/last_workdir remain the single-pointer back-compat view.
