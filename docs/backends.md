@@ -353,6 +353,10 @@ sensible default for the first available provider — currently
 `anthropic/claude-opus-4-8` for Anthropic and
 `openai/gpt-5.4-mini` for OpenAI.
 
+For web search & fetch on claw (the `web_search`/`web_fetch` tools, the
+SearXNG → Brave → DuckDuckGo backend ladder, `ITERION_WEB_SEARCH`, and the
+Firecrawl MCP tier), see [web-search.md](web-search.md).
+
 ### OpenAI via ChatGPT forfait (Codex CLI OAuth)
 
 When Codex CLI is signed in via *Sign in with ChatGPT* (rather than the

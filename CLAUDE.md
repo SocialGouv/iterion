@@ -253,7 +253,8 @@ discovered by claude_code via `--setting-sources project`), `hooks` (JSON
 fragments idempotently merged into `.claude/settings.json`), and
 `lifecycle` (index/refresh). Builtins are embedded
 ([pkg/plugin/builtin/](pkg/plugin/builtin/)); `rtk` ships **enabled**,
-`graphify` + `repo-falcon` ship **disabled**. Installed plugins live under
+`graphify` + `repo-falcon` + `firecrawl` (web search/scrape MCP —
+[docs/web-search.md](docs/web-search.md)) ship **disabled**. Installed plugins live under
 `~/.iterion/plugins/<name>/`, enable state in `~/.iterion/plugins.yaml`. Manage
 with `iterion plugin list|info|enable|disable|run|install|uninstall`. The plugin
 system never injects Go code (static `CGO_ENABLED=0` binaries rule out Go

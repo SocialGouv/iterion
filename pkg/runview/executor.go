@@ -313,7 +313,10 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithMCPManager(mcpManager))
 	}
 
-	clawDefaults := tool.ClawDefaults{Workspace: workspace}
+	clawDefaults := tool.ClawDefaults{
+		Workspace:        workspace,
+		IncludeWebSearch: tool.ResolveWebSearchEnabled(),
+	}
 	if planDir != "" {
 		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
 	}

@@ -8,7 +8,9 @@ out-of-process** packages. A plugin never injects Go code (iterion ships static
 
 Plugins are installable-by-default, uninstallable, replaceable, and composable —
 `rtk` (the command-output compressor) ships as a plugin enabled by default; the
-knowledge-graph explorers `graphify` and `repo-falcon` ship disabled.
+knowledge-graph explorers `graphify` and `repo-falcon` and the web toolkit
+`firecrawl` (Firecrawl search/scrape/crawl MCP — see
+[web-search.md](web-search.md)) ship disabled.
 
 ## Contribution kinds (v1)
 
@@ -47,7 +49,7 @@ A single plugin may contribute several kinds (repo-falcon ships `mcp_servers` +
 ## Where plugins live
 
 - **Builtins** are embedded in the binary under `pkg/plugin/builtin/<name>/`
-  (`rtk`, `graphify`, `repo-falcon`).
+  (`rtk`, `graphify`, `repo-falcon`, `firecrawl`).
 - **Installed** plugins live under `~/.iterion/plugins/<name>/` (a directory
   with a `plugin.yaml`). `iterion plugin install <path|git-url>` puts them there.
 - **Enable/disable state** is persisted in `~/.iterion/plugins.yaml`; the

@@ -1,0 +1,33 @@
+name: firecrawl
+version: 1.0.0
+description: Firecrawl MCP — web search + JS-rendered scrape/crawl/extract (self-hostable, pairs with a SearXNG search backend)
+author: Firecrawl (https://github.com/firecrawl/firecrawl)
+schema_version: 1
+default_enabled: false
+config:
+  - key: api_url
+    label: Firecrawl API URL
+    type: string
+    description: >-
+      Base URL of your self-hosted Firecrawl (e.g. http://localhost:3002).
+      Leave empty to use the Firecrawl cloud API. Point Firecrawl itself at
+      a SearXNG instance via its own SEARXNG_ENDPOINT env (deployment-side).
+    default: ""
+  - key: api_key
+    label: Firecrawl API key
+    type: secret
+    description: >-
+      API key. Required for Firecrawl cloud; for a self-hosted instance set
+      any non-empty value the instance accepts.
+    default: "self-hosted"
+contributes:
+  mcp_servers:
+    - name: firecrawl
+      transport: stdio
+      command: npx
+      args:
+        - -y
+        - firecrawl-mcp
+      env:
+        FIRECRAWL_API_URL: "{{config.api_url}}"
+        FIRECRAWL_API_KEY: "{{config.api_key}}"
