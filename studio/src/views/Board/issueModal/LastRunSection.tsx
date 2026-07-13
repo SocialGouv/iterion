@@ -7,8 +7,60 @@ import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
 import { getRun } from "@/api/runs";
 import { rehydratePendingHumanInput } from "@/store/run/reducer";
 import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { useRunChildren } from "@/hooks/useRunChildren";
+import { childLabel } from "@/components/Runs/runHeader/RunChildrenPanel";
+import {
+  STATUS_VARIANT,
+  labelForStatus,
+} from "@/components/Runs/runStatusMeta";
 import type { RunRef } from "@/api/native";
+
+// ChildrenDisclosure lets a run row in the card history expand to its
+// shard/fork subtree — so an operator sees a card's pipeline tree
+// without leaving the board. Lazy: the useRunChildren fetch is gated on
+// `open`, so a collapsed history list makes ZERO children requests (no
+// N+1 across the card's runs); the fetch only fires when the operator
+// clicks a specific row open.
+function ChildrenDisclosure({ runID }: { runID: string }) {
+  const [open, setOpen] = useState(false);
+  const { data: children } = useRunChildren(runID, open);
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-fg-muted hover:text-fg-default"
+        title="Show this run's shard/fork children"
+      >
+        {open ? "▾" : "▸"} Children
+        {open && children.length > 0 ? ` (${children.length})` : ""}
+      </button>
+      {open && children.length === 0 && (
+        <span className="ml-1 text-fg-subtle">— none</span>
+      )}
+      {open && children.length > 0 && (
+        <ul className="mt-1 space-y-1 pl-3">
+          {children.map((c) => (
+            <li key={c.id} className="flex items-center gap-1.5">
+              <Link
+                href={`/runs/${encodeURIComponent(c.id)}`}
+                className="font-mono text-accent-text hover:underline"
+                title={`Open child run ${c.id}`}
+              >
+                {childLabel(c)}
+              </Link>
+              <Badge variant={STATUS_VARIANT[c.status]} className="ml-auto">
+                {labelForStatus(c.status)}
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 // AwaitingInput reads the stamped last run and, when it is paused on a
 // human node, renders the answer affordance inline on the card — so an
@@ -96,6 +148,7 @@ function RunPanel({ runID, workdir }: { runID?: string; workdir?: string }) {
           </Button>
         </div>
       )}
+      {runID && <ChildrenDisclosure runID={runID} />}
       {runID && (
         <BranchDiffModal
           runId={runID}
