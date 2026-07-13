@@ -228,6 +228,16 @@ func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
 // exit; the per-call timeout caps the leak window.
 const mcpHealthPingTimeout = 5 * time.Second
 
+// mcpDiscoveryEmptyRetries / mcpDiscoveryEmptyBackoff bound the retry-on-empty
+// in ensureServer: an MCP server can answer tools/list before it finishes
+// registering its tools right after initialize. Up to 6 extra re-lists spaced
+// 500ms apart (~3s) covers that startup race without stalling a genuinely
+// tool-less server for long.
+const (
+	mcpDiscoveryEmptyRetries = 6
+	mcpDiscoveryEmptyBackoff = 500 * time.Millisecond
+)
+
 // ServerNames returns the names of every server known to the catalog
 // (whether or not it has been connected yet). The order is stable but
 // unspecified.
@@ -347,17 +357,30 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 	if toolsList == nil {
 		didListTools = true
 		var listErr error
-		toolsList, listErr = client.ListTools(ctx)
-		if listErr != nil {
-			return false, fmt.Errorf("mcp: discover tools for %q: %w", server, listErr)
+		// Retry-on-empty. A server (notably fastmcp-based ones like
+		// firecrawl-mcp) can answer tools/list right after `initialize` but
+		// BEFORE it finishes registering its tools, returning [] on the first
+		// call. Re-list a few times with a short backoff on the SAME session so
+		// a startup race doesn't leave the server tool-less for the whole run.
+		// A genuinely tool-less server just costs a few cheap re-lists.
+		for attempt := 0; ; attempt++ {
+			toolsList, listErr = client.ListTools(ctx)
+			if listErr != nil {
+				return false, fmt.Errorf("mcp: discover tools for %q: %w", server, listErr)
+			}
+			if len(toolsList) > 0 || attempt >= mcpDiscoveryEmptyRetries {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(mcpDiscoveryEmptyBackoff):
+			}
 		}
-		// NEVER cache an empty tool list. An `npx -y <pkg>` stdio server can
-		// answer tools/list before it finishes registering its tools on a cold
-		// pod (the package is still downloading/initialising), returning [].
-		// Persisting that to the disk cache poisons EVERY later run on the pod
-		// (fast cache hit → 0 tools forever). Skipping the write lets the next
-		// run — with a warm npx cache — rediscover the real tools. A server
-		// that genuinely exposes no tools simply re-lists (cheap) each time.
+		// NEVER cache an empty tool list — a startup race (above) shouldn't
+		// poison the persistent disk cache and starve EVERY later run on the pod
+		// (fast empty cache hit → 0 tools forever). Only a non-empty discovery
+		// is durable enough to cache.
 		if m.cache != nil && len(toolsList) > 0 {
 			_ = m.cache.Set(server, state.cfg, toolsList) // best-effort
 		}
