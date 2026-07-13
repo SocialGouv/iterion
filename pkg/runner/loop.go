@@ -1363,7 +1363,9 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// alone can't close (it resolves but git re-resolves at connect time):
 	//   (a) DNS rebinding — pin the validated public IP for the host in
 	//       /etc/hosts so git resolves to the SAME address we just checked.
-	//       Best-effort: needs a writable /etc/hosts (warn + proceed otherwise).
+	//       Best-effort: needs a writable /etc/hosts. On a non-root runner it
+	//       is kubelet-owned and unwritable — expected, so we log once at info
+	//       and proceed (unexpected failures still warn per-clone).
 	//   (b) HTTP 302 → internal — disabled per git invocation below
 	//       (http.followRedirects=false); the clone URL is already canonical https.
 	// The pod-level egress NetworkPolicy (block RFC1918/metadata) remains the
