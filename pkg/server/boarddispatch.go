@@ -24,6 +24,12 @@ type boardCoordinator interface {
 	Release(ctx context.Context, tenant, id, marker string) error
 }
 
+// errCardPaused marks a processBoardCard error whose run parked on a
+// human/operator gate (paused_waiting_human / paused_operator) rather than
+// failing. processCard routes such a card to the awaiting-input column, not
+// blocked.
+var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
+
 // boardDispatcher polls the cloud board for eligible cards and runs each via
 // the injected process func (launch + poll-to-terminal). Multi-replica-safe
 // WITHOUT leader election: the per-card Claim is a CAS, so each card is claimed
@@ -38,6 +44,7 @@ type boardDispatcher struct {
 	inProgressState string
 	doneState       string
 	blockedState    string
+	awaitingState   string
 
 	interval time.Duration
 	sem      chan struct{}
@@ -58,6 +65,7 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 		inProgressState: native.StateInProgress,
 		doneState:       native.StateDone,
 		blockedState:    native.StateBlocked,
+		awaitingState:   native.StateAwaitingInput,
 		interval:        5 * time.Second,
 		sem:             make(chan struct{}, concurrency),
 		logger:          logger,
@@ -100,8 +108,14 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	runErr := d.process(ctx, c.Tenant, c.Issue)
 	final := d.doneState
 	if runErr != nil {
-		final = d.blockedState
-		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+		// A pause is not a failure: route the card to the awaiting-input
+		// column so the operator answers it there, not to blocked.
+		if errors.Is(runErr, errCardPaused) {
+			final = d.awaitingState
+		} else {
+			final = d.blockedState
+			d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+		}
 	}
 	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, final); err != nil {
 		d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
@@ -273,12 +287,13 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 			case st.IsTerminal():
 				return fmt.Errorf("run %s ended %s", runID, st)
 			case st.IsPaused():
-				// Parked on a human/operator gate — stop waiting; the card
-				// goes to blocked and the operator resumes the run. Denormalize
-				// the pause hint so the grid can badge the card without a
-				// per-run fetch.
+				// Parked on a human/operator gate — stop waiting; the operator
+				// resumes the run. Denormalize the pause hint so the grid can
+				// badge the card without a per-run fetch, and wrap errCardPaused
+				// so processCard routes the card to the awaiting-input column
+				// instead of blocked (a pause is not a failure).
 				s.setCardAwaitingInput(tenant, iss.ID, true)
-				return fmt.Errorf("run %s paused (%s)", runID, st)
+				return fmt.Errorf("run %s paused (%s): %w", runID, st, errCardPaused)
 			}
 		}
 		select {

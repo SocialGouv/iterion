@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -397,7 +398,13 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
 		c.stampLastRun(issueID, r)
 		c.setAwaitingInput(issueID, true)
-		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — left claimed and in-progress, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
+		// Move the card into the dedicated "awaiting input" column so the
+		// board shows "this pipeline needs me" at the column level (not only
+		// the per-card badge). Best-effort: a custom board without the state,
+		// or an external tracker that rejects it, keeps the card in place (the
+		// retained claim already blocks re-dispatch either way).
+		c.moveToAwaitingInput(issueID, r.Identifier)
+		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — moved to awaiting-input, kept claimed, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
 		c.fireSnapshot()
 		return
 	}
@@ -687,6 +694,17 @@ func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
 	}
 	if err := setter.SetAwaitingInput(issueID, v); err != nil {
 		c.logger.Warn("dispatcher: set awaiting-input=%v on %s: %v", v, issueID, err)
+	}
+}
+
+// moveToAwaitingInput best-effort transitions a paused card into the
+// StateAwaitingInput column. A board without that state (custom schema) or an
+// external tracker that rejects the transition leaves the card in place — the
+// retained claim already blocks re-dispatch, so this is a display-only
+// refinement, never load-bearing.
+func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) {
+	if err := c.tracker.UpdateState(context.Background(), issueID, native.StateAwaitingInput); err != nil {
+		c.logger.Info("dispatcher: %s stays in place (no awaiting-input column): %v", identifier, err)
 	}
 }
 

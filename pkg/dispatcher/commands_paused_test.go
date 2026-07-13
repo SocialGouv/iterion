@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -117,14 +118,15 @@ func TestFinishRun_PausedForInputIsParkedNotRetried(t *testing.T) {
 				t.Errorf("a retry was scheduled for a paused run — re-runs would re-hit the same pause")
 			}
 
-			// 3) The issue must stay where it is — not moved to FailedState
-			//    ("blocked") and not reverted to its source state ("ready").
+			// 3) The issue moves to the dedicated "awaiting input" column —
+			//    NOT to FailedState ("blocked") and NOT reverted to its source
+			//    state ("ready"). A pause is not a failure.
 			states, err := ft.RefreshStates(context.Background(), []string{issueID})
 			if err != nil {
 				t.Fatalf("RefreshStates: %v", err)
 			}
-			if got := states[issueID]; got != "in_progress" {
-				t.Errorf("issue state = %q, want %q (paused run must not be moved to blocked or reverted)", got, "in_progress")
+			if got := states[issueID]; got != native.StateAwaitingInput {
+				t.Errorf("issue state = %q, want %q (paused run moves to the awaiting-input column, not blocked/reverted)", got, native.StateAwaitingInput)
 			}
 
 			// 4) The slot must be freed and the entry dropped from running.
