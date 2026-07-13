@@ -137,8 +137,8 @@ describe("LastRunSection run history list", () => {
       .getAllByRole("link")
       .filter((el) => el.getAttribute("href")?.startsWith("/runs/"));
     expect(runLinks.length).toBe(2);
-    expect(runLinks[0].getAttribute("href")).toContain("run-aaaaaaaa");
-    expect(runLinks[1].getAttribute("href")).toContain("run-bbbbbbbb");
+    expect(runLinks[0]?.getAttribute("href")).toContain("run-aaaaaaaa");
+    expect(runLinks[1]?.getAttribute("href")).toContain("run-bbbbbbbb");
     // Both worktrees surface.
     expect(screen.getByText("/tmp/wd-1")).toBeTruthy();
     expect(screen.getByText("/tmp/wd-2")).toBeTruthy();
