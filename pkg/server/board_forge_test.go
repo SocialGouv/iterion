@@ -174,6 +174,18 @@ func TestSyncForgeIssuesToBoard_StoreAgnostic(t *testing.T) {
 	}
 }
 
+// TestImportForgeIssues_UnsupportedProvider verifies the self-hosted wrapper's
+// provider switch rejects an unknown forge before any network call — the core
+// idempotent-upsert behaviour is covered by TestSyncForgeIssuesToBoard_StoreAgnostic
+// (ImportForgeIssues is a thin construct-then-delegate shim over it).
+func TestImportForgeIssues_UnsupportedProvider(t *testing.T) {
+	board := newTestBoard(t)
+	_, _, err := ImportForgeIssues(context.Background(), forge.Provider("bitbucket"), "", "tok", "org/api", board, time.Time{})
+	if err == nil {
+		t.Fatal("expected an error for an unsupported provider, got nil")
+	}
+}
+
 func TestUpsertForgeCard_ClosedCreatesInTerminal(t *testing.T) {
 	board := newTestBoard(t)
 	b := board.Board()
