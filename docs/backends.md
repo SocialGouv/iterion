@@ -444,7 +444,7 @@ iterion ships a dedicated **`kimi`** backend for it:
 ```yaml
 agent implement:
   backend: "kimi"
-  model: "moonshot/kimi-k2"    # the provider segment is stripped → `-m kimi-k2`
+  model: "kimi-code/kimi-for-coding" # complete kimi-code alias is preserved
   system: "…the task…"
 ```
 
@@ -452,8 +452,9 @@ Under the hood, `kimi` is a concrete instance of a generic **CLI-agent
 backend** (`delegate.CLIAgentBackend` + `CLIAgentProtocol`, see
 [ADR-065](adr/065-dedicated-cli-agent-backend.md)) that builds the target
 CLI's *own* command line, runs it with a wall-clock timeout (inside the run's
-sandbox container when one is active), parses its stdout (kimi emits a
-claude-code-style `stream-json` stream) into the structured result, and retries
+sandbox container when one is active), parses its role-based `stream-json`
+stdout (with backward compatibility for the former claude-code-style events)
+into the structured result, and retries
 on a no-output / network transient. Adding another such CLI is a new protocol
 *value*, not new plumbing.
 

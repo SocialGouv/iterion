@@ -47,14 +47,10 @@ func NewKimiBackend(logger *iterlog.Logger, command string) *CLIAgentBackend {
 	}
 }
 
-// kimiMapModel translates an iterion model spec into the alias kimi's `-m`
-// flag expects. iterion specs are `provider/model` (e.g. "moonshot/kimi-k2");
-// kimi wants the bare alias, so we strip a leading provider segment. A spec
-// with no "/" is passed through unchanged (already an alias, e.g. "kimi-k2").
+// kimiMapModel preserves the complete kimi-code model alias. Current aliases
+// commonly contain a slash themselves (for example
+// "kimi-code/kimi-for-coding"), so treating the prefix as an iterion provider
+// and stripping it produces an alias that kimi-code cannot resolve.
 func kimiMapModel(model string) string {
-	model = strings.TrimSpace(model)
-	if i := strings.Index(model, "/"); i >= 0 {
-		return model[i+1:]
-	}
-	return model
+	return strings.TrimSpace(model)
 }
