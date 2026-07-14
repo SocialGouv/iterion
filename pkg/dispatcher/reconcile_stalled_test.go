@@ -60,10 +60,27 @@ func TestReconcileStalled_ForceReapsCtxIgnoringWorker(t *testing.T) {
 		t.Fatal("dispatch never started")
 	}
 
+	// Wait for the dispatch to be VISIBLE in a published snapshot before
+	// polling for the reap: dispatchStarted fires from the WORKER
+	// goroutine, which is unordered with the actor's fireSnapshot for the
+	// dispatch — polling for Running==0 straight away can read the initial
+	// EMPTY snapshot and misread it as "already reaped" (the 0.06s CI
+	// flake), then find the entry in the follow-up check and report a
+	// phantom missing tombstone.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(c.Snapshot().Running) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(c.Snapshot().Running) != 1 {
+		t.Fatalf("dispatched entry never appeared in a snapshot; snapshot=%+v", c.Snapshot())
+	}
+
 	// Expect: stall fires (>100ms after dispatch with no events),
 	// grace expires (>100ms after first cancel), force-reap runs.
 	// Total budget: ~500ms; allow 3s for CI slop.
-	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		snap := c.Snapshot()
 		if len(snap.Running) == 0 {
