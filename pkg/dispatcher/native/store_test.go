@@ -134,6 +134,39 @@ func TestNewStoreInsertsAwaitingInputAfterInProgress(t *testing.T) {
 	}
 }
 
+func TestUpgradeBoardSchema(t *testing.T) {
+	// Pure-helper contract — the Mongo store applies this on READ (no
+	// persistence), so the filesystem-store tests above don't cover it.
+	legacy := &Board{States: []State{
+		{Name: StateBacklog, Display: "Backlog"},
+		{Name: StateReady, Display: "Ready", Eligible: true},
+		{Name: StateInProgress, Display: "In progress", Eligible: true},
+		{Name: StateDone, Display: "Done", Terminal: true},
+	}}
+	if !UpgradeBoardSchema(legacy) {
+		t.Fatal("legacy board must report changed")
+	}
+	names := make([]string, 0, len(legacy.States))
+	for _, s := range legacy.States {
+		names = append(names, s.Name)
+	}
+	want := []string{StateInbox, StateBacklog, StateReady, StateInProgress, StateAwaitingInput, StateDone}
+	if len(names) != len(want) {
+		t.Fatalf("states = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("states = %v, want %v", names, want)
+		}
+	}
+	if UpgradeBoardSchema(legacy) {
+		t.Fatal("second upgrade must be a no-op")
+	}
+	if UpgradeBoardSchema(DefaultBoard()) {
+		t.Fatal("DefaultBoard must not need upgrading")
+	}
+}
+
 func TestNewStoreLeavesCustomBoardWithoutInProgressUntouched(t *testing.T) {
 	// A fully custom board with no `in_progress` state gets NO
 	// awaiting_input insert — the dispatcher's "stays in place"

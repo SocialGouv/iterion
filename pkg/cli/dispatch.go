@@ -98,8 +98,11 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	// live instance. That IS the desired end state — SaveConfig above
 	// already live-reloaded it with this invocation's config — so treat
 	// ErrAlreadyRunning as success instead of exiting the daemon.
-	if err := mgr.Start(); err != nil && !errors.Is(err, dispatcher.ErrAlreadyRunning) {
-		return err
+	if err := mgr.Start(); err != nil {
+		if !errors.Is(err, dispatcher.ErrAlreadyRunning) {
+			return err
+		}
+		logger.Info("dispatcher already auto-started from the persisted config — this invocation's config was live-reloaded onto it")
 	}
 	// Shutdown preserves the operator's last-known intent in
 	// runtime.json across SIGTERM / Ctrl-C. Stop is reserved for

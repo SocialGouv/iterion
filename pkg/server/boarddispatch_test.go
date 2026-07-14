@@ -9,6 +9,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 type fakeBoardCoord struct {
@@ -180,6 +181,68 @@ func TestBoardDispatcher_PausedRunMovesToAwaitingInput(t *testing.T) {
 	if len(f.claimed) != 0 {
 		t.Errorf("card should be released after a pause: %v", f.claimed)
 	}
+}
+
+// TestBoardDispatcher_SweepMovesParkedCards: a cloud card parks UNCLAIMED in
+// awaiting_input and every resume surface completes the run outside the
+// dispatcher's poll loop, so only sweepParked can move it on. finished →
+// done, hard-failed → blocked, resumable/in-flight statuses stay parked; the
+// denormalized ⏸ badge is cleared on every terminal move.
+func TestBoardDispatcher_SweepMovesParkedCards(t *testing.T) {
+	awaiting := func(id, runID string) boardmongo.Candidate {
+		return boardmongo.Candidate{Tenant: "t1", Issue: native.Issue{ID: id, State: native.StateAwaitingInput, LastRunID: runID}}
+	}
+	f := newFakeBoardCoord(
+		awaiting("native:done", "run-finished"),
+		awaiting("native:dead", "run-failed"),
+		awaiting("native:wait", "run-paused"),
+		awaiting("native:redo", "run-resumable"),
+		awaiting("native:none", ""), // never dispatched — must be left alone
+	)
+	statuses := map[string]store.RunStatus{
+		"run-finished":  store.RunStatusFinished,
+		"run-failed":    store.RunStatusFailed,
+		"run-paused":    store.RunStatusPausedWaitingHuman,
+		"run-resumable": store.RunStatusFailedResumable,
+	}
+	var bmu sync.Mutex
+	badgeCleared := map[string]bool{}
+	d := newBoardDispatcher(f, func(context.Context, string, native.Issue) error {
+		t.Fatal("sweep must never dispatch a parked card")
+		return nil
+	}, "replica-A", 4, nil)
+	d.statusFor = func(_ context.Context, _, runID string) (store.RunStatus, error) {
+		return statuses[runID], nil
+	}
+	d.clearBadge = func(_, id string) {
+		bmu.Lock()
+		badgeCleared[id] = true
+		bmu.Unlock()
+	}
+
+	d.sweepParked(context.Background())
+
+	if got := f.states["native:done"]; got != native.StateDone {
+		t.Errorf("finished card state = %q, want %q", got, native.StateDone)
+	}
+	if got := f.states["native:dead"]; got != native.StateBlocked {
+		t.Errorf("hard-failed card state = %q, want %q", got, native.StateBlocked)
+	}
+	for _, id := range []string{"native:wait", "native:redo", "native:none"} {
+		if got, moved := f.states[id]; moved {
+			t.Errorf("card %s must stay parked, was moved to %q", id, got)
+		}
+	}
+	if !badgeCleared["native:done"] || !badgeCleared["native:dead"] {
+		t.Errorf("badge must be cleared on terminal moves: %v", badgeCleared)
+	}
+	if badgeCleared["native:wait"] || badgeCleared["native:redo"] {
+		t.Errorf("badge must survive on parked cards: %v", badgeCleared)
+	}
+
+	// nil statusFor (unwired) must be a hard no-op.
+	d2 := newBoardDispatcher(f, func(context.Context, string, native.Issue) error { return nil }, "replica-A", 4, nil)
+	d2.sweepParked(context.Background())
 }
 
 func TestBoardDispatcher_ClaimConflictSkips(t *testing.T) {

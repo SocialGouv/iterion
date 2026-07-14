@@ -21,6 +21,7 @@ export const BOARD_PALETTE: { label: string; value: string }[] = [
   { label: "Backlog", value: "var(--color-board-backlog)" },
   { label: "Ready", value: "var(--color-board-ready)" },
   { label: "In progress", value: "var(--color-board-in-progress)" },
+  { label: "Awaiting input", value: "var(--color-warning)" },
   { label: "Review", value: "var(--color-board-review)" },
   { label: "Done", value: "var(--color-board-done)" },
   { label: "Blocked", value: "var(--color-board-blocked)" },

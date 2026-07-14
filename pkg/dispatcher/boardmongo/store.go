@@ -107,7 +107,12 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 // --- board config ---
 
 // Board returns the tenant's board config, defaulting to native.DefaultBoard
-// when none is stored yet.
+// when none is stored yet. A persisted board from an older iterion is
+// schema-upgraded on READ (inbox / awaiting_input states) — the same upgrade
+// the filesystem store persists in loadOrInitBoard. Normalizing here (not
+// writing back) keeps reads race-free; the next SetBoard from the column
+// editor persists the upgraded shape naturally, and SetState validation
+// (which reads through this method) accepts the upgraded states either way.
 func (s *Store) Board() *native.Board {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
@@ -117,6 +122,7 @@ func (s *Store) Board() *native.Board {
 		return native.DefaultBoard()
 	}
 	b := doc.Board
+	native.UpgradeBoardSchema(&b)
 	return &b
 }
 

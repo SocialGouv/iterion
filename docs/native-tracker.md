@@ -57,15 +57,18 @@ fields the operator can attach to issues. Defaults:
 ```jsonc
 {
   "states": [
-    { "name": "inbox",       "display": "Inbox" },
-    { "name": "backlog",     "display": "Backlog" },
-    { "name": "ready",       "display": "Ready",       "eligible": true },
-    { "name": "in_progress", "display": "In progress", "eligible": true },
-    { "name": "review",      "display": "Review" },
-    { "name": "done",        "display": "Done",        "terminal": true },
-    { "name": "blocked",     "display": "Blocked",     "terminal": true }
+    { "name": "inbox",          "display": "Inbox" },
+    { "name": "backlog",        "display": "Backlog" },
+    { "name": "ready",          "display": "Ready",       "eligible": true },
+    { "name": "in_progress",    "display": "In progress", "eligible": true },
+    { "name": "awaiting_input", "display": "Awaiting input" },
+    { "name": "review",         "display": "Review" },
+    { "name": "done",           "display": "Done",        "terminal": true },
+    { "name": "blocked",        "display": "Blocked",     "terminal": true }
   ],
-  "fields": []
+  "fields": [
+    { "name": "bot_args", "display": "Bot args", "type": "text" }
+  ]
 }
 ```
 
@@ -73,6 +76,16 @@ fields the operator can attach to issues. Defaults:
 post their out-of-scope observations there (labeled `findings`) so
 operators can triage on /board without a separate inbox surface —
 drag inbox → backlog to promote, delete the card to dismiss.
+
+`awaiting_input` holds a dispatched card whose run paused for input
+(a `human` node, or an operator soft-pause): the dispatcher parks the
+card there — non-eligible, claim retained — and a per-tick sweep moves
+it on once the run reaches a terminal status (see the "Paused runs"
+section in [docs/dispatcher.md](dispatcher.md)). Boards persisted by an
+older iterion are **schema-upgraded automatically** on store open
+(filesystem) or on read (Mongo): missing `inbox` is prepended, missing
+`awaiting_input` is inserted right after `in_progress`. Fully-custom
+boards without an `in_progress` state are left untouched.
 
 | Property            | Meaning                                                            |
 |---------------------|--------------------------------------------------------------------|
@@ -151,24 +164,27 @@ machine-readable output:
 iterion issue list --state ready --json | jq '.[].id'
 ```
 
-### Open CLI gap: per-ticket `bot` / `bot_args`
+### Per-ticket `bot` / `bot_args`
 
-The underlying `native.Issue` record carries dedicated typed
-fields `Bot` (string) and `BotArgs` (`map[string]string`) — see
-the REST surface below — but `iterion issue create` and
-`iterion issue update` do **not** yet expose `--bot` or
-`--bot-arg` flags. `--field key=value` lands in the freeform
-`Fields` map, NOT in `BotArgs`.
+The `native.Issue` record carries dedicated typed routing fields:
+`Bot` (string) and `BotArgs` (`map[string]string`). At **create**
+time the CLI exposes them directly:
 
-Until the CLI ships those flags, set the two routing fields via
-one of:
+```bash
+iterion issue create --title "Ship X" --state ready \
+  --bot feature-dev --bot-arg feature_prompt="Ship X exactly as specced"
+```
 
-- the REST API (`POST` / `PATCH` `/api/v1/native/issues` with
+(`--field key=value` is different: it lands in the freeform `Fields`
+map, NOT in `BotArgs`.) `iterion issue update` does not expose the
+two flags yet — to change routing on an EXISTING card use one of:
+
+- the REST API (`PATCH /api/v1/native/issues/{id}` with
   `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`),
 - the board MCP / claw tools (`create_issue` and `set_bot` both accept
   `bot` / `bot_args`, so a bot with the `board.create` / `board.assign`
   capability can pin routing at create time),
-- a direct `native.Store.Create` / `Update` call from Go,
+- the studio issue modal,
 - or rely on the dispatcher-side `assignee_workflows:` /
   `assignee_dispatch:` mappings keyed on `--assignee` (see
   [docs/dispatcher.md](dispatcher.md)).

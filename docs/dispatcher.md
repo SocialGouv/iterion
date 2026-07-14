@@ -137,6 +137,31 @@ per-state** (`agent.max_concurrent_by_state`). A workflow state in
 the per-state map cannot exceed its individual cap even when the
 global cap has room.
 
+### Paused runs — the `awaiting_input` column + parked sweep
+
+A run that suspends for input (a `human` node → `paused_waiting_human`,
+or an operator soft-pause → `paused_operator`) is **not** a failure and
+is never retried. The dispatcher **parks** the card instead:
+
+- the card moves into the dedicated **`awaiting_input`** column (part of
+  the default board; older `board.json` / Mongo board configs are
+  schema-upgraded automatically — the state is inserted right after
+  `in_progress`; fully-custom boards without `in_progress` are left
+  untouched and the card simply stays in place),
+- the claim is retained (so no tick re-dispatches it), the slot is
+  freed, and the denormalized ⏸ badge (`awaiting_input` on the issue) is
+  set — the studio board shows "this pipeline needs me" at the column
+  level and the card's answer form keys off `last_run_id`.
+
+Answering happens **outside** the dispatcher (answer-from-board, the run
+console, or `iterion resume`), so a per-tick **parked sweep**
+(`reconcileParked`) watches the parked cards' runs and finishes the
+lifecycle: run `finished` → `agent.completed_state`, hard `failed` →
+`agent.failed_state` (claim released, badge cleared). Resumable statuses
+(`paused_*`, `failed_resumable`, `cancelled`) keep the card parked — it
+genuinely still awaits the operator. The cloud board coordinator runs
+the same sweep for cloud-launched cards.
+
 ### In-progress transition (`agent.running_state`)
 
 After `tracker.Claim` succeeds, the dispatcher transitions the issue
