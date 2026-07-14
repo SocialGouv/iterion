@@ -185,6 +185,26 @@ func providerFingerprint(env map[string]string) string {
 // inherited env var" (e.g. {"ANTHROPIC_BASE_URL": ""} actively
 // suppresses a stale z.ai value in the parent env when the hint asks
 // for Anthropic-direct).
+// claudeForfaitEnv wires the CLI to a per-run OAuth-forfait credentials.json
+// (desktop `claude login` shape) via CLAUDE_CONFIG_DIR — and actively
+// SUPPRESSES any Anthropic-flavoured credential inherited from the process
+// env. The claude CLI prefers ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN over the
+// OAuth token in CLAUDE_CONFIG_DIR, so a cloud runner that carries a shared
+// ANTHROPIC_API_KEY in its pod env (e.g. an operator-configured key, possibly
+// dead) would otherwise override the forfait — the run then fails with the
+// inherited key's error ("Credit balance is too low") even though a valid
+// forfait was resolved. Setting the vars to "" overrides the inheritance so the
+// CLI falls through to the OAuth token. Mirrors how the z.ai/anthropic hints
+// clear the base-URL/token to stop a stale value leaking in.
+func claudeForfaitEnv(dir string) map[string]string {
+	return map[string]string{
+		"CLAUDE_CONFIG_DIR":    dir,
+		"ANTHROPIC_API_KEY":    "",
+		"ANTHROPIC_AUTH_TOKEN": "",
+		"ANTHROPIC_BASE_URL":   "",
+	}
+}
+
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string]string {
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
@@ -196,7 +216,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string
 				return map[string]string{"ANTHROPIC_API_KEY": k}
 			}
 			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-				return map[string]string{"CLAUDE_CONFIG_DIR": d}
+				return claudeForfaitEnv(d)
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the
@@ -249,7 +269,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string
 		case creds.APIKey(secrets.ProviderAnthropic) != "":
 			return map[string]string{"ANTHROPIC_API_KEY": creds.APIKey(secrets.ProviderAnthropic)}
 		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
-			return map[string]string{"CLAUDE_CONFIG_DIR": creds.OAuthDir(string(secrets.OAuthKindClaudeCode))}
+			return claudeForfaitEnv(creds.OAuthDir(string(secrets.OAuthKindClaudeCode)))
 		}
 	}
 	// Env-fallback: ZAI_API_KEY is the convenience knob for desktop
