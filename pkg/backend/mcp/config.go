@@ -128,6 +128,7 @@ func PrepareWorkflow(wf *ir.Workflow, projectDir string) error {
 			Args:      append([]string(nil), cfg.Args...),
 			URL:       cfg.URL,
 			Headers:   cloneStringMap(cfg.Headers),
+			Env:       cloneStringMap(cfg.Env),
 			Auth:      authConfigToIR(cfg.Auth),
 		}
 	}

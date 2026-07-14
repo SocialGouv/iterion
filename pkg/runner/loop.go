@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/SocialGouv/iterion/pkg/backend/cost"
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/bundle"
@@ -1068,6 +1069,20 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 			r.cfg.Logger.Warn("runner: run %s: capture git baseline: %v", msg.RunID, herr)
 		}
 		defer func() { _ = os.RemoveAll(repoDir) }()
+	}
+
+	// Resolve the MCP catalog (project .mcp.json + enabled-plugin servers)
+	// against the run's workspace. loadWorkflow → ir.Compile only builds the
+	// graph; it does NOT merge plugin/project MCP servers — that is
+	// PrepareWorkflow's job, and the studio/CLI run paths call it via
+	// runview.compileWith. The runner hydrates from a pre-compiled AST and so
+	// must call it explicitly here, else wf.ResolvedMCPServers stays empty,
+	// buildMCPManager returns a nil manager, and every `mcp.<server>.*`
+	// wildcard resolves to zero tools (the firecrawl/repo-falcon plugins were
+	// silently inert in cloud runs). Fail loudly on a malformed catalog rather
+	// than run a bot missing the tools it declared.
+	if err := mcp.PrepareWorkflow(wf, workDir); err != nil {
+		return fmt.Errorf("runner: resolve MCP servers for %s: %w", msg.RunID, err)
 	}
 
 	// No-sandbox file secrets: a workflow with `as: file` secrets but no

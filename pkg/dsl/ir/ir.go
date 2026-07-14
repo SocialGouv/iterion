@@ -755,7 +755,14 @@ type MCPServer struct {
 	Args      []string
 	URL       string
 	Headers   map[string]string
-	Auth      *MCPAuth
+	// Env carries extra environment variables for a stdio server process.
+	// The DSL `mcp_server` block has no `env:`; this is populated only for
+	// plugin-contributed servers (e.g. firecrawl's FIRECRAWL_API_URL /
+	// FIRECRAWL_API_KEY), whose manifest env is resolved at catalog-build
+	// time. Without threading it here the self-host routing is lost and the
+	// server would fall back to its public API.
+	Env  map[string]string
+	Auth *MCPAuth
 }
 
 // MCPAuth describes how to authenticate against an MCP server.
