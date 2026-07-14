@@ -85,12 +85,17 @@ func (s *Server) handlePRForgeReview(ctx context.Context, w http.ResponseWriter,
 	}
 	meta := prforgePRMeta(p)
 
-	// Fork guard (opt-in): a fork PR (head repo != base repo) is untrusted, so
-	// when the webhook enables block_fork_prs it never auto-launches ANY bot —
-	// the operator validates it first (anti budget-exhaustion). Filtered as a
-	// clean 200 so the forge keeps the hook enabled.
-	if cfg.BlockForkPRs && p.IsCrossRepo() {
-		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "fork PR blocked by block_fork_prs (operator validation required)")
+	// Fork guard (UNCONDITIONAL on the auto path): a fork PR (head repo != base
+	// repo) is untrusted — an adversary can open one to run code in our runner
+	// with the forge token and to exhaust the tenant's budget. So an inbound PR
+	// event NEVER auto-launches a bot on a fork, regardless of block_fork_prs.
+	// A repo-authorized collaborator can still run one DELIBERATELY by issuing a
+	// `/command` on the PR: that path (handlePRForgeComment) gates on the
+	// commenter's CollaboratorPermission, so only a trusted user, manually,
+	// triggers a run against fork code. Filtered as a clean 200 so the forge
+	// keeps the hook enabled.
+	if p.IsCrossRepo() {
+		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusFiltered, payloadHash, srcIP, "fork PR — auto-launch blocked (untrusted; a repo collaborator can trigger a bot manually via a command)")
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": webhooks.StatusFiltered})
 		return
 	}

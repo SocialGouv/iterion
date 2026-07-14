@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -203,6 +204,13 @@ func selectForgePRBot(cfg webhooks.Config, p prforge.Parsed) string {
 	if p.IsCrossRepo() {
 		return ""
 	}
+	// Dependency-update PRs (Dependabot/Renovate) never route to the
+	// branch-improvement loop: an improve loop over a bumped manifest/lockfile
+	// is off-target and churns the bot's own PR. The dependency guard (Vetty)
+	// owns that lane — via its own invocation / a `/command`.
+	if isDependencyBotAuthor(p.SenderLogin) {
+		return ""
+	}
 	if len(forge.ParseIssueRefs(true, p.Title, p.Description)) == 0 {
 		return ""
 	}
@@ -210,6 +218,18 @@ func selectForgePRBot(cfg webhooks.Config, p prforge.Parsed) string {
 		return ""
 	}
 	return branchImproveBotID
+}
+
+// isDependencyBotAuthor reports whether login is an automated dependency-update
+// bot (Dependabot / Renovate, including the "renovate[bot]" GitHub-App form and
+// common self-hosted names). Case-insensitive.
+func isDependencyBotAuthor(login string) bool {
+	l := strings.ToLower(strings.TrimSpace(login))
+	switch l {
+	case "dependabot[bot]", "dependabot", "renovate[bot]", "renovate", "renovate-bot":
+		return true
+	}
+	return strings.HasPrefix(l, "renovate[") || strings.HasPrefix(l, "dependabot[")
 }
 
 // resolveReviewBot picks the bot id for a forge-specific review-PR
