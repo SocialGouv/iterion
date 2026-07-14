@@ -447,7 +447,12 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (
 			Args:      expandedArgs,
 			URL:       os.ExpandEnv(server.URL),
 			Headers:   server.Headers,
-			Auth:      mcp.FromIRAuth(server.Auth),
+			// Env is already fully resolved at catalog-build time (plugin
+			// {{config.*}} placeholders expanded by loadPluginServers) — copy
+			// verbatim, no os.ExpandEnv (a secret value may legitimately
+			// contain a `$`).
+			Env:  server.Env,
+			Auth: mcp.FromIRAuth(server.Auth),
 		}
 		if server.Auth != nil {
 			hasAuth = true
