@@ -225,6 +225,41 @@ fields](dispatcher.md) for the current handoff.
 The SPA's Board view (`/board` in the studio) consumes exactly these
 endpoints — it's a thin React shell on top of the REST surface.
 
+## Pipeline boards (the second board)
+
+The Studio also exposes `/pipelines` and `/pipelines/{bot}`. This is a
+different product surface, not a saved filter and not a replacement for
+`/board`:
+
+- `/board` remains the editable, shared dispatcher backlog;
+- one pipeline board is identified by one discovered bot (`bot:<bot-id>`);
+- its columns are derived from the workflow graph and live run statuses;
+- root runs and recursively-linked child runs are separate nested cards;
+- a card paused on `paused_waiting_human` embeds the existing structured
+  answer form and resumes the exact root or child run.
+
+The aggregate read API is intentionally server-side, so the browser does not
+perform an N+1 traversal over issues, checkpoints and child runs:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/pipeline-boards` | GET | List deterministic bot-bound board identities |
+| `/api/v1/pipeline-boards/{bot}` | GET | Return columns plus the flat, depth-annotated task/run tree |
+| `/api/v1/pipeline-boards/{bot}/tasks` | POST | Create a task pinned to the path bot; `{start:true}` admits it directly to the first eligible native state |
+
+Runtime-derived columns cannot be drag-and-dropped: changing a card's visual
+position without changing its run would make the projection false. The board
+always includes `Todo`, `Running`, `Needs attention` and `Done`; declared human
+interactions are named columns between them, with dynamic child interactions
+and an `Other input` fallback for runtime-only pauses.
+
+Task ingestion reuses native issues in this first slice. Consequently a task
+appears before launch only when its `Issue.Bot` explicitly matches the board.
+Once a run exists, manual/API runs genuinely associated with that bot also
+appear even if no native issue references them. See
+[ADR-073](adr/073-dedicated-pipeline-board-projection.md) for the boundary,
+trade-offs and follow-ups.
+
 ## Use cases beyond the dispatcher
 
 Even without `iterion dispatch` running, the native tracker is useful

@@ -124,6 +124,7 @@ func (s *Service) Fork(ctx context.Context, spec ForkSpec) (*ForkResult, error) 
 		child.Name = fmt.Sprintf("%s · fork @ %s", parent.Name, spec.NodeID)
 	}
 	child.ForkedFrom = parent.ID
+	child.ParentRunID = parent.ID
 	child.ForkAnchor = &store.ForkAnchor{
 		NodeID:     spec.NodeID,
 		LoopIter:   turn.LoopIter,

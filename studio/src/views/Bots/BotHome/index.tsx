@@ -311,6 +311,9 @@ function ActionsRow({
   onToggleTest: () => void;
 }) {
   const [, setLocation] = useLocation();
+  const pipelineBoardsEnabled = useServerInfoStore(
+    (state) => !!state.info?.native_tracker_enabled,
+  );
 
   const noPathTitle =
     "The server couldn't relativise this bot's path to the workspace — launch it from its own directory instead.";
@@ -346,6 +349,18 @@ function ActionsRow({
       >
         Open in editor
       </Button>
+      {pipelineBoardsEnabled && (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() =>
+            setLocation(`/pipelines/${encodeURIComponent(entry.name)}`)
+          }
+          title={`Open ${entry.display_name?.trim() || entry.name}'s pipeline board`}
+        >
+          Pipeline board
+        </Button>
+      )}
       {/* Test opens the embedded TestRunPane (contained run: commits land
           on a storage branch only) instead of navigating away. */}
       <Button

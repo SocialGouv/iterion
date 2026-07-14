@@ -18,6 +18,8 @@ const BotsView = lazy(() => import("@/views/Bots"));
 const BotHomeView = lazy(() => import("@/views/Bots/BotHome"));
 const BotBuilderView = lazy(() => import("@/views/Bots/BotBuilder"));
 const BoardView = lazy(() => import("@/views/Board"));
+const PipelineBoardsView = lazy(() => import("@/views/PipelineBoards"));
+const PipelineBoardView = lazy(() => import("@/views/PipelineBoard"));
 const LabelsView = lazy(() => import("@/views/Board/Labels"));
 const FieldsView = lazy(() => import("@/views/Board/Fields"));
 const RunsAnalyticsView = lazy(() => import("@/views/RunsAnalytics"));
@@ -409,6 +411,20 @@ function AuthedApp() {
             </Route>
           )}
           {serverInfo?.native_tracker_enabled && (
+            <Route path="/pipelines/:bot">
+              <ErrorBoundary area="Pipeline board view">
+                <PipelineBoardView />
+              </ErrorBoundary>
+            </Route>
+          )}
+          {serverInfo?.native_tracker_enabled && (
+            <Route path="/pipelines">
+              <ErrorBoundary area="Pipeline boards view">
+                <PipelineBoardsView />
+              </ErrorBoundary>
+            </Route>
+          )}
+          {serverInfo?.native_tracker_enabled && (
             <Route path="/board">
               <ErrorBoundary area="Board view">
                 <BoardView />
@@ -477,4 +493,3 @@ function AuthedApp() {
     </>
   );
 }
-

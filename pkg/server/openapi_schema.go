@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/pat"
 )
@@ -75,6 +76,14 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/orgs/{id}":       {response: orgView{}},
 		"POST /api/admin/orgs/{id}/restore": {response: orgView{}},
 		"POST /api/admin/orgs/{id}/status":  {request: setOrgStatusReq{}, response: orgView{}},
+
+		// Bot-bound execution projection (additive to the native backlog).
+		"GET /api/v1/pipeline-boards":       {response: pipelineBoardListResponse{}},
+		"GET /api/v1/pipeline-boards/{bot}": {response: PipelineBoardResponse{}},
+		"POST /api/v1/pipeline-boards/{bot}/tasks": {
+			request:  pipelineBoardTaskRequest{},
+			response: native.Issue{},
+		},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {

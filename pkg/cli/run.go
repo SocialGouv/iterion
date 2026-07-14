@@ -519,6 +519,8 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
 			runtime.WithFilePath(childPath),
+			runtime.WithParentRunID(req.ParentRunID),
+			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
 			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
 				if out != nil {
 					last = out

@@ -3312,6 +3312,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipeline-boards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/pipeline-boards */
+        get: operations["getV1PipelineBoards"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-boards/{bot}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bot: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/pipeline-boards/{bot} */
+        get: operations["getV1PipelineBoardsByBot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-boards/{bot}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bot: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-boards/{bot}/tasks */
+        post: operations["postV1PipelineBoardsByBotTasks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plugins": {
         parameters: {
             query?: never;
@@ -3683,6 +3738,13 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        Comment: {
+            author?: string;
+            body: string;
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+        };
         Connection: {
             /** Format: date-time */
             access_token_expires_at?: string;
@@ -3708,6 +3770,14 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        ExternalRef: {
+            connection_id: string;
+            number: number;
+            provider: string;
+            repo: string;
+            state?: string;
+            url?: string;
+        };
         ForgeOAuthApp: {
             app_manage_url?: string;
             app_slug?: string;
@@ -3727,6 +3797,94 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        Issue: {
+            assignee?: string;
+            awaiting_input?: boolean;
+            blockers?: string[];
+            body?: string;
+            bot?: string;
+            bot_args?: {
+                [key: string]: string;
+            };
+            claim?: string;
+            comments?: components["schemas"]["Comment"][];
+            /** Format: date-time */
+            created_at: string;
+            external?: components["schemas"]["ExternalRef"];
+            fields?: {
+                [key: string]: unknown;
+            };
+            id: string;
+            labels?: string[];
+            last_run_id?: string;
+            last_workdir?: string;
+            priority?: number;
+            runs?: components["schemas"]["RunRef"][];
+            state: string;
+            title: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        PipelineBoardAttempt: {
+            /** Format: date-time */
+            at?: string;
+            run_id: string;
+            status?: string;
+        };
+        PipelineBoardCard: {
+            attempts?: components["schemas"]["PipelineBoardAttempt"][];
+            body?: string;
+            bot_id?: string;
+            children_count?: number;
+            column_id: string;
+            /** Format: date-time */
+            created_at: string;
+            depth: number;
+            error?: string;
+            id: string;
+            interaction_id?: string;
+            issue_id?: string;
+            issue_state?: string;
+            kind: string;
+            labels?: string[];
+            node_id?: string;
+            parent_run_id?: string;
+            priority?: number;
+            questions?: {
+                [key: string]: unknown;
+            };
+            root_run_id?: string;
+            run_id?: string;
+            status?: string;
+            title: string;
+            /** Format: date-time */
+            updated_at: string;
+            workflow_name?: string;
+        };
+        PipelineBoardColumn: {
+            id: string;
+            interaction_mode?: string;
+            kind: string;
+            node_id?: string;
+            title: string;
+            workflow_name?: string;
+        };
+        PipelineBoardIdentity: {
+            bot_id: string;
+            description?: string;
+            display_name: string;
+            enabled: boolean;
+            icon?: string;
+            id: string;
+        };
+        PipelineBoardResponse: {
+            board: components["schemas"]["PipelineBoardIdentity"];
+            cards: components["schemas"]["PipelineBoardCard"][];
+            columns: components["schemas"]["PipelineBoardColumn"][];
+            /** Format: date-time */
+            generated_at: string;
+            topology_error?: string;
+        };
         RepoSummary: {
             can_admin: boolean;
             default_branch?: string;
@@ -3734,6 +3892,12 @@ export interface components {
             full_name: string;
             private: boolean;
             web_url?: string;
+        };
+        RunRef: {
+            /** Format: date-time */
+            at: string;
+            run_id: string;
+            workdir?: string;
         };
         Token: {
             /** Format: date-time */
@@ -3826,6 +3990,19 @@ export interface components {
             slug: string;
             status: string;
             suspend_reason?: string;
+        };
+        pipelineBoardListResponse: {
+            boards: components["schemas"]["PipelineBoardIdentity"][];
+        };
+        pipelineBoardTaskRequest: {
+            body?: string;
+            bot_args?: {
+                [key: string]: string;
+            };
+            labels?: string[];
+            priority?: number;
+            start?: boolean;
+            title: string;
         };
         setOrgStatusReq: {
             reason?: string;
@@ -8245,6 +8422,74 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getV1PipelineBoards: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["pipelineBoardListResponse"];
+                };
+            };
+        };
+    };
+    getV1PipelineBoardsByBot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineBoardResponse"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardsByBotTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bot: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
             };
         };
     };

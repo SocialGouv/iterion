@@ -214,6 +214,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
+		spec.ParentRunID,
 		inputs,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -325,6 +326,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
+		r.ParentRunID,
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -375,6 +377,7 @@ func (s *Service) spawnRun(
 	promote runtime.AttachmentPromoteFunc,
 	preset string,
 	modelOverrides []store.RunModelOverride,
+	parentRunID string,
 	precreateInputs map[string]any,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
@@ -397,11 +400,24 @@ func (s *Service) spawnRun(
 	// being scheduled. The engine's runResolveDoc sees the running doc and
 	// claims it instead of re-creating.
 	if precreateInputs != nil {
-		if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs); err != nil {
+		created, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+		if err != nil {
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
 			return nil, fmt.Errorf("runview: create run: %w", err)
+		}
+		// ParentRunID is part of the launch identity, so persist it before
+		// returning just like the run document itself. The engine option below
+		// remains the authoritative path for direct/non-precreated runs.
+		if parentRunID != "" {
+			created.ParentRunID = parentRunID
+			if err := s.store.SaveRun(context.Background(), created); err != nil {
+				s.manager.Deregister(runID)
+				_ = lock.Unlock()
+				s.dropRunLog(runID)
+				return nil, fmt.Errorf("runview: save parent run: %w", err)
+			}
 		}
 	}
 
@@ -419,6 +435,9 @@ func (s *Service) spawnRun(
 	}
 	if preset != "" {
 		opts = append(opts, runtime.WithPreset(preset))
+	}
+	if parentRunID != "" {
+		opts = append(opts, runtime.WithParentRunID(parentRunID))
 	}
 	// Persist launch-time model/backend overrides on the run record
 	// (display-only) so the studio Overview shows what it launched with.

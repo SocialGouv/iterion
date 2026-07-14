@@ -69,6 +69,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}", s.handleBotsPut)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}/overlay", s.handleBotOverlay)
+	// Pipeline Boards are a bot-bound execution projection layered alongside
+	// the native backlog board. They keep their own routes/read model so the
+	// existing /board tracker and dispatcher semantics remain unchanged.
+	s.registerPipelineBoardRoutes()
 
 	// Hosted marketplace — curated registry of bot bundles published by
 	// repos. Each endpoint short-circuits to 404 when s.marketplace is

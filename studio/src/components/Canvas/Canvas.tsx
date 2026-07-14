@@ -624,6 +624,13 @@ function buildPaletteActions(deps: {
       run: () => deps.navigate("/board"),
     },
     {
+      id: "nav.pipelines",
+      group: "Navigate",
+      title: "Pipelines",
+      keywords: ["pipeline boards", "human input", "bots"],
+      run: () => deps.navigate("/pipelines"),
+    },
+    {
       id: "nav.dispatcher",
       group: "Navigate",
       title: "Dispatcher",

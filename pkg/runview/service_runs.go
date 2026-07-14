@@ -84,17 +84,22 @@ func (s *Service) List(f ListFilter) ([]RunSummary, error) {
 	return s.ListCtx(context.Background(), f)
 }
 
-// ListCtx is the tenant-aware variant of List: propagates the caller's
-// ctx so mongo's tenant_id filter (stamped by requireAuth via
-// store.WithIdentity) applies to both the ListRuns and per-id LoadRun
-// calls. A cross-tenant caller sees an empty list instead of leaking
-// other tenants' run summaries.
-func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, error) {
+// ListRunRecordsCtx returns the persisted runs matching f. It is the
+// tenant-aware, record-level counterpart to ListCtx: the caller's context is
+// propagated to every store operation, including the event scan used by the
+// Node filter. Results are sorted by CreatedAt descending and truncated by
+// Limit after sorting.
+//
+// A run that cannot be loaded is skipped so one corrupt run document does not
+// break the whole listing. Returning the records directly lets server-side
+// projections consume the same filtered snapshot without listing summaries
+// and loading every run a second time.
+func (s *Service) ListRunRecordsCtx(ctx context.Context, f ListFilter) ([]*store.Run, error) {
 	ids, err := s.store.ListRuns(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]RunSummary, 0, len(ids))
+	out := make([]*store.Run, 0, len(ids))
 	for _, id := range ids {
 		r, err := s.store.LoadRun(ctx, id)
 		if err != nil {
@@ -113,13 +118,30 @@ func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, erro
 		if f.Node != "" && !runTouchedNode(ctx, s.store, r.ID, f.Node) {
 			continue
 		}
-		out = append(out, s.summarize(r))
+		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	if f.Limit > 0 && len(out) > f.Limit {
 		out = out[:f.Limit]
+	}
+	return out, nil
+}
+
+// ListCtx is the tenant-aware variant of List: propagates the caller's
+// ctx so mongo's tenant_id filter (stamped by requireAuth via
+// store.WithIdentity) applies to both the ListRuns and per-id LoadRun
+// calls. A cross-tenant caller sees an empty list instead of leaking
+// other tenants' run summaries.
+func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, error) {
+	runs, err := s.ListRunRecordsCtx(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunSummary, 0, len(runs))
+	for _, r := range runs {
+		out = append(out, s.summarize(r))
 	}
 	return out, nil
 }

@@ -1,6 +1,29 @@
 {
   "components": {
     "schemas": {
+      "Comment": {
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "body",
+          "created_at"
+        ],
+        "type": "object"
+      },
       "Connection": {
         "properties": {
           "access_token_expires_at": {
@@ -80,6 +103,35 @@
         ],
         "type": "object"
       },
+      "ExternalRef": {
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "connection_id",
+          "repo",
+          "number"
+        ],
+        "type": "object"
+      },
       "ForgeOAuthApp": {
         "properties": {
           "app_manage_url": {
@@ -145,6 +197,299 @@
         ],
         "type": "object"
       },
+      "Issue": {
+        "properties": {
+          "assignee": {
+            "type": "string"
+          },
+          "awaiting_input": {
+            "type": "boolean"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "body": {
+            "type": "string"
+          },
+          "bot": {
+            "type": "string"
+          },
+          "bot_args": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "claim": {
+            "type": "string"
+          },
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "external": {
+            "$ref": "#/components/schemas/ExternalRef"
+          },
+          "fields": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "last_run_id": {
+            "type": "string"
+          },
+          "last_workdir": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunRef"
+            },
+            "type": "array"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "state",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PipelineBoardAttempt": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "PipelineBoardCard": {
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineBoardAttempt"
+            },
+            "type": "array"
+          },
+          "body": {
+            "type": "string"
+          },
+          "bot_id": {
+            "type": "string"
+          },
+          "children_count": {
+            "type": "integer"
+          },
+          "column_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "depth": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "interaction_id": {
+            "type": "string"
+          },
+          "issue_id": {
+            "type": "string"
+          },
+          "issue_state": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "questions": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "root_run_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "workflow_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "column_id",
+          "title",
+          "depth",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "PipelineBoardColumn": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "interaction_mode": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workflow_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "PipelineBoardIdentity": {
+        "properties": {
+          "bot_id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "icon": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "bot_id",
+          "display_name",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "PipelineBoardResponse": {
+        "properties": {
+          "board": {
+            "$ref": "#/components/schemas/PipelineBoardIdentity"
+          },
+          "cards": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineBoardCard"
+            },
+            "type": "array"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineBoardColumn"
+            },
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "topology_error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "board",
+          "columns",
+          "cards",
+          "generated_at"
+        ],
+        "type": "object"
+      },
       "RepoSummary": {
         "properties": {
           "can_admin": {
@@ -170,6 +515,25 @@
           "full_name",
           "private",
           "can_admin"
+        ],
+        "type": "object"
+      },
+      "RunRef": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "workdir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "at"
         ],
         "type": "object"
       },
@@ -480,6 +844,52 @@
           "name",
           "slug",
           "status"
+        ],
+        "type": "object"
+      },
+      "pipelineBoardListResponse": {
+        "properties": {
+          "boards": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineBoardIdentity"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "boards"
+        ],
+        "type": "object"
+      },
+      "pipelineBoardTaskRequest": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "bot_args": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "start": {
+            "type": "boolean"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
         ],
         "type": "object"
       },
@@ -5212,6 +5622,99 @@
         "summary": "POST /api/v1/marketplace/submit",
         "tags": [
           "marketplace"
+        ]
+      }
+    },
+    "/api/v1/pipeline-boards": {
+      "get": {
+        "operationId": "getV1PipelineBoards",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/pipelineBoardListResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/v1/pipeline-boards",
+        "tags": [
+          "pipeline-boards"
+        ]
+      }
+    },
+    "/api/v1/pipeline-boards/{bot}": {
+      "get": {
+        "operationId": "getV1PipelineBoardsByBot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineBoardResponse"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/v1/pipeline-boards/{bot}",
+        "tags": [
+          "pipeline-boards"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "bot",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/v1/pipeline-boards/{bot}/tasks": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "bot",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PipelineBoardsByBotTasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBoardTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-boards/{bot}/tasks",
+        "tags": [
+          "pipeline-boards"
         ]
       }
     },
