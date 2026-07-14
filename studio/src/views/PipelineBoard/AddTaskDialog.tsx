@@ -196,7 +196,7 @@ function AddTaskDialogContent({ open, onOpenChange, onCreated }: Props) {
             disabled={!canSubmit}
             onClick={() => void submit()}
           >
-            {start && botEnabled ? "Create & start" : "Add to Todo"}
+            {start && botEnabled ? "Add to Todo" : "Add to Draft"}
           </Button>
         </>
       }
@@ -344,13 +344,13 @@ function AddTaskDialogContent({ open, onOpenChange, onCreated }: Props) {
             checked={start}
             onChange={(event) => setStart(event.target.checked)}
             disabled={!botName || !botEnabled}
-            label="Start immediately"
+            label="Ready to run"
             help={
               !botName
                 ? "Pick a pipeline first."
                 : botEnabled
-                  ? "Otherwise the task waits in Todo until it is started."
-                  : "This bot is disabled. You can still add the task to Todo, but it cannot start yet."
+                  ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Draft until you drag it to Todo."
+                  : "This bot is disabled. The ticket stays in Draft; enable the bot, then drag it to Todo to run."
             }
           />
         </div>

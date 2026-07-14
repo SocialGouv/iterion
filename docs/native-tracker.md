@@ -232,9 +232,10 @@ different product surface — a **control center** for watching and unblocking
 many pipelines at once — not a saved filter and not a replacement for `/board`:
 
 - `/board` remains the editable, shared dispatcher backlog;
-- `/pipelines` is one global, read-only projection of every **root** pipeline,
-  across all bots;
-- it has four fixed lanes — `Todo`, `In progress`, `Done`, `Attention`;
+- `/board` remains the editable, shared dispatcher backlog;
+- `/pipelines` is one global projection of every **root** pipeline, across all
+  bots;
+- it has four fixed lanes — `Draft`, `Todo`, `In progress`, `Done`;
 - each card is one root pipeline; its descendant runs are **folded into the
   root card** (aggregate node progress + a list of pending human reviews), not
   shown as separate cards;
@@ -242,29 +243,37 @@ many pipelines at once — not a saved filter and not a replacement for `/board`
   answer form and resumes the exact paused run; when several reviews are
   pending across the tree the card steps through them one at a time.
 
-Lane semantics: `Todo` = pipelines waiting for a local run slot (see the
-concurrency cap below) plus not-yet-launched native tasks; `In progress` =
-running or awaiting a human review (progress bar or the review form); `Done` =
-finished, showing the pipeline's output; `Attention` = failed / cancelled /
-operator-paused, with a Resume affordance.
+Lane semantics — the board is **task-centric**:
+- `Draft` = tickets being prepared **and** tickets whose last run failed
+  (shown with a red **Failed** badge + the error; fix and re-drag to retry);
+- `Todo` = tickets you marked **ready** by dragging them from Draft, plus runs
+  waiting for a local slot (queued);
+- `In progress` = running or awaiting a human review (progress bar or the
+  review form);
+- `Done` = finished, showing the pipeline's **output**.
+
+The operator **drags a ticket Draft→Todo** to mark it ready; the studio's
+launch loop then starts ready tickets when a concurrency slot frees (no
+`iterion dispatch` needed). Run cards (In progress / Done) are positioned by
+run state and are **not** draggable.
 
 The aggregate read API is intentionally server-side, so the browser does not
 perform an N+1 traversal over issues, checkpoints and child runs:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/pipeline-board` | GET | Global projection: 4 fixed lanes + one folded card per root pipeline (progress, pending reviews, output, concurrency status) |
-| `/api/v1/pipeline-board/tasks` | POST | Create a task; `bot` is required **in the body**; `{start:true}` admits it directly to the first eligible native state |
-
-Card positions are derived from persisted run state, so the board is
-drag-and-drop-free: moving a card by hand would make the projection false.
+| `/api/v1/pipeline-board` | GET | Global projection: 4 fixed lanes + one folded card per root pipeline (progress, pending reviews, output, concurrency) |
+| `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required **in the body**; `{start:true}` creates it ready (Todo), else Draft |
+| `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` flips a ticket ready↔draft — the backend of the Draft↔Todo drag |
 
 **Local concurrency cap.** `iterion studio` caps concurrent **root** pipelines
 at `--max-concurrent-pipelines` (default 3; also
-`ITERION_MAX_CONCURRENT_PIPELINES`). Over the cap, a launch is parked as a
-`queued` run in the `Todo` lane (with its FIFO position) and started
-automatically when a slot frees. `0` disables the cap. The cap is local
-(in-process) only; cloud admission stays on the NATS queue + org/team gates.
+`ITERION_MAX_CONCURRENT_PIPELINES`). Ready tickets and direct launches beyond
+the cap wait until a slot frees; a paused-for-review pipeline frees its slot so
+reviews never starve the queue. `0` disables the cap. Local (in-process) only;
+cloud admission stays on the NATS queue + org/team gates. The launch loop
+stands down while an operator-started dispatcher is running (it would otherwise
+race the same tickets).
 
 Task ingestion reuses native issues in this slice. A task appears before launch
 only when its `Issue.Bot` names a bot; once a run exists, manual/API/scheduled

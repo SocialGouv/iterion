@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "wouter";
 
 import type {
@@ -5,10 +6,10 @@ import type {
   PipelineBoardCard as PipelineBoardCardDTO,
   PipelineBoardColumn,
 } from "@/api/pipelineBoards";
-import { resumeRun } from "@/api/runs";
+import { markPipelineTaskReady } from "@/api/pipelineBoards";
 import type { UnifiedStatus } from "@/components/Runs/runStatusClasses";
-import { Badge, Button, Card, InlineBanner, StatusBadge } from "@/components/ui";
-import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { Badge, Card, InlineBanner, StatusBadge } from "@/components/ui";
+import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 
 import { SequentialReviews } from "./SequentialReviews";
@@ -18,10 +19,8 @@ interface Props {
   onRefetch: () => void;
 }
 
-// Statuses that resume from a preserved checkpoint. Reuses the run console's
-// resume path (resumeRun) — the same call OperatorPauseBanner / the run
-// console use.
-const RESUMABLE_STATUSES = new Set(["failed_resumable", "cancelled", "paused_operator"]);
+// The MIME the Draft ↔ Todo drag carries — the ticket's issue_id.
+const DRAG_MIME = "text/plain";
 
 const KNOWN_STATUSES = new Set<UnifiedStatus>([
   "running",
@@ -47,35 +46,87 @@ function humanizeToken(value: string): string {
 
 function columnAccent(id: string): string {
   switch (id) {
-    case "todo":
+    case "draft":
       return "bg-fg-subtle";
+    case "todo":
+      return "bg-warning";
     case "in_progress":
       return "bg-info";
     case "done":
       return "bg-success";
-    case "attention":
-      return "bg-danger";
     default:
       return "bg-accent";
   }
 }
 
+// isTicketDraggable reports whether a card can be dragged between Draft and
+// Todo. Only task-backed tickets that are NOT currently executing move: a
+// not-yet-launched task (kind "task") or a failed ticket (retry by dragging
+// to Todo). Running / paused / queued / finished runs are fixed by run state.
+export function isTicketDraggable(card: PipelineBoardCardDTO): boolean {
+  if (!card.issue_id) return false;
+  return card.kind === "task" || card.failed === true;
+}
+
+// readyStateForDropColumn maps a drop-target column to the ready flag the
+// write should set — true for Todo, false for Draft, null for a column that
+// is not a drop target (in_progress / done).
+export function readyStateForDropColumn(columnId: string): boolean | null {
+  if (columnId === "todo") return true;
+  if (columnId === "draft") return false;
+  return null;
+}
+
+// dropTicketToColumn performs the ready-state write for a Draft ↔ Todo drop,
+// then refetches the board. A no-op for a non-drop-target column.
+export async function dropTicketToColumn(
+  issueId: string,
+  columnId: string,
+  onDone: () => void,
+): Promise<void> {
+  const ready = readyStateForDropColumn(columnId);
+  if (ready === null) return;
+  await markPipelineTaskReady(issueId, ready);
+  onDone();
+}
+
 export function PipelineColumns({ board, onRefetch }: Props) {
   const { columns, cards } = board;
+  const [dropError, setDropError] = useState<string | null>(null);
+
+  const onDropTicket = async (issueId: string, columnId: string) => {
+    setDropError(null);
+    try {
+      await dropTicketToColumn(issueId, columnId, onRefetch);
+    } catch (e) {
+      setDropError(errorMessage(e));
+    }
+  };
+
   return (
-    <div
-      className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto px-4 pb-4"
-      role="region"
-      aria-label="Pipeline board columns"
-    >
-      {columns.map((column) => (
-        <PipelineColumn
-          key={column.id}
-          column={column}
-          cards={cards.filter((card) => card.column_id === column.id)}
-          onRefetch={onRefetch}
-        />
-      ))}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {dropError && (
+        <div className="px-4 pt-2">
+          <InlineBanner tone="danger" layout="inline">
+            {dropError}
+          </InlineBanner>
+        </div>
+      )}
+      <div
+        className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto px-4 pb-4"
+        role="region"
+        aria-label="Pipeline board columns"
+      >
+        {columns.map((column) => (
+          <PipelineColumn
+            key={column.id}
+            column={column}
+            cards={cards.filter((card) => card.column_id === column.id)}
+            onRefetch={onRefetch}
+            onDropTicket={onDropTicket}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -84,15 +135,41 @@ function PipelineColumn({
   column,
   cards,
   onRefetch,
+  onDropTicket,
 }: {
   column: PipelineBoardColumn;
   cards: PipelineBoardCardDTO[];
   onRefetch: () => void;
+  onDropTicket: (issueId: string, columnId: string) => void;
 }) {
+  const [dragOver, setDragOver] = useState(false);
+  const droppable = readyStateForDropColumn(column.id) !== null;
+
   return (
     <section
-      className="flex max-h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border-default bg-surface-2/70"
+      className={`flex max-h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border bg-surface-2/70 ${
+        dragOver ? "border-accent ring-1 ring-accent/40" : "border-border-default"
+      }`}
       aria-labelledby={`pipeline-column-${column.id}`}
+      onDragOver={
+        droppable
+          ? (e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }
+          : undefined
+      }
+      onDragLeave={droppable ? () => setDragOver(false) : undefined}
+      onDrop={
+        droppable
+          ? (e) => {
+              e.preventDefault();
+              setDragOver(false);
+              const id = e.dataTransfer.getData(DRAG_MIME);
+              if (id) onDropTicket(id, column.id);
+            }
+          : undefined
+      }
     >
       <div className="relative shrink-0 border-b border-border-default bg-surface-1 px-3 py-2.5">
         <span
@@ -133,12 +210,23 @@ interface CardProps {
 
 export function PipelineCard({ card, onRefetch }: CardProps) {
   const timestamp = card.updated_at || card.created_at;
+  const draggable = isTicketDraggable(card);
+
   return (
     <Card
-      className="space-y-2 p-3"
+      className={`space-y-2 p-3 ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
       data-card-id={card.id}
       role="article"
       aria-label={`${card.title}, ${humanizeToken(card.kind)}`}
+      draggable={draggable || undefined}
+      onDragStart={
+        draggable && card.issue_id
+          ? (e) => {
+              e.dataTransfer.setData(DRAG_MIME, card.issue_id as string);
+              e.dataTransfer.effectAllowed = "move";
+            }
+          : undefined
+      }
     >
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
@@ -158,14 +246,12 @@ export function PipelineCard({ card, onRefetch }: CardProps) {
         <p className="line-clamp-3 whitespace-pre-wrap text-xs text-fg-muted">{card.body}</p>
       )}
 
+      {card.column_id === "draft" && <DraftBody card={card} />}
       {card.column_id === "todo" && <TodoBody card={card} />}
       {card.column_id === "in_progress" && (
         <InProgressBody card={card} onRefetch={onRefetch} />
       )}
       {card.column_id === "done" && <DoneBody card={card} />}
-      {card.column_id === "attention" && (
-        <AttentionBody card={card} onRefetch={onRefetch} />
-      )}
 
       {card.labels && card.labels.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -227,6 +313,35 @@ function StatusChip({ status }: { status?: string }) {
   );
 }
 
+// --- DRAFT lane -----------------------------------------------------------
+
+function DraftBody({ card }: { card: PipelineBoardCardDTO }) {
+  return (
+    <div className="space-y-2">
+      <EntryInput input={card.entry_input} />
+      <div className="flex flex-wrap items-center gap-1">
+        {card.failed && <Badge variant="danger">Failed</Badge>}
+        {card.priority !== undefined && card.priority !== 0 && (
+          <Badge variant="accent">P{card.priority}</Badge>
+        )}
+        {card.issue_state && !card.failed && (
+          <Badge variant="neutral">{humanizeToken(card.issue_state)}</Badge>
+        )}
+      </div>
+      {card.failed && card.error && (
+        <InlineBanner tone="danger" layout="inline">
+          {card.error}
+        </InlineBanner>
+      )}
+      <p className="text-micro text-fg-subtle">
+        {card.failed
+          ? "Drag to Todo to retry."
+          : "Drag to Todo when this ticket is ready to run."}
+      </p>
+    </div>
+  );
+}
+
 // --- TODO lane ------------------------------------------------------------
 
 function TodoBody({ card }: { card: PipelineBoardCardDTO }) {
@@ -237,14 +352,13 @@ function TodoBody({ card }: { card: PipelineBoardCardDTO }) {
       <div className="flex flex-wrap items-center gap-1">
         {queuePosition > 0 ? (
           <Badge variant="warning">Waiting · #{queuePosition}</Badge>
-        ) : card.kind === "task" ? (
-          <span className="text-micro text-fg-subtle">Not launched</span>
-        ) : null}
+        ) : (
+          <span className="text-micro text-fg-subtle">
+            Ready — starts when a slot frees
+          </span>
+        )}
         {card.priority !== undefined && card.priority !== 0 && (
           <Badge variant="accent">P{card.priority}</Badge>
-        )}
-        {card.issue_state && (
-          <Badge variant="neutral">{humanizeToken(card.issue_state)}</Badge>
         )}
       </div>
     </div>
@@ -342,58 +456,5 @@ function DoneBody({ card }: { card: PipelineBoardCardDTO }) {
     <pre className="max-h-40 overflow-auto whitespace-pre rounded-md border border-border-default bg-surface-1 p-2 font-mono text-micro text-fg-muted">
       {card.output}
     </pre>
-  );
-}
-
-// --- ATTENTION lane -------------------------------------------------------
-
-function AttentionBody({
-  card,
-  onRefetch,
-}: {
-  card: PipelineBoardCardDTO;
-  onRefetch: () => void;
-}) {
-  const resumeAction = useAsyncAction();
-  const canResume = !!card.run_id && RESUMABLE_STATUSES.has(card.status ?? "");
-
-  const resume = async () => {
-    const runID = card.run_id;
-    if (!runID) return;
-    const result = await resumeAction.run(() => resumeRun(runID));
-    if (result !== undefined) onRefetch();
-  };
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-1">
-        <StatusChip status={card.status} />
-      </div>
-      {card.error && (
-        <InlineBanner tone="danger" layout="inline">
-          {card.error}
-        </InlineBanner>
-      )}
-      {canResume && (
-        <div className="space-y-2 rounded-md border border-info/40 bg-info-soft p-2">
-          <p className="text-micro text-info-fg">
-            Resume this pipeline from its persisted checkpoint.
-          </p>
-          {resumeAction.error && (
-            <InlineBanner tone="danger" layout="inline">
-              {resumeAction.error}
-            </InlineBanner>
-          )}
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={resumeAction.busy}
-            onClick={() => void resume()}
-          >
-            Resume run
-          </Button>
-        </div>
-      )}
-    </div>
   );
 }

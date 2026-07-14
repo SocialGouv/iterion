@@ -158,7 +158,7 @@ func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 func TestPipelineBoardHasFourFixedColumns(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	projection := env.projection(t)
-	want := []string{pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone, pipelineColumnAttention}
+	want := []string{pipelineColumnDraft, pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone}
 	if len(projection.Columns) != len(want) {
 		t.Fatalf("columns = %+v, want %v", projection.Columns, want)
 	}
@@ -252,10 +252,10 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		{"r-running", store.RunStatusRunning, pipelineColumnInProgress},
 		{"r-paused", store.RunStatusPausedWaitingHuman, pipelineColumnInProgress},
 		{"r-finished", store.RunStatusFinished, pipelineColumnDone},
-		{"r-failed", store.RunStatusFailed, pipelineColumnAttention},
-		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnAttention},
-		{"r-cancelled", store.RunStatusCancelled, pipelineColumnAttention},
-		{"r-operator", store.RunStatusPausedOperator, pipelineColumnAttention},
+		{"r-failed", store.RunStatusFailed, pipelineColumnDraft},
+		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnDraft},
+		{"r-cancelled", store.RunStatusCancelled, pipelineColumnDraft},
+		{"r-operator", store.RunStatusPausedOperator, pipelineColumnDraft},
 	}
 	for _, c := range cases {
 		env.seedRun(t, c.id, "review", c.status, func(run *store.Run) {
@@ -279,6 +279,11 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		card := findPipelineCard(t, projection.Cards, "run:"+c.id)
 		if card.ColumnID != c.column {
 			t.Errorf("%s column = %q, want %q", c.id, card.ColumnID, c.column)
+		}
+		// Failed runs land in Draft and must carry the Failed flag so the UI
+		// distinguishes them from not-yet-ready drafts.
+		if c.column == pipelineColumnDraft && !card.Failed {
+			t.Errorf("%s in Draft must have Failed=true", c.id)
 		}
 	}
 	queued := findPipelineCard(t, projection.Cards, "run:r-queued")
@@ -506,25 +511,109 @@ func TestPipelineBoardFoldsChildOfAnotherBot(t *testing.T) {
 	}
 }
 
-// A not-yet-launched native task pinned to a bot is a TODO card.
-func TestPipelineBoardProjectsRunlessTaskInTodo(t *testing.T) {
+// A not-yet-ready native task (non-eligible state) is a Draft card; an
+// eligible (ready) one is a Todo card the launch loop will start.
+func TestPipelineBoardProjectsTaskDraftVsTodo(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
-	issue, err := env.board.Create(native.Issue{
-		Title:   "Queued backlog task",
-		State:   native.StateInbox,
+	draft, err := env.board.Create(native.Issue{
+		Title:   "Being prepared",
+		State:   native.StateInbox, // non-eligible → Draft
 		Bot:     "review",
 		BotArgs: map[string]string{"scope": "api"},
 	})
 	if err != nil {
-		t.Fatalf("Create issue: %v", err)
+		t.Fatalf("Create draft issue: %v", err)
 	}
+	ready, err := env.board.Create(native.Issue{
+		Title: "Ready to run",
+		State: native.StateReady, // eligible → Todo
+		Bot:   "review",
+	})
+	if err != nil {
+		t.Fatalf("Create ready issue: %v", err)
+	}
+
 	projection := env.projection(t)
-	card := findPipelineCard(t, projection.Cards, "task:"+issue.ID)
-	if card.Kind != "task" || card.ColumnID != pipelineColumnTodo {
-		t.Errorf("task card = %+v, want kind=task column=todo", card)
+	d := findPipelineCard(t, projection.Cards, "task:"+draft.ID)
+	if d.Kind != "task" || d.ColumnID != pipelineColumnDraft || d.Ready {
+		t.Errorf("draft card = %+v, want kind=task column=draft ready=false", d)
 	}
-	if card.EntryInput["scope"] != "api" {
-		t.Errorf("task entry_input = %+v, want bot_args", card.EntryInput)
+	if d.EntryInput["scope"] != "api" {
+		t.Errorf("draft entry_input = %+v, want bot_args", d.EntryInput)
+	}
+	r := findPipelineCard(t, projection.Cards, "task:"+ready.ID)
+	if r.ColumnID != pipelineColumnTodo || !r.Ready {
+		t.Errorf("ready card = %+v, want column=todo ready=true", r)
+	}
+}
+
+func TestPipelineBoardTaskReadyTogglesState(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "Prep me", State: native.StateInbox, Bot: "review"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	post := func(ready bool) native.Issue {
+		t.Helper()
+		body := `{"ready":false}`
+		if ready {
+			body = `{"ready":true}`
+		}
+		resp, err := http.Post(env.http.URL+"/api/v1/pipeline-board/tasks/"+issue.ID+"/ready", "application/json", bytes.NewBufferString(body))
+		if err != nil {
+			t.Fatalf("POST ready: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			t.Fatalf("ready status = %d", resp.StatusCode)
+		}
+		var out native.Issue
+		decodeJSONResp(t, resp, &out)
+		return out
+	}
+	if got := post(true); got.State != native.StateReady {
+		t.Errorf("ready=true state = %q, want %q", got.State, native.StateReady)
+	}
+	// On the board the readied ticket is now in Todo.
+	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnTodo || !card.Ready {
+		t.Errorf("after ready: card = %+v, want column=todo ready=true", card)
+	}
+	if got := post(false); got.State != native.StateInbox {
+		t.Errorf("ready=false state = %q, want %q", got.State, native.StateInbox)
+	}
+	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnDraft {
+		t.Errorf("after unready: card column = %q, want draft", card.ColumnID)
+	}
+}
+
+func TestPipelineTicketLaunchable(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	rs := env.runStore(t)
+	ctx := context.Background()
+
+	// No run yet → launchable.
+	if !pipelineTicketLaunchable(ctx, rs, &native.Issue{}) {
+		t.Error("ticket with no run must be launchable")
+	}
+	seed := func(id string, status store.RunStatus) *native.Issue {
+		env.seedRun(t, id, "review", status, nil)
+		return &native.Issue{LastRunID: id}
+	}
+	for _, tc := range []struct {
+		status store.RunStatus
+		want   bool
+	}{
+		{store.RunStatusRunning, false},
+		{store.RunStatusPausedWaitingHuman, false},
+		{store.RunStatusQueued, false},
+		{store.RunStatusFinished, false}, // success is not retried
+		{store.RunStatusFailed, true},    // failure is retry-able
+		{store.RunStatusCancelled, true},
+	} {
+		iss := seed("run-"+string(tc.status), tc.status)
+		if got := pipelineTicketLaunchable(ctx, rs, iss); got != tc.want {
+			t.Errorf("launchable(%s) = %v, want %v", tc.status, got, tc.want)
+		}
 	}
 }
 

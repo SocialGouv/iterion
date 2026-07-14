@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createPipelineTask,
   getPipelineBoard,
+  markPipelineTaskReady,
   normalizePipelineBoard,
 } from "./pipelineBoards";
 
@@ -18,13 +19,13 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("normalizePipelineBoard", () => {
-  it("keeps the four fixed columns, folded root cards and concurrency", () => {
+  it("keeps the four fixed columns, folded root cards, draft/ready flags and concurrency", () => {
     const board = normalizePipelineBoard({
       columns: [
+        { id: "draft", title: "Draft", kind: "draft" },
         { id: "todo", title: "Todo", kind: "todo" },
         { id: "in_progress", title: "In progress", kind: "in_progress" },
         { id: "done", title: "Done", kind: "done" },
-        { id: "attention", title: "Attention", kind: "attention" },
       ],
       cards: [
         {
@@ -58,8 +59,25 @@ describe("normalizePipelineBoard", () => {
           title: "Backlog item",
           issue_id: "iss-1",
           issue_state: "ready",
+          ready: true,
           entry_input: { area: "api", verbose: true },
           queue_position: 2,
+          executed_nodes: 0,
+          total_nodes: 0,
+          tree_executed_nodes: 0,
+          tree_total_nodes: 0,
+          created_at: "2026-07-14T09:00:00Z",
+          updated_at: "2026-07-14T09:00:00Z",
+        },
+        {
+          id: "task:iss-2",
+          kind: "run",
+          column_id: "draft",
+          title: "Broke last time",
+          issue_id: "iss-2",
+          run_id: "run-old",
+          failed: true,
+          error: "boom",
           executed_nodes: 0,
           total_nodes: 0,
           tree_executed_nodes: 0,
@@ -73,10 +91,10 @@ describe("normalizePipelineBoard", () => {
     });
 
     expect(board.columns.map((c) => c.id)).toEqual([
+      "draft",
       "todo",
       "in_progress",
       "done",
-      "attention",
     ]);
     expect(board.concurrency).toEqual({
       enabled: true,
@@ -100,8 +118,14 @@ describe("normalizePipelineBoard", () => {
     expect(board.cards[1]).toMatchObject({
       kind: "task",
       column_id: "todo",
+      ready: true,
       entry_input: { area: "api", verbose: true },
       queue_position: 2,
+    });
+    expect(board.cards[2]).toMatchObject({
+      column_id: "draft",
+      failed: true,
+      error: "boom",
     });
   });
 
@@ -187,5 +211,34 @@ describe("createPipelineTask", () => {
       bot_args: { area: "api" },
       start: true,
     });
+  });
+});
+
+describe("markPipelineTaskReady", () => {
+  it("POSTs the ready flag to the task's ready endpoint", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await markPipelineTaskReady("iss 1/a", true);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/v1/pipeline-board/tasks/iss%201%2Fa/ready");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ ready: true });
+  });
+
+  it("sends ready:false when unmarking", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await markPipelineTaskReady("iss-9", false);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ ready: false });
   });
 });

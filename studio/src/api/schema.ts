@@ -3346,6 +3346,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipeline-board/tasks/{id}/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks/{id}/ready */
+        post: operations["postV1PipelineBoardTasksByIdReady"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plugins": {
         parameters: {
             query?: never;
@@ -3823,6 +3842,7 @@ export interface components {
             };
             error?: string;
             executed_nodes: number;
+            failed?: boolean;
             id: string;
             issue_id?: string;
             issue_state?: string;
@@ -3832,6 +3852,7 @@ export interface components {
             pending_reviews?: components["schemas"]["PipelineBoardPendingReview"][];
             priority?: number;
             queue_position?: number;
+            ready?: boolean;
             run_id?: string;
             status?: string;
             title: string;
@@ -3977,6 +3998,9 @@ export interface components {
             slug: string;
             status: string;
             suspend_reason?: string;
+        };
+        pipelineBoardReadyRequest: {
+            ready: boolean;
         };
         pipelineBoardTaskRequest: {
             body?: string;
@@ -8440,6 +8464,32 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["pipelineBoardTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardTasksByIdReady: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardReadyRequest"];
             };
         };
         responses: {

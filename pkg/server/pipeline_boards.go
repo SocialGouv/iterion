@@ -23,10 +23,10 @@ import (
 // second mutable store — cards are positioned by persisted run state, so
 // there is no drag-and-drop. See docs/native-tracker.md + ADR-073.
 const (
+	pipelineColumnDraft      = "draft"
 	pipelineColumnTodo       = "todo"
 	pipelineColumnInProgress = "in_progress"
 	pipelineColumnDone       = "done"
-	pipelineColumnAttention  = "attention"
 
 	pipelineTreeMaxDepth = 20
 	pipelineTreeMaxCards = 500
@@ -52,13 +52,16 @@ type PipelineBoardColumn struct {
 	Kind  string `json:"kind"`
 }
 
-// pipelineColumns is the fixed, client-order column set.
+// pipelineColumns is the fixed, client-order column set. Draft holds
+// not-yet-ready tickets AND tickets whose last run failed (with a Failed
+// flag); the operator drags a ticket Draft→Todo to mark it ready, then the
+// local launch loop starts it when a concurrency slot frees.
 func pipelineColumns() []PipelineBoardColumn {
 	return []PipelineBoardColumn{
+		{ID: pipelineColumnDraft, Title: "Draft", Kind: "draft"},
 		{ID: pipelineColumnTodo, Title: "Todo", Kind: "todo"},
 		{ID: pipelineColumnInProgress, Title: "In progress", Kind: "in_progress"},
 		{ID: pipelineColumnDone, Title: "Done", Kind: "done"},
-		{ID: pipelineColumnAttention, Title: "Attention", Kind: "attention"},
 	}
 }
 
@@ -107,6 +110,14 @@ type PipelineBoardCard struct {
 	BotID        string          `json:"bot_id,omitempty"`
 	Status       store.RunStatus `json:"status,omitempty"`
 	Error        string          `json:"error,omitempty"`
+	// Failed is true when the card sits in Draft because its run failed /
+	// was cancelled (as opposed to a not-yet-ready draft ticket). The UI
+	// renders a "failed" badge so the operator can fix and re-drag to Todo.
+	Failed bool `json:"failed,omitempty"`
+	// Ready reflects whether a task-backed card's ticket is in a
+	// launch-eligible (ready) state — used by the UI to place run-less
+	// tasks in Todo vs Draft and to drive drag targets.
+	Ready bool `json:"ready,omitempty"`
 
 	// TODO — the pipeline's entry input (launch vars / task bot-args).
 	EntryInput map[string]any `json:"entry_input,omitempty"`
@@ -158,6 +169,7 @@ type pipelineBoardTaskRequest struct {
 func (s *Server) registerPipelineBoardRoutes() {
 	s.mux.Handle("GET /api/v1/pipeline-board", s.requireAuth(http.HandlerFunc(s.handlePipelineBoard)))
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReady)))
 }
 
 func (s *Server) resolvePipelineBoardStore(r *http.Request) (native.BoardStore, error) {
@@ -287,6 +299,52 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+type pipelineBoardReadyRequest struct {
+	// Ready true drags the ticket Draft→Todo (StateReady, eligible for the
+	// launch loop); false drags it Todo→Draft (StateInbox).
+	Ready bool `json:"ready"`
+}
+
+// handlePipelineBoardTaskReady flags a native ticket ready (or back to
+// draft) — the backend of the board's Draft↔Todo drag. A ready ticket is
+// launched by the admission loop when a concurrency slot frees.
+func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	boardStore, err := s.resolvePipelineBoardStore(r)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board: resolve store: %v", err)
+		return
+	}
+	if boardStore == nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board: native tracker is not available")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board ready: missing task id")
+		return
+	}
+	var req pipelineBoardReadyRequest
+	if err := readJSON(r, &req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board ready: invalid request: %v", err)
+		return
+	}
+	target := native.StateInbox
+	if req.Ready {
+		target = native.StateReady
+	}
+	issue, err := boardStore.SetState(id, target)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board ready: set state: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	s.reflectAllowedOrigin(w, r)
+	_ = json.NewEncoder(w).Encode(issue)
 }
 
 // ---------------------------------------------------------------------------
@@ -609,16 +667,26 @@ func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, curren
 	return attempts
 }
 
-// addTaskCard emits a TODO card for a native task pinned to a bot that has
-// no current run yet (a pipeline waiting to be launched).
+// addTaskCard emits a card for a native task pinned to a bot that has no
+// current run yet. A ticket in a launch-eligible (ready) state sits in
+// Todo — the launch loop starts it when a slot frees; otherwise it is a
+// Draft the operator prepares and drags to Todo when ready.
 func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 	if issue == nil || len(b.cards) >= pipelineTreeMaxCards {
 		b.cardLimitReached = len(b.cards) >= pipelineTreeMaxCards
 		return
 	}
-	column := pipelineColumnTodo
-	if _, terminal := b.terminalStates[issue.State]; terminal {
+	_, terminal := b.terminalStates[issue.State]
+	// "Ready" is the specific StateReady the operator drags a ticket into;
+	// the launch loop starts exactly those. Other non-terminal states
+	// (inbox/backlog/…) are Drafts being prepared.
+	ready := issue.State == native.StateReady
+	column := pipelineColumnDraft
+	switch {
+	case terminal:
 		column = pipelineColumnDone
+	case ready:
+		column = pipelineColumnTodo
 	}
 	b.cards = append(b.cards, PipelineBoardCard{
 		ID:         "task:" + issue.ID,
@@ -628,6 +696,7 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 		Body:       issue.Body,
 		IssueID:    issue.ID,
 		IssueState: issue.State,
+		Ready:      ready,
 		Labels:     append([]string(nil), issue.Labels...),
 		Priority:   issue.Priority,
 		BotID:      issue.Bot,
@@ -675,6 +744,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		BotID:             pipelineRunBotID(root),
 		Status:            root.Status,
 		Error:             root.Error,
+		Failed:            pipelineRunFailed(root.Status),
 		ExecutedNodes:     rootExec,
 		TotalNodes:        rootTotal,
 		TreeExecutedNodes: treeExec,
@@ -896,9 +966,22 @@ func pipelineColumnForRoot(root *store.Run, reviews []PipelineBoardPendingReview
 	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman:
 		return pipelineColumnInProgress
 	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
-		return pipelineColumnAttention
+		// A failed/cancelled run sends its ticket back to Draft (Failed
+		// flag) so the operator can fix it and re-drag it to Todo.
+		return pipelineColumnDraft
 	default:
 		return pipelineColumnInProgress
+	}
+}
+
+// pipelineRunFailed reports whether a run status lands a card in Draft as a
+// failure (as opposed to a not-yet-ready draft ticket).
+func pipelineRunFailed(status store.RunStatus) bool {
+	switch status {
+	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+		return true
+	default:
+		return false
 	}
 }
 

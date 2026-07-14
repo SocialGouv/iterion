@@ -57,8 +57,17 @@ the view is a projection of persisted run state, cards are **not** drag targets.
 
 ### D2 — Four fixed lanes; children fold into the root card
 
-The board has exactly four lanes: **Todo**, **In progress**, **Done**,
-**Attention**. Columns are no longer derived from a workflow's graph.
+The board has exactly four lanes: **Draft**, **Todo**, **In progress**,
+**Done**. Columns are no longer derived from a workflow's graph.
+
+The board is **task-centric** and mildly mutable: a ticket is prepared in
+**Draft**, and the operator **drags it to Todo** to mark it ready. The
+studio's launch loop (D5) then starts ready tickets when a concurrency slot
+frees. A run that **fails/cancels sends its ticket back to Draft** with a
+`failed` flag (fix it, drag to Todo to retry) — there is no separate
+"attention" lane. Only Draft↔Todo drag is allowed and only for
+task-backed cards that are not executing; run cards in In progress / Done
+are positioned by run state and are not draggable.
 
 A card is one **root** pipeline — a run with no parent (`ParentRunID == ""`,
 with a `ForkedFrom` compatibility fallback). Every descendant run is **folded
@@ -74,38 +83,42 @@ sees pipelines, not a forest of sub-runs. The root card aggregates:
   them **one at a time**; answering delegates to the existing structured run
   `Resume` contract keyed by that descendant's `run_id`.
 
-Lane placement is computed from the root's status, with one override: **a tree
+Lane placement is computed from the card's state, with one override: **a tree
 blocked on any human review is `In progress`** (the operator's turn) regardless
-of the root's transient status. Otherwise: `queued → Todo`; `running` /
-`paused_waiting_human → In progress`; `finished → Done`;
-`failed` / `failed_resumable` / `cancelled` / `paused_operator → Attention`.
-`Attention` is the deliberate fourth lane (the three-lane ideal would hide
-failures); it carries a Resume affordance.
+of the root's transient status. Otherwise, for a run-backed card:
+`queued → Todo`; `running` / `paused_waiting_human → In progress`;
+`finished → Done`; `failed` / `failed_resumable` / `cancelled` /
+`paused_operator → Draft` (with the `failed` flag). For a run-less ticket:
+the specific ready state (`StateReady`) → `Todo`, a terminal state → `Done`,
+anything else → `Draft`.
 
-### D3 — Todo means "waiting for a slot"; Done shows the output
+### D3 — Draft prepares, Todo means "ready to run"; Done shows the output
 
-**Todo** holds pipelines that are not yet executing:
+**Draft** holds tickets being prepared plus tickets whose last run failed
+(shown with a `failed` flag + the error). **Todo** holds tickets the operator
+marked **ready** (dragged Draft→Todo, `StateReady`) plus any runs `queued` by
+the local concurrency gate (D5). A ready ticket carries its `bot_args` as the
+entry input; the native issue remains the ingestion record (no second task
+store).
 
-- runs `queued` by the local concurrency gate (D5), annotated with their FIFO
-  position, and
-- native tasks pinned to a bot that have not launched yet (their `bot_args` are
-  the entry input). The native issue remains the ingestion record; there is no
-  second task store in this slice.
+The **Draft↔Todo drag** is backed by
+`POST /api/v1/pipeline-board/tasks/{id}/ready { ready }`, which flips the
+ticket between `StateInbox` (draft) and `StateReady`.
 
 **Done** cards surface the pipeline's **output**: the terminal `final_answer`
 artifact field (the pinned `CallbackAnswerNode` first, else any artifact node),
 falling back to a compact rendering of the latest-written artifact when no
 `final_answer` exists.
 
-Task ingestion is now global, so the bot moves from the URL into the body:
+Task ingestion is global, so the bot moves from the URL into the body:
 
 ```http
-POST /api/v1/pipeline-board/tasks   { "bot": "...", "title": "...", ... }
+POST /api/v1/pipeline-board/tasks   { "bot": "...", "title": "...", "start": <ready?> }
 ```
 
-The handler validates the bot against the registry and creates a native issue
-in the first column (or the first eligible state on `{start:true}`). Existing
-native REST/MCP/forge ingestion still appears in the projection.
+The handler validates the bot and creates a native issue in `StateInbox`
+(Draft), or `StateReady` (Todo) on `{start:true}`. Existing native
+REST/MCP/forge ingestion still appears in the projection.
 
 ### D4 — Keep projection and execution tenant-scoped
 
@@ -147,6 +160,23 @@ nil-safe guard (`pipeline_queue.go`, modelled on `runtime.DailyCapGuard`):
 
 The cap is in-process/local only: the cloud publisher path bypasses it (cloud
 admission is the NATS queue + org/team gates).
+
+### D6 — A studio launch loop turns "ready" tickets into runs
+
+For the Draft/Todo drag to mean anything without a running `iterion dispatch`,
+the studio runs a minimal launch loop (`pipeline_admission.go`): a ~2s ticker
+that, while a concurrency slot is free, launches the oldest **ready**
+(`StateReady`) ticket that has no active run — `Service.Launch(bot file + bot
+args)` + `SetLastRun` so the run folds into the ticket's card. It first moves
+the ticket out of `StateReady` (so a slow launch is not double-picked) and, on
+failure, the run's status leaves the ticket in Draft with the `failed` flag —
+it is **not** auto-retried; the operator re-drags it to Todo to retry.
+
+The loop stands down while an operator-**started** dispatcher owns the board
+(the studio always wires an *idle* dispatcher Manager for its dashboard, so the
+gate is `Dispatcher.Status().State != running`, not `Dispatcher == nil`), and it
+is off in cloud mode. It respects the same D5 cap, so ready tickets beyond the
+cap simply wait in Todo until a slot frees.
 
 ## Consequences
 

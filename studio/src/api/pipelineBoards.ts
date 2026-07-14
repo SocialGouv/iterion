@@ -59,6 +59,13 @@ export interface PipelineBoardCard {
   status?: string;
   error?: string;
 
+  // Draft lane — the ticket's last run failed/cancelled (retry by dragging it
+  // to Todo), as opposed to a not-yet-ready draft ticket.
+  failed?: boolean;
+  // Todo lane — a task-backed ticket in the ready state (waiting for a
+  // concurrency slot; the studio auto-launches it when one frees).
+  ready?: boolean;
+
   // TODO lane — launch vars / task bot-args, and the concurrency-queue place.
   entry_input?: Record<string, unknown>;
   queue_position?: number;
@@ -219,6 +226,8 @@ export function normalizePipelineBoardCard(
     ...(text(source.bot_id) ? { bot_id: text(source.bot_id) } : {}),
     ...(text(source.status) ? { status: text(source.status) } : {}),
     ...(text(source.error) ? { error: text(source.error) } : {}),
+    ...(typeof source.failed === "boolean" ? { failed: source.failed } : {}),
+    ...(typeof source.ready === "boolean" ? { ready: source.ready } : {}),
     ...(entryInput ? { entry_input: entryInput } : {}),
     ...(numberValue(source.queue_position) !== undefined
       ? { queue_position: numberValue(source.queue_position) }
@@ -279,4 +288,20 @@ export async function createPipelineTask(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+// markPipelineTaskReady flips a task-backed ticket between the ready (Todo)
+// and draft states — the write behind the board's Draft ↔ Todo drag. The
+// studio auto-launches ready tickets when a concurrency slot frees.
+export async function markPipelineTaskReady(
+  taskId: string,
+  ready: boolean,
+): Promise<void> {
+  await apiRequest<unknown>(
+    `${BASE}/tasks/${encodeURIComponent(taskId)}/ready`,
+    {
+      method: "POST",
+      body: JSON.stringify({ ready }),
+    },
+  );
 }

@@ -1,10 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PipelineBoard, PipelineBoardCard } from "@/api/pipelineBoards";
 
-vi.mock("@/api/runs", () => ({
-  resumeRun: vi.fn(),
+// PipelineColumns imports markPipelineTaskReady for the Draft ↔ Todo drop.
+const { markReadyMock } = vi.hoisted(() => ({ markReadyMock: vi.fn() }));
+vi.mock("@/api/pipelineBoards", () => ({
+  markPipelineTaskReady: markReadyMock,
 }));
 
 vi.mock("wouter", () => ({
@@ -37,20 +39,25 @@ vi.mock("@/components/Runs/conversation/HumanPromptForm", () => ({
   ),
 }));
 
-import { PipelineColumns } from "./PipelineColumns";
+import {
+  PipelineColumns,
+  dropTicketToColumn,
+  isTicketDraggable,
+  readyStateForDropColumn,
+} from "./PipelineColumns";
 
 const columns = [
+  { id: "draft", title: "Draft", kind: "draft" },
   { id: "todo", title: "Todo", kind: "todo" },
   { id: "in_progress", title: "In progress", kind: "in_progress" },
   { id: "done", title: "Done", kind: "done" },
-  { id: "attention", title: "Attention", kind: "attention" },
 ];
 
 function makeCard(partial: Partial<PipelineBoardCard>): PipelineBoardCard {
   return {
     id: "card",
     kind: "run",
-    column_id: "todo",
+    column_id: "draft",
     title: "Card",
     executed_nodes: 0,
     total_nodes: 0,
@@ -76,52 +83,97 @@ function render(board: PipelineBoard): string {
   );
 }
 
-function countArticles(html: string): number {
-  return (html.match(/role="article"/g) ?? []).length;
+function count(html: string, needle: string): number {
+  return html.split(needle).length - 1;
 }
+
+beforeEach(() => {
+  markReadyMock.mockReset();
+});
 
 describe("PipelineColumns", () => {
   it("buckets cards client-side into the four fixed lanes", () => {
     const html = render(
       makeBoard([
-        makeCard({ id: "t", column_id: "todo", kind: "task", title: "Todo card" }),
+        makeCard({ id: "d", column_id: "draft", kind: "task", issue_id: "iss-1", title: "Draft task" }),
+        makeCard({
+          id: "t",
+          column_id: "todo",
+          title: "Queued run",
+          run_id: "r1",
+          status: "queued",
+          queue_position: 2,
+        }),
         makeCard({
           id: "p",
           column_id: "in_progress",
           title: "Running card",
-          run_id: "r1",
+          run_id: "r2",
           status: "running",
           tree_executed_nodes: 12,
           tree_total_nodes: 40,
         }),
         makeCard({
-          id: "d",
+          id: "done",
           column_id: "done",
           title: "Done card",
-          run_id: "r2",
+          run_id: "r3",
           status: "finished",
           output: "Result text",
-        }),
-        makeCard({
-          id: "a",
-          column_id: "attention",
-          title: "Broken card",
-          run_id: "r3",
-          status: "failed",
-          error: "boom",
         }),
       ]),
     );
 
-    // Lane-specific bodies only render when the card lands in the right lane:
-    // the progress readout is in_progress-only, the <pre> output done-only.
-    expect(html).toContain("Todo card");
-    expect(html).toContain("Running card");
-    expect(html).toContain("12 / 40 nodes");
-    expect(html).toContain("Result text");
-    expect(html).toContain("boom");
-    expect(countArticles(html)).toBe(4);
-    // Read-only projection — never draggable.
+    // Lane-specific bodies only render when the card lands in the right lane.
+    expect(html).toContain("Draft task");
+    expect(html).toContain("Queued run");
+    expect(html).toContain("#2"); // queue position badge (Todo)
+    expect(html).toContain("12 / 40 nodes"); // progress (in_progress)
+    expect(html).toContain("Result text"); // output (done)
+    expect(count(html, 'role="article"')).toBe(4);
+    // Only the draft task ticket is draggable.
+    expect(count(html, 'draggable="true"')).toBe(1);
+  });
+
+  it("renders a failed ticket in Draft with a Failed badge and error, draggable for retry", () => {
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "failed",
+          column_id: "draft",
+          kind: "run",
+          title: "Broke last time",
+          issue_id: "iss-2",
+          run_id: "run-old",
+          failed: true,
+          error: "kaboom",
+        }),
+      ]),
+    );
+
+    expect(html).toContain("Failed");
+    expect(html).toContain("kaboom");
+    // A failed ticket is draggable (drop into Todo = retry).
+    expect(count(html, 'draggable="true"')).toBe(1);
+  });
+
+  it("does not make an executing run card draggable", () => {
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "running",
+          column_id: "in_progress",
+          kind: "run",
+          title: "Running",
+          issue_id: "iss-3", // has a ticket, but is executing
+          run_id: "run-x",
+          status: "running",
+          tree_executed_nodes: 1,
+          tree_total_nodes: 4,
+        }),
+      ]),
+    );
+
     expect(html).not.toContain('draggable="true"');
   });
 
@@ -153,67 +205,51 @@ describe("PipelineColumns", () => {
     expect(html).toContain('data-node-id="approval"');
     expect(html).toContain('data-source-null="yes"');
     expect(html).toContain("Ship it?");
-    // Descendants are folded — the child is NOT its own card.
-    expect(countArticles(html)).toBe(1);
+    expect(count(html, 'role="article"')).toBe(1); // child is folded, not its own card
+  });
+});
+
+describe("drag-and-drop helpers", () => {
+  it("only allows dragging non-executing task-backed tickets", () => {
+    expect(isTicketDraggable(makeCard({ kind: "task", issue_id: "iss-1" }))).toBe(true);
+    expect(
+      isTicketDraggable(makeCard({ kind: "run", issue_id: "iss-1", failed: true })),
+    ).toBe(true);
+    // Running / queued / finished runs are fixed by run state.
+    expect(
+      isTicketDraggable(makeCard({ kind: "run", issue_id: "iss-1", status: "running" })),
+    ).toBe(false);
+    // A task with no tracker issue can't be moved between states.
+    expect(isTicketDraggable(makeCard({ kind: "task" }))).toBe(false);
   });
 
-  it("renders a node-weighted progress bar for a running root without reviews", () => {
-    const html = render(
-      makeBoard([
-        makeCard({
-          id: "run:r",
-          column_id: "in_progress",
-          title: "Running",
-          run_id: "r",
-          status: "running",
-          tree_executed_nodes: 12,
-          tree_total_nodes: 40,
-          descendant_count: 2,
-        }),
-      ]),
-    );
-
-    expect(html).toContain("12 / 40 nodes");
-    expect(html).toContain("+2 children");
-    expect(html).not.toContain('data-testid="human-prompt"');
+  it("maps drop columns to the ready flag", () => {
+    expect(readyStateForDropColumn("todo")).toBe(true);
+    expect(readyStateForDropColumn("draft")).toBe(false);
+    expect(readyStateForDropColumn("in_progress")).toBeNull();
+    expect(readyStateForDropColumn("done")).toBeNull();
   });
 
-  it("offers a resume affordance for a failed_resumable root in Attention", () => {
-    const html = render(
-      makeBoard([
-        makeCard({
-          id: "run:r",
-          column_id: "attention",
-          title: "Broken",
-          run_id: "run-broken",
-          status: "failed_resumable",
-          error: "kaboom",
-        }),
-      ]),
-    );
-
-    expect(html).toContain("kaboom");
-    expect(html).toContain("Resume run");
-    expect(html).toContain("/runs/run-broken");
+  it("dropping into Todo marks the ticket ready, then refetches", async () => {
+    markReadyMock.mockResolvedValue(undefined);
+    const onDone = vi.fn();
+    await dropTicketToColumn("iss-1", "todo", onDone);
+    expect(markReadyMock).toHaveBeenCalledWith("iss-1", true);
+    expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("renders a queued run's entry input and waiting position in Todo", () => {
-    const html = render(
-      makeBoard([
-        makeCard({
-          id: "run:queued",
-          column_id: "todo",
-          kind: "run",
-          title: "Queued run",
-          run_id: "run-queued",
-          queue_position: 3,
-          entry_input: { area: "api" },
-        }),
-      ]),
-    );
+  it("dropping into Draft unmarks the ticket", async () => {
+    markReadyMock.mockResolvedValue(undefined);
+    const onDone = vi.fn();
+    await dropTicketToColumn("iss-1", "draft", onDone);
+    expect(markReadyMock).toHaveBeenCalledWith("iss-1", false);
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
 
-    expect(html).toContain("area:");
-    expect(html).toContain("api");
-    expect(html).toContain("#3");
+  it("ignores drops on non-target columns", async () => {
+    const onDone = vi.fn();
+    await dropTicketToColumn("iss-1", "in_progress", onDone);
+    expect(markReadyMock).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

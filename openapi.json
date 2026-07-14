@@ -339,6 +339,9 @@
           "executed_nodes": {
             "type": "integer"
           },
+          "failed": {
+            "type": "boolean"
+          },
           "id": {
             "type": "string"
           },
@@ -371,6 +374,9 @@
           },
           "queue_position": {
             "type": "integer"
+          },
+          "ready": {
+            "type": "boolean"
           },
           "run_id": {
             "type": "string"
@@ -872,6 +878,17 @@
           "name",
           "slug",
           "status"
+        ],
+        "type": "object"
+      },
+      "pipelineBoardReadyRequest": {
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready"
         ],
         "type": "object"
       },
@@ -5690,6 +5707,47 @@
           }
         },
         "summary": "POST /api/v1/pipeline-board/tasks",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/tasks/{id}/ready": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PipelineBoardTasksByIdReady",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBoardReadyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/v1/pipeline-board/tasks/{id}/ready",
         "tags": [
           "pipeline-board"
         ]
