@@ -74,13 +74,6 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	opts = append(opts, codexsdk.WithSandbox(sandboxMode))
 	opts = append(opts, codexsdk.WithPermissionMode("bypassPermissions"))
 
-	// Forward node-declared input images to the codex CLI as `-i`, enabling
-	// image-to-image (the shorts pipeline uses this for series handoff + the
-	// character-identity anchor). No-op when the node declares no images.
-	if len(task.Images) > 0 {
-		opts = append(opts, codexsdk.WithImages(task.Images...))
-	}
-
 	if b.Command != "" {
 		opts = append(opts, codexsdk.WithCliPath(b.Command))
 	}
@@ -121,7 +114,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		}
 	}))
 
-	resultMsg, totalDuration, lastThreadID, err := b.runQueryWithRetry(ctx, task, task.UserPrompt, opts)
+	resultMsg, totalDuration, lastThreadID, err := b.runQueryWithRetry(ctx, task, task.UserPrompt, task.Images, opts)
 	if err != nil {
 		return Result{
 			Duration:    totalDuration,
@@ -231,16 +224,17 @@ const maxCodexRetries = 3
 // runQueryWithRetry drives codex Query to completion, retrying up to
 // maxCodexRetries when the process exits without producing a ResultMessage
 // (a known transient failure mode).
-func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt string, opts []codexsdk.Option) (*codexsdk.ResultMessage, time.Duration, string, error) {
+func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt string, images []string, opts []codexsdk.Option) (*codexsdk.ResultMessage, time.Duration, string, error) {
 	var totalDuration time.Duration
 	var lastThreadID string
+	content := codexQueryContent(prompt, images)
 
 	for attempt := 1; attempt <= maxCodexRetries; attempt++ {
 		startTime := time.Now()
 		var resultMsg *codexsdk.ResultMessage
 		var queryErr error
 
-		for msg, err := range codexsdk.Query(ctx, codexsdk.Text(prompt), opts...) {
+		for msg, err := range codexsdk.Query(ctx, content, opts...) {
 			if err != nil {
 				queryErr = err
 				break
@@ -308,6 +302,34 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 	return nil, totalDuration, lastThreadID, fmt.Errorf("delegate: codex: no result after %d attempts", maxCodexRetries)
 }
 
+// codexLocalImageBlock mirrors the current app-server turn/start input shape.
+// codex-agent-sdk-go v0.0.13 rewrites its public LocalImageInput block to the
+// obsolete local_image variant while marshaling, so keep the compatibility
+// shim at our adapter boundary until the dependency is upgraded.
+type codexLocalImageBlock struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+}
+
+func (b *codexLocalImageBlock) BlockType() string { return b.Type }
+
+func codexQueryContent(prompt string, images []string) codexsdk.UserMessageContent {
+	if len(images) == 0 {
+		return codexsdk.Text(prompt)
+	}
+
+	blocks := make([]codexsdk.ContentBlock, 0, len(images)+1)
+	blocks = append(blocks, codexsdk.TextInput(prompt))
+	for _, path := range images {
+		blocks = append(blocks, &codexLocalImageBlock{
+			Type: codexsdk.BlockTypeLocalImage,
+			Path: path,
+		})
+	}
+
+	return codexsdk.Blocks(blocks...)
+}
+
 // formatOutput performs a second pass: resumes the work-pass session with
 // WithOutputSchema and a tight formatting prompt. Sandbox is forced to
 // read-only so the pass cannot mutate state while rendering the final JSON.
@@ -343,7 +365,7 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID st
 
 	prompt := "Format your complete findings as JSON matching the required output schema. Do not call any tools; just return the JSON."
 
-	rm, duration, _, err := b.runQueryWithRetry(ctx, task, prompt, opts)
+	rm, duration, _, err := b.runQueryWithRetry(ctx, task, prompt, nil, opts)
 	if err != nil {
 		return nil, duration, err
 	}
