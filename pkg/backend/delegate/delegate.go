@@ -316,12 +316,17 @@ type Task struct {
 	// FullAccess, when true, lifts the codex backend's sandbox to
 	// "danger-full-access" (unrestricted network egress + out-of-workspace
 	// writes) instead of the least-privilege mode derived from AllowedTools.
-	// It is the only way to grant a codex node network access — e.g. a CLI
-	// that reaches an external API such as codex's built-in imagegen. Off by
-	// default; other backends ignore it. Set from the node-level
+	// It is Iterion's explicit way to grant a codex node network access — e.g.
+	// a CLI that reaches an external API such as codex's built-in imagegen. Off
+	// by default; other backends ignore it. Set from the node-level
 	// `full_access:` DSL field, so network is a deliberate, per-node choice
 	// by the pipeline author.
 	FullAccess bool
+
+	// Readonly, when true, forces delegated agents into a read-only sandbox.
+	// The executor copies this from the node-level `readonly:` DSL field so
+	// backend enforcement matches workspace-safety scheduling.
+	Readonly bool
 
 	// Images are node-level input image paths (from the `images:` DSL field,
 	// templated + resolved per run). The codex backend forwards them to the
@@ -588,10 +593,11 @@ type Task struct {
 	ResumeAnswer string
 
 	// Sandbox is the live sandbox handle for the run, or nil when the
-	// workflow runs without isolation. Backends route their CLI
-	// subprocess calls through it (via the SDK's CommandBuilder hook
-	// for claude_code, or directly via Run.Command for shell-out
-	// backends) so the agent's tools execute inside the container.
+	// workflow runs without isolation. Supported backends route their CLI
+	// subprocess calls through it (via the SDK's CommandBuilder hook for
+	// claude_code, or directly via Run.Command for shell-out backends) so the
+	// agent's tools execute inside the container. A backend whose SDK cannot
+	// route the process must reject the task rather than escape to the host.
 	//
 	// In-process backends (claw) refuse to start when this is set —
 	// see runtime.containsClawNode for the compile-time guard.

@@ -3,6 +3,7 @@ package delegate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -213,12 +214,16 @@ func TestCodexSandboxForAllowedTools(t *testing.T) {
 	}{
 		{"empty allowlist defaults to read-only (fail-safe)", nil, "read-only"},
 		{"bash unlocks workspace-write, not full-access", []string{"Read", "Bash"}, "workspace-write"},
+		{"native lowercase bash unlocks workspace-write", []string{"read_file", "bash"}, "workspace-write"},
 		{"edit is mutating -> workspace-write", []string{"Read", "Edit"}, "workspace-write"},
+		{"native file_edit is mutating", []string{"read_file", "file_edit"}, "workspace-write"},
 		{"write is mutating -> workspace-write", []string{"Write"}, "workspace-write"},
+		{"native write_file is mutating", []string{"write_file"}, "workspace-write"},
 		{"notebookedit is mutating -> workspace-write", []string{"NotebookEdit"}, "workspace-write"},
+		{"native notebook_edit is mutating", []string{"notebook_edit"}, "workspace-write"},
 		{"read-only reviewer stays read-only", []string{"Read", "Glob", "Grep"}, "read-only"},
 		{"single read tool stays read-only", []string{"Grep"}, "read-only"},
-		{"unknown name falls through to read-only", []string{"SomeFutureTool"}, "read-only"},
+		{"unknown name preserves possible writer semantics", []string{"SomeFutureTool"}, "workspace-write"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -236,20 +241,134 @@ func TestCodexSandboxForTask(t *testing.T) {
 			t.Errorf("FullAccess=true = %q, want danger-full-access", got)
 		}
 	})
-	t.Run("full_access wins over the tool-derived mode", func(t *testing.T) {
-		got := codexSandboxForTask(Task{FullAccess: true, AllowedTools: []string{"Read"}})
-		if got != "danger-full-access" {
-			t.Errorf("= %q, want danger-full-access", got)
+	t.Run("readonly wins over conflicting full_access", func(t *testing.T) {
+		got := codexSandboxForTask(Task{FullAccess: true, Readonly: true, AllowedTools: []string{"Read"}})
+		if got != "read-only" {
+			t.Errorf("= %q, want read-only", got)
 		}
 	})
-	t.Run("without opt-in, stays least-privilege", func(t *testing.T) {
-		if got := codexSandboxForTask(Task{AllowedTools: []string{"Bash"}}); got != "workspace-write" {
+	t.Run("readonly forces read-only even with mutating tools", func(t *testing.T) {
+		if got := codexSandboxForTask(Task{Readonly: true, AllowedTools: []string{"bash", "write_file"}}); got != "read-only" {
+			t.Errorf("readonly task = %q, want read-only", got)
+		}
+	})
+	t.Run("default task preserves unrestricted native tool semantics", func(t *testing.T) {
+		if got := codexSandboxForTask(Task{}); got != "workspace-write" {
+			t.Errorf("empty task = %q, want workspace-write", got)
+		}
+	})
+	t.Run("restricted tools stay least-privilege", func(t *testing.T) {
+		if got := codexSandboxForTask(Task{AllowedTools: []string{"bash"}}); got != "workspace-write" {
 			t.Errorf("Bash without full_access = %q, want workspace-write", got)
 		}
-		if got := codexSandboxForTask(Task{}); got != "read-only" {
-			t.Errorf("empty task = %q, want read-only", got)
+		if got := codexSandboxForTask(Task{AllowedTools: []string{"read_file", "grep"}}); got != "read-only" {
+			t.Errorf("read-only allowlist = %q, want read-only", got)
 		}
 	})
+}
+
+func TestCodexNeedsTwoPassForEveryStructuredTask(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	tests := []struct {
+		name string
+		task Task
+		want bool
+	}{
+		{"no schema needs no formatter", Task{}, false},
+		{"default empty tools", Task{OutputSchema: schema}, true},
+		{"writer list", Task{OutputSchema: schema, AllowedTools: []string{"write_file"}}, true},
+		{"readonly reader list", Task{OutputSchema: schema, Readonly: true, AllowedTools: []string{"read_file"}}, true},
+		{"readonly empty tools can still read or shell", Task{OutputSchema: schema, Readonly: true}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexNeedsTwoPass(tt.task); got != tt.want {
+				t.Fatalf("codexNeedsTwoPass(%+v) = %v, want %v", tt.task, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCodexRejectsOuterSandboxInsteadOfEscapingToHost(t *testing.T) {
+	b := &CodexBackend{Logger: testLogger()}
+	result, err := b.Execute(context.Background(), Task{Sandbox: &recordingRun{}})
+	if err == nil || !strings.Contains(err.Error(), "cannot run inside Iterion recording sandbox") {
+		t.Fatalf("error = %v, want explicit outer-sandbox rejection", err)
+	}
+	if result.BackendName != BackendCodex || result.ExitCode != -1 {
+		t.Fatalf("result = %+v, want codex failure metadata", result)
+	}
+}
+
+func TestCodexTerminalFailure(t *testing.T) {
+	empty := ""
+	errText := "Error: stream disconnected before completion"
+	authText := "Error: unexpected status 401 Unauthorized"
+	rateText := "Error: unexpected status 429 rate limit exceeded"
+	bareUsageText := "You've hit your usage limit. Try again later."
+	bareQuotaText := "Quota exceeded. Check your plan and billing details."
+	bareCapacityText := "Selected model is at capacity. Please retry later."
+	bareDemandText := "We're currently experiencing high demand. Please retry shortly."
+	valid := "done"
+	discussion := "I fixed the network error and completed the task."
+	failedTests := "Failed tests: TestWidget and TestParser"
+	errorDiscussion := "Error: network error handling is documented in recovery.go"
+	quotaDiscussion := "Quota exceeded handling is documented in the operator guide."
+	tests := []struct {
+		name          string
+		rm            *codexsdk.ResultMessage
+		stderr        string
+		wantError     bool
+		wantTransient bool
+		wantRateLimit bool
+	}{
+		{"empty result with disconnected stderr", &codexsdk.ResultMessage{Result: &empty}, "stream disconnected", true, true, false},
+		{"network error text cannot satisfy string schema", &codexsdk.ResultMessage{Result: &errText}, "", true, true, false},
+		{"auth error fails without formatting", &codexsdk.ResultMessage{Result: &authText}, "", true, false, false},
+		{"rate limit is typed", &codexsdk.ResultMessage{Result: &rateText}, "", true, false, true},
+		{"bare usage limit is typed", &codexsdk.ResultMessage{Result: &bareUsageText}, "", true, false, true},
+		{"bare quota notice is typed", &codexsdk.ResultMessage{Result: &bareQuotaText}, "", true, false, true},
+		{"bare capacity notice is typed", &codexsdk.ResultMessage{Result: &bareCapacityText}, "", true, false, true},
+		{"bare high-demand notice is typed", &codexsdk.ResultMessage{Result: &bareDemandText}, "", true, false, true},
+		{"valid result ignores unrelated stderr", &codexsdk.ResultMessage{Result: &valid}, "diagnostic", false, false, false},
+		{"discussion of recovered network error is valid", &codexsdk.ResultMessage{Result: &discussion}, "", false, false, false},
+		{"ordinary failed-tests summary is valid", &codexsdk.ResultMessage{Result: &failedTests}, "", false, false, false},
+		{"ordinary error-prefixed discussion is valid", &codexsdk.ResultMessage{Result: &errorDiscussion}, "", false, false, false},
+		{"ordinary quota discussion is valid", &codexsdk.ResultMessage{Result: &quotaDiscussion}, "", false, false, false},
+		{"structured result survives stale stderr", &codexsdk.ResultMessage{Result: &empty, StructuredOutput: map[string]any{"ok": true}}, "stream disconnected", false, false, false},
+		{"structured result wins over error-like text", &codexsdk.ResultMessage{Result: &errText, StructuredOutput: map[string]any{"summary": "Error: stream disconnected"}}, "", false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := codexTerminalFailure(tt.rm, tt.stderr)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("error = %v, wantError %v", err, tt.wantError)
+			}
+			_, transient := err.(*ErrTransient)
+			if transient != tt.wantTransient {
+				t.Errorf("transient = %v, want %v (err=%v)", transient, tt.wantTransient, err)
+			}
+			_, rateLimited := err.(*ErrRateLimited)
+			if rateLimited != tt.wantRateLimit {
+				t.Errorf("rateLimited = %v, want %v (err=%v)", rateLimited, tt.wantRateLimit, err)
+			}
+		})
+	}
+}
+
+func TestCodexFormattingStderrCapturePreservesTransientClassification(t *testing.T) {
+	var capture codexStderrCapture
+	capture.AppendLine("stream disconnected before completion")
+	empty := ""
+
+	err := codexTerminalFailure(&codexsdk.ResultMessage{Result: &empty}, capture.String())
+	var transient *ErrTransient
+	if !errors.As(err, &transient) {
+		t.Fatalf("codexTerminalFailure() error = %T %v, want *ErrTransient", err, err)
+	}
+	if transient.Reason != "network" {
+		t.Fatalf("transient reason = %q, want network", transient.Reason)
+	}
 }
 
 func TestTruncate(t *testing.T) {

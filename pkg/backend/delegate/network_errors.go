@@ -60,6 +60,7 @@ var networkErrorSignatures = []string{
 	"unable to connect to api", "failedtoopensocket", "http: eof",
 	"http2: timeout", "http2: server sent goaway",
 	"server closed idle connection",
+	"stream disconnected",
 }
 
 // MatchesNetworkSignature reports whether s (an error message or a captured
