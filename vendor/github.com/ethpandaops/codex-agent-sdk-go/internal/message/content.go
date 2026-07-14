@@ -126,7 +126,7 @@ func (b *InputLocalImageBlock) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON emits local_image, which matches the live app-server transport.
+// MarshalJSON emits localImage, which matches the turn/start input schema.
 func (b *InputLocalImageBlock) MarshalJSON() ([]byte, error) {
 	type wireInputLocalImageBlock struct {
 		Type string `json:"type"`
@@ -134,7 +134,7 @@ func (b *InputLocalImageBlock) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(wireInputLocalImageBlock{
-		Type: blockTypeLocalImageWire,
+		Type: BlockTypeLocalImage,
 		Path: b.Path,
 	})
 }
