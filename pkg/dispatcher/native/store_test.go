@@ -85,6 +85,88 @@ func TestNewStorePrependsInboxToLegacyBoard(t *testing.T) {
 	}
 }
 
+func TestNewStoreInsertsAwaitingInputAfterInProgress(t *testing.T) {
+	// Simulate an existing operator's board.json that predates the
+	// `awaiting_input` state — the upgrade path must insert it right
+	// after `in_progress` so the dispatcher's paused-run parking
+	// (moveToAwaitingInput) works without manual board.json edits.
+	dir := t.TempDir()
+	legacy := Board{
+		States: []State{
+			{Name: StateInbox, Display: "Inbox"},
+			{Name: StateReady, Display: "Ready", Eligible: true},
+			{Name: StateInProgress, Display: "In progress", Eligible: true},
+			{Name: StateDone, Display: "Done", Terminal: true},
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(&legacy, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal legacy board: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "board.json"), data, 0o644); err != nil {
+		t.Fatalf("write legacy board: %v", err)
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	got := s.Board().States
+	if len(got) != 5 {
+		t.Fatalf("want 5 states after awaiting-input insert, got %d: %+v", len(got), got)
+	}
+	if got[2].Name != StateInProgress || got[3].Name != StateAwaitingInput {
+		t.Fatalf("want awaiting_input right after in_progress, got %+v", got)
+	}
+	if got[3].Eligible || got[3].Terminal {
+		t.Fatalf("awaiting_input must be non-eligible, non-terminal: %+v", got[3])
+	}
+
+	// Re-load to confirm the upgrade was persisted and is idempotent.
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore (second pass): %v", err)
+	}
+	if len(s2.Board().States) != 5 {
+		t.Fatalf("awaiting_input inserted twice: %+v", s2.Board().States)
+	}
+}
+
+func TestNewStoreLeavesCustomBoardWithoutInProgressUntouched(t *testing.T) {
+	// A fully custom board with no `in_progress` state gets NO
+	// awaiting_input insert — the dispatcher's "stays in place"
+	// fallback covers it.
+	dir := t.TempDir()
+	custom := Board{
+		States: []State{
+			{Name: StateInbox, Display: "Inbox"},
+			{Name: "triage", Display: "Triage", Eligible: true},
+			{Name: "shipped", Display: "Shipped", Terminal: true},
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(&custom, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal custom board: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "board.json"), data, 0o644); err != nil {
+		t.Fatalf("write custom board: %v", err)
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if got := s.Board().States; len(got) != 3 {
+		t.Fatalf("custom board must be untouched, got %+v", got)
+	}
+	if s.Board().StateByName(StateAwaitingInput) != nil {
+		t.Fatal("awaiting_input must not be inserted into a board without in_progress")
+	}
+}
+
 func TestCreateAndGet(t *testing.T) {
 	s := newTestStore(t)
 	iss, err := s.Create(Issue{Title: "first", State: "ready"})

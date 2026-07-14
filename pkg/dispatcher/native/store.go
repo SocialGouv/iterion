@@ -1328,6 +1328,27 @@ func (s *Store) loadOrInitBoard() error {
 			return fmt.Errorf("native store: persist inbox upgrade: %w", err)
 		}
 	}
+	// Pre-upgrade stores also predate the `awaiting_input` state. Insert it
+	// right after `in_progress` so the dispatcher's paused-run parking
+	// (moveToAwaitingInput) works after upgrade without manual board.json
+	// edits. Boards without an `in_progress` state are fully custom — leave
+	// them untouched; the dispatcher's "stays in place" fallback still applies.
+	if s.board.StateByName(StateAwaitingInput) == nil {
+		for i, st := range s.board.States {
+			if st.Name != StateInProgress {
+				continue
+			}
+			states := make([]State, 0, len(s.board.States)+1)
+			states = append(states, s.board.States[:i+1]...)
+			states = append(states, State{Name: StateAwaitingInput, Display: "Awaiting input"})
+			states = append(states, s.board.States[i+1:]...)
+			s.board.States = states
+			if err := s.writeBoardLocked(); err != nil {
+				return fmt.Errorf("native store: persist awaiting-input upgrade: %w", err)
+			}
+			break
+		}
+	}
 	return nil
 }
 
