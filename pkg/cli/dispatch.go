@@ -92,7 +92,13 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	if err := mgr.SaveConfig(cfg); err != nil {
 		return err
 	}
-	if err := mgr.Start(); err != nil {
+	// NewManager auto-starts when the store carries a persisted config
+	// (first-boot intent defaults to Running), so on any re-run of
+	// `iterion dispatch` over the same store the explicit Start finds a
+	// live instance. That IS the desired end state — SaveConfig above
+	// already live-reloaded it with this invocation's config — so treat
+	// ErrAlreadyRunning as success instead of exiting the daemon.
+	if err := mgr.Start(); err != nil && !errors.Is(err, dispatcher.ErrAlreadyRunning) {
 		return err
 	}
 	// Shutdown preserves the operator's last-known intent in

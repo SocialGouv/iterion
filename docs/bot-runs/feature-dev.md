@@ -48,6 +48,13 @@
   in prose; (b) contain forfait spend — a long multi-wave campaign can deplete org credit
   mid-flight (finish stragglers from a credited local session); (c) `--merge-into none` +
   `post_to_board=false` on every dogfood launch kept the operator's tree clean.
+- Réserves closed (2026-07-14 follow-up): **awaiting-input validated live** on a local
+  `iterion dispatch` (legacy board auto-migrated, pause → card into the column, CLI resume →
+  new `reconcileParked` sweep moves it to review) — the validation surfaced 3 engine gaps
+  (no board migration for existing stores, parked cards stranded after out-of-band resume,
+  `iterion dispatch` re-run exiting on "already running"), all fixed; and the **verify-build
+  drift gate is now deterministic** (CI-mirror assertion + post-verify tree-drift check in
+  every verify_run body, all 9 bots), not just skill prose.
 
 ## 2026-07-09 — first CLOUD runs: label an issue → implement → open a PR (runs 019f4590 / 019f45dd / 019f45f6)
 

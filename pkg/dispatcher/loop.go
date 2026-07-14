@@ -28,6 +28,7 @@ func (c *Dispatcher) tick(ctx context.Context) {
 
 	c.reconcileStalled(ctx, cfg)
 	c.refreshRunningStates(ctx)
+	c.reconcileParked(ctx)
 
 	if c.paused.Load() {
 		c.fireSnapshot()

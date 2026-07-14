@@ -127,6 +127,28 @@ func (a *Adapter) Release(ctx context.Context, id, marker string) error {
 	return a.store.Release(id, marker)
 }
 
+// ListAwaitingInput returns the cards parked in the awaiting-input
+// column that this dispatcher may reconcile: unclaimed (post-restart,
+// after the stale-claim sweep) or claimed by the given marker. Cards
+// claimed by ANOTHER live daemon sharing the store are excluded — their
+// owner reconciles them. Consumed by the dispatcher's parked sweep
+// (reconcileParked in pkg/dispatcher) via optional-interface assertion,
+// same seam as SetLastRun/SetAwaitingInput.
+func (a *Adapter) ListAwaitingInput(marker string) ([]tracker.Issue, error) {
+	issues, err := a.store.List(ListFilter{States: []string{StateAwaitingInput}})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tracker.Issue, 0, len(issues))
+	for _, iss := range issues {
+		if iss.Claim != "" && iss.Claim != marker {
+			continue
+		}
+		out = append(out, toTrackerIssue(iss))
+	}
+	return out, nil
+}
+
 // SetLastRun stamps the (runID, workdir) pair on the issue so the
 // dispatcher can pivot from a kanban card back to the run that
 // processed it (studio's IssueModal, the resume fallback in
