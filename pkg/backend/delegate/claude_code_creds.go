@@ -2,8 +2,10 @@ package delegate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -197,12 +199,46 @@ func providerFingerprint(env map[string]string) string {
 // CLI falls through to the OAuth token. Mirrors how the z.ai/anthropic hints
 // clear the base-URL/token to stop a stale value leaking in.
 func claudeForfaitEnv(dir string) map[string]string {
-	return map[string]string{
+	env := map[string]string{
 		"CLAUDE_CONFIG_DIR":    dir,
 		"ANTHROPIC_API_KEY":    "",
 		"ANTHROPIC_AUTH_TOKEN": "",
 		"ANTHROPIC_BASE_URL":   "",
 	}
+	// Also pass the OAuth access token via CLAUDE_CODE_OAUTH_TOKEN — the
+	// headless auth path the Claude Code CLI checks BEFORE the credentials file
+	// (and before any apiKeyHelper), the same one its own UI hints at
+	// ("export CLAUDE_CODE_OAUTH_TOKEN=<token>"). The file path
+	// ($CLAUDE_CONFIG_DIR/.credentials.json) works standalone — verified with
+	// the runner's exact CLI build — but a cloud runner's full inherited pod
+	// env can shadow it, so the CLI reports "Not logged in" despite a valid
+	// materialised forfait. Reading it here from the materialised file (kept
+	// fresh by the runner's refresh worker; re-read per spawn) makes the env
+	// token deterministically win. Best-effort: on any read/parse failure we
+	// fall back to the file path alone (prior behaviour).
+	if tok := readForfaitAccessToken(dir); tok != "" {
+		env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
+	}
+	return env
+}
+
+// readForfaitAccessToken extracts claudeAiOauth.accessToken from the
+// materialised Claude Code credentials.json in dir. Returns "" (never an error)
+// when the file is absent or malformed — the caller degrades to the file path.
+func readForfaitAccessToken(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
+	if err != nil {
+		return ""
+	}
+	var v struct {
+		ClaudeAIOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return ""
+	}
+	return v.ClaudeAIOauth.AccessToken
 }
 
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string]string {

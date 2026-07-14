@@ -2,6 +2,8 @@ package delegate
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -137,6 +139,29 @@ func assertForfaitEnv(t *testing.T, got map[string]string, wantDir string) {
 		if !present || v != "" {
 			t.Errorf("%s must be present and empty (suppression): present=%v val=%q", k, present, v)
 		}
+	}
+}
+
+// When the materialised dir holds a real credentials.json, the resolver also
+// exports CLAUDE_CODE_OAUTH_TOKEN — the first-precedence headless auth path
+// that bypasses a cloud runner's env shadowing the credentials FILE. A dir
+// without a readable file degrades to the file path (no token key).
+func TestClaudeForfaitEnv_ExportsOAuthTokenFromFile(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := claudeForfaitEnv(dir)
+	assertForfaitEnv(t, got, dir)
+	if got["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat-TESTTOKEN" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want the file's accessToken", got["CLAUDE_CODE_OAUTH_TOKEN"])
+	}
+
+	// No file → no token key, file path preserved.
+	bare := claudeForfaitEnv(t.TempDir())
+	if _, present := bare["CLAUDE_CODE_OAUTH_TOKEN"]; present {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be absent when no credentials file is present: %v", bare)
 	}
 }
 
