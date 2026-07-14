@@ -46,6 +46,13 @@ type boardDispatcher struct {
 	blockedState    string
 	awaitingState   string
 
+	// statusFor + clearBadge power the parked-card sweep (sweepParked).
+	// statusFor reads a run's persisted status for a tenant; clearBadge
+	// clears the card's denormalized awaiting-input hint. Both optional —
+	// a nil statusFor disables the sweep.
+	statusFor  func(ctx context.Context, tenant, runID string) (store.RunStatus, error)
+	clearBadge func(tenant, id string)
+
 	interval time.Duration
 	sem      chan struct{}
 	logger   *iterlog.Logger
@@ -125,6 +132,55 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	}
 }
 
+// sweepParked reconciles cards parked in the awaiting-input column whose
+// runs have since reached a terminal status. A cloud card parks UNCLAIMED
+// (processCard moved it to awaitingState and released), and every resume
+// surface — answer-from-board, run console, CLI — completes the run outside
+// this dispatcher's poll loop (which returned at the pause), so without the
+// sweep the card strands in awaiting_input forever. Mirrors the local
+// dispatcher's reconcileParked (pkg/dispatcher/parked.go): finished →
+// doneState, hard-failed → blockedState; resumable statuses (paused_*,
+// failed_resumable, cancelled) and in-flight ones stay parked. Multi-replica
+// safe without claims: a concurrent double-move lands on the same final
+// state, and awaiting_input is not in `eligible` so no replica re-dispatches.
+func (d *boardDispatcher) sweepParked(ctx context.Context) {
+	if d.statusFor == nil {
+		return
+	}
+	cands, err := d.coord.ListEligible(ctx, []string{d.awaitingState}, 200)
+	if err != nil {
+		d.warn("parked sweep list: %v", err)
+		return
+	}
+	for _, c := range cands {
+		runID := c.Issue.LastRunID
+		if runID == "" {
+			continue
+		}
+		st, err := d.statusFor(ctx, c.Tenant, runID)
+		if err != nil {
+			continue // best-effort: unreadable run → leave the card alone
+		}
+		var target string
+		switch st {
+		case store.RunStatusFinished:
+			target = d.doneState
+			d.log("card %s/%s resumed out-of-band and finished (run=%s) — moving to %s", c.Tenant, c.Issue.ID, runID, target)
+		case store.RunStatusFailed:
+			target = d.blockedState
+			d.warn("card %s/%s resumed out-of-band and failed hard (run=%s) — moving to %s", c.Tenant, c.Issue.ID, runID, target)
+		default:
+			continue // still paused / resumable / in flight — genuinely awaiting the operator
+		}
+		if d.clearBadge != nil {
+			d.clearBadge(c.Tenant, c.Issue.ID)
+		}
+		if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, target); err != nil {
+			d.warn("parked sweep move %s/%s → %s: %v", c.Tenant, c.Issue.ID, target, err)
+		}
+	}
+}
+
 // run loops tick every interval until ctx is cancelled, then drains in-flight
 // cards. Start one per replica.
 func (d *boardDispatcher) run(ctx context.Context) {
@@ -132,6 +188,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		d.tick(ctx)
+		d.sweepParked(ctx)
 		select {
 		case <-ctx.Done():
 			d.wg.Wait() // let in-flight cards finish their state transition
@@ -144,6 +201,12 @@ func (d *boardDispatcher) run(ctx context.Context) {
 func (d *boardDispatcher) warn(format string, args ...any) {
 	if d.logger != nil {
 		d.logger.Warn("board dispatcher: "+format, args...)
+	}
+}
+
+func (d *boardDispatcher) log(format string, args ...any) {
+	if d.logger != nil {
+		d.logger.Info("board dispatcher: "+format, args...)
 	}
 }
 
@@ -235,6 +298,20 @@ func (s *Server) setCardAwaitingInput(tenant, cardID string, v bool) {
 	if err := store.SetAwaitingInput(cardID, v); err != nil && s.logger != nil {
 		s.logger.Warn("board dispatcher: set awaiting-input=%v on card %s/%s: %v", v, tenant, cardID, err)
 	}
+}
+
+// boardRunStatus reads a run's persisted status for the parked-card sweep,
+// tenant-scoped exactly like processBoardCard's launch context.
+func (s *Server) boardRunStatus(ctx context.Context, tenant, runID string) (store.RunStatus, error) {
+	if s.runs == nil {
+		return "", errors.New("run service unavailable")
+	}
+	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	run, err := s.runs.LoadRunCtx(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	return run.Status, nil
 }
 
 func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {

@@ -1318,35 +1318,13 @@ func (s *Store) loadOrInitBoard() error {
 		return fmt.Errorf("native store: invalid board: %w", err)
 	}
 	s.board = &b
-	// Pre-upgrade stores predate the `inbox` state. Prepend it once so
-	// bots emitting findings (which target inbox) work after upgrade
-	// without manual board.json edits. Idempotent: skipped when inbox
-	// is already present (operator-customised boards keep their order).
-	if s.board.StateByName(StateInbox) == nil {
-		s.board.States = append([]State{{Name: StateInbox, Display: "Inbox"}}, s.board.States...)
+	// Boards persisted by an older iterion may predate the `inbox` /
+	// `awaiting_input` states — apply the shared schema upgrade once and
+	// persist, so bots emitting findings and the dispatcher's paused-run
+	// parking work without manual board.json edits.
+	if UpgradeBoardSchema(s.board) {
 		if err := s.writeBoardLocked(); err != nil {
-			return fmt.Errorf("native store: persist inbox upgrade: %w", err)
-		}
-	}
-	// Pre-upgrade stores also predate the `awaiting_input` state. Insert it
-	// right after `in_progress` so the dispatcher's paused-run parking
-	// (moveToAwaitingInput) works after upgrade without manual board.json
-	// edits. Boards without an `in_progress` state are fully custom — leave
-	// them untouched; the dispatcher's "stays in place" fallback still applies.
-	if s.board.StateByName(StateAwaitingInput) == nil {
-		for i, st := range s.board.States {
-			if st.Name != StateInProgress {
-				continue
-			}
-			states := make([]State, 0, len(s.board.States)+1)
-			states = append(states, s.board.States[:i+1]...)
-			states = append(states, State{Name: StateAwaitingInput, Display: "Awaiting input"})
-			states = append(states, s.board.States[i+1:]...)
-			s.board.States = states
-			if err := s.writeBoardLocked(); err != nil {
-				return fmt.Errorf("native store: persist awaiting-input upgrade: %w", err)
-			}
-			break
+			return fmt.Errorf("native store: persist board schema upgrade: %w", err)
 		}
 	}
 	return nil

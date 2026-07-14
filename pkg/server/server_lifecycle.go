@@ -232,7 +232,12 @@ func (s *Server) ListenAndServe() error {
 				<-s.shutdown
 				cancel()
 			}()
-			newBoardDispatcher(s.cfg.CloudBoardCoordinator, s.processBoardCard, marker, 4, s.logger).run(ctx)
+			d := newBoardDispatcher(s.cfg.CloudBoardCoordinator, s.processBoardCard, marker, 4, s.logger)
+			// Parked-card sweep wiring: read a run's status tenant-scoped,
+			// and clear the denormalized ⏸ badge when the sweep moves a card.
+			d.statusFor = s.boardRunStatus
+			d.clearBadge = func(tenant, id string) { s.setCardAwaitingInput(tenant, id, false) }
+			d.run(ctx)
 		}()
 	}
 	// Truthful URL in the log: if the operator chose a non-loopback bind we

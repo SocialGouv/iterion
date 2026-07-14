@@ -122,6 +122,41 @@ func (b *Board) StateByName(name string) *State {
 	return nil
 }
 
+// UpgradeBoardSchema applies the in-place upgrades a board persisted by an
+// older iterion needs to work with the current dispatcher, returning true
+// when it modified the board. Shared by the filesystem store
+// (loadOrInitBoard, which persists the result) and the Mongo store (Board(),
+// which normalizes on read). Idempotent; operator-customised boards keep
+// their ordering.
+//
+//   - `inbox` (bot-emitted findings land there) is prepended when missing.
+//   - `awaiting_input` (the dispatcher parks a paused card there) is
+//     inserted right after `in_progress` when missing. Boards without an
+//     `in_progress` state are fully custom — left untouched; the
+//     dispatcher's "stays in place" fallback covers them.
+func UpgradeBoardSchema(b *Board) bool {
+	changed := false
+	if b.StateByName(StateInbox) == nil {
+		b.States = append([]State{{Name: StateInbox, Display: "Inbox"}}, b.States...)
+		changed = true
+	}
+	if b.StateByName(StateAwaitingInput) == nil {
+		for i, st := range b.States {
+			if st.Name != StateInProgress {
+				continue
+			}
+			states := make([]State, 0, len(b.States)+1)
+			states = append(states, b.States[:i+1]...)
+			states = append(states, State{Name: StateAwaitingInput, Display: "Awaiting input"})
+			states = append(states, b.States[i+1:]...)
+			b.States = states
+			changed = true
+			break
+		}
+	}
+	return changed
+}
+
 // stateIndex returns the position of the state matching name, or -1.
 // Reorder/delete need the slice index; StateByName only yields a pointer.
 func (b *Board) stateIndex(name string) int {
