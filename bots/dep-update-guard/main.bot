@@ -695,16 +695,106 @@ agent commit:
   tool_max_steps: 25
 
 ## Post the complete review comment on the PR (forge REST + token).
-agent post_feedback:
-  backend: "claude_code"
-  model: "${VETTY_MODEL_FEEDBACK:-claude-opus-4-8}"
-  reasoning_effort: "${VETTY_EFFORT_FEEDBACK:-medium}"
+## DETERMINISTIC feedback (no LLM): compose the verdict comment from the
+## structured verdict fields and POST it via the forge REST API with the
+## forge_token. An LLM turn here made the comment a fragile last step — a
+## provider rate-limit at the very end sank an otherwise-complete verdict
+## (observed dogfooding: the forfait's session limit failed post_feedback and
+## the run went failed_resumable with nothing posted). A tool node can't be
+## rate-limited, is faster, cheaper, and formats consistently. Script refs are
+## JSON-encoded (safe for multi-line summaries); a missing ref renders as the
+## JSON `null` literal, so `null/true/false` are shimmed to Python.
+tool post_feedback:
   input: feedback_input
   output: feedback_output
-  system: feedback_system
-  user: feedback_user
-  session: fresh
-  tool_max_steps: 30
+  language: py
+  script: |
+    import json, os, re, urllib.request, urllib.error
+    null = None; true = True; false = False  # JSON-literal shim for missing refs
+    pr_url = {{input.pr_url}}
+    verdict = {{input.verdict}}
+    audit_summary = {{input.audit_summary}}
+    cves = {{input.cves}}
+    malware_signals = {{input.malware_signals}}
+    align_summary = {{input.align_summary}}
+    validate_summary = {{input.validate_summary}}
+    escalation = {{input.escalation}}
+    commit_summary = {{input.commit_summary}}
+    token_ref = {{secrets.forge_token.path}}
+
+    def s(x):
+        return (x or "").strip() if isinstance(x, str) else ("" if x is None else str(x).strip())
+
+    def out(posted, comment_url="", skipped_reason="", summary=""):
+        print(json.dumps({"posted": bool(posted), "comment_url": comment_url or "",
+                          "skipped_reason": skipped_reason or "", "summary": summary or ""}))
+        raise SystemExit(0)
+
+    if not s(pr_url):
+        out(False, skipped_reason="no pr_url (local run)")
+
+    badges = {
+        "hold_security":  "\U0001F6D1 HOLD — supply-chain risk; not aligned/merged",
+        "needs_decision": "\U0001F9ED Needs a human decision (architectural)",
+        "hold_unstable":  "⚠️ HOLD — build/tests not green after alignment",
+        "committed":      "✅ Aligned — code updated on this branch; review & merge",
+        "clean":          "✅ Safe bump — no code alignment needed",
+    }
+    parts = ["**" + badges.get(s(verdict), "ℹ️ Vetty review") + "**", ""]
+    def section(title, body):
+        if s(body):
+            parts.extend(["## " + title, s(body), ""])
+    sec = s(audit_summary)
+    extra = []
+    if s(cves): extra.append("CVEs: " + s(cves))
+    if s(malware_signals): extra.append("Malware signals: " + s(malware_signals))
+    if extra: sec = (sec + "\n\n" + "\n".join(extra)).strip()
+    section("Security & supply-chain", sec)
+    section("Code alignment", align_summary)
+    section("Reliability", validate_summary)
+    if s(verdict) == "needs_decision":
+        section("Decision needed", escalation)
+    did = {"committed": "Committed the alignment to this branch.",
+           "hold_security": "Held — no alignment, no commit.",
+           "hold_unstable": "Held — build/tests not green.",
+           "needs_decision": "Escalated for a human decision.",
+           "clean": "Nothing to align."}.get(s(verdict), "")
+    did = (s(commit_summary) + " " if s(commit_summary) else "") + did + " **Vetty did NOT merge.**"
+    section("What Vetty did", did)
+    parts.append("_\U0001F916 Posted by Vetty (dep-update-guard) — deterministic feedback._")
+    body = "\n".join(parts)
+
+    token = ""
+    tref = s(token_ref)
+    if tref:
+        token = (open(tref).read().strip() if os.path.exists(tref) else tref)
+    if not token:
+        out(False, skipped_reason="no forge_token bound — cannot post")
+
+    m = re.match(r"https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|pulls|-/merge_requests|merge_requests)/(\d+)", s(pr_url))
+    if not m:
+        out(False, skipped_reason="unparseable pr_url: " + s(pr_url))
+    host, owner, repo, num = m.group(1), m.group(2), m.group(3), m.group(4)
+    if host == "github.com":
+        api = "https://api.github.com/repos/%s/%s/issues/%s/comments" % (owner, repo, num)
+        headers = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
+    else:
+        api = "https://%s/api/v1/repos/%s/%s/issues/%s/comments" % (host, owner, repo, num)
+        headers = {"Authorization": "token " + token, "Accept": "application/json"}
+    headers.update({"Content-Type": "application/json", "User-Agent": "vetty-dep-update-guard"})
+    req = urllib.request.Request(api, data=json.dumps({"body": body}).encode("utf-8"), method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        out(True, comment_url=(payload.get("html_url") or payload.get("url") or ""),
+            summary="verdict=" + s(verdict) + "; comment posted")
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try: detail = e.read().decode("utf-8")[:300]
+        except Exception: pass
+        out(False, skipped_reason="forge POST HTTP %s: %s" % (e.code, detail))
+    except Exception as e:
+        out(False, skipped_reason="forge POST error: " + str(e))
 
 ## Deterministic anti-façade gate: a PR target was given but nothing
 ## posted → loud banner (informational; the audit/align already ran).
