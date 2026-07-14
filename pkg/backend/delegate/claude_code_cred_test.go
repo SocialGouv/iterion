@@ -107,8 +107,36 @@ func TestAnthropicCredEnv_HintAnthropicFallsToOAuthDir(t *testing.T) {
 		string(secrets.OAuthKindClaudeCode): "/tmp/iterion-oauth-claude",
 	})
 	got := anthropicCredEnvForCLI(ctx, "anthropic")
-	if got["CLAUDE_CONFIG_DIR"] != "/tmp/iterion-oauth-claude" {
-		t.Errorf("CLAUDE_CONFIG_DIR: got %q, want /tmp/iterion-oauth-claude", got["CLAUDE_CONFIG_DIR"])
+	assertForfaitEnv(t, got, "/tmp/iterion-oauth-claude")
+}
+
+func TestAnthropicCredEnv_AutoForfaitSuppressesInheritedKey(t *testing.T) {
+	resetClaudeCredEnv(t)
+	// A shared, possibly-dead ANTHROPIC_API_KEY in the runner's pod env must
+	// NOT shadow a resolved per-run forfait: the returned map suppresses it
+	// (""), and mergeCmdEnv (claudesdk) turns that into an absent var so the
+	// CLI uses the CLAUDE_CONFIG_DIR OAuth token.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-dead-shared")
+	ctx := ctxWithCreds(t, nil, map[string]string{
+		string(secrets.OAuthKindClaudeCode): "/tmp/iterion-oauth-claude",
+	})
+	got := anthropicCredEnvForCLI(ctx, "")
+	assertForfaitEnv(t, got, "/tmp/iterion-oauth-claude")
+}
+
+// assertForfaitEnv pins the forfait env contract: the OAuth config dir is
+// wired and every Anthropic-flavoured credential that could shadow it is
+// explicitly emptied (suppression signal consumed by mergeCmdEnv).
+func assertForfaitEnv(t *testing.T, got map[string]string, wantDir string) {
+	t.Helper()
+	if got["CLAUDE_CONFIG_DIR"] != wantDir {
+		t.Errorf("CLAUDE_CONFIG_DIR: got %q, want %q", got["CLAUDE_CONFIG_DIR"], wantDir)
+	}
+	for _, k := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"} {
+		v, present := got[k]
+		if !present || v != "" {
+			t.Errorf("%s must be present and empty (suppression): present=%v val=%q", k, present, v)
+		}
 	}
 }
 
