@@ -116,22 +116,7 @@ func ConvertMessages(system string, messages []api.Message) []Message {
 func ConvertTools(provider string, tools []api.Tool) ([]Tool, error) {
 	result := make([]Tool, 0, len(tools))
 	for _, t := range tools {
-		schemaType := t.InputSchema.Type
-		if schemaType == "" {
-			schemaType = "object"
-		}
-		properties := t.InputSchema.Properties
-		if properties == nil {
-			properties = map[string]api.Property{}
-		}
-		schema := map[string]interface{}{
-			"type":       schemaType,
-			"properties": properties,
-		}
-		if len(t.InputSchema.Required) > 0 {
-			schema["required"] = t.InputSchema.Required
-		}
-		params, err := json.Marshal(schema)
+		params, err := NormalizedParameters(t.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("%s: marshal input schema for tool %q: %w", provider, t.Name, err)
 		}
@@ -145,4 +130,41 @@ func ConvertTools(provider string, tools []api.Tool) ([]Tool, error) {
 		})
 	}
 	return result, nil
+}
+
+// NormalizedParameters marshals an InputSchema into an OpenAI-function
+// `parameters` object, normalising the three shapes OpenAI's validator (both
+// /chat/completions and /responses) rejects as `null`:
+//   - `required` is OMITTED when nil/empty — a nil []string marshals to JSON
+//     null and OpenAI errors "None is not of type 'array'". This is the shape
+//     an MCP tool with only optional parameters produces (e.g. firecrawl's
+//     firecrawl_interact / firecrawl_monitor_create).
+//   - `properties` defaults to `{}` rather than null for a tool that declares
+//     no parameters.
+//   - `type` defaults to "object" when empty so the schema is a valid
+//     JSON-Schema object descriptor.
+//
+// Both the chat and responses tool converters route through this so the
+// normalisation can never drift between the two OpenAI transports.
+func NormalizedParameters(schema api.InputSchema) (json.RawMessage, error) {
+	schemaType := schema.Type
+	if schemaType == "" {
+		schemaType = "object"
+	}
+	properties := schema.Properties
+	if properties == nil {
+		properties = map[string]api.Property{}
+	}
+	out := map[string]interface{}{
+		"type":       schemaType,
+		"properties": properties,
+	}
+	if len(schema.Required) > 0 {
+		out["required"] = schema.Required
+	}
+	params, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(params), nil
 }
