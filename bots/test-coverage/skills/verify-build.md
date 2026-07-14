@@ -90,6 +90,13 @@ part of the work — the gate is here to force it. (iterion specifically:
 `task openapi:check` + the helm chart drift check are CI gates; a new
 `/api/...` route needs `task openapi:gen` committed.)
 
+This section is **deterministically enforced** by the verify gate: when the
+repo's CI config contains a drift gate and your `verify.sh` has no
+`git diff --exit-code`/`--quiet` line, the gate fails with a DRIFT GATE
+MISSING error; and a green verify that leaves new changes in the tree fails
+with UNCOMMITTED REGEN OUTPUT. Writing the gate here is cheaper than being
+bounced by the enforcement.
+
 ## 2. Write the verify script to the scratch dir
 
 Write an executable POSIX-sh script at the exact `verify.sh` path your task

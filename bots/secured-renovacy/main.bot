@@ -2987,6 +2987,15 @@ script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
     print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'p2_verify_build produced no verify.sh; build gate SKIPPED (counted as pass, but surfaced)'}))
     raise SystemExit(0)
+def tree_state():
+    try:
+        p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+        if p.returncode != 0:
+            return None
+        return set(l for l in p.stdout.splitlines() if l.strip())
+    except Exception:
+        return None
+pre = tree_state()
 rc = 0
 out = ''
 try:
@@ -2999,6 +3008,43 @@ except subprocess.TimeoutExpired as e:
 except Exception as e:
     out = 'p2_verify_run could not execute the script: ' + str(e)
     rc = 1
+# Deterministic codegen-drift tail (stack-agnostic; the gate stays
+# deterministic per ADR-044). Only on a GREEN verify: (1) if the repo's own
+# CI enforces a drift gate, verify.sh must mirror it; (2) a green verify
+# must not leave new changes in the tree (regen output belongs in a commit).
+if rc == 0:
+    import glob
+    def has_drift_gate(text):
+        for l in text.splitlines():
+            if ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or 'status --porcelain' in l:
+                return True
+        return False
+    ci_hit = ''
+    for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):
+        for f in sorted(glob.glob(os.path.join(ws, pat))):
+            try:
+                if has_drift_gate(open(f, encoding='utf-8', errors='replace').read()):
+                    ci_hit = os.path.relpath(f, ws)
+                    break
+            except OSError:
+                pass
+        if ci_hit:
+            break
+    if ci_hit:
+        try:
+            vs = open(script, encoding='utf-8', errors='replace').read()
+        except OSError:
+            vs = ''
+        if not has_drift_gate(vs):
+            rc = 3
+            out = out + chr(10) + 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
+    if rc == 0 and pre is not None:
+        post = tree_state()
+        if post is not None:
+            fresh = sorted(post - pre)
+            if fresh:
+                rc = 4
+                out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
 try:
     with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)
