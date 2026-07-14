@@ -28,6 +28,7 @@ import (
 
 	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
+	"github.com/SocialGouv/claw-code-go/internal/api/providers/openaiwire"
 	"github.com/SocialGouv/claw-code-go/internal/api/sseutil"
 )
 
@@ -385,11 +386,13 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 func convertToolsToResponses(tools []api.Tool) ([]oaiResponsesTool, error) {
 	out := make([]oaiResponsesTool, 0, len(tools))
 	for _, t := range tools {
-		params, err := json.Marshal(map[string]interface{}{
-			"type":       t.InputSchema.Type,
-			"properties": t.InputSchema.Properties,
-			"required":   t.InputSchema.Required,
-		})
+		// Same normalisation as the chat path (openaiwire.ConvertTools): a nil
+		// `required` must be OMITTED, not marshalled as `null` — the responses
+		// API validator rejects null with "None is not of type 'array'", which
+		// silently killed every MCP tool that has only optional parameters
+		// (e.g. firecrawl_interact / firecrawl_monitor_create). Routing both
+		// transports through the shared helper keeps them from drifting.
+		params, err := openaiwire.NormalizedParameters(t.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("openai: marshal input schema for tool %q: %w", t.Name, err)
 		}
