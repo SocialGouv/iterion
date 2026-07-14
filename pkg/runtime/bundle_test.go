@@ -31,9 +31,17 @@ func TestMirrorBundleSkills_CopiesIntoClaudeSkills(t *testing.T) {
 
 	dest := filepath.Join(workDir, ".claude", "skills")
 	// Flat "probe.md" source mirrors to the directory form "probe/SKILL.md"
-	// (the only form claude_code's Skill tool discovers).
+	// (the form claude_code's Skill tool discovers natively).
 	if _, err := os.Stat(filepath.Join(dest, "probe", "SKILL.md")); err != nil {
 		t.Errorf("probe/SKILL.md missing: %v", err)
+	}
+	// AND to the flat alias "probe.md" so a bot prompt that Reads the skill by
+	// its flat path (`.claude/skills/probe.md`, the pattern most catalog bots
+	// use) resolves it instead of failing + re-finding the file.
+	if got, err := os.ReadFile(filepath.Join(dest, "probe.md")); err != nil {
+		t.Errorf("flat alias probe.md missing: %v", err)
+	} else if string(got) != "# probe\n" {
+		t.Errorf("flat alias probe.md content = %q, want the source content", got)
 	}
 	// A source that is already a directory is copied through unchanged.
 	if _, err := os.Stat(filepath.Join(dest, "nested", "step.md")); err != nil {
