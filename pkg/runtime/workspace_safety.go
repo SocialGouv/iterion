@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
@@ -22,14 +23,29 @@ var readOnlyTools = map[string]bool{
 }
 
 // isMutatingNode returns true if the node may modify the workspace.
-// Tool nodes are always mutating. Agent/judge nodes are mutating only
-// if they have at least one tool that is not in the read-only set.
+// Tool nodes are always mutating. Agent/judge nodes are mutating when
+// full_access is set, when they have at least one tool that is not in the
+// read-only set, or when the effective backend is a CLI delegate and its tool
+// list is omitted (CLI delegates treat an empty list as unrestricted native
+// tools). The engine asks the production executor for the effective backend so
+// launch overrides, environment defaults, and auto-detection are included.
 // Subbot nodes run a child .bot that may do anything (including mutate the
 // shared worktree), so they are conservatively treated as mutating — this
 // keeps validateWorkspaceSafety from admitting two subbot branches that would
 // race the same workspace. Nodes with Readonly=true are never considered
 // mutating.
 func isMutatingNode(node ir.Node) bool {
+	return isMutatingNodeWithBackend(node, "", nil)
+}
+
+// effectiveBackendResolver is implemented by the production model executor.
+// Keeping the interface here avoids duplicating its evolving resolution chain
+// (launch override -> DSL -> workflow default -> env -> auto-detection).
+type effectiveBackendResolver interface {
+	EffectiveBackendName(ir.Node) string
+}
+
+func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver effectiveBackendResolver) bool {
 	switch n := node.(type) {
 	case *ir.ToolNode:
 		return true
@@ -38,6 +54,9 @@ func isMutatingNode(node ir.Node) bool {
 	case *ir.AgentNode:
 		if n.Readonly {
 			return false
+		}
+		if n.FullAccess || unrestrictedCLIBackendCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver) {
+			return true
 		}
 		for _, t := range n.Tools {
 			if !readOnlyTools[t] {
@@ -48,6 +67,9 @@ func isMutatingNode(node ir.Node) bool {
 		if n.Readonly {
 			return false
 		}
+		if n.FullAccess || unrestrictedCLIBackendCanWrite(node, n.LLMFields, n.Tools, defaultBackend, resolver) {
+			return true
+		}
 		for _, t := range n.Tools {
 			if !readOnlyTools[t] {
 				return true
@@ -55,6 +77,31 @@ func isMutatingNode(node ir.Node) bool {
 		}
 	}
 	return false
+}
+
+func unrestrictedCLIBackendCanWrite(
+	node ir.Node,
+	fields ir.LLMFields,
+	tools []string,
+	defaultBackend string,
+	resolver effectiveBackendResolver,
+) bool {
+	if len(tools) > 0 {
+		return false
+	}
+	backend := strings.TrimSpace(ir.ExpandEnvWithDefault(fields.Backend))
+	if backend == "" {
+		backend = strings.TrimSpace(ir.ExpandEnvWithDefault(defaultBackend))
+	}
+	if resolver != nil {
+		if effective := strings.TrimSpace(resolver.EffectiveBackendName(node)); effective != "" {
+			backend = effective
+		}
+	}
+	if backend == "" || backend == "auto" {
+		return false
+	}
+	return backend != "claw"
 }
 
 // branchContainsMutation walks from startNodeID to globalConvergence (or to a
@@ -101,7 +148,8 @@ func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string) b
 		if isTerminalNode(node) {
 			continue
 		}
-		if isMutatingNode(node) {
+		resolver, _ := e.executor.(effectiveBackendResolver)
+		if isMutatingNodeWithBackend(node, e.workflow.DefaultBackend, resolver) {
 			return true
 		}
 		for _, edge := range e.workflow.Edges {

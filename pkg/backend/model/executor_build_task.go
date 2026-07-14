@@ -41,6 +41,7 @@ type backendFields struct {
 	compress         string   // node-level `compress:` value ("" = unset)
 	permission       string   // node-level `permission:` mode override ("" = inherit)
 	timeout          string   // node-level `timeout:` Go duration ("" = no per-node bound); may contain ${VAR} env refs
+	readonly         bool     // node-level `readonly:` — force delegated agents into a read-only sandbox
 	fullAccess       bool     // node-level `full_access:` — lift the codex sandbox to danger-full-access (network egress)
 	images           []string // node-level `images:` — templated input image paths forwarded to codex as `-i` (i2i)
 }
@@ -72,6 +73,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			permission:       n.Permission,
 			timeout:          n.Timeout,
+			readonly:         n.Readonly,
 			fullAccess:       n.FullAccess,
 			images:           n.Images,
 		}, nil
@@ -94,6 +96,7 @@ func extractBackendFields(node ir.Node) (backendFields, error) {
 			compress:         n.Compress,
 			permission:       n.Permission,
 			timeout:          n.Timeout,
+			readonly:         n.Readonly,
 			fullAccess:       n.FullAccess,
 			images:           n.Images,
 		}, nil
@@ -517,6 +520,7 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 		UserPrompt:            userText,
 		UserContent:           userContent,
 		AllowedTools:          f.tools,
+		Readonly:              f.readonly,
 		FullAccess:            f.fullAccess,
 		Images:                resolvedImages,
 		Capabilities:          effectiveCaps,

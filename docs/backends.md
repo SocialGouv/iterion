@@ -293,17 +293,26 @@ auto-resolution. `OPENAI_API_KEY` alone routes to `claw`.
 
 #### Sandbox and `full_access`
 
-A codex node runs under codex's own sandbox. By default the mode is the
-least-privilege one implied by the node's tools: `read-only`, or
-`workspace-write` when a mutating tool (`Bash`/`Edit`/`Write`/`NotebookEdit`)
-is declared. Neither allows **network egress** — so a codex agent cannot reach
-an external API (e.g. codex's built-in `imagegen`, or any HTTP call) by default.
+A codex node runs under codex's own sandbox. `readonly: true` always selects
+`read-only` (and takes precedence over a conflicting `full_access: true`).
+Otherwise, an omitted/empty `tools:` list keeps Iterion's normal
+"native tools unrestricted" contract and selects `workspace-write`; a non-empty
+list uses `read-only` only when all declared tools are known readers, and
+`workspace-write` when it contains a writer/shell tool (both Iterion snake_case
+names and Claude-style names are recognised). Unknown/custom names conservatively
+select `workspace-write`; use `readonly: true` for an explicit lock-down.
+
+With Codex's default configuration neither `read-only` nor `workspace-write`
+allows **network egress** — so a codex agent cannot reach an external API (e.g.
+codex's built-in `imagegen`, or any HTTP call). A user-level Codex config can
+override workspace-write network policy; Iterion does not currently rewrite that
+file, so operators who require a hard network boundary should use an Iterion
+Docker/Kubernetes sandbox with a backend that supports it.
 
 To grant network access, the pipeline author sets `full_access: true` on the
 node. It lifts the sandbox to `danger-full-access` (unrestricted network +
 out-of-workspace writes) — the same posture as `codex exec -s
-danger-full-access`. It is **off by default and opt-in per node**, so network is
-always a deliberate choice, never granted implicitly:
+danger-full-access`. It is **off by default and opt-in per node** in the workflow:
 
 ```
 agent make_cover:
@@ -313,6 +322,12 @@ agent make_cover:
 ```
 
 Other backends ignore `full_access` (they do not impose the codex sandbox).
+
+> **Outer-sandbox limitation:** the pinned Codex Agent SDK cannot yet route its
+> subprocess through Iterion's Docker/Kubernetes command builder. Iterion fails
+> such a node explicitly instead of silently launching the CLI on the host. Set
+> `sandbox: none` to rely on Codex's own sandbox, or use `claude_code`/`claw`
+> when the outer container boundary is required.
 
 #### Image inputs (`images:`)
 

@@ -49,6 +49,7 @@ type IOTask struct {
 	UserPrompt             string                `json:"user_prompt,omitempty"`
 	UserContent            []ContentBlock        `json:"user_content,omitempty"`
 	AllowedTools           []string              `json:"allowed_tools,omitempty"`
+	Readonly               bool                  `json:"readonly,omitempty"`
 	Capabilities           []string              `json:"capabilities,omitempty"`
 	StoreDir               string                `json:"store_dir,omitempty"`
 	BoardHTTPEndpoint      string                `json:"board_http_endpoint,omitempty"`
@@ -139,6 +140,7 @@ func ToIOTask(t Task) IOTask {
 		UserPrompt:             t.UserPrompt,
 		UserContent:            t.UserContent,
 		AllowedTools:           t.AllowedTools,
+		Readonly:               t.Readonly,
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,
@@ -189,6 +191,7 @@ func FromIOTask(t IOTask) Task {
 		UserPrompt:             t.UserPrompt,
 		UserContent:            t.UserContent,
 		AllowedTools:           t.AllowedTools,
+		Readonly:               t.Readonly,
 		Capabilities:           t.Capabilities,
 		StoreDir:               t.StoreDir,
 		BoardHTTPEndpoint:      t.BoardHTTPEndpoint,

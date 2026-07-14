@@ -19,6 +19,7 @@ func TestIOTaskRoundTrip(t *testing.T) {
 			{Type: "image", MediaType: "image/png", Data: "aW1hZ2U=", Path: "assets/image.png", Name: "diagram"},
 		},
 		AllowedTools:          []string{"Bash", "Read"},
+		Readonly:              true,
 		OutputSchema:          json.RawMessage(`{"type":"object"}`),
 		Model:                 "anthropic/claude-sonnet-4-6",
 		HasTools:              true,
@@ -99,6 +100,9 @@ func TestIOTaskRoundTrip(t *testing.T) {
 	}
 	if got.HasTools != original.HasTools {
 		t.Errorf("HasTools = %v", got.HasTools)
+	}
+	if got.Readonly != original.Readonly {
+		t.Errorf("Readonly = %v, want %v", got.Readonly, original.Readonly)
 	}
 	if got.SessionID != original.SessionID {
 		t.Errorf("SessionID = %q", got.SessionID)
