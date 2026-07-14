@@ -126,6 +126,21 @@ func TestParseStreamJSONText(t *testing.T) {
 		}
 	})
 
+	t.Run("kimi native role stream keeps final assistant message", func(t *testing.T) {
+		stream := `{"role":"assistant","content":"I will inspect the files first."}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool-1"}]}
+{"role":"tool","tool_call_id":"tool-1","content":"done"}
+{"role":"assistant","content":"{\"answer\":\"42\"}"}
+{"role":"meta","type":"session.resume_hint","session_id":"sess-tools"}`
+		text, sid, _ := parseStreamJSONText(stream)
+		if text != `{"answer":"42"}` {
+			t.Errorf("text = %q, want final JSON message", text)
+		}
+		if sid != "sess-tools" {
+			t.Errorf("sessionID = %q, want sess-tools", sid)
+		}
+	})
+
 	t.Run("result event wins", func(t *testing.T) {
 		stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}
 {"type":"result","result":"final answer","session_id":"sess-1","usage":{"input_tokens":10,"output_tokens":5}}`

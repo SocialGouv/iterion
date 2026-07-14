@@ -378,7 +378,8 @@ func envSliceToMap(resolve func(context.Context) map[string]string, ctx context.
 // It extracts the assistant's final text, session id, and token usage. Unknown
 // lines are skipped; when nothing parses it falls back to the raw stream.
 func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
-	var assistantText strings.Builder
+	var legacyAssistantText strings.Builder
+	var nativeAssistantText string
 	var resultText string
 	haveResult := false
 
@@ -398,17 +399,25 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 			tokens += asInt(u["input_tokens"]) + asInt(u["output_tokens"])
 		}
 		if role, _ := ev["role"].(string); role == "assistant" {
+			var message strings.Builder
 			switch content := ev["content"].(type) {
 			case string:
-				assistantText.WriteString(content)
+				message.WriteString(content)
 			case []any:
 				for _, item := range content {
 					if block, ok := item.(map[string]any); ok {
 						if value, ok := block["text"].(string); ok {
-							assistantText.WriteString(value)
+							message.WriteString(value)
 						}
 					}
 				}
+			}
+			// Native kimi role events are complete assistant messages, not
+			// token deltas. Tool-using sessions can contain an early status
+			// message followed by the actual final answer; keep the latest
+			// non-empty message instead of concatenating both into invalid JSON.
+			if message.Len() > 0 {
+				nativeAssistantText = message.String()
 			}
 		}
 		typ, _ := ev["type"].(string)
@@ -425,7 +434,7 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 						if blk, ok := c.(map[string]any); ok {
 							if t, _ := blk["type"].(string); t == "text" {
 								if txt, ok := blk["text"].(string); ok {
-									assistantText.WriteString(txt)
+									legacyAssistantText.WriteString(txt)
 								}
 							}
 						}
@@ -438,8 +447,10 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 	switch {
 	case haveResult && resultText != "":
 		return resultText, sessionID, tokens
-	case assistantText.Len() > 0:
-		return assistantText.String(), sessionID, tokens
+	case nativeAssistantText != "":
+		return nativeAssistantText, sessionID, tokens
+	case legacyAssistantText.Len() > 0:
+		return legacyAssistantText.String(), sessionID, tokens
 	default:
 		// Nothing recognisable — hand back the raw stream so the schema-aware
 		// fallback can still try to extract a JSON object from it.
