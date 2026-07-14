@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,104 +9,144 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
-	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
+// The pipeline board is a SINGLE global execution projection: one card per
+// ROOT pipeline (a run with no parent), with every descendant folded into
+// its root card as aggregate progress + a flat list of pending human
+// reviews. It is a read model over the runtime + native tracker, not a
+// second mutable store — cards are positioned by persisted run state, so
+// there is no drag-and-drop. See docs/native-tracker.md + ADR-073.
 const (
 	pipelineColumnTodo       = "todo"
-	pipelineColumnRunning    = "running"
-	pipelineColumnOtherInput = "interaction:other"
-	pipelineColumnAttention  = "attention"
+	pipelineColumnInProgress = "in_progress"
 	pipelineColumnDone       = "done"
+	pipelineColumnAttention  = "attention"
 
 	pipelineTreeMaxDepth = 20
 	pipelineTreeMaxCards = 500
+
+	// pipelineFinalAnswerField mirrors notify.DefaultAnswerField — the
+	// artifact-data key a finished run's "output" is read from. Duplicated
+	// (not imported) to keep pkg/server off pkg/notify for one constant.
+	pipelineFinalAnswerField = "final_answer"
+	// pipelineOutputMaxLen bounds the DONE card's output string so a
+	// verbose artifact can't bloat the board payload.
+	pipelineOutputMaxLen = 1200
+	// pipelineArtifactProbeCap bounds how many nodes the output fallback
+	// probes for the latest artifact on a finished run.
+	pipelineArtifactProbeCap = 24
 )
 
-// PipelineBoardIdentity is the stable identity of the derived board exposed
-// by the Studio. V1 deliberately keys it by the bot registry entry instead of
-// creating a second mutable board store: the native board remains the
-// dispatcher's backlog, while this surface is a runtime projection.
-type PipelineBoardIdentity struct {
-	ID          string `json:"id"`
-	BotID       string `json:"bot_id"`
-	DisplayName string `json:"display_name"`
-	Icon        string `json:"icon,omitempty"`
-	Description string `json:"description,omitempty"`
-	Enabled     bool   `json:"enabled"`
+// PipelineBoardColumn is one of the four fixed lanes. Unlike the previous
+// per-bot board there are no derived interaction columns — human reviews
+// live inside the IN_PROGRESS card that blocks on them.
+type PipelineBoardColumn struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Kind  string `json:"kind"`
 }
 
-// PipelineBoardColumn is one derived lane. Interaction columns carry the
-// workflow/node pair that selects paused runs; lifecycle columns leave those
-// fields empty.
-type PipelineBoardColumn struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	Kind            string `json:"kind"`
-	WorkflowName    string `json:"workflow_name,omitempty"`
-	NodeID          string `json:"node_id,omitempty"`
-	InteractionMode string `json:"interaction_mode,omitempty"`
+// pipelineColumns is the fixed, client-order column set.
+func pipelineColumns() []PipelineBoardColumn {
+	return []PipelineBoardColumn{
+		{ID: pipelineColumnTodo, Title: "Todo", Kind: "todo"},
+		{ID: pipelineColumnInProgress, Title: "In progress", Kind: "in_progress"},
+		{ID: pipelineColumnDone, Title: "Done", Kind: "done"},
+		{ID: pipelineColumnAttention, Title: "Attention", Kind: "attention"},
+	}
+}
+
+// PipelineBoardPendingReview is one paused human interaction somewhere in
+// a root's tree (the root itself or any descendant). The card presents
+// these one at a time; each answer targets the exact run_id shown here.
+type PipelineBoardPendingReview struct {
+	RunID         string         `json:"run_id"`
+	WorkflowName  string         `json:"workflow_name,omitempty"`
+	BotID         string         `json:"bot_id,omitempty"`
+	NodeID        string         `json:"node_id,omitempty"`
+	InteractionID string         `json:"interaction_id,omitempty"`
+	Questions     map[string]any `json:"questions,omitempty"`
+	// Depth is 0 for the root's own pause, >0 for a descendant's.
+	Depth int `json:"depth"`
 }
 
 // PipelineBoardAttempt is one dispatcher attempt associated with a native
-// task. Status is enriched from the run store when that run still exists.
+// task-backed root. Status is enriched from the run store when the run
+// still exists.
 type PipelineBoardAttempt struct {
 	RunID  string          `json:"run_id"`
 	Status store.RunStatus `json:"status,omitempty"`
 	At     *time.Time      `json:"at,omitempty"`
 }
 
-// PipelineBoardCard is intentionally flat: it is the read model the Studio
-// polls, not a mirror of either native.Issue or store.Run. A task without a run
-// has Kind=task; once launched the root and every descendant are separate run
-// cards linked by ParentRunID/Depth.
+// PipelineBoardCard is the read model the studio polls: one per root
+// pipeline (or per not-yet-launched native task). Descendants are NOT
+// separate cards — their progress and pending reviews are folded here.
 type PipelineBoardCard struct {
-	ID            string                 `json:"id"`
-	Kind          string                 `json:"kind"`
-	ColumnID      string                 `json:"column_id"`
-	Title         string                 `json:"title"`
-	Body          string                 `json:"body,omitempty"`
-	IssueID       string                 `json:"issue_id,omitempty"`
-	IssueState    string                 `json:"issue_state,omitempty"`
-	Labels        []string               `json:"labels,omitempty"`
-	Priority      int                    `json:"priority,omitempty"`
-	RunID         string                 `json:"run_id,omitempty"`
-	RootRunID     string                 `json:"root_run_id,omitempty"`
-	ParentRunID   string                 `json:"parent_run_id,omitempty"`
-	Depth         int                    `json:"depth"`
-	WorkflowName  string                 `json:"workflow_name,omitempty"`
-	BotID         string                 `json:"bot_id,omitempty"`
-	Status        store.RunStatus        `json:"status,omitempty"`
-	Error         string                 `json:"error,omitempty"`
-	NodeID        string                 `json:"node_id,omitempty"`
-	InteractionID string                 `json:"interaction_id,omitempty"`
-	Questions     map[string]any         `json:"questions,omitempty"`
-	CreatedAt     time.Time              `json:"created_at"`
-	UpdatedAt     time.Time              `json:"updated_at"`
-	Attempts      []PipelineBoardAttempt `json:"attempts,omitempty"`
-	ChildrenCount int                    `json:"children_count,omitempty"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"` // "run" | "task"
+	ColumnID string `json:"column_id"`
+	Title    string `json:"title"`
+	Body     string `json:"body,omitempty"`
+
+	// Native task provenance (present when the root is backed by a board issue).
+	IssueID    string   `json:"issue_id,omitempty"`
+	IssueState string   `json:"issue_state,omitempty"`
+	Labels     []string `json:"labels,omitempty"`
+	Priority   int      `json:"priority,omitempty"`
+
+	// Run identity (empty for a not-yet-launched task card).
+	RunID        string          `json:"run_id,omitempty"`
+	WorkflowName string          `json:"workflow_name,omitempty"`
+	BotID        string          `json:"bot_id,omitempty"`
+	Status       store.RunStatus `json:"status,omitempty"`
+	Error        string          `json:"error,omitempty"`
+
+	// TODO — the pipeline's entry input (launch vars / task bot-args).
+	EntryInput map[string]any `json:"entry_input,omitempty"`
+	// QueuePosition is the 1-based place in the local concurrency queue
+	// (queued roots only); 0 otherwise.
+	QueuePosition int `json:"queue_position,omitempty"`
+
+	// IN_PROGRESS — node-progress for the root and the whole tree
+	// (executed / total). Tree_* is node-weighted over root ∪ descendants.
+	ExecutedNodes     int `json:"executed_nodes"`
+	TotalNodes        int `json:"total_nodes"`
+	TreeExecutedNodes int `json:"tree_executed_nodes"`
+	TreeTotalNodes    int `json:"tree_total_nodes"`
+	// DescendantCount is how many child runs the tree folded into this card.
+	DescendantCount int `json:"descendant_count,omitempty"`
+	// PendingReviews are the human gates the tree is currently blocked on
+	// (root + descendants), presented one at a time by the card.
+	PendingReviews []PipelineBoardPendingReview `json:"pending_reviews,omitempty"`
+
+	// DONE — the pipeline's output (final_answer, else latest artifact).
+	Output string `json:"output,omitempty"`
+
+	Attempts  []PipelineBoardAttempt `json:"attempts,omitempty"`
+	CreatedAt time.Time              `json:"created_at"`
+	UpdatedAt time.Time              `json:"updated_at"`
 }
 
-// PipelineBoardResponse is the aggregate read model for one bot-bound board.
+// PipelineBoardResponse is the aggregate global read model.
 type PipelineBoardResponse struct {
-	Board         PipelineBoardIdentity `json:"board"`
-	Columns       []PipelineBoardColumn `json:"columns"`
-	Cards         []PipelineBoardCard   `json:"cards"`
-	GeneratedAt   time.Time             `json:"generated_at"`
-	TopologyError string                `json:"topology_error,omitempty"`
-}
-
-type pipelineBoardListResponse struct {
-	Boards []PipelineBoardIdentity `json:"boards"`
+	Columns       []PipelineBoardColumn             `json:"columns"`
+	Cards         []PipelineBoardCard               `json:"cards"`
+	Concurrency   runview.PipelineConcurrencyStatus `json:"concurrency"`
+	GeneratedAt   time.Time                         `json:"generated_at"`
+	TopologyError string                            `json:"topology_error,omitempty"`
 }
 
 type pipelineBoardTaskRequest struct {
+	// Bot is the bot the created task runs as. Required — the board is
+	// global, so the bot comes from the request body (not a URL path).
+	Bot      string            `json:"bot"`
 	Title    string            `json:"title"`
 	Body     string            `json:"body,omitempty"`
 	Labels   []string          `json:"labels,omitempty"`
@@ -117,9 +156,8 @@ type pipelineBoardTaskRequest struct {
 }
 
 func (s *Server) registerPipelineBoardRoutes() {
-	s.mux.Handle("GET /api/v1/pipeline-boards", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardsList)))
-	s.mux.Handle("GET /api/v1/pipeline-boards/{bot}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardGet)))
-	s.mux.Handle("POST /api/v1/pipeline-boards/{bot}/tasks", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
+	s.mux.Handle("GET /api/v1/pipeline-board", s.requireAuth(http.HandlerFunc(s.handlePipelineBoard)))
+	s.mux.Handle("POST /api/v1/pipeline-board/tasks", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
 }
 
 func (s *Server) resolvePipelineBoardStore(r *http.Request) (native.BoardStore, error) {
@@ -140,55 +178,22 @@ func (s *Server) resolvePipelineBoardStore(r *http.Request) (native.BoardStore, 
 	return nil, nil
 }
 
-func pipelineBoardIdentity(entry botregistry.EntryWithSchema) PipelineBoardIdentity {
-	display := strings.TrimSpace(entry.DisplayName)
-	if display == "" {
-		display = humanizePipelineName(entry.Name)
-	}
-	return PipelineBoardIdentity{
-		ID:          "bot:" + entry.Name,
-		BotID:       entry.Name,
-		DisplayName: display,
-		Icon:        entry.Icon,
-		Description: entry.Description,
-		Enabled:     entry.Enabled,
-	}
-}
-
-func (s *Server) handlePipelineBoardsList(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePipelineBoard(w http.ResponseWriter, r *http.Request) {
 	boardStore, err := s.resolvePipelineBoardStore(r)
 	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline boards: resolve store: %v", err)
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board: resolve store: %v", err)
 		return
 	}
 	if boardStore == nil {
-		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline boards: native tracker is not available")
+		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board: native tracker is not available")
 		return
 	}
-	entries, err := botregistry.ListWithSchema(s.botListOptions())
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline boards: discover bots: %v", err)
-		return
-	}
-	boards := make([]PipelineBoardIdentity, 0, len(entries))
-	for _, entry := range entries {
-		boards = append(boards, pipelineBoardIdentity(entry))
-	}
-	s.writeJSONFor(w, r, pipelineBoardListResponse{Boards: boards})
-}
-
-func (s *Server) handlePipelineBoardGet(w http.ResponseWriter, r *http.Request) {
-	boardStore, entry, ok := s.resolvePipelineBoardRequest(w, r)
-	if !ok {
-		return
-	}
-
 	s.stateMu.RLock()
 	runs := s.runs
 	s.stateMu.RUnlock()
-	projection, err := s.buildPipelineBoard(r.Context(), boardStore, runs, entry)
+	projection, err := s.buildPipelineBoard(r.Context(), boardStore, runs)
 	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board %q: %v", entry.Name, err)
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board: %v", err)
 		return
 	}
 	s.writeJSONFor(w, r, projection)
@@ -198,8 +203,13 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 	if !s.requireSafeOrigin(w, r) {
 		return
 	}
-	boardStore, entry, ok := s.resolvePipelineBoardRequest(w, r)
-	if !ok {
+	boardStore, err := s.resolvePipelineBoardStore(r)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board: resolve store: %v", err)
+		return
+	}
+	if boardStore == nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board: native tracker is not available")
 		return
 	}
 	var req pipelineBoardTaskRequest
@@ -208,8 +218,22 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req.Title = strings.TrimSpace(req.Title)
+	req.Bot = strings.TrimSpace(req.Bot)
 	if req.Title == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: title is required")
+		return
+	}
+	if req.Bot == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: bot is required")
+		return
+	}
+	entry, found, err := s.findBot(req.Bot)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: discover bot: %v", err)
+		return
+	}
+	if !found {
+		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board task: bot %q not found", req.Bot)
 		return
 	}
 	if req.Start && !entry.Enabled {
@@ -254,33 +278,6 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 	_ = json.NewEncoder(w).Encode(issue)
 }
 
-func (s *Server) resolvePipelineBoardRequest(w http.ResponseWriter, r *http.Request) (native.BoardStore, botregistry.EntryWithSchema, bool) {
-	boardStore, err := s.resolvePipelineBoardStore(r)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline boards: resolve store: %v", err)
-		return nil, botregistry.EntryWithSchema{}, false
-	}
-	if boardStore == nil {
-		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline boards: native tracker is not available")
-		return nil, botregistry.EntryWithSchema{}, false
-	}
-	name := strings.TrimSpace(r.PathValue("bot"))
-	if name == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline boards: missing bot")
-		return nil, botregistry.EntryWithSchema{}, false
-	}
-	entry, found, err := s.findBot(name)
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline boards: discover bot: %v", err)
-		return nil, botregistry.EntryWithSchema{}, false
-	}
-	if !found {
-		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline boards: bot %q not found", name)
-		return nil, botregistry.EntryWithSchema{}, false
-	}
-	return boardStore, entry, true
-}
-
 func cloneStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -292,41 +289,47 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+// ---------------------------------------------------------------------------
+// Projection
+// ---------------------------------------------------------------------------
+
 type pipelineProjectionBuilder struct {
-	bot               botregistry.EntryWithSchema
-	columns           []PipelineBoardColumn
-	columnIDs         map[string]struct{}
-	dynamicColumns    map[string]PipelineBoardColumn
-	runs              map[string]*store.Run
-	children          map[string][]*store.Run
-	terminalStates    map[string]struct{}
-	includedRuns      map[string]struct{}
-	issueOwnedRuns    map[string]struct{}
-	cards             []PipelineBoardCard
+	ctx            context.Context
+	rs             store.RunStore
+	runs           map[string]*store.Run
+	children       map[string][]*store.Run
+	terminalStates map[string]struct{}
+	includedRuns   map[string]struct{}
+	issueOwnedRuns map[string]struct{}
+	nodeCountCache map[string]int
+	queuePositions map[string]int
+	cards          []PipelineBoardCard
+
 	cardLimitReached  bool
 	depthLimitReached bool
 	cycleDetected     bool
 }
 
-func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.BoardStore, runs *runview.Service, entry botregistry.EntryWithSchema) (PipelineBoardResponse, error) {
+func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.BoardStore, runs *runview.Service) (PipelineBoardResponse, error) {
 	response := PipelineBoardResponse{
-		Board:       pipelineBoardIdentity(entry),
+		Columns:     pipelineColumns(),
 		GeneratedAt: time.Now().UTC(),
 	}
-	staticColumns, topologyErr := pipelineBoardTopology(entry)
-	if topologyErr != nil {
-		response.TopologyError = topologyErr.Error()
+	if runs != nil {
+		response.Concurrency = runs.PipelineConcurrency()
 	}
 	builder := &pipelineProjectionBuilder{
-		bot:            entry,
-		columns:        staticColumns,
-		columnIDs:      make(map[string]struct{}, len(staticColumns)),
-		dynamicColumns: map[string]PipelineBoardColumn{},
+		ctx:            ctx,
 		runs:           map[string]*store.Run{},
 		children:       map[string][]*store.Run{},
 		terminalStates: map[string]struct{}{},
 		includedRuns:   map[string]struct{}{},
 		issueOwnedRuns: map[string]struct{}{},
+		nodeCountCache: map[string]int{},
+		queuePositions: map[string]int{},
+	}
+	if runs != nil {
+		builder.rs = runs.RunStore()
 	}
 	if board := boardStore.Board(); board != nil {
 		for _, state := range board.States {
@@ -335,18 +338,16 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 			}
 		}
 	}
-	for _, column := range staticColumns {
-		builder.columnIDs[column.ID] = struct{}{}
-	}
 
 	allIssues, err := boardStore.List(native.ListFilter{})
 	if err != nil {
 		return PipelineBoardResponse{}, fmt.Errorf("list native tasks: %w", err)
 	}
+	// Global board: keep every issue that names a bot (any bot). Issues
+	// with no bot belong to the shared backlog (/board), not to pipelines.
 	issues := make([]*native.Issue, 0, len(allIssues))
-	wantedBot := botregistry.NormalizeName(entry.Name)
 	for _, issue := range allIssues {
-		if issue != nil && botregistry.NormalizeName(issue.Bot) == wantedBot {
+		if issue != nil && strings.TrimSpace(issue.Bot) != "" {
 			issues = append(issues, issue)
 		}
 	}
@@ -362,7 +363,9 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 		builder.indexChildren()
 	}
 	builder.indexIssueOwnedRuns(issues)
+	builder.indexQueuePositions()
 
+	// Issue-backed roots first (stable: priority desc, then created asc).
 	sort.SliceStable(issues, func(i, j int) bool {
 		if issues[i].Priority != issues[j].Priority {
 			return issues[i].Priority > issues[j].Priority
@@ -375,47 +378,40 @@ func (s *Server) buildPipelineBoard(ctx context.Context, boardStore native.Board
 			builder.addTaskCard(issue)
 			continue
 		}
-		builder.addRunTree(root, issue, root.ID, 0, map[string]struct{}{})
+		builder.addRootCard(root, issue)
 	}
 
-	// Manual/API/scheduled roots do not necessarily have a native issue. Only
-	// top-level runs (or legacy runs whose parent no longer exists) become
-	// standalone roots. A child belongs to the board of the root that spawned
-	// it, even when the child itself executes the target bot.
-	matching := make([]*store.Run, 0)
+	// Standalone roots: manual/API/scheduled/queued runs with no native
+	// issue. Only top-level runs (parent absent or dangling) become cards;
+	// a child belongs to the root that spawned it, even when the child runs
+	// a different bot.
+	standalone := make([]*store.Run, 0)
 	for _, run := range builder.runs {
-		if pipelineRunMatchesBot(run, entry) {
-			matching = append(matching, run)
-		}
-	}
-	sort.SliceStable(matching, func(i, j int) bool {
-		if matching[i].CreatedAt.Equal(matching[j].CreatedAt) {
-			return matching[i].ID < matching[j].ID
-		}
-		return matching[i].CreatedAt.After(matching[j].CreatedAt)
-	})
-	for _, run := range matching {
 		if _, owned := builder.issueOwnedRuns[run.ID]; owned {
 			continue
 		}
 		parentID := pipelineParentRunID(run)
-		parent := builder.runs[parentID]
-		if parentID != "" && parent != nil {
+		if parentID != "" && builder.runs[parentID] != nil {
 			continue
 		}
-		builder.addRunTree(run, nil, run.ID, 0, map[string]struct{}{})
+		standalone = append(standalone, run)
+	}
+	sort.SliceStable(standalone, func(i, j int) bool {
+		if standalone[i].CreatedAt.Equal(standalone[j].CreatedAt) {
+			return standalone[i].ID < standalone[j].ID
+		}
+		return standalone[i].CreatedAt.After(standalone[j].CreatedAt)
+	})
+	for _, run := range standalone {
+		builder.addRootCard(run, nil)
 	}
 
-	response.Columns = builder.finalColumns()
 	response.Cards = builder.cards
-	if response.Columns == nil {
-		response.Columns = []PipelineBoardColumn{}
-	}
 	if response.Cards == nil {
 		response.Cards = []PipelineBoardCard{}
 	}
 	if builder.cardLimitReached {
-		appendPipelineTopologyError(&response, fmt.Sprintf("run tree truncated after %d cards", pipelineTreeMaxCards))
+		appendPipelineTopologyError(&response, fmt.Sprintf("board truncated after %d cards", pipelineTreeMaxCards))
 	}
 	if builder.depthLimitReached {
 		appendPipelineTopologyError(&response, fmt.Sprintf("run tree truncated after depth %d", pipelineTreeMaxDepth))
@@ -478,6 +474,35 @@ func (b *pipelineProjectionBuilder) indexIssueOwnedRuns(issues []*native.Issue) 
 	}
 }
 
+// indexQueuePositions assigns each queued ROOT run a 1-based position by
+// QueuedAt (fallback CreatedAt), decoupled from the in-memory scheduler so
+// the number is stable across a restart.
+func (b *pipelineProjectionBuilder) indexQueuePositions() {
+	queued := make([]*store.Run, 0)
+	for _, run := range b.runs {
+		if run.Status == store.RunStatusQueued && pipelineParentRunID(run) == "" {
+			queued = append(queued, run)
+		}
+	}
+	sort.SliceStable(queued, func(i, j int) bool {
+		ti, tj := queuedAt(queued[i]), queuedAt(queued[j])
+		if ti.Equal(tj) {
+			return queued[i].ID < queued[j].ID
+		}
+		return ti.Before(tj)
+	})
+	for i, run := range queued {
+		b.queuePositions[run.ID] = i + 1
+	}
+}
+
+func queuedAt(run *store.Run) time.Time {
+	if run.QueuedAt != nil {
+		return *run.QueuedAt
+	}
+	return run.CreatedAt
+}
+
 func pipelineParentRunID(run *store.Run) string {
 	if run == nil {
 		return ""
@@ -503,9 +528,7 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 		return time.Time{}
 	}
 
-	// LastRunID is the dispatcher's canonical current-attempt pointer. Run
-	// creation time is not a substitute: imported/legacy histories can have
-	// timestamps that do not reflect append order.
+	// LastRunID is the dispatcher's canonical current-attempt pointer.
 	current := b.runs[issue.LastRunID]
 	baseline := refTime(issue.LastRunID)
 	if current == nil {
@@ -522,9 +545,8 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 	}
 
 	// A dispatcher stamps LastRunID at the end of an attempt. During the
-	// attempt the authoritative source edge already exists on the run, so use
-	// it to avoid rendering the same work once as a stale task and once as a
-	// standalone run.
+	// attempt the authoritative source edge already exists on the run, so
+	// prefer a newer, non-terminal run sourced from this issue.
 	sourceCandidates := make([]*store.Run, 0, 1)
 	for _, run := range b.runs {
 		if run.Source != nil && run.Source.IssueID == issue.ID && pipelineParentRunID(run) == "" {
@@ -541,7 +563,7 @@ func (b *pipelineProjectionBuilder) currentRunForIssue(issue *native.Issue) *sto
 		return sourceCandidates[len(sourceCandidates)-1]
 	}
 	for _, candidate := range sourceCandidates {
-		if candidate.ID == current.ID || candidate.Status.IsTerminal() || !candidate.CreatedAt.After(baseline) {
+		if current == nil || candidate.ID == current.ID || candidate.Status.IsTerminal() || !candidate.CreatedAt.After(baseline) {
 			continue
 		}
 		current = candidate
@@ -587,6 +609,8 @@ func (b *pipelineProjectionBuilder) attemptsForIssue(issue *native.Issue, curren
 	return attempts
 }
 
+// addTaskCard emits a TODO card for a native task pinned to a bot that has
+// no current run yet (a pipeline waiting to be launched).
 func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 	if issue == nil || len(b.cards) >= pipelineTreeMaxCards {
 		b.cardLimitReached = len(b.cards) >= pipelineTreeMaxCards
@@ -595,8 +619,6 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 	column := pipelineColumnTodo
 	if _, terminal := b.terminalStates[issue.State]; terminal {
 		column = pipelineColumnDone
-	} else if issue.Claim != "" {
-		column = pipelineColumnRunning
 	}
 	b.cards = append(b.cards, PipelineBoardCard{
 		ID:         "task:" + issue.ID,
@@ -609,284 +631,275 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 		Labels:     append([]string(nil), issue.Labels...),
 		Priority:   issue.Priority,
 		BotID:      issue.Bot,
-		Depth:      0,
+		EntryInput: stringMapToAny(issue.BotArgs),
 		CreatedAt:  issue.CreatedAt,
 		UpdatedAt:  issue.UpdatedAt,
 		Attempts:   b.attemptsForIssue(issue, nil),
 	})
 }
 
-func (b *pipelineProjectionBuilder) addRunTree(run *store.Run, issue *native.Issue, rootRunID string, depth int, path map[string]struct{}) {
-	if run == nil {
+// addRootCard emits ONE card for a root run, folding its whole descendant
+// tree into aggregate progress + pending reviews. issue is non-nil when
+// the root is backed by a native task.
+func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.Issue) {
+	if root == nil {
+		return
+	}
+	if _, already := b.includedRuns[root.ID]; already {
 		return
 	}
 	if len(b.cards) >= pipelineTreeMaxCards {
 		b.cardLimitReached = true
 		return
 	}
-	if depth > pipelineTreeMaxDepth {
-		b.depthLimitReached = true
-		return
-	}
-	if _, cycle := path[run.ID]; cycle {
-		b.cycleDetected = true
-		return
-	}
-	if _, already := b.includedRuns[run.ID]; already {
-		return
-	}
-	nextPath := make(map[string]struct{}, len(path)+1)
-	for id := range path {
-		nextPath[id] = struct{}{}
-	}
-	nextPath[run.ID] = struct{}{}
-	b.includedRuns[run.ID] = struct{}{}
+	b.includedRuns[root.ID] = struct{}{}
 
-	columnID, nodeID, interactionID, questions := b.columnForRun(run, depth)
-	title := strings.TrimSpace(run.Name)
+	rootExec, rootTotal := b.runProgress(root)
+	treeExec, treeTotal, descCount, reviews := b.aggregateTree(root)
+
+	title := strings.TrimSpace(root.Name)
 	if title == "" {
-		title = humanizePipelineName(run.WorkflowName)
+		title = humanizePipelineName(root.WorkflowName)
 	}
-	if issue != nil && depth == 0 {
+	if issue != nil {
 		title = issue.Title
 	}
+
 	card := PipelineBoardCard{
-		ID:            "run:" + run.ID,
-		Kind:          "run",
-		ColumnID:      columnID,
-		Title:         title,
-		RunID:         run.ID,
-		RootRunID:     rootRunID,
-		ParentRunID:   pipelineParentRunID(run),
-		Depth:         depth,
-		WorkflowName:  run.WorkflowName,
-		BotID:         pipelineRunBotID(run),
-		Status:        run.Status,
-		Error:         run.Error,
-		NodeID:        nodeID,
-		InteractionID: interactionID,
-		Questions:     questions,
-		CreatedAt:     run.CreatedAt,
-		UpdatedAt:     run.UpdatedAt,
-		ChildrenCount: len(b.children[run.ID]),
+		ID:                "run:" + root.ID,
+		Kind:              "run",
+		ColumnID:          pipelineColumnForRoot(root, reviews),
+		Title:             title,
+		RunID:             root.ID,
+		WorkflowName:      root.WorkflowName,
+		BotID:             pipelineRunBotID(root),
+		Status:            root.Status,
+		Error:             root.Error,
+		ExecutedNodes:     rootExec,
+		TotalNodes:        rootTotal,
+		TreeExecutedNodes: treeExec,
+		TreeTotalNodes:    treeTotal,
+		DescendantCount:   descCount,
+		PendingReviews:    reviews,
+		CreatedAt:         root.CreatedAt,
+		UpdatedAt:         root.UpdatedAt,
+	}
+	if root.Status == store.RunStatusQueued {
+		card.QueuePosition = b.queuePositions[root.ID]
+		card.EntryInput = cloneAnyMap(root.Inputs)
+	} else if len(root.Inputs) > 0 {
+		card.EntryInput = cloneAnyMap(root.Inputs)
+	}
+	if root.Status == store.RunStatusFinished {
+		card.Output = pipelineTruncate(b.finalOutput(root), pipelineOutputMaxLen)
 	}
 	if issue != nil {
 		card.IssueID = issue.ID
 		card.IssueState = issue.State
-		if depth == 0 {
-			card.Body = issue.Body
-			card.Labels = append([]string(nil), issue.Labels...)
-			card.Priority = issue.Priority
-			card.Attempts = b.attemptsForIssue(issue, run)
+		card.Body = issue.Body
+		card.Labels = append([]string(nil), issue.Labels...)
+		card.Priority = issue.Priority
+		card.Attempts = b.attemptsForIssue(issue, root)
+		if card.EntryInput == nil {
+			card.EntryInput = stringMapToAny(issue.BotArgs)
 		}
 	}
 	b.cards = append(b.cards, card)
-	for _, child := range b.children[run.ID] {
-		b.addRunTree(child, issue, rootRunID, depth+1, nextPath)
-	}
 }
 
-func (b *pipelineProjectionBuilder) columnForRun(run *store.Run, depth int) (columnID, nodeID, interactionID string, questions map[string]any) {
-	if run == nil {
-		return pipelineColumnAttention, "", "", nil
-	}
-	switch run.Status {
-	case store.RunStatusFinished:
-		return pipelineColumnDone, "", "", nil
-	case store.RunStatusQueued, store.RunStatusRunning:
-		return pipelineColumnRunning, "", "", nil
-	case store.RunStatusPausedWaitingHuman:
-		if run.Checkpoint == nil || run.Checkpoint.NodeID == "" {
-			return pipelineColumnOtherInput, "", "", nil
+// aggregateTree walks root ∪ descendants, summing node-weighted progress,
+// counting descendants, and collecting every pending human review. It
+// reuses the depth / cycle guards; a finished subtree contributes without
+// an event scan (see runProgress).
+func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, treeTotal, descCount int, reviews []PipelineBoardPendingReview) {
+	visited := map[string]struct{}{}
+	var walk func(run *store.Run, depth int)
+	walk = func(run *store.Run, depth int) {
+		if run == nil {
+			return
 		}
-		nodeID = run.Checkpoint.NodeID
-		interactionID = run.Checkpoint.InteractionID
-		questions = cloneAnyMap(run.Checkpoint.InteractionQuestions)
-		columnID = pipelineInteractionColumnID(run.WorkflowName, nodeID)
-		if _, exists := b.columnIDs[columnID]; !exists {
-			if depth == 0 {
-				return pipelineColumnOtherInput, nodeID, interactionID, questions
-			}
-			workflowName := run.WorkflowName
-			title := humanizePipelineName(nodeID)
-			if workflowName != "" && botregistry.NormalizeName(workflowName) != botregistry.NormalizeName(b.bot.Name) {
-				title += " · " + humanizePipelineName(workflowName)
-			}
-			b.dynamicColumns[columnID] = PipelineBoardColumn{
-				ID:           columnID,
-				Title:        title,
-				Kind:         "interaction",
-				WorkflowName: workflowName,
-				NodeID:       nodeID,
-			}
+		if _, seen := visited[run.ID]; seen {
+			b.cycleDetected = true
+			return
 		}
-		return columnID, nodeID, interactionID, questions
-	case store.RunStatusPausedOperator, store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		return pipelineColumnAttention, "", "", nil
-	default:
-		return pipelineColumnAttention, "", "", nil
-	}
-}
-
-func cloneAnyMap(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}
-
-func (b *pipelineProjectionBuilder) finalColumns() []PipelineBoardColumn {
-	dynamic := make([]PipelineBoardColumn, 0, len(b.dynamicColumns))
-	for _, column := range b.dynamicColumns {
-		dynamic = append(dynamic, column)
-	}
-	sort.Slice(dynamic, func(i, j int) bool {
-		if dynamic[i].WorkflowName != dynamic[j].WorkflowName {
-			return dynamic[i].WorkflowName < dynamic[j].WorkflowName
+		if depth > pipelineTreeMaxDepth {
+			b.depthLimitReached = true
+			return
 		}
-		return dynamic[i].NodeID < dynamic[j].NodeID
-	})
-	// Static columns are laid out as todo, running, interactions,
-	// other-input, attention, done. Insert runtime-discovered child columns
-	// immediately before the generic fallback.
-	out := make([]PipelineBoardColumn, 0, len(b.columns)+len(dynamic))
-	for _, column := range b.columns {
-		if column.ID == pipelineColumnOtherInput {
-			out = append(out, dynamic...)
+		visited[run.ID] = struct{}{}
+		if depth > 0 {
+			descCount++
+			// A descendant is included in the root's card, so mark it so it
+			// never also becomes a standalone root card.
+			b.includedRuns[run.ID] = struct{}{}
 		}
-		out = append(out, column)
-	}
-	return out
-}
-
-func pipelineBoardTopology(entry botregistry.EntryWithSchema) ([]PipelineBoardColumn, error) {
-	columns := []PipelineBoardColumn{
-		{ID: pipelineColumnTodo, Title: "Todo", Kind: "todo"},
-		{ID: pipelineColumnRunning, Title: "Running", Kind: "running"},
-	}
-	path := entry.MainFile()
-	var (
-		workflow *ir.Workflow
-		err      error
-	)
-	if bundle := runview.ResolveBundleFromFilePath(path); bundle != nil {
-		workflow, _, err = runview.CompileBundleWorkflow(path, bundle)
-	} else {
-		workflow, _, err = runview.CompileWorkflowWithHash(path)
-	}
-	if err == nil {
-		for _, nodeID := range pipelineWorkflowNodeOrder(workflow) {
-			node := workflow.Nodes[nodeID]
-			mode := ir.NodeInteraction(node)
-			if !pipelineInteractionNeedsHuman(node, mode) {
-				continue
-			}
-			columns = append(columns, PipelineBoardColumn{
-				ID:              pipelineInteractionColumnID(workflow.Name, nodeID),
-				Title:           humanizePipelineName(nodeID),
-				Kind:            "interaction",
-				WorkflowName:    workflow.Name,
-				NodeID:          nodeID,
-				InteractionMode: mode.String(),
+		exec, total := b.runProgress(run)
+		treeExec += exec
+		treeTotal += total
+		if run.Status == store.RunStatusPausedWaitingHuman && run.Checkpoint != nil && run.Checkpoint.NodeID != "" {
+			reviews = append(reviews, PipelineBoardPendingReview{
+				RunID:         run.ID,
+				WorkflowName:  run.WorkflowName,
+				BotID:         pipelineRunBotID(run),
+				NodeID:        run.Checkpoint.NodeID,
+				InteractionID: run.Checkpoint.InteractionID,
+				Questions:     cloneAnyMap(run.Checkpoint.InteractionQuestions),
+				Depth:         depth,
 			})
 		}
-	}
-	columns = append(columns,
-		PipelineBoardColumn{ID: pipelineColumnOtherInput, Title: "Other input", Kind: "interaction"},
-		PipelineBoardColumn{ID: pipelineColumnAttention, Title: "Needs attention", Kind: "attention"},
-		PipelineBoardColumn{ID: pipelineColumnDone, Title: "Done", Kind: "done"},
-	)
-	return columns, err
-}
-
-func pipelineInteractionNeedsHuman(node ir.Node, mode ir.InteractionMode) bool {
-	if node == nil {
-		return false
-	}
-	switch mode {
-	case ir.InteractionHuman, ir.InteractionLLMOrHuman, ir.InteractionReview:
-		return true
-	case ir.InteractionNone:
-		// A compiled HumanNode normally defaults to InteractionHuman. Keep
-		// the kind fallback for old/hand-built IR values used by importers.
-		return node.NodeKind() == ir.NodeHuman
-	default:
-		return false
-	}
-}
-
-func pipelineWorkflowNodeOrder(workflow *ir.Workflow) []string {
-	if workflow == nil {
-		return nil
-	}
-	adjacent := make(map[string][]string, len(workflow.Nodes))
-	for _, edge := range workflow.Edges {
-		if edge == nil {
-			continue
+		for _, child := range b.children[run.ID] {
+			walk(child, depth+1)
 		}
-		adjacent[edge.From] = append(adjacent[edge.From], edge.To)
+	}
+	walk(root, 0)
+	return
+}
+
+// runProgress returns (executed, total) node counts for one run. Finished
+// runs clamp to 100% with no event scan; queued runs report 0/total; other
+// statuses count distinct node_started events (clamped to total).
+func (b *pipelineProjectionBuilder) runProgress(run *store.Run) (executed, total int) {
+	total = b.totalNodes(run.FilePath)
+	switch run.Status {
+	case store.RunStatusFinished:
+		return total, total
+	case store.RunStatusQueued:
+		return 0, total
+	default:
+		exec := b.executedNodes(run.ID)
+		if total > 0 && exec > total {
+			exec = total
+		}
+		return exec, total
+	}
+}
+
+// executedNodes counts distinct nodes that started for a run (node_started
+// fires once per loop iteration, so dedup on node id).
+func (b *pipelineProjectionBuilder) executedNodes(runID string) int {
+	if b.rs == nil {
+		return 0
 	}
 	seen := map[string]struct{}{}
-	order := make([]string, 0, len(workflow.Nodes))
-	queue := []string{workflow.Entry}
-	for len(queue) > 0 {
-		id := queue[0]
-		queue = queue[1:]
-		if id == "" {
-			continue
+	_ = b.rs.ScanEvents(b.ctx, runID, func(e *store.Event) bool {
+		if e.Type == store.EventNodeStarted && e.NodeID != "" {
+			seen[e.NodeID] = struct{}{}
 		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		if _, exists := workflow.Nodes[id]; exists {
-			order = append(order, id)
-		}
-		queue = append(queue, adjacent[id]...)
-	}
-	remaining := make([]string, 0, len(workflow.Nodes)-len(order))
-	for id := range workflow.Nodes {
-		if _, ok := seen[id]; !ok {
-			remaining = append(remaining, id)
-		}
-	}
-	sort.Strings(remaining)
-	return append(order, remaining...)
+		return true
+	})
+	return len(seen)
 }
 
-func pipelineInteractionColumnID(workflowName, nodeID string) string {
-	encode := func(value string) string {
-		return base64.RawURLEncoding.EncodeToString([]byte(value))
+// totalNodes compiles the run's workflow (memoized by file path) and
+// returns its node count; 0 when the file is absent or fails to compile.
+func (b *pipelineProjectionBuilder) totalNodes(filePath string) int {
+	if filePath == "" {
+		return 0
 	}
-	return "interaction:" + encode(workflowName) + ":" + encode(nodeID)
+	if n, ok := b.nodeCountCache[filePath]; ok {
+		return n
+	}
+	var (
+		wf  *ir.Workflow
+		err error
+	)
+	if bundle := runview.ResolveBundleFromFilePath(filePath); bundle != nil {
+		wf, _, err = runview.CompileBundleWorkflow(filePath, bundle)
+	} else {
+		wf, _, err = runview.CompileWorkflowWithHash(filePath)
+	}
+	n := 0
+	if err == nil && wf != nil {
+		n = len(wf.Nodes)
+	}
+	b.nodeCountCache[filePath] = n
+	return n
 }
 
-func pipelineRunMatchesBot(run *store.Run, entry botregistry.EntryWithSchema) bool {
-	if run == nil {
-		return false
+// finalOutput resolves a finished run's user-facing output: the
+// final_answer artifact field (pinned node first, then any artifact node),
+// falling back to a compact rendering of the latest-written artifact.
+func (b *pipelineProjectionBuilder) finalOutput(run *store.Run) string {
+	if b.rs == nil {
+		return ""
 	}
-	want := botregistry.NormalizeName(entry.Name)
-	candidates := []string{run.BotID, run.BundleName}
-	if run.BundlePath != "" {
-		candidates = append(candidates, strings.TrimSuffix(filepath.Base(strings.TrimRight(run.BundlePath, "/")), ".botz"))
-	}
-	for _, candidate := range candidates {
-		if candidate != "" && botregistry.NormalizeName(candidate) == want {
-			return true
+	if run.CallbackAnswerNode != "" {
+		if s := b.answerField(run.ID, run.CallbackAnswerNode); s != "" {
+			return s
 		}
 	}
-	if run.FilePath != "" {
-		runPath, runErr := filepath.Abs(run.FilePath)
-		botPath, botErr := filepath.Abs(entry.MainFile())
-		if runErr == nil && botErr == nil && filepath.Clean(runPath) == filepath.Clean(botPath) {
-			return true
+	for nodeID := range run.ArtifactIndex {
+		if s := b.answerField(run.ID, nodeID); s != "" {
+			return s
 		}
 	}
-	return false
+	return b.latestArtifactSummary(run)
+}
+
+func (b *pipelineProjectionBuilder) answerField(runID, nodeID string) string {
+	art, err := b.rs.LoadLatestArtifact(b.ctx, runID, nodeID)
+	if err != nil || art == nil || art.Data == nil {
+		return ""
+	}
+	if raw, ok := art.Data[pipelineFinalAnswerField]; ok {
+		if s, ok := raw.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+// latestArtifactSummary probes each artifact-bearing node (bounded),
+// picks the most-recently-written artifact, and returns a compact JSON of
+// its data — the DONE fallback when no final_answer field exists.
+func (b *pipelineProjectionBuilder) latestArtifactSummary(run *store.Run) string {
+	var (
+		best   *store.Artifact
+		probed int
+	)
+	for nodeID := range run.ArtifactIndex {
+		if probed >= pipelineArtifactProbeCap {
+			break
+		}
+		probed++
+		art, err := b.rs.LoadLatestArtifact(b.ctx, run.ID, nodeID)
+		if err != nil || art == nil || len(art.Data) == 0 {
+			continue
+		}
+		if best == nil || art.WrittenAt.After(best.WrittenAt) {
+			best = art
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	encoded, err := json.Marshal(best.Data)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+// pipelineColumnForRoot maps a root run to a lane. A tree blocked on a
+// human review is IN_PROGRESS (the operator's turn) regardless of the
+// root's own transient status.
+func pipelineColumnForRoot(root *store.Run, reviews []PipelineBoardPendingReview) string {
+	if len(reviews) > 0 {
+		return pipelineColumnInProgress
+	}
+	switch root.Status {
+	case store.RunStatusQueued:
+		// Waiting for a local concurrency slot — not yet executing.
+		return pipelineColumnTodo
+	case store.RunStatusFinished:
+		return pipelineColumnDone
+	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman:
+		return pipelineColumnInProgress
+	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+		return pipelineColumnAttention
+	default:
+		return pipelineColumnInProgress
+	}
 }
 
 func pipelineRunBotID(run *store.Run) string {
@@ -905,6 +918,35 @@ func pipelineRunBotID(run *store.Run) string {
 	return ""
 }
 
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func stringMapToAny(in map[string]string) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func pipelineTruncate(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
 func humanizePipelineName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -913,7 +955,7 @@ func humanizePipelineName(value string) string {
 	var b strings.Builder
 	previousSeparator := true
 	for _, r := range value {
-		if r == '_' || r == '-' || r == '.' || r == '/' || unicode.IsSpace(r) {
+		if r == '_' || r == '-' || r == '.' || r == '/' || r == ' ' {
 			if b.Len() > 0 && !previousSeparator {
 				b.WriteByte(' ')
 			}
@@ -921,11 +963,18 @@ func humanizePipelineName(value string) string {
 			continue
 		}
 		if previousSeparator {
-			b.WriteRune(unicode.ToUpper(r))
+			b.WriteRune(toUpperRune(r))
 		} else {
 			b.WriteRune(r)
 		}
 		previousSeparator = false
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func toUpperRune(r rune) rune {
+	if r >= 'a' && r <= 'z' {
+		return r - 32
+	}
+	return r
 }

@@ -319,6 +319,7 @@ func (s *Server) swapWorkDir(_ context.Context, newDir string) error {
 		svcOpts := []runview.ServiceOption{
 			runview.WithLogger(s.logger),
 			runview.WithWorkDir(abs),
+			runview.WithMaxConcurrentPipelines(s.cfg.MaxConcurrentPipelines),
 		}
 		if opt, ok := s.boardMCPServiceOption(s.logger); ok {
 			svcOpts = append(svcOpts, opt)

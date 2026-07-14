@@ -1,27 +1,27 @@
 import { Link } from "wouter";
 
 import type {
+  PipelineBoard,
   PipelineBoardCard as PipelineBoardCardDTO,
   PipelineBoardColumn,
 } from "@/api/pipelineBoards";
 import { resumeRun } from "@/api/runs";
-import HumanPromptForm from "@/components/Runs/conversation/HumanPromptForm";
 import type { UnifiedStatus } from "@/components/Runs/runStatusClasses";
-import {
-  Badge,
-  Button,
-  Card,
-  InlineBanner,
-  StatusBadge,
-} from "@/components/ui";
+import { Badge, Button, Card, InlineBanner, StatusBadge } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { formatRelative } from "@/lib/format";
 
+import { SequentialReviews } from "./SequentialReviews";
+
 interface Props {
-  columns: PipelineBoardColumn[];
-  cards: PipelineBoardCardDTO[];
-  onChanged: () => void;
+  board: PipelineBoard;
+  onRefetch: () => void;
 }
+
+// Statuses that resume from a preserved checkpoint. Reuses the run console's
+// resume path (resumeRun) — the same call OperatorPauseBanner / the run
+// console use.
+const RESUMABLE_STATUSES = new Set(["failed_resumable", "cancelled", "paused_operator"]);
 
 const KNOWN_STATUSES = new Set<UnifiedStatus>([
   "running",
@@ -45,19 +45,14 @@ function humanizeToken(value: string): string {
   return label ? label.charAt(0).toUpperCase() + label.slice(1) : value;
 }
 
-function columnAccent(kind: string): string {
-  switch (kind) {
+function columnAccent(id: string): string {
+  switch (id) {
     case "todo":
       return "bg-fg-subtle";
-    case "running":
+    case "in_progress":
       return "bg-info";
-    case "interaction":
-    case "human":
-      return "bg-warning";
     case "done":
-    case "finished":
       return "bg-success";
-    case "failed":
     case "attention":
       return "bg-danger";
     default:
@@ -65,144 +60,93 @@ function columnAccent(kind: string): string {
   }
 }
 
-export function PipelineColumns({ columns, cards, onChanged }: Props) {
-  const knownColumnIDs = new Set(columns.map((column) => column.id));
-  const unknownColumnIDs = Array.from(
-    new Set(cards.map((card) => card.column_id).filter((id) => !knownColumnIDs.has(id))),
-  );
-  // Never hide a card because a server topology projection is stale. Unknown
-  // buckets are appended, visibly labelled, until the next poll repairs it.
-  const visibleColumns: PipelineBoardColumn[] = [
-    ...columns,
-    ...unknownColumnIDs.map((id) => ({ id, title: id, kind: "unmapped" })),
-  ];
-  const cardsByRunID = new Map(
-    cards.flatMap((card) => (card.run_id ? [[card.run_id, card] as const] : [])),
-  );
-
+export function PipelineColumns({ board, onRefetch }: Props) {
+  const { columns, cards } = board;
   return (
     <div
       className="flex min-h-0 flex-1 items-start gap-3 overflow-x-auto px-4 pb-4"
       role="region"
       aria-label="Pipeline board columns"
     >
-      {visibleColumns.map((column) => {
-        const columnCards = cards.filter((card) => card.column_id === column.id);
-        return (
-          <section
-            key={column.id}
-            className="flex max-h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border-default bg-surface-2/70"
-            aria-labelledby={`pipeline-column-${column.id}`}
-          >
-            <div className="relative shrink-0 border-b border-border-default bg-surface-1 px-3 py-2.5">
-              <span
-                className={`absolute inset-x-0 top-0 h-0.5 ${columnAccent(column.kind)}`}
-                aria-hidden
-              />
-              <div className="flex items-center gap-2">
-                <h2
-                  id={`pipeline-column-${column.id}`}
-                  className="min-w-0 flex-1 truncate text-xs font-semibold text-fg-default"
-                  title={column.title}
-                >
-                  {column.title}
-                </h2>
-                <Badge variant="neutral">{columnCards.length}</Badge>
-              </div>
-              {(column.node_id || column.workflow_name) && (
-                <div className="mt-1 flex min-w-0 items-center gap-1 text-caption text-fg-subtle">
-                  {column.node_id && (
-                    <code className="truncate" title={column.node_id}>
-                      {column.node_id}
-                    </code>
-                  )}
-                  {column.node_id && column.workflow_name && <span>·</span>}
-                  {column.workflow_name && (
-                    <span className="truncate" title={column.workflow_name}>
-                      {column.workflow_name}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="min-h-24 flex-1 space-y-2 overflow-y-auto p-2">
-              {columnCards.length === 0 ? (
-                <div className="flex min-h-20 items-center justify-center rounded-md border border-dashed border-border-default px-3 text-center text-micro text-fg-subtle">
-                  No cards here
-                </div>
-              ) : (
-                columnCards.map((card) => (
-                  <PipelineCard
-                    key={card.id}
-                    card={card}
-                    parent={
-                      card.parent_run_id
-                        ? cardsByRunID.get(card.parent_run_id)
-                        : undefined
-                    }
-                    onChanged={onChanged}
-                  />
-                ))
-              )}
-            </div>
-          </section>
-        );
-      })}
+      {columns.map((column) => (
+        <PipelineColumn
+          key={column.id}
+          column={column}
+          cards={cards.filter((card) => card.column_id === column.id)}
+          onRefetch={onRefetch}
+        />
+      ))}
     </div>
+  );
+}
+
+function PipelineColumn({
+  column,
+  cards,
+  onRefetch,
+}: {
+  column: PipelineBoardColumn;
+  cards: PipelineBoardCardDTO[];
+  onRefetch: () => void;
+}) {
+  return (
+    <section
+      className="flex max-h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border-default bg-surface-2/70"
+      aria-labelledby={`pipeline-column-${column.id}`}
+    >
+      <div className="relative shrink-0 border-b border-border-default bg-surface-1 px-3 py-2.5">
+        <span
+          className={`absolute inset-x-0 top-0 h-0.5 ${columnAccent(column.id)}`}
+          aria-hidden
+        />
+        <div className="flex items-center gap-2">
+          <h2
+            id={`pipeline-column-${column.id}`}
+            className="min-w-0 flex-1 truncate text-xs font-semibold text-fg-default"
+            title={column.title}
+          >
+            {column.title}
+          </h2>
+          <Badge variant="neutral">{cards.length}</Badge>
+        </div>
+      </div>
+
+      <div className="min-h-24 flex-1 space-y-2 overflow-y-auto p-2">
+        {cards.length === 0 ? (
+          <div className="flex min-h-20 items-center justify-center rounded-md border border-dashed border-border-default px-3 text-center text-micro text-fg-subtle">
+            No cards here
+          </div>
+        ) : (
+          cards.map((card) => (
+            <PipelineCard key={card.id} card={card} onRefetch={onRefetch} />
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 
 interface CardProps {
   card: PipelineBoardCardDTO;
-  parent?: PipelineBoardCardDTO;
-  onChanged: () => void;
+  onRefetch: () => void;
 }
 
-export function PipelineCard({ card, parent, onChanged }: CardProps) {
-  const resumeAction = useAsyncAction();
-  const depth = Math.min(card.depth, 4);
-  const parentLabel =
-    parent?.title ||
-    (card.parent_run_id ? card.parent_run_id.slice(0, 12) : undefined);
-  const attemptCount = card.attempts?.length ?? 0;
+export function PipelineCard({ card, onRefetch }: CardProps) {
   const timestamp = card.updated_at || card.created_at;
-
-  const resumeOperator = async () => {
-    const runID = card.run_id;
-    if (!runID) return;
-    const result = await resumeAction.run(() => resumeRun(runID));
-    if (result !== undefined) onChanged();
-  };
-
   return (
     <Card
       className="space-y-2 p-3"
-      style={{ marginInlineStart: depth ? `${depth * 10}px` : undefined }}
       data-card-id={card.id}
-      data-depth={card.depth}
       role="article"
       aria-label={`${card.title}, ${humanizeToken(card.kind)}`}
     >
-      {card.depth > 0 && (
-        <div className="flex min-w-0 items-center gap-1 text-caption text-fg-subtle">
-          <span aria-hidden>↳</span>
-          <span className="shrink-0">Child of</span>
-          <span className="truncate font-medium text-fg-muted" title={parentLabel}>
-            {parentLabel}
-          </span>
-          {card.depth > 1 && <Badge variant="neutral">depth {card.depth}</Badge>}
-        </div>
-      )}
-
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium leading-snug text-fg-default">
-            {card.title}
-          </div>
+          <CardTitle card={card} />
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-caption text-fg-subtle">
+            {card.bot_id && <code title={`Bot ${card.bot_id}`}>{card.bot_id}</code>}
             {card.issue_id && <code title={`Issue ${card.issue_id}`}>#{card.issue_id}</code>}
-            {card.workflow_name && <span>{card.workflow_name}</span>}
+            {card.workflow_name && <span className="truncate">{card.workflow_name}</span>}
           </div>
         </div>
         <Badge variant={card.kind === "run" ? "info" : "neutral"}>
@@ -211,35 +155,17 @@ export function PipelineCard({ card, parent, onChanged }: CardProps) {
       </div>
 
       {card.body && (
-        <p className="line-clamp-3 whitespace-pre-wrap text-xs text-fg-muted">
-          {card.body}
-        </p>
+        <p className="line-clamp-3 whitespace-pre-wrap text-xs text-fg-muted">{card.body}</p>
       )}
 
-      <div className="flex flex-wrap items-center gap-1">
-        {card.status &&
-          (isKnownStatus(card.status) ? (
-            <StatusBadge status={card.status} />
-          ) : (
-            <Badge>{card.status}</Badge>
-          ))}
-        {card.issue_state && (
-          <Badge variant="neutral">{humanizeToken(card.issue_state)}</Badge>
-        )}
-        {card.priority !== undefined && card.priority !== 0 && (
-          <Badge variant="accent">P{card.priority}</Badge>
-        )}
-        {attemptCount > 0 && (
-          <Badge variant="neutral">
-            {attemptCount} attempt{attemptCount === 1 ? "" : "s"}
-          </Badge>
-        )}
-        {(card.children_count ?? 0) > 0 && (
-          <Badge variant="neutral">
-            {card.children_count} child{card.children_count === 1 ? "" : "ren"}
-          </Badge>
-        )}
-      </div>
+      {card.column_id === "todo" && <TodoBody card={card} />}
+      {card.column_id === "in_progress" && (
+        <InProgressBody card={card} onRefetch={onRefetch} />
+      )}
+      {card.column_id === "done" && <DoneBody card={card} />}
+      {card.column_id === "attention" && (
+        <AttentionBody card={card} onRefetch={onRefetch} />
+      )}
 
       {card.labels && card.labels.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -249,12 +175,6 @@ export function PipelineCard({ card, parent, onChanged }: CardProps) {
             </Badge>
           ))}
         </div>
-      )}
-
-      {card.error && (
-        <InlineBanner tone="danger" layout="inline">
-          {card.error}
-        </InlineBanner>
       )}
 
       <div className="flex items-center gap-2 border-t border-border-default pt-2 text-micro">
@@ -271,19 +191,193 @@ export function PipelineCard({ card, parent, onChanged }: CardProps) {
           <span className="text-fg-subtle">Not started</span>
         )}
         {timestamp && (
-          <span
-            className="ml-auto text-fg-subtle"
-            title={timestamp}
-          >
+          <span className="ml-auto text-fg-subtle" title={timestamp}>
             {formatRelative(timestamp)}
           </span>
         )}
       </div>
+    </Card>
+  );
+}
 
-      {card.status === "paused_operator" && card.run_id && (
+// CardTitle links to the run console when the card is backed by a run;
+// otherwise it is plain text (a not-yet-launched native task).
+function CardTitle({ card }: { card: PipelineBoardCardDTO }) {
+  if (card.run_id) {
+    return (
+      <Link
+        href={`/runs/${encodeURIComponent(card.run_id)}`}
+        className="text-sm font-medium leading-snug text-fg-default hover:underline"
+      >
+        {card.title}
+      </Link>
+    );
+  }
+  return (
+    <div className="text-sm font-medium leading-snug text-fg-default">{card.title}</div>
+  );
+}
+
+function StatusChip({ status }: { status?: string }) {
+  if (!status) return null;
+  return isKnownStatus(status) ? (
+    <StatusBadge status={status} />
+  ) : (
+    <Badge>{status}</Badge>
+  );
+}
+
+// --- TODO lane ------------------------------------------------------------
+
+function TodoBody({ card }: { card: PipelineBoardCardDTO }) {
+  const queuePosition = card.queue_position ?? 0;
+  return (
+    <div className="space-y-2">
+      <EntryInput input={card.entry_input} />
+      <div className="flex flex-wrap items-center gap-1">
+        {queuePosition > 0 ? (
+          <Badge variant="warning">Waiting · #{queuePosition}</Badge>
+        ) : card.kind === "task" ? (
+          <span className="text-micro text-fg-subtle">Not launched</span>
+        ) : null}
+        {card.priority !== undefined && card.priority !== 0 && (
+          <Badge variant="accent">P{card.priority}</Badge>
+        )}
+        {card.issue_state && (
+          <Badge variant="neutral">{humanizeToken(card.issue_state)}</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// EntryInput renders the pipeline's launch vars / task bot-args as a compact
+// key: value list.
+function EntryInput({ input }: { input?: Record<string, unknown> }) {
+  const entries = input ? Object.entries(input) : [];
+  if (entries.length === 0) return null;
+  return (
+    <dl className="space-y-0.5 text-micro">
+      {entries.map(([key, value]) => (
+        <div key={key} className="flex min-w-0 gap-1">
+          <dt className="shrink-0 font-medium text-fg-muted">{key}:</dt>
+          <dd className="min-w-0 truncate text-fg-subtle" title={stringifyValue(value)}>
+            {stringifyValue(value)}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function stringifyValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// --- IN_PROGRESS lane -----------------------------------------------------
+
+function InProgressBody({
+  card,
+  onRefetch,
+}: {
+  card: PipelineBoardCardDTO;
+  onRefetch: () => void;
+}) {
+  if (card.pending_reviews && card.pending_reviews.length > 0) {
+    return <SequentialReviews card={card} onResolved={onRefetch} />;
+  }
+  const descendants = card.descendant_count ?? 0;
+  return (
+    <div className="space-y-2">
+      <ProgressBar executed={card.tree_executed_nodes} total={card.tree_total_nodes} />
+      <div className="flex flex-wrap items-center gap-1">
+        <StatusChip status={card.status} />
+        {descendants > 0 && (
+          <Badge variant="neutral">
+            +{descendants} child{descendants === 1 ? "" : "ren"}
+          </Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProgressBar({ executed, total }: { executed: number; total: number }) {
+  const pct = total > 0 ? Math.min(100, Math.round((executed / total) * 100)) : 0;
+  return (
+    <div className="flex flex-col gap-1">
+      <div
+        className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3"
+        role="progressbar"
+        aria-valuenow={executed}
+        aria-valuemin={0}
+        aria-valuemax={total}
+      >
+        <div
+          className="h-full rounded-full bg-info transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="text-micro tabular-nums text-fg-subtle">
+        {executed} / {total} nodes
+      </div>
+    </div>
+  );
+}
+
+// --- DONE lane ------------------------------------------------------------
+
+function DoneBody({ card }: { card: PipelineBoardCardDTO }) {
+  if (!card.output) {
+    return <p className="text-micro italic text-fg-subtle">No output.</p>;
+  }
+  return (
+    <pre className="max-h-40 overflow-auto whitespace-pre rounded-md border border-border-default bg-surface-1 p-2 font-mono text-micro text-fg-muted">
+      {card.output}
+    </pre>
+  );
+}
+
+// --- ATTENTION lane -------------------------------------------------------
+
+function AttentionBody({
+  card,
+  onRefetch,
+}: {
+  card: PipelineBoardCardDTO;
+  onRefetch: () => void;
+}) {
+  const resumeAction = useAsyncAction();
+  const canResume = !!card.run_id && RESUMABLE_STATUSES.has(card.status ?? "");
+
+  const resume = async () => {
+    const runID = card.run_id;
+    if (!runID) return;
+    const result = await resumeAction.run(() => resumeRun(runID));
+    if (result !== undefined) onRefetch();
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1">
+        <StatusChip status={card.status} />
+      </div>
+      {card.error && (
+        <InlineBanner tone="danger" layout="inline">
+          {card.error}
+        </InlineBanner>
+      )}
+      {canResume && (
         <div className="space-y-2 rounded-md border border-info/40 bg-info-soft p-2">
           <p className="text-micro text-info-fg">
-            This run was paused by an operator. Resume it from its persisted checkpoint.
+            Resume this pipeline from its persisted checkpoint.
           </p>
           {resumeAction.error && (
             <InlineBanner tone="danger" layout="inline">
@@ -294,34 +388,12 @@ export function PipelineCard({ card, parent, onChanged }: CardProps) {
             variant="secondary"
             size="sm"
             loading={resumeAction.busy}
-            onClick={() => void resumeOperator()}
+            onClick={() => void resume()}
           >
             Resume run
           </Button>
         </div>
       )}
-
-      {card.status === "paused_waiting_human" && card.run_id && card.node_id && (
-        <div className="space-y-2 rounded-md border border-warning/40 bg-warning-soft p-2">
-          <div className="text-micro font-medium uppercase tracking-wide text-warning-fg">
-            Awaiting input
-          </div>
-          <HumanPromptForm
-            runId={card.run_id}
-            nodeId={card.node_id}
-            questions={card.questions ?? {}}
-            sourceOverride={null}
-            onResumed={onChanged}
-          />
-        </div>
-      )}
-
-      {card.status === "paused_waiting_human" && card.run_id && !card.node_id && (
-        <InlineBanner tone="warning" layout="inline">
-          This legacy pause has no node identifier, so it cannot be answered inline.
-          Open the run console to inspect it.
-        </InlineBanner>
-      )}
-    </Card>
+    </div>
   );
 }

@@ -61,6 +61,12 @@ type StudioOptions struct {
 	MaxUploadsPerRun   int
 	AllowUploadMime    []string
 
+	// MaxConcurrentPipelines caps how many ROOT pipelines run at once
+	// (0 = unlimited). Over the cap, launches wait in the pipeline
+	// board's Todo lane. Threaded into server.Config →
+	// runview.WithMaxConcurrentPipelines.
+	MaxConcurrentPipelines int
+
 	// OnForceRefresh, when non-nil, is forwarded to the server and fires
 	// before /api/backends/detect?force=1 invalidates its cache. The
 	// desktop host uses this to re-source ~/.iterion/env so dotenv
@@ -207,17 +213,18 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	}
 
 	cfg := server.Config{
-		Port:               opts.Port,
-		Bind:               opts.Bind,
-		ExamplesDir:        examplesDir,
-		WorkDir:            dir,
-		StoreDir:           opts.StoreDir,
-		OpenBrowser:        !opts.NoBrowser,
-		Mode:               opts.Mode,
-		MaxUploadSize:      opts.MaxUploadSize,
-		MaxTotalUploadSize: opts.MaxTotalUploadSize,
-		MaxUploadsPerRun:   opts.MaxUploadsPerRun,
-		AllowedUploadMIMEs: opts.AllowUploadMime,
+		Port:                   opts.Port,
+		Bind:                   opts.Bind,
+		ExamplesDir:            examplesDir,
+		WorkDir:                dir,
+		StoreDir:               opts.StoreDir,
+		OpenBrowser:            !opts.NoBrowser,
+		Mode:                   opts.Mode,
+		MaxUploadSize:          opts.MaxUploadSize,
+		MaxTotalUploadSize:     opts.MaxTotalUploadSize,
+		MaxUploadsPerRun:       opts.MaxUploadsPerRun,
+		AllowedUploadMIMEs:     opts.AllowUploadMime,
+		MaxConcurrentPipelines: opts.MaxConcurrentPipelines,
 		// Local mode: the studio process is implicitly trusted to
 		// its TTY user. CSRF protection still gates write endpoints
 		// via Origin allowlisting; cross-tenant isolation does not

@@ -225,40 +225,52 @@ fields](dispatcher.md) for the current handoff.
 The SPA's Board view (`/board` in the studio) consumes exactly these
 endpoints — it's a thin React shell on top of the REST surface.
 
-## Pipeline boards (the second board)
+## Pipeline board (the second board)
 
-The Studio also exposes `/pipelines` and `/pipelines/{bot}`. This is a
-different product surface, not a saved filter and not a replacement for
-`/board`:
+The Studio also exposes a single global `/pipelines` board. This is a
+different product surface — a **control center** for watching and unblocking
+many pipelines at once — not a saved filter and not a replacement for `/board`:
 
 - `/board` remains the editable, shared dispatcher backlog;
-- one pipeline board is identified by one discovered bot (`bot:<bot-id>`);
-- its columns are derived from the workflow graph and live run statuses;
-- root runs and recursively-linked child runs are separate nested cards;
-- a card paused on `paused_waiting_human` embeds the existing structured
-  answer form and resumes the exact root or child run.
+- `/pipelines` is one global, read-only projection of every **root** pipeline,
+  across all bots;
+- it has four fixed lanes — `Todo`, `In progress`, `Done`, `Attention`;
+- each card is one root pipeline; its descendant runs are **folded into the
+  root card** (aggregate node progress + a list of pending human reviews), not
+  shown as separate cards;
+- a tree blocked on `paused_waiting_human` embeds the existing structured
+  answer form and resumes the exact paused run; when several reviews are
+  pending across the tree the card steps through them one at a time.
+
+Lane semantics: `Todo` = pipelines waiting for a local run slot (see the
+concurrency cap below) plus not-yet-launched native tasks; `In progress` =
+running or awaiting a human review (progress bar or the review form); `Done` =
+finished, showing the pipeline's output; `Attention` = failed / cancelled /
+operator-paused, with a Resume affordance.
 
 The aggregate read API is intentionally server-side, so the browser does not
 perform an N+1 traversal over issues, checkpoints and child runs:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/pipeline-boards` | GET | List deterministic bot-bound board identities |
-| `/api/v1/pipeline-boards/{bot}` | GET | Return columns plus the flat, depth-annotated task/run tree |
-| `/api/v1/pipeline-boards/{bot}/tasks` | POST | Create a task pinned to the path bot; `{start:true}` admits it directly to the first eligible native state |
+| `/api/v1/pipeline-board` | GET | Global projection: 4 fixed lanes + one folded card per root pipeline (progress, pending reviews, output, concurrency status) |
+| `/api/v1/pipeline-board/tasks` | POST | Create a task; `bot` is required **in the body**; `{start:true}` admits it directly to the first eligible native state |
 
-Runtime-derived columns cannot be drag-and-dropped: changing a card's visual
-position without changing its run would make the projection false. The board
-always includes `Todo`, `Running`, `Needs attention` and `Done`; declared human
-interactions are named columns between them, with dynamic child interactions
-and an `Other input` fallback for runtime-only pauses.
+Card positions are derived from persisted run state, so the board is
+drag-and-drop-free: moving a card by hand would make the projection false.
 
-Task ingestion reuses native issues in this first slice. Consequently a task
-appears before launch only when its `Issue.Bot` explicitly matches the board.
-Once a run exists, manual/API runs genuinely associated with that bot also
-appear even if no native issue references them. See
-[ADR-073](adr/073-dedicated-pipeline-board-projection.md) for the boundary,
-trade-offs and follow-ups.
+**Local concurrency cap.** `iterion studio` caps concurrent **root** pipelines
+at `--max-concurrent-pipelines` (default 3; also
+`ITERION_MAX_CONCURRENT_PIPELINES`). Over the cap, a launch is parked as a
+`queued` run in the `Todo` lane (with its FIFO position) and started
+automatically when a slot frees. `0` disables the cap. The cap is local
+(in-process) only; cloud admission stays on the NATS queue + org/team gates.
+
+Task ingestion reuses native issues in this slice. A task appears before launch
+only when its `Issue.Bot` names a bot; once a run exists, manual/API/scheduled
+runs associated with that bot also appear even if no native issue references
+them. See [ADR-073](adr/073-dedicated-pipeline-board-projection.md) for the
+boundary, trade-offs and follow-ups.
 
 ## Use cases beyond the dispatcher
 

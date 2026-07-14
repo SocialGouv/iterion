@@ -40,15 +40,12 @@ export function useDocumentTitle() {
     return tab?.label ?? null;
   });
   // The catalog carries each bot's persona display_name; load it lazily
-  // while on the editor or a bot-scoped pipeline so titles show the persona
-  // ("Featurly") instead of a path/technical id.
+  // while on the editor so titles show the persona ("Featurly") instead of
+  // a path/technical id.
   const bots = useBotsStore((s) => s.bots);
   const fetchBots = useBotsStore((s) => s.fetch);
   useEffect(() => {
-    if (
-      (location === "/editor" || location.startsWith("/pipelines/")) &&
-      bots === null
-    ) {
+    if (location === "/editor" && bots === null) {
       void fetchBots();
     }
   }, [location, bots, fetchBots]);
@@ -65,17 +62,6 @@ export function useDocumentTitle() {
       context = "Run";
     } else if (location === "/runs") {
       context = "Runs";
-    } else if (location.startsWith("/pipelines/")) {
-      const encodedBot = location.split("/")[2] ?? "";
-      let bot = encodedBot;
-      try {
-        bot = decodeURIComponent(encodedBot);
-      } catch {
-        // Keep the raw segment when a malformed URL reaches the client.
-      }
-      const pipelineBot = bots?.find((entry) => entry.name === bot);
-      const pipelineLabel = pipelineBot?.display_name?.trim() || bot;
-      context = pipelineLabel ? `${pipelineLabel} pipeline` : "Pipelines";
     } else if (location === "/pipelines") {
       context = "Pipelines";
     } else if (location === "/account") {

@@ -319,9 +319,6 @@
           "bot_id": {
             "type": "string"
           },
-          "children_count": {
-            "type": "integer"
-          },
           "column_id": {
             "type": "string"
           },
@@ -329,16 +326,20 @@
             "format": "date-time",
             "type": "string"
           },
-          "depth": {
+          "descendant_count": {
             "type": "integer"
+          },
+          "entry_input": {
+            "additionalProperties": {},
+            "type": "object"
           },
           "error": {
             "type": "string"
           },
-          "id": {
-            "type": "string"
+          "executed_nodes": {
+            "type": "integer"
           },
-          "interaction_id": {
+          "id": {
             "type": "string"
           },
           "issue_id": {
@@ -356,21 +357,20 @@
             },
             "type": "array"
           },
-          "node_id": {
+          "output": {
             "type": "string"
           },
-          "parent_run_id": {
-            "type": "string"
+          "pending_reviews": {
+            "items": {
+              "$ref": "#/components/schemas/PipelineBoardPendingReview"
+            },
+            "type": "array"
           },
           "priority": {
             "type": "integer"
           },
-          "questions": {
-            "additionalProperties": {},
-            "type": "object"
-          },
-          "root_run_id": {
-            "type": "string"
+          "queue_position": {
+            "type": "integer"
           },
           "run_id": {
             "type": "string"
@@ -380,6 +380,15 @@
           },
           "title": {
             "type": "string"
+          },
+          "total_nodes": {
+            "type": "integer"
+          },
+          "tree_executed_nodes": {
+            "type": "integer"
+          },
+          "tree_total_nodes": {
+            "type": "integer"
           },
           "updated_at": {
             "format": "date-time",
@@ -394,7 +403,10 @@
           "kind",
           "column_id",
           "title",
-          "depth",
+          "executed_nodes",
+          "total_nodes",
+          "tree_executed_nodes",
+          "tree_total_nodes",
           "created_at",
           "updated_at"
         ],
@@ -405,19 +417,10 @@
           "id": {
             "type": "string"
           },
-          "interaction_mode": {
-            "type": "string"
-          },
           "kind": {
             "type": "string"
           },
-          "node_id": {
-            "type": "string"
-          },
           "title": {
-            "type": "string"
-          },
-          "workflow_name": {
             "type": "string"
           }
         },
@@ -428,40 +431,39 @@
         ],
         "type": "object"
       },
-      "PipelineBoardIdentity": {
+      "PipelineBoardPendingReview": {
         "properties": {
           "bot_id": {
             "type": "string"
           },
-          "description": {
+          "depth": {
+            "type": "integer"
+          },
+          "interaction_id": {
             "type": "string"
           },
-          "display_name": {
+          "node_id": {
             "type": "string"
           },
-          "enabled": {
-            "type": "boolean"
+          "questions": {
+            "additionalProperties": {},
+            "type": "object"
           },
-          "icon": {
+          "run_id": {
             "type": "string"
           },
-          "id": {
+          "workflow_name": {
             "type": "string"
           }
         },
         "required": [
-          "id",
-          "bot_id",
-          "display_name",
-          "enabled"
+          "run_id",
+          "depth"
         ],
         "type": "object"
       },
       "PipelineBoardResponse": {
         "properties": {
-          "board": {
-            "$ref": "#/components/schemas/PipelineBoardIdentity"
-          },
           "cards": {
             "items": {
               "$ref": "#/components/schemas/PipelineBoardCard"
@@ -474,6 +476,9 @@
             },
             "type": "array"
           },
+          "concurrency": {
+            "$ref": "#/components/schemas/PipelineConcurrencyStatus"
+          },
           "generated_at": {
             "format": "date-time",
             "type": "string"
@@ -483,10 +488,33 @@
           }
         },
         "required": [
-          "board",
           "columns",
           "cards",
+          "concurrency",
           "generated_at"
+        ],
+        "type": "object"
+      },
+      "PipelineConcurrencyStatus": {
+        "properties": {
+          "active": {
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "max": {
+            "type": "integer"
+          },
+          "waiting": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "max",
+          "active",
+          "waiting"
         ],
         "type": "object"
       },
@@ -847,23 +875,12 @@
         ],
         "type": "object"
       },
-      "pipelineBoardListResponse": {
-        "properties": {
-          "boards": {
-            "items": {
-              "$ref": "#/components/schemas/PipelineBoardIdentity"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "boards"
-        ],
-        "type": "object"
-      },
       "pipelineBoardTaskRequest": {
         "properties": {
           "body": {
+            "type": "string"
+          },
+          "bot": {
             "type": "string"
           },
           "bot_args": {
@@ -889,6 +906,7 @@
           }
         },
         "required": [
+          "bot",
           "title"
         ],
         "type": "object"
@@ -5625,30 +5643,9 @@
         ]
       }
     },
-    "/api/v1/pipeline-boards": {
+    "/api/v1/pipeline-board": {
       "get": {
-        "operationId": "getV1PipelineBoards",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/pipelineBoardListResponse"
-                }
-              }
-            },
-            "description": "OK"
-          }
-        },
-        "summary": "GET /api/v1/pipeline-boards",
-        "tags": [
-          "pipeline-boards"
-        ]
-      }
-    },
-    "/api/v1/pipeline-boards/{bot}": {
-      "get": {
-        "operationId": "getV1PipelineBoardsByBot",
+        "operationId": "getV1PipelineBoard",
         "responses": {
           "200": {
             "content": {
@@ -5661,35 +5658,15 @@
             "description": "OK"
           }
         },
-        "summary": "GET /api/v1/pipeline-boards/{bot}",
+        "summary": "GET /api/v1/pipeline-board",
         "tags": [
-          "pipeline-boards"
+          "pipeline-board"
         ]
-      },
-      "parameters": [
-        {
-          "in": "path",
-          "name": "bot",
-          "required": true,
-          "schema": {
-            "type": "string"
-          }
-        }
-      ]
+      }
     },
-    "/api/v1/pipeline-boards/{bot}/tasks": {
-      "parameters": [
-        {
-          "in": "path",
-          "name": "bot",
-          "required": true,
-          "schema": {
-            "type": "string"
-          }
-        }
-      ],
+    "/api/v1/pipeline-board/tasks": {
       "post": {
-        "operationId": "postV1PipelineBoardsByBotTasks",
+        "operationId": "postV1PipelineBoardTasks",
         "requestBody": {
           "content": {
             "application/json": {
@@ -5712,9 +5689,9 @@
             "description": "OK"
           }
         },
-        "summary": "POST /api/v1/pipeline-boards/{bot}/tasks",
+        "summary": "POST /api/v1/pipeline-board/tasks",
         "tags": [
-          "pipeline-boards"
+          "pipeline-board"
         ]
       }
     },

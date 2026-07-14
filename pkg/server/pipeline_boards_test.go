@@ -79,16 +79,22 @@ func newPipelineBoardTestEnv(t *testing.T) *pipelineBoardTestEnv {
 	}
 }
 
-func (e *pipelineBoardTestEnv) seedRun(t *testing.T, id, workflow string, status store.RunStatus, mutate func(*store.Run)) *store.Run {
+func (e *pipelineBoardTestEnv) runStore(t *testing.T) *store.FilesystemRunStore {
 	t.Helper()
-	runStore, err := store.New(e.storeDir)
+	rs, err := store.New(e.storeDir)
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	if _, err := runStore.CreateRun(context.Background(), id, workflow, nil); err != nil {
+	return rs
+}
+
+func (e *pipelineBoardTestEnv) seedRun(t *testing.T, id, workflow string, status store.RunStatus, mutate func(*store.Run)) *store.Run {
+	t.Helper()
+	rs := e.runStore(t)
+	if _, err := rs.CreateRun(context.Background(), id, workflow, nil); err != nil {
 		t.Fatalf("CreateRun(%s): %v", id, err)
 	}
-	run, err := runStore.LoadRun(context.Background(), id)
+	run, err := rs.LoadRun(context.Background(), id)
 	if err != nil {
 		t.Fatalf("LoadRun(%s): %v", id, err)
 	}
@@ -96,15 +102,44 @@ func (e *pipelineBoardTestEnv) seedRun(t *testing.T, id, workflow string, status
 	if mutate != nil {
 		mutate(run)
 	}
-	if err := runStore.SaveRun(context.Background(), run); err != nil {
+	if err := rs.SaveRun(context.Background(), run); err != nil {
 		t.Fatalf("SaveRun(%s): %v", id, err)
 	}
 	return run
 }
 
+func (e *pipelineBoardTestEnv) seedArtifact(t *testing.T, runID, nodeID string, data map[string]any) {
+	t.Helper()
+	rs := e.runStore(t)
+	if err := rs.WriteArtifact(context.Background(), &store.Artifact{
+		RunID:     runID,
+		NodeID:    nodeID,
+		Version:   1,
+		Data:      data,
+		WrittenAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteArtifact(%s/%s): %v", runID, nodeID, err)
+	}
+}
+
+func (e *pipelineBoardTestEnv) seedNodeStarted(t *testing.T, runID string, nodeIDs ...string) {
+	t.Helper()
+	rs := e.runStore(t)
+	for _, nodeID := range nodeIDs {
+		if _, err := rs.AppendEvent(context.Background(), runID, store.Event{
+			Type:      store.EventNodeStarted,
+			RunID:     runID,
+			NodeID:    nodeID,
+			Timestamp: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("AppendEvent(%s/%s): %v", runID, nodeID, err)
+		}
+	}
+}
+
 func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 	t.Helper()
-	resp, err := http.Get(e.http.URL + "/api/v1/pipeline-boards/review")
+	resp, err := http.Get(e.http.URL + "/api/v1/pipeline-board")
 	if err != nil {
 		t.Fatalf("GET projection: %v", err)
 	}
@@ -119,7 +154,25 @@ func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 	return projection
 }
 
-func TestPipelineBoardProjectsTaskRunTreeAndInteractions(t *testing.T) {
+// The four fixed lanes, in order.
+func TestPipelineBoardHasFourFixedColumns(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	projection := env.projection(t)
+	want := []string{pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone, pipelineColumnAttention}
+	if len(projection.Columns) != len(want) {
+		t.Fatalf("columns = %+v, want %v", projection.Columns, want)
+	}
+	for i, id := range want {
+		if projection.Columns[i].ID != id {
+			t.Errorf("column[%d] = %q, want %q", i, projection.Columns[i].ID, id)
+		}
+	}
+}
+
+// A root's whole descendant tree is folded into ONE card: the child does
+// not get its own card; its pending review surfaces in the root's
+// PendingReviews. Global — roots of every bot appear on the one board.
+func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	issue, err := env.board.Create(native.Issue{
 		Title:    "Review the release",
@@ -131,9 +184,6 @@ func TestPipelineBoardProjectsTaskRunTreeAndInteractions(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Create issue: %v", err)
-	}
-	if _, err := env.board.Create(native.Issue{Title: "Other bot", Bot: "other"}); err != nil {
-		t.Fatalf("Create other issue: %v", err)
 	}
 
 	env.seedRun(t, "run-root", "review", store.RunStatusRunning, func(run *store.Run) {
@@ -147,117 +197,154 @@ func TestPipelineBoardProjectsTaskRunTreeAndInteractions(t *testing.T) {
 			NodeID:               "child_approval",
 			InteractionID:        "int-child",
 			InteractionQuestions: map[string]any{"approved": "Ship it?"},
-			Outputs:              map[string]map[string]any{},
-			LoopCounters:         map[string]int{},
-			ArtifactVersions:     map[string]int{},
-			Vars:                 map[string]any{},
 		}
 	})
 	if err := env.board.SetLastRun(issue.ID, "run-root", ""); err != nil {
 		t.Fatalf("SetLastRun: %v", err)
 	}
 
-	resp, err := http.Get(env.http.URL + "/api/v1/pipeline-boards/review")
-	if err != nil {
-		t.Fatalf("GET projection: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		var body any
-		_ = json.NewDecoder(resp.Body).Decode(&body)
-		t.Fatalf("status = %d, body=%v", resp.StatusCode, body)
-	}
-	var projection PipelineBoardResponse
-	decodeJSONResp(t, resp, &projection)
+	// A standalone root of a DIFFERENT bot must also appear (global board).
+	env.seedRun(t, "run-other", "other_workflow", store.RunStatusFinished, func(run *store.Run) {
+		run.BotID = "other"
+	})
 
-	if projection.Board.ID != "bot:review" || projection.Board.BotID != "review" {
-		t.Fatalf("identity = %+v", projection.Board)
-	}
+	projection := env.projection(t)
+
 	if projection.TopologyError != "" {
 		t.Fatalf("topology error = %q", projection.TopologyError)
 	}
-	if len(projection.Cards) != 2 {
-		t.Fatalf("cards = %+v, want root + child only", projection.Cards)
+	if hasPipelineCard(projection.Cards, "run:run-child") {
+		t.Fatalf("child run must be folded into its root, not a separate card: %+v", projection.Cards)
 	}
 	root := findPipelineCard(t, projection.Cards, "run:run-root")
-	if root.ColumnID != pipelineColumnRunning || root.IssueID != issue.ID || root.Title != issue.Title {
-		t.Errorf("root = %+v", root)
+	if root.ColumnID != pipelineColumnInProgress {
+		t.Errorf("root column = %q, want in_progress", root.ColumnID)
 	}
-	if len(root.Attempts) != 1 || root.Attempts[0].RunID != "run-root" {
-		t.Errorf("root attempts = %+v", root.Attempts)
+	if root.IssueID != issue.ID || root.Title != issue.Title {
+		t.Errorf("root issue association = %+v", root)
 	}
-	child := findPipelineCard(t, projection.Cards, "run:run-child")
-	if child.Depth != 1 || child.ParentRunID != "run-root" || child.RootRunID != "run-root" {
-		t.Errorf("child lineage = %+v", child)
+	if root.DescendantCount != 1 {
+		t.Errorf("descendant_count = %d, want 1", root.DescendantCount)
 	}
-	if child.ColumnID != pipelineInteractionColumnID("child_workflow", "child_approval") {
-		t.Errorf("child column = %q", child.ColumnID)
+	if len(root.PendingReviews) != 1 {
+		t.Fatalf("pending_reviews = %+v, want the child's gate", root.PendingReviews)
 	}
-	if child.InteractionID != "int-child" || child.Questions["approved"] != "Ship it?" {
-		t.Errorf("child interaction = %+v", child)
+	pr := root.PendingReviews[0]
+	if pr.RunID != "run-child" || pr.NodeID != "child_approval" || pr.Depth != 1 {
+		t.Errorf("pending review = %+v", pr)
 	}
-
-	staticID := pipelineInteractionColumnID("review", "approval")
-	if column := findPipelineColumn(t, projection.Columns, staticID); column.Title != "Approval" || column.InteractionMode != "human" {
-		t.Errorf("static interaction = %+v", column)
+	if pr.InteractionID != "int-child" || pr.Questions["approved"] != "Ship it?" {
+		t.Errorf("pending review interaction = %+v", pr)
 	}
-	dynamicID := pipelineInteractionColumnID("child_workflow", "child_approval")
-	dynamicIndex := pipelineColumnIndex(projection.Columns, dynamicID)
-	fallbackIndex := pipelineColumnIndex(projection.Columns, pipelineColumnOtherInput)
-	if dynamicIndex < 0 || fallbackIndex < 0 || dynamicIndex >= fallbackIndex {
-		t.Errorf("dynamic/fallback order = %d/%d; columns=%+v", dynamicIndex, fallbackIndex, projection.Columns)
+	if !hasPipelineCard(projection.Cards, "run:run-other") {
+		t.Errorf("standalone root of another bot missing (board is global): %+v", projection.Cards)
 	}
 }
 
-func TestPipelineBoardAssociatesInflightSourceAndStandaloneRun(t *testing.T) {
+// Root status maps to the four lanes; queued is TODO (waiting for a slot).
+func TestPipelineBoardColumnBucketing(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
-	issue, err := env.board.Create(native.Issue{Title: "In flight", Bot: "review"})
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		id     string
+		status store.RunStatus
+		column string
+	}{
+		{"r-running", store.RunStatusRunning, pipelineColumnInProgress},
+		{"r-paused", store.RunStatusPausedWaitingHuman, pipelineColumnInProgress},
+		{"r-finished", store.RunStatusFinished, pipelineColumnDone},
+		{"r-failed", store.RunStatusFailed, pipelineColumnAttention},
+		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnAttention},
+		{"r-cancelled", store.RunStatusCancelled, pipelineColumnAttention},
+		{"r-operator", store.RunStatusPausedOperator, pipelineColumnAttention},
 	}
-	env.seedRun(t, "run-inflight", "review", store.RunStatusRunning, func(run *store.Run) {
+	for _, c := range cases {
+		env.seedRun(t, c.id, "review", c.status, func(run *store.Run) {
+			run.FilePath = env.botPath
+			// r-paused carries a checkpoint so it is a genuine human gate,
+			// not routed to attention.
+			if c.status == store.RunStatusPausedWaitingHuman {
+				run.Checkpoint = &store.Checkpoint{NodeID: "approval", InteractionID: "int-x"}
+			}
+		})
+	}
+	// A queued root waiting for a concurrency slot lands in TODO with a position.
+	env.seedRun(t, "r-queued", "review", store.RunStatusQueued, func(run *store.Run) {
 		run.FilePath = env.botPath
-		run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: issue.ID}
-	})
-	env.seedRun(t, "run-manual", "review", store.RunStatusFinished, func(run *store.Run) {
-		run.FilePath = env.botPath
+		now := time.Now().UTC()
+		run.QueuedAt = &now
 	})
 
-	resp, err := http.Get(env.http.URL + "/api/v1/pipeline-boards/review")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var projection PipelineBoardResponse
-	decodeJSONResp(t, resp, &projection)
-	if len(projection.Cards) != 2 {
-		t.Fatalf("cards = %+v, want associated inflight + standalone", projection.Cards)
-	}
-	inflight := findPipelineCard(t, projection.Cards, "run:run-inflight")
-	if inflight.IssueID != issue.ID || inflight.Title != issue.Title {
-		t.Errorf("inflight source association = %+v", inflight)
-	}
-	if findPipelineCard(t, projection.Cards, "run:run-manual").ColumnID != pipelineColumnDone {
-		t.Error("manual finished run should be projected in Done")
-	}
-	for _, card := range projection.Cards {
-		if card.Kind == "task" {
-			t.Errorf("in-flight issue was duplicated as a task: %+v", card)
+	projection := env.projection(t)
+	for _, c := range cases {
+		card := findPipelineCard(t, projection.Cards, "run:"+c.id)
+		if card.ColumnID != c.column {
+			t.Errorf("%s column = %q, want %q", c.id, card.ColumnID, c.column)
 		}
 	}
+	queued := findPipelineCard(t, projection.Cards, "run:r-queued")
+	if queued.ColumnID != pipelineColumnTodo {
+		t.Errorf("queued column = %q, want todo", queued.ColumnID)
+	}
+	if queued.QueuePosition != 1 {
+		t.Errorf("queued position = %d, want 1", queued.QueuePosition)
+	}
 }
 
-func TestPipelineBoardTaskCreatePinsBotAndSelectsAdmissionState(t *testing.T) {
+// Progress = distinct node_started / total nodes; finished clamps to 100%;
+// DONE surfaces the final_answer artifact.
+func TestPipelineBoardProgressAndOutput(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+
+	// A running root that has entered 1 of the workflow's 3 nodes.
+	env.seedRun(t, "run-progress", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+	})
+	env.seedNodeStarted(t, "run-progress", "approval")
+
+	// A finished root with a final_answer artifact.
+	env.seedRun(t, "run-output", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.ArtifactIndex = map[string]int{"summary": 1}
+	})
+	env.seedArtifact(t, "run-output", "summary", map[string]any{"final_answer": "Shipped v2 cleanly."})
+
+	projection := env.projection(t)
+
+	prog := findPipelineCard(t, projection.Cards, "run:run-progress")
+	if prog.TotalNodes != 3 {
+		t.Errorf("progress total_nodes = %d, want 3", prog.TotalNodes)
+	}
+	if prog.ExecutedNodes != 1 {
+		t.Errorf("progress executed_nodes = %d, want 1", prog.ExecutedNodes)
+	}
+	if prog.TreeTotalNodes != 3 || prog.TreeExecutedNodes != 1 {
+		t.Errorf("progress tree = %d/%d, want 1/3", prog.TreeExecutedNodes, prog.TreeTotalNodes)
+	}
+
+	out := findPipelineCard(t, projection.Cards, "run:run-output")
+	if out.ColumnID != pipelineColumnDone {
+		t.Errorf("finished column = %q, want done", out.ColumnID)
+	}
+	if out.ExecutedNodes != out.TotalNodes || out.TotalNodes != 3 {
+		t.Errorf("finished progress = %d/%d, want 3/3 (100%% clamp)", out.ExecutedNodes, out.TotalNodes)
+	}
+	if out.Output != "Shipped v2 cleanly." {
+		t.Errorf("output = %q, want the final_answer", out.Output)
+	}
+}
+
+func TestPipelineBoardTaskCreatePinsBotFromBody(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	post := func(body string) *http.Response {
 		t.Helper()
-		resp, err := http.Post(env.http.URL+"/api/v1/pipeline-boards/review/tasks", "application/json", bytes.NewBufferString(body))
+		resp, err := http.Post(env.http.URL+"/api/v1/pipeline-board/tasks", "application/json", bytes.NewBufferString(body))
 		if err != nil {
 			t.Fatalf("POST task: %v", err)
 		}
 		return resp
 	}
 
-	resp := post(`{"title":"Todo task","labels":["demo"],"bot_args":{"scope":"api"}}`)
+	resp := post(`{"bot":"review","title":"Todo task","labels":["demo"],"bot_args":{"scope":"api"}}`)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("todo status = %d", resp.StatusCode)
 	}
@@ -267,7 +354,7 @@ func TestPipelineBoardTaskCreatePinsBotAndSelectsAdmissionState(t *testing.T) {
 		t.Errorf("todo = %+v", todo)
 	}
 
-	resp = post(`{"title":"Start task","start":true}`)
+	resp = post(`{"bot":"review","title":"Start task","start":true}`)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("start status = %d", resp.StatusCode)
 	}
@@ -277,154 +364,23 @@ func TestPipelineBoardTaskCreatePinsBotAndSelectsAdmissionState(t *testing.T) {
 		t.Errorf("started = %+v, want bot=review state=ready", started)
 	}
 
-	resp = post(`{"title":""}`)
-	if resp.StatusCode != http.StatusBadRequest {
+	if resp := post(`{"bot":"review","title":""}`); resp.StatusCode != http.StatusBadRequest {
 		resp.Body.Close()
 		t.Errorf("empty title status = %d, want 400", resp.StatusCode)
 	} else {
 		resp.Body.Close()
 	}
-}
-
-func TestPipelineBoardsListAndUnknownBot(t *testing.T) {
-	env := newPipelineBoardTestEnv(t)
-	resp, err := http.Get(env.http.URL + "/api/v1/pipeline-boards")
-	if err != nil {
-		t.Fatal(err)
+	if resp := post(`{"title":"No bot"}`); resp.StatusCode != http.StatusBadRequest {
+		resp.Body.Close()
+		t.Errorf("missing bot status = %d, want 400", resp.StatusCode)
+	} else {
+		resp.Body.Close()
 	}
-	var list pipelineBoardListResponse
-	decodeJSONResp(t, resp, &list)
-	if len(list.Boards) != 1 || list.Boards[0].BotID != "review" {
-		t.Fatalf("boards = %+v", list.Boards)
-	}
-
-	resp, err = http.Get(env.http.URL + "/api/v1/pipeline-boards/missing")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
+	if resp := post(`{"bot":"ghost","title":"Unknown bot"}`); resp.StatusCode != http.StatusNotFound {
+		resp.Body.Close()
 		t.Errorf("unknown bot status = %d, want 404", resp.StatusCode)
-	}
-}
-
-func TestPipelineBoardUsesLastRunAsCurrentAttemptWithoutDuplicatingHistory(t *testing.T) {
-	env := newPipelineBoardTestEnv(t)
-	issue, err := env.board.Create(native.Issue{
-		Title: "Retry review",
-		State: native.StateInProgress,
-		Bot:   "review",
-	})
-	if err != nil {
-		t.Fatalf("Create issue: %v", err)
-	}
-
-	base := time.Date(2026, time.July, 14, 10, 0, 0, 0, time.UTC)
-	env.seedRun(t, "run-old", "review", store.RunStatusFinished, func(run *store.Run) {
-		run.FilePath = env.botPath
-		// The old attempt is deliberately newer by CreatedAt: LastRunID, not
-		// run timestamps, is the authoritative current-attempt pointer.
-		run.CreatedAt = base.Add(time.Hour)
-		run.UpdatedAt = run.CreatedAt
-	})
-	env.seedRun(t, "run-current", "review", store.RunStatusRunning, func(run *store.Run) {
-		run.FilePath = env.botPath
-		run.CreatedAt = base
-		run.UpdatedAt = run.CreatedAt
-	})
-	if err := env.board.SetLastRun(issue.ID, "run-old", ""); err != nil {
-		t.Fatalf("SetLastRun(old): %v", err)
-	}
-	if err := env.board.SetLastRun(issue.ID, "run-current", ""); err != nil {
-		t.Fatalf("SetLastRun(current): %v", err)
-	}
-
-	projection := env.projection(t)
-	if len(projection.Cards) != 1 {
-		t.Fatalf("cards = %+v, want the current attempt only", projection.Cards)
-	}
-	current := findPipelineCard(t, projection.Cards, "run:run-current")
-	if current.IssueID != issue.ID {
-		t.Errorf("current issue = %q, want %q", current.IssueID, issue.ID)
-	}
-	if len(current.Attempts) != 2 || current.Attempts[0].RunID != "run-old" || current.Attempts[1].RunID != "run-current" {
-		t.Errorf("attempts = %+v, want old then current", current.Attempts)
-	}
-	if hasPipelineCard(projection.Cards, "run:run-old") {
-		t.Error("old issue-owned attempt must not also be projected as a standalone card")
-	}
-}
-
-func TestPipelineBoardRoutesUnknownRootAndChildInteractionsDifferently(t *testing.T) {
-	env := newPipelineBoardTestEnv(t)
-	env.seedRun(t, "run-unknown-root", "review", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
-		run.FilePath = env.botPath
-		run.Checkpoint = &store.Checkpoint{
-			NodeID:               "unlisted_root_gate",
-			InteractionID:        "int-root",
-			InteractionQuestions: map[string]any{"answer": "Root answer?"},
-		}
-	})
-	env.seedRun(t, "run-unknown-child", "child_workflow", store.RunStatusPausedWaitingHuman, func(run *store.Run) {
-		run.ParentRunID = "run-unknown-root"
-		run.Checkpoint = &store.Checkpoint{
-			NodeID:               "unlisted_child_gate",
-			InteractionID:        "int-child",
-			InteractionQuestions: map[string]any{"answer": "Child answer?"},
-		}
-	})
-
-	projection := env.projection(t)
-	root := findPipelineCard(t, projection.Cards, "run:run-unknown-root")
-	if root.ColumnID != pipelineColumnOtherInput {
-		t.Errorf("unknown root column = %q, want %q", root.ColumnID, pipelineColumnOtherInput)
-	}
-	rootDynamicID := pipelineInteractionColumnID("review", "unlisted_root_gate")
-	if pipelineColumnIndex(projection.Columns, rootDynamicID) >= 0 {
-		t.Errorf("unknown root unexpectedly created dynamic column %q", rootDynamicID)
-	}
-
-	child := findPipelineCard(t, projection.Cards, "run:run-unknown-child")
-	childDynamicID := pipelineInteractionColumnID("child_workflow", "unlisted_child_gate")
-	if child.Depth != 1 || child.ColumnID != childDynamicID {
-		t.Errorf("unknown child = %+v, want depth=1 column=%q", child, childDynamicID)
-	}
-	if pipelineColumnIndex(projection.Columns, childDynamicID) < 0 {
-		t.Errorf("unknown child dynamic column %q missing from %+v", childDynamicID, projection.Columns)
-	}
-}
-
-func TestPipelineBoardDoesNotPromoteMatchingChildOfAnotherBot(t *testing.T) {
-	env := newPipelineBoardTestEnv(t)
-	env.seedRun(t, "run-other-parent", "other_workflow", store.RunStatusRunning, func(run *store.Run) {
-		run.BotID = "other"
-	})
-	env.seedRun(t, "run-review-child", "review", store.RunStatusRunning, func(run *store.Run) {
-		run.BotID = "review"
-		run.ParentRunID = "run-other-parent"
-	})
-
-	projection := env.projection(t)
-	if len(projection.Cards) != 0 {
-		t.Fatalf("cards = %+v, want no review root for a child whose existing parent belongs to another bot", projection.Cards)
-	}
-}
-
-func TestPipelineBoardInteractionColumnIDsPreservePunctuation(t *testing.T) {
-	withHyphen := pipelineInteractionColumnID("a-b", "gate")
-	withoutHyphen := pipelineInteractionColumnID("ab", "gate")
-	if withHyphen == withoutHyphen {
-		t.Fatalf("column ID collision: a-b and ab both produced %q", withHyphen)
-	}
-}
-
-func TestPipelineBoardDoesNotAssociateLooseRunByWorkflowNameAlone(t *testing.T) {
-	env := newPipelineBoardTestEnv(t)
-	env.seedRun(t, "run-workflow-name-only", "review", store.RunStatusFinished, nil)
-
-	projection := env.projection(t)
-	if len(projection.Cards) != 0 {
-		t.Fatalf("cards = %+v, want no association based only on WorkflowName", projection.Cards)
+	} else {
+		resp.Body.Close()
 	}
 }
 
@@ -432,8 +388,8 @@ func TestPipelineBoardTaskCreateRejectsCrossOrigin(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	req, err := http.NewRequest(
 		http.MethodPost,
-		env.http.URL+"/api/v1/pipeline-boards/review/tasks",
-		bytes.NewBufferString(`{"title":"Must not be created"}`),
+		env.http.URL+"/api/v1/pipeline-board/tasks",
+		bytes.NewBufferString(`{"bot":"review","title":"Must not be created"}`),
 	)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -454,6 +410,121 @@ func TestPipelineBoardTaskCreateRejectsCrossOrigin(t *testing.T) {
 	}
 	if len(issues) != 0 {
 		t.Fatalf("rejected cross-origin POST created issues: %+v", issues)
+	}
+}
+
+func TestPipelineBoardUsesLastRunAsCurrentAttemptWithoutDuplicatingHistory(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{
+		Title: "Retry review",
+		State: native.StateInProgress,
+		Bot:   "review",
+	})
+	if err != nil {
+		t.Fatalf("Create issue: %v", err)
+	}
+
+	base := time.Date(2026, time.July, 14, 10, 0, 0, 0, time.UTC)
+	env.seedRun(t, "run-old", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.CreatedAt = base.Add(time.Hour)
+		run.UpdatedAt = run.CreatedAt
+	})
+	env.seedRun(t, "run-current", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.CreatedAt = base
+		run.UpdatedAt = run.CreatedAt
+	})
+	if err := env.board.SetLastRun(issue.ID, "run-old", ""); err != nil {
+		t.Fatalf("SetLastRun(old): %v", err)
+	}
+	if err := env.board.SetLastRun(issue.ID, "run-current", ""); err != nil {
+		t.Fatalf("SetLastRun(current): %v", err)
+	}
+
+	projection := env.projection(t)
+	current := findPipelineCard(t, projection.Cards, "run:run-current")
+	if current.IssueID != issue.ID {
+		t.Errorf("current issue = %q, want %q", current.IssueID, issue.ID)
+	}
+	if len(current.Attempts) != 2 || current.Attempts[0].RunID != "run-old" || current.Attempts[1].RunID != "run-current" {
+		t.Errorf("attempts = %+v, want old then current", current.Attempts)
+	}
+	if hasPipelineCard(projection.Cards, "run:run-old") {
+		t.Error("old issue-owned attempt must not also be projected as a standalone card")
+	}
+}
+
+func TestPipelineBoardAssociatesInflightSourceAndStandaloneRun(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{Title: "In flight", Bot: "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.seedRun(t, "run-inflight", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.FilePath = env.botPath
+		run.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: issue.ID}
+	})
+	env.seedRun(t, "run-manual", "review", store.RunStatusFinished, func(run *store.Run) {
+		run.FilePath = env.botPath
+	})
+
+	projection := env.projection(t)
+	inflight := findPipelineCard(t, projection.Cards, "run:run-inflight")
+	if inflight.IssueID != issue.ID || inflight.Title != issue.Title {
+		t.Errorf("inflight source association = %+v", inflight)
+	}
+	if findPipelineCard(t, projection.Cards, "run:run-manual").ColumnID != pipelineColumnDone {
+		t.Error("manual finished run should be projected in Done")
+	}
+	for _, card := range projection.Cards {
+		if card.Kind == "task" {
+			t.Errorf("in-flight issue was duplicated as a task: %+v", card)
+		}
+	}
+}
+
+// A child whose parent belongs to another bot folds into that parent; it is
+// never promoted to its own root card.
+func TestPipelineBoardFoldsChildOfAnotherBot(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	env.seedRun(t, "run-other-parent", "other_workflow", store.RunStatusRunning, func(run *store.Run) {
+		run.BotID = "other"
+	})
+	env.seedRun(t, "run-review-child", "review", store.RunStatusRunning, func(run *store.Run) {
+		run.BotID = "review"
+		run.ParentRunID = "run-other-parent"
+	})
+
+	projection := env.projection(t)
+	if hasPipelineCard(projection.Cards, "run:run-review-child") {
+		t.Fatalf("child must fold into its parent, not become a root: %+v", projection.Cards)
+	}
+	parent := findPipelineCard(t, projection.Cards, "run:run-other-parent")
+	if parent.DescendantCount != 1 {
+		t.Errorf("parent descendant_count = %d, want 1", parent.DescendantCount)
+	}
+}
+
+// A not-yet-launched native task pinned to a bot is a TODO card.
+func TestPipelineBoardProjectsRunlessTaskInTodo(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{
+		Title:   "Queued backlog task",
+		State:   native.StateInbox,
+		Bot:     "review",
+		BotArgs: map[string]string{"scope": "api"},
+	})
+	if err != nil {
+		t.Fatalf("Create issue: %v", err)
+	}
+	projection := env.projection(t)
+	card := findPipelineCard(t, projection.Cards, "task:"+issue.ID)
+	if card.Kind != "task" || card.ColumnID != pipelineColumnTodo {
+		t.Errorf("task card = %+v, want kind=task column=todo", card)
+	}
+	if card.EntryInput["scope"] != "api" {
+		t.Errorf("task entry_input = %+v, want bot_args", card.EntryInput)
 	}
 }
 
@@ -481,7 +552,7 @@ func TestPipelineBoardCloudStoreIsResolvedFromActiveTeam(t *testing.T) {
 			return nil
 		},
 	}}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/pipeline-boards/review", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/pipeline-board", nil)
 	request = request.WithContext(auth.WithIdentity(request.Context(), auth.Identity{TeamID: "team-b"}))
 	got, err := server.resolvePipelineBoardStore(request)
 	if err != nil {
@@ -493,7 +564,7 @@ func TestPipelineBoardCloudStoreIsResolvedFromActiveTeam(t *testing.T) {
 
 	// Even when a local store is present on a cloud-configured process, an
 	// identity without an active team must fail closed instead of reading it.
-	request = httptest.NewRequest(http.MethodGet, "/api/v1/pipeline-boards/review", nil)
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/pipeline-board", nil)
 	got, err = server.resolvePipelineBoardStore(request)
 	if err != nil {
 		t.Fatalf("resolve board without team: %v", err)
@@ -521,24 +592,4 @@ func hasPipelineCard(cards []PipelineBoardCard, id string) bool {
 		}
 	}
 	return false
-}
-
-func findPipelineColumn(t *testing.T, columns []PipelineBoardColumn, id string) PipelineBoardColumn {
-	t.Helper()
-	for _, column := range columns {
-		if column.ID == id {
-			return column
-		}
-	}
-	t.Fatalf("column %q not found in %+v", id, columns)
-	return PipelineBoardColumn{}
-}
-
-func pipelineColumnIndex(columns []PipelineBoardColumn, id string) int {
-	for index, column := range columns {
-		if column.ID == id {
-			return index
-		}
-	}
-	return -1
 }

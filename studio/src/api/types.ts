@@ -167,6 +167,21 @@ export interface ServerInfo {
   // fetches the curated widget spec when true; otherwise it shows the
   // deterministic task-list board alone and never polls.
   session_board_enabled?: boolean;
+  // pipeline_concurrency reports the local pipeline-concurrency gate (the
+  // global pipeline board's TODO/in-flight admission). Mirrors the board's
+  // own `concurrency` block; present so surfaces outside the board (nav,
+  // status pills) can read the cap without polling the board.
+  pipeline_concurrency?: PipelineConcurrencyInfo;
+}
+
+// PipelineConcurrencyInfo mirrors runview.PipelineConcurrencyStatus. When
+// `enabled` is false the other fields are zero and the pipeline TODO lane
+// only holds not-yet-launched native tasks.
+export interface PipelineConcurrencyInfo {
+  enabled: boolean;
+  max: number;
+  active: number;
+  waiting: number;
 }
 
 // CostCapStatus mirrors runtime.CapStatus (GET /api/v1/limits/cost).

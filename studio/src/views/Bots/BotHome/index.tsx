@@ -353,10 +353,8 @@ function ActionsRow({
         <Button
           variant="secondary"
           size="sm"
-          onClick={() =>
-            setLocation(`/pipelines/${encodeURIComponent(entry.name)}`)
-          }
-          title={`Open ${entry.display_name?.trim() || entry.name}'s pipeline board`}
+          onClick={() => setLocation("/pipelines")}
+          title="Open the global pipeline board"
         >
           Pipeline board
         </Button>

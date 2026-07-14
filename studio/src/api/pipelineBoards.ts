@@ -1,88 +1,112 @@
-// Pipeline Boards — read-model client for the bot-scoped, runtime-derived
-// board. This is deliberately separate from api/native.ts: /board remains
-// the editable backlog, while this API projects one bot's pipeline topology
-// and current run tree into non-draggable columns.
+// Pipeline board — read-model client for the single, global, runtime-derived
+// board. Distinct from api/native.ts: /board remains the editable backlog,
+// while this API projects every root pipeline (and not-yet-launched native
+// task) into four fixed, non-draggable lanes. Card position is derived from
+// server state only — there is no drag-and-drop here.
 
 import { apiRequest } from "./client";
 import type { NativeIssue } from "./native";
 
-const BASE = "/api/v1/pipeline-boards";
+const BASE = "/api/v1/pipeline-board";
 
-export interface PipelineBoardIdentity {
-  id: string;
-  bot_id: string;
-  display_name: string;
-  icon?: string;
-  description?: string;
-  enabled: boolean;
-}
-
+// The four fixed lanes, in the order the server emits them.
 export interface PipelineBoardColumn {
-  id: string;
+  id: string; // "todo" | "in_progress" | "done" | "attention"
   title: string;
   kind: string;
-  workflow_name?: string;
-  node_id?: string;
-  interaction_mode?: string;
 }
 
+// One paused human interaction somewhere in a root's tree (the root itself or
+// any descendant). The IN_PROGRESS card presents these one at a time; each
+// answer targets the exact run_id shown here.
+export interface PipelineBoardPendingReview {
+  run_id: string;
+  workflow_name?: string;
+  bot_id?: string;
+  node_id?: string;
+  interaction_id?: string;
+  questions?: Record<string, unknown>;
+  depth: number;
+}
+
+// One dispatcher attempt associated with a native task-backed root.
 export interface PipelineBoardAttempt {
   run_id?: string;
   status?: string;
   at?: string;
 }
 
+// PipelineBoardCard is the read model the studio polls: one per root pipeline
+// (or per not-yet-launched native task). Descendants are folded into their
+// root — there are no per-child cards.
 export interface PipelineBoardCard {
   id: string;
   kind: "task" | "run" | string;
   column_id: string;
   title: string;
   body?: string;
+
+  // Native task provenance (present when the root is backed by a board issue).
   issue_id?: string;
   issue_state?: string;
   labels?: string[];
   priority?: number;
+
+  // Run identity (empty for a not-yet-launched task card).
   run_id?: string;
-  root_run_id?: string;
-  parent_run_id?: string;
-  depth: number;
   workflow_name?: string;
   bot_id?: string;
   status?: string;
   error?: string;
-  node_id?: string;
-  interaction_id?: string;
-  questions?: Record<string, unknown>;
-  created_at?: string;
-  updated_at?: string;
+
+  // TODO lane — launch vars / task bot-args, and the concurrency-queue place.
+  entry_input?: Record<string, unknown>;
+  queue_position?: number;
+
+  // IN_PROGRESS lane — node progress for the root and the whole tree.
+  executed_nodes: number;
+  total_nodes: number;
+  tree_executed_nodes: number;
+  tree_total_nodes: number;
+  descendant_count?: number;
+  pending_reviews?: PipelineBoardPendingReview[];
+
+  // DONE lane — the pipeline's output (final_answer, else latest artifact).
+  output?: string;
+
   attempts?: PipelineBoardAttempt[];
-  children_count?: number;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface PipelineBoardDetail {
-  board: PipelineBoardIdentity;
+// The local pipeline-concurrency gate. When `enabled` is false the other
+// fields are zero and the TODO lane only holds not-yet-launched native tasks.
+export interface PipelineConcurrency {
+  enabled: boolean;
+  max: number;
+  active: number;
+  waiting: number;
+}
+
+// PipelineBoard is the aggregate global read model returned by the board GET.
+export interface PipelineBoard {
   columns: PipelineBoardColumn[];
   cards: PipelineBoardCard[];
-  generated_at?: string;
-  topology_error?: string;
-}
-
-export interface PipelineBoardListItem {
-  board: PipelineBoardIdentity;
-  column_count?: number;
-  card_count?: number;
-  awaiting_input_count?: number;
+  concurrency: PipelineConcurrency;
   generated_at?: string;
   topology_error?: string;
 }
 
 export interface CreatePipelineTaskInput {
+  // The bot the created task runs as. Required — the board is global, so the
+  // bot comes from the request body (not a URL path).
+  bot: string;
   title: string;
   body?: string;
   labels?: string[];
   priority?: number;
   bot_args?: Record<string, string>;
-  start: boolean;
+  start?: boolean;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -101,67 +125,65 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function booleanValue(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
+function intValue(value: unknown, fallback = 0): number {
+  const n = numberValue(value);
+  return n === undefined ? fallback : Math.trunc(n);
+}
+
+function booleanValue(value: unknown): boolean {
+  return value === true;
 }
 
 function stringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const out = value.filter((entry): entry is string => typeof entry === "string");
-  return out.length > 0 ? out : [];
+  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function normalizeAttempts(value: unknown): PipelineBoardAttempt[] | undefined {
-  if (Array.isArray(value)) {
-    return value.map((entry) => {
-      const source = record(entry) ?? {};
-      return {
-        ...(text(source.run_id) ? { run_id: text(source.run_id) } : {}),
-        ...(text(source.status) ? { status: text(source.status) } : {}),
-        ...(text(source.at) ? { at: text(source.at) } : {}),
-      };
-    });
-  }
-  // A few early prototypes returned only the count. Preserve that count in
-  // the canonical array shape so rendering can consistently use `.length`.
-  const legacyCount = numberValue(value);
-  if (legacyCount === undefined) return undefined;
-  return Array.from({ length: Math.max(0, Math.trunc(legacyCount)) }, () => ({}));
+  if (!Array.isArray(value)) return undefined;
+  return value.map((entry) => {
+    const source = record(entry) ?? {};
+    return {
+      ...(text(source.run_id) ? { run_id: text(source.run_id) } : {}),
+      ...(text(source.status) ? { status: text(source.status) } : {}),
+      ...(text(source.at) ? { at: text(source.at) } : {}),
+    };
+  });
 }
 
-function normalizeIdentity(value: unknown): PipelineBoardIdentity {
-  const source = record(value) ?? {};
-  // bot/name aliases keep the client tolerant of early backend revisions;
-  // the rest of Studio only consumes the canonical shape below.
-  const botID =
-    text(source.bot_id) ?? text(source.bot) ?? text(source.name) ?? text(source.id) ?? "";
-  const id = text(source.id) ?? botID;
-  return {
-    id,
-    bot_id: botID,
-    display_name:
-      text(source.display_name) ?? text(source.title) ?? text(source.name) ?? botID,
-    ...(text(source.icon) ? { icon: text(source.icon) } : {}),
-    ...(text(source.description) ? { description: text(source.description) } : {}),
-    enabled: booleanValue(source.enabled) ?? true,
-  };
+function normalizePendingReviews(
+  value: unknown,
+): PipelineBoardPendingReview[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((entry) => {
+    const source = record(entry) ?? {};
+    const questions = record(source.questions) ?? undefined;
+    return {
+      run_id: text(source.run_id) ?? "",
+      ...(text(source.workflow_name)
+        ? { workflow_name: text(source.workflow_name) }
+        : {}),
+      ...(text(source.bot_id) ? { bot_id: text(source.bot_id) } : {}),
+      ...(text(source.node_id) ? { node_id: text(source.node_id) } : {}),
+      ...(text(source.interaction_id)
+        ? { interaction_id: text(source.interaction_id) }
+        : {}),
+      ...(questions ? { questions } : {}),
+      depth: Math.max(0, intValue(source.depth, 0)),
+    };
+  });
 }
 
-function normalizeColumn(value: unknown, index: number): PipelineBoardColumn {
+export function normalizePipelineBoardColumn(
+  value: unknown,
+  index = 0,
+): PipelineBoardColumn {
   const source = record(value) ?? {};
-  const nodeID = text(source.node_id);
-  const id = text(source.id) ?? nodeID ?? `column-${index + 1}`;
+  const id = text(source.id) ?? `column-${index + 1}`;
   return {
     id,
-    title: text(source.title) ?? text(source.display_name) ?? text(source.name) ?? id,
-    kind: text(source.kind) ?? (nodeID ? "interaction" : "state"),
-    ...(text(source.workflow_name)
-      ? { workflow_name: text(source.workflow_name) }
-      : {}),
-    ...(nodeID ? { node_id: nodeID } : {}),
-    ...(text(source.interaction_mode)
-      ? { interaction_mode: text(source.interaction_mode) }
-      : {}),
+    title: text(source.title) ?? id,
+    kind: text(source.kind) ?? id,
   };
 }
 
@@ -170,25 +192,17 @@ export function normalizePipelineBoardCard(
   index = 0,
 ): PipelineBoardCard {
   const source = record(value) ?? {};
-  const checkpoint = record(source.checkpoint);
-  const issueID = text(source.issue_id) ?? text(source.issue);
-  const runID = text(source.run_id) ?? text(source.run);
-  const nodeID = text(source.node_id) ?? text(checkpoint?.node_id);
-  const questions =
-    record(source.questions) ??
-    record(checkpoint?.questions) ??
-    record(checkpoint?.interaction_questions) ??
-    undefined;
-  const attempts = normalizeAttempts(source.attempts);
+  const runID = text(source.run_id);
+  const issueID = text(source.issue_id);
   const id = text(source.id) ?? runID ?? issueID ?? `card-${index + 1}`;
-  const depth = Math.max(0, Math.trunc(numberValue(source.depth) ?? 0));
+  const entryInput = record(source.entry_input) ?? undefined;
+  const attempts = normalizeAttempts(source.attempts);
+  const reviews = normalizePendingReviews(source.pending_reviews);
   return {
     id,
     kind: text(source.kind) ?? (runID ? "run" : "task"),
-    column_id:
-      text(source.column_id) ?? text(source.column) ?? text(source.state) ?? "unmapped",
-    title:
-      text(source.title) ?? text(source.issue_title) ?? text(source.workflow_name) ?? id,
+    column_id: text(source.column_id) ?? "todo",
+    title: text(source.title) ?? id,
     ...(text(source.body) ? { body: text(source.body) } : {}),
     ...(issueID ? { issue_id: issueID } : {}),
     ...(text(source.issue_state) ? { issue_state: text(source.issue_state) } : {}),
@@ -199,53 +213,51 @@ export function normalizePipelineBoardCard(
       ? { priority: numberValue(source.priority) }
       : {}),
     ...(runID ? { run_id: runID } : {}),
-    ...(text(source.root_run_id) ? { root_run_id: text(source.root_run_id) } : {}),
-    ...(text(source.parent_run_id) ?? text(source.parent_id)
-      ? { parent_run_id: text(source.parent_run_id) ?? text(source.parent_id) }
-      : {}),
-    depth,
     ...(text(source.workflow_name)
       ? { workflow_name: text(source.workflow_name) }
       : {}),
-    ...(text(source.bot_id) ?? text(source.bot)
-      ? { bot_id: text(source.bot_id) ?? text(source.bot) }
-      : {}),
+    ...(text(source.bot_id) ? { bot_id: text(source.bot_id) } : {}),
     ...(text(source.status) ? { status: text(source.status) } : {}),
     ...(text(source.error) ? { error: text(source.error) } : {}),
-    ...(nodeID ? { node_id: nodeID } : {}),
-    ...(text(source.interaction_id) ?? text(checkpoint?.interaction_id)
-      ? {
-          interaction_id:
-            text(source.interaction_id) ?? text(checkpoint?.interaction_id),
-        }
+    ...(entryInput ? { entry_input: entryInput } : {}),
+    ...(numberValue(source.queue_position) !== undefined
+      ? { queue_position: numberValue(source.queue_position) }
       : {}),
-    ...(questions ? { questions } : {}),
-    ...(text(source.created_at) ? { created_at: text(source.created_at) } : {}),
-    ...(text(source.updated_at) ? { updated_at: text(source.updated_at) } : {}),
+    executed_nodes: intValue(source.executed_nodes, 0),
+    total_nodes: intValue(source.total_nodes, 0),
+    tree_executed_nodes: intValue(source.tree_executed_nodes, 0),
+    tree_total_nodes: intValue(source.tree_total_nodes, 0),
+    ...(numberValue(source.descendant_count) !== undefined
+      ? { descendant_count: numberValue(source.descendant_count) }
+      : {}),
+    ...(reviews !== undefined ? { pending_reviews: reviews } : {}),
+    ...(text(source.output) ? { output: text(source.output) } : {}),
     ...(attempts !== undefined ? { attempts } : {}),
-    ...(numberValue(source.children_count) !== undefined
-      ? { children_count: numberValue(source.children_count) }
-      : {}),
+    created_at: text(source.created_at) ?? "",
+    updated_at: text(source.updated_at) ?? "",
+  };
+}
+
+function normalizeConcurrency(value: unknown): PipelineConcurrency {
+  const source = record(value) ?? {};
+  return {
+    enabled: booleanValue(source.enabled),
+    max: intValue(source.max, 0),
+    active: intValue(source.active, 0),
+    waiting: intValue(source.waiting, 0),
   };
 }
 
 // Keep all wire-shape tolerance in this module. Views always receive one
-// canonical root regardless of whether an early server build used `identity`
-// instead of `board`, or wrapped the detail under a `pipeline_board` key.
-export function normalizePipelineBoardDetail(value: unknown): PipelineBoardDetail {
-  const outer = record(value) ?? {};
-  const root = record(outer.pipeline_board) ?? outer;
-  const boardSource = record(root.board) ?? record(root.identity) ?? root;
+// canonical board with the four fixed columns and folded root cards.
+export function normalizePipelineBoard(value: unknown): PipelineBoard {
+  const root = record(value) ?? {};
   const columns = Array.isArray(root.columns) ? root.columns : [];
-  const cards = Array.isArray(root.cards)
-    ? root.cards
-    : Array.isArray(root.tasks)
-      ? root.tasks
-      : [];
+  const cards = Array.isArray(root.cards) ? root.cards : [];
   return {
-    board: normalizeIdentity(boardSource),
-    columns: columns.map(normalizeColumn),
+    columns: columns.map(normalizePipelineBoardColumn),
     cards: cards.map(normalizePipelineBoardCard),
+    concurrency: normalizeConcurrency(root.concurrency),
     ...(text(root.generated_at) ? { generated_at: text(root.generated_at) } : {}),
     ...(text(root.topology_error)
       ? { topology_error: text(root.topology_error) }
@@ -253,72 +265,18 @@ export function normalizePipelineBoardDetail(value: unknown): PipelineBoardDetai
   };
 }
 
-export function normalizePipelineBoardList(value: unknown): PipelineBoardListItem[] {
-  const root = record(value);
-  const items = Array.isArray(value)
-    ? value
-    : Array.isArray(root?.boards)
-      ? root.boards
-      : Array.isArray(root?.pipeline_boards)
-        ? root.pipeline_boards
-        : [];
-  return items.map((item) => {
-    const source = record(item) ?? {};
-    const detail = normalizePipelineBoardDetail(source);
-    const boardSource = record(source.board) ?? record(source.identity) ?? source;
-    const hasColumns = Array.isArray(source.columns);
-    const hasCards = Array.isArray(source.cards) || Array.isArray(source.tasks);
-    const columnCount =
-      numberValue(source.column_count) ?? (hasColumns ? detail.columns.length : undefined);
-    const cardCount =
-      numberValue(source.card_count) ?? (hasCards ? detail.cards.length : undefined);
-    const explicitAwaiting = numberValue(source.awaiting_input_count);
-    const awaiting =
-      explicitAwaiting ??
-      (hasCards
-        ? detail.cards.filter((card) => card.status === "paused_waiting_human").length
-        : undefined);
-    return {
-      board: normalizeIdentity(boardSource),
-      ...(columnCount !== undefined ? { column_count: columnCount } : {}),
-      ...(cardCount !== undefined ? { card_count: cardCount } : {}),
-      ...(awaiting !== undefined ? { awaiting_input_count: awaiting } : {}),
-      ...(text(source.generated_at)
-        ? { generated_at: text(source.generated_at) }
-        : {}),
-      ...(text(source.topology_error)
-        ? { topology_error: text(source.topology_error) }
-        : {}),
-    };
-  });
-}
-
-export async function listPipelineBoards(opts?: {
+export async function getPipelineBoard(opts?: {
   signal?: AbortSignal;
-}): Promise<PipelineBoardListItem[]> {
+}): Promise<PipelineBoard> {
   const raw = await apiRequest<unknown>(BASE, { signal: opts?.signal });
-  return normalizePipelineBoardList(raw);
-}
-
-export async function getPipelineBoard(
-  botID: string,
-  opts?: { signal?: AbortSignal },
-): Promise<PipelineBoardDetail> {
-  const raw = await apiRequest<unknown>(`${BASE}/${encodeURIComponent(botID)}`, {
-    signal: opts?.signal,
-  });
-  return normalizePipelineBoardDetail(raw);
+  return normalizePipelineBoard(raw);
 }
 
 export async function createPipelineTask(
-  botID: string,
   input: CreatePipelineTaskInput,
 ): Promise<NativeIssue> {
-  return apiRequest<NativeIssue>(
-    `${BASE}/${encodeURIComponent(botID)}/tasks`,
-    {
-      method: "POST",
-      body: JSON.stringify(input),
-    },
-  );
+  return apiRequest<NativeIssue>(`${BASE}/tasks`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }

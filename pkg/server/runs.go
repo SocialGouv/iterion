@@ -227,6 +227,12 @@ func (b *launchBudgetSpec) toOverrides() *ir.BudgetOverrides {
 type launchRunResponse struct {
 	RunID  string `json:"run_id"`
 	Status string `json:"status"`
+	// QueuePosition is the 1-based place in the local pipeline-concurrency
+	// queue when the launch was deferred (the machine was at its
+	// max-concurrent-pipelines cap). 0 when the run started immediately.
+	// The studio uses it to tell the operator "queued at position N"
+	// instead of a misleading "running".
+	QueuePosition int `json:"queue_position,omitempty"`
 }
 
 type resumeRunRequest struct {
@@ -409,8 +415,17 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	span.SetAttributes(attribute.String("iterion.run_id", res.RunID))
+	// A deferred launch (over the local concurrency cap) reports the queued
+	// status + position so the studio doesn't claim "running" for a
+	// pipeline still waiting for a slot. QueuePosition is 0 for the normal
+	// immediate-start path (and always 0 in cloud mode, which uses the
+	// NATS queue, not this local gate).
+	status := store.RunStatusRunning
+	if res.QueuePosition > 0 {
+		status = store.RunStatusQueued
+	}
 	w.WriteHeader(http.StatusAccepted)
-	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(store.RunStatusRunning)})
+	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(status), QueuePosition: res.QueuePosition})
 }
 
 // resolveCrossStore inspects the `?store=` query parameter and, when

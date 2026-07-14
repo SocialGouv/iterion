@@ -168,6 +168,32 @@ func AsPIDStore(s RunStore) PIDStore {
 	return p
 }
 
+// QueuedRunCreator is the optional interface for stores that can persist
+// a run document directly in the `queued` state (so it surfaces on the
+// pipeline board's TODO lane while it waits for a local concurrency
+// slot). Cloud stores already create runs queued via CreateRun; only the
+// filesystem store — which creates runs `running` — needs this extra
+// entry point. The local pipeline-concurrency queue reaches it through
+// AsQueuedRunCreator, so a store that does not implement it cleanly
+// disables the persisted-queue behaviour (the run then starts eagerly).
+type QueuedRunCreator interface {
+	// CreateQueuedRun persists a new run with status "queued", stamping
+	// the file path + bot id so the board can render it and the local
+	// scheduler can start it later via the engine's queued→running
+	// pickup. No-clobber, like CreateRun.
+	CreateQueuedRun(ctx context.Context, id, workflowName, filePath, botID string, inputs map[string]any) (*Run, error)
+}
+
+// AsQueuedRunCreator returns s as QueuedRunCreator when the backend can
+// persist queued run docs, or nil otherwise. Check for nil before use.
+func AsQueuedRunCreator(s RunStore) QueuedRunCreator {
+	if s == nil {
+		return nil
+	}
+	q, _ := s.(QueuedRunCreator)
+	return q
+}
+
 // RunFilesStore is an optional interface implemented by stores that
 // can host arbitrary tool-produced files alongside a run. Tools running
 // inside the sandbox write into a per-run scratch directory bind-mounted

@@ -77,10 +77,10 @@ func routeSchemas() map[string]routeOp {
 		"POST /api/admin/orgs/{id}/restore": {response: orgView{}},
 		"POST /api/admin/orgs/{id}/status":  {request: setOrgStatusReq{}, response: orgView{}},
 
-		// Bot-bound execution projection (additive to the native backlog).
-		"GET /api/v1/pipeline-boards":       {response: pipelineBoardListResponse{}},
-		"GET /api/v1/pipeline-boards/{bot}": {response: PipelineBoardResponse{}},
-		"POST /api/v1/pipeline-boards/{bot}/tasks": {
+		// Global pipeline board — a single execution projection of every
+		// root pipeline (ADR-073). Additive to the native backlog (/board).
+		"GET /api/v1/pipeline-board": {response: PipelineBoardResponse{}},
+		"POST /api/v1/pipeline-board/tasks": {
 			request:  pipelineBoardTaskRequest{},
 			response: native.Issue{},
 		},

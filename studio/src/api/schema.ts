@@ -3312,15 +3312,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/pipeline-boards": {
+    "/api/v1/pipeline-board": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** GET /api/v1/pipeline-boards */
-        get: operations["getV1PipelineBoards"];
+        /** GET /api/v1/pipeline-board */
+        get: operations["getV1PipelineBoard"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3329,38 +3329,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/pipeline-boards/{bot}": {
+    "/api/v1/pipeline-board/tasks": {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                bot: string;
-            };
-            cookie?: never;
-        };
-        /** GET /api/v1/pipeline-boards/{bot} */
-        get: operations["getV1PipelineBoardsByBot"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/pipeline-boards/{bot}/tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                bot: string;
-            };
+            path?: never;
             cookie?: never;
         };
         get?: never;
         put?: never;
-        /** POST /api/v1/pipeline-boards/{bot}/tasks */
-        post: operations["postV1PipelineBoardsByBotTasks"];
+        /** POST /api/v1/pipeline-board/tasks */
+        post: operations["postV1PipelineBoardTasks"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3835,55 +3814,63 @@ export interface components {
             attempts?: components["schemas"]["PipelineBoardAttempt"][];
             body?: string;
             bot_id?: string;
-            children_count?: number;
             column_id: string;
             /** Format: date-time */
             created_at: string;
-            depth: number;
+            descendant_count?: number;
+            entry_input?: {
+                [key: string]: unknown;
+            };
             error?: string;
+            executed_nodes: number;
             id: string;
-            interaction_id?: string;
             issue_id?: string;
             issue_state?: string;
             kind: string;
             labels?: string[];
-            node_id?: string;
-            parent_run_id?: string;
+            output?: string;
+            pending_reviews?: components["schemas"]["PipelineBoardPendingReview"][];
             priority?: number;
-            questions?: {
-                [key: string]: unknown;
-            };
-            root_run_id?: string;
+            queue_position?: number;
             run_id?: string;
             status?: string;
             title: string;
+            total_nodes: number;
+            tree_executed_nodes: number;
+            tree_total_nodes: number;
             /** Format: date-time */
             updated_at: string;
             workflow_name?: string;
         };
         PipelineBoardColumn: {
             id: string;
-            interaction_mode?: string;
             kind: string;
-            node_id?: string;
             title: string;
+        };
+        PipelineBoardPendingReview: {
+            bot_id?: string;
+            depth: number;
+            interaction_id?: string;
+            node_id?: string;
+            questions?: {
+                [key: string]: unknown;
+            };
+            run_id: string;
             workflow_name?: string;
         };
-        PipelineBoardIdentity: {
-            bot_id: string;
-            description?: string;
-            display_name: string;
-            enabled: boolean;
-            icon?: string;
-            id: string;
-        };
         PipelineBoardResponse: {
-            board: components["schemas"]["PipelineBoardIdentity"];
             cards: components["schemas"]["PipelineBoardCard"][];
             columns: components["schemas"]["PipelineBoardColumn"][];
+            concurrency: components["schemas"]["PipelineConcurrencyStatus"];
             /** Format: date-time */
             generated_at: string;
             topology_error?: string;
+        };
+        PipelineConcurrencyStatus: {
+            active: number;
+            enabled: boolean;
+            max: number;
+            waiting: number;
         };
         RepoSummary: {
             can_admin: boolean;
@@ -3991,11 +3978,9 @@ export interface components {
             status: string;
             suspend_reason?: string;
         };
-        pipelineBoardListResponse: {
-            boards: components["schemas"]["PipelineBoardIdentity"][];
-        };
         pipelineBoardTaskRequest: {
             body?: string;
+            bot: string;
             bot_args?: {
                 [key: string]: string;
             };
@@ -8425,33 +8410,11 @@ export interface operations {
             };
         };
     };
-    getV1PipelineBoards: {
+    getV1PipelineBoard: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["pipelineBoardListResponse"];
-                };
-            };
-        };
-    };
-    getV1PipelineBoardsByBot: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                bot: string;
-            };
             cookie?: never;
         };
         requestBody?: never;
@@ -8467,13 +8430,11 @@ export interface operations {
             };
         };
     };
-    postV1PipelineBoardsByBotTasks: {
+    postV1PipelineBoardTasks: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                bot: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
