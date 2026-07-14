@@ -571,10 +571,19 @@ func TestDispatcherGivesUpAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("dispatch calls = %d, want 2 (initial + 1 retry, then give up)", got)
 	}
 	// No lingering bookkeeping: the retry entry was dropped on give-up.
-	snap := c.Snapshot()
-	if len(snap.Running) != 0 || len(snap.Retries) != 0 {
-		t.Fatalf("after give-up: running=%d retries=%d, want 0/0", len(snap.Running), len(snap.Retries))
+	// The tracker's "blocked" write happens on the give-up WORKER before
+	// the actor applies cmdDropRetry and republishes — so poll for the
+	// snapshot to converge instead of asserting a single read (the -race
+	// CI flake: retries=1 observed in the gap).
+	for time.Now().Before(deadline) {
+		snap := c.Snapshot()
+		if len(snap.Running) == 0 && len(snap.Retries) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	snap := c.Snapshot()
+	t.Fatalf("after give-up: running=%d retries=%d, want 0/0", len(snap.Running), len(snap.Retries))
 }
 
 func TestDispatcherRespectsClaimConflict(t *testing.T) {
