@@ -233,23 +233,33 @@ func TestGitHubWebhook_TicketPRRoutesToBilly(t *testing.T) {
 
 // TestGitHubWebhook_ForkTicketPRStaysOnReviewer: the fork guard — a fork PR that
 // closes an issue must NOT route to the mutating bot; it stays on the reviewer.
-func TestGitHubWebhook_ForkTicketPRStaysOnReviewer(t *testing.T) {
+// A fork PR NEVER auto-launches a bot — not even the reviewer — regardless of
+// block_fork_prs. The auto path is untrusted (adversary-controlled code + budget
+// exhaustion); a repo collaborator triggers a bot manually via a command
+// instead (gated on CollaboratorPermission in handlePRForgeComment).
+func TestGitHubWebhook_ForkPRBlockedFromAutoLaunch(t *testing.T) {
 	s := newWebhookTestServer(t)
-	var gotBot string
-	s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
-		gotBot = botID
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
 		return "run-x", nil
 	}
 	cfg, pt := ghConfig(t, s)
 	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+	// block_fork_prs deliberately NOT set — the guard is unconditional now.
 
 	w := httptest.NewRecorder()
 	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghForkTicketPR, prforge.EventHeaderPullRequest, pt))
-	if w.Code != http.StatusAccepted {
+	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	if gotBot != "review-pr" {
-		t.Fatalf("fork PR must stay on the reviewer (fork guard), got %q", gotBot)
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("fork PR must be filtered on the auto path, got %q", resp["status"])
+	}
+	if launched != 0 {
+		t.Fatalf("fork PR must NOT auto-launch any bot, launched=%d", launched)
 	}
 }
 

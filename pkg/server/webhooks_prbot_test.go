@@ -66,6 +66,16 @@ func TestSelectForgePRBot(t *testing.T) {
 		ProjectPath: "acme/widgets", HeadRepoFullName: "acme/widgets",
 		Title: "Chore: tidy", Description: "no linked issue here",
 	}
+	// A dependency-bot PR that even references a ticket must still be excluded
+	// from the improve loop — the dependency guard owns that lane.
+	depBotPR := prforge.Parsed{
+		ProjectPath: "acme/widgets", HeadRepoFullName: "acme/widgets",
+		Title: "chore(deps): bump lib", Description: "Fixes #12", SenderLogin: "dependabot[bot]",
+	}
+	renovatePR := prforge.Parsed{
+		ProjectPath: "acme/widgets", HeadRepoFullName: "acme/widgets",
+		Title: "chore(deps): bump lib", Description: "Fixes #12", SenderLogin: "renovate[bot]",
+	}
 
 	cases := []struct {
 		name string
@@ -78,6 +88,8 @@ func TestSelectForgePRBot(t *testing.T) {
 		{"fork ticket PR → fall through (fork guard)", billyEnabled, forkTicketPR, ""},
 		{"standalone PR (no ticket) → fall through", billyEnabled, standalonePR, ""},
 		{"ticket PR but billy not enabled → fall through", billyDisabled, ticketPR, ""},
+		{"dependabot ticket PR → excluded from improve loop", billyEnabled, depBotPR, ""},
+		{"renovate ticket PR → excluded from improve loop", billyEnabled, renovatePR, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,5 +141,26 @@ func TestBranchImproveVars_AsPR(t *testing.T) {
 	}
 	if _, direct := v["push_branch"]; direct {
 		t.Errorf("push_branch must NOT be set in as-PR mode (no in-place push): %v", v)
+	}
+}
+
+func TestIsDependencyBotAuthor(t *testing.T) {
+	for _, tc := range []struct {
+		login string
+		want  bool
+	}{
+		{"dependabot[bot]", true},
+		{"Dependabot[bot]", true},
+		{"renovate[bot]", true},
+		{"renovate", true},
+		{"renovate-bot", true},
+		{"renovate[my-org]", true},
+		{"", false},
+		{"devthejo", false},
+		{"someone-renovating", false},
+	} {
+		if got := isDependencyBotAuthor(tc.login); got != tc.want {
+			t.Errorf("isDependencyBotAuthor(%q) = %v, want %v", tc.login, got, tc.want)
+		}
 	}
 }
