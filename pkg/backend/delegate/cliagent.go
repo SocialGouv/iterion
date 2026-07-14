@@ -372,15 +372,14 @@ func envSliceToMap(resolve func(context.Context) map[string]string, ctx context.
 	return resolve(ctx)
 }
 
-// parseStreamJSONText walks a claude-code-style NDJSON stream (`type: assistant`
-// text blocks + a terminal `type: result`) and extracts the assistant's final
-// text, session id, and token usage. It is defensive: unrecognised lines are
-// skipped, and when no `result` event is present it accumulates assistant text
-// blocks; when nothing parses it falls back to the raw stream. Third-party
-// agent CLIs that emit `--output-format stream-json` overwhelmingly mirror this
-// event shape; a protocol whose stream differs supplies its own ParseOutput.
+// parseStreamJSONText walks both the legacy claude-code-style NDJSON stream
+// (`type: assistant` + terminal `type: result`) and kimi-code 0.23+'s native
+// role stream (`role: assistant`, followed by a `role: meta` resume hint).
+// It extracts the assistant's final text, session id, and token usage. Unknown
+// lines are skipped; when nothing parses it falls back to the raw stream.
 func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
-	var assistantText strings.Builder
+	var legacyAssistantText strings.Builder
+	var nativeAssistantText string
 	var resultText string
 	haveResult := false
 
@@ -396,15 +395,37 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 		if sid, ok := ev["session_id"].(string); ok && sid != "" {
 			sessionID = sid
 		}
+		if u, ok := ev["usage"].(map[string]any); ok {
+			tokens += asInt(u["input_tokens"]) + asInt(u["output_tokens"])
+		}
+		if role, _ := ev["role"].(string); role == "assistant" {
+			var message strings.Builder
+			switch content := ev["content"].(type) {
+			case string:
+				message.WriteString(content)
+			case []any:
+				for _, item := range content {
+					if block, ok := item.(map[string]any); ok {
+						if value, ok := block["text"].(string); ok {
+							message.WriteString(value)
+						}
+					}
+				}
+			}
+			// Native kimi role events are complete assistant messages, not
+			// token deltas. Tool-using sessions can contain an early status
+			// message followed by the actual final answer; keep the latest
+			// non-empty message instead of concatenating both into invalid JSON.
+			if message.Len() > 0 {
+				nativeAssistantText = message.String()
+			}
+		}
 		typ, _ := ev["type"].(string)
 		switch typ {
 		case "result":
 			if r, ok := ev["result"].(string); ok {
 				resultText = r
 				haveResult = true
-			}
-			if u, ok := ev["usage"].(map[string]any); ok {
-				tokens += asInt(u["input_tokens"]) + asInt(u["output_tokens"])
 			}
 		case "assistant":
 			if msg, ok := ev["message"].(map[string]any); ok {
@@ -413,7 +434,7 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 						if blk, ok := c.(map[string]any); ok {
 							if t, _ := blk["type"].(string); t == "text" {
 								if txt, ok := blk["text"].(string); ok {
-									assistantText.WriteString(txt)
+									legacyAssistantText.WriteString(txt)
 								}
 							}
 						}
@@ -426,8 +447,10 @@ func parseStreamJSONText(stdout string) (text, sessionID string, tokens int) {
 	switch {
 	case haveResult && resultText != "":
 		return resultText, sessionID, tokens
-	case assistantText.Len() > 0:
-		return assistantText.String(), sessionID, tokens
+	case nativeAssistantText != "":
+		return nativeAssistantText, sessionID, tokens
+	case legacyAssistantText.Len() > 0:
+		return legacyAssistantText.String(), sessionID, tokens
 	default:
 		// Nothing recognisable — hand back the raw stream so the schema-aware
 		// fallback can still try to extract a JSON object from it.

@@ -53,7 +53,7 @@ func TestCLIAgentBuildArgs(t *testing.T) {
 		}
 		promptArg := task.BuildSystemPrompt() + "\n\n" + task.UserPrompt
 		args, stdin := b.buildArgs(kimiProtocol, task, promptArg, task.BuildSystemPrompt())
-		want := []string{"-p", "be terse\n\nhello", "--output-format", "stream-json", "-m", "kimi-k2"}
+		want := []string{"-p", "be terse\n\nhello", "--output-format", "stream-json", "-m", "moonshot/kimi-k2"}
 		if !reflect.DeepEqual(args, want) {
 			t.Fatalf("args = %v, want %v", args, want)
 		}
@@ -98,10 +98,10 @@ func TestCLIAgentBuildArgs(t *testing.T) {
 
 func TestKimiMapModel(t *testing.T) {
 	cases := map[string]string{
-		"moonshot/kimi-k2": "kimi-k2",
-		"kimi/k2":          "k2",
+		"moonshot/kimi-k2": "moonshot/kimi-k2",
+		"kimi/k2":          "kimi/k2",
 		"kimi-k2":          "kimi-k2",
-		"  moonshot/x  ":   "x",
+		"  moonshot/x  ":   "moonshot/x",
 	}
 	for in, want := range cases {
 		if got := kimiMapModel(in); got != want {
@@ -111,6 +111,36 @@ func TestKimiMapModel(t *testing.T) {
 }
 
 func TestParseStreamJSONText(t *testing.T) {
+	t.Run("kimi 0.23 native role stream", func(t *testing.T) {
+		stream := `{"role":"assistant","content":"final answer"}
+{"role":"meta","type":"session.resume_hint","session_id":"sess-current","content":"resume"}`
+		text, sid, tokens := parseStreamJSONText(stream)
+		if text != "final answer" {
+			t.Errorf("text = %q, want final answer", text)
+		}
+		if sid != "sess-current" {
+			t.Errorf("sessionID = %q, want sess-current", sid)
+		}
+		if tokens != 0 {
+			t.Errorf("tokens = %d, want 0 when stream reports no usage", tokens)
+		}
+	})
+
+	t.Run("kimi native role stream keeps final assistant message", func(t *testing.T) {
+		stream := `{"role":"assistant","content":"I will inspect the files first."}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool-1"}]}
+{"role":"tool","tool_call_id":"tool-1","content":"done"}
+{"role":"assistant","content":"{\"answer\":\"42\"}"}
+{"role":"meta","type":"session.resume_hint","session_id":"sess-tools"}`
+		text, sid, _ := parseStreamJSONText(stream)
+		if text != `{"answer":"42"}` {
+			t.Errorf("text = %q, want final JSON message", text)
+		}
+		if sid != "sess-tools" {
+			t.Errorf("sessionID = %q, want sess-tools", sid)
+		}
+	})
+
 	t.Run("result event wins", func(t *testing.T) {
 		stream := `{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}
 {"type":"result","result":"final answer","session_id":"sess-1","usage":{"input_tokens":10,"output_tokens":5}}`
@@ -152,10 +182,11 @@ func TestCLIAgentExecute(t *testing.T) {
 	}
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "fakekimi")
-	// The script emits a stream-json result whose text is a JSON object, so
+	// The script emits kimi-code 0.23's role stream whose content is a JSON object, so
 	// the schema-aware fallback extracts it into Result.Output.
 	script := `#!/bin/sh
-printf '%s\n' '{"type":"result","result":"{\"answer\":\"42\"}","session_id":"s9","usage":{"input_tokens":3,"output_tokens":7}}'
+printf '%s\n' '{"role":"assistant","content":"{\"answer\":\"42\"}"}'
+printf '%s\n' '{"role":"meta","type":"session.resume_hint","session_id":"s9"}'
 `
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 — test fixture must be executable
 		t.Fatal(err)
@@ -184,8 +215,8 @@ printf '%s\n' '{"type":"result","result":"{\"answer\":\"42\"}","session_id":"s9"
 	if got := res.Output["answer"]; got != "42" {
 		t.Errorf("Output[answer] = %v, want 42", got)
 	}
-	if res.Tokens != 10 {
-		t.Errorf("Tokens = %d, want 10", res.Tokens)
+	if res.Tokens != 0 {
+		t.Errorf("Tokens = %d, want 0 when kimi reports no usage", res.Tokens)
 	}
 }
 
