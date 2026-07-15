@@ -103,6 +103,13 @@ type yamlNATSConfig struct {
 	Stream    *string `yaml:"stream"`
 	KVBucket  *string `yaml:"kv_bucket"`
 	DLQStream *string `yaml:"dlq_stream"`
+
+	MaxAckPending *int    `yaml:"max_ack_pending"`
+	AckWait       *string `yaml:"ack_wait"`
+	MaxDeliver    *int    `yaml:"max_deliver"`
+	MaxAge        *string `yaml:"max_age"`
+	DLQMaxAge     *string `yaml:"dlq_max_age"`
+	MaxPayload    *int    `yaml:"max_payload"`
 }
 
 type yamlMongoConfig struct {
@@ -149,6 +156,30 @@ func (y *yamlConfig) applyTo(cfg *Config) error {
 		applyString(y.NATS.Stream, &cfg.NATS.Stream)
 		applyString(y.NATS.KVBucket, &cfg.NATS.KVBucket)
 		applyString(y.NATS.DLQStream, &cfg.NATS.DLQStream)
+		applyInt(y.NATS.MaxAckPending, &cfg.NATS.MaxAckPending)
+		applyInt(y.NATS.MaxDeliver, &cfg.NATS.MaxDeliver)
+		applyInt(y.NATS.MaxPayload, &cfg.NATS.MaxPayload)
+		if y.NATS.AckWait != nil {
+			d, err := time.ParseDuration(*y.NATS.AckWait)
+			if err != nil {
+				return fmt.Errorf("nats.ack_wait: %w", err)
+			}
+			cfg.NATS.AckWait = d
+		}
+		if y.NATS.MaxAge != nil {
+			d, err := time.ParseDuration(*y.NATS.MaxAge)
+			if err != nil {
+				return fmt.Errorf("nats.max_age: %w", err)
+			}
+			cfg.NATS.MaxAge = d
+		}
+		if y.NATS.DLQMaxAge != nil {
+			d, err := time.ParseDuration(*y.NATS.DLQMaxAge)
+			if err != nil {
+				return fmt.Errorf("nats.dlq_max_age: %w", err)
+			}
+			cfg.NATS.DLQMaxAge = d
+		}
 	}
 	if y.Mongo != nil {
 		applyString(y.Mongo.URI, &cfg.Mongo.URI)

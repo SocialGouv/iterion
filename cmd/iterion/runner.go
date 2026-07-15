@@ -93,12 +93,18 @@ func runRunner(cmd *cobra.Command, _ []string) error {
 
 	// 1. NATS layer — provides the queue + KV lock bucket.
 	natsConn, err := natsq.Connect(rootCtx, natsq.Config{
-		URL:        cfg.NATS.URL,
-		StreamName: cfg.NATS.Stream,
-		DLQStream:  cfg.NATS.DLQStream,
-		KVBucket:   cfg.NATS.KVBucket,
-		LockTTL:    cfg.Runner.LockTTL,
-		Logger:     logger,
+		URL:           cfg.NATS.URL,
+		StreamName:    cfg.NATS.Stream,
+		DLQStream:     cfg.NATS.DLQStream,
+		KVBucket:      cfg.NATS.KVBucket,
+		MaxAckPending: cfg.NATS.MaxAckPending,
+		AckWait:       cfg.NATS.AckWait,
+		MaxDeliver:    cfg.NATS.MaxDeliver,
+		MaxAge:        cfg.NATS.MaxAge,
+		DLQMaxAge:     cfg.NATS.DLQMaxAge,
+		MaxPayload:    cfg.NATS.MaxPayload,
+		LockTTL:       cfg.Runner.LockTTL,
+		Logger:        logger,
 	})
 	if err != nil {
 		return fmt.Errorf("runner: connect NATS: %w", err)

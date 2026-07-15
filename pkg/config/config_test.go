@@ -480,3 +480,59 @@ func TestLoad_InvalidRunnerDurations(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_NATSQueueTuningEnvOverride(t *testing.T) {
+	clearITERION(t)
+	t.Setenv("ITERION_NATS_MAX_ACK_PENDING", "512")
+	t.Setenv("ITERION_NATS_ACK_WAIT", "15m")
+	t.Setenv("ITERION_NATS_MAX_DELIVER", "12")
+	t.Setenv("ITERION_NATS_MAX_AGE", "48h")
+	t.Setenv("ITERION_NATS_DLQ_MAX_AGE", "336h")
+	t.Setenv("ITERION_NATS_MAX_PAYLOAD", "4194304")
+	cfg, err := Load(LoadOptions{})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NATS.MaxAckPending != 512 {
+		t.Errorf("MaxAckPending = %d, want 512", cfg.NATS.MaxAckPending)
+	}
+	if cfg.NATS.AckWait != 15*time.Minute {
+		t.Errorf("AckWait = %s, want 15m", cfg.NATS.AckWait)
+	}
+	if cfg.NATS.MaxDeliver != 12 {
+		t.Errorf("MaxDeliver = %d, want 12", cfg.NATS.MaxDeliver)
+	}
+	if cfg.NATS.MaxAge != 48*time.Hour {
+		t.Errorf("MaxAge = %s, want 48h", cfg.NATS.MaxAge)
+	}
+	if cfg.NATS.DLQMaxAge != 336*time.Hour {
+		t.Errorf("DLQMaxAge = %s, want 336h", cfg.NATS.DLQMaxAge)
+	}
+	if cfg.NATS.MaxPayload != 4194304 {
+		t.Errorf("MaxPayload = %d, want 4194304", cfg.NATS.MaxPayload)
+	}
+}
+
+func TestLoad_NATSQueueTuningYAML(t *testing.T) {
+	clearITERION(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.yaml")
+	body := "nats:\n  max_ack_pending: 64\n  ack_wait: 5m\n  max_deliver: 3\n  max_age: 12h\n  dlq_max_age: 72h\n  max_payload: 1048576\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(LoadOptions{YAMLPath: path})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.NATS.MaxAckPending != 64 || cfg.NATS.MaxDeliver != 3 || cfg.NATS.MaxPayload != 1048576 {
+		t.Errorf("ints = %d/%d/%d, want 64/3/1048576", cfg.NATS.MaxAckPending, cfg.NATS.MaxDeliver, cfg.NATS.MaxPayload)
+	}
+	if cfg.NATS.AckWait != 5*time.Minute || cfg.NATS.MaxAge != 12*time.Hour || cfg.NATS.DLQMaxAge != 72*time.Hour {
+		t.Errorf("durations = %s/%s/%s, want 5m/12h/72h", cfg.NATS.AckWait, cfg.NATS.MaxAge, cfg.NATS.DLQMaxAge)
+	}
+	// Zero-value default preserved: tuning left unset inherits natsq defaults.
+	if d := Defaults(); d.NATS.MaxAckPending != 0 || d.NATS.AckWait != 0 {
+		t.Errorf("Defaults() tuning fields must stay zero (inherit natsq): %+v", d.NATS)
+	}
+}
