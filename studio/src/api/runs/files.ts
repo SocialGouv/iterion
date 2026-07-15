@@ -9,6 +9,7 @@ import type {
   RunFiles,
   RunFilesMode,
   RunHeader,
+  RunTouchedFiles,
 } from "./types";
 
 export async function listRunFiles(
@@ -21,6 +22,14 @@ export async function listRunFiles(
   return request(
     `/runs/${encodeURIComponent(runId)}/files${suffix ? `?${suffix}` : ""}`,
   );
+}
+
+// listTouchedFiles returns the files the run's LLM nodes wrote/edited,
+// with per-node attribution — derived from run events, not git. The
+// pipeline board uses it to scope (in-place runs) and annotate (all runs)
+// the produced-elements list.
+export async function listTouchedFiles(runId: string): Promise<RunTouchedFiles> {
+  return request(`/runs/${encodeURIComponent(runId)}/files/touched`);
 }
 
 export async function getRunFileDiff(

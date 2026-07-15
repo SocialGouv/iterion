@@ -678,3 +678,131 @@ func TestArtifactFileContentType_MediaTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestRunFiles_ModeProduced_LiveWorktree verifies that produced resolves to
+// the combined view while the working directory exists: committed +
+// uncommitted union, lifecycle-tagged, live=true.
+func TestRunFiles_ModeProduced_LiveWorktree(t *testing.T) {
+	srv, hs := newTestServer(t)
+	dir := initRepo(t)
+	baseSHA := revParse(t, dir, "HEAD")
+
+	commitInRunWorktree(t, dir, "b.txt", "new\n", "add b")
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedRunWithBaseline(t, srv, "produced-live", dir, baseSHA)
+
+	resp, err := http.Get(hs.URL + "/api/runs/produced-live/files?mode=produced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out runFilesResponse
+	decodeJSONResp(t, resp, &out)
+	if !out.Available || !out.Live {
+		t.Fatalf("Available=%v Live=%v reason=%q", out.Available, out.Live, out.Reason)
+	}
+	if out.Mode != modeCombined {
+		t.Errorf("Mode: want combined (produced resolves to it live), got %q", out.Mode)
+	}
+	got := map[string]gitlib.FileStatus{}
+	for _, f := range out.Files {
+		got[f.Path] = f
+	}
+	if got["b.txt"].Lifecycle != lifecycleCommitted {
+		t.Errorf("b.txt lifecycle: want %q, got %+v", lifecycleCommitted, out.Files)
+	}
+	if got["c.txt"].Lifecycle != lifecycleUncommitted {
+		t.Errorf("c.txt lifecycle: want %q, got %+v", lifecycleUncommitted, out.Files)
+	}
+}
+
+// TestRunFiles_ModeProduced_WorktreeGone verifies the produced view does NOT
+// dead-end on worktree_gone the way combined does: it falls through to the
+// historical BaseCommit..FinalCommit diff, tagging every row committed so
+// per-row diffs target the branch range.
+func TestRunFiles_ModeProduced_WorktreeGone(t *testing.T) {
+	srv, hs := newTestServer(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = srv.cfg.WorkDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(srv.cfg.WorkDir, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "a.txt"}, {"commit", "-q", "-m", "base"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = srv.cfg.WorkDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	baseSHA := revParse(t, srv.cfg.WorkDir, "HEAD")
+	if err := os.WriteFile(filepath.Join(srv.cfg.WorkDir, "b.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "b.txt"}, {"commit", "-q", "-m", "add b"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = srv.cfg.WorkDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	finalSHA := revParse(t, srv.cfg.WorkDir, "HEAD")
+
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := st.CreateRun(context.Background(), "produced-gone", "wf", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.WorkDir = "/nonexistent/host/path/.iterion/worktrees/produced-gone"
+	r.RepoRoot = srv.cfg.WorkDir
+	r.Worktree = true
+	r.Status = store.RunStatusFinished
+	r.BaseCommit = baseSHA
+	r.FinalCommit = finalSHA
+	if err := st.SaveRun(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(hs.URL + "/api/runs/produced-gone/files?mode=produced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out runFilesResponse
+	decodeJSONResp(t, resp, &out)
+	if !out.Available {
+		t.Fatalf("Available=false reason=%q, want historical fallback", out.Reason)
+	}
+	if out.Live {
+		t.Errorf("Live=true, want false")
+	}
+	found := false
+	for _, f := range out.Files {
+		if f.Path == "b.txt" {
+			found = true
+			if f.Status != "A" {
+				t.Errorf("b.txt status = %q, want A", f.Status)
+			}
+			if f.Lifecycle != lifecycleCommitted {
+				t.Errorf("b.txt lifecycle = %q, want %q", f.Lifecycle, lifecycleCommitted)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("b.txt missing from produced historical view: %+v", out.Files)
+	}
+}
