@@ -94,6 +94,7 @@ subbot run_ticket:
   with { issue: "{{outputs.plan.id}}" }   # → the child's vars
   output: ticket_verdict              # schema of the child's terminal output
   needs: worktree_slot                # optional resource lease for the child run
+  isolated: true                      # child confines writes to its own run/worktree
 
 plan -> run_ticket
 run_ticket -> merge when validated
@@ -104,10 +105,71 @@ run_ticket -> merge when validated
 - `needs:` leases a resource for the duration of the child run; the leased
   instance id (from a named pool) is passed to the child as `_lease_<resource>`
   so it can pick e.g. a worktree index.
+- `isolated:` (default `false`) is the mirror of an agent/judge node's
+  `readonly:`. See [Fanning subbots out in parallel](#fanning-subbots-out-in-parallel)
+  below — it is what makes the parallel pattern legal.
 - A depth guard bounds nested subbot recursion. Diagnostic **C119** (no `source`).
 - The runtime invokes a host-supplied `SubbotRunner`; the `iterion run` CLI
   wires one that compiles + runs the child sharing the parent store. (Studio /
   cloud wiring + parent↔child run linkage in the UI are follow-ons.)
+
+### Fanning subbots out in parallel
+
+A subbot runs a **whole child `.bot`** that may do anything, so the
+workspace-safety guard conservatively treats it as **mutating**: it refuses to
+fan the *same* subbot template out concurrently (`max_parallel_branches > 1`)
+over a `fan_out_each`, because two children could race the shared git
+worktree/index. By default the only legal subbot fan-out is therefore
+**serialized** (`max_parallel_branches: 1`).
+
+`isolated: true` **opts out of that guard**. It is an author assertion that the
+child **does not mutate the parent's shared workspace** — it confines every
+write to its own run store (`runs/<child_run_id>/`) and/or its own worktree —
+so N replays are safe to run at once. It is the exact analogue of `readonly:`
+on an agent/judge node: the runtime cannot *prove* the child is
+workspace-independent, so you certify it, and the guard then admits the
+parallel fan-out (both `fan_out_each` and static `fan_out_all`).
+
+```
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.plan.tickets}}"
+  as: ticket
+
+subbot run_ticket:
+  source: "episode.bot"
+  with { id: "{{outputs.dispatch.ticket.id}}" }
+  isolated: true        # each child writes only to its own run store
+
+dispatch -> run_ticket
+run_ticket -> collect
+```
+
+> **Contract — use `isolated:` ONLY when true.** If the child *does* write the
+> shared worktree (e.g. it commits code to the same checkout), leaving it
+> serialized (`max_parallel_branches: 1`) or giving each child a real worktree
+> (`needs: <worktree_pool>` + a child that keys its worktree off `_lease_*`) is
+> the safe path. A false `isolated:` assertion re-opens exactly the parallel
+> shared-workspace race the guard exists to prevent.
+
+Parallel child runs are **data-race safe**: they share the parent's `RunStore`,
+whose per-run artifacts/events/checkpoints are isolated by `run_id` and guarded
+by a store-wide lock, and each child gets its own engine + (if `worktree: auto`)
+its own distinct git worktree. Concurrency is bounded only by the parent's
+`max_parallel_branches` (and any `needs:` lease pool). Two accounting/hygiene
+boundaries are worth knowing before a heavy fan-out:
+
+- **Budget does not compose across the boundary.** A child run is budgeted
+  purely from its own `.bot`; the parent's `max_cost_usd` / `max_tokens` /
+  `max_duration` do **not** bound the children, so N parallel children can
+  collectively spend well past the parent's cap. Bound them with a per-child
+  budget block, the run-level `--timeout`, and an explicit
+  `max_parallel_branches`.
+- **Same-target board writes are not cross-child atomic.** If several parallel
+  subbots hold `board.*` capabilities and mutate the **same** issue or board
+  config, the last writer wins (writes never corrupt the file, but an update
+  can be lost). Give each child a distinct target, or serialize board-mutating
+  subbots.
 
 ---
 
@@ -134,9 +196,18 @@ subbot run_ticket:
   with { issue: "{{outputs.dispatch.ticket.id}}" }
   output: ticket_verdict
   needs: worktree_slot
+  isolated: true                       # each child mutates only its leased worktree
 
 run_ticket -> collect when validated   # collect: await: best_effort
 ```
+
+`isolated: true` is what makes this parallel — the `worktree_slot` lease gives
+each child a distinct worktree, and `isolated:` certifies that the child
+confines its writes there rather than to the parent's shared checkout, so the
+safety guard admits the concurrent replays. Without it the fan-out would be
+rejected (see [Fanning subbots out in parallel](#fanning-subbots-out-in-parallel));
+drop `isolated:` and add `max_parallel_branches: 1` if the children genuinely
+share one workspace.
 
 See [examples/composition/](../examples/composition/) for a runnable tool-only
 demonstration.

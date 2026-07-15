@@ -363,6 +363,10 @@ type SubbotNode struct {
 	With         []*DataMapping // vars passed to the child run (key = child var name)
 	OutputSchema string         // schema reference describing the child's terminal output
 	Needs        []string       // resource names acquired before running the child
+	// Isolated asserts the child does NOT mutate the parent's shared workspace,
+	// letting the workspace-safety guard fan this subbot out in parallel. Mirror
+	// of AgentNode/JudgeNode Readonly. Default false = conservatively mutating.
+	Isolated bool
 }
 
 // NodeKind implements Node.

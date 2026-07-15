@@ -352,6 +352,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		if err != nil {
 			spec.Logger.Warn("runview: open native board store at %s: %v — board MCP tools disabled", dispatcherStoreDir, err)
 		} else {
+			// The store owns an fsnotify watcher goroutine + inotify fd; hand
+			// it to the executor so Close() releases it. Otherwise every
+			// BuildExecutor call leaks one — acute under parallel subbot
+			// fan-out (one executor per child).
+			opts = append(opts, model.WithExtraClosers(ns))
 			boardCfg := &tool.BoardConfig{
 				Store: ns,
 				Capabilities: []string{

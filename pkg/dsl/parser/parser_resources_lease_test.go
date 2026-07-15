@@ -127,3 +127,61 @@ workflow w:
 		t.Errorf("round-trip pair.Needs = %q, want pool,slot", got)
 	}
 }
+
+// TestParseSubbotIsolated covers the `isolated:` opt-in on a subbot node
+// (workspace-independence assertion that lets the fan-out safety guard admit the
+// subbot in parallel): text → AST (Isolated bool), the default (absent = false),
+// and the round-trip through unparse.
+func TestParseSubbotIsolated(t *testing.T) {
+	src := `schema r:
+  ok: bool
+
+tool start:
+  command: ` + "`printf '{\"ok\":true}'`" + `
+  output: r
+
+subbot iso:
+  source: "./c.bot"
+  isolated: true
+  output: r
+
+subbot plain:
+  source: "./d.bot"
+  output: r
+
+workflow w:
+  entry: start
+  start -> iso
+  iso -> plain
+  plain -> done
+`
+	res := parser.Parse("test.bot", src)
+	for _, d := range res.Diagnostics {
+		t.Fatalf("unexpected diagnostic: %s", d.Error())
+	}
+	if res.File == nil || len(res.File.Subbots) != 2 {
+		t.Fatalf("expected 2 subbots, got file=%v", res.File)
+	}
+	if !res.File.Subbots[0].Isolated {
+		t.Errorf("iso.Isolated = false, want true")
+	}
+	if res.File.Subbots[1].Isolated {
+		t.Errorf("plain.Isolated = true, want false (default)")
+	}
+
+	// Round-trip: unparse must re-emit `isolated:` and re-parsing must preserve it.
+	out := unparse.Unparse(res.File)
+	if !strings.Contains(out, "isolated: true") {
+		t.Errorf("unparse did not emit `isolated: true`:\n%s", out)
+	}
+	res2 := parser.Parse("rt.bot", out)
+	for _, d := range res2.Diagnostics {
+		t.Fatalf("round-trip diagnostic: %s", d.Error())
+	}
+	if !res2.File.Subbots[0].Isolated {
+		t.Errorf("round-trip iso.Isolated = false, want true")
+	}
+	if res2.File.Subbots[1].Isolated {
+		t.Errorf("round-trip plain.Isolated = true, want false")
+	}
+}

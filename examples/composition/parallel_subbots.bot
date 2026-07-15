@@ -1,0 +1,49 @@
+## Demonstrates PARALLEL fan-out of an `isolated:` subbot (tool-only, no API keys).
+##
+##   make_items -> dispatch(fan_out_each) -> run_child(subbot, isolated) -> collect(wait_all) -> done
+##
+## `isolated: true` asserts each child run confines its writes to its own run
+## store, so the workspace-safety guard admits the concurrent replays. Drop the
+## flag (or the budget cap) and the run is rejected with WORKSPACE_SAFETY — see
+## docs/groups-iteration-subbots.md#fanning-subbots-out-in-parallel.
+schema items_out:
+  items: json
+
+schema vout:
+  validated: bool
+  echoed: string
+
+schema cout:
+  done: bool
+
+tool make_items:
+  command: `printf '{"items":[{"id":"ep1"},{"id":"ep2"},{"id":"ep3"}]}'`
+  output: items_out
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.make_items.items}}"
+  as: ep
+
+## Runs child.bot once per element, concurrently. `isolated:` is what makes the
+## parallel fan-out legal; each child only echoes its own ticket id.
+subbot run_child:
+  source: "child.bot"
+  with { ticket: "{{outputs.dispatch.ep.id}}" }
+  output: vout
+  isolated: true
+
+compute collect:
+  await: wait_all
+  output: cout
+  expr:
+    done: "true"
+
+workflow parallel_subbots:
+  entry: make_items
+  budget:
+    max_parallel_branches: 3
+  make_items -> dispatch
+  dispatch    -> run_child
+  run_child   -> collect
+  collect     -> done

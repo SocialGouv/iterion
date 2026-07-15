@@ -32,7 +32,9 @@ var readOnlyTools = map[string]bool{
 // Subbot nodes run a child .bot that may do anything (including mutate the
 // shared worktree), so they are conservatively treated as mutating — this
 // keeps validateWorkspaceSafety from admitting two subbot branches that would
-// race the same workspace. Nodes with Readonly=true are never considered
+// race the same workspace. A subbot may opt out with `isolated:` (it asserts
+// the child confines writes to its own run store / worktree), just as an
+// agent/judge node opts out with Readonly=true; neither is then considered
 // mutating.
 func isMutatingNode(node ir.Node) bool {
 	return isMutatingNodeWithBackend(node, "", nil)
@@ -50,7 +52,12 @@ func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver eff
 	case *ir.ToolNode:
 		return true
 	case *ir.SubbotNode:
-		return true
+		// A subbot marked `isolated:` asserts the child confines its writes to
+		// its own run store / worktree and never touches the parent's shared
+		// workspace, so it is safe to fan out in parallel (mirror of an
+		// agent/judge node's `readonly:`). Absent the flag, the child may do
+		// anything — conservatively mutating.
+		return !n.Isolated
 	case *ir.AgentNode:
 		if n.Readonly {
 			return false

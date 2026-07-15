@@ -68,6 +68,7 @@ type UseDecl struct {
 //	  with: { issue: "{{input.id}}" }
 //	  output: ticket_verdict
 //	  needs: worktree_slot
+//	  isolated: true
 //
 // The child executes as a real run (it may contain loops); its terminal
 // output is mapped back to `outputs.<subbot>.<field>`.
@@ -77,7 +78,12 @@ type SubbotDecl struct {
 	With   []*WithEntry // vars passed to the child run (key = var name)
 	Output string       // schema reference describing the child's terminal output
 	Needs  []string     // named resource leases held while the child runs
-	Span   Span
+	// Isolated asserts the child run does NOT mutate the parent's shared
+	// workspace (it confines writes to its own run store / worktree), so the
+	// workspace-safety guard may fan it out in parallel. Mirror of an
+	// agent/judge node's `readonly:`. Default false = conservatively mutating.
+	Isolated bool
+	Span     Span
 }
 
 // EmitDecl is an `emit` node: it publishes a named event with an optional
