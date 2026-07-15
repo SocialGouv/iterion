@@ -21,7 +21,7 @@ import (
 // Offsets are absolute stream positions seeded from RunLogSize at run
 // claim, so a resumed/redelivered run appends after the persisted tail
 // instead of overlapping it. The writer is the single producer per run
-// (queue MaxAckPending=1 + run lock); the store's unique
+// (per-pod sequential loop + run lock); the store's unique
 // (run_id, offset) index is the safety net.
 //
 // Failure policy: a flush retries a few times with a short backoff and
@@ -57,7 +57,7 @@ const (
 
 // registerLogWriter exposes the run's writer to the store's
 // LogPositionFn hook (logWriterTotal) so AppendEvent can stamp
-// Event.LogOffset. The runner is sequential (MaxAckPending=1) but the
+// Event.LogOffset. Each runner pod is sequential (one in-flight run) but the
 // map keeps the wiring correct regardless.
 func (r *Runner) registerLogWriter(runID string, w *runLogWriter) {
 	r.logWritersMu.Lock()

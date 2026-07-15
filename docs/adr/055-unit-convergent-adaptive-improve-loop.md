@@ -6,6 +6,13 @@ terminal-commit + blind-chunk-review design of the loop-bot family
 `feature_dev`) for the *improvement* use case. Piloted on
 `whole_improve_loop`, then rolled to the family.
 
+> Amended by [ADR-057](057-axis-driven-work-list-sweep.md) (the unit of
+> work became the axis-driven work-list) and superseded for the improve
+> loops by [ADR-058](058-minimal-framing-lean-on-the-agent.md) (minimal
+> framing, one campaign agent). The per-unit verify gate / incremental
+> commit / bounded-loop machinery introduced here remains the substrate
+> of the v2 campaign shape.
+
 ## Context
 
 A production-readiness dogfood of `whole_improve_loop` (Willy) against this

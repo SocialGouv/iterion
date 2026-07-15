@@ -142,3 +142,25 @@ cloud integration store) has landed as **`iterion issue import`**
   `--token-env`, never a flag value.
 
 This closes T6's self-hosted arm; the deeper T4 tree projection remains open.
+
+## Addendum (2026-07-15) — the #125 campaign shipped the deferred follow-ons
+
+The "Deferred" list above is now history — the board-as-pipeline campaign
+(GitHub epic #125, delivered 2026-07-12→14 by the Featurly/Billy factory)
+landed all four:
+
+- **T4 ticket↔runs 1:N history** — native cards keep an append-only run
+  history (`RunRefs`, newest-last; see `TestSetLastRunAppendsRunHistory`),
+  rendered as the per-card run history (#154).
+- **T4b parent/child/shards tree** — the run store carries the lineage
+  (`ParentRunID` + `ShardIndex`/`ShardCount`/`ShardLabel` on `store.Run`,
+  reverse query `ListChildRuns` — [pkg/store/iface.go](../../pkg/store/iface.go)),
+  projected as the run tree in the console and on the card (#162, #169).
+- **Per-card "awaiting input" badge** — denormalized signal, no N+1 run
+  fetch (#161).
+- **"Awaiting input" column** — a paused dispatched run's card moves into
+  the generic `awaiting_input` state and back on resume (#173), with the
+  awaiting-input lifecycle hardened for cloud parity (#179, #181).
+
+The 2026-07-13 addendum above (T6 `iterion issue import`) plus this one
+close every deferred item; the ADR is fully implemented.

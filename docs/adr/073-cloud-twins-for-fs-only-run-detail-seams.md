@@ -1,4 +1,4 @@
-# ADR-068 — Cloud twins for the three filesystem-only run-detail store seams (turns, tool blobs, artifact files)
+# ADR-073 — Cloud twins for the three filesystem-only run-detail store seams (turns, tool blobs, artifact files)
 
 - Status: accepted
 - Date: 2026-07-12
