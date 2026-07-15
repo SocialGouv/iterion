@@ -28,7 +28,10 @@ func (s *Service) enqueuePipeline(parent context.Context, runID string, spec Lau
 		}
 		created, err := qc.CreateQueuedRun(parent, runID, wfName, spec.FilePath, spec.BotID, varsToInputs(spec.Vars))
 		if err != nil {
-			s.logger.Warn("runview: persist queued pipeline %s: %v", runID, err)
+			// The FIFO entry is then memory-only: rebuildPipelineQueue reads
+			// the store on restart, so this queued launch is LOST if the
+			// server restarts before a slot frees.
+			s.logger.Warn("runview: persist queued pipeline %s: %v (queue entry is memory-only — lost on server restart)", runID, err)
 		} else {
 			created.Name = store.GenerateRunName(spec.FilePath + ":" + runID)
 			if err := s.store.SaveRun(parent, created); err != nil {
