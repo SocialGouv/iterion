@@ -258,12 +258,24 @@ type SandboxConfig struct {
 	Override string `yaml:"override"`
 }
 
-// NATSConfig holds the NATS JetStream connection + stream/bucket names.
+// NATSConfig holds the NATS JetStream connection + stream/bucket names,
+// plus the work-queue tuning knobs. The tuning fields default to zero =
+// inherit the natsq defaults (MaxAckPending 256, AckWait 10m, MaxDeliver 8,
+// MaxAge 24h, DLQMaxAge 7d, MaxPayload server-negotiated). Server and runner
+// deployments must be fed the same values — whichever connects last
+// re-pins the shared stream/consumer.
 type NATSConfig struct {
 	URL       string `yaml:"url"`
 	Stream    string `yaml:"stream"`
 	KVBucket  string `yaml:"kv_bucket"`
 	DLQStream string `yaml:"dlq_stream"`
+
+	MaxAckPending int           `yaml:"max_ack_pending"` // fleet-wide in-flight (delivered-unacked) cap on the shared consumer
+	AckWait       time.Duration `yaml:"ack_wait"`        // per-delivery ack window before redelivery
+	MaxDeliver    int           `yaml:"max_deliver"`     // delivery attempts before the message parks in the DLQ
+	MaxAge        time.Duration `yaml:"max_age"`         // run-stream retention
+	DLQMaxAge     time.Duration `yaml:"dlq_max_age"`     // DLQ retention
+	MaxPayload    int           `yaml:"max_payload"`     // publish-size guard override (bytes)
 }
 
 // MongoConfig holds the Mongo connection + DB + events TTL.
@@ -454,6 +466,24 @@ func (c *Config) Validate() error {
 		}
 		if c.NATS.DLQStream == "" {
 			return fmt.Errorf("ITERION_NATS_DLQ_STREAM must not be empty")
+		}
+		if c.NATS.MaxAckPending < 0 {
+			return fmt.Errorf("ITERION_NATS_MAX_ACK_PENDING %d invalid (want >= 0; 0 inherits the default)", c.NATS.MaxAckPending)
+		}
+		if c.NATS.MaxDeliver < 0 {
+			return fmt.Errorf("ITERION_NATS_MAX_DELIVER %d invalid (want >= 0; 0 inherits the default)", c.NATS.MaxDeliver)
+		}
+		if c.NATS.AckWait < 0 {
+			return fmt.Errorf("ITERION_NATS_ACK_WAIT %s invalid (want >= 0; 0 inherits the default)", c.NATS.AckWait)
+		}
+		if c.NATS.MaxAge < 0 {
+			return fmt.Errorf("ITERION_NATS_MAX_AGE %s invalid (want >= 0; 0 inherits the default)", c.NATS.MaxAge)
+		}
+		if c.NATS.DLQMaxAge < 0 {
+			return fmt.Errorf("ITERION_NATS_DLQ_MAX_AGE %s invalid (want >= 0; 0 inherits the default)", c.NATS.DLQMaxAge)
+		}
+		if c.NATS.MaxPayload < 0 {
+			return fmt.Errorf("ITERION_NATS_MAX_PAYLOAD %d invalid (want >= 0; 0 inherits the default)", c.NATS.MaxPayload)
 		}
 		if c.Mongo.URI == "" {
 			return fmt.Errorf("ITERION_MONGO_URI required when mode=cloud")
