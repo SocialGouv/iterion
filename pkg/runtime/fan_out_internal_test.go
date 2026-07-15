@@ -16,6 +16,23 @@ func TestIsMutatingNode_ToolNodeAlwaysMutating(t *testing.T) {
 	}
 }
 
+func TestIsMutatingNode_SubbotDefaultMutating(t *testing.T) {
+	// A subbot with no isolation assertion may run a child that touches the
+	// shared workspace, so it is conservatively mutating.
+	if !isMutatingNode(&ir.SubbotNode{BaseNode: ir.BaseNode{ID: "sb"}}) {
+		t.Error("subbot node must be classified mutating by default")
+	}
+}
+
+func TestIsMutatingNode_SubbotIsolatedOptOut(t *testing.T) {
+	// `isolated:` asserts the child confines writes to its own run store /
+	// worktree — the mirror of an agent's Readonly — so it is not mutating.
+	n := &ir.SubbotNode{BaseNode: ir.BaseNode{ID: "sb"}, Isolated: true}
+	if isMutatingNode(n) {
+		t.Error("isolated subbot must not be classified mutating")
+	}
+}
+
 func TestIsMutatingNode_AgentReadonlyOverride(t *testing.T) {
 	// Even if the agent declares tools, Readonly=true wins.
 	n := &ir.AgentNode{

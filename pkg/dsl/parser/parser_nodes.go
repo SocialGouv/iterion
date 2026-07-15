@@ -796,6 +796,7 @@ func (p *parser) parseUseDecl() *ast.UseDecl {
 //	  with: { var: "value", ... }
 //	  output: <schema>
 //	  needs: <resource>
+//	  isolated: true
 func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 	start, name, ok := p.parseDeclHeader("subbot")
 	if !ok {
@@ -823,6 +824,12 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			p.next()
 			p.expect(TokenColon)
 			sd.Source = p.expectString()
+		case t.Type == TokenIdent && t.Value == "isolated":
+			p.next()
+			p.expect(TokenColon)
+			if v := p.parseBool(); v != nil {
+				sd.Isolated = *v
+			}
 		case t.Type == TokenNeeds:
 			p.next()
 			p.expect(TokenColon)
