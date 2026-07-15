@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
@@ -86,6 +87,60 @@ func TestSubbotRunsChildAndMapsOutput(t *testing.T) {
 	}
 	if !routedToOK {
 		t.Error("expected the subbot's validated=true to route to the `ok` done node")
+	}
+}
+
+// TestSubbotOutputSchemaValidation ensures a parent validates the terminal
+// output returned by a nested run against the schema declared on the subbot.
+func TestSubbotOutputSchemaValidation(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "subbot_output_validation",
+		Entry: "run_child",
+		Nodes: map[string]ir.Node{
+			"run_child": &ir.SubbotNode{
+				BaseNode:     ir.BaseNode{ID: "run_child"},
+				Source:       "child.bot",
+				OutputSchema: "verdict",
+			},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{{From: "run_child", To: "done"}},
+		Schemas: map[string]*ir.Schema{
+			"verdict": {
+				Name: "verdict",
+				Fields: []*ir.SchemaField{
+					{Name: "validated", Type: ir.FieldTypeBool},
+				},
+			},
+		},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	runner := func(_ context.Context, _ SubbotRequest) (map[string]any, error) {
+		return map[string]any{"validated": "not-a-bool"}, nil
+	}
+	eng := New(
+		wf,
+		tmpStore(t),
+		newStubExecutor(),
+		WithSubbotRunner(runner),
+		WithOutputValidation(true),
+	)
+	err := eng.Run(context.Background(), "run-subbot-invalid-output", nil)
+	if err == nil {
+		t.Fatal("expected schema validation error, got nil")
+	}
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T: %v", err, err)
+	}
+	if rtErr.Code != ErrCodeSchemaValidation {
+		t.Fatalf("error code = %s, want %s", rtErr.Code, ErrCodeSchemaValidation)
+	}
+	if rtErr.NodeID != "run_child" {
+		t.Fatalf("node ID = %q, want run_child", rtErr.NodeID)
 	}
 }
 

@@ -564,6 +564,8 @@ func NodeOutputSchema(n Node) string {
 		return n.OutputSchema
 	case *ComputeNode:
 		return n.OutputSchema
+	case *SubbotNode:
+		return n.OutputSchema
 	case *WaitNode:
 		return n.OutputSchema
 	}
