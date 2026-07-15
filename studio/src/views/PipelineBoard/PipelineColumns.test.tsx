@@ -223,6 +223,33 @@ describe("PipelineColumns", () => {
     // …while the tree progress stays visible.
     expect(html).toContain("5 / 10 nodes");
     expect(count(html, 'role="article"')).toBe(1); // child is folded, not its own card
+    // A HEALTHY blocked pipeline shows no redundant status chip (Blocked
+    // already says it) and no descendant-count badge.
+    expect(html).not.toContain("Running</span>");
+    expect(html).not.toContain("Interrupted");
+    expect(html).not.toContain("child");
+  });
+
+  it("a blocked pipeline whose root was interrupted gets an explicit tag, not a scary chip", () => {
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "run:orphan",
+          column_id: "in_progress",
+          title: "Orphaned pipeline",
+          run_id: "run-orphan",
+          status: "failed_resumable", // e.g. server restart killed the parked parent
+          failed: true,
+          tree_executed_nodes: 3,
+          tree_total_nodes: 10,
+          pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+        }),
+      ]),
+    );
+    expect(html).toContain("Blocked — human review · review");
+    expect(html).toContain("Interrupted — resume needed");
+    // The raw failed_resumable chip stays hidden while reviews are pending.
+    expect(html).not.toContain("Failed (resumable)");
   });
 
   it("pluralizes the Blocked tag for several pending reviews", () => {

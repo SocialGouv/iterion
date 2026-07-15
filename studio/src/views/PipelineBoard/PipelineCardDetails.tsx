@@ -148,6 +148,14 @@ export function PipelineCardDetailsBody({
       {reviews.length > 0 && (
         <section aria-label="Response required" className="space-y-2">
           <SectionHeading>Response required</SectionHeading>
+          {card.failed && (
+            <InlineBanner tone="warning" layout="inline">
+              This pipeline's run was interrupted (e.g. a server restart).
+              Answering the reviews below resumes the child runs, but the
+              pipeline itself needs a resume from its run console to pick up
+              their results and finish.
+            </InlineBanner>
+          )}
           <SequentialReviews card={card} onResolved={onRefetch} />
         </section>
       )}

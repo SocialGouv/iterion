@@ -423,9 +423,12 @@ function TodoStatus({ card }: { card: PipelineBoardCardDTO }) {
 
 // In progress: tree progress + a Blocked tag naming WHY (the pending human
 // gate) when the pipeline waits on a review. The review form itself lives
-// exclusively in the details sidebar.
+// exclusively in the details sidebar. While blocked, the root's own status
+// chip is NOISE (Blocked already says it) — except when the root run was
+// interrupted (e.g. a server restart orphaned it to failed_resumable while
+// its children still hold reviews): that state gets an explicit tag, because
+// answering the reviews alone will not finish the pipeline.
 function InProgressStatus({ card }: { card: PipelineBoardCardDTO }) {
-  const descendants = card.descendant_count ?? 0;
   const reviews = card.pending_reviews ?? [];
   const blockedLabel =
     reviews.length === 1
@@ -435,19 +438,25 @@ function InProgressStatus({ card }: { card: PipelineBoardCardDTO }) {
     <div className="space-y-2">
       <ProgressBar executed={card.tree_executed_nodes} total={card.tree_total_nodes} />
       <div className="flex flex-wrap items-center gap-1">
-        {reviews.length > 0 && (
-          <Badge
-            variant="warning"
-            title="Waiting on a human review — open the card to answer it"
-          >
-            {blockedLabel}
-          </Badge>
-        )}
-        <StatusChip status={card.status} />
-        {descendants > 0 && (
-          <Badge variant="neutral">
-            +{descendants} child{descendants === 1 ? "" : "ren"}
-          </Badge>
+        {reviews.length > 0 ? (
+          <>
+            <Badge
+              variant="warning"
+              title="Waiting on a human review — open the card to answer it"
+            >
+              {blockedLabel}
+            </Badge>
+            {card.failed && (
+              <Badge
+                variant="danger"
+                title="The pipeline's run was interrupted (e.g. a server restart). Answering the reviews resumes the CHILD runs, but the pipeline itself needs a resume from the run console to pick up their results and finish."
+              >
+                Interrupted — resume needed
+              </Badge>
+            )}
+          </>
+        ) : (
+          <StatusChip status={card.status} />
         )}
       </div>
     </div>
