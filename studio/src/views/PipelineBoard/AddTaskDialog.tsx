@@ -5,7 +5,10 @@ import type { BotEntryWithSchema } from "@/api/bots";
 import type { VarField } from "@/api/types";
 import {
   createPipelineTask,
+  updatePipelineTask,
   type CreatePipelineTaskInput,
+  type PipelineBoardCard,
+  type PipelineTaskPatch,
 } from "@/api/pipelineBoards";
 import VarFieldInput, {
   defaultStringFor,
@@ -28,6 +31,30 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
+  // When set, the dialog edits this existing (Draft / ready-but-unlaunched)
+  // ticket instead of creating a new one: the form pre-fills from the card
+  // and Save PATCHes it. The ready-state stays under the Draft ↔ Todo drag,
+  // so the "Ready to run" checkbox is hidden in edit mode.
+  editTask?: PipelineBoardCard;
+}
+
+// coerceEntryInput turns a card's entry_input (launch vars / bot_args, whose
+// values may be non-strings) into the string map the arg form edits.
+function coerceEntryInput(
+  input: Record<string, unknown> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!input) return out;
+  for (const [key, value] of Object.entries(input)) {
+    if (value === null || value === undefined) continue;
+    out[key] =
+      typeof value === "string"
+        ? value
+        : typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
+  }
+  return out;
 }
 
 /**
@@ -86,15 +113,25 @@ function VarFieldRow({
   );
 }
 
-function AddTaskDialogContent({ open, onOpenChange, onCreated }: Props) {
-  const [botName, setBotName] = useState("");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [labels, setLabels] = useState<string[]>([]);
-  const [priority, setPriority] = useState(0);
-  const [botArgs, setBotArgs] = useState<Record<string, string>>({});
+function AddTaskDialogContent({
+  open,
+  onOpenChange,
+  onCreated,
+  editTask,
+}: Props) {
+  const isEdit = !!editTask;
+  const [botName, setBotName] = useState(editTask?.bot_id ?? "");
+  const [title, setTitle] = useState(editTask?.title ?? "");
+  const [body, setBody] = useState(editTask?.body ?? "");
+  const [labels, setLabels] = useState<string[]>(editTask?.labels ?? []);
+  const [priority, setPriority] = useState(editTask?.priority ?? 0);
+  const [botArgs, setBotArgs] = useState<Record<string, string>>(() =>
+    coerceEntryInput(editTask?.entry_input),
+  );
   const [start, setStart] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Open Advanced by default when editing so the title / description / labels /
+  // priority the operator came to change are visible without a click.
+  const [advancedOpen, setAdvancedOpen] = useState(isEdit);
   const action = useAsyncAction();
 
   // Shared bot catalog store — fetched once across all consumers. The board
@@ -158,9 +195,26 @@ function AddTaskDialogContent({ open, onOpenChange, onCreated }: Props) {
         botName.trim().length === 0
           ? "Choose a bot for this task."
           : missingRequiredArgs
-            ? "Fill the required inputs before creating the task."
+            ? "Fill the required inputs before saving the task."
             : "A task title is required.",
       );
+      return;
+    }
+    if (isEdit && editTask?.issue_id) {
+      const patch: PipelineTaskPatch = {
+        bot: botName.trim(),
+        title: effectiveTitle,
+        body: body.trim(),
+        labels,
+        priority,
+        bot_args: botArgs,
+      };
+      const result = await action.run(() =>
+        updatePipelineTask(editTask.issue_id as string, patch),
+      );
+      if (result === undefined) return;
+      onOpenChange(false);
+      onCreated();
       return;
     }
     const input: CreatePipelineTaskInput = {
@@ -182,8 +236,12 @@ function AddTaskDialogContent({ open, onOpenChange, onCreated }: Props) {
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Add pipeline task"
-      description="Pick the pipeline to run and its input. Technical parameters sit under Advanced."
+      title={isEdit ? "Edit ticket" : "Add pipeline task"}
+      description={
+        isEdit
+          ? "Edit this draft ticket before it runs. Technical parameters sit under Advanced."
+          : "Pick the pipeline to run and its input. Technical parameters sit under Advanced."
+      }
       widthClass="max-w-2xl"
       footer={
         <>
@@ -196,7 +254,7 @@ function AddTaskDialogContent({ open, onOpenChange, onCreated }: Props) {
             disabled={!canSubmit}
             onClick={() => void submit()}
           >
-            {start && botEnabled ? "Add to Todo" : "Add to Draft"}
+            {isEdit ? "Save" : start && botEnabled ? "Add to Todo" : "Add to Draft"}
           </Button>
         </>
       }
@@ -339,21 +397,23 @@ function AddTaskDialogContent({ open, onOpenChange, onCreated }: Props) {
           )}
         </div>
 
-        <div className="border-t border-border-default pt-4">
-          <Checkbox
-            checked={start}
-            onChange={(event) => setStart(event.target.checked)}
-            disabled={!botName || !botEnabled}
-            label="Ready to run"
-            help={
-              !botName
-                ? "Pick a pipeline first."
-                : botEnabled
-                  ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Draft until you drag it to Todo."
-                  : "This bot is disabled. The ticket stays in Draft; enable the bot, then drag it to Todo to run."
-            }
-          />
-        </div>
+        {!isEdit && (
+          <div className="border-t border-border-default pt-4">
+            <Checkbox
+              checked={start}
+              onChange={(event) => setStart(event.target.checked)}
+              disabled={!botName || !botEnabled}
+              label="Ready to run"
+              help={
+                !botName
+                  ? "Pick a pipeline first."
+                  : botEnabled
+                    ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Draft until you drag it to Todo."
+                    : "This bot is disabled. The ticket stays in Draft; enable the bot, then drag it to Todo to run."
+              }
+            />
+          </div>
+        )}
       </div>
     </Dialog>
   );

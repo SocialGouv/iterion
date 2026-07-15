@@ -170,6 +170,7 @@ func (s *Server) registerPipelineBoardRoutes() {
 	s.mux.Handle("GET /api/v1/pipeline-board", s.requireAuth(http.HandlerFunc(s.handlePipelineBoard)))
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReady)))
+	s.mux.Handle("PATCH /api/v1/pipeline-board/tasks/{id}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskUpdate)))
 }
 
 func (s *Server) resolvePipelineBoardStore(r *http.Request) (native.BoardStore, error) {
@@ -299,6 +300,82 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+// pipelineBoardUpdateRequest edits a ticket the operator is still preparing
+// (a Draft, or a failed ticket before retry). Only non-nil fields are
+// applied; the studio form sends the full state it wants to persist.
+type pipelineBoardUpdateRequest struct {
+	Title    *string            `json:"title,omitempty"`
+	Body     *string            `json:"body,omitempty"`
+	Labels   *[]string          `json:"labels,omitempty"`
+	Priority *int               `json:"priority,omitempty"`
+	Bot      *string            `json:"bot,omitempty"`
+	BotArgs  *map[string]string `json:"bot_args,omitempty"`
+}
+
+// handlePipelineBoardTaskUpdate edits a ticket's fields (title, input,
+// bot, …) so Draft tickets stay editable while the operator prepares them.
+// It maps onto the native tracker's Update; the frontend only exposes it on
+// task-backed cards that aren't executing.
+func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	boardStore, err := s.resolvePipelineBoardStore(r)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board: resolve store: %v", err)
+		return
+	}
+	if boardStore == nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board: native tracker is not available")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: missing task id")
+		return
+	}
+	var req pipelineBoardUpdateRequest
+	if err := readJSON(r, &req); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: invalid request: %v", err)
+		return
+	}
+	patch := native.Patch{
+		Body:     req.Body,
+		Labels:   req.Labels,
+		Priority: req.Priority,
+		BotArgs:  req.BotArgs,
+	}
+	if req.Title != nil {
+		title := strings.TrimSpace(*req.Title)
+		if title == "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: title cannot be empty")
+			return
+		}
+		patch.Title = &title
+	}
+	if req.Bot != nil {
+		bot := strings.TrimSpace(*req.Bot)
+		if bot != "" {
+			if _, found, ferr := s.findBot(bot); ferr != nil {
+				s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: discover bot: %v", ferr)
+				return
+			} else if !found {
+				s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board update: bot %q not found", bot)
+				return
+			}
+		}
+		patch.Bot = &bot
+	}
+	issue, err := boardStore.Update(id, patch)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	s.reflectAllowedOrigin(w, r)
+	_ = json.NewEncoder(w).Encode(issue)
 }
 
 type pipelineBoardReadyRequest struct {

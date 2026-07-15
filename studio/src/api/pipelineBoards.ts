@@ -305,3 +305,26 @@ export async function markPipelineTaskReady(
     },
   );
 }
+
+// PipelineTaskPatch is the editable surface of a not-yet-run (Draft/ready)
+// ticket. All fields optional — only sent fields are applied server-side.
+export interface PipelineTaskPatch {
+  title?: string;
+  body?: string;
+  labels?: string[];
+  priority?: number;
+  bot?: string;
+  bot_args?: Record<string, string>;
+}
+
+// updatePipelineTask edits a Draft (or ready-but-unlaunched) ticket before it
+// runs — title, input (bot_args), bot, description, labels, priority.
+export async function updatePipelineTask(
+  taskId: string,
+  patch: PipelineTaskPatch,
+): Promise<void> {
+  await apiRequest<unknown>(`${BASE}/tasks/${encodeURIComponent(taskId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}

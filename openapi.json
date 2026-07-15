@@ -928,6 +928,35 @@
         ],
         "type": "object"
       },
+      "pipelineBoardUpdateRequest": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "bot": {
+            "type": "string"
+          },
+          "bot_args": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "setOrgStatusReq": {
         "properties": {
           "reason": {
@@ -5707,6 +5736,47 @@
           }
         },
         "summary": "POST /api/v1/pipeline-board/tasks",
+        "tags": [
+          "pipeline-board"
+        ]
+      }
+    },
+    "/api/v1/pipeline-board/tasks/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchV1PipelineBoardTasksById",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/pipelineBoardUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "PATCH /api/v1/pipeline-board/tasks/{id}",
         "tags": [
           "pipeline-board"
         ]

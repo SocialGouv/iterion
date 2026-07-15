@@ -3346,6 +3346,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipeline-board/tasks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/v1/pipeline-board/tasks/{id} */
+        patch: operations["patchV1PipelineBoardTasksById"];
+        trace?: never;
+    };
     "/api/v1/pipeline-board/tasks/{id}/ready": {
         parameters: {
             query?: never;
@@ -4012,6 +4031,16 @@ export interface components {
             priority?: number;
             start?: boolean;
             title: string;
+        };
+        pipelineBoardUpdateRequest: {
+            body?: string;
+            bot?: string;
+            bot_args?: {
+                [key: string]: string;
+            };
+            labels?: string[];
+            priority?: number;
+            title?: string;
         };
         setOrgStatusReq: {
             reason?: string;
@@ -8464,6 +8493,32 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["pipelineBoardTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+        };
+    };
+    patchV1PipelineBoardTasksById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardUpdateRequest"];
             };
         };
         responses: {

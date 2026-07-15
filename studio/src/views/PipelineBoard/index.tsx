@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { getPipelineBoard } from "@/api/pipelineBoards";
+import { getPipelineBoard, type PipelineBoardCard } from "@/api/pipelineBoards";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button, EmptyState, InlineBanner, Spinner } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
@@ -14,6 +14,7 @@ const POLL_INTERVAL_MS = 3000;
 
 export default function PipelineBoardView() {
   const [addTaskOpen, setAddTaskOpen] = useState(false);
+  const [editTask, setEditTask] = useState<PipelineBoardCard | null>(null);
 
   const query = useQuery({
     queryKey: ["pipeline-board"],
@@ -78,8 +79,8 @@ export default function PipelineBoardView() {
             <h1 className="text-display font-semibold text-fg-default">Pipeline board</h1>
             <p className="mt-0.5 max-w-3xl text-xs text-fg-muted">
               Every launched pipeline (and not-yet-started task) across all bots, bucketed
-              into four fixed lanes. Positions are derived from run state — this board is
-              read-only.
+              into four fixed lanes. Running cards are placed by run state; drag a Draft
+              ticket to Todo to stage it, or edit it first.
             </p>
           </div>
           <div className="flex items-center gap-2 text-caption text-fg-subtle">
@@ -130,13 +131,29 @@ export default function PipelineBoardView() {
           className="flex-1"
         />
       ) : (
-        <PipelineColumns board={board} onRefetch={() => void query.refetch()} />
+        <PipelineColumns
+          board={board}
+          onRefetch={() => void query.refetch()}
+          onEditTask={setEditTask}
+        />
       )}
 
       <AddTaskDialog
         open={addTaskOpen}
         onOpenChange={setAddTaskOpen}
         onCreated={() => void query.refetch()}
+      />
+
+      <AddTaskDialog
+        open={editTask !== null}
+        editTask={editTask ?? undefined}
+        onOpenChange={(o) => {
+          if (!o) setEditTask(null);
+        }}
+        onCreated={() => {
+          setEditTask(null);
+          void query.refetch();
+        }}
       />
     </div>
   );

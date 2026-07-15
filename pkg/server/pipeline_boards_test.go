@@ -586,6 +586,51 @@ func TestPipelineBoardTaskReadyTogglesState(t *testing.T) {
 	}
 }
 
+func TestPipelineBoardTaskUpdateEditsDraft(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	issue, err := env.board.Create(native.Issue{
+		Title:   "Rough draft",
+		State:   native.StateInbox,
+		Bot:     "review",
+		BotArgs: map[string]string{"scope": "old"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	body := `{"title":"Polished","bot_args":{"scope":"new","extra":"1"},"priority":3}`
+	req, _ := http.NewRequest(http.MethodPatch, env.http.URL+"/api/v1/pipeline-board/tasks/"+issue.ID, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("update status = %d", resp.StatusCode)
+	}
+	var out native.Issue
+	decodeJSONResp(t, resp, &out)
+	if out.Title != "Polished" || out.Priority != 3 || out.BotArgs["scope"] != "new" || out.BotArgs["extra"] != "1" {
+		t.Errorf("updated issue = %+v", out)
+	}
+	// The edit shows on the board's Draft card.
+	card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID)
+	if card.Title != "Polished" || card.ColumnID != pipelineColumnDraft || card.EntryInput["scope"] != "new" {
+		t.Errorf("edited draft card = %+v", card)
+	}
+
+	// Empty title is rejected.
+	req2, _ := http.NewRequest(http.MethodPatch, env.http.URL+"/api/v1/pipeline-board/tasks/"+issue.ID, bytes.NewBufferString(`{"title":"  "}`))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, _ := http.DefaultClient.Do(req2)
+	if resp2.StatusCode != http.StatusBadRequest {
+		resp2.Body.Close()
+		t.Errorf("empty title update status = %d, want 400", resp2.StatusCode)
+	} else {
+		resp2.Body.Close()
+	}
+}
+
 func TestPipelineTicketLaunchable(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	rs := env.runStore(t)

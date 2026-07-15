@@ -5,6 +5,7 @@ import {
   getPipelineBoard,
   markPipelineTaskReady,
   normalizePipelineBoard,
+  updatePipelineTask,
 } from "./pipelineBoards";
 
 afterEach(() => {
@@ -240,5 +241,36 @@ describe("markPipelineTaskReady", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ ready: false });
+  });
+});
+
+describe("updatePipelineTask", () => {
+  it("PATCHes the ticket's endpoint with the patch body", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updatePipelineTask("iss 1/a", {
+      title: "New title",
+      body: "context",
+      labels: ["docs"],
+      priority: 3,
+      bot: "docs/review",
+      bot_args: { area: "api" },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/v1/pipeline-board/tasks/iss%201%2Fa");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: "New title",
+      body: "context",
+      labels: ["docs"],
+      priority: 3,
+      bot: "docs/review",
+      bot_args: { area: "api" },
+    });
   });
 });

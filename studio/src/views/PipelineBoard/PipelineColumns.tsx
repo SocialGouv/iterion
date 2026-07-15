@@ -17,6 +17,9 @@ import { SequentialReviews } from "./SequentialReviews";
 interface Props {
   board: PipelineBoard;
   onRefetch: () => void;
+  // Opens the edit dialog for a still-editable (Draft / ready-unlaunched)
+  // ticket. Absent → no Edit affordance is shown.
+  onEditTask?: (card: PipelineBoardCardDTO) => void;
 }
 
 // The MIME the Draft ↔ Todo drag carries — the ticket's issue_id.
@@ -77,6 +80,18 @@ export function readyStateForDropColumn(columnId: string): boolean | null {
   return null;
 }
 
+// isTicketEditable reports whether a ticket can still be edited before it
+// runs: it must be task-backed (issue_id) and not executing — a Draft card
+// (a task, or a failed run being retried) or a ready-but-unlaunched Todo task
+// card. In-progress / done cards and queued runs are fixed.
+export function isTicketEditable(card: PipelineBoardCardDTO): boolean {
+  if (!card.issue_id) return false;
+  return (
+    card.column_id === "draft" ||
+    (card.column_id === "todo" && card.kind === "task")
+  );
+}
+
 // dropTicketToColumn performs the ready-state write for a Draft ↔ Todo drop,
 // then refetches the board. A no-op for a non-drop-target column.
 export async function dropTicketToColumn(
@@ -90,7 +105,7 @@ export async function dropTicketToColumn(
   onDone();
 }
 
-export function PipelineColumns({ board, onRefetch }: Props) {
+export function PipelineColumns({ board, onRefetch, onEditTask }: Props) {
   const { columns, cards } = board;
   const [dropError, setDropError] = useState<string | null>(null);
 
@@ -124,6 +139,7 @@ export function PipelineColumns({ board, onRefetch }: Props) {
             cards={cards.filter((card) => card.column_id === column.id)}
             onRefetch={onRefetch}
             onDropTicket={onDropTicket}
+            onEditTask={onEditTask}
           />
         ))}
       </div>
@@ -136,11 +152,13 @@ function PipelineColumn({
   cards,
   onRefetch,
   onDropTicket,
+  onEditTask,
 }: {
   column: PipelineBoardColumn;
   cards: PipelineBoardCardDTO[];
   onRefetch: () => void;
   onDropTicket: (issueId: string, columnId: string) => void;
+  onEditTask?: (card: PipelineBoardCardDTO) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
   const droppable = readyStateForDropColumn(column.id) !== null;
@@ -195,7 +213,12 @@ function PipelineColumn({
           </div>
         ) : (
           cards.map((card) => (
-            <PipelineCard key={card.id} card={card} onRefetch={onRefetch} />
+            <PipelineCard
+              key={card.id}
+              card={card}
+              onRefetch={onRefetch}
+              onEditTask={onEditTask}
+            />
           ))
         )}
       </div>
@@ -206,11 +229,13 @@ function PipelineColumn({
 interface CardProps {
   card: PipelineBoardCardDTO;
   onRefetch: () => void;
+  onEditTask?: (card: PipelineBoardCardDTO) => void;
 }
 
-export function PipelineCard({ card, onRefetch }: CardProps) {
+export function PipelineCard({ card, onRefetch, onEditTask }: CardProps) {
   const timestamp = card.updated_at || card.created_at;
   const draggable = isTicketDraggable(card);
+  const editable = !!onEditTask && isTicketEditable(card);
 
   return (
     <Card
@@ -276,11 +301,23 @@ export function PipelineCard({ card, onRefetch }: CardProps) {
         ) : (
           <span className="text-fg-subtle">Not started</span>
         )}
-        {timestamp && (
-          <span className="ml-auto text-fg-subtle" title={timestamp}>
-            {formatRelative(timestamp)}
-          </span>
-        )}
+        <span className="ml-auto flex items-center gap-2">
+          {editable && (
+            <button
+              type="button"
+              onClick={() => onEditTask?.(card)}
+              className="text-accent-text hover:underline"
+              aria-label={`Edit ticket ${card.title}`}
+            >
+              Edit
+            </button>
+          )}
+          {timestamp && (
+            <span className="text-fg-subtle" title={timestamp}>
+              {formatRelative(timestamp)}
+            </span>
+          )}
+        </span>
       </div>
     </Card>
   );

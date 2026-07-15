@@ -88,6 +88,10 @@ func routeSchemas() map[string]routeOp {
 			request:  pipelineBoardReadyRequest{},
 			response: native.Issue{},
 		},
+		"PATCH /api/v1/pipeline-board/tasks/{id}": {
+			request:  pipelineBoardUpdateRequest{},
+			response: native.Issue{},
+		},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {

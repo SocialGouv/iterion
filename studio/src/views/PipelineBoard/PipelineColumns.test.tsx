@@ -43,6 +43,7 @@ import {
   PipelineColumns,
   dropTicketToColumn,
   isTicketDraggable,
+  isTicketEditable,
   readyStateForDropColumn,
 } from "./PipelineColumns";
 
@@ -251,5 +252,71 @@ describe("drag-and-drop helpers", () => {
     await dropTicketToColumn("iss-1", "in_progress", onDone);
     expect(markReadyMock).not.toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe("isTicketEditable", () => {
+  it("allows editing not-yet-run task-backed tickets", () => {
+    // Draft task card.
+    expect(
+      isTicketEditable(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" })),
+    ).toBe(true);
+    // Draft failed ticket (a failed run being retried) is still editable.
+    expect(
+      isTicketEditable(
+        makeCard({ column_id: "draft", kind: "run", issue_id: "iss-2", failed: true }),
+      ),
+    ).toBe(true);
+    // Ready-but-unlaunched Todo task card.
+    expect(
+      isTicketEditable(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-3" })),
+    ).toBe(true);
+  });
+
+  it("blocks editing executing / finished / queued cards", () => {
+    // Running run.
+    expect(
+      isTicketEditable(
+        makeCard({ column_id: "in_progress", kind: "run", issue_id: "iss-4", status: "running" }),
+      ),
+    ).toBe(false);
+    // Done run.
+    expect(
+      isTicketEditable(
+        makeCard({ column_id: "done", kind: "run", issue_id: "iss-5", status: "finished" }),
+      ),
+    ).toBe(false);
+    // Queued run sitting in Todo (kind run, not a task).
+    expect(
+      isTicketEditable(
+        makeCard({ column_id: "todo", kind: "run", issue_id: "iss-6", status: "queued" }),
+      ),
+    ).toBe(false);
+    // A task with no tracker issue can't be patched.
+    expect(isTicketEditable(makeCard({ column_id: "draft", kind: "task" }))).toBe(false);
+  });
+
+  it("renders an Edit affordance only for editable cards when a handler is given", () => {
+    const editableHtml = renderToStaticMarkup(
+      <PipelineColumns
+        board={makeBoard([
+          makeCard({ id: "e", column_id: "draft", kind: "task", issue_id: "iss-1", title: "Draft task" }),
+        ])}
+        onRefetch={() => {}}
+        onEditTask={() => {}}
+      />,
+    );
+    expect(editableHtml).toContain("Edit ticket Draft task");
+
+    const runningHtml = renderToStaticMarkup(
+      <PipelineColumns
+        board={makeBoard([
+          makeCard({ id: "r", column_id: "in_progress", kind: "run", run_id: "run-x", status: "running" }),
+        ])}
+        onRefetch={() => {}}
+        onEditTask={() => {}}
+      />,
+    );
+    expect(runningHtml).not.toContain("aria-label=\"Edit ticket");
   });
 });
