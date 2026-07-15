@@ -297,8 +297,9 @@ export async function createPipelineTask(
 }
 
 // markPipelineTaskReady flips a task-backed ticket between the ready (Todo)
-// and draft states — the write behind the board's Draft ↔ Todo drag. The
-// studio auto-launches ready tickets when a concurrency slot frees.
+// and draft states — the write behind the board's "→ Todo" / "→ Draft" move
+// buttons. The studio auto-launches ready tickets when a concurrency slot
+// frees.
 export async function markPipelineTaskReady(
   taskId: string,
   ready: boolean,

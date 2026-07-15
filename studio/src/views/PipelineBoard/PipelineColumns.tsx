@@ -26,9 +26,9 @@ interface Props {
 // isInteractiveClick reports whether a card click landed on (or inside) an
 // interactive descendant — a link, button, or form control — rather than the
 // card's inert chrome. Card-level clicks open the details sidebar; clicks on
-// the title link, the Edit button, or an inline review form must keep doing
-// their own thing, so those are ignored here. The walk stops at the card
-// element itself (the handler's currentTarget).
+// the title link or the footer/move buttons must keep doing their own thing,
+// so those are ignored here. The walk stops at the card element itself (the
+// handler's currentTarget).
 function isInteractiveClick(e: React.MouseEvent): boolean {
   const boundary = e.currentTarget;
   let node = e.target as HTMLElement | null;
@@ -50,9 +50,6 @@ function isInteractiveClick(e: React.MouseEvent): boolean {
   }
   return false;
 }
-
-// The MIME the Draft ↔ Todo drag carries — the ticket's issue_id.
-const DRAG_MIME = "text/plain";
 
 const KNOWN_STATUSES = new Set<UnifiedStatus>([
   "running",
@@ -91,22 +88,19 @@ function columnAccent(id: string): string {
   }
 }
 
-// isTicketDraggable reports whether a card can be dragged between Draft and
-// Todo. Only task-backed tickets that are NOT currently executing move: a
-// not-yet-launched task (kind "task") or a failed ticket (retry by dragging
-// to Todo). Running / paused / queued / finished runs are fixed by run state.
-export function isTicketDraggable(card: PipelineBoardCardDTO): boolean {
-  if (!card.issue_id) return false;
+// Ticket movement is BUTTON-driven — there is no drag & drop on this board.
+// canMoveToTodo: a Draft task-backed ticket that is not executing — a
+// not-yet-launched task, or a failed ticket (retry). Running / paused /
+// queued / finished runs are fixed by run state.
+export function canMoveToTodo(card: PipelineBoardCardDTO): boolean {
+  if (!card.issue_id || card.column_id !== "draft") return false;
   return card.kind === "task" || card.failed === true;
 }
 
-// readyStateForDropColumn maps a drop-target column to the ready flag the
-// write should set — true for Todo, false for Draft, null for a column that
-// is not a drop target (in_progress / done).
-export function readyStateForDropColumn(columnId: string): boolean | null {
-  if (columnId === "todo") return true;
-  if (columnId === "draft") return false;
-  return null;
+// canMoveToDraft: a ready-but-unlaunched Todo task goes back to Draft. A
+// queued RUN sitting in Todo is fixed by run state.
+export function canMoveToDraft(card: PipelineBoardCardDTO): boolean {
+  return !!card.issue_id && card.column_id === "todo" && card.kind === "task";
 }
 
 // isTicketEditable reports whether a ticket can still be edited before it
@@ -121,38 +115,36 @@ export function isTicketEditable(card: PipelineBoardCardDTO): boolean {
   );
 }
 
-// dropTicketToColumn performs the ready-state write for a Draft ↔ Todo drop,
-// then refetches the board. A no-op for a non-drop-target column.
-export async function dropTicketToColumn(
+// moveTicket flips a ticket's ready state (true → Todo, staged for the launch
+// loop; false → back to Draft), then refetches the board.
+export async function moveTicket(
   issueId: string,
-  columnId: string,
+  ready: boolean,
   onDone: () => void,
 ): Promise<void> {
-  const ready = readyStateForDropColumn(columnId);
-  if (ready === null) return;
   await markPipelineTaskReady(issueId, ready);
   onDone();
 }
 
 export function PipelineColumns({ board, onRefetch, onEditTask, onOpenCard }: Props) {
   const { columns, cards } = board;
-  const [dropError, setDropError] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
-  const onDropTicket = async (issueId: string, columnId: string) => {
-    setDropError(null);
+  const onMoveTicket = async (issueId: string, ready: boolean) => {
+    setMoveError(null);
     try {
-      await dropTicketToColumn(issueId, columnId, onRefetch);
+      await moveTicket(issueId, ready, onRefetch);
     } catch (e) {
-      setDropError(errorMessage(e));
+      setMoveError(errorMessage(e));
     }
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {dropError && (
+      {moveError && (
         <div className="px-4 pt-2">
           <InlineBanner tone="danger" layout="inline">
-            {dropError}
+            {moveError}
           </InlineBanner>
         </div>
       )}
@@ -166,7 +158,7 @@ export function PipelineColumns({ board, onRefetch, onEditTask, onOpenCard }: Pr
             key={column.id}
             column={column}
             cards={cards.filter((card) => card.column_id === column.id)}
-            onDropTicket={onDropTicket}
+            onMoveTicket={onMoveTicket}
             onEditTask={onEditTask}
             onOpenCard={onOpenCard}
           />
@@ -179,44 +171,20 @@ export function PipelineColumns({ board, onRefetch, onEditTask, onOpenCard }: Pr
 function PipelineColumn({
   column,
   cards,
-  onDropTicket,
+  onMoveTicket,
   onEditTask,
   onOpenCard,
 }: {
   column: PipelineBoardColumn;
   cards: PipelineBoardCardDTO[];
-  onDropTicket: (issueId: string, columnId: string) => void;
+  onMoveTicket: (issueId: string, ready: boolean) => void;
   onEditTask?: (card: PipelineBoardCardDTO) => void;
   onOpenCard?: (card: PipelineBoardCardDTO) => void;
 }) {
-  const [dragOver, setDragOver] = useState(false);
-  const droppable = readyStateForDropColumn(column.id) !== null;
-
   return (
     <section
-      className={`flex max-h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border bg-surface-2/70 ${
-        dragOver ? "border-accent ring-1 ring-accent/40" : "border-border-default"
-      }`}
+      className="flex max-h-full w-[21rem] shrink-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border-default bg-surface-2/70"
       aria-labelledby={`pipeline-column-${column.id}`}
-      onDragOver={
-        droppable
-          ? (e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }
-          : undefined
-      }
-      onDragLeave={droppable ? () => setDragOver(false) : undefined}
-      onDrop={
-        droppable
-          ? (e) => {
-              e.preventDefault();
-              setDragOver(false);
-              const id = e.dataTransfer.getData(DRAG_MIME);
-              if (id) onDropTicket(id, column.id);
-            }
-          : undefined
-      }
     >
       <div className="relative shrink-0 border-b border-border-default bg-surface-1 px-3 py-2.5">
         <span
@@ -245,6 +213,7 @@ function PipelineColumn({
             <PipelineCard
               key={card.id}
               card={card}
+              onMoveTicket={onMoveTicket}
               onEditTask={onEditTask}
               onOpenCard={onOpenCard}
             />
@@ -257,21 +226,23 @@ function PipelineColumn({
 
 interface CardProps {
   card: PipelineBoardCardDTO;
+  onMoveTicket: (issueId: string, ready: boolean) => void;
   onEditTask?: (card: PipelineBoardCardDTO) => void;
   onOpenCard?: (card: PipelineBoardCardDTO) => void;
 }
 
-export function PipelineCard({ card, onEditTask, onOpenCard }: CardProps) {
+// PipelineCard is deliberately LEAN: title, status (progress / blocked / why),
+// and the footer (run access, Details, Edit, move buttons). Everything else —
+// inputs, produced elements, the review form, labels, description — lives in
+// the details sidebar the card click opens.
+export function PipelineCard({ card, onMoveTicket, onEditTask, onOpenCard }: CardProps) {
   const timestamp = card.updated_at || card.created_at;
-  const draggable = isTicketDraggable(card);
   const editable = !!onEditTask && isTicketEditable(card);
   const openable = !!onOpenCard;
 
   return (
     <Card
-      className={`space-y-2 p-3 ${draggable ? "cursor-grab active:cursor-grabbing" : ""} ${
-        openable && !draggable ? "cursor-pointer" : ""
-      }`}
+      className={`space-y-2 p-3 ${openable ? "cursor-pointer" : ""}`}
       interactive={openable}
       data-card-id={card.id}
       role="article"
@@ -279,56 +250,20 @@ export function PipelineCard({ card, onEditTask, onOpenCard }: CardProps) {
       onClick={
         openable
           ? (e) => {
-              // Clicks on the title link, Edit / Details buttons, or an inline
-              // review form act on their own; only inert-chrome clicks open
-              // the sidebar.
+              // Clicks on the title link or footer buttons act on their own;
+              // only inert-chrome clicks open the sidebar.
               if (isInteractiveClick(e)) return;
               onOpenCard?.(card);
             }
           : undefined
       }
-      draggable={draggable || undefined}
-      onDragStart={
-        draggable && card.issue_id
-          ? (e) => {
-              e.dataTransfer.setData(DRAG_MIME, card.issue_id as string);
-              e.dataTransfer.effectAllowed = "move";
-            }
-          : undefined
-      }
     >
-      <div className="flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <CardTitle card={card} />
-          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-caption text-fg-subtle">
-            {card.bot_id && <code title={`Bot ${card.bot_id}`}>{card.bot_id}</code>}
-            {card.issue_id && <code title={`Issue ${card.issue_id}`}>#{card.issue_id}</code>}
-            {card.workflow_name && <span className="truncate">{card.workflow_name}</span>}
-          </div>
-        </div>
-        <Badge variant={card.kind === "run" ? "info" : "neutral"}>
-          {humanizeToken(card.kind)}
-        </Badge>
-      </div>
+      <CardTitle card={card} />
 
-      {card.body && (
-        <p className="line-clamp-3 whitespace-pre-wrap text-xs text-fg-muted">{card.body}</p>
-      )}
-
-      {card.column_id === "draft" && <DraftBody card={card} />}
-      {card.column_id === "todo" && <TodoBody card={card} />}
-      {card.column_id === "in_progress" && <InProgressBody card={card} />}
-      {card.column_id === "done" && <DoneBody card={card} />}
-
-      {card.labels && card.labels.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {card.labels.map((label) => (
-            <Badge key={label} variant="neutral">
-              {label}
-            </Badge>
-          ))}
-        </div>
-      )}
+      {card.column_id === "draft" && <DraftStatus card={card} />}
+      {card.column_id === "todo" && <TodoStatus card={card} />}
+      {card.column_id === "in_progress" && <InProgressStatus card={card} />}
+      {card.column_id === "done" && <DoneStatus card={card} />}
 
       <div className="flex items-center gap-2 border-t border-border-default pt-2 text-micro">
         {card.run_id ? (
@@ -344,6 +279,32 @@ export function PipelineCard({ card, onEditTask, onOpenCard }: CardProps) {
           <span className="text-fg-subtle">Not started</span>
         )}
         <span className="ml-auto flex items-center gap-2">
+          {canMoveToTodo(card) && card.issue_id && (
+            <button
+              type="button"
+              onClick={() => onMoveTicket(card.issue_id as string, true)}
+              className="text-accent-text hover:underline"
+              aria-label={`${card.failed ? "Retry" : "Move to Todo"}: ${card.title}`}
+              title={
+                card.failed
+                  ? "Retry — stage this ticket back to Todo"
+                  : "Stage this ticket: it starts when a slot frees"
+              }
+            >
+              {card.failed ? "Retry" : "→ Todo"}
+            </button>
+          )}
+          {canMoveToDraft(card) && card.issue_id && (
+            <button
+              type="button"
+              onClick={() => onMoveTicket(card.issue_id as string, false)}
+              className="text-accent-text hover:underline"
+              aria-label={`Back to Draft: ${card.title}`}
+              title="Unstage this ticket back to Draft"
+            >
+              → Draft
+            </button>
+          )}
           {openable && (
             <button
               type="button"
@@ -402,106 +363,62 @@ function StatusChip({ status }: { status?: string }) {
   );
 }
 
-// --- DRAFT lane -----------------------------------------------------------
+// --- per-lane STATUS (the card's only body content) -------------------------
 
-function DraftBody({ card }: { card: PipelineBoardCardDTO }) {
+// Draft: why the ticket is here — failed (with the error) or being prepared.
+function DraftStatus({ card }: { card: PipelineBoardCardDTO }) {
   return (
     <div className="space-y-2">
-      <EntryInput input={card.entry_input} />
-      <div className="flex flex-wrap items-center gap-1">
-        {card.failed && <Badge variant="danger">Failed</Badge>}
-        {card.priority !== undefined && card.priority !== 0 && (
-          <Badge variant="accent">P{card.priority}</Badge>
-        )}
-        {card.issue_state && !card.failed && (
-          <Badge variant="neutral">{humanizeToken(card.issue_state)}</Badge>
-        )}
-      </div>
+      {card.failed && (
+        <div className="flex flex-wrap items-center gap-1">
+          <Badge variant="danger">Failed</Badge>
+        </div>
+      )}
       {card.failed && card.error && (
         <InlineBanner tone="danger" layout="inline">
           {card.error}
         </InlineBanner>
       )}
-      <p className="text-micro text-fg-subtle">
-        {card.failed
-          ? "Drag to Todo to retry."
-          : "Drag to Todo when this ticket is ready to run."}
-      </p>
     </div>
   );
 }
 
-// --- TODO lane ------------------------------------------------------------
-
-function TodoBody({ card }: { card: PipelineBoardCardDTO }) {
+// Todo: queue position (waiting for a concurrency slot) or ready.
+function TodoStatus({ card }: { card: PipelineBoardCardDTO }) {
   const queuePosition = card.queue_position ?? 0;
   return (
-    <div className="space-y-2">
-      <EntryInput input={card.entry_input} />
-      <div className="flex flex-wrap items-center gap-1">
-        {queuePosition > 0 ? (
-          <Badge variant="warning">Waiting · #{queuePosition}</Badge>
-        ) : (
-          <span className="text-micro text-fg-subtle">
-            Ready — starts when a slot frees
-          </span>
-        )}
-        {card.priority !== undefined && card.priority !== 0 && (
-          <Badge variant="accent">P{card.priority}</Badge>
-        )}
-      </div>
+    <div className="flex flex-wrap items-center gap-1">
+      {queuePosition > 0 ? (
+        <Badge variant="warning">Waiting · #{queuePosition}</Badge>
+      ) : (
+        <span className="text-micro text-fg-subtle">
+          Ready — starts when a slot frees
+        </span>
+      )}
     </div>
   );
 }
 
-// EntryInput renders the pipeline's launch vars / task bot-args as a compact
-// key: value list.
-function EntryInput({ input }: { input?: Record<string, unknown> }) {
-  const entries = input ? Object.entries(input) : [];
-  if (entries.length === 0) return null;
-  return (
-    <dl className="space-y-0.5 text-micro">
-      {entries.map(([key, value]) => (
-        <div key={key} className="flex min-w-0 gap-1">
-          <dt className="shrink-0 font-medium text-fg-muted">{key}:</dt>
-          <dd className="min-w-0 truncate text-fg-subtle" title={stringifyValue(value)}>
-            {stringifyValue(value)}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function stringifyValue(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-// --- IN_PROGRESS lane -----------------------------------------------------
-
-// The card stays a STATUS surface: progress + badges only. The human-review
-// form lives exclusively in the details sidebar (open the card) — a pending
-// gate shows here as a "Blocked" tag, never as an inline form.
-function InProgressBody({ card }: { card: PipelineBoardCardDTO }) {
+// In progress: tree progress + a Blocked tag naming WHY (the pending human
+// gate) when the pipeline waits on a review. The review form itself lives
+// exclusively in the details sidebar.
+function InProgressStatus({ card }: { card: PipelineBoardCardDTO }) {
   const descendants = card.descendant_count ?? 0;
-  const reviews = card.pending_reviews?.length ?? 0;
+  const reviews = card.pending_reviews ?? [];
+  const blockedLabel =
+    reviews.length === 1
+      ? `Blocked — human review${reviews[0]?.node_id ? ` · ${reviews[0].node_id}` : ""}`
+      : `Blocked — ${reviews.length} human reviews`;
   return (
     <div className="space-y-2">
       <ProgressBar executed={card.tree_executed_nodes} total={card.tree_total_nodes} />
       <div className="flex flex-wrap items-center gap-1">
-        {reviews > 0 && (
+        {reviews.length > 0 && (
           <Badge
             variant="warning"
             title="Waiting on a human review — open the card to answer it"
           >
-            Blocked — {reviews > 1 ? `${reviews} human reviews` : "human review"}
+            {blockedLabel}
           </Badge>
         )}
         <StatusChip status={card.status} />
@@ -538,15 +455,11 @@ function ProgressBar({ executed, total }: { executed: number; total: number }) {
   );
 }
 
-// --- DONE lane ------------------------------------------------------------
-
-function DoneBody({ card }: { card: PipelineBoardCardDTO }) {
-  if (!card.output) {
-    return <p className="text-micro italic text-fg-subtle">No output.</p>;
-  }
+// Done: just the terminal status — the output lives in the sidebar's Result.
+function DoneStatus({ card }: { card: PipelineBoardCardDTO }) {
   return (
-    <pre className="max-h-40 overflow-auto whitespace-pre rounded-md border border-border-default bg-surface-1 p-2 font-mono text-micro text-fg-muted">
-      {card.output}
-    </pre>
+    <div className="flex flex-wrap items-center gap-1">
+      <StatusChip status={card.status} />
+    </div>
   );
 }

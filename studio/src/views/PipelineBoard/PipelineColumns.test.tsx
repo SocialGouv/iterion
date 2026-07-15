@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PipelineBoard, PipelineBoardCard } from "@/api/pipelineBoards";
 
-// PipelineColumns imports markPipelineTaskReady for the Draft ↔ Todo drop.
+// PipelineColumns imports markPipelineTaskReady for the button-driven
+// Draft ↔ Todo moves.
 const { markReadyMock } = vi.hoisted(() => ({ markReadyMock: vi.fn() }));
 vi.mock("@/api/pipelineBoards", () => ({
   markPipelineTaskReady: markReadyMock,
@@ -23,10 +24,10 @@ vi.mock("wouter", () => ({
 
 import {
   PipelineColumns,
-  dropTicketToColumn,
-  isTicketDraggable,
+  canMoveToDraft,
+  canMoveToTodo,
   isTicketEditable,
-  readyStateForDropColumn,
+  moveTicket,
 } from "./PipelineColumns";
 
 const columns = [
@@ -107,18 +108,51 @@ describe("PipelineColumns", () => {
       ]),
     );
 
-    // Lane-specific bodies only render when the card lands in the right lane.
     expect(html).toContain("Draft task");
     expect(html).toContain("Queued run");
     expect(html).toContain("#2"); // queue position badge (Todo)
     expect(html).toContain("12 / 40 nodes"); // progress (in_progress)
-    expect(html).toContain("Result text"); // output (done)
     expect(count(html, 'role="article"')).toBe(4);
-    // Only the draft task ticket is draggable.
-    expect(count(html, 'draggable="true"')).toBe(1);
+    // Drag & drop is gone entirely.
+    expect(html).not.toContain('draggable="true"');
   });
 
-  it("renders a failed ticket in Draft with a Failed badge and error, draggable for retry", () => {
+  it("cards are lean: no body text, labels, inputs, kind badge, or output", () => {
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "d",
+          column_id: "draft",
+          kind: "task",
+          issue_id: "iss-1",
+          title: "Draft task",
+          body: "long ticket description",
+          labels: ["labelled-x"],
+          entry_input: { topic: "jazz-input" },
+          priority: 3,
+        }),
+        makeCard({
+          id: "done",
+          column_id: "done",
+          run_id: "r3",
+          status: "finished",
+          title: "Done card",
+          output: "Result text",
+          workflow_name: "wf_name_meta",
+          bot_id: "bot-meta",
+        }),
+      ]),
+    );
+
+    expect(html).not.toContain("long ticket description");
+    expect(html).not.toContain("labelled-x");
+    expect(html).not.toContain("jazz-input");
+    expect(html).not.toContain("Result text"); // output lives in the sidebar
+    expect(html).not.toContain("bot-meta"); // meta chips removed
+    expect(html).not.toContain("wf_name_meta");
+  });
+
+  it("renders a failed ticket in Draft with a Failed badge, its error, and Retry", () => {
     const html = render(
       makeBoard([
         makeCard({
@@ -136,31 +170,10 @@ describe("PipelineColumns", () => {
 
     expect(html).toContain("Failed");
     expect(html).toContain("kaboom");
-    // A failed ticket is draggable (drop into Todo = retry).
-    expect(count(html, 'draggable="true"')).toBe(1);
+    expect(html).toContain("Retry");
   });
 
-  it("does not make an executing run card draggable", () => {
-    const html = render(
-      makeBoard([
-        makeCard({
-          id: "running",
-          column_id: "in_progress",
-          kind: "run",
-          title: "Running",
-          issue_id: "iss-3", // has a ticket, but is executing
-          run_id: "run-x",
-          status: "running",
-          tree_executed_nodes: 1,
-          tree_total_nodes: 4,
-        }),
-      ]),
-    );
-
-    expect(html).not.toContain('draggable="true"');
-  });
-
-  it("shows a Blocked tag + progress for pending reviews — the form lives in the sidebar only", () => {
+  it("shows a Blocked tag naming the gate + progress; the form lives in the sidebar only", () => {
     const html = render(
       makeBoard([
         makeCard({
@@ -184,10 +197,9 @@ describe("PipelineColumns", () => {
       ]),
     );
 
-    // The blocked tag replaces the inline review form…
-    expect(html).toContain("Blocked — human review");
-    expect(html).not.toContain('data-testid="human-prompt"');
-    expect(html).not.toContain("Ship it?");
+    // The blocked tag names the pending gate…
+    expect(html).toContain("Blocked — human review · approval");
+    expect(html).not.toContain("Ship it?"); // no inline form
     // …while the tree progress stays visible.
     expect(html).toContain("5 / 10 nodes");
     expect(count(html, 'role="article"')).toBe(1); // child is folded, not its own card
@@ -217,19 +229,19 @@ describe("PipelineColumns", () => {
 });
 
 describe("card details affordance", () => {
-  it("renders a Details affordance for every card when onOpenCard is given", () => {
+  it("renders a Details affordance and a pointer cursor when onOpenCard is given", () => {
     const html = renderToStaticMarkup(
       <PipelineColumns
         board={makeBoard([
           makeCard({ id: "a", column_id: "in_progress", run_id: "r1", status: "running", title: "Running" }),
-          makeCard({ id: "b", column_id: "done", run_id: "r2", status: "finished", title: "Done" }),
         ])}
         onRefetch={() => {}}
         onOpenCard={() => {}}
       />,
     );
     expect(html).toContain("Details for Running");
-    expect(html).toContain("Details for Done");
+    expect(html).toContain("cursor-pointer");
+    expect(html).not.toContain("cursor-grab");
   });
 
   it("omits the Details affordance when onOpenCard is absent", () => {
@@ -239,92 +251,107 @@ describe("card details affordance", () => {
       ]),
     );
     expect(html).not.toContain("aria-label=\"Details for");
+    expect(html).not.toContain("cursor-pointer");
   });
 });
 
-describe("drag-and-drop helpers", () => {
-  it("only allows dragging non-executing task-backed tickets", () => {
-    expect(isTicketDraggable(makeCard({ kind: "task", issue_id: "iss-1" }))).toBe(true);
+describe("move buttons (no drag & drop)", () => {
+  it("a Draft task shows → Todo; a Todo task shows → Draft", () => {
+    const html = render(
+      makeBoard([
+        makeCard({ id: "d", column_id: "draft", kind: "task", issue_id: "iss-1", title: "Prep me" }),
+        makeCard({ id: "t", column_id: "todo", kind: "task", issue_id: "iss-2", title: "Staged" }),
+      ]),
+    );
+    expect(html).toContain("→ Todo");
+    expect(html).toContain("→ Draft");
+  });
+
+  it("run-backed cards get no move buttons", () => {
+    const html = render(
+      makeBoard([
+        makeCard({ id: "q", column_id: "todo", kind: "run", run_id: "r1", status: "queued", issue_id: "iss-3" }),
+        makeCard({ id: "p", column_id: "in_progress", kind: "run", run_id: "r2", status: "running" }),
+        makeCard({ id: "done", column_id: "done", kind: "run", run_id: "r3", status: "finished" }),
+      ]),
+    );
+    expect(html).not.toContain("→ Todo");
+    expect(html).not.toContain("→ Draft");
+  });
+});
+
+describe("move helpers", () => {
+  it("canMoveToTodo: draft-only, task-backed or failed", () => {
+    expect(canMoveToTodo(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" }))).toBe(true);
     expect(
-      isTicketDraggable(makeCard({ kind: "run", issue_id: "iss-1", failed: true })),
+      canMoveToTodo(makeCard({ column_id: "draft", kind: "run", issue_id: "iss-1", failed: true })),
     ).toBe(true);
-    // Running / queued / finished runs are fixed by run state.
+    // Not in draft / executing / no ticket → immobile.
+    expect(canMoveToTodo(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-1" }))).toBe(false);
     expect(
-      isTicketDraggable(makeCard({ kind: "run", issue_id: "iss-1", status: "running" })),
+      canMoveToTodo(makeCard({ column_id: "draft", kind: "run", issue_id: "iss-1", status: "running" })),
     ).toBe(false);
-    // A task with no tracker issue can't be moved between states.
-    expect(isTicketDraggable(makeCard({ kind: "task" }))).toBe(false);
+    expect(canMoveToTodo(makeCard({ column_id: "draft", kind: "task" }))).toBe(false);
   });
 
-  it("maps drop columns to the ready flag", () => {
-    expect(readyStateForDropColumn("todo")).toBe(true);
-    expect(readyStateForDropColumn("draft")).toBe(false);
-    expect(readyStateForDropColumn("in_progress")).toBeNull();
-    expect(readyStateForDropColumn("done")).toBeNull();
+  it("canMoveToDraft: todo-only, unlaunched task-backed tickets", () => {
+    expect(canMoveToDraft(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-1" }))).toBe(true);
+    // A queued RUN in Todo is fixed by run state.
+    expect(
+      canMoveToDraft(makeCard({ column_id: "todo", kind: "run", issue_id: "iss-1", status: "queued" })),
+    ).toBe(false);
+    expect(canMoveToDraft(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" }))).toBe(false);
+    expect(canMoveToDraft(makeCard({ column_id: "todo", kind: "task" }))).toBe(false);
   });
 
-  it("dropping into Todo marks the ticket ready, then refetches", async () => {
+  it("moveTicket(true) stages to Todo, then refetches", async () => {
     markReadyMock.mockResolvedValue(undefined);
     const onDone = vi.fn();
-    await dropTicketToColumn("iss-1", "todo", onDone);
+    await moveTicket("iss-1", true, onDone);
     expect(markReadyMock).toHaveBeenCalledWith("iss-1", true);
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("dropping into Draft unmarks the ticket", async () => {
+  it("moveTicket(false) unstages to Draft", async () => {
     markReadyMock.mockResolvedValue(undefined);
     const onDone = vi.fn();
-    await dropTicketToColumn("iss-1", "draft", onDone);
+    await moveTicket("iss-1", false, onDone);
     expect(markReadyMock).toHaveBeenCalledWith("iss-1", false);
     expect(onDone).toHaveBeenCalledTimes(1);
-  });
-
-  it("ignores drops on non-target columns", async () => {
-    const onDone = vi.fn();
-    await dropTicketToColumn("iss-1", "in_progress", onDone);
-    expect(markReadyMock).not.toHaveBeenCalled();
-    expect(onDone).not.toHaveBeenCalled();
   });
 });
 
 describe("isTicketEditable", () => {
   it("allows editing not-yet-run task-backed tickets", () => {
-    // Draft task card.
     expect(
       isTicketEditable(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" })),
     ).toBe(true);
-    // Draft failed ticket (a failed run being retried) is still editable.
     expect(
       isTicketEditable(
         makeCard({ column_id: "draft", kind: "run", issue_id: "iss-2", failed: true }),
       ),
     ).toBe(true);
-    // Ready-but-unlaunched Todo task card.
     expect(
       isTicketEditable(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-3" })),
     ).toBe(true);
   });
 
   it("blocks editing executing / finished / queued cards", () => {
-    // Running run.
     expect(
       isTicketEditable(
         makeCard({ column_id: "in_progress", kind: "run", issue_id: "iss-4", status: "running" }),
       ),
     ).toBe(false);
-    // Done run.
     expect(
       isTicketEditable(
         makeCard({ column_id: "done", kind: "run", issue_id: "iss-5", status: "finished" }),
       ),
     ).toBe(false);
-    // Queued run sitting in Todo (kind run, not a task).
     expect(
       isTicketEditable(
         makeCard({ column_id: "todo", kind: "run", issue_id: "iss-6", status: "queued" }),
       ),
     ).toBe(false);
-    // A task with no tracker issue can't be patched.
     expect(isTicketEditable(makeCard({ column_id: "draft", kind: "task" }))).toBe(false);
   });
 
