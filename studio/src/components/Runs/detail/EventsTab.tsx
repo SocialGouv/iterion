@@ -58,6 +58,7 @@ export function EventsTab({ events }: { events: RunEvent[] }) {
                   key={t}
                   type="button"
                   onClick={() => toggleType(t)}
+                  aria-pressed={isActive}
                   className={`text-caption px-1.5 py-0.5 rounded border transition-colors ${
                     isActive
                       ? "bg-accent-soft border-accent text-fg-default"
@@ -77,6 +78,7 @@ export function EventsTab({ events }: { events: RunEvent[] }) {
           <button
             type="button"
             onClick={() => setShowRawData((v) => !v)}
+            aria-pressed={showRawData}
             className="ml-auto text-caption text-fg-subtle hover:text-fg-default"
           >
             {showRawData ? "hide raw" : "show raw"}

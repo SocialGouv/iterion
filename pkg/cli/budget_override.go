@@ -1,78 +1,18 @@
 package cli
 
 import (
-	"fmt"
-	"time"
-
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 )
 
-// BudgetOverrides carries CLI-supplied budget limits that override a
-// workflow's declared `budget:` block at run time. Each field uses the
-// "non-zero wins, zero inherits" convention shared with recipe budget
-// overrides (see recipe.applyBudget). This lets any bot be re-budgeted at
-// the CLI without editing its .bot — e.g.
-//
-//	iterion run bots/foo/main.bot --max-cost-usd 120 --max-duration 4h
-//
-// Precedence is DSL budget: → recipe/preset → CLI flags (flags win, which
-// is the intent of an at-run override).
-type BudgetOverrides struct {
-	MaxCostUSD          float64
-	MaxTokens           int
-	MaxDuration         string
-	MaxIterations       int
-	MaxParallelBranches int
-}
+// BudgetOverrides aliases ir.BudgetOverrides so existing CLI callers
+// (RunOptions.Budget, ResumeOptions.Budget, cmd/iterion flag wiring) keep
+// compiling unchanged. The canonical type + apply logic live in
+// pkg/dsl/ir/budget_override.go, shared with the server launch path.
+type BudgetOverrides = ir.BudgetOverrides
 
-// IsZero reports whether no override was supplied.
-func (o BudgetOverrides) IsZero() bool {
-	return o.MaxCostUSD <= 0 && o.MaxTokens <= 0 && o.MaxDuration == "" &&
-		o.MaxIterations <= 0 && o.MaxParallelBranches <= 0
-}
-
-// Validate rejects a malformed --max-duration early with an actionable
-// error, rather than letting newSharedBudget silently drop an unparseable
-// duration (which would look like the flag had no effect).
-func (o BudgetOverrides) Validate() error {
-	if o.MaxDuration != "" {
-		if _, err := time.ParseDuration(ir.ExpandEnvWithDefault(o.MaxDuration)); err != nil {
-			return fmt.Errorf("--max-duration %q: %w (use a Go duration like 30m, 2h, 90m)", o.MaxDuration, err)
-		}
-	}
-	return nil
-}
-
-// applyBudgetOverrides mutates wf.Budget in place with any non-zero CLI
-// override. A nil wf.Budget is allocated only when at least one override is
-// supplied; otherwise the workflow keeps its (possibly nil) budget so
-// newSharedBudget continues to treat the run as unbudgeted. Mirrors
-// recipe.applyBudget's precedence: non-zero override wins, zero inherits.
-//
-// It must run AFTER the workflow is resolved (recipe/preset budget already
-// folded in) but BEFORE the executor is built — the executor snapshots
-// Budget at construction time, so a later mutation would be invisible to
-// the model/cost layer.
+// applyBudgetOverrides delegates to ir.ApplyBudgetOverrides. See the ir
+// package for the ordering contract (after recipe/preset resolution,
+// before the executor snapshots Budget).
 func applyBudgetOverrides(wf *ir.Workflow, o BudgetOverrides) {
-	if wf == nil || o.IsZero() {
-		return
-	}
-	if wf.Budget == nil {
-		wf.Budget = &ir.Budget{}
-	}
-	if o.MaxCostUSD > 0 {
-		wf.Budget.MaxCostUSD = o.MaxCostUSD
-	}
-	if o.MaxTokens > 0 {
-		wf.Budget.MaxTokens = o.MaxTokens
-	}
-	if o.MaxDuration != "" {
-		wf.Budget.MaxDuration = o.MaxDuration
-	}
-	if o.MaxIterations > 0 {
-		wf.Budget.MaxIterations = o.MaxIterations
-	}
-	if o.MaxParallelBranches > 0 {
-		wf.Budget.MaxParallelBranches = o.MaxParallelBranches
-	}
+	ir.ApplyBudgetOverrides(wf, o)
 }

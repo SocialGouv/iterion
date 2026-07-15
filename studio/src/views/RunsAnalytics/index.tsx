@@ -26,6 +26,7 @@ import { getRunsStats, type StatsResponse } from "@/api/runsStats";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { formatCost, formatMs } from "@/lib/format";
@@ -252,8 +253,7 @@ function CostChart({ buckets, workflows, colors }: CostChartProps) {
               y={y}
               textAnchor="end"
               dominantBaseline="central"
-              className="fill-fg-muted"
-              style={{ fontSize: "9px" }}
+              className="fill-fg-muted text-caption"
             >
               {formatCost(max * f)}
             </text>
@@ -296,8 +296,7 @@ function CostChart({ buckets, workflows, colors }: CostChartProps) {
             x={xs[i]}
             y={H - 10}
             textAnchor="middle"
-            className="fill-fg-muted"
-            style={{ fontSize: "9px" }}
+            className="fill-fg-muted text-caption"
           >
             {b.day.slice(5)}
           </text>
@@ -387,19 +386,19 @@ interface WorkflowTableProps {
 function WorkflowTable({ workflows, colors }: WorkflowTableProps) {
   const totalRuns = workflows.reduce((a, w) => a + w.run_count, 0);
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-body border-collapse">
-      <thead>
-        <tr className="text-left text-fg-muted text-micro">
-          <th className="font-medium py-1">Workflow</th>
-          <th className="font-medium py-1 text-right">Runs</th>
-          <th className="font-medium py-1">Status</th>
-          <th className="font-medium py-1 text-right">Fail rate</th>
-          <th className="font-medium py-1 text-right">P50 / P95</th>
-          <th className="font-medium py-1 text-right">Cost</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table
+      caption="Per-workflow run statistics: run count, status histogram, fail rate, P50/P95 duration, total cost"
+      density="sm"
+    >
+      <THead>
+        <Th>Workflow</Th>
+        <Th align="right">Runs</Th>
+        <Th>Status</Th>
+        <Th align="right">Fail rate</Th>
+        <Th align="right">P50 / P95</Th>
+        <Th align="right">Cost</Th>
+      </THead>
+      <TBody>
         {workflows.map((w) => {
           const rateClass =
             w.fail_rate >= 0.5
@@ -408,44 +407,43 @@ function WorkflowTable({ workflows, colors }: WorkflowTableProps) {
                 ? "text-warning-fg"
                 : "text-fg-default";
           return (
-            <tr key={w.workflow} className="border-t border-border-subtle">
-              <td className="py-1">
+            <Tr key={w.workflow}>
+              <Td>
                 <span
                   className="inline-block w-2 h-2 rounded-full mr-2 align-middle"
                   style={{ background: colors[w.workflow] ?? "var(--color-fg-subtle)" }}
                 />
                 <span className="font-mono text-fg-default">{w.workflow}</span>
-              </td>
-              <td className="py-1 text-right tabular-nums text-fg-default">
+              </Td>
+              <Td align="right" className="tabular-nums text-fg-default">
                 {w.run_count}
                 <span className="text-fg-subtle text-caption ml-1">
                   ({totalRuns > 0 ? Math.round((w.run_count / totalRuns) * 100) : 0}%)
                 </span>
-              </td>
-              <td className="py-1">
+              </Td>
+              <Td>
                 <StatusHistogram counts={w.counts_by_status} total={w.run_count} />
-              </td>
-              <td className={`py-1 text-right tabular-nums ${rateClass}`}>
+              </Td>
+              <Td align="right" className={`tabular-nums ${rateClass}`}>
                 {(w.fail_rate * 100).toFixed(0)}%
                 <span className="text-fg-subtle text-caption ml-1">
                   ({w.fail_count}/{w.run_count})
                 </span>
-              </td>
-              <td className="py-1 text-right tabular-nums text-fg-muted">
+              </Td>
+              <Td align="right" className="tabular-nums text-fg-muted">
                 {formatMs(w.duration_p50_sec * 1000)} /{" "}
                 <span className="text-fg-default">
                   {formatMs(w.duration_p95_sec * 1000)}
                 </span>
-              </td>
-              <td className="py-1 text-right tabular-nums text-fg-default">
+              </Td>
+              <Td align="right" className="tabular-nums text-fg-default">
                 {formatCost(w.total_cost_usd)}
-              </td>
-            </tr>
+              </Td>
+            </Tr>
           );
         })}
-      </tbody>
-      </table>
-    </div>
+      </TBody>
+    </Table>
   );
 }
 

@@ -141,15 +141,9 @@ func MirrorSingleSkill(workDir string, b *bundle.Bundle, name string, logger *it
 		}
 		return copyDir(srcPath, destPath)
 	}
-	// File skill → directory form <dest>/<stem>/SKILL.md (see skillDestDirForm).
-	skillDir, skillDest, markerPath, derr := skillDestDirForm(dest, markerDir, name)
-	if derr != nil {
-		return derr
-	}
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return fmt.Errorf("runtime/bundle: mkdir %s: %w", skillDir, err)
-	}
-	_, err = reconcileSkillFile(srcPath, skillDest, markerPath, logger)
+	// File skill → directory form (native discovery) + flat alias (prompt
+	// Reads). Shared with mirrorBundleSkills via mirrorFileSkill.
+	_, err = mirrorFileSkill(dest, markerDir, srcPath, name, logger)
 	return err
 }
 
@@ -171,6 +165,41 @@ func skillDestDirForm(dest, markerDir, srcName string) (skillDir, destPath, mark
 	destPath = filepath.Join(skillDir, "SKILL.md")
 	markerPath = filepath.Join(markerDir, stem+".SKILL.md.sha256")
 	return skillDir, destPath, markerPath, nil
+}
+
+// mirrorFileSkill mirrors one flat "<stem>.md" source skill into BOTH forms
+// under <dest>:
+//   - directory form <stem>/SKILL.md — what the claude_code (and claw) Skill
+//     TOOLS discover natively (Agent Skills spec);
+//   - flat alias <stem>.md — what a bot prompt that Reads the skill by PATH
+//     ("READ .claude/skills/<stem>.md FIRST", the pattern most catalog bots
+//     use for upfront context) resolves.
+//
+// The mirror historically wrote only the flat file, then moved to the
+// directory form for native discovery — which silently broke every prompt
+// still Reading the flat path (the agent then wastes turns re-finding the file,
+// observed dogfooding Vetty on a dependency PR). Writing both keeps native
+// discovery AND explicit Reads working. Each form goes through
+// reconcileSkillFile so the workspace-wins collision policy holds independently;
+// the returned outcome is the directory-form result (the one callers tally).
+func mirrorFileSkill(dest, markerDir, srcPath, name string, logger *iterlog.Logger) (skillReconcileOutcome, error) {
+	skillDir, skillDest, markerPath, err := skillDestDirForm(dest, markerDir, name)
+	if err != nil {
+		return skillOutcomeShadowed, err
+	}
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return skillOutcomeShadowed, fmt.Errorf("runtime/bundle: mkdir %s: %w", skillDir, err)
+	}
+	outcome, err := reconcileSkillFile(srcPath, skillDest, markerPath, logger)
+	if err != nil {
+		return outcome, err
+	}
+	flatDest := filepath.Join(dest, name)
+	flatMarker := filepath.Join(markerDir, name+".sha256")
+	if _, ferr := reconcileSkillFile(srcPath, flatDest, flatMarker, logger); ferr != nil {
+		return outcome, ferr
+	}
+	return outcome, nil
 }
 
 // mirrorBundleSkills copies every top-level entry from bundle.SkillsDir
@@ -233,17 +262,10 @@ func mirrorBundleSkills(workDir string, b *bundle.Bundle, logger *iterlog.Logger
 			mirrored++
 			continue
 		}
-		// File skill → mirror as <dest>/<stem>/SKILL.md (directory form) so
-		// the claude_code Skill tool discovers it; a flat <name>.md is
-		// invisible to it. Shared reconciliation with MirrorSingleSkill.
-		skillDir, skillDest, markerPath, derr := skillDestDirForm(dest, markerDir, name)
-		if derr != nil {
-			return derr
-		}
-		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			return fmt.Errorf("runtime/bundle: mkdir %s: %w", skillDir, err)
-		}
-		outcome, err := reconcileSkillFile(srcPath, skillDest, markerPath, logger)
+		// File skill → both the directory form (native Skill-tool discovery)
+		// and the flat <name>.md alias (prompt Reads). Shared with
+		// MirrorSingleSkill via mirrorFileSkill.
+		outcome, err := mirrorFileSkill(dest, markerDir, srcPath, name, logger)
 		if err != nil {
 			return err
 		}

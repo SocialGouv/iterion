@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -55,7 +56,7 @@ var ErrServerDraining = errors.New("runtime: server draining")
 type NodeExecutor interface {
 	// Execute runs the given node with the provided input and returns its
 	// output. For terminal nodes (done/fail) this is never called.
-	Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error)
+	Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error)
 }
 
 // The following minimal interfaces are optional extensions to NodeExecutor:
@@ -69,7 +70,7 @@ type workDirSetter interface{ SetWorkDir(string) }
 
 type repoRootSetter interface{ SetRepoRoot(string) }
 
-type varsSetter interface{ SetVars(map[string]interface{}) }
+type varsSetter interface{ SetVars(map[string]any) }
 
 // Engine executes workflows. It supports sequential execution and
 // parallel fan-out via bounded branch scheduling.
@@ -78,7 +79,7 @@ type Engine struct {
 	store                    store.RunStore
 	executor                 NodeExecutor
 	logger                   *iterlog.Logger
-	onNodeFinished           func(runID, nodeID string, output map[string]interface{})
+	onNodeFinished           func(runID, nodeID string, output map[string]any)
 	onEvent                  func(evt store.Event)    // optional observer fired after every successful append
 	recoveryDispatch         RecoveryDispatch         // optional; consulted on node execution failure
 	workflowHash             string                   // SHA-256 of the .bot source, set via WithWorkflowHash
@@ -111,6 +112,7 @@ type Engine struct {
 	callbackAnswerNode       string                   // optional: node whose latest artifact holds the run's final answer; set via WithCallback
 	boardMCPHandler          http.Handler             // optional: serves the board MCP routes; when set + a sandbox is active, a per-run gateway-reachable listener is started so sandboxed board-cap nodes can write the operator's board (C082). Set via WithBoardMCP; nil disables sandboxed board-emit (CLI runs with no server).
 	subbotRunner             SubbotRunner             // optional: host-supplied closure that compiles + runs a child .bot for a `subbot` node. nil → subbot nodes hard-error (the runtime can't compile a child itself — import cycle with runview). Set via WithSubbotRunner.
+	sandboxRunObserver       func(sandbox.Run)        // optional: invoked with the live sandbox Run right after it starts, so the host (cloud runner) can drive mid-run file-secret refresh against the driver's SecretFileRefresher. nil disables it. Set via WithSandboxRunObserver.
 
 	// activeBudget points at the SharedBudget of the run currently
 	// executing in this engine, published atomically by newRunState so an
@@ -146,8 +148,8 @@ func (e *Engine) ActiveElapsed() time.Duration {
 // SubbotRunner: the child .bot source, the resolved input vars, and the
 // parent linkage so the runner can record a child run tied to the parent.
 type SubbotRequest struct {
-	Source      string                 // child .bot path/ref (relative to the parent workdir)
-	Vars        map[string]interface{} // resolved `with:` mappings + `_lease_<resource>` instance ids
+	Source      string         // child .bot path/ref (relative to the parent workdir)
+	Vars        map[string]any // resolved `with:` mappings + `_lease_<resource>` instance ids
 	ParentRunID string
 	NodeID      string
 }
@@ -155,7 +157,7 @@ type SubbotRequest struct {
 // SubbotRunner compiles and runs a child .bot as a nested run and returns its
 // terminal output (mapped to outputs.<subbot>.<field>). Wired by the CLI /
 // runview layer where compiling + running a child engine is possible.
-type SubbotRunner func(ctx context.Context, req SubbotRequest) (map[string]interface{}, error)
+type SubbotRunner func(ctx context.Context, req SubbotRequest) (map[string]any, error)
 
 // New creates a new Engine for a raw workflow.
 func New(wf *ir.Workflow, s store.RunStore, exec NodeExecutor, opts ...EngineOption) *Engine {
@@ -182,6 +184,29 @@ func NewFromRecipe(r *recipe.RecipeSpec, wf *ir.Workflow, s store.RunStore, exec
 }
 
 // runState holds the mutable runtime state passed through the execution loop.
+//
+// CONCURRENCY CONTRACT (no mutex by design — ownership, not exclusion):
+// the main execution-loop goroutine is the SINGLE WRITER of every
+// unsynchronized field (outputs, artifacts, loopCounters, vars,
+// costUSDTotal, ...). Parallel fan-out branches never touch them:
+//   - branches receive deep COPIES of outputs/artifacts
+//     (fanOutPlan.parentOutputs via copyOutputs) and write only into
+//     their own branchResult; the merge back into rs happens
+//     mono-thread in processConvergence after collection;
+//   - the explicitly synchronized exceptions are branchLedgerSeq
+//     (atomic), budget (SharedBudget, internal mutex), events
+//     (runEvents, internal mutex) and resourceSemaphores (channels).
+//
+// Two rules keep this sound — breaking either introduces a silent data
+// race the compiler cannot catch:
+//  1. never write an unsynchronized rs field from a branch goroutine;
+//  2. fields branches READ through the resolution scope (loopCounters,
+//     vars, runInputs) must not be mutated by the main loop while a
+//     fan-out is in flight — INCLUDING an abandoned branch that
+//     outlives its fan-out (collectBranches' grace-period escape), so
+//     the constraint extends until the run ends, not just until the
+//     collector returns. TestFanOutAbandonedBranchDoesNotRaceRunState
+//     exercises that window under -race.
 type runState struct {
 	// ctx is the per-run context. Stored on runState (despite the
 	// usual "no context in struct" rule) because helpers.go threads
@@ -191,10 +216,10 @@ type runState struct {
 	// Set in Run() before execLoop().
 	ctx          context.Context
 	runID        string
-	runInputs    map[string]interface{}
-	vars         map[string]interface{}
-	outputs      map[string]map[string]interface{}
-	artifacts    map[string]map[string]interface{} // publish name → output
+	runInputs    map[string]any
+	vars         map[string]any
+	outputs      map[string]map[string]any
+	artifacts    map[string]map[string]any // publish name → output
 	loopCounters map[string]int
 	// loopPreviousOutput holds the snapshot of the source node output from
 	// the PREVIOUS traversal of a given loop's edge — i.e., one iteration
@@ -202,8 +227,8 @@ type runState struct {
 	// {{loop.<name>.previous_output[.field]}}; in the very first iteration
 	// of a loop the value is nil. The snapshot is rotated through
 	// loopCurrentOutput on each traversal to preserve the one-iteration lag.
-	loopPreviousOutput map[string]map[string]interface{}
-	loopCurrentOutput  map[string]map[string]interface{} // staging slot for the next iteration's "previous"
+	loopPreviousOutput map[string]map[string]any
+	loopCurrentOutput  map[string]map[string]any // staging slot for the next iteration's "previous"
 	// loopProgressSig / loopStaleness drive the unbounded-loop liveness monitor:
 	// the last-seen progress signature (a hash of the source output) per loop,
 	// and how many consecutive crossings it has been unchanged. Reset when the
@@ -284,28 +309,45 @@ type resumeBackendState struct {
 // formatted message describing the origin error. Used on pre-execLoop
 // setup failures where the engine is about to return the same error to
 // the caller — a store-side failure of the status flip itself can't be
-// propagated, so it's logged at warn level instead of being silently
+// propagated, so it's retried then logged instead of being silently
 // dropped (without this, an op error during startup leaves the run
 // stuck in `running` in the UI).
+//
+// The retry exists because this write shares its failure domain with
+// whatever just failed (the store): a transient blip (Mongo hiccup, a
+// ctx already torn down) that broke setup often clears within seconds,
+// and a lost flip costs an operator round trip — or waits for the
+// periodic orphan reconcile. Attempts run on a detached ctx: the run
+// ctx being dead is one of the very triggers that lands here.
 func (e *Engine) markFailedBestEffort(ctx context.Context, runID, phase string, cause error) {
 	msg := fmt.Sprintf("%s: %v", phase, cause)
-	if err := e.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, msg); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: failed to record run %s as failed during %s: %v (original cause: %v)", runID, phase, err, cause)
+	writeCtx := context.WithoutCancel(ctx)
+	var err error
+	for attempt, delay := 0, 500*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*4 {
+		if attempt > 0 {
+			time.Sleep(delay)
+		}
+		if err = e.store.UpdateRunStatus(writeCtx, runID, store.RunStatusFailed, msg); err == nil {
+			return
+		}
+	}
+	if e.logger != nil {
+		e.logger.Warn("runtime: failed to record run %s as failed during %s after 3 attempts: %v (original cause: %v — the run stays running until the orphan reconcile catches it)", runID, phase, err, cause)
 	}
 }
 
 // newRunState builds a runState with all maps allocated. Resume paths
 // then overwrite specific fields (outputs, loop counters, vars, etc.)
 // from the persisted checkpoint.
-func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runState {
+func (e *Engine) newRunState(runID string, inputs map[string]any) *runState {
 	rs := &runState{
 		runID:              runID,
 		runInputs:          inputs,
-		outputs:            make(map[string]map[string]interface{}),
-		artifacts:          make(map[string]map[string]interface{}),
+		outputs:            make(map[string]map[string]any),
+		artifacts:          make(map[string]map[string]any),
 		loopCounters:       make(map[string]int),
-		loopPreviousOutput: make(map[string]map[string]interface{}),
-		loopCurrentOutput:  make(map[string]map[string]interface{}),
+		loopPreviousOutput: make(map[string]map[string]any),
+		loopCurrentOutput:  make(map[string]map[string]any),
 		loopProgressSig:    make(map[string]string),
 		loopStaleness:      make(map[string]int),
 		roundRobinCounters: make(map[string]int),
@@ -328,11 +370,11 @@ func (e *Engine) newRunState(runID string, inputs map[string]interface{}) *runSt
 // the workflow has no declared loops (payload stays absent). Literal
 // caps only — expression / unbounded caps report 0 (max unknown), which
 // the studio renders as a bare current count.
-func loopBoundsPayload(wf *ir.Workflow) map[string]interface{} {
+func loopBoundsPayload(wf *ir.Workflow) map[string]any {
 	if wf == nil || len(wf.Loops) == 0 {
 		return nil
 	}
-	bounds := make(map[string]interface{}, len(wf.Loops))
+	bounds := make(map[string]any, len(wf.Loops))
 	for name, loop := range wf.Loops {
 		if loop == nil {
 			continue
@@ -342,7 +384,7 @@ func loopBoundsPayload(wf *ir.Workflow) map[string]interface{} {
 	if len(bounds) == 0 {
 		return nil
 	}
-	return map[string]interface{}{"loops": bounds}
+	return map[string]any{"loops": bounds}
 }
 
 // leaseInputKey is the node-input key under which a node's acquired

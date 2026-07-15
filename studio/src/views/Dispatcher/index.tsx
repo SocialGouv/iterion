@@ -7,6 +7,7 @@ import DispatcherControlBar from "@/components/shared/DispatcherControlBar";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { Tooltip } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -248,6 +249,12 @@ export default function DispatcherView() {
   // this view sees an eligible issue that simply never runs, with no
   // reason given.
   const skips = snap.dispatch_skips ?? [];
+  // With no dispatcher attached (never started / no config), GET /state
+  // returns the manager's idle stub — a Snapshot with only generated_at
+  // set. The manager serves the stub exactly when its lifecycle state is
+  // not running/paused, so gate the empty state on the polled status
+  // (`dispatcherAttached` above) rather than fingerprinting zero fields.
+  const idleStub = !dispatcherAttached;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -288,30 +295,46 @@ export default function DispatcherView() {
         </InlineBanner>
       )}
 
-      <div className="flex-1 overflow-auto p-4 space-y-4 max-w-4xl">
-        <SummaryCard snap={snap} status={status} />
-        <DispatchSkipsTable
-          rows={skips}
-          onFocusIssue={(id) =>
-            setLocation(`/board?focus=${encodeURIComponent(id)}`)
+      {idleStub ? (
+        <EmptyState
+          className="flex-1"
+          title="No dispatcher running"
+          message={
+            <>
+              Configure and start one from the toolbar above (Settings, then
+              Start), or run{" "}
+              <code className="text-caption">iterion dispatch &lt;config.yaml&gt;</code>{" "}
+              from a terminal. Running issues, retries and slots will appear
+              here live.
+            </>
           }
         />
-        <RunningTable
-          rows={running}
-          stallTimeoutS={snap.stall_timeout_seconds}
-          onCancel={doCancel}
-          onOpenRun={openRun}
-        />
-        <RetriesTable
-          rows={retries}
-          canPollDispatches={actions.canPollDispatches}
-          pollTitle={actions.pollTitle}
-          onFocusIssue={(id) =>
-            setLocation(`/board?focus=${encodeURIComponent(id)}`)
-          }
-          onRefreshNow={doRefresh}
-        />
-      </div>
+      ) : (
+        <div className="flex-1 overflow-auto p-4 space-y-4 max-w-4xl">
+          <SummaryCard snap={snap} status={status} />
+          <DispatchSkipsTable
+            rows={skips}
+            onFocusIssue={(id) =>
+              setLocation(`/board?focus=${encodeURIComponent(id)}`)
+            }
+          />
+          <RunningTable
+            rows={running}
+            stallTimeoutS={snap.stall_timeout_seconds}
+            onCancel={doCancel}
+            onOpenRun={openRun}
+          />
+          <RetriesTable
+            rows={retries}
+            canPollDispatches={actions.canPollDispatches}
+            pollTitle={actions.pollTitle}
+            onFocusIssue={(id) =>
+              setLocation(`/board?focus=${encodeURIComponent(id)}`)
+            }
+            onRefreshNow={doRefresh}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -394,34 +417,34 @@ function DispatchSkipsTable({
           <code>assignee_workflows</code>
         </span>
       </header>
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-xs">
-          <thead className="text-fg-muted border-b border-border-default">
-            <tr>
-              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Issue</th>
-              <th className="text-left py-1.5 px-3 font-normal">Bot</th>
-              <th className="text-left py-1.5 px-3 font-normal">Reason</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((s) => (
-              <tr
-                key={s.issue_id}
-                className="border-b border-border-default/60 hover:bg-surface-2/40 cursor-pointer focus-visible:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-                {...clickableRowProps(() => onFocusIssue(s.issue_id), `Open issue ${s.identifier || s.issue_id} on the board to fix its bot`)}
-              >
-                <td className="py-1.5 px-3 font-mono whitespace-nowrap">
-                  {s.identifier || s.issue_id}
-                </td>
-                <td className="py-1.5 px-3 font-mono">
-                  {s.bot ? s.bot : <span className="text-fg-subtle">—</span>}
-                </td>
-                <td className="py-1.5 px-3 text-danger-fg/80">{s.reason}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <Table
+        caption="Eligible issues the dispatcher refuses to claim"
+        density="sm"
+        className="min-w-full"
+      >
+        <THead>
+          <Th className="whitespace-nowrap">Issue</Th>
+          <Th>Bot</Th>
+          <Th>Reason</Th>
+        </THead>
+        <TBody>
+          {rows.map((s) => (
+            <Tr
+              key={s.issue_id}
+              className="cursor-pointer focus-visible:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+              {...clickableRowProps(() => onFocusIssue(s.issue_id), `Open issue ${s.identifier || s.issue_id} on the board to fix its bot`)}
+            >
+              <Td className="font-mono whitespace-nowrap">
+                {s.identifier || s.issue_id}
+              </Td>
+              <Td className="font-mono">
+                {s.bot ? s.bot : <span className="text-fg-subtle">—</span>}
+              </Td>
+              <Td className="text-danger-fg/80">{s.reason}</Td>
+            </Tr>
+          ))}
+        </TBody>
+      </Table>
     </section>
   );
 }

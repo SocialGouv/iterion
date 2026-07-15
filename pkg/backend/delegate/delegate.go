@@ -246,6 +246,20 @@ type ToolDef struct {
 	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
 }
 
+// TaskMCPServer is a resolved, user/plugin-declared MCP server carried on
+// Task.MCPServers for CLI backends to forward to the agent CLI. It mirrors
+// the runtime mcp.ServerConfig / claudesdk MCP server shape (stdio uses
+// Command/Args/Env; http/sse use URL/Headers).
+type TaskMCPServer struct {
+	Name      string
+	Transport string // "stdio" | "http" | "sse" (empty → stdio)
+	Command   string
+	Args      []string
+	URL       string
+	Headers   map[string]string
+	Env       map[string]string
+}
+
 // MemorySpec opts the node into the iterion workspace memory
 // tree (under ~/.iterion/projects/<encoded>/memory/<Scope>/).
 // Honored by backends that maintain their own session history (claw).
@@ -298,6 +312,27 @@ type Task struct {
 
 	// UserPrompt is the fully resolved user message text.
 	UserPrompt string
+
+	// FullAccess, when true, lifts the codex backend's sandbox to
+	// "danger-full-access" (unrestricted network egress + out-of-workspace
+	// writes) instead of the least-privilege mode derived from AllowedTools.
+	// It is Iterion's explicit way to grant a codex node network access — e.g.
+	// a CLI that reaches an external API such as codex's built-in imagegen. Off
+	// by default; other backends ignore it. Set from the node-level
+	// `full_access:` DSL field, so network is a deliberate, per-node choice
+	// by the pipeline author.
+	FullAccess bool
+
+	// Readonly, when true, forces delegated agents into a read-only sandbox.
+	// The executor copies this from the node-level `readonly:` DSL field so
+	// backend enforcement matches workspace-safety scheduling.
+	Readonly bool
+
+	// Images are node-level input image paths (from the `images:` DSL field,
+	// templated + resolved per run). The codex backend forwards them to the
+	// codex CLI as `-i` for image-to-image — e.g. a previous keyframe reused as
+	// a seed, or a character-identity anchor. Other backends ignore it.
+	Images []string
 
 	// UserContent, when non-empty, replaces UserPrompt for backends
 	// that support multimodal input (claw). The first text block is
@@ -352,6 +387,17 @@ type Task struct {
 	// loops internally (e.g. claw). CLI-based backends ignore this field.
 	ToolDefs []ToolDef
 
+	// MCPServers are the user/plugin-declared MCP servers active for this
+	// node (from the workflow `mcp_server` decls, project .mcp.json, and
+	// enabled plugins' mcp_servers contributions). CLI backends
+	// (claude_code) forward them to the agent CLI via --mcp-config so
+	// their tools are available ALONGSIDE — never replacing — the native
+	// toolset (WebSearch/WebFetch stay on by default). The claw backend
+	// does NOT read this: it resolves the same servers into ToolDefs
+	// in-process via the MCP manager. Internal servers (ask_user, board)
+	// are wired separately by each backend and are absent here.
+	MCPServers []TaskMCPServer
+
 	// OutputSchema is the JSON Schema for the expected structured output.
 	// Nil means free-form text output.
 	OutputSchema json.RawMessage
@@ -359,6 +405,13 @@ type Task struct {
 	// Model is the resolved model spec (e.g. "anthropic/claude-sonnet-4-6").
 	// Required for API-based backends; ignored by CLI-based backends.
 	Model string
+
+	// Command is the per-node CLI binary override (env-expanded). Honored
+	// only by claude_code, where it replaces the default `claude` binary
+	// with an alternate claude-code-compatible CLI (a pinned build or wrapper). It takes
+	// precedence over the backend-level Command default. Empty means "use
+	// the backend default"; ignored by all other backends.
+	Command string
 
 	// HasTools indicates whether the node has tools, enabling backends to
 	// choose between structured-output and text-with-tools generation strategies.
@@ -540,10 +593,11 @@ type Task struct {
 	ResumeAnswer string
 
 	// Sandbox is the live sandbox handle for the run, or nil when the
-	// workflow runs without isolation. Backends route their CLI
-	// subprocess calls through it (via the SDK's CommandBuilder hook
-	// for claude_code, or directly via Run.Command for shell-out
-	// backends) so the agent's tools execute inside the container.
+	// workflow runs without isolation. Supported backends route their CLI
+	// subprocess calls through it (via the SDK's CommandBuilder hook for
+	// claude_code, or directly via Run.Command for shell-out backends) so the
+	// agent's tools execute inside the container. A backend whose SDK cannot
+	// route the process must reject the task rather than escape to the host.
 	//
 	// In-process backends (claw) refuse to start when this is set —
 	// see runtime.containsClawNode for the compile-time guard.
@@ -873,13 +927,13 @@ const (
 // free-text ask_user pauses keep their historical single-key shape.
 // Options serialize as []map so the checkpoint's JSON round-trip is
 // loss-free.
-func AddAskUserOptionKeys(questions map[string]interface{}, options []AskUserOption, allowFreeText bool) {
+func AddAskUserOptionKeys(questions map[string]any, options []AskUserOption, allowFreeText bool) {
 	if len(options) == 0 {
 		return
 	}
-	list := make([]interface{}, 0, len(options))
+	list := make([]any, 0, len(options))
 	for _, o := range options {
-		list = append(list, map[string]interface{}{"id": o.ID, "label": o.Label})
+		list = append(list, map[string]any{"id": o.ID, "label": o.Label})
 	}
 	questions[AskUserOptionsKey] = list
 	questions[AskUserAllowFreeTextKey] = allowFreeText
@@ -960,7 +1014,7 @@ const QueuedOperatorMessagesKey = "_queued_operator_messages"
 // Result contains the output from a delegation backend.
 type Result struct {
 	// Output is the parsed structured output from the CLI agent.
-	Output map[string]interface{}
+	Output map[string]any
 
 	// Tokens is an estimate of total tokens consumed (if available from CLI metadata).
 	Tokens int

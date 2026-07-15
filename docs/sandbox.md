@@ -315,6 +315,15 @@ iterion sandbox doctor                 # report driver + capabilities
   `~/.iterion` + `~/.claude` auto-mount (`""`, `auto`, or `none`).
   Defaults to `auto`. Set to `none` on multi-tenant / cloud runners
   to avoid leaking host OAuth credentials.
+- `ITERION_SANDBOX_OVERRIDE` — CLI-strength mode override (`""`,
+  `none`, or `auto`), same precedence tier as `iterion run --sandbox`:
+  `none` beats even a workflow's inline `sandbox:` block. Honoured by
+  the cloud runner (`iterion runner`): set `none` on a runner that is
+  itself the isolation boundary and ships the toolchain (e.g. the
+  `iterion-runner-devbox` image), so a bot's sandbox block — written
+  for local runs — executes directly in the runner pod instead of
+  spawning a sibling sandbox pod. The Helm chart sets this
+  automatically whenever `runner.sandbox.enabled` is false.
 
 ### Precedence (highest → lowest)
 
@@ -544,6 +553,59 @@ Architecture:
   `origin`) so the sandboxed bot can commit and push.
 - Cleanup deletes the pod (and its emptyDir) on run exit.
 
+#### Orphan garbage collection (ADR-070)
+
+`Run.Cleanup` fires only on a graceful engine exit. A runner pod
+SIGKILLed / OOM-killed / node-evicted mid-run never runs it, so its
+sandbox pod, both Secrets — including the one holding **plaintext BYOK/
+forge credentials** — and the NetworkPolicy would otherwise leak with no
+TTL. Three cooperating mechanisms GC them without relying on `Cleanup`:
+
+- **`spec.activeDeadlineSeconds`** on the sandbox pod, derived from the
+  run's `max_duration` + a 30-minute margin. A leaked pod self-fails once
+  it passes the deadline instead of idling on `sleep infinity` forever.
+  Runs with no `max_duration` budget get no deadline (the reaper is the
+  backstop there).
+- **`ownerReference` → the runner pod** on every per-run resource (pod,
+  both Secrets, NetworkPolicy), read best-effort from the downward-API env
+  vars `ITERION_RUNNER_POD_NAME` / `ITERION_RUNNER_POD_UID`. When a runner
+  pod is removed (rollout, drain, scale-down) the cluster cascade-GCs its
+  whole sandbox footprint — closing the plaintext-credential-at-rest
+  window — with no reaper round-trip. Wire them in the Helm chart via:
+
+  ```yaml
+  env:
+    - name: ITERION_RUNNER_POD_NAME
+      valueFrom: {fieldRef: {fieldPath: metadata.name}}
+    - name: ITERION_RUNNER_POD_UID
+      valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+  ```
+
+  When unset, the pod keeps `activeDeadlineSeconds` + the reaper only.
+- **A labelled-resource reaper** (`ReapOrphanResources`, the kubernetes
+  peer of the docker `ReapOrphanContainers`) sweeps managed pods, Secrets
+  and NetworkPolicies whose owning run is terminal/absent, at boot and on
+  a periodic tick. It targets all three kinds explicitly because they are
+  owned by the runner pod, not the sandbox pod (so deleting the pod does
+  not cascade the Secrets/NetworkPolicy). It is liveness-first, so it never
+  reaps a live run's sandbox, and runs in **two homes**:
+  - **Self-hosted (filesystem store in k8s)** — in the `runview.Service`
+    at boot + reconcile tick, gated on cross-process-lock authority (the
+    flock), off on the lock-less cloud server.
+  - **Managed cloud** — in the **runner** claim-loop
+    ([pkg/runner/reaper.go](../pkg/runner/reaper.go)), boot + a ticker.
+    The cloud server is lock-less (gate off) and the cloud runner runs no
+    `runview.Service`, so the runner is where the reaper lives in cloud. Its
+    liveness authority is the runner's **NATS KV lease** (`IsRunLocked`, the
+    signal the queue sweeper trusts): a run still leased by any runner is
+    skipped, and a terminal/absent run with no lease is reaped — so a healthy
+    **sibling** runner reaps a dead runner's orphaned sandbox within one tick.
+    This closes the OOM-with-surviving-pod window the `ownerReference` cascade
+    misses (the cascade only fires on runner-pod *deletion*; an in-place
+    container OOM/SIGKILL keeps the pod UID, so nothing cascades — the
+    plaintext-credential Secret would otherwise leak until the next rollout).
+    Cadence: `ITERION_SANDBOX_REAP_INTERVAL` (default 60s; `0` = boot scan only).
+
 Security defaults applied to every sibling pod:
 
 | Setting                          | Value                              |
@@ -558,8 +620,11 @@ Security defaults applied to every sibling pod:
 
 RBAC: the chart provisions a `Role` (namespace-scoped, NOT
 ClusterRole) granting the runner `pods:get/list/watch/create/delete`,
-`pods/exec:create/get`, `pods/log:get/list`, `pods/status:get`.
-Enable via:
+`pods/exec:create/get`, `pods/log:get/list`, `pods/status:get`, plus
+`secrets` and `networkpolicies` (`networking.k8s.io`)
+`get/list/create/delete` (create/delete for the per-run CA + file-secrets
+Secrets and NetworkPolicy; **`list` is required by the orphan reaper** —
+see "Orphan garbage collection" above). Enable via:
 
 ```yaml
 # values-prod.yaml

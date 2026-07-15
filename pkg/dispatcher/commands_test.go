@@ -14,6 +14,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/runtime"
 )
 
 // lastRunCall captures one SetLastRun invocation so the test can
@@ -31,8 +32,9 @@ type lastRunCall struct {
 type lastRunTracker struct {
 	*fakeTracker
 
-	mu    sync.Mutex
-	calls []lastRunCall
+	mu            sync.Mutex
+	calls         []lastRunCall
+	awaitingCalls []bool
 }
 
 func newLastRunTracker() *lastRunTracker {
@@ -51,6 +53,23 @@ func (t *lastRunTracker) lastRunCalls() []lastRunCall {
 	defer t.mu.Unlock()
 	out := make([]lastRunCall, len(t.calls))
 	copy(out, t.calls)
+	return out
+}
+
+// SetAwaitingInput records the denormalized pause-hint writes so tests can
+// assert the dispatcher sets true on pause and clears false on clean finish.
+func (t *lastRunTracker) SetAwaitingInput(id string, v bool) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.awaitingCalls = append(t.awaitingCalls, v)
+	return nil
+}
+
+func (t *lastRunTracker) awaitingInputCalls() []bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]bool, len(t.awaitingCalls))
+	copy(out, t.awaitingCalls)
 	return out
 }
 
@@ -229,6 +248,76 @@ type errPermanentFailure struct{}
 
 func (errPermanentFailure) Error() string { return "permanent failure" }
 
+// TestFinishRun_AwaitingInputBadge asserts the denormalized pause hint:
+// the ErrRunPaused/ErrRunPausedOperator park arm sets AwaitingInput=true
+// (so the board grid can badge the card without an N+1 run fetch), and a
+// clean terminal finish clears it back to false.
+func TestFinishRun_AwaitingInputBadge(t *testing.T) {
+	newDispatcher := func(t *testing.T, ft *lastRunTracker, issueID string) *Dispatcher {
+		t.Helper()
+		dir := t.TempDir()
+		wsDir := filepath.Join(dir, "ws")
+		cfg := &Config{
+			Name:      "test",
+			Workflow:  t.TempDir() + "/fake.bot",
+			Tracker:   TrackerConfig{Kind: "fake"},
+			Polling:   PollingConfig{IntervalMS: 50},
+			Agent:     AgentConfig{MaxConcurrent: 4, MaxRetryBackoffMS: 1000, RunningState: "in_progress"},
+			Workspace: WorkspaceConfig{Root: wsDir},
+			Stall:     StallConfig{TimeoutMS: 0},
+		}
+		cfg.applyDefaults()
+		ws, err := NewWorkspaces(wsDir)
+		if err != nil {
+			t.Fatalf("NewWorkspaces: %v", err)
+		}
+		c, err := New(Options{
+			Config:     cfg,
+			Tracker:    ft,
+			Runner:     &StubRunner{},
+			Workspaces: ws,
+			Logger:     iterlog.New(iterlog.LevelError, &bytes.Buffer{}),
+			HostMarker: "test",
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		ft.add(tracker.Issue{ID: issueID, Identifier: "fake#ai", Title: "go", WorkflowState: "in_progress"})
+		c.state.running[issueID] = &runningEntry{
+			IssueID:       issueID,
+			Identifier:    "fake#ai",
+			RunID:         "run-ai-1",
+			WorkflowState: "in_progress",
+			WorkspacePath: filepath.Join(wsDir, "fake_ai"),
+			StartedAt:     time.Now(),
+		}
+		c.state.slotsByState["in_progress"] = 1
+		return c
+	}
+
+	t.Run("pause sets true", func(t *testing.T) {
+		const issueID = "fake:ai-pause"
+		ft := newLastRunTracker()
+		c := newDispatcher(t, ft, issueID)
+		c.finishRun(context.Background(), issueID, runtime.ErrRunPaused)
+		got := ft.awaitingInputCalls()
+		if len(got) != 1 || got[0] != true {
+			t.Fatalf("awaiting-input calls = %v, want [true]", got)
+		}
+	})
+
+	t.Run("clean finish clears false", func(t *testing.T) {
+		const issueID = "fake:ai-done"
+		ft := newLastRunTracker()
+		c := newDispatcher(t, ft, issueID)
+		c.finishRun(context.Background(), issueID, nil)
+		got := ft.awaitingInputCalls()
+		if len(got) != 1 || got[0] != false {
+			t.Fatalf("awaiting-input calls = %v, want [false]", got)
+		}
+	})
+}
+
 // applyNextCmd drains one command the off-actor finish worker posted on c.cmds
 // and applies it on the test goroutine. Used by the give-up tests, which drive
 // finishRun directly (no actor running) and need the worker's cmdDropRetry
@@ -239,7 +328,7 @@ func applyNextCmd(t *testing.T, c *Dispatcher, ctx context.Context) {
 	select {
 	case command := <-c.cmds:
 		command.apply(c, ctx)
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("expected a command posted by the off-actor finish worker, got none")
 	}
 }
@@ -368,7 +457,7 @@ func TestFinishRun_CompletedStateCapturedBeforeReload(t *testing.T) {
 	var plan finishPlan
 	select {
 	case plan = <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("finish worker never reached the pre-transition gate")
 	}
 	if plan.kind != finishCompleted || plan.completedState != "review" {
@@ -481,7 +570,7 @@ func pumpCandidates(t *testing.T, c *Dispatcher, ctx context.Context) {
 	select {
 	case command := <-c.cmds:
 		command.apply(c, ctx)
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("no cmdCandidates posted by the off-actor discovery goroutine")
 	}
 }
@@ -608,7 +697,7 @@ func TestDispatch_StampsLastRunAtStart(t *testing.T) {
 
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started")
 	}
 

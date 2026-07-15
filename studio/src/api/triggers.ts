@@ -93,6 +93,29 @@ export function deleteTrigger(id: string): Promise<void> {
   return request<void>(`/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+// createTriggerFromInvocation is the bot home's one-click "enable this
+// trigger": POST /api/v1/bots/{name}/triggers/from-invocation derives a
+// subscription server-side from the bot's manifest invocation at `index`
+// (schedule or board kinds only). `cron` optionally overrides a schedule
+// invocation's suggested_cron. Errors surface as ApiError: 409 = a
+// bot-home subscription for that kind already exists (body carries
+// `subscription_id`), 400 = explicit reason (command/forge kinds must be
+// wired through the forge integration; board without a board: block;
+// schedule without a cron).
+export function createTriggerFromInvocation(
+  botName: string,
+  index: number,
+  cron?: string,
+): Promise<TriggerSubscription> {
+  return apiRequest<TriggerSubscription>(
+    `/api/v1/bots/${encodeURIComponent(botName)}/triggers/from-invocation`,
+    {
+      method: "POST",
+      body: JSON.stringify({ index, ...(cron ? { cron } : {}) }),
+    },
+  );
+}
+
 // setTriggerEnabled is a convenience PUT that flips only the enabled flag,
 // preserving the rest of the subscription.
 export function setTriggerEnabled(sub: TriggerSubscription, enabled: boolean): Promise<TriggerSubscription> {

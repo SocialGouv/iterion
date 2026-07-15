@@ -8,6 +8,8 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Spinner } from "@/components/ui/Spinner";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { Tabs } from "@/components/ui/Tabs";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
@@ -281,50 +283,46 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
 
       <section>
         <h3 className="font-medium mb-2">Members</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-              <tr>
-                <th className="px-2 py-1">Email</th>
-                <th className="px-2 py-1">Name</th>
-                <th className="px-2 py-1">Org role</th>
-                <th className="px-2 py-1"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((m) => (
-                <tr key={m.user_id} className="border-t border-border-subtle">
-                  <td className="px-2 py-2">{m.email ?? m.user_id}</td>
-                  <td className="px-2 py-2">{m.name ?? "—"}</td>
-                  <td className="px-2 py-2">
-                    {canManage ? (
-                      <Select
-                        value={m.role}
-                        onChange={(e) => setRole(m.user_id, m.role, e.target.value as OrgRole)}
-                        aria-label={`Org role for ${m.email ?? m.user_id}`}
-                      >
-                        {ORG_ROLES.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
-                        ))}
-                      </Select>
-                    ) : (
-                      m.role
-                    )}
-                  </td>
-                  <td className="px-2 py-2 text-right">
-                    {canManage && (
-                      <Button variant="danger" size="sm" onClick={() => kick(m.user_id)}>
-                        Remove
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table caption="Organization members">
+          <THead>
+            <Th>Email</Th>
+            <Th>Name</Th>
+            <Th>Org role</Th>
+            <Th align="right" srLabel="Actions" />
+          </THead>
+          <TBody>
+            {members.map((m) => (
+              <Tr key={m.user_id}>
+                <Td>{m.email ?? m.user_id}</Td>
+                <Td>{m.name ?? "—"}</Td>
+                <Td>
+                  {canManage ? (
+                    <Select
+                      value={m.role}
+                      onChange={(e) => setRole(m.user_id, m.role, e.target.value as OrgRole)}
+                      aria-label={`Org role for ${m.email ?? m.user_id}`}
+                    >
+                      {ORG_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </Select>
+                  ) : (
+                    m.role
+                  )}
+                </Td>
+                <Td align="right">
+                  {canManage && (
+                    <Button variant="danger" size="sm" onClick={() => kick(m.user_id)}>
+                      Remove
+                    </Button>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
       </section>
 
       {canManage && (
@@ -333,34 +331,30 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
           {invs.length === 0 ? (
             <div className="text-fg-muted text-sm">None.</div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-                  <tr>
-                    <th className="px-2 py-1">Email</th>
-                    <th className="px-2 py-1">Role</th>
-                    <th className="px-2 py-1">Expires</th>
-                    <th className="px-2 py-1"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invs.map((i) => (
-                    <tr key={i.id} className="border-t border-border-subtle">
-                      <td className="px-2 py-2">{i.email}</td>
-                      <td className="px-2 py-2">{i.role}</td>
-                      <td className="px-2 py-2 text-fg-muted">
-                        {new Date(i.expires_at).toLocaleString()}
-                      </td>
-                      <td className="px-2 py-2 text-right">
-                        <Button variant="danger" size="sm" onClick={() => cancel(i.id)}>
-                          Cancel
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <Table caption="Pending organization invitations">
+              <THead>
+                <Th>Email</Th>
+                <Th>Role</Th>
+                <Th>Expires</Th>
+                <Th align="right" srLabel="Actions" />
+              </THead>
+              <TBody>
+                {invs.map((i) => (
+                  <Tr key={i.id}>
+                    <Td>{i.email}</Td>
+                    <Td>{i.role}</Td>
+                    <Td className="text-fg-muted">
+                      {new Date(i.expires_at).toLocaleString()}
+                    </Td>
+                    <Td align="right">
+                      <Button variant="danger" size="sm" onClick={() => cancel(i.id)}>
+                        Cancel
+                      </Button>
+                    </Td>
+                  </Tr>
+                ))}
+              </TBody>
+            </Table>
           )}
         </section>
       )}
@@ -392,7 +386,13 @@ function OrgBilling({ orgID }: { orgID: string }) {
       </InlineBanner>
     );
   }
-  if (!usage) return <div className="text-sm text-fg-muted">Loading…</div>;
+  if (!usage) {
+    return (
+      <div className="text-sm text-fg-muted">
+        <Spinner size="sm" label="Loading usage" />
+      </div>
+    );
+  }
 
   const rows: Array<[string, string]> = [
     ["Monthly run quota", usage.monthly_run_quota ? String(usage.monthly_run_quota) : "unlimited"],

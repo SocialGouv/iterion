@@ -20,15 +20,27 @@ import { FeatureUnavailableError, getAdminOrgUsage, type OrgUsage, fmtBytes, fmt
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
+import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 export default function OrgsAdminPage() {
   const { user, activeOrgID, reloadIdentity } = useAuth();
   const isSuper = user?.is_super_admin ?? false;
+  // Org administration is a cloud-mode console (/api/admin/orgs isn't
+  // registered locally) — gate on server_info BEFORE fetching so local
+  // mode never fires a doomed 404 and never shows an enabled create form.
+  const serverInfo = useServerInfoStore((s) => s.info);
+  const isCloud = serverInfo?.mode === "cloud";
 
   const [orgs, setOrgs] = useState<OrgView[]>([]);
+  // loaded flips once the first list fetch settles — drives the initial
+  // TableSkeleton without re-skeletoning on post-mutation refreshes.
+  const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState("");
   const [ownerEmail, setOwnerEmail] = useState("");
   const [active, setActive] = useState<OrgView | null>(null);
@@ -54,12 +66,14 @@ export default function OrgsAdminPage() {
           ? "Organization administration is a cloud-mode feature — it isn't available on this server (local/desktop mode)."
           : String(e),
       );
+    } finally {
+      setLoaded(true);
     }
   }, [setError]);
 
   useEffect(() => {
-    if (isSuper) void refresh();
-  }, [isSuper, refresh]);
+    if (isSuper && isCloud) void refresh();
+  }, [isSuper, isCloud, refresh]);
 
   // Wrap a mutation in the shared busy/error slot, then refresh the
   // list once it settles successfully — identical sequencing to the
@@ -82,6 +96,19 @@ export default function OrgsAdminPage() {
     return (
       <div className="p-6">
         <p className="text-sm text-fg-muted">Super-admin only.</p>
+      </div>
+    );
+  }
+
+  // Deliberate local-mode gate: no fetch fired, no enabled create form.
+  // While server_info is still loading we fall through to the skeleton
+  // below instead of flashing this notice on cloud.
+  if (serverInfo && !isCloud) {
+    return (
+      <div className="h-full overflow-auto">
+        <div className="max-w-5xl mx-auto p-3 sm:p-6">
+          <CloudOnlyNotice feature="Organization administration" />
+        </div>
       </div>
     );
   }
@@ -145,56 +172,55 @@ export default function OrgsAdminPage() {
         </section>
 
         <section className="bg-surface-1 border border-border-subtle rounded-[var(--radius-lg)] shadow-[var(--shadow-sm)] overflow-hidden">
-          <div className="overflow-x-auto"><table className="w-full text-sm">
-            <thead className="text-left text-fg-muted border-b border-border-subtle">
-              <tr>
-                <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Slug</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Memory quota</th>
-                <th className="px-3 py-2 font-medium text-right">Manage</th>
-              </tr>
-            </thead>
-            <tbody>
-              {orgs.map((o) => {
-                const statusVariant: BadgeVariant =
-                  o.status === "suspended" || o.status === "pending_deletion"
-                    ? "danger"
-                    : o.status === "read_only"
-                      ? "neutral"
-                      : "success";
-                return (
-                  <tr
-                    key={o.id}
-                    className="border-b border-border-subtle last:border-0 cursor-pointer hover:bg-surface-2"
-                    {...clickableRowProps(() => setActive(o), `Open ${o.name} (${o.status})`)}
-                  >
-                    <td className="px-3 py-2">
-                      {o.name}
-                      {o.personal && <span className="ml-2 text-xs text-fg-muted">personal</span>}
-                    </td>
-                    <td className="px-3 py-2 text-fg-muted">{o.slug}</td>
-                    <td className="px-3 py-2">
-                      <Badge variant={statusVariant}>{o.status}</Badge>
-                    </td>
-                    <td className="px-3 py-2 text-fg-muted">{fmtQuotaGiB(o.memory_quota_bytes)}</td>
-                    <td className="px-3 py-2 text-right">
-                      <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setActive(o); }}>
-                        Open
-                      </Button>
-                    </td>
-                  </tr>
-                );
-              })}
-              {orgs.length === 0 && (
-                <tr>
-                  <td className="px-3 py-6 text-center text-fg-muted" colSpan={5}>
-                    No organizations yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table></div>
+          {!loaded ? (
+            <div className="p-3">
+              <TableSkeleton rows={4} cols={5} />
+            </div>
+          ) : orgs.length === 0 ? (
+            <EmptyState message="No organizations yet." />
+          ) : (
+            <Table caption="Organizations">
+              <THead>
+                <Th>Name</Th>
+                <Th>Slug</Th>
+                <Th>Status</Th>
+                <Th>Memory quota</Th>
+                <Th align="right">Manage</Th>
+              </THead>
+              <TBody>
+                {orgs.map((o) => {
+                  const statusVariant: BadgeVariant =
+                    o.status === "suspended" || o.status === "pending_deletion"
+                      ? "danger"
+                      : o.status === "read_only"
+                        ? "neutral"
+                        : "success";
+                  return (
+                    <Tr
+                      key={o.id}
+                      className="cursor-pointer"
+                      {...clickableRowProps(() => setActive(o), `Open ${o.name} (${o.status})`)}
+                    >
+                      <Td>
+                        {o.name}
+                        {o.personal && <span className="ml-2 text-xs text-fg-muted">personal</span>}
+                      </Td>
+                      <Td className="text-fg-muted">{o.slug}</Td>
+                      <Td>
+                        <Badge variant={statusVariant}>{o.status}</Badge>
+                      </Td>
+                      <Td className="text-fg-muted">{fmtQuotaGiB(o.memory_quota_bytes)}</Td>
+                      <Td align="right">
+                        <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setActive(o); }}>
+                          Open
+                        </Button>
+                      </Td>
+                    </Tr>
+                  );
+                })}
+              </TBody>
+            </Table>
+          )}
         </section>
       </div>
 

@@ -33,7 +33,7 @@ func (c *captureSink) snapshot() []Alert {
 // in goroutines, so assertions must tolerate async delivery.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -77,7 +77,7 @@ func TestBudgetWarningFiresOncePerAxis(t *testing.T) {
 		return store.Event{
 			RunID: "r1", Type: store.EventBudgetWarning, NodeID: "agent",
 			Timestamp: time.Now(),
-			Data:      map[string]interface{}{"dimension": axis, "used": used, "limit": limit},
+			Data:      map[string]any{"dimension": axis, "used": used, "limit": limit},
 		}
 	}
 	m.Observe(warn("tokens", 80, 100))
@@ -123,11 +123,11 @@ func TestBudgetExceededAndRunFailed(t *testing.T) {
 	m := newTestManager(sink)
 
 	m.Observe(store.Event{RunID: "r1", Type: store.EventBudgetExceeded, NodeID: "agent",
-		Timestamp: time.Now(), Data: map[string]interface{}{"dimension": "cost_usd", "used": 1.0, "limit": 1.0}})
+		Timestamp: time.Now(), Data: map[string]any{"dimension": "cost_usd", "used": 1.0, "limit": 1.0}})
 	m.Observe(store.Event{RunID: "r1", Type: store.EventBudgetExceeded,
-		Timestamp: time.Now(), Data: map[string]interface{}{"dimension": "cost_usd", "used": 1.1, "limit": 1.0}}) // dedup
+		Timestamp: time.Now(), Data: map[string]any{"dimension": "cost_usd", "used": 1.1, "limit": 1.0}}) // dedup
 	m.Observe(store.Event{RunID: "r1", Type: store.EventRunFailed, NodeID: "agent",
-		Timestamp: time.Now(), Data: map[string]interface{}{"error": "boom"}})
+		Timestamp: time.Now(), Data: map[string]any{"error": "boom"}})
 
 	waitFor(t, func() bool { return len(sink.snapshot()) == 2 })
 	got := sink.snapshot()

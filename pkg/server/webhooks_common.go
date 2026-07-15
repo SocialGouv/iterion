@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,6 +78,11 @@ const defaultWebhookBotReviConverse = "revi-converse"
 // a tracked issue. See selectForgePRBot.
 const branchImproveBotID = "branch-improve-loop"
 
+// featureDevBotID is the implementer bot (Featurly) the issue-labeled path
+// routes to — a freshly-labeled issue has no diff to review, it needs to be
+// TURNED INTO one. See selectIssueLabeledBot.
+const featureDevBotID = "feature-dev"
+
 // webhookEventMeta is the provider-agnostic carrier of "what happened
 // upstream" the common helpers consume. Every field is optional: a
 // provider that doesn't have e.g. a project path leaves it empty and
@@ -127,16 +133,57 @@ func reviewPRVars(prURL, baseRef, scopeNotes string, launchVars map[string]strin
 // its base. baseRef is the PR's target branch; scopeNotes carries the PR
 // title+body (which includes the "Fixes #N" ticket link). open_mr=false — the
 // PR already exists, so Billy commits onto the checked-out PR branch rather
-// than opening a second MR. The webhook's LaunchVars win last so an operator
-// can override per repo (e.g. pin max_passes or a scratch path).
-func branchImproveVars(baseRef, scopeNotes string, launchVars map[string]string) map[string]string {
+// than opening a second MR; push_branch (the PR's source branch) routes those
+// commits through the bot's deterministic push-back so they land ON the PR
+// instead of stranding in the cloud runner's ephemeral worktree. The webhook's
+// LaunchVars win last so an operator can override per repo (e.g. pin
+// max_passes or a scratch path).
+func branchImproveVars(baseRef, sourceBranch, prURL, scopeNotes string, asPR bool, launchVars map[string]string) map[string]string {
 	vars := map[string]string{
 		"base_ref":    baseRef,
 		"scope_notes": scopeNotes,
-		"open_mr":     "false",
+		// The PR Billy is hardening — post_pr_feedback comments its review
+		// verdict on it so the author reads the conclusion in the forge.
+		"pr_url": prURL,
+	}
+	if asPR {
+		// Open a separate PR targeting the contributor's source branch — the
+		// author reviews the bot's hardening as an isolated diff. Billy derives
+		// its own mr_branch (iterion/improve/<run>) and opens base=source.
+		vars["open_mr"] = "true"
+		vars["mr_base"] = sourceBranch
+	} else {
+		// Commit + push directly onto the PR's own source branch (in-place).
+		vars["open_mr"] = "false"
+		vars["push_branch"] = sourceBranch
 	}
 	mergeVarsInto(vars, launchVars)
 	return vars
+}
+
+// stampBranchImprovePushBack gives a branch-improvement command launch
+// (/billy on a PR/MR comment) the same push-back semantics as the
+// pull_request-event path above: without open_mr/push_branch the bot's
+// mr_gate takes neither tail and its commits strand on the cloud runner's
+// storage branch — the PR never receives them. Vars already present
+// (operator LaunchVars / route ContextVars) win.
+func stampBranchImprovePushBack(vars map[string]string, botID, sourceBranch string, asPR bool) {
+	if botID != branchImproveBotID || sourceBranch == "" {
+		return
+	}
+	if _, ok := vars["open_mr"]; ok {
+		return
+	}
+	if _, ok := vars["push_branch"]; ok {
+		return
+	}
+	if asPR {
+		vars["open_mr"] = "true"
+		vars["mr_base"] = sourceBranch
+	} else {
+		vars["open_mr"] = "false"
+		vars["push_branch"] = sourceBranch
+	}
 }
 
 // selectForgePRBot deterministically routes a PR-open delivery to the
@@ -157,6 +204,13 @@ func selectForgePRBot(cfg webhooks.Config, p prforge.Parsed) string {
 	if p.IsCrossRepo() {
 		return ""
 	}
+	// Dependency-update PRs (Dependabot/Renovate) never route to the
+	// branch-improvement loop: an improve loop over a bumped manifest/lockfile
+	// is off-target and churns the bot's own PR. The dependency guard (Vetty)
+	// owns that lane — via its own invocation / a `/command`.
+	if isDependencyBotAuthor(p.SenderLogin) {
+		return ""
+	}
 	if len(forge.ParseIssueRefs(true, p.Title, p.Description)) == 0 {
 		return ""
 	}
@@ -164,6 +218,18 @@ func selectForgePRBot(cfg webhooks.Config, p prforge.Parsed) string {
 		return ""
 	}
 	return branchImproveBotID
+}
+
+// isDependencyBotAuthor reports whether login is an automated dependency-update
+// bot (Dependabot / Renovate, including the "renovate[bot]" GitHub-App form and
+// common self-hosted names). Case-insensitive.
+func isDependencyBotAuthor(login string) bool {
+	l := strings.ToLower(strings.TrimSpace(login))
+	switch l {
+	case "dependabot[bot]", "dependabot", "renovate[bot]", "renovate", "renovate-bot":
+		return true
+	}
+	return strings.HasPrefix(l, "renovate[") || strings.HasPrefix(l, "dependabot[")
 }
 
 // resolveReviewBot picks the bot id for a forge-specific review-PR
@@ -186,6 +252,44 @@ func (s *Server) resolveReviewBot(
 	if botID == "" {
 		botID = defaultWebhookBotReviewPR
 	}
+	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
+}
+
+// selectIssueLabeledBot picks the bot for a freshly-labeled issue. Unlike a
+// PR (which carries a diff to REVIEW), an issue must be TURNED INTO one, so
+// the reviewer default is wrong here. Precedence: an operator-pinned
+// DefaultBotID wins (explicit intent); else the canonical implementer
+// (Featurly) when the webhook permits it; else fall back to SelectBot /
+// review-pr so a reviewer-only webhook keeps its prior behaviour. The
+// deterministic counterpart to selectForgePRBot on the issue path.
+func (s *Server) selectIssueLabeledBot(
+	ctx context.Context,
+	w http.ResponseWriter,
+	cfg webhooks.Config,
+	meta webhookEventMeta,
+	payloadHash, srcIP string,
+) (string, bool) {
+	botID := cfg.DefaultBotID
+	if botID == "" && cfg.AllowsBot(featureDevBotID) {
+		botID = featureDevBotID
+	}
+	if botID == "" {
+		if botID = cfg.SelectBot(); botID == "" {
+			botID = defaultWebhookBotReviewPR
+		}
+	}
+	return s.checkBotPermitted(ctx, w, cfg, meta, botID, payloadHash, srcIP)
+}
+
+// checkBotPermitted enforces the webhook's bot allowlist, recording an
+// Invalid delivery + writing a 403 (ok=false) when botID is out of scope.
+func (s *Server) checkBotPermitted(
+	ctx context.Context,
+	w http.ResponseWriter,
+	cfg webhooks.Config,
+	meta webhookEventMeta,
+	botID, payloadHash, srcIP string,
+) (string, bool) {
 	if !cfg.AllowsBot(botID) {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusInvalid, payloadHash, srcIP, "bot not permitted by webhook scope")
 		httpError(w, http.StatusForbidden, "bot %q not permitted by this webhook", botID)
@@ -312,7 +416,8 @@ func (s *Server) insertAndLaunchWebhook(
 	// (replays were filtered in step 1), so the quota CAS fires once per
 	// distinct event. A denied event writes a terminal row under a random
 	// key so a later forge retry can launch once the quota resets.
-	if d := s.gateLaunch(ctx); d != nil {
+	adm, d := s.gateLaunch(ctx)
+	if d != nil {
 		s.recordTerminalWebhookDelivery(ctx, cfg, meta, webhooks.StatusLaunchError, payloadHash, srcIP, d.reason)
 		s.writeLaunchDenial(w, r, d)
 		return
@@ -338,6 +443,12 @@ func (s *Server) insertAndLaunchWebhook(
 	} else if s.webhookDeliveries != nil {
 		if err := s.webhookDeliveries.Insert(ctx, delivery); err != nil {
 			if errors.Is(err, webhooks.ErrDuplicate) {
+				// Concurrent-duplicate loser: both deliveries passed the
+				// step-1 replay check and both metered a quota unit in
+				// step 2, but only the Insert winner launches. Release
+				// this delivery's unit or every concurrent forge
+				// redelivery over-counts the monthly run quota.
+				adm.rollback(s.logger)
 				// Read back the prior delivery so the duplicate 200
 				// echoes its run_id/delivery_id. A failed read would
 				// otherwise emit a misleading 200 with empty IDs —

@@ -6,7 +6,7 @@ import {
   ReloadIcon,
 } from "@radix-ui/react-icons";
 
-import { EmptyState, IconButton, Tooltip } from "@/components/ui";
+import { Button, EmptyState, IconButton, Tooltip } from "@/components/ui";
 import { useRunFiles } from "@/hooks/useRunFiles";
 import { useToggleSet } from "@/hooks/useToggleSet";
 import {
@@ -18,6 +18,7 @@ import {
 import { basename } from "@/lib/format";
 import type { RunFile, RunFilesMode } from "@/api/runs";
 import { StatusDot } from "./StatusDot";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 // View scope for the files tree. "combined" is the union of branch +
 // uncommitted (each file tagged with a lifecycle), surfaced to the operator
@@ -169,7 +170,7 @@ export default function FilesPanel({
           <EmptyState message={error} />
         ) : !data ? (
           loading ? (
-            <EmptyState message="Loading…" />
+            <PanelLoading />
           ) : (
             <EmptyState message="" />
           )
@@ -230,7 +231,10 @@ export default function FilesPanel({
           </div>
         )}
       </div>
-      {data?.work_dir && (
+      {/* No footer when the file list itself is unavailable — a lone
+          "Committed in this run" under an unavailable-state message
+          reads like a broken section. */}
+      {data?.work_dir && data.available && (
         <footer className="border-t border-border-default px-2 py-1 text-caption text-fg-subtle truncate">
           <Tooltip content={footerTooltip(data, mode)}>
             <span className="truncate block">{footerLabel(data, mode)}</span>
@@ -295,13 +299,14 @@ function LargeChangesetHint({
       )}
       {onEditGitignore && (
         <div>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onEditGitignore}
-            className="mt-0.5 inline-flex items-center rounded-md border border-border-default bg-surface-2 px-2 py-0.5 text-caption font-medium text-fg-default hover:bg-surface-3 focus:outline-none"
+            className="mt-0.5"
           >
             Edit .gitignore
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -589,11 +594,13 @@ function reasonLabel(reason: string | undefined): string {
     case "no_workdir":
       return "No working directory recorded for this run";
     case "not_git_repo":
-      return "Not a git repository";
+      return "Run workspace no longer exists — the worktree was removed or is not a git checkout";
     case "no_baseline":
       return "This run has no base commit — branch diff unavailable";
     case "worktree_gone":
       return "Worktree was cleaned up after the run finished. Showing branch view.";
+    case "building":
+      return "Building — the modified-files list becomes available when the run finishes. (A cloud run's changes are recorded at finalize.)";
     default:
       return reason ?? "Files unavailable";
   }

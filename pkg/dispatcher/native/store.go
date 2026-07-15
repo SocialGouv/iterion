@@ -886,6 +886,9 @@ func cloneIssue(in *Issue) *Issue {
 	if in.Comments != nil {
 		c.Comments = append([]Comment(nil), in.Comments...)
 	}
+	if in.Runs != nil {
+		c.Runs = append([]RunRef(nil), in.Runs...)
+	}
 	return &c
 }
 
@@ -1124,9 +1127,11 @@ func (s *Store) SetLastRun(id, runID, workdir string) (err error) {
 	if iss.LastRunID == runID && iss.LastWorkdir == workdir {
 		return nil
 	}
+	now := time.Now().UTC()
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
-	iss.UpdatedAt = time.Now().UTC()
+	iss.Runs = AppendRunRef(iss.Runs, runID, workdir, now)
+	iss.UpdatedAt = now
 	if err := s.writeIssueLocked(iss); err != nil {
 		return err
 	}
@@ -1135,6 +1140,36 @@ func (s *Store) SetLastRun(id, runID, workdir string) (err error) {
 		Type:    EvtIssueLastRun,
 		IssueID: id,
 		Payload: map[string]any{"run_id": runID, "workdir": workdir},
+	})
+}
+
+// SetAwaitingInput denormalizes onto the issue whether its most recent
+// dispatcher-spawned run parked awaiting human/operator input (see
+// Issue.AwaitingInput). Idempotent — setting the flag to its current
+// value is a no-op (no write, no event). Follows the SetLastRun shape:
+// read → set → write → bump UpdatedAt → emit EvtIssueUpdated so tailers
+// (studio) refresh the card badge.
+func (s *Store) SetAwaitingInput(id string, v bool) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.recoverMutator("SetAwaitingInput", &err)
+	iss, err := s.readIssueLocked(id)
+	if err != nil {
+		return err
+	}
+	if iss.AwaitingInput == v {
+		return nil
+	}
+	iss.AwaitingInput = v
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.writeIssueLocked(iss); err != nil {
+		return err
+	}
+	s.index[iss.ID] = cloneIssue(iss)
+	return s.emitPostCommitEvent(Event{
+		Type:    EvtIssueUpdated,
+		IssueID: id,
+		Payload: map[string]any{"awaiting_input": v},
 	})
 }
 
@@ -1283,14 +1318,13 @@ func (s *Store) loadOrInitBoard() error {
 		return fmt.Errorf("native store: invalid board: %w", err)
 	}
 	s.board = &b
-	// Pre-upgrade stores predate the `inbox` state. Prepend it once so
-	// bots emitting findings (which target inbox) work after upgrade
-	// without manual board.json edits. Idempotent: skipped when inbox
-	// is already present (operator-customised boards keep their order).
-	if s.board.StateByName(StateInbox) == nil {
-		s.board.States = append([]State{{Name: StateInbox, Display: "Inbox"}}, s.board.States...)
+	// Boards persisted by an older iterion may predate the `inbox` /
+	// `awaiting_input` states — apply the shared schema upgrade once and
+	// persist, so bots emitting findings and the dispatcher's paused-run
+	// parking work without manual board.json edits.
+	if UpgradeBoardSchema(s.board) {
 		if err := s.writeBoardLocked(); err != nil {
-			return fmt.Errorf("native store: persist inbox upgrade: %w", err)
+			return fmt.Errorf("native store: persist board schema upgrade: %w", err)
 		}
 	}
 	return nil

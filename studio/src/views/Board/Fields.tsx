@@ -31,6 +31,7 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { TagInput } from "@/components/ui/TagInput";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
@@ -154,42 +155,48 @@ function FieldsViewInner() {
         </div>
       )}
 
-      {!board && <EmptyState message="Loading…" />}
+      {!board && <TableSkeleton />}
 
       {board && fields.length === 0 && (
-        <p className="text-fg-muted text-micro italic">
-          No custom fields yet. Add one to attach typed metadata to issues.
-        </p>
+        <EmptyState
+          title="No custom fields yet"
+          message="Add one to attach typed metadata (severity, ETA, owner…) to every issue on the board."
+          action={
+            <Button variant="primary" size="sm" onClick={() => setDialog({ kind: "add" })}>
+              + Add field
+            </Button>
+          }
+        />
       )}
 
       {fields.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="w-full text-body border border-border-subtle">
-            <thead>
-              <tr className="bg-surface-1 text-fg-muted text-left">
-                <th className="px-2 py-1 font-medium">Name</th>
-                <th className="px-2 py-1 font-medium w-24">Type</th>
-                <th className="px-2 py-1 font-medium w-20">Required</th>
-                <th className="px-2 py-1 font-medium">Values</th>
-                <th className="px-2 py-1 font-medium w-56">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {fields.map((f, i) => (
-                <tr key={f.name} className="border-t border-border-subtle hover:bg-surface-1/40">
-                  <td className="px-2 py-1 font-mono text-fg-default">
-                    {f.name}
-                    {f.display && (
-                      <span className="ml-2 text-fg-muted font-sans">{f.display}</span>
-                    )}
-                  </td>
-                  <td className="px-2 py-1 text-fg-default">{f.type}</td>
-                  <td className="px-2 py-1 text-fg-muted">{f.required ? "yes" : "—"}</td>
-                  <td className="px-2 py-1 text-fg-muted truncate max-w-xs">
-                    {f.type === "enum" ? (f.enum_values ?? []).join(", ") : "—"}
-                  </td>
-                  <td className="px-2 py-1">
-                    <div className="flex gap-1.5 items-center">
+        <Table
+          caption="Custom fields on the board schema"
+          className="border border-border-subtle"
+        >
+          <THead className="bg-surface-1">
+            <Th>Name</Th>
+            <Th className="w-24">Type</Th>
+            <Th className="w-20">Required</Th>
+            <Th>Values</Th>
+            <Th className="w-56">Actions</Th>
+          </THead>
+          <TBody>
+            {fields.map((f, i) => (
+              <Tr key={f.name}>
+                <Td className="font-mono text-fg-default">
+                  {f.name}
+                  {f.display && (
+                    <span className="ml-2 text-fg-muted font-sans">{f.display}</span>
+                  )}
+                </Td>
+                <Td className="text-fg-default">{f.type}</Td>
+                <Td className="text-fg-muted">{f.required ? "yes" : "—"}</Td>
+                <Td className="text-fg-muted truncate max-w-xs">
+                  {f.type === "enum" ? (f.enum_values ?? []).join(", ") : "—"}
+                </Td>
+                <Td>
+                  <div className="flex gap-1.5 items-center">
                       <Button
                         variant="ghost"
                         size="sm"
@@ -224,12 +231,11 @@ function FieldsViewInner() {
                         delete
                       </Button>
                     </div>
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               ))}
-            </tbody>
-          </table>
-        </div>
+          </TBody>
+        </Table>
       )}
 
       {dialog.kind === "add" && (

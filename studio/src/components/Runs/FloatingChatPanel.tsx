@@ -1,3 +1,7 @@
+// Deliberately NOT built on ui/Dialog (Radix): this is a NON-modal
+// floating panel — the operator keeps interacting with the run view
+// behind it (no scrim, no focus trap, page stays live). Radix Dialog is
+// modal by design, so the hand-rolled shell here is intentional.
 import { useEffect, useRef, useState } from "react";
 import {
   ChatBubbleIcon,
@@ -13,6 +17,18 @@ import { useRunStore } from "@/store/run";
 import type { RunStatus } from "@/api/runs";
 
 export type ChatDock = "closed" | "floating" | "docked-right";
+
+// Tailwind's lg breakpoint — below it the floating panel covers most of
+// the canvas and the bottom tab bar, so open-from-closed docks instead.
+const DOCK_BREAKPOINT_PX = 1024;
+
+// openedDock picks the presentation when the panel OPENS from closed.
+// Point-in-time check by design: an already-open panel must not re-dock
+// itself on window resize, and the user's explicit dock choice (persisted
+// by the caller) wins afterwards.
+function openedDock(): ChatDock {
+  return window.innerWidth <= DOCK_BREAKPOINT_PX ? "docked-right" : "floating";
+}
 
 interface Props {
   runId: string;
@@ -43,7 +59,7 @@ export default function FloatingChatPanel({
       <ClosedBubble
         runId={runId}
         status={status}
-        onOpen={() => onDockChange("floating")}
+        onOpen={() => onDockChange(openedDock())}
       />
     );
   }
@@ -278,7 +294,7 @@ function useAutoExpandOnPause(
     if (lastReactedRef.current === status) return;
     lastReactedRef.current = status;
     if (dockRef.current === "closed") {
-      onDockChangeRef.current("floating");
+      onDockChangeRef.current(openedDock());
     }
   }, [status]);
 }

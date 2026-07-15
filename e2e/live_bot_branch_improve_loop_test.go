@@ -59,7 +59,7 @@ func Multiply(a, b int) int {
 
 	// worktree:auto → do NOT set workspace_dir (defaults to ${PROJECT_DIR},
 	// remapped to the worktree). withWorkDir mounts the seeded repo.
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"base_ref":    "main",
 		"open_mr":     false,
 		"scope_notes": "Review the diff for correctness; fix the off-by-one in Multiply.",

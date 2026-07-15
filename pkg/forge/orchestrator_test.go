@@ -127,6 +127,7 @@ func newTestOrch(t *testing.T) (*Orchestrator, *fakeAdmin, secrets.Sealer) {
 		Integrations: NewMemoryRepoIntegrationStore(),
 		Webhooks:     webhooks.NewMemoryConfigStore(),
 		Secrets:      secrets.NewMemoryGenericSecretStore(),
+		Bindings:     secrets.NewMemoryBotSecretBindingStore(),
 		Sealer:       sealer,
 		Bots:         testBotLookup,
 		AdminFor:     func(context.Context, Connection) (Admin, error) { return fa, nil },
@@ -304,6 +305,15 @@ func TestProvision_SingleBot(t *testing.T) {
 	if cfg.SecretOverrides["forge_token"] != conn.ManagedSecretID {
 		t.Errorf("secret override forge_token = %q, want %q", cfg.SecretOverrides["forge_token"], conn.ManagedSecretID)
 	}
+	// A bot-binding mirrors the override so a board-coordinator launch (which
+	// resolves by (tenant, bot) binding, not the webhook override) authenticates.
+	binds, err := o.Bindings.ListByTenantBot(ctx, "t1", "review-pr")
+	if err != nil {
+		t.Fatalf("list bindings: %v", err)
+	}
+	if len(binds) != 1 || binds[0].SecretNameForWorkflow != "forge_token" || binds[0].SecretID != conn.ManagedSecretID {
+		t.Errorf("bot binding = %+v, want forge_token → %q", binds, conn.ManagedSecretID)
+	}
 	if cfg.ProvisionedBy != "forge:conn-1" {
 		t.Errorf("provisioned_by = %q", cfg.ProvisionedBy)
 	}
@@ -398,6 +408,17 @@ func TestProvision_Idempotent(t *testing.T) {
 	}
 	if fa.creates != 1 || fa.updates != 0 {
 		t.Errorf("idempotent re-run touched the forge: creates=%d updates=%d", fa.creates, fa.updates)
+	}
+	// The idempotent no-op path still backfills the per-bot token binding —
+	// an integration provisioned before the binding fix has none, so a
+	// re-provision (same bots) must reconcile it rather than early-return blind.
+	binds, err := o.Bindings.ListByTenantBot(ctx, "t1", "review-pr")
+	if err != nil {
+		t.Fatalf("list bindings: %v", err)
+	}
+	conn, _ := o.Connections.Get(ctx, "conn-1")
+	if len(binds) != 1 || binds[0].SecretID != conn.ManagedSecretID {
+		t.Errorf("idempotent re-provision did not reconcile the binding: %+v", binds)
 	}
 }
 

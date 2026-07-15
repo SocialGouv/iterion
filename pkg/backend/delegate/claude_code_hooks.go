@@ -321,6 +321,53 @@ func (b *ClaudeCodeBackend) wireBoardMCP(task Task, opts []claudesdk.Option, ext
 	return opts
 }
 
+// wireUserMCP forwards the node's active user/plugin-declared MCP servers
+// (Task.MCPServers) to the claude_code CLI via --mcp-config, so their tools
+// are available to the agent — the claude_code half of the parity claw
+// already had. It is purely ADDITIVE: it registers servers only, never
+// passes --tools, so the native toolset (WebSearch/WebFetch, …) stays on by
+// default. AlwaysLoad is set so an http/sse server's tools surface past
+// claude-code's tool-search deferral (and a stdio server's tools are always
+// eager). When the node restricts its toolset (non-empty AllowedTools), each
+// server's tools are allow-listed by wildcard FQN (mcp__<server>__*) so the
+// declared MCP tools are not filtered out.
+//
+// Sandboxed stdio servers whose Command is a host path are left to the CLI:
+// the same host-path caveat as ask_user/board applies, but unlike those we
+// have no HTTP fallback for arbitrary user servers — an http/sse server is
+// reachable from inside the container, a stdio one only if its Command
+// resolves in-container.
+func (b *ClaudeCodeBackend) wireUserMCP(task Task, opts []claudesdk.Option, extras *[]string) []claudesdk.Option {
+	for _, s := range task.MCPServers {
+		var srv claudesdk.MCPServerConfig
+		switch strings.ToLower(strings.TrimSpace(s.Transport)) {
+		case "http":
+			if s.URL == "" {
+				b.Logger.Warn("[%s#%d/claude-code] MCP server %q: http transport with empty url; skipped", task.NodeID, task.Iteration, s.Name)
+				continue
+			}
+			srv = &claudesdk.MCPHTTPServer{URL: s.URL, Headers: s.Headers, AlwaysLoad: true}
+		case "sse":
+			if s.URL == "" {
+				b.Logger.Warn("[%s#%d/claude-code] MCP server %q: sse transport with empty url; skipped", task.NodeID, task.Iteration, s.Name)
+				continue
+			}
+			srv = &claudesdk.MCPSSEServer{URL: s.URL, Headers: s.Headers}
+		default: // stdio
+			if s.Command == "" {
+				b.Logger.Warn("[%s#%d/claude-code] MCP server %q: stdio transport with empty command; skipped", task.NodeID, task.Iteration, s.Name)
+				continue
+			}
+			srv = &claudesdk.MCPStdioServer{Command: s.Command, Args: s.Args, Env: s.Env}
+		}
+		opts = append(opts, claudesdk.WithMCPServer(s.Name, srv))
+		if len(task.AllowedTools) > 0 {
+			*extras = append(*extras, "mcp__"+s.Name+"__*")
+		}
+	}
+	return opts
+}
+
 // installInboxDrainHooks delivers operator-chatbox messages mid-session
 // (parity with the claw backend's per-iteration drain). PostToolUse fires
 // after every tool call and Stop fires when the LLM tries to end the turn;

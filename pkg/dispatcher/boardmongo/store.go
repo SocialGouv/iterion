@@ -107,7 +107,12 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 // --- board config ---
 
 // Board returns the tenant's board config, defaulting to native.DefaultBoard
-// when none is stored yet.
+// when none is stored yet. A persisted board from an older iterion is
+// schema-upgraded on READ (inbox / awaiting_input states) — the same upgrade
+// the filesystem store persists in loadOrInitBoard. Normalizing here (not
+// writing back) keeps reads race-free; the next SetBoard from the column
+// editor persists the upgraded shape naturally, and SetState validation
+// (which reads through this method) accepts the upgraded states either way.
 func (s *Store) Board() *native.Board {
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
@@ -117,6 +122,7 @@ func (s *Store) Board() *native.Board {
 		return native.DefaultBoard()
 	}
 	b := doc.Board
+	native.UpgradeBoardSchema(&b)
 	return &b
 }
 
@@ -364,13 +370,37 @@ func (s *Store) SetLastRun(id, runID, workdir string) error {
 	if iss.LastRunID == runID && iss.LastWorkdir == workdir {
 		return nil
 	}
+	now := time.Now().UTC()
 	iss.LastRunID = runID
 	iss.LastWorkdir = workdir
-	iss.UpdatedAt = time.Now().UTC()
+	iss.Runs = native.AppendRunRef(iss.Runs, runID, workdir, now)
+	iss.UpdatedAt = now
 	if err := s.replace(ctx, iss); err != nil {
 		return err
 	}
 	return s.emit(native.Event{Type: native.EvtIssueLastRun, IssueID: id, Payload: map[string]any{"run_id": runID, "workdir": workdir}})
+}
+
+// SetAwaitingInput denormalizes onto the issue whether its most recent
+// run parked awaiting human/operator input (see native.Issue.AwaitingInput).
+// Idempotent — setting the flag to its current value is a no-op. Mirrors
+// SetLastRun: read → set → replace → bump UpdatedAt → emit EvtIssueUpdated.
+func (s *Store) SetAwaitingInput(id string, v bool) error {
+	ctx, cancel := ctxWithTimeout()
+	defer cancel()
+	iss, err := s.get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if iss.AwaitingInput == v {
+		return nil
+	}
+	iss.AwaitingInput = v
+	iss.UpdatedAt = time.Now().UTC()
+	if err := s.replace(ctx, iss); err != nil {
+		return err
+	}
+	return s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: id, Payload: map[string]any{"awaiting_input": v}})
 }
 
 // AddComment appends a note to the issue's discussion thread and returns

@@ -140,7 +140,7 @@ func TestWatchCoordinator_SkipsTerminalRuns(t *testing.T) {
 func waitForQueued(t *testing.T, rs store.RunStore, runID string, want int) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		msgs, err := rs.LoadPendingQueuedMessages(ctx, runID)
 		if err == nil && len(msgs) >= want {

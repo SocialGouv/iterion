@@ -8,7 +8,9 @@ out-of-process** packages. A plugin never injects Go code (iterion ships static
 
 Plugins are installable-by-default, uninstallable, replaceable, and composable —
 `rtk` (the command-output compressor) ships as a plugin enabled by default; the
-knowledge-graph explorers `graphify` and `repo-falcon` ship disabled.
+knowledge-graph explorers `graphify` and `repo-falcon` and the web toolkit
+`firecrawl` (Firecrawl search/scrape/crawl MCP — see
+[web-search.md](web-search.md)) ship disabled.
 
 ## Contribution kinds (v1)
 
@@ -47,12 +49,34 @@ A single plugin may contribute several kinds (repo-falcon ships `mcp_servers` +
 ## Where plugins live
 
 - **Builtins** are embedded in the binary under `pkg/plugin/builtin/<name>/`
-  (`rtk`, `graphify`, `repo-falcon`).
+  (`rtk`, `graphify`, `repo-falcon`, `firecrawl`).
 - **Installed** plugins live under `~/.iterion/plugins/<name>/` (a directory
   with a `plugin.yaml`). `iterion plugin install <path|git-url>` puts them there.
 - **Enable/disable state** is persisted in `~/.iterion/plugins.yaml`; the
   default for a plugin with no recorded preference is its manifest
   `default_enabled`. (`$ITERION_HOME` overrides the home dir.)
+
+### Env-based enablement & config (cloud / headless)
+
+`~/.iterion/plugins.yaml` is per-machine and ephemeral in a cloud runner pod,
+so enablement can also be driven by **immutable env** — set once on the
+runtime (e.g. a Helm chart's `config.extraEnv`), no persistent file needed.
+Env wins over both stored state and `default_enabled`:
+
+| Env var | Effect |
+|---------|--------|
+| `ITERION_PLUGINS_ENABLE=a,b` | force-enable these plugins (comma/space list) |
+| `ITERION_PLUGINS_DISABLE=c`  | force-disable (wins over enable for the same name) |
+| `ITERION_PLUGIN_<NAME>_<KEY>=v` | set config value `<key>` for `<name>` (highest precedence over defaults + stored values) |
+
+`<NAME>`/`<KEY>` are upper-cased with `-` → `_`. Example — enable the
+`firecrawl` MCP plugin and point it at a self-hosted instance, entirely from
+env:
+
+```sh
+ITERION_PLUGINS_ENABLE=firecrawl
+ITERION_PLUGIN_FIRECRAWL_API_URL=http://iterion-firecrawl:3002
+```
 
 ## Manifest reference (`plugin.yaml`)
 

@@ -39,7 +39,7 @@ func TestHeartbeatStoreForwardsTurnWrites(t *testing.T) {
 
 	// The hook layer probes the wrapper via model.TurnWriter; this must
 	// succeed (it silently didn't with the old 3-arg signature).
-	tw, ok := interface{}(hb).(model.TurnWriter)
+	tw, ok := any(hb).(model.TurnWriter)
 	if !ok {
 		t.Fatal("*heartbeatStore does not satisfy model.TurnWriter; dispatcher runs would drop turn checkpoints")
 	}

@@ -39,6 +39,13 @@ export interface Tab {
   // skip mounting (and thus skip api.openFile + WS) for tabs the user
   // hasn't clicked yet, even though they're shown in the inner strip.
   hydrated: boolean;
+  // restored is true for tabs rehydrated from localStorage (set by
+  // onRehydrateStorage, never persisted). Lets EditorTabHost tell a
+  // restored named tab that lost its file binding (must show an explicit
+  // error, never a fresh scaffold) apart from an in-flight open in the
+  // current session (example fork, toolbar Open) that legitimately has
+  // no params.file yet.
+  restored?: boolean;
 }
 
 interface TabsState {
@@ -76,6 +83,12 @@ interface TabsState {
   setCurrentProjectKey: (key: string | null) => void;
   reorder: (kind: TabKind, from: number, to: number) => void;
   rename: (id: string, label: string) => void;
+  // bindFile back-syncs the document's file path onto an editor tab's
+  // params so persistence keeps the tab ↔ file binding. Without it a tab
+  // whose document was loaded outside openTab (toolbar Open, Save As,
+  // example fork) restores after a reload with no file param and cannot
+  // reload its document.
+  bindFile: (id: string, file: string) => void;
 }
 
 function generateId(): string {
@@ -83,6 +96,21 @@ function generateId(): string {
     return crypto.randomUUID();
   }
   return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// UNTITLED_TAB_LABEL is the default label newEditorTab assigns to a
+// fresh unbound tab. Exported (with isDefaultTabLabel) as the single
+// source of truth for "this tab never named a real file" checks —
+// EditorTabHost's lost-binding detection and useDocumentTitle's
+// fallback both key off it.
+export const UNTITLED_TAB_LABEL = "untitled.bot";
+
+// isDefaultTabLabel reports whether a label is one a fresh unbound
+// editor tab can carry (newEditorTab's default, or defaultLabelFor
+// ("editor", {})). Any OTHER label on a tab without a file param names
+// a real document the tab can no longer reach.
+export function isDefaultTabLabel(label: string): boolean {
+  return label === UNTITLED_TAB_LABEL || label === "Editor";
 }
 
 function defaultLabelFor(kind: TabKind, params: Record<string, string>): string {
@@ -165,7 +193,7 @@ export const useTabsStore = create<TabsState>()(
           id,
           kind: "editor",
           params: {},
-          label: label ?? "untitled.bot",
+          label: label ?? UNTITLED_TAB_LABEL,
           projectKey: get().currentProjectKey ?? undefined,
           hydrated: true,
         };
@@ -276,6 +304,17 @@ export const useTabsStore = create<TabsState>()(
           tabs: s.tabs.map((t) => (t.id === id ? { ...t, label } : t)),
         }));
       },
+      bindFile: (id, file) => {
+        set((s) => {
+          const tab = s.tabs.find((t) => t.id === id);
+          if (!tab || tab.kind !== "editor" || tab.params.file === file) return s;
+          return {
+            tabs: s.tabs.map((t) =>
+              t.id === id ? { ...t, params: { ...t.params, file } } : t,
+            ),
+          };
+        });
+      },
     }),
     {
       name: "iterion.tabs",
@@ -307,7 +346,7 @@ export const useTabsStore = create<TabsState>()(
           // projects. New tabs are always tagged with the active project
           // on open.
           .filter((t) => t.projectKey != null)
-          .map((t) => ({ ...t, hydrated: false }));
+          .map((t) => ({ ...t, hydrated: false, restored: true }));
         if (!state.tabs.some((t) => t.id === state.activeEditorTabId)) {
           state.activeEditorTabId = null;
         }

@@ -3,6 +3,7 @@
 
 import { apiRequest } from "./client";
 import type { InstallBotResult } from "./bots";
+import type { PluginView } from "./plugins";
 
 const BASE = "/api/v1/marketplace";
 
@@ -28,6 +29,14 @@ export type MarketplaceScope = "public" | "instance" | "org";
  *  "approved" (legacy + local single-tenant entries). */
 export type MarketplaceStatus = "pending" | "approved" | "rejected";
 
+/** MarketplaceKind is the entry's artifact category filter accepted by
+ *  GET /bots?kind=. */
+export type MarketplaceKind = "bot" | "plugin";
+
+/** MarketplaceSort is the list ordering accepted by GET /bots?sort=.
+ *  The server defaults to "popular". */
+export type MarketplaceSort = "popular" | "recent" | "name";
+
 /** MarketplaceEntry is one listing in the hosted bot registry. */
 export interface MarketplaceEntry {
   slug: string;
@@ -39,6 +48,8 @@ export interface MarketplaceEntry {
   // skill / command / agent / hook / lifecycle), used to group it in the
   // marketplace. Empty for bots (grouped under "bot").
   categories?: string[];
+  // icon is an optional emoji rendered in the entry's visual slot.
+  icon?: string;
   display_name?: string;
   description?: string;
   author?: string;
@@ -70,6 +81,8 @@ export interface SubmitMarketplaceRequest {
   ref?: string;
   path?: string;
   tags?: string[];
+  /** Optional emoji shown in the entry's visual slot. */
+  icon?: string;
   /** Visibility scope (cloud only; ignored in local mode). */
   scope?: MarketplaceScope;
 }
@@ -87,9 +100,12 @@ export interface MarketplaceConfig {
 
 /** InstallMarketplaceResponse is the wire body returned by
  *  POST /api/v1/marketplace/bots/{slug}/install — the install result
- *  plus the post-bump entry (so callers don't need a follow-up GET). */
+ *  plus the post-bump entry (so callers don't need a follow-up GET).
+ *  Exactly one of `install` (bot entries → workspace .botz/) or
+ *  `plugin` (plugin entries → ~/.iterion/plugins/) is set. */
 export interface InstallMarketplaceResponse {
-  install: InstallBotResult;
+  install?: InstallBotResult;
+  plugin?: PluginView;
   entry: MarketplaceEntry;
 }
 
@@ -101,13 +117,20 @@ interface ListResponse {
 // REST surface
 // ---------------------------------------------------------------------------
 
-/** listMarketplace returns every entry matching the optional free-text
- *  and tag filters. Returns [] for both omitted (server applies no
- *  filter). */
-export async function listMarketplace(q?: string, tag?: string): Promise<MarketplaceEntry[]> {
+/** listMarketplace returns every entry matching the optional free-text,
+ *  tag and kind filters, ordered by `sort` (server default: popular).
+ *  All filters omitted → the server applies none. */
+export async function listMarketplace(
+  q?: string,
+  tag?: string,
+  kind?: MarketplaceKind | "",
+  sort?: MarketplaceSort | "",
+): Promise<MarketplaceEntry[]> {
   const params = new URLSearchParams();
   if (q && q.trim() !== "") params.set("q", q.trim());
   if (tag && tag.trim() !== "") params.set("tag", tag.trim());
+  if (kind) params.set("kind", kind);
+  if (sort) params.set("sort", sort);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const r = await apiRequest<ListResponse>(`${BASE}/bots${suffix}`);
   return r.bots ?? [];

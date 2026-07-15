@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import { useProjectInfo } from "@/hooks/useProjectInfo";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { useRunStore } from "@/store/run";
-import { useTabsStore } from "@/store/tabs";
+import { UNTITLED_TAB_LABEL, useTabsStore } from "@/store/tabs";
 import { useBotsStore } from "@/store/bots";
 import { botDisplayLabel } from "@/lib/botLabel";
 
@@ -75,7 +75,7 @@ export function useDocumentTitle() {
         // Tab with only a label (example opened via newEditorTab): the
         // label is already the display name, kept current by
         // EditorTabHost's TabLabelSync.
-        context = activeEditorTabLabel || "untitled.bot";
+        context = activeEditorTabLabel || UNTITLED_TAB_LABEL;
       }
     } else {
       // Home and any unmatched route: no per-page context, just the

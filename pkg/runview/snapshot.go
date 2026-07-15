@@ -9,6 +9,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -75,9 +76,9 @@ type RunHeader struct {
 	// "Nexie"). When set, the studio RunHeader leads the bot chip
 	// with this persona name + a ✨ icon so dispatcher-spawned runs
 	// belonging to a named bot read at a glance.
-	BundleDisplayName string                 `json:"bundle_display_name,omitempty"`
-	Status            store.RunStatus        `json:"status"`
-	Inputs            map[string]interface{} `json:"inputs,omitempty"`
+	BundleDisplayName string          `json:"bundle_display_name,omitempty"`
+	Status            store.RunStatus `json:"status"`
+	Inputs            map[string]any  `json:"inputs,omitempty"`
 	// PermissionMode is the workflow-declared tool-permission gate mode
 	// ("off"|"ask"|"deny"); empty when the gate is off/unset. The studio
 	// badges ask/deny. See docs/permissions.md.
@@ -103,6 +104,15 @@ type RunHeader struct {
 	WorkDir string `json:"work_dir,omitempty"`
 	// Worktree is true when WorkDir was created by `worktree: auto`.
 	Worktree bool `json:"worktree,omitempty"`
+	// WorktreeAvailable is true when WorkDir still exists on THIS server's
+	// filesystem — i.e. the inline file-editor + uncommitted/live diff
+	// surfaces can be served without a 409. It is false for a cloud run
+	// (whose worktree lives on the runner pod) and for a finalized/gc'd
+	// local run (whose worktree was torn down). The studio gates the
+	// Monaco file-editor affordances on it so the operator never clicks an
+	// Edit button that then 409s. Mirrors the /files/content endpoint's own
+	// gate (resolveRunWorktreePath).
+	WorktreeAvailable bool `json:"worktree_available"`
 	// Worktree finalization summary (only populated for `worktree:
 	// auto` runs that reached a clean exit). The studio uses these to
 	// surface the persistent branch and FF status in the run header.
@@ -137,11 +147,28 @@ type RunHeader struct {
 	// RunHeader reads it to render a link back to the kanban ticket
 	// that triggered the dispatch.
 	Source *store.RunSource `json:"source,omitempty"`
+	// Run-tree shard tuple (T4b, refs #125): the child←parent edge plus
+	// the shard coordinates mirrored from the queue message. ParentRunID
+	// points UP at the run that spawned this shard/child; ShardIndex /
+	// ShardCount / ShardLabel describe this run's slot in its parent's
+	// fan-out. All empty for a top-level (non-sharded) run. The studio
+	// projects these to render a run's shard/child subtree.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	ShardIndex  int    `json:"shard_index,omitempty"`
+	ShardCount  int    `json:"shard_count,omitempty"`
+	ShardLabel  string `json:"shard_label,omitempty"`
 	// WatchedIssueIDs is the server-authoritative set of native-kanban
 	// issue IDs this run subscribed to (MVP3b). The studio's whats-next
 	// WatchPanel reads it as the primary watch-list source, falling back
 	// to its event-derived list for legacy runs that predate the field.
 	WatchedIssueIDs []string `json:"watched_issue_ids,omitempty"`
+	// BackendsUsed summarizes the distinct (backend, model) pairs the
+	// run's LLM/delegate nodes actually executed against, derived by
+	// folding node_finished events (each stamps _backend / _model on its
+	// output). Auto-detected backends report their RESOLVED value, not
+	// "auto". Nil for runs with no LLM nodes (tool/compute-only) so the
+	// studio RunHeader renders no chip. See the studio BackendsUsed row.
+	BackendsUsed []BackendUsage `json:"backends_used,omitempty"`
 	// Loops is the run-level "real loops" indicator: one entry per
 	// declared named loop (e.g. "review_loop"), reporting the SEMANTIC
 	// iteration counter (matching the runtime's `node#N` log label and
@@ -152,6 +179,17 @@ type RunHeader struct {
 	// (iteration_path); Max is the declared bound (0 = unbounded /
 	// expression cap / unknown). Absent for runs with no named loops.
 	Loops map[string]RunLoopProgress `json:"loops,omitempty"`
+}
+
+// BackendUsage is one distinct (backend, model) pair a run's LLM /
+// delegate nodes executed against. NodeCount is the number of distinct
+// IR nodes that resolved to this pair, so loop iterations and resume
+// re-executions of the same node do not inflate it. Model is empty when
+// the backend did not report an effective model.
+type BackendUsage struct {
+	Backend   string `json:"backend"`
+	Model     string `json:"model,omitempty"`
+	NodeCount int    `json:"node_count"`
 }
 
 // RunLoopProgress reports a named loop's semantic progress at the run
@@ -236,6 +274,21 @@ type SnapshotBuilder struct {
 	// RunHeader.Loops on Snapshot.
 	loopCurrent map[string]int
 	loopBound   map[string]int
+	// backendUsage aggregates the distinct (backend, model) pairs the
+	// run's LLM/delegate nodes executed against (from each node_finished's
+	// stamped _backend / _model). Keyed by backend\x00model; backendOrder
+	// preserves first-seen order for a deterministic BackendsUsed slice;
+	// each agg tracks the set of distinct IR node ids so loops/resumes
+	// don't inflate NodeCount.
+	backendUsage map[string]*backendAgg
+	backendOrder []string
+}
+
+// backendAgg accumulates one (backend, model) pair while folding events.
+type backendAgg struct {
+	backend string
+	model   string
+	nodes   map[string]bool
 }
 
 // NewSnapshotBuilder seeds a builder from the persisted Run metadata.
@@ -250,6 +303,7 @@ func NewSnapshotBuilder(run *store.Run) *SnapshotBuilder {
 		lastResumedSeq: NoEventsSeq,
 		loopCurrent:    make(map[string]int),
 		loopBound:      make(map[string]int),
+		backendUsage:   make(map[string]*backendAgg),
 	}
 	if run != nil {
 		b.header = headerFromRun(run)
@@ -315,6 +369,7 @@ func (b *SnapshotBuilder) Apply(evt *store.Event) {
 		b.handleNodeStarted(evt, branch)
 	case store.EventNodeFinished:
 		b.handleNodeFinished(evt, branch)
+		b.recordBackendUsage(evt)
 	case store.EventArtifactWritten:
 		b.handleArtifactWritten(evt, branch)
 	case store.EventRunFailed:
@@ -361,6 +416,7 @@ func (b *SnapshotBuilder) Snapshot() *RunSnapshot {
 	}
 	header := b.header
 	header.Loops = b.buildLoopProgress()
+	header.BackendsUsed = b.buildBackendsUsed()
 	return &RunSnapshot{
 		Run:        header,
 		Executions: execs,
@@ -386,6 +442,54 @@ func (b *SnapshotBuilder) buildLoopProgress() map[string]RunLoopProgress {
 		if _, seen := out[name]; !seen {
 			out[name] = RunLoopProgress{Current: 0, Max: max}
 		}
+	}
+	return out
+}
+
+// recordBackendUsage folds a node_finished event into the per-(backend,
+// model) usage tally. The runtime stamps _backend (always, for delegate
+// nodes) and _model (when the backend reports an effective model) onto
+// the node's output map, which node_finished carries under data.output.
+// Nodes with no _backend (tool/compute/router terminals) contribute
+// nothing, so a run with only such nodes yields an empty BackendsUsed.
+func (b *SnapshotBuilder) recordBackendUsage(evt *store.Event) {
+	if evt.NodeID == "" || evt.Data == nil {
+		return
+	}
+	output, ok := evt.Data["output"].(map[string]any)
+	if !ok {
+		return
+	}
+	backend, _ := output["_backend"].(string)
+	if backend == "" {
+		return
+	}
+	model, _ := output["_model"].(string)
+	key := backend + "\x00" + model
+	agg := b.backendUsage[key]
+	if agg == nil {
+		agg = &backendAgg{backend: backend, model: model, nodes: make(map[string]bool)}
+		b.backendUsage[key] = agg
+		b.backendOrder = append(b.backendOrder, key)
+	}
+	agg.nodes[evt.NodeID] = true
+}
+
+// buildBackendsUsed materialises the aggregated (backend, model) pairs
+// in first-seen order. Returns nil when no delegate node has finished so
+// tool/compute-only runs render no backend chip.
+func (b *SnapshotBuilder) buildBackendsUsed() []BackendUsage {
+	if len(b.backendOrder) == 0 {
+		return nil
+	}
+	out := make([]BackendUsage, 0, len(b.backendOrder))
+	for _, key := range b.backendOrder {
+		agg := b.backendUsage[key]
+		out = append(out, BackendUsage{
+			Backend:   agg.backend,
+			Model:     agg.model,
+			NodeCount: len(agg.nodes),
+		})
 	}
 	return out
 }
@@ -689,7 +793,7 @@ func (b *SnapshotBuilder) recordLoopBounds(evt *store.Event) {
 	if !ok {
 		return
 	}
-	m, ok := raw.(map[string]interface{})
+	m, ok := raw.(map[string]any)
 	if !ok {
 		return
 	}
@@ -731,7 +835,7 @@ func (b *SnapshotBuilder) recordLoopIteration(evt *store.Event) {
 // toInt coerces a JSON-decoded numeric (int / int64 / float64) to int;
 // 0 for anything else. Event.Data round-trips through JSON so integer
 // payloads surface as float64 on replay.
-func toInt(v interface{}) int {
+func toInt(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n
@@ -852,7 +956,7 @@ func MakeExecutionID(branch, nodeID string, iteration int) string {
 // attempt's terminal status). Events emitted by older runtime builds
 // don't carry `iteration_path` — fall back to the legacy int form
 // transparently so historical event streams still replay deterministically.
-func makeExecutionIDFromEvent(branch, nodeID string, iteration int, data map[string]interface{}) string {
+func makeExecutionIDFromEvent(branch, nodeID string, iteration int, data map[string]any) string {
 	if branch == "" {
 		branch = MainBranch
 	}
@@ -924,6 +1028,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Checkpoint:        r.Checkpoint,
 		WorkDir:           r.WorkDir,
 		Worktree:          r.Worktree,
+		WorktreeAvailable: worktreeAvailable(r.WorkDir),
 		FinalCommit:       r.FinalCommit,
 		FinalBranch:       r.FinalBranch,
 		FinalBranchError:  r.FinalBranchError,
@@ -933,6 +1038,10 @@ func headerFromRun(r *store.Run) RunHeader {
 		MergeStatus:       r.MergeStatus,
 		AutoMerge:         r.AutoMerge,
 		Source:            r.Source,
+		ParentRunID:       r.ParentRunID,
+		ShardIndex:        r.ShardIndex,
+		ShardCount:        r.ShardCount,
+		ShardLabel:        r.ShardLabel,
 		WatchedIssueIDs:   r.WatchedIssueIDs,
 	}
 	// Bootstrap fallback: when the run is already running but the WS
@@ -945,6 +1054,20 @@ func headerFromRun(r *store.Run) RunHeader {
 		h.CurrentRunStart = &ts
 	}
 	return h
+}
+
+// worktreeAvailable reports whether dir exists and is a directory on this
+// server's filesystem. Empty dir (pre-feature runs, or runs with no
+// recorded WorkDir) and absent/removed paths both yield false. This is the
+// single signal the studio keys its inline file-editor affordances off of;
+// it deliberately mirrors the /files/content endpoint's own gate so the
+// UI's affordance and the endpoint's 409 stay in lockstep.
+func worktreeAvailable(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
 }
 
 // BuildSnapshot is the cold-read convenience: load run.json + events

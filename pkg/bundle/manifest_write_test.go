@@ -98,6 +98,61 @@ func TestWriteManifest_AppendsNewKeysAfterDescription(t *testing.T) {
 	}
 }
 
+func TestWriteManifest_IconRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte(manifestWithComments), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := WriteManifest(path, ManifestPatch{Icon: ptr("🦉")})
+	if err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+	if m.Icon != "🦉" {
+		t.Errorf("Icon = %q, want 🦉", m.Icon)
+	}
+
+	raw, _ := os.ReadFile(path)
+	got := string(raw)
+	// New key lands right after display_name; comments survive.
+	displayAt := strings.Index(got, "display_name:")
+	iconAt := strings.Index(got, "icon:")
+	descAt := strings.Index(got, "description:")
+	if !(displayAt < iconAt && iconAt < descAt) {
+		t.Errorf("icon not placed after display_name / before description (display=%d icon=%d desc=%d)\n---\n%s",
+			displayAt, iconAt, descAt, got)
+	}
+	if !strings.Contains(got, "# the catalogue blurb") {
+		t.Errorf("comment lost\n---\n%s", got)
+	}
+
+	// Clearing keeps the key but empties the value.
+	m, err = WriteManifest(path, ManifestPatch{Icon: ptr("")})
+	if err != nil {
+		t.Fatalf("WriteManifest clear: %v", err)
+	}
+	if m.Icon != "" {
+		t.Errorf("Icon after clear = %q, want empty", m.Icon)
+	}
+}
+
+func TestWriteManifest_IconTooLongRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte(manifestWithComments), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteManifest(path, ManifestPatch{Icon: ptr(strings.Repeat("x", 40))}); err == nil {
+		t.Fatal("expected an error for an over-long icon, got nil")
+	}
+	// The original file must be untouched (validation happens pre-write).
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "icon:") {
+		t.Errorf("invalid icon landed on disk\n---\n%s", raw)
+	}
+}
+
 func TestWriteManifest_NilPatchPreservesEverything(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.yaml")

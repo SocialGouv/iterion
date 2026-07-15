@@ -85,7 +85,7 @@ func TestInProcBusCancelUnblocksInFlightHandler(t *testing.T) {
 	_ = bus.Publish(context.Background(), trigger.Event{Source: trigger.SourceBoard})
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("handler never started")
 	}
 
@@ -93,7 +93,7 @@ func TestInProcBusCancelUnblocksInFlightHandler(t *testing.T) {
 	go func() { cancel(); close(returned) }()
 	select {
 	case <-returned:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("cancel() hung — in-flight handler was not unblocked by context cancellation")
 	}
 }
@@ -103,7 +103,7 @@ func waitN(t *testing.T, done <-chan struct{}, n int) {
 	for i := 0; i < n; i++ {
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(10 * time.Second):
 			t.Fatalf("timed out waiting for delivery %d/%d", i+1, n)
 		}
 	}

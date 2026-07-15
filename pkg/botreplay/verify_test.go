@@ -8,16 +8,16 @@ import (
 
 func TestCollectAssignees_NestedShapes(t *testing.T) {
 	// Mirrors emit_output.created_issues[] and roadmap_item arrays.
-	output := map[string]interface{}{
-		"created_issues": []interface{}{
-			map[string]interface{}{"id": "iss-1", "assignee": "feature_dev"},
-			map[string]interface{}{"id": "iss-2", "assignee": ""},
+	output := map[string]any{
+		"created_issues": []any{
+			map[string]any{"id": "iss-1", "assignee": "feature_dev"},
+			map[string]any{"id": "iss-2", "assignee": ""},
 		},
-		"next_action": []interface{}{
-			map[string]interface{}{"title": "x", "assignee": "docs-refresh"},
+		"next_action": []any{
+			map[string]any{"title": "x", "assignee": "docs-refresh"},
 		},
-		"nested": map[string]interface{}{
-			"deeper": map[string]interface{}{"bot": "whats-next"},
+		"nested": map[string]any{
+			"deeper": map[string]any{"bot": "whats-next"},
 		},
 	}
 	got := collectAssignees(output)
@@ -33,29 +33,29 @@ func TestVerifyNoHallucinatedAssignees(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		output  map[string]interface{}
+		output  map[string]any
 		wantErr bool
 	}{
 		{
 			name:    "snake_case normalizes to known bot",
-			output:  map[string]interface{}{"assignee": "feature_dev"},
+			output:  map[string]any{"assignee": "feature_dev"},
 			wantErr: false,
 		},
 		{
 			name:    "empty assignee is allowed",
-			output:  map[string]interface{}{"assignee": ""},
+			output:  map[string]any{"assignee": ""},
 			wantErr: false,
 		},
 		{
 			name:    "whitespace assignee is allowed",
-			output:  map[string]interface{}{"assignee": "   "},
+			output:  map[string]any{"assignee": "   "},
 			wantErr: false,
 		},
 		{
 			name: "hallucinated assignee fails",
-			output: map[string]interface{}{
-				"created_issues": []interface{}{
-					map[string]interface{}{"assignee": "super-coder-3000"},
+			output: map[string]any{
+				"created_issues": []any{
+					map[string]any{"assignee": "super-coder-3000"},
 				},
 			},
 			wantErr: true,
@@ -74,31 +74,31 @@ func TestVerifyNoHallucinatedAssignees(t *testing.T) {
 func TestVerifyRequiredNonEmpty(t *testing.T) {
 	cases := []struct {
 		name    string
-		output  map[string]interface{}
+		output  map[string]any
 		fields  []string
 		wantErr bool
 	}{
 		{
 			name:    "present non-empty array passes",
-			output:  map[string]interface{}{"created_issues": []interface{}{"x"}},
+			output:  map[string]any{"created_issues": []any{"x"}},
 			fields:  []string{"created_issues"},
 			wantErr: false,
 		},
 		{
 			name:    "empty array fails",
-			output:  map[string]interface{}{"created_issues": []interface{}{}},
+			output:  map[string]any{"created_issues": []any{}},
 			fields:  []string{"created_issues"},
 			wantErr: true,
 		},
 		{
 			name:    "absent field fails",
-			output:  map[string]interface{}{},
+			output:  map[string]any{},
 			fields:  []string{"created_issues"},
 			wantErr: true,
 		},
 		{
 			name:    "empty string fails",
-			output:  map[string]interface{}{"summary": "  "},
+			output:  map[string]any{"summary": "  "},
 			fields:  []string{"summary"},
 			wantErr: true,
 		},
@@ -126,7 +126,7 @@ func TestVerifySchema_RealBot(t *testing.T) {
 	good := &Fixture{
 		Bot:  "feature-dev",
 		Node: "campaign",
-		Output: map[string]interface{}{
+		Output: map[string]any{
 			"feature_complete": true,
 			// JSON-decoded numbers arrive as float64 — mirror that here
 			// (a Go int literal is rejected by the integer check).
@@ -145,7 +145,7 @@ func TestVerifySchema_RealBot(t *testing.T) {
 	bad := &Fixture{
 		Bot:  "feature-dev",
 		Node: "campaign",
-		Output: map[string]interface{}{
+		Output: map[string]any{
 			"commits_this_pass": float64(2),
 			"work_remaining":    "",
 			"needs_human":       false,
@@ -161,7 +161,7 @@ func TestVerifySchema_RealBot(t *testing.T) {
 	wrongType := &Fixture{
 		Bot:  "feature-dev",
 		Node: "campaign",
-		Output: map[string]interface{}{
+		Output: map[string]any{
 			"feature_complete":  true,
 			"commits_this_pass": "two",
 			"work_remaining":    "",

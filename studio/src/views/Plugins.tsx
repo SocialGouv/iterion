@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Component1Icon } from "@radix-ui/react-icons";
+import { useLocation } from "wouter";
 
 import {
   installPlugin,
@@ -12,7 +13,6 @@ import { useAuth } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 import { useConfirm } from "@/hooks/useConfirm";
-import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -20,26 +20,30 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Spinner } from "@/components/ui/Spinner";
-import PluginConfigForm from "./plugins/PluginConfigForm";
+import PluginCard from "./plugins/PluginCard";
+import PluginDetail from "./plugins/PluginDetail";
 
 // Plugins lists the iterion plugin registry (embedded builtins +
-// ~/.iterion/plugins) and lets the operator enable/disable each one, filter by
-// contribution type, and — for super-admins (or the single-user local operator)
-// — install new plugins and remove installed ones.
-// Backed by GET /api/v1/plugins + POST /api/v1/plugins/{name}/{enable,disable}
-// + POST /api/v1/plugins/install + DELETE /api/v1/plugins/{name}.
+// ~/.iterion/plugins) as a card gallery and lets the operator enable/disable
+// each one, filter by contribution type, search, and — for super-admins (or
+// the single-user local operator) — install new plugins and remove installed
+// ones. Clicking a card opens a detail drawer (contributes/config/lifecycle/
+// README) backed by GET /api/v1/plugins/{name}.
 export default function Plugins() {
   const [plugins, setPlugins] = useState<PluginView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [installOpen, setInstallOpen] = useState(false);
-  const [configOpen, setConfigOpen] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
 
   const { user } = useAuth();
   const authRequired = useServerInfoStore((s) => s.info?.auth_required);
+  const marketplaceEnabled = useServerInfoStore((s) => s.info?.marketplace_enabled);
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog } = useConfirm();
+  const [, navigate] = useLocation();
   // Install/remove mutate the shared plugin tree, so they're super-admin only —
   // mirroring the backend's requireSuperAdmin, which also passes for the
   // single-user local/desktop operator (auth disabled → no login).
@@ -68,13 +72,17 @@ export default function Plugins() {
   // syncing state to props.
   const activeKind = kindFilter && allKinds.includes(kindFilter) ? kindFilter : null;
 
-  const filtered = useMemo(
-    () =>
-      activeKind
-        ? (plugins ?? []).filter((p) => p.kinds.includes(activeKind))
-        : (plugins ?? []),
-    [plugins, activeKind],
-  );
+  const filtered = useMemo(() => {
+    let list = plugins ?? [];
+    if (activeKind) list = list.filter((p) => p.kinds.includes(activeKind));
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter((p) =>
+        [p.name, p.description ?? "", ...p.kinds].join(" ").toLowerCase().includes(q),
+      );
+    }
+    return list;
+  }, [plugins, activeKind, search]);
 
   const toggle = useCallback(
     async (p: PluginView) => {
@@ -104,6 +112,7 @@ export default function Plugins() {
       try {
         await uninstallPlugin(p.name);
         addToast(`Removed plugin ${p.name}`, "success");
+        setSelected((s) => (s === p.name ? null : s));
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -113,6 +122,19 @@ export default function Plugins() {
     },
     [confirm, addToast, refresh],
   );
+
+  const browseMarketplace = marketplaceEnabled ? (
+    <Button
+      variant="secondary"
+      size="sm"
+      onClick={() => navigate("/marketplace?kind=plugin")}
+    >
+      Browse marketplace
+    </Button>
+  ) : null;
+
+  const selectedPlugin =
+    selected !== null ? (plugins ?? []).find((p) => p.name === selected) : undefined;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface-0 text-fg-default">
@@ -129,6 +151,7 @@ export default function Plugins() {
         }
         actions={
           <div className="flex items-center gap-2">
+            {browseMarketplace}
             <Button variant="secondary" size="sm" onClick={() => void refresh()}>
               Refresh
             </Button>
@@ -141,7 +164,7 @@ export default function Plugins() {
         }
       />
 
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3 overflow-y-auto p-6">
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-3 overflow-y-auto p-6">
         {error && (
           <InlineBanner tone="danger" title="Plugin error" layout="inline">
             {error}
@@ -152,107 +175,65 @@ export default function Plugins() {
           <EmptyState message="Loading plugins…" icon={<Spinner />} />
         )}
 
-        {/* Filter by contribution type — only when there's more than one kind to
-            choose between, so a single-kind registry stays uncluttered. */}
-        {allKinds.length > 1 && (
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="mr-1 text-caption text-fg-subtle">Type:</span>
-            <FilterPill active={activeKind === null} onClick={() => setKindFilter(null)}>
-              All
-            </FilterPill>
-            {allKinds.map((k) => (
-              <FilterPill key={k} active={activeKind === k} onClick={() => setKindFilter(k)}>
-                {k}
-              </FilterPill>
-            ))}
+        {plugins !== null && plugins.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              size="md"
+              type="search"
+              placeholder="Search plugins…"
+              aria-label="Search plugins"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full max-w-xs"
+            />
+            {/* Filter by contribution type — only when there's more than one
+                kind to choose between, so a single-kind registry stays
+                uncluttered. */}
+            {allKinds.length > 1 && (
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="mr-1 text-caption text-fg-subtle">Type:</span>
+                <FilterPill active={activeKind === null} onClick={() => setKindFilter(null)}>
+                  All
+                </FilterPill>
+                {allKinds.map((k) => (
+                  <FilterPill key={k} active={activeKind === k} onClick={() => setKindFilter(k)}>
+                    {k}
+                  </FilterPill>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
         {plugins !== null && plugins.length === 0 && (
-          <EmptyState message="No plugins found." />
+          <EmptyState
+            message="No plugins found."
+            action={browseMarketplace ?? undefined}
+          />
         )}
         {plugins !== null && plugins.length > 0 && filtered.length === 0 && (
-          <EmptyState message={`No ${activeKind} plugins.`} />
+          <EmptyState
+            message={
+              search.trim()
+                ? `No plugins match “${search.trim()}”.`
+                : `No ${activeKind} plugins.`
+            }
+          />
         )}
 
-        <ul className="flex flex-col gap-2">
-          {filtered.map((p) => {
-            const configurable = canManage && (p.config_schema?.length ?? 0) > 0;
-            const open = configOpen === p.name;
-            return (
-              <li
+        {filtered.length > 0 && (
+          <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {filtered.map((p) => (
+              <PluginCard
                 key={p.name}
-                className="flex flex-col gap-3 rounded-[var(--radius-lg)] border border-border-default bg-surface-1 p-4 shadow-[var(--shadow-sm)] transition-[box-shadow,border-color] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:border-border-strong hover:shadow-[var(--shadow-md)]"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-sm text-fg-default">{p.name}</span>
-                      {p.version && (
-                        <span className="text-caption text-fg-subtle">{p.version}</span>
-                      )}
-                      <Badge variant={p.builtin ? "info" : "neutral"} size="sm">
-                        {p.builtin ? "builtin" : "installed"}
-                      </Badge>
-                      {p.enabled && (
-                        <Badge variant="success" size="sm">
-                          enabled
-                        </Badge>
-                      )}
-                    </div>
-                    {p.description && (
-                      <p className="mt-1 text-caption text-fg-muted">{p.description}</p>
-                    )}
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {p.kinds.map((k) => (
-                        <Badge key={k} variant="accent" size="sm">
-                          {k}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {configurable && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-expanded={open}
-                        onClick={() => setConfigOpen(open ? null : p.name)}
-                      >
-                        {open ? "Close" : "Configure"}
-                      </Button>
-                    )}
-                    {canManage && !p.builtin && (
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        loading={busy === p.name}
-                        disabled={busy !== null}
-                        onClick={() => void remove(p)}
-                      >
-                        Remove
-                      </Button>
-                    )}
-                    <Button
-                      variant={p.enabled ? "secondary" : "primary"}
-                      size="sm"
-                      loading={busy === p.name}
-                      disabled={busy !== null}
-                      onClick={() => void toggle(p)}
-                    >
-                      {p.enabled ? "Disable" : "Enable"}
-                    </Button>
-                  </div>
-                </div>
-                {configurable && open && (
-                  <div className="border-t border-border-default pt-3">
-                    <PluginConfigForm plugin={p} onSaved={refresh} />
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+                plugin={p}
+                busy={busy === p.name}
+                onEnable={() => void toggle(p)}
+                onOpen={() => setSelected(p.name)}
+              />
+            ))}
+          </ul>
+        )}
 
         {canManage && (
           <InstallPluginDialog
@@ -262,6 +243,18 @@ export default function Plugins() {
               addToast(`Installed plugin ${name}`, "success");
               void refresh();
             }}
+          />
+        )}
+
+        {selectedPlugin && (
+          <PluginDetail
+            plugin={selectedPlugin}
+            canManage={canManage}
+            busy={busy === selectedPlugin.name}
+            onToggle={() => void toggle(selectedPlugin)}
+            onRemove={() => void remove(selectedPlugin)}
+            onClose={() => setSelected(null)}
+            onConfigSaved={() => void refresh()}
           />
         )}
       </div>

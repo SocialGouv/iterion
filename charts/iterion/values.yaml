@@ -98,6 +98,9 @@ runner:
     # installs to avoid collision when several iterion releases share
     # a NATS cluster.
     consumerName: iterion-runners
+    # JetStream account the stream lives in. Required by the KEDA scaler;
+    # single-tenant JetStream (no NATS accounts) uses the global default "$G".
+    account: "$G"
   # Sandbox toggle for the runner pod. When enabled, the chart
   # provisions the additional RBAC the runner needs to create per-run
   # sibling pods via the kubernetes sandbox driver (Phase 5 V1).
@@ -105,6 +108,32 @@ runner:
   # sandbox feature; turn on per-environment via values-prod.yaml.
   sandbox:
     enabled: false
+  # --- Persistent build cache (warm runner pods) --------------------
+  # A bot's verify gate re-clones the target repo per run into an
+  # ephemeral workdir, so a fresh/scaled-up runner pod otherwise
+  # re-downloads Go modules and recompiles from cold every time (the
+  # dominant cost seen in live runs). Enabling this mounts a shared RWX
+  # volume for GOMODCACHE + GOCACHE so every pod starts warm.
+  #
+  # accessModes MUST be ReadWriteMany when >1 replica (KEDA/replicas):
+  # the Go module cache is read-mostly and the build cache is
+  # content-addressed + concurrency-safe, so pods share one warm volume.
+  # storageClass must provide RWX and honour fsGroup (OVH:
+  # openebs-nfs-hspeed). The Nix toolchain store (/nix) is intentionally
+  # NOT cached here — it is baked warm in the runner image; a shared RWX
+  # live /nix risks store-DB corruption across the fleet, so its
+  # scale-up warm-fix is a binary-cache substituter (ADR), not a mount.
+  cache:
+    enabled: false
+    # existingClaim: use a pre-created PVC instead of the chart's own.
+    existingClaim: ""
+    # storageClass: leave "" to use the cluster default (must be RWX for
+    # multi-replica). On OVH set openebs-nfs-hspeed.
+    storageClass: ""
+    accessModes:
+      - ReadWriteMany
+    size: 20Gi
+    mountPath: /cache
 
 # --- HTTP exposure --------------------------------------------------
 service:
@@ -132,6 +161,11 @@ ingress:
 mode: cloud   # "local" or "cloud"; "local" pins replicas=1 + PVC
 
 config:
+  # Arbitrary extra environment variables rendered into the shared
+  # ConfigMap (both the server and runner deployments envFrom it).
+  # e.g. TZ: Europe/Paris — the binary embeds the IANA tz database
+  # (time/tzdata), so TZ works even in tzdata-less images.
+  extraEnv: {}
   log:
     format: json
     level: info

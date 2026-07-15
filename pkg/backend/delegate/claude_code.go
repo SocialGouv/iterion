@@ -125,10 +125,24 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	if model == "" {
 		model = defaultClaudeCodeModel
 	}
+	// The DSL's canonical model spec is provider-prefixed
+	// ("anthropic/claude-…", the form claw parses), but the claude CLI
+	// only accepts bare model names and rejects the prefixed form as an
+	// unknown model. Strip the anthropic prefix; any other provider
+	// prefix stays and fails fast as a genuinely non-Anthropic model.
+	model = strings.TrimPrefix(model, "anthropic/")
 	opts = append(opts, claudesdk.WithModel(model))
 
-	if b.Command != "" {
-		opts = append(opts, claudesdk.WithCLIPath(b.Command))
+	// CLI binary path: the per-node task override (DSL `command:`, an
+	// alternate claude-code-compatible CLI) wins over the backend-level
+	// default; the shared backend is
+	// left unmutated so it can serve other nodes with their own override.
+	cliPath := b.Command
+	if task.Command != "" {
+		cliPath = task.Command
+	}
+	if cliPath != "" {
+		opts = append(opts, claudesdk.WithCLIPath(cliPath))
 	}
 
 	// When the run is sandboxed, route the claude CLI subprocess
@@ -174,6 +188,9 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	if d := claudeCodeThinkingDisplay(); d != "" {
+		opts = append(opts, claudesdk.WithThinkingDisplay(d))
+	}
 
 	// tool_max_steps caps agentic tool-use iterations. Until now this
 	// field was defined in delegate.Task but never wired into the CLI,
@@ -187,6 +204,25 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	}
 
 	return opts, sandboxCleanup
+}
+
+// claudeCodeThinkingDisplay resolves the --thinking-display value passed
+// to the CLI. In headless (--print) mode the CLI defaults thinking
+// display to omitted on Opus 4.8+ — thinking blocks stream with empty
+// text and only the encrypted signature — so iterion requests the
+// readable summary by default. ITERION_CLAUDE_CODE_THINKING_DISPLAY
+// overrides: "omitted" restores the latency-optimised default, "off"
+// stops passing the flag entirely (required for claude CLIs older than
+// the flag, which reject unknown options).
+func claudeCodeThinkingDisplay() string {
+	switch v := os.Getenv("ITERION_CLAUDE_CODE_THINKING_DISPLAY"); v {
+	case "":
+		return "summarized"
+	case "off":
+		return ""
+	default:
+		return v
+	}
 }
 
 func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Result, err error) {
@@ -324,6 +360,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 	opts = installMaterializeSecretsHook(task, opts)
 	opts = installRewriteHook(task, opts)
 	opts = b.wireBoardMCP(task, opts, &extraAllowedTools)
+	opts = b.wireUserMCP(task, opts, &extraAllowedTools)
 
 	// Watch capabilities (watch.subscribe / watch.unsubscribe) are wired for
 	// the claw backend only so far — the claude_code stdio (__mcp-watch) and
@@ -469,13 +506,13 @@ func (b *ClaudeCodeBackend) buildAskUserPendingResult(task Task, p pendingAskUse
 	if rm != nil {
 		sessID = rm.SessionID
 	}
-	questions := map[string]interface{}{AskUserQuestionKey: p.Question}
+	questions := map[string]any{AskUserQuestionKey: p.Question}
 	AddAskUserOptionKeys(questions, p.Options, p.AllowFreeText)
 	if marker != nil {
 		questions[permission.InteractionMarkerKey] = marker
 	}
 	askResult := Result{
-		Output: map[string]interface{}{
+		Output: map[string]any{
 			"_needs_interaction":     true,
 			"_interaction_questions": questions,
 		},
@@ -739,9 +776,23 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 	if model == "" {
 		model = defaultClaudeCodeModel
 	}
+	// The DSL's canonical model spec is provider-prefixed
+	// ("anthropic/claude-…", the form claw parses), but the claude CLI
+	// only accepts bare model names and rejects the prefixed form as an
+	// unknown model. Strip the anthropic prefix; any other provider
+	// prefix stays and fails fast as a genuinely non-Anthropic model.
+	model = strings.TrimPrefix(model, "anthropic/")
 	opts = append(opts, claudesdk.WithModel(model))
-	if b.Command != "" {
-		opts = append(opts, claudesdk.WithCLIPath(b.Command))
+	// CLI binary path: the per-node task override (DSL `command:`, an
+	// alternate claude-code-compatible CLI) wins over the backend-level
+	// default; the shared backend is
+	// left unmutated so it can serve other nodes with their own override.
+	cliPath := b.Command
+	if task.Command != "" {
+		cliPath = task.Command
+	}
+	if cliPath != "" {
+		opts = append(opts, claudesdk.WithCLIPath(cliPath))
 	}
 
 	// Capture every spawned subprocess so promptWithTimeout can SIGKILL
@@ -817,6 +868,9 @@ func (b *ClaudeCodeBackend) formatOutput(ctx context.Context, task Task, session
 		effort = defaultClaudeCodeEffort
 	}
 	opts = append(opts, claudesdk.WithEnv("CLAUDE_CODE_EFFORT_LEVEL", effort))
+	if d := claudeCodeThinkingDisplay(); d != "" {
+		opts = append(opts, claudesdk.WithThinkingDisplay(d))
+	}
 
 	prompt := "Format your complete findings as JSON matching the required output schema."
 

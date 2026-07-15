@@ -3,11 +3,13 @@ package runview
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	dockersandbox "github.com/SocialGouv/iterion/pkg/sandbox/docker"
+	k8ssandbox "github.com/SocialGouv/iterion/pkg/sandbox/kubernetes"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -22,6 +24,16 @@ import (
 // Safe to call when docker/podman isn't installed: dockersandbox.Detect
 // returns an error which we swallow as "nothing to reconcile."
 func (s *Service) reconcileSandboxContainers() {
+	// Same liveness-authority guard as reconcileOrphans (b7b63f723): the
+	// reap probes LockRun to decide "owner gone", but a store with no real
+	// cross-process lock (the cloud server's noop lock) always "succeeds"
+	// the probe — so without this a server sharing a store with docker
+	// runners on one host could force-remove live sandbox containers.
+	// Today this is masked (cloud servers have no docker daemon, so Detect
+	// below no-ops), but gate it explicitly so the two reapers can't drift.
+	if !s.store.Capabilities().CrossProcessLock {
+		return
+	}
 	rt, err := dockersandbox.Detect()
 	if err != nil {
 		return
@@ -37,6 +49,44 @@ func (s *Service) reconcileSandboxContainers() {
 	}
 	if len(reaped) > 0 {
 		s.logger.Info("runview: reaped %d orphan sandbox container(s)", len(reaped))
+	}
+}
+
+// reconcileSandboxK8sResources force-deletes iterion-managed kubernetes
+// sandbox resources (pod + CA/file-secrets Secret + NetworkPolicy) whose
+// owning run has reached a terminal status or vanished from the store.
+// The kubernetes counterpart to reconcileSandboxContainers: a runner pod
+// SIGKILLed / OOM-killed / node-evicted mid-run never runs Run.Cleanup,
+// so its sandbox footprint — including the Secret holding plaintext BYOK/
+// forge credentials — leaks with no TTL. The self-terminating manifest
+// (ownerReference + activeDeadlineSeconds) covers the runner-pod-deleted
+// and idle-forever cases; this sweep closes the rest.
+//
+// Gated on the SAME cross-process-lock authority as the docker reaper: a
+// store with a noop lock (the lock-less cloud server) always "succeeds"
+// the liveness probe, so without this gate a server sharing a namespace
+// with live runner pods could reap an in-flight run's sandbox. Safe when
+// not in-cluster: kubernetes.Detect returns an error we swallow.
+func (s *Service) reconcileSandboxK8sResources() {
+	if !s.store.Capabilities().CrossProcessLock {
+		return
+	}
+	_, namespace, err := k8ssandbox.Detect()
+	if err != nil {
+		return // not an in-cluster runner — nothing to reconcile
+	}
+	// Boot-time admin scan: peek at runs across tenants to decide whether
+	// their kubernetes leftovers should be reaped. Reuses the exact same
+	// reapability predicate as the docker reaper (liveness-first).
+	ctx := store.WithoutTenantFilter(context.Background())
+	reaped, err := k8ssandbox.ReapOrphanResources(ctx, namespace, func(runID string) bool {
+		return s.sandboxContainerReapable(ctx, runID)
+	})
+	if err != nil {
+		s.logger.Warn("runview: reap orphan k8s sandbox resources: %v", err)
+	}
+	if len(reaped) > 0 {
+		s.logger.Info("runview: reaped %d orphan k8s sandbox resource(s)", len(reaped))
 	}
 }
 
@@ -117,6 +167,17 @@ func (s *Service) reconcileOrphans() {
 	// ListRuns / LoadRun / UpdateRunStatus calls that follow. The
 	// filesystem store ignores the flag (no tenant scoping there).
 	ctx := store.WithoutTenantFilter(context.Background())
+	// The reap uses LockRun as the liveness probe: grabbing the lock
+	// proves no other process holds the run. That is only meaningful
+	// when the store has a REAL cross-process lock (filesystem flock,
+	// or the runner's NATS-KV lease). The cloud SERVER store has no
+	// lock provider, so LockRun returns a noop that always "succeeds"
+	// — which would make every runner-owned run in `running` look
+	// orphaned and get reaped mid-flight (observed: a 60s tick failing
+	// live cloud runs). When the store can't prove liveness, skip the
+	// reap entirely: a genuinely dead runner is recovered by the NATS
+	// lease expiring + JetStream redelivery, not by the server.
+	canReap := s.store.Capabilities().CrossProcessLock
 	ids, err := s.store.ListRuns(ctx)
 	if err != nil {
 		s.logger.Warn("runview: reconcile: list runs: %v", err)
@@ -134,10 +195,33 @@ func (s *Service) reconcileOrphans() {
 		// for every run scanned. Without this, a SIGTERM landing during
 		// the ~50ms window between status=finished and SaveRun(final_*)
 		// leaves the run forever stuck with no merge UI affordance.
-		if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil {
-			s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
+		//
+		// Only when this service has liveness authority: the cloud server
+		// (noop lock) owns no worktree — the finalize runs on the runner
+		// pod. Calling it here reads a WorkDir/RepoRoot absent on the
+		// server pod, doing pointless git work + logging a spurious
+		// "cannot read worktree HEAD" every tick per finished run.
+		if canReap {
+			if recErr := runtime.RecoverFinalize(ctx, s.store, r, s.logger); recErr != nil {
+				s.logger.Warn("runview: recover finalize %s: %v", id, recErr)
+			}
 		}
 		if r.Status != store.RunStatusRunning {
+			continue
+		}
+		// No liveness authority (cloud server, noop lock): never reap a
+		// runner-owned run — RecoverFinalize above still ran for any
+		// finished worktree run, which is all the server legitimately
+		// needs to do here.
+		if !canReap {
+			continue
+		}
+		// In-process active run: this service owns it — skip before any
+		// lock/PID probing. Matters for the periodic re-scan (the boot
+		// scan predates any active run): without this guard every tick
+		// would re-probe each managed run's flock and re-attempt
+		// RegisterDetached on already-reattached detached runners.
+		if s.manager.Active(id) {
 			continue
 		}
 		// .pid present + PID alive → runner outlived the previous
@@ -172,6 +256,74 @@ func (s *Service) reconcileOrphans() {
 		}
 		_ = lock.Unlock()
 	}
+}
+
+// defaultOrphanReconcileInterval is how often the periodic reconcile
+// re-runs the orphan scan after boot. Overridable via
+// ITERION_ORPHAN_RECONCILE_INTERVAL (a Go duration; "0" disables the
+// ticker, keeping only the boot-time scan).
+const defaultOrphanReconcileInterval = 60 * time.Second
+
+func orphanReconcileInterval() time.Duration {
+	v := os.Getenv("ITERION_ORPHAN_RECONCILE_INTERVAL")
+	if v == "" {
+		return defaultOrphanReconcileInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return defaultOrphanReconcileInterval
+	}
+	return d // <= 0 disables
+}
+
+// startPeriodicReconcile re-runs reconcileOrphans on a ticker so a run
+// whose owning process crashes while the service is up (a CLI `iterion
+// run` sharing the store, a killed detached runner) flips to
+// failed/failed_resumable within a minute instead of staying `running`
+// until the next server restart. The scan is idempotent and
+// liveness-gated (flock probe + manager.Active guard), so re-running it
+// against live runs is a no-op. reconcileSandboxContainers is
+// deliberately NOT on the tick — it would round-trip docker every
+// interval; the boot scan plus owner-exit reaping cover containers.
+//
+// reconcileSandboxK8sResources IS on the tick, unlike its docker peer: a
+// runner pod OOM-killed / node-evicted while THIS server stays up leaks a
+// sandbox pod + its plaintext-credential Secret that boot-only reaping
+// wouldn't catch until the next restart. It stays cheap and safe — the
+// same lock-authority gate (off on the lock-less cloud server) and
+// liveness-first predicate as the boot scan, no-op when not in-cluster.
+func (s *Service) startPeriodicReconcile() {
+	interval := orphanReconcileInterval()
+	if interval <= 0 {
+		return
+	}
+	s.reconcileStop = make(chan struct{})
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.reconcileStop:
+				return
+			case <-t.C:
+				if s.draining.Load() {
+					return
+				}
+				s.reconcileOrphans()
+				s.reconcileSandboxK8sResources()
+			}
+		}
+	}()
+}
+
+// stopPeriodicReconcile ends the reconcile goroutine. Idempotent —
+// Stop and Drain may both run in one teardown.
+func (s *Service) stopPeriodicReconcile() {
+	s.reconcileStopOnce.Do(func() {
+		if s.reconcileStop != nil {
+			close(s.reconcileStop)
+		}
+	})
 }
 
 // tryReattachByPID handles the .pid path of reconcileOrphans. Returns
@@ -272,6 +424,7 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // publishes EventRunInterrupted and flips each in-flight run to
 // failed_resumable so the next server boot can offer one-click resume.
 func (s *Service) Stop(ctx context.Context) {
+	s.stopPeriodicReconcile()
 	s.manager.Stop(ctx)
 }
 
@@ -296,6 +449,7 @@ func (s *Service) Stop(ctx context.Context) {
 // it returns, the service should not be used to launch new work.
 func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
+	s.stopPeriodicReconcile()
 
 	// Stop the alert manager's stall-poll goroutine. It was started with
 	// context.Background() (so it outlives per-run contexts), so Drain is
@@ -353,7 +507,7 @@ func (s *Service) markInterrupted(runID string) {
 	if _, err := s.store.AppendEvent(ctx, runID, store.Event{
 		Type:  store.EventRunInterrupted,
 		RunID: runID,
-		Data:  map[string]interface{}{"reason": reason},
+		Data:  map[string]any{"reason": reason},
 	}); err != nil {
 		s.logger.Warn("runview: drain: append run_interrupted for %s: %v", runID, err)
 	}

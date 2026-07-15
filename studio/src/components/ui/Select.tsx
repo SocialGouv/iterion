@@ -32,6 +32,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
       <select
         ref={ref}
         className={`${base} ${widthClass} ${sizeClass[size]} ${ringClass} ${className}`.trim()}
+        aria-invalid={error || undefined}
         {...rest}
       >
         {children}

@@ -239,6 +239,14 @@ func (m *Manager) SaveConfig(cfg *Config) error {
 	return nil
 }
 
+// ErrAlreadyRunning is returned by Start when a Dispatcher is already
+// live — which NewManager's auto-start makes the NORMAL case for any
+// caller starting explicitly on a store with a persisted config (e.g.
+// `iterion dispatch` re-run on the same store dir). Callers that just
+// need "a dispatcher is running with my config" should treat it as
+// success: SaveConfig live-reloads the running instance.
+var ErrAlreadyRunning = errors.New("manager: already running")
+
 // Start spins up a fresh Dispatcher from the persisted config. Returns
 // an error and stays in StateError when the start sequence fails (bad
 // workflow, missing tracker creds, port conflict, …).
@@ -246,7 +254,7 @@ func (m *Manager) Start() error {
 	m.mu.Lock()
 	if m.cur != nil {
 		m.mu.Unlock()
-		return errors.New("manager: already running")
+		return ErrAlreadyRunning
 	}
 	cfg := m.cfg
 	m.mu.Unlock()

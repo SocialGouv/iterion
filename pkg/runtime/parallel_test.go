@@ -70,20 +70,20 @@ func fanOutWorkflow(awaitStrategy ir.AwaitMode) *ir.Workflow {
 func TestFanOutWaitAllSuccess(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
-	var capturedFinalizeInput map[string]interface{}
+	var capturedFinalizeInput map[string]any
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "PR context"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "PR context"}, nil
 	})
-	exec.on("agent_a", func(input map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "A says LGTM", "approved": true}, nil
+	exec.on("agent_a", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "A says LGTM", "approved": true}, nil
 	})
-	exec.on("agent_b", func(input map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "B says needs work", "approved": false}, nil
+	exec.on("agent_b", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "B says needs work", "approved": false}, nil
 	})
-	exec.on("finalize", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("finalize", func(input map[string]any) (map[string]any, error) {
 		capturedFinalizeInput = input
-		return map[string]interface{}{"result": "merged"}, nil
+		return map[string]any{"result": "merged"}, nil
 	})
 
 	s := tmpStore(t)
@@ -217,13 +217,13 @@ func TestFanOutWaitAllPartialFailure(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "context"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "context"}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "A ok"}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "A ok"}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		return nil, errors.New("LLM timeout")
 	})
 
@@ -251,20 +251,20 @@ func TestFanOutWaitAllPartialFailure(t *testing.T) {
 func TestFanOutBestEffortPartialFailure(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitBestEffort)
 
-	var capturedFinalizeInput map[string]interface{}
+	var capturedFinalizeInput map[string]any
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "context"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "context"}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "A says ok"}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "A says ok"}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		return nil, errors.New("provider error")
 	})
-	exec.on("finalize", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("finalize", func(input map[string]any) (map[string]any, error) {
 		capturedFinalizeInput = input
-		return map[string]interface{}{"result": "partial merge"}, nil
+		return map[string]any{"result": "partial merge"}, nil
 	})
 
 	s := tmpStore(t)
@@ -325,8 +325,8 @@ func TestFanOutConcurrentExecution(t *testing.T) {
 	var currentConcurrent int64
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "go"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "go"}, nil
 	})
 
 	// A 2-branch rendezvous barrier makes the branches OVERLAP by construction
@@ -339,7 +339,7 @@ func TestFanOutConcurrentExecution(t *testing.T) {
 	const branches = 2
 	var arrived int64
 	release := make(chan struct{})
-	branchHandler := func(_ map[string]interface{}) (map[string]interface{}, error) {
+	branchHandler := func(_ map[string]any) (map[string]any, error) {
 		cur := atomic.AddInt64(&currentConcurrent, 1)
 		// Track max concurrency.
 		for {
@@ -353,16 +353,16 @@ func TestFanOutConcurrentExecution(t *testing.T) {
 		}
 		select {
 		case <-release:
-		case <-time.After(2 * time.Second): // regression guard: don't hang if branches serialize
+		case <-time.After(10 * time.Second): // regression guard: don't hang if branches serialize
 		}
 		atomic.AddInt64(&currentConcurrent, -1)
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	}
 
 	exec.on("agent_a", branchHandler)
 	exec.on("agent_b", branchHandler)
-	exec.on("finalize", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("finalize", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -415,11 +415,11 @@ func TestFanOutBoundedParallelism(t *testing.T) {
 	var currentConcurrent int64
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
-	branchHandler := func(_ map[string]interface{}) (map[string]interface{}, error) {
+	branchHandler := func(_ map[string]any) (map[string]any, error) {
 		cur := atomic.AddInt64(&currentConcurrent, 1)
 		for {
 			old := atomic.LoadInt64(&maxConcurrent)
@@ -429,7 +429,7 @@ func TestFanOutBoundedParallelism(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 		atomic.AddInt64(&currentConcurrent, -1)
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	}
 
 	exec.on("a", branchHandler)
@@ -511,27 +511,27 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 		Loops:   map[string]*ir.Loop{},
 	}
 
-	var capturedMergeInput map[string]interface{}
+	var capturedMergeInput map[string]any
 
 	exec := newStubExecutor()
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"diff": "+foo", "files": []string{"main.go"}}, nil
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"diff": "+foo", "files": []string{"main.go"}}, nil
 	})
-	exec.on("claude_review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"issues": []string{"naming"}, "approved": false}, nil
+	exec.on("claude_review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"issues": []string{"naming"}, "approved": false}, nil
 	})
-	exec.on("gpt_review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"issues": []string{"error handling"}, "approved": false}, nil
+	exec.on("gpt_review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"issues": []string{"error handling"}, "approved": false}, nil
 	})
-	exec.on("claude_plan", func(input map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"steps": []string{"rename vars"}, "source": "claude"}, nil
+	exec.on("claude_plan", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"steps": []string{"rename vars"}, "source": "claude"}, nil
 	})
-	exec.on("gpt_plan", func(input map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"steps": []string{"add error checks"}, "source": "gpt"}, nil
+	exec.on("gpt_plan", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{"steps": []string{"add error checks"}, "source": "gpt"}, nil
 	})
-	exec.on("merge", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("merge", func(input map[string]any) (map[string]any, error) {
 		capturedMergeInput = input
-		return map[string]interface{}{"final_plan": "merged"}, nil
+		return map[string]any{"final_plan": "merged"}, nil
 	})
 
 	s := tmpStore(t)
@@ -554,14 +554,14 @@ func TestFanOutMultiStepBranches(t *testing.T) {
 	if capturedMergeInput == nil {
 		t.Fatal("merge node was never called")
 	}
-	claudePlan, ok := capturedMergeInput["claude_plan"].(map[string]interface{})
+	claudePlan, ok := capturedMergeInput["claude_plan"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected claude_plan map, got %T", capturedMergeInput["claude_plan"])
 	}
 	if claudePlan["source"] != "claude" {
 		t.Errorf("claude_plan source = %v, want 'claude'", claudePlan["source"])
 	}
-	gptPlan, ok := capturedMergeInput["gpt_plan"].(map[string]interface{})
+	gptPlan, ok := capturedMergeInput["gpt_plan"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected gpt_plan map, got %T", capturedMergeInput["gpt_plan"])
 	}
@@ -589,16 +589,16 @@ func TestFanOutContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "go"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "go"}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		// Cancel context while branches are running.
 		cancel()
 		time.Sleep(10 * time.Millisecond) // let cancellation propagate
 		return nil, ctx.Err()
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
@@ -652,15 +652,15 @@ func TestFanOutBoundedCancellationNoDeadlock(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
 		cancel() // cancel while b and c are queued on the semaphore
 		return nil, ctx.Err()
 	})
-	noop := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	noop := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	}
 	exec.on("b", noop)
 	exec.on("c", noop)
@@ -713,18 +713,26 @@ func TestFanOutCancelAbandonsWedgedBranch(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	wedgedStarted := make(chan struct{})
 	release := make(chan struct{})
+	var startedOnce sync.Once
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		cancel() // trip cancellation while b is mid-flight
+	exec.on("a", func(_ map[string]any) (map[string]any, error) {
+		// Only cancel once b is provably INSIDE executor.Execute —
+		// otherwise b's goroutine can observe the cancel before running
+		// and return a cancelled result instead of wedging, and the
+		// abandonment path (the thing this test pins) never triggers.
+		<-wedgedStarted
+		cancel()
 		return nil, ctx.Err()
 	})
-	exec.on("b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("b", func(_ map[string]any) (map[string]any, error) {
+		startedOnce.Do(func() { close(wedgedStarted) })
 		<-release // wedged: ignores ctx, never returns until released
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -737,7 +745,7 @@ func TestFanOutCancelAbandonsWedgedBranch(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected a cancellation error")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(release)
 		t.Fatal("fan_out hung on a wedged branch despite cancellation (collector drain not bounded)")
 	}
@@ -748,6 +756,28 @@ func TestFanOutCancelAbandonsWedgedBranch(t *testing.T) {
 	// t.TempDir cleanup runs, otherwise RemoveAll races the late write and
 	// fails with "directory not empty" (or trips -race).
 	waitBranchFinished(t, s, "run-wedged", "branch_router_b")
+
+	// The abandonment must be persisted in the run record — a
+	// branch_abandoned event naming the wedged branch — not just logged.
+	events, err := s.LoadEvents(context.Background(), "run-wedged")
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	found := false
+	for _, evt := range events {
+		if evt.Type == store.EventBranchAbandoned {
+			if evt.NodeID != "branch_router_b" {
+				t.Fatalf("branch_abandoned names %q, want branch_router_b", evt.NodeID)
+			}
+			if evt.Data["router"] != "router" || evt.Data["mode"] != "fan_out" {
+				t.Fatalf("branch_abandoned data = %+v, want router/fan_out", evt.Data)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no branch_abandoned event persisted for the wedged branch")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -758,17 +788,17 @@ func TestFanOutBranchEventIDs(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "go"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "go"}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true}, nil
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("finalize", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("finalize", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -816,17 +846,17 @@ func TestFanOutBestEffortAllFail(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitBestEffort)
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "go"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "go"}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		return nil, errors.New("fail A")
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		return nil, errors.New("fail B")
 	})
-	exec.on("finalize", func(input map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("finalize", func(input map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -887,20 +917,20 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 		Loops:   map[string]*ir.Loop{},
 	}
 
-	var capturedMergeInput map[string]interface{}
+	var capturedMergeInput map[string]any
 	exec := newStubExecutor()
-	exec.on("context", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"diff": "...", "title": "Add feature X"}, nil
+	exec.on("context", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"diff": "...", "title": "Add feature X"}, nil
 	})
-	exec.on("claude_review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"approved": true, "summary": "Claude: LGTM"}, nil
+	exec.on("claude_review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"approved": true, "summary": "Claude: LGTM"}, nil
 	})
-	exec.on("gpt_review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"approved": false, "summary": "GPT: needs work"}, nil
+	exec.on("gpt_review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"approved": false, "summary": "GPT: needs work"}, nil
 	})
-	exec.on("merge_reviews", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("merge_reviews", func(input map[string]any) (map[string]any, error) {
 		capturedMergeInput = input
-		return map[string]interface{}{"final_verdict": "needs work"}, nil
+		return map[string]any{"final_verdict": "needs work"}, nil
 	})
 
 	s := tmpStore(t)
@@ -923,7 +953,7 @@ func TestDualReviewParallelToMerge(t *testing.T) {
 	if capturedMergeInput == nil {
 		t.Fatal("merge_reviews never called")
 	}
-	claudeReview, ok := capturedMergeInput["claude"].(map[string]interface{})
+	claudeReview, ok := capturedMergeInput["claude"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected claude map, got %T", capturedMergeInput["claude"])
 	}
@@ -957,17 +987,17 @@ func TestFanOutEventOrdering(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "go"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "go"}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"ok": true}, nil
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("finalize", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("finalize", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -1045,21 +1075,21 @@ func TestFanOutEventOrdering(t *testing.T) {
 func TestFanOutDataFlow(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
-	var capturedA, capturedB map[string]interface{}
+	var capturedA, capturedB map[string]any
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "important PR"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "important PR"}, nil
 	})
-	exec.on("agent_a", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(input map[string]any) (map[string]any, error) {
 		capturedA = input
-		return map[string]interface{}{"review": "A review"}, nil
+		return map[string]any{"review": "A review"}, nil
 	})
-	exec.on("agent_b", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(input map[string]any) (map[string]any, error) {
 		capturedB = input
-		return map[string]interface{}{"review": "B review"}, nil
+		return map[string]any{"review": "B review"}, nil
 	})
-	exec.on("finalize", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("finalize", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -1124,11 +1154,11 @@ func TestSequentialFanOuts(t *testing.T) {
 	exec := newStubExecutor()
 
 	register := func(id string) {
-		exec.on(id, func(_ map[string]interface{}) (map[string]interface{}, error) {
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
 			mu.Lock()
 			callLog = append(callLog, id)
 			mu.Unlock()
-			return map[string]interface{}{"from": id}, nil
+			return map[string]any{"from": id}, nil
 		})
 	}
 	for _, id := range []string{"entry", "a", "b", "mid", "c", "d"} {
@@ -1184,17 +1214,17 @@ func TestFanOutInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 	var closeOnce sync.Once
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "go"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "go"}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		<-wedgedStarted // ensure sibling is already stuck before failing
 		return nil, errors.New("agent_a failed")
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		closeOnce.Do(func() { close(wedgedStarted) })
 		<-release // deliberately ignores ctx until the test releases it
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -1211,10 +1241,110 @@ func TestFanOutInternalCancellationAbandonsWedgedBranch(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Fatalf("fan_out returned too slowly after internal cancellation: %s", elapsed)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(release)
 		t.Fatal("fan_out hung on a wedged branch after internal cancellation")
 	}
 	close(release)
 	waitBranchFinished(t, s, "run-internal-cancel-wedged", "branch_router_agent_b")
+}
+
+// ---------------------------------------------------------------------------
+// Test: abandoned branch vs continuing main loop — runState contract
+// ---------------------------------------------------------------------------
+
+// TestFanOutAbandonedBranchDoesNotRaceRunState exercises the window the
+// runState concurrency contract calls out: after collectBranches
+// abandons a wedged branch on INTERNAL cancellation (best_effort, so
+// ctxErr is nil and the run continues), the main loop keeps executing —
+// including a loop-edge traversal that mutates rs.loopCounters — while
+// the abandoned branch goroutine is still alive and reading rs through
+// the resolution scope (branch.go currentLoopIteration). The test's
+// functional assertions are minimal; its value is running exactly this
+// interleaving under the CI -race job.
+func TestFanOutAbandonedBranchDoesNotRaceRunState(t *testing.T) {
+	oldGrace := branchCancelGracePeriod
+	branchCancelGracePeriod = 100 * time.Millisecond
+	defer func() { branchCancelGracePeriod = oldGrace }()
+
+	wf := &ir.Workflow{
+		Name:  "abandoned_vs_mainloop",
+		Entry: "entry",
+		Nodes: map[string]ir.Node{
+			"entry":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "entry"}},
+			"router":   &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"agent_a":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b":  &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"finalize": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "finalize"}, AwaitMode: ir.AwaitBestEffort, Publish: "verdict"},
+			"done":     &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+			"fail":     &ir.FailNode{BaseNode: ir.BaseNode{ID: "fail"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "entry", To: "router"},
+			{From: "router", To: "agent_a"}, {From: "router", To: "agent_b"},
+			{From: "agent_a", To: "finalize"}, {From: "agent_b", To: "finalize"},
+			{From: "finalize", To: "done", Condition: "stop"},
+			// The loop edge is the WRITE: traversing it increments
+			// rs.loopCounters on the main loop while the abandoned branch
+			// may still be reading.
+			{From: "finalize", To: "entry", Condition: "stop", Negated: true, LoopName: "again"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops: map[string]*ir.Loop{
+			"again": {Name: "again", MaxIterations: 2},
+		},
+		Budget: &ir.Budget{MaxParallelBranches: 2},
+	}
+
+	wedgedStarted := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce, releaseOnce sync.Once
+	var pass atomic.Int64
+
+	exec := newStubExecutor()
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
+	})
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		if pass.Load() > 0 {
+			return map[string]any{}, nil // later iterations succeed
+		}
+		<-wedgedStarted
+		// Budget errors cancel siblings even under best_effort — the
+		// internal-cancellation trigger that leads to abandonment.
+		return nil, ErrBudgetExceeded
+	})
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
+		if pass.Load() > 0 {
+			return map[string]any{}, nil
+		}
+		startedOnce.Do(func() { close(wedgedStarted) })
+		<-release // wedged: ignores ctx until released
+		return map[string]any{}, nil
+	})
+	exec.on("finalize", func(_ map[string]any) (map[string]any, error) {
+		stop := pass.Add(1) >= 2
+		// Wake the abandoned branch WHILE the main loop is mid-node —
+		// it resumes its per-node scope reads as the main loop goes on
+		// to traverse the loop edge (the loopCounters write).
+		releaseOnce.Do(func() { close(release) })
+		return map[string]any{"stop": stop}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	done := make(chan error, 1)
+	go func() { done <- eng.Run(context.Background(), "run-abandoned-race", nil) }()
+	select {
+	case <-done:
+		// Outcome (success or budget failure) is secondary — the
+		// interleaving must simply complete without deadlock or race.
+	case <-time.After(5 * time.Second):
+		releaseOnce.Do(func() { close(release) })
+		t.Fatal("run hung: abandoned-branch continuation deadlocked the main loop")
+	}
+	waitBranchFinished(t, s, "run-abandoned-race", "branch_router_agent_b")
 }

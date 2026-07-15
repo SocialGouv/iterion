@@ -247,11 +247,17 @@ type OutputConfig struct {
 //   - Type "enabled": manual thinking with BudgetTokens (Opus 4.5 and earlier).
 //   - Type "off": sentinel used by callers to suppress the model default; the
 //     marshaler omits the thinking field entirely (never sent on the wire).
+//   - Display "summarized" returns readable (summarized) thinking text;
+//     "omitted" returns thinking blocks with an empty field (signature only,
+//     the encrypted full reasoning). Opus 4.8/4.7 and Sonnet 5 default to
+//     "omitted", so the marshaler requests "summarized" on adaptive requests
+//     unless the caller (or CLAW_ANTHROPIC_THINKING_DISPLAY) says otherwise.
 //
 // Source: platform.claude.com/docs/en/build-with-claude/adaptive-thinking
 type ThinkingConfig struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Display      string `json:"display,omitempty"`
 }
 
 // --- SSE Event Types ---
@@ -288,6 +294,12 @@ type MessageDelta struct {
 // UsageDelta contains token usage info.
 type UsageDelta struct {
 	OutputTokens int `json:"output_tokens"`
+	// OutputTokensDetails carries Anthropic's exact billed breakdown.
+	// ThinkingTokens counts the raw internal reasoning (always the full
+	// amount regardless of thinking.display); 0 when the API omits it.
+	OutputTokensDetails struct {
+		ThinkingTokens int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 // ContentBlockInfo holds info about a starting content block.

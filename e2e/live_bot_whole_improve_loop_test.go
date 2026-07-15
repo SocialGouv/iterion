@@ -89,7 +89,7 @@ func Multiply(a, b int) int {
 	// ADR-057: improvement_prompt is THE AXIS. Point the sweep at the planted
 	// logic bug so enumerate produces a concrete, targetable work-item.
 	axis := "Fix logic/correctness bugs in the Go source at the repository root (e.g. off-by-one loop bounds). One work-item per buggy function."
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir":      workspaceDir,
 		"improvement_prompt": axis,
 		"scope_notes":        "Two files at the repo root; one has an off-by-one in a loop bound.",
@@ -98,7 +98,7 @@ func Multiply(a, b int) int {
 	eng := runtime.New(wf, s, executor)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"workspace_dir":      workspaceDir,
 		"improvement_prompt": axis,
 		"scope_notes":        "Two files at the repo root; one has an off-by-one in a loop bound.",
@@ -188,7 +188,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	// production-blocking defects so enumerate produces concrete work-items.
 	axis := "Fix production-blocking correctness, concurrency, and security defects across queue/, worker/, auth/, storage/, config/, and main.go (race on a shared map, goroutine leak, timing-attack auth compare, path traversal, unbounded dequeue on close). One work-item per defect site. Skip stylistic nits."
 	scopeNotes := "A curated Go fixture with a mix of clean modules and ones carrying the defects named in the axis."
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"improvement_prompt": axis,
 		"scope_notes":        scopeNotes,
 	})
@@ -196,7 +196,7 @@ func TestLive_VibeReviewAlternating_Real(t *testing.T) {
 	eng := runtime.New(wf, s, executor, runtime.WithWorkDir(workspaceDir), runtime.WithLogger(teeLogger))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"improvement_prompt": axis,
 		"scope_notes":        scopeNotes,
 	}

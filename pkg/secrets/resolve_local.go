@@ -3,6 +3,8 @@ package secrets
 import (
 	"context"
 	"fmt"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // ResolveLocalCredentials resolves the named secrets from a local (file-backed)
@@ -16,12 +18,12 @@ import (
 // `{{secrets.X}}` reference can legally use (compile-checked). Returns an empty
 // (non-nil-map) Credentials when store/sealer is nil or names is empty, so
 // callers can WithCredentials unconditionally.
-func ResolveLocalCredentials(ctx context.Context, store GenericSecretStore, sealer Sealer, names []string) (Credentials, error) {
+func ResolveLocalCredentials(ctx context.Context, store GenericSecretStore, sealer Sealer, names []string, logger *iterlog.Logger) (Credentials, error) {
 	creds := Credentials{Generic: map[string]string{}, GenericHosts: map[string][]string{}}
 	if store == nil || sealer == nil || len(names) == 0 {
 		return creds, nil
 	}
-	resolved, err := ResolveGeneric(ctx, store, LocalScopeTeam, "", names, sealer)
+	resolved, err := ResolveGeneric(ctx, store, LocalScopeTeam, "", names, sealer, logger)
 	if err != nil {
 		return Credentials{}, err
 	}

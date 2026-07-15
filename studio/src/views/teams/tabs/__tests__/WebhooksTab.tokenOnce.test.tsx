@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 // Stub the API surface WebhooksTab uses so the page can render with a
 // controllable set of webhooks. The Create flow calls createWebhook —
@@ -59,16 +59,10 @@ describe("WebhooksTab token-once panel", () => {
 
     // Click the row's Rotate button → opens the confirm dialog.
     fireEvent.click(screen.getByRole("button", { name: /^Rotate$/i }));
-    // Confirm — click the dialog's primary Rotate button (now the only
-    // one labelled "Rotate" inside the open ConfirmDialog).
-    const confirmDialog = await screen.findByText(/Rotate Demo\?/);
-    const dialogRoot = confirmDialog.closest("div")!.parentElement!;
-    const rotateBtns = dialogRoot.querySelectorAll("button");
-    const confirmBtn = Array.from(rotateBtns).find(
-      (b) => b.textContent?.trim() === "Rotate",
-    );
-    expect(confirmBtn).toBeDefined();
-    fireEvent.click(confirmBtn!);
+    // Confirm — click the primary Rotate button inside the open
+    // ConfirmDialog (queried by role so the markup can evolve).
+    const dialog = await screen.findByRole("dialog", { name: /Rotate Demo\?/ });
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Rotate$/i }));
 
     await waitFor(() => {
       expect(webhooksApi.rotateWebhook).toHaveBeenCalledWith("team_1", "wh_42");

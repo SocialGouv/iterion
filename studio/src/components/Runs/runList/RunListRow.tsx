@@ -3,6 +3,7 @@ import { memo } from "react";
 import type { RunSummary } from "@/api/runs";
 import { Badge } from "@/components/ui/Badge";
 import { LiveDot } from "@/components/ui/LiveDot";
+import { compactPath } from "@/lib/compactPath";
 import { formatRelative } from "@/lib/format";
 
 import { STATUS_VARIANT, labelForStatus } from "../runStatusMeta";
@@ -43,8 +44,11 @@ export const RunListRow = memo(function RunListRow({
           <div className="text-fg-default">{workflowDisplay(run)}</div>
         )}
         {run.file_path && (
-          <div className="text-fg-subtle text-caption truncate max-w-md">
-            {run.file_path}
+          <div
+            className="text-fg-subtle text-caption truncate max-w-md"
+            title={run.file_path}
+          >
+            {compactPath(run.file_path)}
           </div>
         )}
       </td>

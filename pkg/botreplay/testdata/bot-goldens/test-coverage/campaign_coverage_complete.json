@@ -1,0 +1,21 @@
+{
+  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, forfait cost). Shape frozen against the bot's campaign_output termination contract (ADR-058 v2). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "bot": "test-coverage",
+  "scenario": "campaign_coverage_complete",
+  "node": "campaign",
+  "backend": "claude_code",
+  "model": "claude-opus-4-8",
+  "recorded_at": "2026-07-11T00:00:00Z",
+  "vars": {},
+  "input": {
+    "fail_log": ""
+  },
+  "output": {
+    "coverage_complete": true,
+    "commits_this_pass": 2,
+    "coverage_gaps_remaining": "",
+    "needs_human": false,
+    "human_note": "",
+    "summary": "Covered the two untested behaviours found this pass: the pagination boundary in ListRuns (test(store): cover page-boundary off-by-one) and the error path of the webhook parser (test(webhooks): malformed payload rejects with 400); suite green after each commit, no assertion-free façade tests added."
+  }
+}

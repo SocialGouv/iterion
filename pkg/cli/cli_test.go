@@ -222,8 +222,8 @@ func TestRun_FileNotFound(t *testing.T) {
 // approveExecutor always returns approved=true.
 type approveExecutor struct{}
 
-func (e *approveExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	out := make(map[string]interface{})
+func (e *approveExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+	out := make(map[string]any)
 	for k, v := range input {
 		out[k] = v
 	}
@@ -282,7 +282,7 @@ func TestRun_SuccessJSON(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("cannot parse JSON output: %v", err)
 	}
@@ -335,8 +335,8 @@ func TestRun_NoFile(t *testing.T) {
 // rejectExecutor returns approved=false so the workflow hits a human node.
 type rejectExecutor struct{}
 
-func (e *rejectExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
-	out := make(map[string]interface{})
+func (e *rejectExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+	out := make(map[string]any)
 	for k, v := range input {
 		out[k] = v
 	}
@@ -414,7 +414,7 @@ func TestInspect_ListRunsJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var runs []interface{}
+	var runs []any
 	if err := json.Unmarshal(buf.Bytes(), &runs); err != nil {
 		t.Fatalf("cannot parse JSON: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestInspect_SingleRun(t *testing.T) {
 	dir := t.TempDir()
 	storeDir := filepath.Join(dir, "store")
 	s, _ := store.New(storeDir)
-	_, _ = s.CreateRun(context.Background(), "run-1", "my_workflow", map[string]interface{}{"key": "val"})
+	_, _ = s.CreateRun(context.Background(), "run-1", "my_workflow", map[string]any{"key": "val"})
 
 	p, buf := newTestPrinter(cli.OutputHuman)
 	err := cli.RunInspect(cli.InspectOptions{StoreDir: storeDir, RunID: "run-1"}, p)
@@ -456,7 +456,7 @@ func TestInspect_SingleRunJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("cannot parse JSON: %v", err)
 	}
@@ -523,12 +523,12 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventNodeStarted,
 		NodeID: "agent1",
-		Data:   map[string]interface{}{"kind": "agent"},
+		Data:   map[string]any{"kind": "agent"},
 	})
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventLLMPrompt,
 		NodeID: "agent1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"system_prompt": "you are a reviewer",
 			"user_message":  "review the diff",
 		},
@@ -536,7 +536,7 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventLLMStepFinished,
 		NodeID: "agent1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"response_text": "looks good",
 			"input_tokens":  120,
 			"output_tokens": 30,
@@ -546,7 +546,7 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventToolCalled,
 		NodeID: "agent1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"tool_name":   "Read",
 			"input":       "path=/tmp/foo",
 			"duration_ms": float64(42),
@@ -555,22 +555,22 @@ func seedSimpleRun(t *testing.T, runID string) (storeDir string, s store.RunStor
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventArtifactWritten,
 		NodeID: "agent1",
-		Data:   map[string]interface{}{"version": float64(0)},
+		Data:   map[string]any{"version": float64(0)},
 	})
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventNodeFinished,
 		NodeID: "agent1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"_tokens":   float64(150),
 			"_cost_usd": float64(0.0021),
-			"output":    map[string]interface{}{"summary": "ok"},
+			"output":    map[string]any{"summary": "ok"},
 		},
 	})
 	if err := s.WriteArtifact(context.Background(), &store.Artifact{
 		RunID:   runID,
 		NodeID:  "agent1",
 		Version: 0,
-		Data:    map[string]interface{}{"summary": "first"},
+		Data:    map[string]any{"summary": "first"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -592,12 +592,12 @@ func seedRunningNodeRun(t *testing.T, runID string) string {
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventNodeStarted,
 		NodeID: "agent1",
-		Data:   map[string]interface{}{"kind": "agent"},
+		Data:   map[string]any{"kind": "agent"},
 	})
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventLLMPrompt,
 		NodeID: "agent1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"system_prompt": "you are live",
 			"user_message":  "continue",
 		},
@@ -605,7 +605,7 @@ func seedRunningNodeRun(t *testing.T, runID string) string {
 	_, _ = s.AppendEvent(context.Background(), runID, store.Event{
 		Type:   store.EventToolCalled,
 		NodeID: "agent1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"tool_name": "Read",
 			"input":     "file.txt",
 		},
@@ -627,7 +627,7 @@ func TestInspect_RunningNodeSectionsIncludeLiveEvents(t *testing.T) {
 		}, p); err != nil {
 			t.Fatalf("%s: %v", section, err)
 		}
-		var r map[string]interface{}
+		var r map[string]any
 		if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 			t.Fatalf("%s decode: %v\n%s", section, err, buf.String())
 		}
@@ -637,14 +637,14 @@ func TestInspect_RunningNodeSectionsIncludeLiveEvents(t *testing.T) {
 		if got := r["last_seq"]; got != float64(3) {
 			t.Fatalf("%s last_seq = %v, want 3", section, got)
 		}
-		items, ok := r[key].([]interface{})
+		items, ok := r[key].([]any)
 		if !ok || len(items) == 0 {
 			t.Fatalf("%s expected non-empty %s, got %v", section, key, r[key])
 		}
 		if wantType != "" {
 			found := false
 			for _, item := range items {
-				m := item.(map[string]interface{})
+				m := item.(map[string]any)
 				if m["type"] == string(wantType) {
 					found = true
 				}
@@ -673,7 +673,7 @@ func TestInspect_NodeBasic_JSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var report map[string]interface{}
+	var report map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
 		t.Fatalf("cannot parse JSON: %v\n%s", err, buf.String())
 	}
@@ -686,14 +686,14 @@ func TestInspect_NodeBasic_JSON(t *testing.T) {
 	if report["status"] != "finished" {
 		t.Errorf("status = %v, want finished", report["status"])
 	}
-	if _, ok := report["trace"].([]interface{}); !ok {
+	if _, ok := report["trace"].([]any); !ok {
 		t.Errorf("expected trace array, got %T", report["trace"])
 	}
-	tools, ok := report["tools"].([]interface{})
+	tools, ok := report["tools"].([]any)
 	if !ok || len(tools) != 1 {
 		t.Errorf("expected 1 tool call, got %v", report["tools"])
 	}
-	arts, ok := report["artifacts"].([]interface{})
+	arts, ok := report["artifacts"].([]any)
 	if !ok || len(arts) != 1 {
 		t.Errorf("expected 1 artifact, got %v", report["artifacts"])
 	}
@@ -730,9 +730,9 @@ func TestInspect_NodeWithBranchIter(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Two iterations of the same node on main branch.
-	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]any{"kind": "agent"}})
 	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
-	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]any{"kind": "agent"}})
 	_, _ = s.AppendEvent(context.Background(), "run-iter", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
 
 	// Iter 0 must resolve.
@@ -746,7 +746,7 @@ func TestInspect_NodeWithBranchIter(t *testing.T) {
 	}, p0); err != nil {
 		t.Fatalf("iter 0: %v", err)
 	}
-	var r0 map[string]interface{}
+	var r0 map[string]any
 	if err := json.Unmarshal(buf0.Bytes(), &r0); err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +765,7 @@ func TestInspect_NodeWithBranchIter(t *testing.T) {
 	}, p1); err != nil {
 		t.Fatalf("iter 1: %v", err)
 	}
-	var r1 map[string]interface{}
+	var r1 map[string]any
 	if err := json.Unmarshal(buf1.Bytes(), &r1); err != nil {
 		t.Fatal(err)
 	}
@@ -781,7 +781,7 @@ func TestInspect_NodeWithBranchIter(t *testing.T) {
 	}, pl); err != nil {
 		t.Fatalf("default iter: %v", err)
 	}
-	var rl map[string]interface{}
+	var rl map[string]any
 	if err := json.Unmarshal(bufl.Bytes(), &rl); err != nil {
 		t.Fatal(err)
 	}
@@ -815,8 +815,8 @@ func TestInspect_NodeAmbiguousBranches(t *testing.T) {
 	s, _ := store.New(storeDir)
 	_, _ = s.CreateRun(context.Background(), "run-ambig", "wf", nil)
 	// Same node on two branches.
-	_, _ = s.AppendEvent(context.Background(), "run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b1", Data: map[string]interface{}{"kind": "agent"}})
-	_, _ = s.AppendEvent(context.Background(), "run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b2", Data: map[string]interface{}{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b1", Data: map[string]any{"kind": "agent"}})
+	_, _ = s.AppendEvent(context.Background(), "run-ambig", store.Event{Type: store.EventNodeStarted, NodeID: "n", BranchID: "b2", Data: map[string]any{"kind": "agent"}})
 
 	p, _ := newTestPrinter(cli.OutputJSON)
 	err := cli.RunInspect(cli.InspectOptions{
@@ -860,7 +860,7 @@ func TestInspect_NodeExecID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var r map[string]interface{}
+	var r map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 		t.Fatal(err)
 	}
@@ -880,15 +880,15 @@ func TestInspect_SectionTrace(t *testing.T) {
 	}, p); err != nil {
 		t.Fatal(err)
 	}
-	var r map[string]interface{}
+	var r map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 		t.Fatal(err)
 	}
-	trace, ok := r["trace"].([]interface{})
+	trace, ok := r["trace"].([]any)
 	if !ok || len(trace) != 1 {
 		t.Fatalf("expected 1 trace step, got %v", r["trace"])
 	}
-	step := trace[0].(map[string]interface{})
+	step := trace[0].(map[string]any)
 	if step["finish_reason"] != "stop" {
 		t.Errorf("finish_reason = %v", step["finish_reason"])
 	}
@@ -915,15 +915,15 @@ func TestInspect_SectionArtifactsIncludesBody(t *testing.T) {
 	}, p); err != nil {
 		t.Fatal(err)
 	}
-	var r map[string]interface{}
+	var r map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 		t.Fatal(err)
 	}
-	arts := r["artifacts"].([]interface{})
+	arts := r["artifacts"].([]any)
 	if len(arts) != 1 {
 		t.Fatalf("expected 1 artifact, got %d", len(arts))
 	}
-	body, ok := arts[0].(map[string]interface{})["data"].(map[string]interface{})
+	body, ok := arts[0].(map[string]any)["data"].(map[string]any)
 	if !ok || body["summary"] != "first" {
 		t.Errorf("expected artifact body in --section=artifacts, got %v", arts[0])
 	}
@@ -941,25 +941,25 @@ func TestInspect_ArtifactsScopedToSelectedExecution(t *testing.T) {
 	// sibling branch. The inspector must report only versions referenced by
 	// the selected execution's artifact_written events, not every persisted
 	// version under artifacts/<node>/.
-	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
-	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 0, Data: map[string]interface{}{"summary": "main iter 0"}}); err != nil {
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]any{"kind": "agent"}})
+	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 0, Data: map[string]any{"summary": "main iter 0"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]interface{}{"version": float64(0)}})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]any{"version": float64(0)}})
 	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
 
-	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", BranchID: "feature", Data: map[string]interface{}{"kind": "agent"}})
-	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 1, Data: map[string]interface{}{"summary": "feature iter 0"}}); err != nil {
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", BranchID: "feature", Data: map[string]any{"kind": "agent"}})
+	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 1, Data: map[string]any{"summary": "feature iter 0"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", BranchID: "feature", Data: map[string]interface{}{"version": float64(1)}})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", BranchID: "feature", Data: map[string]any{"version": float64(1)}})
 	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop", BranchID: "feature"})
 
-	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]interface{}{"kind": "agent"}})
-	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 2, Data: map[string]interface{}{"summary": "main iter 1"}}); err != nil {
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeStarted, NodeID: "loop", Data: map[string]any{"kind": "agent"}})
+	if err := s.WriteArtifact(context.Background(), &store.Artifact{RunID: "run-art-scope", NodeID: "loop", Version: 2, Data: map[string]any{"summary": "main iter 1"}}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]interface{}{"version": float64(2)}})
+	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventArtifactWritten, NodeID: "loop", Data: map[string]any{"version": float64(2)}})
 	_, _ = s.AppendEvent(context.Background(), "run-art-scope", store.Event{Type: store.EventNodeFinished, NodeID: "loop"})
 
 	assertArtifacts := func(name string, opts cli.InspectOptions, wantVersion float64, wantSummary string) {
@@ -968,19 +968,19 @@ func TestInspect_ArtifactsScopedToSelectedExecution(t *testing.T) {
 		if err := cli.RunInspect(opts, p); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		var r map[string]interface{}
+		var r map[string]any
 		if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 			t.Fatalf("%s decode: %v\n%s", name, err, buf.String())
 		}
-		arts, ok := r["artifacts"].([]interface{})
+		arts, ok := r["artifacts"].([]any)
 		if !ok || len(arts) != 1 {
 			t.Fatalf("%s: expected exactly 1 artifact, got %v", name, r["artifacts"])
 		}
-		art := arts[0].(map[string]interface{})
+		art := arts[0].(map[string]any)
 		if art["version"] != wantVersion {
 			t.Fatalf("%s: version = %v, want %v", name, art["version"], wantVersion)
 		}
-		body := art["data"].(map[string]interface{})
+		body := art["data"].(map[string]any)
 		if body["summary"] != wantSummary {
 			t.Fatalf("%s: summary = %v, want %q", name, body["summary"], wantSummary)
 		}
@@ -1021,7 +1021,7 @@ func TestInspect_NodeWithLogSlice(t *testing.T) {
 		Type:      store.EventNodeStarted,
 		NodeID:    "agent1",
 		Timestamp: startedAt,
-		Data:      map[string]interface{}{"kind": "agent"},
+		Data:      map[string]any{"kind": "agent"},
 	})
 	_, _ = s.AppendEvent(context.Background(), "run-log", store.Event{
 		Type:      store.EventNodeFinished,
@@ -1052,11 +1052,11 @@ func TestInspect_NodeWithLogSlice(t *testing.T) {
 	}, p); err != nil {
 		t.Fatal(err)
 	}
-	var r map[string]interface{}
+	var r map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 		t.Fatalf("decode: %v\n%s", err, buf.String())
 	}
-	logSlice, ok := r["log"].(map[string]interface{})
+	logSlice, ok := r["log"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected log object, got %v", r["log"])
 	}
@@ -1102,7 +1102,7 @@ func TestInspect_LogSliceNonUTCTimezone(t *testing.T) {
 		Type:      store.EventNodeStarted,
 		NodeID:    "agent1",
 		Timestamp: startedAt,
-		Data:      map[string]interface{}{"kind": "agent"},
+		Data:      map[string]any{"kind": "agent"},
 	})
 	_, _ = s.AppendEvent(context.Background(), "run-tz", store.Event{
 		Type:      store.EventNodeFinished,
@@ -1134,11 +1134,11 @@ func TestInspect_LogSliceNonUTCTimezone(t *testing.T) {
 	}, p); err != nil {
 		t.Fatal(err)
 	}
-	var r map[string]interface{}
+	var r map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 		t.Fatalf("decode: %v\n%s", err, buf.String())
 	}
-	logSlice, ok := r["log"].(map[string]interface{})
+	logSlice, ok := r["log"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected log object, got %v", r["log"])
 	}
@@ -1165,7 +1165,7 @@ func TestInspect_LogSliceCrossesMidnight(t *testing.T) {
 		Type:      store.EventNodeStarted,
 		NodeID:    "agent1",
 		Timestamp: startedAt,
-		Data:      map[string]interface{}{"kind": "agent"},
+		Data:      map[string]any{"kind": "agent"},
 	})
 	_, _ = s.AppendEvent(context.Background(), "run-midnight", store.Event{
 		Type:      store.EventNodeFinished,
@@ -1194,11 +1194,11 @@ func TestInspect_LogSliceCrossesMidnight(t *testing.T) {
 	}, p); err != nil {
 		t.Fatal(err)
 	}
-	var r map[string]interface{}
+	var r map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 		t.Fatalf("decode: %v\n%s", err, buf.String())
 	}
-	logSlice, ok := r["log"].(map[string]interface{})
+	logSlice, ok := r["log"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected log object, got %v", r["log"])
 	}
@@ -1225,15 +1225,15 @@ func TestInspect_ListNodes(t *testing.T) {
 	}, p); err != nil {
 		t.Fatal(err)
 	}
-	var r map[string]interface{}
+	var r map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
 		t.Fatal(err)
 	}
-	execs, ok := r["executions"].([]interface{})
+	execs, ok := r["executions"].([]any)
 	if !ok || len(execs) != 1 {
 		t.Fatalf("expected 1 execution, got %v", r["executions"])
 	}
-	first := execs[0].(map[string]interface{})
+	first := execs[0].(map[string]any)
 	if first["execution_id"] != "exec:main:agent1:0" {
 		t.Errorf("execution_id = %v", first["execution_id"])
 	}
@@ -1333,7 +1333,7 @@ func TestResume_Success(t *testing.T) {
 
 	// Write answers file.
 	answersPath := filepath.Join(dir, "answers.json")
-	answersData, _ := json.Marshal(map[string]interface{}{"feedback": "looks good now"})
+	answersData, _ := json.Marshal(map[string]any{"feedback": "looks good now"})
 	os.WriteFile(answersPath, answersData, 0o644)
 
 	// Resume.
@@ -1442,7 +1442,7 @@ func TestParseAnswerFlags(t *testing.T) {
 func TestParseAnswersFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "answers.json")
-	data, _ := json.Marshal(map[string]interface{}{
+	data, _ := json.Marshal(map[string]any{
 		"feedback": "great work",
 		"score":    42,
 	})

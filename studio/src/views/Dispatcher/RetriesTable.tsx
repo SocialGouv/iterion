@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import { Tooltip } from "@/components/ui";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { clickableRowProps } from "@/lib/a11y";
 import type { DispatcherSnapshot } from "@/api/dispatcher";
 
@@ -79,44 +80,40 @@ export default function RetriesTable({
       {!rows || rows.length === 0 ? (
         <div className="p-4 text-xs text-fg-muted">No retries pending.</div>
       ) : (
-        <div className="overflow-x-auto">
-        <table className="min-w-full text-xs">
-          <thead className="text-fg-muted border-b border-border-default">
-            <tr>
-              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Issue</th>
-              <th className="text-left py-1.5 px-3 font-normal">Attempt</th>
-              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Due</th>
-              <th className="text-left py-1.5 px-3 font-normal">Last error</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table caption="Failed dispatches queued for retry" density="sm" className="min-w-full">
+          <THead>
+            <Th className="whitespace-nowrap">Issue</Th>
+            <Th>Attempt</Th>
+            <Th className="whitespace-nowrap">Due</Th>
+            <Th>Last error</Th>
+          </THead>
+          <TBody>
             {rows!.map((r) => {
               const dueLabel = formatRetryDue(r.due_at, now);
               const isDue = dueLabel === "due";
               return (
-              <tr
+              <Tr
                 key={r.issue_id}
-                className={`border-b border-border-default/60 hover:bg-surface-2/40 cursor-pointer focus-visible:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
+                className={`cursor-pointer focus-visible:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent ${
                   isDue ? "bg-warning-soft" : ""
                 }`}
                 {...clickableRowProps(() => onFocusIssue(r.issue_id), `Open issue ${r.identifier || r.issue_id} on the board`)}
               >
-                <td className="py-1.5 px-3 font-mono whitespace-nowrap">{r.identifier || r.issue_id}</td>
-                <td className="py-1.5 px-3">{r.attempt}</td>
-                <td className="py-1.5 px-3 whitespace-nowrap">
+                <Td className="font-mono whitespace-nowrap">{r.identifier || r.issue_id}</Td>
+                <Td>{r.attempt}</Td>
+                <Td className="whitespace-nowrap">
                   <span className={isDue ? "text-warning-fg" : "text-fg-muted"}>
                     {dueLabel || relTime(r.due_at)}
                   </span>
-                </td>
-                <td className="py-1.5 px-3 text-danger-fg/80 truncate max-w-[24rem]">
+                </Td>
+                <Td className="text-danger-fg/80 truncate max-w-[24rem]">
                   {r.error}
-                </td>
-              </tr>
+                </Td>
+              </Tr>
               );
             })}
-          </tbody>
-        </table>
-        </div>
+          </TBody>
+        </Table>
       )}
     </section>
   );

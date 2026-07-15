@@ -187,7 +187,7 @@ func (s *JWTSigner) IssueAccess(id Identity) (token string, exp time.Time, err e
 // carries. Errors are returned as a small set of categorized values
 // so the middleware can map them to specific HTTP responses.
 func (s *JWTSigner) Verify(raw string) (Identity, error) {
-	parsed, err := jwt.ParseWithClaims(raw, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
+	parsed, err := jwt.ParseWithClaims(raw, &AccessClaims{}, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}

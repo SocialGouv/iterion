@@ -111,13 +111,16 @@ type TurnWriter interface {
 	WriteTurn(ctx context.Context, t *store.TurnCheckpoint) error
 }
 
-// PlanWriter is the optional capability filesystem stores satisfy for
-// persisting the chronological plan snapshots agents produce via their
-// TodoWrite (claude_code) / todo_write (claw) tool. When present, the
-// tool-started hook captures each snapshot to runs/<id>/plans/. Mongo
-// (cloud) stores don't satisfy it today; the hook skips the capture when
-// the capability is missing rather than failing the LLM call. See
-// store.PlanStore for the on-disk format + dedup semantics.
+// PlanWriter is the optional capability stores satisfy for persisting
+// the chronological plan snapshots agents produce via their TodoWrite
+// (claude_code) / todo_write (claw) tool. When present, the tool-started
+// hook captures each snapshot (filesystem → runs/<id>/plans/, Mongo →
+// run_plans collection). The hook skips the capture when the capability
+// is missing rather than failing the LLM call. In cloud mode the runner's
+// metricsEmitter wrapper forwards this interface to the inner Mongo store
+// (see pkg/runner metricsEmitter.AppendPlanSnapshot), otherwise the plain
+// `emitter.(PlanWriter)` assertion below would hide it. See
+// store.PlanStore for the format + dedup semantics.
 type PlanWriter interface {
 	AppendPlanSnapshot(ctx context.Context, runID string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error)
 }
@@ -134,7 +137,7 @@ type PlanWriter interface {
 // When blobSink is nil or toolUseID is empty (legacy paths, cloud
 // stores), falls back to capped inline persistence so the studio still
 // shows *something*.
-func persistToolPayload(ctx context.Context, guard *secretguard.Guard, blobSink ToolBlobWriter, runID, toolUseID, key string, content []byte, data map[string]interface{}) {
+func persistToolPayload(ctx context.Context, guard *secretguard.Guard, blobSink ToolBlobWriter, runID, toolUseID, key string, content []byte, data map[string]any) {
 	if len(content) == 0 {
 		return
 	}
@@ -193,7 +196,7 @@ type storeHooks struct {
 // every call site before this refactor: the store layer already logs
 // persistence failures and the hook path must never fail the in-flight
 // LLM call.
-func (h *storeHooks) emit(nodeID string, evType store.EventType, data map[string]interface{}) {
+func (h *storeHooks) emit(nodeID string, evType store.EventType, data map[string]any) {
 	_, _ = h.emitter.AppendEvent(h.ctx, h.runID, store.Event{
 		Type:   evType,
 		RunID:  h.runID,
@@ -204,7 +207,7 @@ func (h *storeHooks) emit(nodeID string, evType store.EventType, data map[string
 
 // onLLMPrompt implements the OnLLMPrompt hook.
 func (h *storeHooks) onLLMPrompt(nodeID string, systemPrompt string, userMessage string) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"system_prompt": iterlog.Truncate(systemPrompt, maxFieldSize),
 		"user_message":  iterlog.Truncate(userMessage, maxFieldSize),
 	}
@@ -226,7 +229,7 @@ func (h *storeHooks) onLLMPrompt(nodeID string, systemPrompt string, userMessage
 
 // onLLMRequest implements the OnLLMRequest hook.
 func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"model":         info.Model,
 		"message_count": info.MessageCount,
 		"tool_count":    info.ToolCount,
@@ -250,7 +253,7 @@ func (h *storeHooks) onLLMRequest(nodeID string, info LLMRequestInfo) {
 
 // onLLMRetry implements the OnLLMRetry hook.
 func (h *storeHooks) onLLMRetry(nodeID string, info RetryInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"attempt":  info.Attempt,
 		"delay_ms": info.Delay.Milliseconds(),
 	}
@@ -272,7 +275,7 @@ func (h *storeHooks) onLLMRetry(nodeID string, info RetryInfo) {
 
 // onLLMStepFinish implements the OnLLMStepFinish hook.
 func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"step":          step.Number,
 		"input_tokens":  step.InputTokens,
 		"output_tokens": step.OutputTokens,
@@ -292,16 +295,20 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		data["thinking_ms"] = step.ThinkingMs
 	}
 
-	// Always include response text in persisted events.
+	// Always include response text in persisted events. Thinking text is
+	// deliberately NOT persisted here: it is routinely 10-50 KB per step,
+	// events.jsonl is bounded to small payloads (big bodies live in
+	// sidecar blobs — see runview MaxEventsPerPage), and the run.log
+	// LogBlock below is the surface that renders it.
 	if step.Text != "" {
 		data["response_text"] = iterlog.Truncate(step.Text, maxFieldSize)
 	}
 
 	// At trace, include tool call details.
 	if h.logger.IsEnabled(iterlog.LevelTrace) && len(step.ToolCalls) > 0 {
-		calls := make([]map[string]interface{}, len(step.ToolCalls))
+		calls := make([]map[string]any, len(step.ToolCalls))
 		for i, tc := range step.ToolCalls {
-			calls[i] = map[string]interface{}{
+			calls[i] = map[string]any{
 				"tool_name": tc.Name,
 				"input":     iterlog.Truncate(string(tc.Input), maxFieldSize),
 			}
@@ -367,7 +374,15 @@ func (h *storeHooks) onLLMStepFinish(nodeID string, step LLMStepInfo) {
 		h.logger.Logf(iterlog.LevelDebug, "📊", "[%s#%d/claw] step %d: %d in / %d out tokens",
 			nodeID, step.Iteration, step.Number, step.InputTokens, step.OutputTokens)
 	}
-	if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {
+	// Thinking content folds under its header in the studio log view
+	// (LogBlock), so full reasoning text at INFO doesn't crowd the log.
+	// Metrics-only line kept as fallback when no text was captured.
+	if step.Thinking != "" {
+		h.logger.LogBlock(iterlog.LevelInfo, "🧠",
+			fmt.Sprintf("[%s#%d/claw] thinking step %d (~%d tok, %dms):",
+				nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs),
+			h.red(step.Thinking))
+	} else if step.ReasoningTokens > 0 || step.ThinkingMs > 0 {
 		h.logger.Logf(iterlog.LevelInfo, "🧠", "[%s#%d/claw] step %d thinking: ~%d tok, %dms",
 			nodeID, step.Iteration, step.Number, step.ReasoningTokens, step.ThinkingMs)
 	}
@@ -383,7 +398,7 @@ func (h *storeHooks) onAssistantText(nodeID string, info AssistantTextInfo) {
 	if text == "" || isLikelyStructuredPayload(text) {
 		return
 	}
-	h.emit(nodeID, store.EventAssistantText, map[string]interface{}{
+	h.emit(nodeID, store.EventAssistantText, map[string]any{
 		"text":      iterlog.Truncate(text, maxFieldSize),
 		"iteration": info.Iteration,
 	})
@@ -463,7 +478,7 @@ func (h *storeHooks) onLLMTurnCapture(nodeID string, info LLMTurnCaptureInfo) {
 
 // onLLMCompacted implements the OnLLMCompacted hook.
 func (h *storeHooks) onLLMCompacted(nodeID string, info LLMCompactInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"before_messages":       info.BeforeMessages,
 		"after_messages":        info.AfterMessages,
 		"removed_message_count": info.RemovedMessageCount,
@@ -476,7 +491,7 @@ func (h *storeHooks) onLLMCompacted(nodeID string, info LLMCompactInfo) {
 
 // onToolStarted implements the OnToolStarted hook.
 func (h *storeHooks) onToolStarted(nodeID string, info LLMToolStartedInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"tool":       info.ToolName,
 		"input_size": info.InputSize,
 	}
@@ -503,12 +518,13 @@ func (h *storeHooks) onToolStarted(nodeID string, info LLMToolStartedInfo) {
 }
 
 // capturePlan persists a TodoWrite/todo_write plan snapshot to the run's
-// plan store (runs/<id>/plans/). Best-effort: any error is logged and
-// swallowed — a plan-write failure must never fail the in-flight LLM call,
-// exactly like the artifact/attachment sinks. No-ops when the store lacks
-// the PlanWriter capability (cloud/Mongo today), when the tool isn't a
-// plan write, or when the input carries no todos (e.g. a claw
-// `todo_write` read). Todos are secret-redacted before landing on disk.
+// plan store (filesystem runs/<id>/plans/ or the Mongo run_plans
+// collection). Best-effort: any error is logged and swallowed — a
+// plan-write failure must never fail the in-flight LLM call, exactly like
+// the artifact/attachment sinks. No-ops when the store lacks the
+// PlanWriter capability, when the tool isn't a plan write, or when the
+// input carries no todos (e.g. a claw `todo_write` read). Todos are
+// secret-redacted before landing in the store.
 func (h *storeHooks) capturePlan(nodeID string, info LLMToolStartedInfo) {
 	if h.planSink == nil || !isPlanTool(info.ToolName) {
 		return
@@ -534,7 +550,7 @@ func (h *storeHooks) capturePlan(nodeID string, info LLMToolStartedInfo) {
 		// change. Nothing persisted, no event: the studio already shows it.
 		return
 	}
-	h.emit(nodeID, store.EventPlanWritten, map[string]interface{}{
+	h.emit(nodeID, store.EventPlanWritten, map[string]any{
 		"seq":       written.Seq,
 		"node_id":   nodeID,
 		"iteration": info.Iteration,
@@ -601,7 +617,7 @@ func parsePlanTodos(input json.RawMessage, redact func(string) string) []store.P
 
 // onToolCall implements the OnToolCall hook.
 func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"tool":        info.ToolName,
 		"input_size":  info.InputSize,
 		"duration_ms": info.Duration.Milliseconds(),
@@ -635,13 +651,13 @@ func (h *storeHooks) onToolCall(nodeID string, info LLMToolCallInfo) {
 
 // onDelegateStarted implements the OnDelegateStarted hook.
 func (h *storeHooks) onDelegateStarted(nodeID string, backendName string) {
-	h.emit(nodeID, store.EventDelegateStarted, map[string]interface{}{"backend": backendName})
+	h.emit(nodeID, store.EventDelegateStarted, map[string]any{"backend": backendName})
 	h.logger.Logf(iterlog.LevelInfo, "🚀", "Delegation started [%s]: backend=%s", nodeID, backendName)
 }
 
 // onDelegateFinished implements the OnDelegateFinished hook.
 func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"backend":              info.BackendName,
 		"duration_ms":          info.Duration.Milliseconds(),
 		"tokens":               info.Tokens,
@@ -670,7 +686,7 @@ func (h *storeHooks) onDelegateFinished(nodeID string, info DelegateInfo) {
 
 // onDelegateError implements the OnDelegateError hook.
 func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"backend":     info.BackendName,
 		"duration_ms": info.Duration.Milliseconds(),
 		"tokens":      info.Tokens,
@@ -693,7 +709,7 @@ func (h *storeHooks) onDelegateError(nodeID string, info DelegateInfo) {
 
 // onDelegateRetry implements the OnDelegateRetry hook.
 func (h *storeHooks) onDelegateRetry(nodeID string, info DelegateInfo) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"backend":  info.BackendName,
 		"attempt":  info.Attempt,
 		"delay_ms": info.Delay.Milliseconds(),
@@ -714,7 +730,7 @@ func (h *storeHooks) onDelegateRetry(nodeID string, info DelegateInfo) {
 // onToolNodeResult implements the OnToolNodeResult hook for direct tool
 // nodes (not LLM tool loops), surfacing full I/O content.
 func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []byte, output string, elapsed time.Duration, err error) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"tool":        toolName,
 		"input_size":  len(input),
 		"duration_ms": elapsed.Milliseconds(),
@@ -864,7 +880,7 @@ func captureBrowserScreenshot(
 		return
 	}
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"attachment_name": name,
 		"source":          "tool-stdout",
 		"mime":            mime,

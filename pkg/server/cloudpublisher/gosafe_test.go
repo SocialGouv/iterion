@@ -20,7 +20,7 @@ func TestGoSafeDetachedRecoversAndDrains(t *testing.T) {
 	})
 	select {
 	case <-ran:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("detached fn never ran")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

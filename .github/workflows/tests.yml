@@ -95,7 +95,9 @@ jobs:
         run: go test -mod=vendor ./...
 
       - name: E2E tests
-        run: go test -mod=vendor -v -timeout 120s ./e2e/...
+        # Same budget as the Taskfile's test:e2e (240s) — a shared CI runner
+        # is slower than a dev machine, so a tighter CI timeout only buys flakes.
+        run: go test -mod=vendor -v -timeout 240s ./e2e/...
 
   race:
     # Data-race detector pass. The `test` job runs CGO_ENABLED=0 with no

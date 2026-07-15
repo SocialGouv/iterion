@@ -45,6 +45,14 @@ data:
   # Cloud runners pin it to none (docs/sandbox.md) — coupled to
   # runner.sandbox.enabled like ITERION_POD_IP + the sandbox RBAC.
   ITERION_SANDBOX_HOST_STATE: "none"
+  {{- else }}
+  # Sibling-pod sandboxing is NOT provisioned on this deployment (no sandbox
+  # RBAC, no ITERION_POD_IP): neutralize any bot-declared `sandbox:` block at
+  # CLI-override strength so runs execute directly in the runner pod — the
+  # pod is the isolation boundary and the runner image ships the toolchain
+  # (e.g. iterion-runner-devbox). Without this a bot's inline sandbox block
+  # (written for local runs) hard-errors the kubernetes driver mid-run.
+  ITERION_SANDBOX_OVERRIDE: "none"
   {{- end }}
   {{- if .Values.config.disableAuth }}
   ITERION_DISABLE_AUTH: "true"
@@ -109,4 +117,7 @@ data:
   {{- with .Values.config.auth.oauthForfait.codexClientId }}
   ITERION_OAUTH_FORFAIT_CODEX_CLIENT_ID: {{ . | quote }}
   {{- end }}
+  {{- end }}
+  {{- range $key, $value := .Values.config.extraEnv }}
+  {{ $key }}: {{ $value | quote }}
   {{- end }}

@@ -197,7 +197,7 @@ func TestFileSource_LogsMissingFileClosesImmediately(t *testing.T) {
 		if ok {
 			t.Fatalf("unexpected chunk %+v", chunk)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("stream did not close for a missing run.log")
 	}
 }

@@ -112,6 +112,10 @@ export default function FileDiffDialog({
           <div className="flex-1 flex items-center justify-center text-sm text-fg-subtle">
             Binary file not shown
           </div>
+        ) : diff.oversized ? (
+          <div className="flex-1 flex items-center justify-center text-sm text-fg-subtle">
+            File too large to display
+          </div>
         ) : (
           <DiffEditor
             theme={monacoTheme}

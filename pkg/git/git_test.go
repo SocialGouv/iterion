@@ -15,6 +15,9 @@ import (
 func gitRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("git not on PATH — required in CI; skipping here would silently drop the whole pkg/git suite")
+		}
 		t.Skip("git not on PATH")
 	}
 	dir := t.TempDir()

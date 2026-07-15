@@ -66,7 +66,7 @@ func newDelegateTestExecutor(backend delegate.Backend, hooks EventHooks) *ClawEx
 func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output:       map[string]interface{}{"result": "ok"},
+			Output:       map[string]any{"result": "ok"},
 			Tokens:       100,
 			Duration:     500 * time.Millisecond,
 			BackendName:  "test_backend",
@@ -96,7 +96,7 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
-	output, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
+	output, err := exec.executeBackend(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,9 +142,9 @@ func TestDelegation_EmitsStartedAndFinished(t *testing.T) {
 func TestDelegation_InteractionSignalSkipsSchemaValidation(t *testing.T) {
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output: map[string]interface{}{
+			Output: map[string]any{
 				"_needs_interaction": true,
-				"_interaction_questions": map[string]interface{}{
+				"_interaction_questions": map[string]any{
 					"ask_user_response": "What is your favorite color?",
 				},
 			},
@@ -154,7 +154,7 @@ func TestDelegation_InteractionSignalSkipsSchemaValidation(t *testing.T) {
 		// this schema-shaped Result and the test would NOT see a pause —
 		// the calls-count assertion catches the regression either way.
 		fallback: delegate.Result{
-			Output:      map[string]interface{}{"answer": "blue"},
+			Output:      map[string]any{"answer": "blue"},
 			BackendName: "test_backend",
 		},
 	}
@@ -182,7 +182,7 @@ func TestDelegation_InteractionSignalSkipsSchemaValidation(t *testing.T) {
 		InteractionFields: ir.InteractionFields{Interaction: ir.InteractionHuman},
 	}
 
-	_, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
+	_, err := exec.executeBackend(context.Background(), node, map[string]any{})
 	var ni *ErrNeedsInteraction
 	if !errors.As(err, &ni) {
 		t.Fatalf("expected *ErrNeedsInteraction (clean pause), got %T: %v", err, err)
@@ -219,7 +219,7 @@ func TestDelegation_EmitsErrorOnFailure(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
-	_, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
+	_, err := exec.executeBackend(context.Background(), node, map[string]any{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -242,7 +242,7 @@ func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
 		results: []delegate.Result{
 			{}, // placeholder for first call (error)
 			{
-				Output:      map[string]interface{}{"result": "ok"},
+				Output:      map[string]any{"result": "ok"},
 				Tokens:      50,
 				BackendName: "test_backend",
 			},
@@ -268,7 +268,7 @@ func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
-	_, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
+	_, err := exec.executeBackend(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestDelegation_EmitsRetryOnTransientError(t *testing.T) {
 func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output:        map[string]interface{}{"text": "plain text response"},
+			Output:        map[string]any{"text": "plain text response"},
 			Tokens:        30,
 			BackendName:   "test_backend",
 			ParseFallback: true,
@@ -313,7 +313,7 @@ func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 		LLMFields: ir.LLMFields{Backend: "test_backend"},
 	}
 
-	output, err := exec.executeBackend(context.Background(), node, map[string]interface{}{})
+	output, err := exec.executeBackend(context.Background(), node, map[string]any{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestDelegation_ParseFallbackMetadata(t *testing.T) {
 func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output: map[string]interface{}{
+			Output: map[string]any{
 				"selected_route": "agent_a",
 				"reasoning":      "code issues dominate",
 			},
@@ -351,7 +351,7 @@ func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 		RouterMode: ir.RouterLLM,
 	}
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"_route_candidates": []string{"agent_a", "agent_b"},
 		"code_review":       "some review",
 	}
@@ -372,8 +372,8 @@ func TestLLMRouterDelegated_SelectsRoute(t *testing.T) {
 func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output: map[string]interface{}{
-				"selected_routes": []interface{}{"agent_a", "agent_b"},
+			Output: map[string]any{
+				"selected_routes": []any{"agent_a", "agent_b"},
 				"reasoning":       "both routes needed",
 			},
 			Tokens: 120,
@@ -389,7 +389,7 @@ func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
 		RouterMulti: true,
 	}
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"_route_candidates": []string{"agent_a", "agent_b", "agent_c"},
 	}
 
@@ -402,7 +402,7 @@ func TestLLMRouterDelegated_MultiRoute(t *testing.T) {
 	if !ok {
 		t.Fatal("expected selected_routes in output")
 	}
-	routeSlice, ok := routes.([]interface{})
+	routeSlice, ok := routes.([]any)
 	if !ok {
 		t.Fatalf("expected []interface{}, got %T", routes)
 	}
@@ -415,7 +415,7 @@ func TestLLMRouterDelegated_ParseFallbackJSON(t *testing.T) {
 	// Backend returns text-wrapped output, but text contains valid JSON.
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output:        map[string]interface{}{"text": `{"selected_route":"agent_b","reasoning":"arch issue"}`},
+			Output:        map[string]any{"text": `{"selected_route":"agent_b","reasoning":"arch issue"}`},
 			ParseFallback: true,
 			Tokens:        50,
 		}},
@@ -429,7 +429,7 @@ func TestLLMRouterDelegated_ParseFallbackJSON(t *testing.T) {
 		RouterMode: ir.RouterLLM,
 	}
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"_route_candidates": []string{"agent_a", "agent_b"},
 	}
 
@@ -447,7 +447,7 @@ func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
 	// Backend returns plain text that isn't JSON — should fail.
 	backend := &stubBackend{
 		results: []delegate.Result{{
-			Output:        map[string]interface{}{"text": "I think agent_a is best"},
+			Output:        map[string]any{"text": "I think agent_a is best"},
 			ParseFallback: true,
 			Tokens:        30,
 		}},
@@ -461,7 +461,7 @@ func TestLLMRouterDelegated_ParseFallbackPlainTextFails(t *testing.T) {
 		RouterMode: ir.RouterLLM,
 	}
 
-	input := map[string]interface{}{
+	input := map[string]any{
 		"_route_candidates": []string{"agent_a", "agent_b"},
 	}
 

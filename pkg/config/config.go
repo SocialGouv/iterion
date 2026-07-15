@@ -245,6 +245,17 @@ type SandboxConfig struct {
 	// cloud / multi-tenant deploys (it avoids leaking host OAuth
 	// into shared runners).
 	HostState string `yaml:"host_state"`
+
+	// Override is the CLI-strength sandbox mode ("" | "none" | "auto")
+	// applied on top of everything a workflow declares — same precedence
+	// tier as `iterion run --sandbox`, where "none" is the
+	// non-overridable opt-out. Meant for the cloud runner
+	// (ITERION_SANDBOX_OVERRIDE=none): the runner pod already IS the
+	// isolation boundary and ships the toolchain (devbox), so a bot's
+	// inline `sandbox:` block — written for local runs — must not spawn
+	// a sibling sandbox pod there. Default (lower-precedence) knobs
+	// cannot express this because a workflow block outranks them.
+	Override string `yaml:"override"`
 }
 
 // NATSConfig holds the NATS JetStream connection + stream/bucket names.
@@ -508,6 +519,12 @@ func (c *Config) Validate() error {
 	case "", "auto", "none":
 	default:
 		return fmt.Errorf("ITERION_SANDBOX_HOST_STATE %q invalid (want \"\", \"auto\", or \"none\")", c.Sandbox.HostState)
+	}
+
+	switch c.Sandbox.Override {
+	case "", "none", "auto":
+	default:
+		return fmt.Errorf("ITERION_SANDBOX_OVERRIDE %q invalid (want \"\", \"none\", or \"auto\")", c.Sandbox.Override)
 	}
 
 	return nil

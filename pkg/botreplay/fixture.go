@@ -36,15 +36,15 @@ import (
 // committed under testdata/bot-goldens/<bot>/<scenario>.json and
 // re-validated by TestGoldens without hitting any LLM.
 type Fixture struct {
-	Bot        string                 `json:"bot"`
-	Scenario   string                 `json:"scenario"`
-	Node       string                 `json:"node"`
-	Backend    string                 `json:"backend,omitempty"`
-	Model      string                 `json:"model,omitempty"`
-	RecordedAt string                 `json:"recorded_at,omitempty"`
-	Vars       map[string]string      `json:"vars,omitempty"`
-	Input      map[string]interface{} `json:"input"`
-	Output     map[string]interface{} `json:"output"`
+	Bot        string            `json:"bot"`
+	Scenario   string            `json:"scenario"`
+	Node       string            `json:"node"`
+	Backend    string            `json:"backend,omitempty"`
+	Model      string            `json:"model,omitempty"`
+	RecordedAt string            `json:"recorded_at,omitempty"`
+	Vars       map[string]string `json:"vars,omitempty"`
+	Input      map[string]any    `json:"input"`
+	Output     map[string]any    `json:"output"`
 }
 
 // LoadFixture reads and decodes a fixture JSON file.

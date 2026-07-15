@@ -14,6 +14,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -113,6 +114,7 @@ func ResolveGenericWithBindings(
 	names []string,
 	secretOverrides map[string]string,
 	sealer Sealer,
+	logger *iterlog.Logger,
 ) (map[string]GenericResolution, error) {
 	if secretStore == nil {
 		return map[string]GenericResolution{}, nil
@@ -173,6 +175,10 @@ func ResolveGenericWithBindings(
 			sec, err := secretStore.Get(ctx, b.SecretID)
 			if err != nil {
 				// dangling binding (secret deleted) — skip, don't fail the run.
+				// Warn: a configured binding pointing at a missing secret is a
+				// misconfiguration the operator should see (name + reason, never
+				// the value).
+				logger.Warn("secrets: bot binding for %q (bot=%s, secret_id=%s) dangles — credential dropped: %v", b.SecretNameForWorkflow, botID, b.SecretID, err)
 				continue
 			}
 			if !bindableGenericSecretForBotBinding(sec, teamID) {
@@ -180,6 +186,7 @@ func ResolveGenericWithBindings(
 				// point at a personal secret or a secret moved out of this team.
 				// Treat those like dangling bindings rather than injecting them
 				// into synthetic bot/webhook runs.
+				logger.Warn("secrets: bot binding for %q (bot=%s, secret_id=%s) points at a non-bindable (cross-tenant or personal) secret — credential dropped", b.SecretNameForWorkflow, botID, b.SecretID)
 				continue
 			}
 			bindingByName[b.SecretNameForWorkflow] = boundSecret{sec: sec, hosts: b.AllowedHosts}
@@ -201,10 +208,15 @@ func ResolveGenericWithBindings(
 		}
 		sec, err := secretStore.Get(ctx, secretID)
 		if err != nil {
-			continue // dangling override -> fall through to the lower tiers
+			// dangling override -> fall through to the lower tiers. Warn: an
+			// explicitly-pinned secret that can't be read is a misconfiguration.
+			logger.Warn("secrets: webhook override for %q (secret_id=%s) dangles — falling through to lower tiers: %v", name, secretID, err)
+			continue
 		}
 		if !bindableGenericSecretForBotBinding(sec, teamID) {
-			continue // cross-tenant / personal secret -> ignore
+			// cross-tenant / personal secret -> ignore (fall through).
+			logger.Warn("secrets: webhook override for %q (secret_id=%s) points at a non-bindable (cross-tenant or personal) secret — ignored", name, secretID)
+			continue
 		}
 		overrideByName[name] = sec
 	}
@@ -212,21 +224,21 @@ func ResolveGenericWithBindings(
 	out := make(map[string]GenericResolution, len(want))
 	for name := range want {
 		if s, ok := overrideByName[name]; ok {
-			if r, ok := buildGenericResolution(s, sealer, userID); ok {
+			if r, ok := buildGenericResolution(s, sealer, userID, logger); ok {
 				r.SourceScope = "webhook-override"
 				out[name] = r
 				continue
 			}
 		}
 		if s, ok := userByName[name]; ok {
-			if r, ok := buildGenericResolution(s, sealer, userID); ok {
+			if r, ok := buildGenericResolution(s, sealer, userID, logger); ok {
 				r.SourceScope = "user"
 				out[name] = r
 				continue
 			}
 		}
 		if b, ok := bindingByName[name]; ok {
-			if r, ok := buildGenericResolution(b.sec, sealer, userID); ok {
+			if r, ok := buildGenericResolution(b.sec, sealer, userID, logger); ok {
 				r.SourceScope = "binding"
 				// Intersect the binding's egress hosts with the secret's own
 				// lock (buildGenericResolution seeded r.AllowedHosts from the
@@ -237,11 +249,29 @@ func ResolveGenericWithBindings(
 			}
 		}
 		if s, ok := teamByName[name]; ok {
-			if r, ok := buildGenericResolution(s, sealer, userID); ok {
+			if r, ok := buildGenericResolution(s, sealer, userID, logger); ok {
 				r.SourceScope = "team"
 				out[name] = r
+				continue
 			}
 		}
+		// Expected fall-through: no tier produced a value for this name and no
+		// candidate dropped on unseal (those are already warned above). Debug —
+		// a run may legitimately declare an optional secret the team never
+		// configured / bound.
+		if _, hadCandidate := overrideByName[name]; hadCandidate {
+			continue
+		}
+		if _, hadCandidate := userByName[name]; hadCandidate {
+			continue
+		}
+		if _, hadCandidate := bindingByName[name]; hadCandidate {
+			continue
+		}
+		if _, hadCandidate := teamByName[name]; hadCandidate {
+			continue
+		}
+		logger.Debug("secrets: no generic secret named %q resolvable for team=%s bot=%s (no user/binding/team/override match) — leaving credential unset", name, teamID, botID)
 	}
 	return out, nil
 }

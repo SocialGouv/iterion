@@ -113,38 +113,104 @@ func (s *Service) ListCtx(ctx context.Context, f ListFilter) ([]RunSummary, erro
 		if f.Node != "" && !runTouchedNode(ctx, s.store, r.ID, f.Node) {
 			continue
 		}
-		out = append(out, RunSummary{
-			ID:                r.ID,
-			Name:              r.Name,
-			WorkflowName:      r.WorkflowName,
-			BundleName:        resolveBundleName(r.BundleName, r.BundlePath),
-			BundleDisplayName: r.BundleDisplayName,
-			SourceKind:        deriveSourceKind(r),
-			Status:            r.Status,
-			FilePath:          r.FilePath,
-			CreatedAt:         r.CreatedAt,
-			UpdatedAt:         r.UpdatedAt,
-			FinishedAt:        r.FinishedAt,
-			Error:             r.Error,
-			Active:            s.manager.Active(r.ID),
-			FinalCommit:       r.FinalCommit,
-			FinalBranch:       r.FinalBranch,
-			FinalBranchError:  r.FinalBranchError,
-			MergedInto:        r.MergedInto,
-			MergedCommit:      r.MergedCommit,
-			MergeStrategy:     r.MergeStrategy,
-			MergeStatus:       r.MergeStatus,
-			AutoMerge:         r.AutoMerge,
-			WorkDir:           r.WorkDir,
-			RepoRoot:          r.RepoRoot,
-			ProjectPath:       r.ProjectPath,
-		})
+		out = append(out, s.summarize(r))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	if f.Limit > 0 && len(out) > f.Limit {
 		out = out[:f.Limit]
+	}
+	return out, nil
+}
+
+// ListChildren returns the summaries of every run whose ParentRunID is
+// parentRunID — a run's shard/child subtree (T4b, refs #125), ordered by
+// created_at ascending (the store guarantees the ordering). Propagates
+// the caller's ctx so the mongo tenant filter applies. A run that fails
+// to load is skipped rather than failing the whole listing.
+func (s *Service) ListChildren(ctx context.Context, parentRunID string) ([]RunSummary, error) {
+	ids, err := s.store.ListChildRuns(ctx, parentRunID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunSummary, 0, len(ids))
+	for _, id := range ids {
+		r, err := s.store.LoadRun(ctx, id)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("runview: skip child run %s: %v", id, err)
+			}
+			continue
+		}
+		out = append(out, s.summarize(r))
+	}
+	return out, nil
+}
+
+// summarize projects a persisted Run into the lightweight RunSummary
+// shape the run list + children endpoint return. Shared so every
+// listing surface carries the same derived fields (source-kind
+// classification, shard tuple, active flag).
+func (s *Service) summarize(r *store.Run) RunSummary {
+	return summarizeRun(r, s.manager.Active(r.ID))
+}
+
+// summarizeRun is the manager-free core of summarize: it projects a
+// persisted Run into a RunSummary given a precomputed active flag. Shared
+// by the Service (which knows liveness via its manager) and the cross-store
+// read path (BuildChildrenFromStore, where runs are owned by another daemon
+// and thus never active in this process).
+func summarizeRun(r *store.Run, active bool) RunSummary {
+	return RunSummary{
+		ID:                r.ID,
+		Name:              r.Name,
+		WorkflowName:      r.WorkflowName,
+		BundleName:        resolveBundleName(r.BundleName, r.BundlePath),
+		BundleDisplayName: r.BundleDisplayName,
+		SourceKind:        deriveSourceKind(r),
+		Status:            r.Status,
+		FilePath:          r.FilePath,
+		CreatedAt:         r.CreatedAt,
+		UpdatedAt:         r.UpdatedAt,
+		FinishedAt:        r.FinishedAt,
+		Error:             r.Error,
+		Active:            active,
+		FinalCommit:       r.FinalCommit,
+		FinalBranch:       r.FinalBranch,
+		FinalBranchError:  r.FinalBranchError,
+		MergedInto:        r.MergedInto,
+		MergedCommit:      r.MergedCommit,
+		MergeStrategy:     r.MergeStrategy,
+		MergeStatus:       r.MergeStatus,
+		AutoMerge:         r.AutoMerge,
+		WorkDir:           r.WorkDir,
+		RepoRoot:          r.RepoRoot,
+		ProjectPath:       r.ProjectPath,
+		ParentRunID:       r.ParentRunID,
+		ShardIndex:        r.ShardIndex,
+		ShardCount:        r.ShardCount,
+		ShardLabel:        r.ShardLabel,
+	}
+}
+
+// BuildChildrenFromStore returns the shard/child subtree of a run read
+// directly off an arbitrary store — the cross-store (?store=) counterpart
+// to Service.ListChildren. Runs owned by another daemon are never active in
+// this process, so their summaries carry Active=false. A child that fails to
+// load is skipped rather than failing the whole listing.
+func BuildChildrenFromStore(ctx context.Context, s store.RunStore, parentRunID string) ([]RunSummary, error) {
+	ids, err := s.ListChildRuns(ctx, parentRunID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RunSummary, 0, len(ids))
+	for _, id := range ids {
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			continue
+		}
+		out = append(out, summarizeRun(r, false))
 	}
 	return out, nil
 }
@@ -197,6 +263,9 @@ func matchesFilter(r *store.Run, f ListFilter) bool {
 		return false
 	}
 	if f.Repo != "" && r.ProjectPath != f.Repo {
+		return false
+	}
+	if f.Bundle != "" && !strings.EqualFold(resolveBundleName(r.BundleName, r.BundlePath), f.Bundle) {
 		return false
 	}
 	if !f.Since.IsZero() && r.UpdatedAt.Before(f.Since) {

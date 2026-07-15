@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 
 // Either teamID (team audit) or orgID (org control-plane audit) — the
 // component picks the matching loader. Exactly one should be set.
@@ -143,31 +144,31 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
         </div>
       </form>
 
-      {events.length === 0 && !loading ? (
+      {events.length === 0 && loading ? (
+        <TableSkeleton rows={4} cols={5} />
+      ) : events.length === 0 ? (
         <EmptyState message="No events for this filter." />
       ) : (
-        <div className="overflow-x-auto"><table className="w-full text-sm">
-          <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-            <tr>
-              <th className="px-2 py-1">When</th>
-              <th className="px-2 py-1">Actor</th>
-              <th className="px-2 py-1">Action</th>
-              <th className="px-2 py-1">Target</th>
-              <th className="px-2 py-1">IP</th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table caption="Audit log events">
+          <THead>
+            <Th>When</Th>
+            <Th>Actor</Th>
+            <Th>Action</Th>
+            <Th>Target</Th>
+            <Th>IP</Th>
+          </THead>
+          <TBody>
             {events.map((e) => (
-              <tr key={e.id} className="border-t border-border-subtle align-top">
-                <td className="px-2 py-2 text-fg-muted whitespace-nowrap">
+              <Tr key={e.id} className="align-top">
+                <Td className="text-fg-muted whitespace-nowrap">
                   {new Date(e.created_at).toLocaleString()}
-                </td>
-                <td className="px-2 py-2 text-xs">
+                </Td>
+                <Td className="text-xs">
                   <div>{e.actor_id ?? "—"}</div>
                   <div className="text-fg-subtle">{e.actor_kind ?? ""}</div>
-                </td>
-                <td className="px-2 py-2 font-mono text-xs">{e.action}</td>
-                <td className="px-2 py-2 text-xs">
+                </Td>
+                <Td className="font-mono text-xs">{e.action}</Td>
+                <Td className="text-xs">
                   <div>{e.target ?? ""}</div>
                   <div className="text-fg-subtle font-mono break-all">{e.target_id ?? ""}</div>
                   {e.meta && (
@@ -178,12 +179,12 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
                       </pre>
                     </details>
                   )}
-                </td>
-                <td className="px-2 py-2 text-xs font-mono text-fg-muted">{e.ip ?? "—"}</td>
-              </tr>
+                </Td>
+                <Td className="text-xs font-mono text-fg-muted">{e.ip ?? "—"}</Td>
+              </Tr>
             ))}
-          </tbody>
-        </table></div>
+          </TBody>
+        </Table>
       )}
 
       {nextOffset != null && (

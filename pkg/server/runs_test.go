@@ -54,7 +54,7 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 	if err != nil {
 		t.Fatalf("open seed store: %v", err)
 	}
-	if _, err := st.CreateRun(context.Background(), runID, workflowName, map[string]interface{}{"k": "v"}); err != nil {
+	if _, err := st.CreateRun(context.Background(), runID, workflowName, map[string]any{"k": "v"}); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
 	if err := st.UpdateRunStatus(context.Background(), runID, status, ""); err != nil {
@@ -62,7 +62,7 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 	}
 	for i, evt := range []store.Event{
 		{Type: store.EventRunStarted, RunID: runID},
-		{Type: store.EventNodeStarted, RunID: runID, NodeID: "analyze", Data: map[string]interface{}{"kind": "agent"}},
+		{Type: store.EventNodeStarted, RunID: runID, NodeID: "analyze", Data: map[string]any{"kind": "agent"}},
 		{Type: store.EventNodeFinished, RunID: runID, NodeID: "analyze"},
 	} {
 		if _, err := st.AppendEvent(context.Background(), runID, evt); err != nil {
@@ -74,7 +74,7 @@ func seedRun(t *testing.T, srv *Server, runID, workflowName string, status store
 // decodeJSONResp reads + unmarshals the response body into v, failing
 // the test on any error. Distinct from production's decodeJSON (which
 // drives request decoding from a handler), hence the -Resp suffix.
-func decodeJSONResp(t *testing.T, resp *http.Response, v interface{}) {
+func decodeJSONResp(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
 	defer resp.Body.Close()
 	b, err := io.ReadAll(resp.Body)
@@ -326,6 +326,99 @@ func TestStateChangingEndpoints_RejectCrossStore(t *testing.T) {
 				t.Errorf("body = %q, want it to contain cross_store_readonly", string(body))
 			}
 		})
+	}
+}
+
+// TestLaunch_RejectsBadBudgetDuration pins the admission contract for
+// launchRunRequest.Budget: a max_duration that time.ParseDuration
+// rejects must 400 with an explicit "invalid budget" error, before any
+// run is created.
+func TestLaunch_RejectsBadBudgetDuration(t *testing.T) {
+	srv, hs := newTestServer(t)
+	botPath := filepath.Join(srv.cfg.WorkDir, "demo.bot")
+	if err := os.WriteFile(botPath, []byte("workflow demo:\n  entry: done\n"), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"file_path": botPath,
+		"budget":    map[string]any{"max_duration": "4 hours"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(hs.URL+"/api/runs", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(b, []byte("invalid budget")) {
+		t.Errorf("body = %q, want it to contain %q", string(b), "invalid budget")
+	}
+}
+
+// TestListRuns_BotFilter covers the ?bot= query param: it matches the
+// run's resolved bundle name case-insensitively, including the legacy
+// basename(bundle_path) fallback, and excludes bundle-less runs.
+func TestListRuns_BotFilter(t *testing.T) {
+	srv, hs := newTestServer(t)
+	seedRun(t, srv, "run-docs", "wf_docs", store.RunStatusFinished)
+	seedRun(t, srv, "run-feature", "wf_feature", store.RunStatusFinished)
+	seedRun(t, srv, "run-plain", "wf_plain", store.RunStatusFinished)
+
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	stamp := func(id, bundleName, bundlePath string) {
+		t.Helper()
+		r, err := st.LoadRun(context.Background(), id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		r.BundleName = bundleName
+		r.BundlePath = bundlePath
+		if err := st.SaveRun(context.Background(), r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+	stamp("run-docs", "docs-refresh", "")
+	stamp("run-feature", "", "/bots/feature-dev.botz")
+
+	get := func(query string) []runview.RunSummary {
+		t.Helper()
+		resp, err := http.Get(hs.URL + "/api/runs" + query)
+		if err != nil {
+			t.Fatalf("GET %s: %v", query, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200", query, resp.StatusCode)
+		}
+		var out struct {
+			Runs []runview.RunSummary `json:"runs"`
+		}
+		decodeJSONResp(t, resp, &out)
+		return out.Runs
+	}
+
+	if runs := get("?bot=docs-refresh"); len(runs) != 1 || runs[0].ID != "run-docs" {
+		t.Errorf("?bot=docs-refresh → %+v, want only run-docs", runs)
+	}
+	if runs := get("?bot=DOCS-Refresh"); len(runs) != 1 || runs[0].ID != "run-docs" {
+		t.Errorf("?bot=DOCS-Refresh (case-insensitive) → %+v, want only run-docs", runs)
+	}
+	if runs := get("?bot=feature-dev"); len(runs) != 1 || runs[0].ID != "run-feature" {
+		t.Errorf("?bot=feature-dev (path fallback) → %+v, want only run-feature", runs)
+	}
+	if runs := get("?bot=nonexistent"); len(runs) != 0 {
+		t.Errorf("?bot=nonexistent → %+v, want empty", runs)
+	}
+	if runs := get(""); len(runs) != 3 {
+		t.Errorf("unfiltered → %d runs, want 3", len(runs))
 	}
 }
 

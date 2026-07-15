@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/Button";
 import { Tooltip } from "@/components/ui";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import type { DispatcherSnapshot } from "@/api/dispatcher";
 
 import { compactWorkspace, relTime } from "./format";
@@ -56,32 +57,32 @@ export default function RunningTable({
       {!rows || rows.length === 0 ? (
         <div className="p-4 text-xs text-fg-muted">No runs in flight.</div>
       ) : (
-        // overflow-x-auto so the 7-column row stays fully reachable
-        // when the page is capped by max-w-4xl on small viewports.
-        <div className="overflow-x-auto">
-        <table className="min-w-full text-xs">
-          <thead className="text-fg-muted border-b border-border-default">
-            <tr>
-              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Identifier</th>
-              <th className="text-left py-1.5 px-3 font-normal">Run</th>
-              <th className="text-left py-1.5 px-3 font-normal">State</th>
-              <th className="text-left py-1.5 px-3 font-normal">Workspace</th>
-              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Started</th>
-              <th className="text-left py-1.5 px-3 font-normal whitespace-nowrap">Last event</th>
-              <th className="text-right py-1.5 px-3 font-normal">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+        // Table's built-in overflow-x-auto keeps the 7-column row fully
+        // reachable when the page is capped by max-w-4xl on small viewports.
+        <Table caption="Runs the dispatcher currently has in flight" density="sm" className="min-w-full">
+          <THead>
+            <Th className="whitespace-nowrap">Identifier</Th>
+            <Th>Run</Th>
+            <Th>State</Th>
+            <Th>Workspace</Th>
+            <Th className="whitespace-nowrap">Started</Th>
+            <Th className="whitespace-nowrap">Last event</Th>
+            <Th align="right">Actions</Th>
+          </THead>
+          <TBody>
             {rows!.map((r) => {
               const stall = stallStyle(r.last_event_at, stallTimeoutS);
               return (
-              <tr
+              <Tr
                 key={r.issue_id}
-                className={`border-b border-border-default/60 ${stall.rowClass}`}
+                // Disable the hover tint on stalled rows so the amber/red
+                // status background stays visible under the cursor.
+                hover={!stall.rowClass}
+                className={stall.rowClass}
                 title={stall.hint ?? undefined}
               >
-                <td className="py-1.5 px-3 font-mono whitespace-nowrap">{r.identifier}</td>
-                <td className="py-1.5 px-3 font-mono truncate max-w-[14rem]">
+                <Td className="font-mono whitespace-nowrap">{r.identifier}</Td>
+                <Td className="font-mono truncate max-w-[14rem]">
                   <button
                     type="button"
                     onClick={() => onOpenRun(r.run_id)}
@@ -99,23 +100,23 @@ export default function RunningTable({
                       </span>
                     </Tooltip>
                   ) : null}
-                </td>
-                <td className="py-1.5 px-3">{r.workflow_state}</td>
-                <td
-                  className="py-1.5 px-3 font-mono text-fg-muted truncate max-w-[18rem]"
+                </Td>
+                <Td>{r.workflow_state}</Td>
+                <Td
+                  className="font-mono text-fg-muted truncate max-w-[18rem]"
                   title={r.workspace_path ?? "no workspace path captured (legacy or in-process run)"}
                 >
                   {r.workspace_path ? compactWorkspace(r.workspace_path) : <span className="text-fg-subtle">—</span>}
-                </td>
-                <td className="py-1.5 px-3 text-fg-muted whitespace-nowrap">{relTime(r.started_at)}</td>
-                <td className="py-1.5 px-3 text-fg-muted whitespace-nowrap">
+                </Td>
+                <Td className="text-fg-muted whitespace-nowrap">{relTime(r.started_at)}</Td>
+                <Td className="text-fg-muted whitespace-nowrap">
                   {r.last_event_name ? r.last_event_name + " · " : ""}
                   {relTime(r.last_event_at)}
                   {stall.hint && (
                     <span className="ml-1 text-warning-fg/90">⏱</span>
                   )}
-                </td>
-                <td className="py-1.5 px-3 text-right">
+                </Td>
+                <Td align="right">
                   <Button
                     variant="danger"
                     size="sm"
@@ -123,13 +124,12 @@ export default function RunningTable({
                   >
                     Cancel
                   </Button>
-                </td>
-              </tr>
+                </Td>
+              </Tr>
               );
             })}
-          </tbody>
-        </table>
-        </div>
+          </TBody>
+        </Table>
       )}
     </section>
   );

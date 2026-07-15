@@ -40,7 +40,7 @@ func (f *failAfterNExecutor) pass(nodeIDs ...string) *failAfterNExecutor {
 	return f
 }
 
-func (f *failAfterNExecutor) Execute(ctx context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (f *failAfterNExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	if f.passthrough[node.NodeID()] {
 		return f.inner.Execute(ctx, node, input)
 	}
@@ -64,8 +64,8 @@ func TestChaos_FailMidFanOut_WaitAll(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitWaitAll)
 
 	stub := newStubExecutor()
-	stub.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "ctx"}, nil
+	stub.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "ctx"}, nil
 	})
 	// failAt=2: entry (0) succeeds, router is not an executor call,
 	// first branch (1) succeeds, second branch (2) fails.
@@ -96,17 +96,17 @@ func TestChaos_FailMidFanOut_BestEffort(t *testing.T) {
 	wf := fanOutWorkflow(ir.AwaitBestEffort)
 
 	stub := newStubExecutor()
-	stub.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"summary": "ctx"}, nil
+	stub.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"summary": "ctx"}, nil
 	})
-	stub.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "A ok"}, nil
+	stub.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "A ok"}, nil
 	})
-	stub.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"review": "B ok"}, nil
+	stub.on("agent_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"review": "B ok"}, nil
 	})
-	stub.on("finalize", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "partial"}, nil
+	stub.on("finalize", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "partial"}, nil
 	})
 
 	// passthrough finalize+done so only branch nodes are subject to the counter.
@@ -145,8 +145,8 @@ func TestChaos_AllBranchesFail(t *testing.T) {
 			wf := fanOutWorkflow(strategy.mode)
 
 			stub := newStubExecutor()
-			stub.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-				return map[string]interface{}{"summary": "ctx"}, nil
+			stub.on("entry", func(_ map[string]any) (map[string]any, error) {
+				return map[string]any{"summary": "ctx"}, nil
 			})
 
 			// failAt=1: only entry succeeds, both branches fail.
@@ -199,11 +199,11 @@ func TestChaos_FailInLoopIteration(t *testing.T) {
 	}
 
 	stub := newStubExecutor()
-	stub.on("agent", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"code": "v1"}, nil
+	stub.on("agent", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"code": "v1"}, nil
 	})
-	stub.on("judge", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"pass": false}, nil // always loop
+	stub.on("judge", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"pass": false}, nil // always loop
 	})
 
 	// failAt=3: agent(0), judge(1), agent(2) succeed → judge(3) fails.

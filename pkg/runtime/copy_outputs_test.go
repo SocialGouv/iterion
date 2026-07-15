@@ -11,15 +11,15 @@ import (
 // the inner hashtable; the deep copy gives each branch its own
 // independent tree.
 func TestCopyOutputs_DeepCopiesNestedMaps(t *testing.T) {
-	src := map[string]map[string]interface{}{
+	src := map[string]map[string]any{
 		"node_a": {
-			"obj": map[string]interface{}{
+			"obj": map[string]any{
 				"k1": "v1",
-				"k2": map[string]interface{}{"nested": "value"},
+				"k2": map[string]any{"nested": "value"},
 			},
-			"list": []interface{}{
+			"list": []any{
 				"a",
-				map[string]interface{}{"in_list": true},
+				map[string]any{"in_list": true},
 			},
 		},
 	}
@@ -28,19 +28,19 @@ func TestCopyOutputs_DeepCopiesNestedMaps(t *testing.T) {
 
 	// Mutate the destination's deep structure and ensure the source
 	// is untouched.
-	dstObj := dst["node_a"]["obj"].(map[string]interface{})
+	dstObj := dst["node_a"]["obj"].(map[string]any)
 	dstObj["k1"] = "mutated"
-	dstObj["k2"].(map[string]interface{})["nested"] = "mutated"
-	dst["node_a"]["list"].([]interface{})[1].(map[string]interface{})["in_list"] = false
+	dstObj["k2"].(map[string]any)["nested"] = "mutated"
+	dst["node_a"]["list"].([]any)[1].(map[string]any)["in_list"] = false
 
-	srcObj := src["node_a"]["obj"].(map[string]interface{})
+	srcObj := src["node_a"]["obj"].(map[string]any)
 	if srcObj["k1"] != "v1" {
 		t.Errorf("source map mutated via shallow copy: k1=%v", srcObj["k1"])
 	}
-	if nested := srcObj["k2"].(map[string]interface{})["nested"]; nested != "value" {
+	if nested := srcObj["k2"].(map[string]any)["nested"]; nested != "value" {
 		t.Errorf("source nested map mutated via shallow copy: nested=%v", nested)
 	}
-	if inList := src["node_a"]["list"].([]interface{})[1].(map[string]interface{})["in_list"]; inList != true {
+	if inList := src["node_a"]["list"].([]any)[1].(map[string]any)["in_list"]; inList != true {
 		t.Errorf("source slice element mutated via shallow copy: in_list=%v", inList)
 	}
 }
@@ -48,7 +48,7 @@ func TestCopyOutputs_DeepCopiesNestedMaps(t *testing.T) {
 // TestCopyOutputs_PreservesScalars is the inverse — scalars are
 // safe to share by value, so the deep copy still returns them as-is.
 func TestCopyOutputs_PreservesScalars(t *testing.T) {
-	src := map[string]map[string]interface{}{
+	src := map[string]map[string]any{
 		"node_b": {
 			"s":  "string",
 			"i":  42,

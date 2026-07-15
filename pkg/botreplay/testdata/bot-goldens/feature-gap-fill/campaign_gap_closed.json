@@ -1,0 +1,21 @@
+{
+  "_note": "Hand-authored seed fixture — record mode is impractical for a claude_code campaign node (whole-session agent, real repo side-effects, forfait cost). Shape frozen against the bot's campaign_output termination contract (ADR-058 v2). Regenerate by hand ONLY if the campaign_output schema changes.",
+  "bot": "feature-gap-fill",
+  "scenario": "campaign_gap_closed",
+  "node": "campaign",
+  "backend": "claude_code",
+  "model": "claude-opus-4-8",
+  "recorded_at": "2026-07-11T00:00:00Z",
+  "vars": {},
+  "input": {
+    "fail_log": ""
+  },
+  "output": {
+    "gap_closed": true,
+    "commits_this_pass": 2,
+    "missing_remaining": "",
+    "needs_human": false,
+    "human_note": "",
+    "summary": "Closed the spec gap: wired the documented --format flag into the export command (feat(export): honour --format) and added its table test (test(export): cover json/csv formats); build and tests green before each commit."
+  }
+}

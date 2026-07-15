@@ -137,6 +137,12 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 
 - Go 1.26.0
 - `claw-code-go` (sibling repo, vendored under `vendor/github.com/SocialGouv/claw-code-go/`) — native multi-provider LLM client. iterion uses `claw-code-go/pkg/api.Client.StreamResponse` directly via `pkg/backend/model/generation.go` for in-process LLM calls (anthropic + openai validated; bedrock/vertex/foundry available but untested).
+  **Bump the pin ONLY with [`scripts/bump-claw.sh`](scripts/bump-claw.sh)**
+  (pushes the claw commit if needed, then `go get @<sha>` + tidy + vendor +
+  verify + commit). NEVER hand-write the pseudo-version: a locally-computed
+  timestamp (non-UTC) fails `go mod verify` ("does not match version-control
+  timestamp") and turns vendor-check red on main and every PR merge-ref —
+  this happened three times on 2026-07-11 alone.
 
 ## Architecture
 
@@ -247,7 +253,8 @@ discovered by claude_code via `--setting-sources project`), `hooks` (JSON
 fragments idempotently merged into `.claude/settings.json`), and
 `lifecycle` (index/refresh). Builtins are embedded
 ([pkg/plugin/builtin/](pkg/plugin/builtin/)); `rtk` ships **enabled**,
-`graphify` + `repo-falcon` ship **disabled**. Installed plugins live under
+`graphify` + `repo-falcon` + `firecrawl` (web search/scrape MCP —
+[docs/web-search.md](docs/web-search.md)) ship **disabled**. Installed plugins live under
 `~/.iterion/plugins/<name>/`, enable state in `~/.iterion/plugins.yaml`. Manage
 with `iterion plugin list|info|enable|disable|run|install|uninstall`. The plugin
 system never injects Go code (static `CGO_ENABLED=0` binaries rule out Go
@@ -939,14 +946,14 @@ iterion inspect [--run-id] [--events]   # View run state and events
 iterion resume --run-id --file [--answers-file] [--force]  # Resume paused/failed/cancelled run
 iterion fork --run-id <parent> --node <id> [--turn N] [--rewind-code]  # Fork a run at a prior LLM turn (resume with `iterion resume`)
 iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detailed|full)
-iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane]  # Launch visual workflow editor (+ kanban /board, /dispatcher dashboard, Browser pane, Launch modal)
+iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane]  # Launch visual workflow editor (+ kanban /board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new)
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
 iterion schedule add|list|remove|run|install|uninstall  # Cron recurring bots via the host crontab — no daemon (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board  # Native kanban tracker
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
 iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)
-iterion marketplace list|submit|install  # Hosted bot registry CLI (same <store-dir>/marketplace the studio reads)
+iterion marketplace list|submit|install|uninstall  # Hosted registry CLI — bot AND plugin entries (kind auto-detected at submit; list --kind filters; same <store-dir>/marketplace the studio reads)
 iterion bench asymptote [flags]         # Asymptote benchmark (see docs/asymptote-bench.md)
 iterion bundle init|pack                # Scaffold or pack a .botz bundle (see docs/bundles.md)
 iterion sandbox doctor [file] [--strict] [--target auto|cloud|local]  # Diagnose host sandbox prerequisites; --strict validates a run's full config pre-flight (see docs/sandbox.md)
@@ -1097,6 +1104,15 @@ committed, PR-reviewable record. Index + template:
 - **tests.yml** — on push/PR: gofmt, go vet, unit tests, e2e tests
 - **release.yml** — on git tags (v*): multi-platform builds (linux/darwin/windows × amd64/arm64), GitHub release
 - **version.yml** — conventional changelog via release-it, version from `package.json`
+
+**`main` is protected by a merge queue** (ruleset "main protected — merge
+queue"). PRs merge THROUGH the queue (`gh pr merge <n> --auto --squash`), which
+rebuilds each on `main` + earlier-queued PRs and merges only if that combined
+tree is green — closing the semantic inter-PR conflict class (two PRs green
+apart, red combined). Repo **admins bypass** the queue for hotfixes (direct
+push / `--squash` without `--auto`). Required checks: `test`, `race`,
+`vendor-check`, `mongo-conformance`. Full details + revert command:
+[docs/merge-policy.md](docs/merge-policy.md).
 
 ## Conventions
 

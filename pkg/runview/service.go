@@ -13,6 +13,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/alert"
 	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/clock"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/notify"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -97,6 +98,15 @@ type LaunchSpec struct {
 	// backend:/model:. Empty applies nothing. Composes with ReviewMode. See
 	// model_override.go.
 	ModelOverrides []ModelOverrideEntry
+	// Budget carries launch-time budget-cap overrides for the workflow's
+	// `budget:` block — the HTTP equivalent of the CLI --max-cost-usd /
+	// --max-tokens / --max-duration / --max-iterations /
+	// --max-parallel-branches flags. Applied to the compiled workflow after
+	// recipe/preset resolution and before the executor snapshots Budget
+	// (non-zero field wins, zero inherits — see ir.ApplyBudgetOverrides).
+	// The detached path forwards it as the CLI flags; the queued cloud path
+	// does not support it yet and rejects a non-zero Budget explicitly.
+	Budget *ir.BudgetOverrides
 	// ParentRunID, ShardIndex, ShardCount, ShardLabel are set when a
 	// parent run dispatches this as a shard child (see Cap. 3 in
 	// docs/security-bots-distributed.md). The cloudpublisher copies
@@ -202,9 +212,9 @@ type ResumeSpec struct {
 	// the .bot contents inline so the server pod does not need to
 	// resolve FilePath against a local filesystem.
 	Source  string
-	Answers map[string]interface{} // answers for human nodes; ignored for failed_resumable
-	Force   bool                   // skip workflow hash check
-	Timeout time.Duration          // 0 disables
+	Answers map[string]any // answers for human nodes; ignored for failed_resumable
+	Force   bool           // skip workflow hash check
+	Timeout time.Duration  // 0 disables
 }
 
 // RunSummary is the lightweight per-row shape returned by List.
@@ -268,6 +278,15 @@ type RunSummary struct {
 	// by the server (Mongo aggregation), not persisted on the run doc.
 	// See cloud-ready plan §F (T-03, T-31).
 	QueuePosition *int `json:"queue_position,omitempty"`
+	// Run-tree shard tuple (T4b, refs #125): the child←parent edge plus
+	// the shard coordinates mirrored from the queue message. Empty for a
+	// top-level (non-sharded) run. Carried so the run list / children
+	// endpoint can project a run's shard/child subtree without a per-run
+	// fetch. See store.Run.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+	ShardIndex  int    `json:"shard_index,omitempty"`
+	ShardCount  int    `json:"shard_count,omitempty"`
+	ShardLabel  string `json:"shard_label,omitempty"`
 }
 
 // ListFilter scopes a List request. Empty fields mean no filter.
@@ -275,8 +294,12 @@ type ListFilter struct {
 	Status   store.RunStatus // exact match
 	Workflow string          // exact match on WorkflowName
 	Repo     string          // exact match on ProjectPath (cloud repo slug)
-	Since    time.Time       // UpdatedAt >= Since
-	Limit    int             // 0 = no limit
+	// Bundle filters runs to those whose resolved bundle name (persisted
+	// BundleName, falling back to basename(BundlePath) minus ".botz" —
+	// see resolveBundleName) matches case-insensitively. Wire name: ?bot=.
+	Bundle string
+	Since  time.Time // UpdatedAt >= Since
+	Limit  int       // 0 = no limit
 	// Node filters runs to those whose persisted events include at
 	// least one node_started for this IR node ID. Used by the studio
 	// to surface "this node was touched by N runs" without scanning
@@ -365,6 +388,12 @@ type Service struct {
 	// Once true, Launch and Resume early-return runtime.ErrServerDraining
 	// so the HTTP layer can map it to 503 Service Unavailable.
 	draining atomic.Bool
+
+	// reconcileStop ends the periodic orphan-reconcile goroutine (see
+	// startPeriodicReconcile). Closed by Drain and Stop via
+	// reconcileStopOnce so double-teardown is safe.
+	reconcileStop     chan struct{}
+	reconcileStopOnce sync.Once
 
 	// publisher, when non-nil, intercepts Launch/Resume/Cancel and
 	// routes them through the cloud queue. When nil the service runs
@@ -637,6 +666,8 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 
 	s.reconcileOrphans()
 	s.reconcileSandboxContainers()
+	s.reconcileSandboxK8sResources()
+	s.startPeriodicReconcile()
 	return s, nil
 }
 

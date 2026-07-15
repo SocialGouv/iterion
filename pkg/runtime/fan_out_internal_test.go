@@ -16,6 +16,23 @@ func TestIsMutatingNode_ToolNodeAlwaysMutating(t *testing.T) {
 	}
 }
 
+func TestIsMutatingNode_SubbotDefaultMutating(t *testing.T) {
+	// A subbot with no isolation assertion may run a child that touches the
+	// shared workspace, so it is conservatively mutating.
+	if !isMutatingNode(&ir.SubbotNode{BaseNode: ir.BaseNode{ID: "sb"}}) {
+		t.Error("subbot node must be classified mutating by default")
+	}
+}
+
+func TestIsMutatingNode_SubbotIsolatedOptOut(t *testing.T) {
+	// `isolated:` asserts the child confines writes to its own run store /
+	// worktree — the mirror of an agent's Readonly — so it is not mutating.
+	n := &ir.SubbotNode{BaseNode: ir.BaseNode{ID: "sb"}, Isolated: true}
+	if isMutatingNode(n) {
+		t.Error("isolated subbot must not be classified mutating")
+	}
+}
+
 func TestIsMutatingNode_AgentReadonlyOverride(t *testing.T) {
 	// Even if the agent declares tools, Readonly=true wins.
 	n := &ir.AgentNode{
@@ -49,10 +66,47 @@ func TestIsMutatingNode_AgentWithOneMutatingTool(t *testing.T) {
 }
 
 func TestIsMutatingNode_AgentWithNoTools(t *testing.T) {
-	// An agent without any tools cannot mutate via the executor.
+	// With no backend signal (unit-test stub), preserve the model-only default.
 	n := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}}
 	if isMutatingNode(n) {
-		t.Error("agent with no tools should not be mutating")
+		t.Error("agent with no tools and no CLI backend should not be mutating")
+	}
+}
+
+func TestIsMutatingNode_CLIBackendWithNoTools(t *testing.T) {
+	for _, backend := range []string{"codex", "claude_code", "kimi", "custom_cli"} {
+		n := &ir.AgentNode{
+			BaseNode:  ir.BaseNode{ID: "a"},
+			LLMFields: ir.LLMFields{Backend: backend},
+		}
+		if !isMutatingNode(n) {
+			t.Errorf("unrestricted %s agent must be classified mutating", backend)
+		}
+	}
+}
+
+type fixedBackendResolver string
+
+func (r fixedBackendResolver) EffectiveBackendName(ir.Node) string { return string(r) }
+
+func TestIsMutatingNode_EffectiveBackendAndFullAccess(t *testing.T) {
+	n := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "a"}}
+	if !isMutatingNodeWithBackend(n, "", fixedBackendResolver("codex")) {
+		t.Error("agent resolved to unrestricted codex must be mutating")
+	}
+	if isMutatingNodeWithBackend(n, "codex", fixedBackendResolver("claw")) {
+		t.Error("effective claw launch override must win over the workflow default")
+	}
+	full := &ir.AgentNode{BaseNode: ir.BaseNode{ID: "full"}, LLMFields: ir.LLMFields{FullAccess: true}}
+	if !isMutatingNode(full) {
+		t.Error("full_access agent must be mutating")
+	}
+	locked := &ir.AgentNode{
+		BaseNode:  ir.BaseNode{ID: "locked"},
+		LLMFields: ir.LLMFields{Readonly: true, FullAccess: true, Backend: "codex"},
+	}
+	if isMutatingNode(locked) {
+		t.Error("readonly must win over conflicting full_access")
 	}
 }
 
@@ -277,6 +331,34 @@ func TestValidateWorkspaceSafety_RejectsTwoMutatingBranches(t *testing.T) {
 	ok := errorAs(err, &rtErr)
 	if !ok || rtErr.Code != ErrCodeWorkspaceSafety {
 		t.Errorf("expected RuntimeError ErrCodeWorkspaceSafety, got %v", err)
+	}
+}
+
+func TestValidateWorkspaceSafety_RejectsParallelUnrestrictedCodexAgents(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:           "t",
+		DefaultBackend: "codex",
+		Nodes: map[string]ir.Node{
+			"router":  &ir.RouterNode{BaseNode: ir.BaseNode{ID: "router"}, RouterMode: ir.RouterFanOutAll},
+			"agent_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_a"}},
+			"agent_b": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "agent_b"}},
+			"join":    &ir.AgentNode{BaseNode: ir.BaseNode{ID: "join"}, AwaitMode: ir.AwaitWaitAll},
+			"done":    &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "router", To: "agent_a"},
+			{From: "router", To: "agent_b"},
+			{From: "agent_a", To: "join"},
+			{From: "agent_b", To: "join"},
+			{From: "join", To: "done"},
+		},
+	}
+	e := &Engine{workflow: wf}
+	if err := e.validateWorkspaceSafety("router", []*ir.Edge{
+		{From: "router", To: "agent_a"},
+		{From: "router", To: "agent_b"},
+	}); err == nil {
+		t.Fatal("parallel unrestricted codex agents must be rejected as mutating")
 	}
 }
 

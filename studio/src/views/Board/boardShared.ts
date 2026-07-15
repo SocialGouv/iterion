@@ -21,6 +21,7 @@ export const BOARD_PALETTE: { label: string; value: string }[] = [
   { label: "Backlog", value: "var(--color-board-backlog)" },
   { label: "Ready", value: "var(--color-board-ready)" },
   { label: "In progress", value: "var(--color-board-in-progress)" },
+  { label: "Awaiting input", value: "var(--color-warning)" },
   { label: "Review", value: "var(--color-board-review)" },
   { label: "Done", value: "var(--color-board-done)" },
   { label: "Blocked", value: "var(--color-board-blocked)" },
@@ -44,6 +45,7 @@ export const BASE_GROUP_OPTIONS: { value: GroupMode; label: string }[] = [
   { value: "assignee", label: "Assignee" },
   { value: "label", label: "Label" },
   { value: "priority", label: "Priority" },
+  { value: "bot", label: "Bot" },
 ];
 
 // Sentinel lane key for issues with no value for the grouping dimension
@@ -110,6 +112,10 @@ export function defaultStateColor(name: string, eligible: boolean, terminal: boo
       return "var(--color-board-ready)";
     case "in_progress":
       return "var(--color-board-in-progress)";
+    case "awaiting_input":
+      // Warning-toned to match the per-card ⏸ awaiting-input badge; a
+      // non-terminal "needs a human answer" column.
+      return "var(--color-warning)";
     case "review":
       return "var(--color-board-review)";
     case "done":

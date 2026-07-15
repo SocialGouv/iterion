@@ -57,6 +57,9 @@
           "status": {
             "type": "string"
           },
+          "status_reason": {
+            "type": "string"
+          },
           "tenant_id": {
             "type": "string"
           },
@@ -2951,6 +2954,30 @@
         ]
       }
     },
+    "/api/runs/{id}/children": {
+      "get": {
+        "operationId": "getRunsByIdChildren",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/children",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/runs/{id}/commit-and-finalize": {
       "parameters": [
         {
@@ -3363,6 +3390,42 @@
         ]
       }
     },
+    "/api/runs/{id}/notes": {
+      "get": {
+        "operationId": "getRunsByIdNotes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/notes",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postRunsByIdNotes",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/runs/{id}/notes",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
     "/api/runs/{id}/pause": {
       "parameters": [
         {
@@ -3610,6 +3673,42 @@
           }
         }
       ]
+    },
+    "/api/runs/{id}/tags": {
+      "get": {
+        "operationId": "getRunsByIdTags",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/runs/{id}/tags",
+        "tags": [
+          "runs"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "putRunsByIdTags",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PUT /api/runs/{id}/tags",
+        "tags": [
+          "runs"
+        ]
+      }
     },
     "/api/runs/{id}/tools/{toolUseID}/{kind}": {
       "get": {
@@ -4760,6 +4859,18 @@
         "tags": [
           "bots"
         ]
+      },
+      "post": {
+        "operationId": "postV1Bots",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/bots",
+        "tags": [
+          "bots"
+        ]
       }
     },
     "/api/v1/bots/install": {
@@ -4771,6 +4882,20 @@
           }
         },
         "summary": "POST /api/v1/bots/install",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/templates": {
+      "get": {
+        "operationId": "getV1BotsTemplates",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/bots/templates",
         "tags": [
           "bots"
         ]
@@ -4845,6 +4970,30 @@
           }
         },
         "summary": "PUT /api/v1/bots/{name}/overlay",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
+    "/api/v1/bots/{name}/triggers/from-invocation": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1BotsByNameTriggersFromInvocation",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/bots/{name}/triggers/from-invocation",
         "tags": [
           "bots"
         ]
@@ -5107,6 +5256,18 @@
           "plugins"
         ]
       },
+      "get": {
+        "operationId": "getV1PluginsByName",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/v1/plugins/{name}",
+        "tags": [
+          "plugins"
+        ]
+      },
       "parameters": [
         {
           "in": "path",
@@ -5185,6 +5346,38 @@
           }
         },
         "summary": "POST /api/v1/plugins/{name}/enable",
+        "tags": [
+          "plugins"
+        ]
+      }
+    },
+    "/api/v1/plugins/{name}/lifecycle/{phase}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "phase",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postV1PluginsByNameLifecycleByPhase",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/plugins/{name}/lifecycle/{phase}",
         "tags": [
           "plugins"
         ]

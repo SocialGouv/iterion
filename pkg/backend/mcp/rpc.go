@@ -63,7 +63,7 @@ func (c *sdkClient) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	return tools, nil
 }
 
-func (c *sdkClient) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*ToolCallResult, error) {
+func (c *sdkClient) CallTool(ctx context.Context, toolName string, args map[string]any) (*ToolCallResult, error) {
 	if err := c.ensureStarted(ctx); err != nil {
 		return nil, err
 	}

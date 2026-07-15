@@ -52,7 +52,8 @@ function stripMeta(v: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-function prettyMd(value: Record<string, unknown>): string {
+// Exported for unit tests.
+export function prettyMd(value: Record<string, unknown>): string {
   const entries = Object.entries(value);
   if (entries.length === 0) return "";
   // Single string field → render verbatim. Typical for {text: "..."}
@@ -67,9 +68,12 @@ function prettyMd(value: Record<string, unknown>): string {
     // content.
     if (isPlainObject(v)) return prettyMd(stripMeta(v));
   }
-  // Multi-field: section per key.
+  // Multi-field: section per key. Blank string fields (e.g. a gate's
+  // empty `fail_log` on success) are skipped entirely — a heading with
+  // no body under it reads as a rendering bug, not as information.
   const parts: string[] = [];
   for (const [k, v] of entries) {
+    if (typeof v === "string" && v.trim() === "") continue;
     parts.push(`#### ${humanizeKey(k)}`);
     parts.push(renderValue(v));
   }

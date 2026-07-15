@@ -110,7 +110,7 @@ func TestRebuildArtifacts_OnlyPublishedNodesAppear(t *testing.T) {
 			},
 		},
 	}
-	outputs := map[string]map[string]interface{}{
+	outputs := map[string]map[string]any{
 		"a": {"k": "va"},
 		"b": {"k": "vb"},
 		"c": {"k": "vc"},

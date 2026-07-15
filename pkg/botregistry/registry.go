@@ -32,7 +32,11 @@ type Entry struct {
 	// feature_dev. Empty for loose .bot files and bundles that declare
 	// no persona. Surfaced by `iterion bots list` and the studio bot
 	// picker so operators recognise the team by name, not just by id.
-	DisplayName  string   `json:"display_name,omitempty" yaml:"display_name,omitempty"`
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`
+	// Icon is the bot's emoji identity from the manifest (manifest.yaml
+	// icon:). Empty for loose .bot files and bundles without one — the
+	// studio then falls back to its persona/hash identity.
+	Icon         string   `json:"icon,omitempty" yaml:"icon,omitempty"`
 	Description  string   `json:"description" yaml:"description,omitempty"`
 	Path         string   `json:"path" yaml:"path"`
 	Triggers     []string `json:"triggers,omitempty" yaml:"triggers,omitempty"`
@@ -364,6 +368,7 @@ func parseBundle(dir string) (*Entry, error) {
 	return &Entry{
 		Name:            m.Name,
 		DisplayName:     m.DisplayName,
+		Icon:            m.Icon,
 		Description:     strings.TrimSpace(m.Description),
 		Path:            dir,
 		Triggers:        m.Triggers,

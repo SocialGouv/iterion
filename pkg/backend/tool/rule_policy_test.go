@@ -67,7 +67,7 @@ func TestRulePolicyMatchByVarMatch(t *testing.T) {
 	rp := &RulePolicy{
 		Rules: []Rule{
 			{
-				VarMatch: map[string]interface{}{"env": "production"},
+				VarMatch: map[string]any{"env": "production"},
 				Allow:    []string{"read_file"},
 			},
 		},
@@ -77,7 +77,7 @@ func TestRulePolicyMatchByVarMatch(t *testing.T) {
 	// production env — only read_file
 	err := rp.CheckContext(PolicyContext{
 		ToolName: "read_file",
-		Vars:     map[string]interface{}{"env": "production"},
+		Vars:     map[string]any{"env": "production"},
 	})
 	if err != nil {
 		t.Errorf("production + read_file should be allowed, got: %v", err)
@@ -85,7 +85,7 @@ func TestRulePolicyMatchByVarMatch(t *testing.T) {
 
 	err = rp.CheckContext(PolicyContext{
 		ToolName: "write_file",
-		Vars:     map[string]interface{}{"env": "production"},
+		Vars:     map[string]any{"env": "production"},
 	})
 	if err == nil {
 		t.Error("production + write_file should be denied")
@@ -94,7 +94,7 @@ func TestRulePolicyMatchByVarMatch(t *testing.T) {
 	// staging env — falls through to open fallback
 	err = rp.CheckContext(PolicyContext{
 		ToolName: "write_file",
-		Vars:     map[string]interface{}{"env": "staging"},
+		Vars:     map[string]any{"env": "staging"},
 	})
 	if err != nil {
 		t.Errorf("staging should allow everything via fallback, got: %v", err)
@@ -105,7 +105,7 @@ func TestRulePolicyVarMatchBoolAndNumber(t *testing.T) {
 	rp := &RulePolicy{
 		Rules: []Rule{
 			{
-				VarMatch: map[string]interface{}{"debug": true, "retries": 3},
+				VarMatch: map[string]any{"debug": true, "retries": 3},
 				Allow:    []string{"debug_tool"},
 			},
 		},
@@ -114,7 +114,7 @@ func TestRulePolicyVarMatchBoolAndNumber(t *testing.T) {
 
 	err := rp.CheckContext(PolicyContext{
 		ToolName: "debug_tool",
-		Vars:     map[string]interface{}{"debug": true, "retries": 3},
+		Vars:     map[string]any{"debug": true, "retries": 3},
 	})
 	if err != nil {
 		t.Errorf("should match bool/number vars, got: %v", err)
@@ -122,7 +122,7 @@ func TestRulePolicyVarMatchBoolAndNumber(t *testing.T) {
 
 	err = rp.CheckContext(PolicyContext{
 		ToolName: "debug_tool",
-		Vars:     map[string]interface{}{"debug": false, "retries": 3},
+		Vars:     map[string]any{"debug": false, "retries": 3},
 	})
 	if err == nil {
 		t.Error("should not match when debug=false")
@@ -229,7 +229,7 @@ func TestRulePolicyCombinedConditions(t *testing.T) {
 		Rules: []Rule{
 			{
 				NodeIDs:  []string{"deploy_agent"},
-				VarMatch: map[string]interface{}{"env": "production"},
+				VarMatch: map[string]any{"env": "production"},
 				Allow:    []string{"deploy_tool"},
 			},
 		},
@@ -240,7 +240,7 @@ func TestRulePolicyCombinedConditions(t *testing.T) {
 	err := rp.CheckContext(PolicyContext{
 		NodeID:   "deploy_agent",
 		ToolName: "deploy_tool",
-		Vars:     map[string]interface{}{"env": "production"},
+		Vars:     map[string]any{"env": "production"},
 	})
 	if err != nil {
 		t.Errorf("combined match should allow, got: %v", err)
@@ -250,7 +250,7 @@ func TestRulePolicyCombinedConditions(t *testing.T) {
 	err = rp.CheckContext(PolicyContext{
 		NodeID:   "deploy_agent",
 		ToolName: "deploy_tool",
-		Vars:     map[string]interface{}{"env": "staging"},
+		Vars:     map[string]any{"env": "staging"},
 	})
 	if err == nil {
 		t.Error("should deny when vars don't match")
@@ -260,7 +260,7 @@ func TestRulePolicyCombinedConditions(t *testing.T) {
 	err = rp.CheckContext(PolicyContext{
 		NodeID:   "other_agent",
 		ToolName: "deploy_tool",
-		Vars:     map[string]interface{}{"env": "production"},
+		Vars:     map[string]any{"env": "production"},
 	})
 	if err == nil {
 		t.Error("should deny when NodeID doesn't match")

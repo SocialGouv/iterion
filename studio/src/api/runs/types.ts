@@ -98,6 +98,16 @@ export interface RunSummary {
   // "manual"; the UI must treat empty as "manual" — see
   // runSourceMeta.normalizeSourceKind.
   source_kind?: RunSourceKind;
+  // Run-tree shard tuple (T4b, refs #125): the child←parent edge plus
+  // the shard coordinates mirrored from the queue message. parent_run_id
+  // points at the run that spawned this shard/child; the shard_* fields
+  // describe its slot in the parent's fan-out. All absent for a
+  // top-level (non-sharded) run. Lets the run list / children endpoint
+  // project a run's shard/child subtree client-side.
+  parent_run_id?: string;
+  shard_index?: number;
+  shard_count?: number;
+  shard_label?: string;
 }
 
 export type MergeStrategy = "squash" | "merge";
@@ -241,6 +251,13 @@ export interface RunHeader {
   // whether to render at all.
   work_dir?: string;
   worktree?: boolean;
+  // True when work_dir still exists on the server's filesystem — i.e. the
+  // inline file editor + live diff surfaces can be served without a 409.
+  // False for a cloud run (worktree on the runner pod) and a finalized/
+  // gc'd local run (worktree torn down). The RunView gates its Monaco
+  // file-editor affordances on this so an Edit click never 409s. Absent
+  // (undefined) on pre-feature snapshots — treated as unavailable.
+  worktree_available?: boolean;
   // Worktree finalization summary; empty for non-worktree runs or
   // runs that never reached a clean exit.
   final_commit?: string;
@@ -283,6 +300,15 @@ export interface RunHeader {
   // Today only dispatcher runs populate it, carrying the back-reference
   // to the kanban issue so the RunHeader can link back to /board.
   source?: RunSource;
+  // Run-tree shard tuple (T4b, refs #125): parent_run_id points UP at the
+  // run that spawned this shard/child; shard_index/shard_count/shard_label
+  // describe this run's slot in its parent's fan-out (mirrored from the
+  // queue message). All absent for a top-level (non-sharded) run. The
+  // tree/shard-grid UI that renders these is a separate follow-up.
+  parent_run_id?: string;
+  shard_index?: number;
+  shard_count?: number;
+  shard_label?: string;
   // watched_issue_ids is the server-authoritative set of native-kanban
   // issue IDs this run subscribed to (MVP3b). The whats-next WatchPanel
   // reads it as the primary watch-list source; absent for legacy runs
@@ -293,6 +319,23 @@ export interface RunHeader {
   // iteration counter (matching the runtime's `node#N` log label), NOT
   // the count of node executions. Absent for runs with no named loops.
   loops?: Record<string, RunLoopProgress>;
+  // backends_used summarizes the distinct (backend, model) pairs the
+  // run's LLM/delegate nodes executed against, reducer-derived from each
+  // node_finished's stamped _backend / _model. Auto-detected backends
+  // report their resolved value, never "auto". Absent for tool/compute-
+  // only runs (the header then renders no backend chip).
+  backends_used?: BackendUsage[];
+}
+
+// BackendUsage is one distinct (backend, model) pair the run's LLM /
+// delegate nodes executed against. node_count is the number of distinct
+// IR nodes that resolved to it (loops / resumes don't inflate it); model
+// is empty when the backend reported no effective model. Mirror of
+// runview.BackendUsage.
+export interface BackendUsage {
+  backend: string;
+  model?: string;
+  node_count: number;
 }
 
 // RunLoopProgress reports a named loop's semantic progress: the current
@@ -376,6 +419,10 @@ export interface ListRunsParams {
   // least one node_started for this IR node id. Used by the studio's
   // "this node was touched by N runs" chip on hover/select.
   node?: string;
+  // Bot filters runs to a bundle name (case-insensitive server-side,
+  // matches RunSummary.bundle_name). Powers the bot home's "recent
+  // runs" card. Wire name: ?bot=.
+  bot?: string;
 }
 
 // One repository (project_path) that has runs, with a per-repo count.
@@ -475,6 +522,17 @@ export interface PlanSnapshot {
   todos: PlanTodo[];
 }
 
+// RunNote is one freeform operator note attached to a run — the durable
+// annotations a team leaves ("flaky, re-ran", "root cause was X"). Served
+// by GET /api/runs/:id/notes in ascending seq (chronological) order;
+// created by POST /api/runs/:id/notes. Immutable once created.
+export interface RunNote {
+  seq: number;
+  author: string;
+  body: string;
+  ts: string;
+}
+
 // DownloadOutcome describes what happened on the save side. `cancelled`
 // is desktop-only — it fires when the user dismisses the native save
 // dialog. In browser mode the SPA can't observe the user's choice
@@ -541,6 +599,17 @@ export interface CreateRunRequest {
   // pauses for human approval on any tool not allow-listed; "deny" hard-
   // blocks it. See docs/permissions.md.
   permission?: string;
+  // Run-level mono/dual review-topology override ("auto" | "mono" |
+  // "dual") for bots that declare a `review_mode` var. Omitted/"auto"
+  // resolves from the providers detected at launch. See
+  // pkg/reviewtopology.
+  review_mode?: string;
+  // Run-level budget-cap overrides — the HTTP twin of the CLI --max-*
+  // flags. Non-zero fields win over the workflow's `budget:` block;
+  // zero/omitted fields inherit. max_duration is a Go duration string
+  // ("2h", "1h30m"), validated server-side (bad value → 400). Omit the
+  // whole object when nothing is overridden.
+  budget?: RunBudget;
   // Per-node/-group model+backend overrides (Launch dropdowns). Each entry
   // targets nodes by selector (node id, id glob "reviewer_*", or kind
   // keyword "agent"|"judge") and wins over the node's DSL backend:/model:.
@@ -660,8 +729,13 @@ export type RunFilesMode = "uncommitted" | "branch" | "combined" | "";
 
 // Mirror of server.runFilesResponse. `available` is the gate: when
 // false, `reason` is one of "no_workdir" | "not_git_repo" |
-// "no_baseline" | "worktree_gone" and the studio renders an empty-
-// state instead of a file list.
+// "no_baseline" | "worktree_gone" | "building" and the studio renders
+// an empty-state instead of a file list.
+//
+// `building` is a live run whose worktree/branch-range gitmeta this
+// server pod can't yet see (a cloud run's worktree lives on the runner
+// pod; its gitmeta is only recorded at finalize) — the panel shows an
+// "available when the run finishes" hint rather than an error.
 //
 // `live` distinguishes the source: true when files come from a
 // still-existing worktree (uncommitted or live branch range), false
@@ -680,18 +754,24 @@ export interface RunFiles {
     | "not_git_repo"
     | "no_baseline"
     | "worktree_gone"
+    | "building"
     | string;
 }
 
 // Mirror of pkg/git.DiffPayload. before/after are nil for added/deleted
 // files respectively; binary suppresses both contents so the UI can
-// substitute a "binary file" placeholder. Status is not part of the
-// payload — the caller passes it through from the prior /files listing.
+// substitute a "binary file" placeholder. oversized suppresses both
+// contents when a side exceeds the diff read cap OR (for a persisted
+// cloud diff) the content was dropped past the persistence budget — the
+// UI substitutes a "too large to display" placeholder. Status is not part
+// of the payload — the caller passes it through from the prior /files
+// listing.
 export interface RunFileDiff {
   path: string;
   before: string | null;
   after: string | null;
   binary: boolean;
+  oversized?: boolean;
 }
 
 // Mirror of server.runFileContentResponse. Raw file contents from the run's

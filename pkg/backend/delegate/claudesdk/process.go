@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,6 +39,12 @@ type processConfig struct {
 	MaxBudgetUSD float64
 
 	IncludePartialMessages bool
+
+	// ThinkingDisplay maps to --thinking-display (summarized|omitted).
+	// Opus 4.8+ defaults display to omitted in headless mode, streaming
+	// thinking blocks with empty text; "summarized" makes the reasoning
+	// text visible. Empty means the flag is not emitted.
+	ThinkingDisplay string
 
 	Resume               string
 	ForkSession          bool
@@ -85,6 +92,9 @@ func buildArgs(cfg processConfig, streaming bool) []string {
 	}
 	if cfg.IncludePartialMessages {
 		args = append(args, "--include-partial-messages")
+	}
+	if cfg.ThinkingDisplay != "" {
+		args = append(args, "--thinking-display", cfg.ThinkingDisplay)
 	}
 
 	if len(cfg.AllowedTools) > 0 {
@@ -250,10 +260,7 @@ func spawnProcess(ctx context.Context, cliPath string, args []string, opts spawn
 		if opts.Cwd != "" {
 			cmd.Dir = opts.Cwd
 		}
-		cmd.Env = os.Environ()
-		for k, v := range opts.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
-		}
+		cmd.Env = mergeCmdEnv(os.Environ(), opts.Env)
 	}
 
 	// Pipes are file descriptors in the parent process; if a later step
@@ -485,4 +492,46 @@ func (p *cliProcess) drainStderr() {
 			p.stderrCallback(line)
 		}
 	}
+}
+
+// mergeCmdEnv layers override onto base (typically os.Environ()) with
+// key-level REPLACEMENT rather than blind appending. A key present in override
+// removes every inherited occurrence, then:
+//   - non-empty value → the override value is set (single occurrence);
+//   - empty value → the key is SUPPRESSED (left absent).
+//
+// This matters because a plain `append(os.Environ(), "K=v")` leaves duplicate
+// keys, and the child's resolution of a duplicate is not guaranteed to be the
+// appended (last) one — glibc getenv and Node build process.env differently.
+// The claude CLI prefers ANTHROPIC_API_KEY over the CLAUDE_CONFIG_DIR OAuth
+// token, so a runner carrying a shared ANTHROPIC_API_KEY in its pod env would
+// otherwise shadow a per-run forfait even when the resolver set the key to ""
+// to suppress it. Deterministic (override keys applied in sorted order).
+func mergeCmdEnv(base []string, override map[string]string) []string {
+	if len(override) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(override))
+	for _, kv := range base {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			out = append(out, kv)
+			continue
+		}
+		if _, ok := override[kv[:eq]]; ok {
+			continue // inherited value replaced/suppressed below
+		}
+		out = append(out, kv)
+	}
+	keys := make([]string, 0, len(override))
+	for k := range override {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if v := override[k]; v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
 }

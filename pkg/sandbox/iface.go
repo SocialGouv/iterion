@@ -108,6 +108,29 @@ type Run interface {
 	Cleanup(ctx context.Context) error
 }
 
+// SecretFileRefresher is an optional interface a [Run] may implement to
+// rewrite a materialised file secret's in-container content mid-run.
+//
+// A short-lived credential (e.g. a GitHub App installation token, ~1h)
+// mounted as an `as: file` secret is a launch-time SNAPSHOT: the docker
+// bind-mount source and the k8s Secret are both fixed when the sandbox
+// starts. A long run (the common `sandbox: auto` cloud case) that
+// pushes/comments after the token's lifetime would use a dead
+// credential. The runner drives a refresh loop that re-reads the store
+// record on a cadence and, when it rotated, calls RefreshSecretFile so
+// the driver propagates the fresh value to the running sandbox — the
+// sandboxed counterpart to the no-sandbox in-pod file rewrite.
+//
+// Implementations MUST NOT log the value. Failures are returned to the
+// caller (logged and retried next tick); the previous value stays in
+// place — nothing is truncated on error.
+type SecretFileRefresher interface {
+	// RefreshSecretFile propagates value to the named file secret's
+	// in-container location. name matches a [SecretFileMount.Name] the
+	// sandbox was started with; an unknown name is an error.
+	RefreshSecretFile(ctx context.Context, name string, value []byte) error
+}
+
 // Capabilities advertises a driver's supported feature set.
 //
 // The engine compares a [Spec] against capabilities at Prepare time:
@@ -239,6 +262,14 @@ type RunInfo struct {
 	// that support [Capabilities.SupportsNetworkPolicy]. Phase 3
 	// populates this; Phase 0 leaves it empty.
 	ProxyEndpoint string
+
+	// MaxDurationSeconds is the run's budgeted wall-clock cap in seconds
+	// (0 = unbounded). Drivers that can bound a sandbox's lifetime use it
+	// to self-terminate a leaked sandbox — the kubernetes driver derives
+	// spec.activeDeadlineSeconds from it (plus a margin) so a pod orphaned
+	// by a runner killed mid-run stops consuming resources. Drivers that
+	// can't (docker relies on the label reaper) ignore it.
+	MaxDurationSeconds int64
 
 	// ProxyCACert, if non-empty, is the PEM of the per-run egress CA the
 	// proxy uses in TLS-inspection mode (Layer 2 secret substitution).

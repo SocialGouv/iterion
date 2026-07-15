@@ -61,6 +61,10 @@ type StepResult struct {
 
 	// Usage for this step.
 	Usage Usage
+
+	// Thinking is the extended-thinking (reasoning) text produced during
+	// this step; empty when the step produced no thinking.
+	Thinking string
 }
 
 // TurnCaptureInfo is the payload of the OnTurnCapture hook fired by

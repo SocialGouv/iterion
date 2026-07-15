@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { Tabs } from "@/components/ui/Tabs";
 import { useLocation, useParams, useSearch } from "wouter";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -20,7 +21,7 @@ import {
   removeMember,
   updateMemberRole,
 } from "@/api/byok";
-import ApiKeysPanel from "@/views/settings/ApiKeys";
+import ApiKeysPanel from "@/views/account/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 import AuditTab from "./tabs/AuditTab";
@@ -297,21 +298,19 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
 
       <section>
         <h3 className="font-medium mb-2">Members</h3>
-        <div className="overflow-x-auto"><table className="w-full text-sm">
-          <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-            <tr>
-              <th className="px-2 py-1">Email</th>
-              <th className="px-2 py-1">Name</th>
-              <th className="px-2 py-1">Role</th>
-              <th className="px-2 py-1"></th>
-            </tr>
-          </thead>
-          <tbody>
+        <Table caption="Team members">
+          <THead>
+            <Th>Email</Th>
+            <Th>Name</Th>
+            <Th>Role</Th>
+            <Th align="right" srLabel="Actions" />
+          </THead>
+          <TBody>
             {members.map((m) => (
-              <tr key={m.user_id} className="border-t border-border-subtle">
-                <td className="px-2 py-2">{m.email ?? m.user_id}</td>
-                <td className="px-2 py-2">{m.name ?? "—"}</td>
-                <td className="px-2 py-2">
+              <Tr key={m.user_id}>
+                <Td>{m.email ?? m.user_id}</Td>
+                <Td>{m.name ?? "—"}</Td>
+                <Td>
                   {canManage ? (
                     <Select
                       value={m.role}
@@ -327,8 +326,8 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
                   ) : (
                     m.role
                   )}
-                </td>
-                <td className="px-2 py-2 text-right">
+                </Td>
+                <Td align="right">
                   {canManage && (
                     <Button
                       variant="danger"
@@ -338,11 +337,11 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
                       Remove
                     </Button>
                   )}
-                </td>
-              </tr>
+                </Td>
+              </Tr>
             ))}
-          </tbody>
-        </table></div>
+          </TBody>
+        </Table>
       </section>
 
       <section>
@@ -350,24 +349,22 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
         {invs.length === 0 ? (
           <div className="text-fg-muted text-sm">None.</div>
         ) : (
-          <div className="overflow-x-auto"><table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-              <tr>
-                <th className="px-2 py-1">Email</th>
-                <th className="px-2 py-1">Role</th>
-                <th className="px-2 py-1">Expires</th>
-                <th className="px-2 py-1"></th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table caption="Pending team invitations">
+            <THead>
+              <Th>Email</Th>
+              <Th>Role</Th>
+              <Th>Expires</Th>
+              <Th align="right" srLabel="Actions" />
+            </THead>
+            <TBody>
               {invs.map((i) => (
-                <tr key={i.id} className="border-t border-border-subtle">
-                  <td className="px-2 py-2">{i.email}</td>
-                  <td className="px-2 py-2">{i.role}</td>
-                  <td className="px-2 py-2 text-fg-muted">
+                <Tr key={i.id}>
+                  <Td>{i.email}</Td>
+                  <Td>{i.role}</Td>
+                  <Td className="text-fg-muted">
                     {new Date(i.expires_at).toLocaleString()}
-                  </td>
-                  <td className="px-2 py-2 text-right">
+                  </Td>
+                  <Td align="right">
                     {canManage && (
                       <Button
                         variant="danger"
@@ -377,11 +374,11 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
                         Cancel
                       </Button>
                     )}
-                  </td>
-                </tr>
+                  </Td>
+                </Tr>
               ))}
-            </tbody>
-          </table></div>
+            </TBody>
+          </Table>
         )}
       </section>
     </div>

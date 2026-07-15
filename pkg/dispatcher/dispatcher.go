@@ -62,6 +62,11 @@ type Dispatcher struct {
 	logger     *iterlog.Logger
 	storeDir   string
 	hostMarker string
+	// claims journals this process's in-flight tracker claims so a
+	// successor daemon can release the ones a crash left behind — the
+	// only recovery path for external trackers, whose claim label
+	// carries no host/PID marker. Nil when StoreDir is unset.
+	claims *claimJournal
 
 	state *state
 	cmds  chan cmd
@@ -156,6 +161,7 @@ func New(opts Options) (*Dispatcher, error) {
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 		ws:         newWsBridge(opts.Logger),
+		claims:     newClaimJournal(opts.StoreDir, opts.Logger),
 	}
 	c.cfg.Store(opts.Config)
 	// Seed the published snapshot so Snapshot() never reads a nil pointer
@@ -200,37 +206,62 @@ func (c *Dispatcher) Start(ctx context.Context) {
 // Markers from a different shape (older or user-set) also stay so we
 // don't reset state we don't understand.
 func (c *Dispatcher) sweepStaleLocalClaims() {
-	sweeper, ok := c.tracker.(interface {
-		SweepStaleClaims(func(marker string) bool) ([]string, error)
-	})
-	if !ok {
-		// External adapters (github/forgejo) carry the claim as a single
-		// markerless label (ClaimedLabel) — no host/PID is encoded, so a
-		// sweep has nothing to key on, and these adapters ship no GC of
-		// their own. Consequence: a claim left behind by a crashed or
-		// SIGKILL'd dispatcher (OOM, watchexec rebuild, pod eviction, a
-		// run that never reached finishRun's Release) keeps the issue
-		// filtered out of ListCandidates indefinitely — it is only
-		// reclaimed by removing the label on the tracker by hand. Surface
-		// that once at startup so the stranding isn't silent. A proper
-		// fix (marker-bearing claim labels + an external sweep) is left
-		// as a precise finding.
-		c.logger.Info("dispatcher: %s tracker has no stale-claim sweep — an issue claimed by a dispatcher that crashes before releasing stays out of dispatch until its claim label is removed by hand", c.tracker.Name())
-		return
-	}
 	host, _ := osHostname()
 	if host == "" {
 		host = "dispatcher"
 	}
-	cleared, err := sweeper.SweepStaleClaims(func(marker string) bool {
-		return isStaleLocalMarker(marker, host)
-	})
-	if err != nil {
-		c.logger.Warn("dispatcher: stale-claim sweep failed: %v", err)
+	if sweeper, ok := c.tracker.(interface {
+		SweepStaleClaims(func(marker string) bool) ([]string, error)
+	}); ok {
+		cleared, err := sweeper.SweepStaleClaims(func(marker string) bool {
+			return isStaleLocalMarker(marker, host)
+		})
+		if err != nil {
+			c.logger.Warn("dispatcher: stale-claim sweep failed: %v", err)
+		} else if len(cleared) > 0 {
+			c.logger.Info("dispatcher: released %d stale claim(s) from dead local PIDs: %v", len(cleared), cleared)
+		}
+	}
+	// Journal-based sweep — the only recovery path for external adapters
+	// (github/forgejo/gitlab), whose claim label carries no host/PID
+	// marker the tracker-side sweep above could key on. Entries whose
+	// recorded marker belongs to a dead local PID are released with the
+	// idempotent Release (an entry journalled just before a crash may
+	// never have reached the tracker — releasing an unclaimed issue is
+	// not an error). Entries from live PIDs (another daemon sharing the
+	// store dir) stay untouched. For the native tracker this is a
+	// redundant second net behind SweepStaleClaims; Release tolerates
+	// the already-swept case via ErrNotFound.
+	c.sweepJournalledClaims(host)
+}
+
+// sweepJournalledClaims releases journal entries left by dead local
+// dispatcher PIDs. See sweepStaleLocalClaims for the safety argument.
+func (c *Dispatcher) sweepJournalledClaims(host string) {
+	entries := c.claims.Load()
+	if len(entries) == 0 {
 		return
 	}
-	if len(cleared) > 0 {
-		c.logger.Info("dispatcher: released %d stale claim(s) from dead local PIDs: %v", len(cleared), cleared)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var released []string
+	for _, e := range entries {
+		if !isStaleLocalMarker(e.Marker, host) {
+			continue
+		}
+		if err := c.tracker.Release(ctx, e.IssueID, e.Marker); err != nil &&
+			!errors.Is(err, tracker.ErrNotFound) &&
+			!errors.Is(err, tracker.ErrClaimConflict) {
+			// Keep the entry: the next boot retries (e.g. the forge API
+			// was briefly unreachable).
+			c.logger.Warn("dispatcher: release journalled claim %s: %v (will retry next start)", e.Identifier, err)
+			continue
+		}
+		c.claims.Remove(e.IssueID)
+		released = append(released, e.Identifier)
+	}
+	if len(released) > 0 {
+		c.logger.Info("dispatcher: released %d journalled claim(s) from dead local PIDs: %v", len(released), released)
 	}
 }
 

@@ -1,3 +1,9 @@
+// Deliberately NOT built on ui/Dialog (Radix): this is a combobox/listbox
+// pattern — focus stays pinned on the input while ↑/↓ move an
+// aria-activedescendant cursor through the option list. Radix Dialog's
+// focus scope fights that (it wants a roving tab order inside the
+// content), so the hand-rolled overlay + Tab pin below is the correct
+// a11y shape here. Covered by axe in __tests__/a11y/primitives.test.tsx.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MagnifyingGlassIcon } from "@radix-ui/react-icons";
 
@@ -122,7 +128,10 @@ export default function CommandPalette({ open, actions, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-[var(--z-confirm)] bg-scrim-popover flex items-start justify-center pt-[15vh]"
+      // bg-scrim-modal (not -popover): the palette is fully modal — it
+      // pins Tab and blocks the page — so it dims like the settings
+      // dialog rather than floating over full-contrast content (L8).
+      className="fixed inset-0 z-[var(--z-confirm)] bg-scrim-modal flex items-start justify-center pt-[15vh]"
       onClick={onClose}
     >
       <div

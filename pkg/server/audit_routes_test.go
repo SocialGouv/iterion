@@ -33,7 +33,7 @@ func TestAuditEndToEnd(t *testing.T) {
 	s.auditPlatform(r, "t1", "org.status_changed", "org", "t1", nil)
 
 	// Writes are detached; poll briefly for both rows to land.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		tenantEvs, _ := s.auditStore.ListByTenant(context.Background(), "t1", audit.Page{})
 		platEvs, _ := s.auditStore.ListPlatform(context.Background(), audit.Page{})

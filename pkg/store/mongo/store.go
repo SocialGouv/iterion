@@ -12,6 +12,8 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -41,6 +43,11 @@ const (
 	colRunLogs      = "run_logs"
 	colInteractions = "interactions"
 	colUserMessages = "user_messages"
+	colRunGitMeta   = "run_gitmeta"
+	colRunPlans     = "run_plans"
+	colRunNotes     = "run_notes"
+	colRunTurns     = "run_turns"
+	colRunTags      = "run_tags"
 )
 
 // Config bundles the connection settings for a MongoRunStore.
@@ -57,6 +64,12 @@ type Config struct {
 	// uploader can't push the runner pod into OOM by streaming an
 	// arbitrarily large body.
 	MaxAttachmentBytes int64
+	// RunFilesScratchDir is the runner-local base directory under which
+	// EnsureRunFilesDir creates per-run artifact-file scratch areas
+	// (bind-mounted into the sandbox). Empty applies the default
+	// (<os.TempDir>/iterion-runfiles). Only the runner pod writes here;
+	// the server pod reads the uploaded copies from S3.
+	RunFilesScratchDir string
 }
 
 // defaultMaxAttachmentBytes matches the documented upload cap on the
@@ -93,6 +106,11 @@ type Store struct {
 	runLogs            *mongo.Collection
 	interactions       *mongo.Collection
 	userMessages       *mongo.Collection
+	runGitMeta         *mongo.Collection
+	runPlans           *mongo.Collection
+	runNotes           *mongo.Collection
+	runTurns           *mongo.Collection
+	runTags            *mongo.Collection
 	blob               blob.Client
 	logger             *iterlog.Logger
 	lockProv           LockProvider
@@ -101,6 +119,11 @@ type Store struct {
 	// logPositionFn stamps Event.LogOffset at AppendEvent time from the
 	// runner's per-run log writer total (the cloud twin of the
 	// filesystem store's hook). nil disables stamping. See runlogs.go.
+	// runFilesScratch is the runner-local base dir under which
+	// EnsureRunFilesDir creates per-run artifact-file scratch areas
+	// (see runfiles.go). Empty on a server-only store — it never writes.
+	runFilesScratch string
+
 	logPositionMu sync.Mutex
 	logPositionFn store.LogPositionFn
 	// activeDurationFn stamps Event.ActiveMs at AppendEvent time from the
@@ -141,6 +164,10 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if maxAttach <= 0 {
 		maxAttach = defaultMaxAttachmentBytes
 	}
+	scratch := cfg.RunFilesScratchDir
+	if scratch == "" {
+		scratch = filepath.Join(os.TempDir(), "iterion-runfiles")
+	}
 	db := cli.Database(cfg.Database)
 	s := &Store{
 		client:             cli,
@@ -151,10 +178,16 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		runLogs:            db.Collection(colRunLogs),
 		interactions:       db.Collection(colInteractions),
 		userMessages:       db.Collection(colUserMessages),
+		runGitMeta:         db.Collection(colRunGitMeta),
+		runPlans:           db.Collection(colRunPlans),
+		runNotes:           db.Collection(colRunNotes),
+		runTurns:           db.Collection(colRunTurns),
+		runTags:            db.Collection(colRunTags),
 		blob:               cfg.Blob,
 		logger:             cfg.Logger,
 		lockProv:           cfg.LockProvider,
 		maxAttachmentBytes: maxAttach,
+		runFilesScratch:    scratch,
 	}
 	if err := s.EnsureSchema(ctx, cfg.EventsTTLDays); err != nil {
 		_ = cli.Disconnect(context.Background())
@@ -243,6 +276,12 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 			Keys:    bson.D{{Key: "runner_id", Value: 1}},
 			Options: options.Index().SetName("runner_id_partial").SetPartialFilterExpression(bson.M{"runner_id": bson.M{"$exists": true}}),
 		},
+		// Run-tree reverse queries (T4b, refs #125). Partial on the keyed
+		// field so only tree-participating runs index — a card-triggered
+		// run sets source.issue_id, a shard/child sets parent_run_id;
+		// plain manual runs leave both empty.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "source.issue_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_source_issue_created").SetPartialFilterExpression(bson.M{"source.issue_id": bson.M{"$exists": true}})},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "parent_run_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_parent_run_created").SetPartialFilterExpression(bson.M{"parent_run_id": bson.M{"$exists": true}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure runs indexes: %w", err)
@@ -257,19 +296,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 	}
 	if eventsTTLDays > 0 {
-		// MongoDB requires the TTL to be on a top-level date field.
-		// Plan §D.2 names this `ts`. expireAfterSeconds is an int32, so a very
-		// large TTL (> ~24855 days) would overflow the cast to a negative
-		// value; clamp to int32 max (~68 years) instead.
-		secs := int64(eventsTTLDays) * 86400
-		const maxTTLSeconds = int64(1<<31 - 1)
-		if secs > maxTTLSeconds {
-			secs = maxTTLSeconds
-		}
-		eventIdx = append(eventIdx, mongo.IndexModel{
-			Keys:    bson.D{{Key: "ts", Value: 1}},
-			Options: options.Index().SetName("events_ttl").SetExpireAfterSeconds(int32(secs)),
-		})
+		eventIdx = append(eventIdx, ttlIndexModel("events_ttl", eventsTTLDays))
 	}
 	_, err = s.events.Indexes().CreateMany(ctx, eventIdx)
 	if err != nil && !mongoutil.IsIndexConflict(err) {
@@ -286,15 +313,7 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "offset", Value: 1}}, Options: options.Index().SetName("tenant_run_offset").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
 	}
 	if eventsTTLDays > 0 {
-		secs := int64(eventsTTLDays) * 86400
-		const maxTTLSeconds = int64(1<<31 - 1)
-		if secs > maxTTLSeconds {
-			secs = maxTTLSeconds
-		}
-		runLogIdx = append(runLogIdx, mongo.IndexModel{
-			Keys:    bson.D{{Key: "ts", Value: 1}},
-			Options: options.Index().SetName("run_logs_ttl").SetExpireAfterSeconds(int32(secs)),
-		})
+		runLogIdx = append(runLogIdx, ttlIndexModel("run_logs_ttl", eventsTTLDays))
 	}
 	if _, err := s.runLogs.Indexes().CreateMany(ctx, runLogIdx); err != nil && !mongoutil.IsIndexConflict(err) {
 		return fmt.Errorf("store/mongo: ensure run_logs indexes: %w", err)
@@ -320,5 +339,98 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		return fmt.Errorf("store/mongo: ensure user_messages indexes: %w", err)
 	}
 
+	// run_gitmeta: one doc per run, keyed uniquely by run_id (the runner
+	// upserts a whole-snapshot once after the run returns, post-finalize).
+	_, err = s.runGitMeta.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "run_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("run_id_unique"),
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_gitmeta index: %w", err)
+	}
+
+	// run_plans: many docs per run (one per captured plan snapshot),
+	// uniquely keyed by (run_id, seq) — the race safety net when parallel
+	// branches fire TodoWrite concurrently. (tenant_id, run_id, seq)
+	// accelerates the tenant-scoped chronological listing. Plan snapshots
+	// are a derived observability stream of the run, just like events and
+	// run_logs, so they share the same retention knob (eventsTTLDays) on
+	// their top-level `ts` date field.
+	runPlanIdx := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+	}
+	if eventsTTLDays > 0 {
+		runPlanIdx = append(runPlanIdx, ttlIndexModel("run_plans_ttl", eventsTTLDays))
+	}
+	if _, err := s.runPlans.Indexes().CreateMany(ctx, runPlanIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_plans indexes: %w", err)
+	}
+
+	// run_notes: many docs per run (one per operator note), uniquely keyed
+	// by (run_id, seq) — the race safety net when two operators annotate the
+	// same run concurrently. (tenant_id, run_id, seq) accelerates the
+	// tenant-scoped chronological listing. Notes are durable run annotations,
+	// not a derived observability stream, so — unlike events/run_logs/
+	// run_plans — they carry NO TTL and persist for the life of the run.
+	runNoteIdx := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_seq_unique")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "seq", Value: 1}}, Options: options.Index().SetName("tenant_run_seq").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+	}
+	if _, err := s.runNotes.Indexes().CreateMany(ctx, runNoteIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_notes indexes: %w", err)
+	}
+
+	// run_turns: many docs per run (one per captured LLM turn), uniquely
+	// keyed by (run_id, node_id, loop_iter, turn_index) — the idempotent-
+	// overwrite key WriteTurn upserts on (the cloud twin of the filesystem
+	// store's runs/<id>/turns/<node>/<iter>/<turn>.json). The compound
+	// (tenant_id, run_id, node_id, loop_iter, turn_index) accelerates the
+	// tenant-scoped per-node listing + LatestTurn/LoadTurnAtIndex sorts.
+	// Turn checkpoints are a derived observability stream of the run, like
+	// events/run_logs/run_plans, so they share the same retention knob
+	// (eventsTTLDays) on their top-level `ts` date field.
+	runTurnIdx := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "run_id", Value: 1}, {Key: "node_id", Value: 1}, {Key: "loop_iter", Value: 1}, {Key: "turn_index", Value: 1}}, Options: options.Index().SetUnique(true).SetName("run_node_iter_turn_unique")},
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "run_id", Value: 1}, {Key: "node_id", Value: 1}, {Key: "loop_iter", Value: 1}, {Key: "turn_index", Value: 1}}, Options: options.Index().SetName("tenant_run_node_iter_turn").SetPartialFilterExpression(bson.M{"tenant_id": bson.M{"$exists": true}})},
+	}
+	if eventsTTLDays > 0 {
+		runTurnIdx = append(runTurnIdx, ttlIndexModel("run_turns_ttl", eventsTTLDays))
+	}
+	if _, err := s.runTurns.Indexes().CreateMany(ctx, runTurnIdx); err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_turns indexes: %w", err)
+	}
+
+	// run_tags: one doc per run, keyed uniquely by run_id (a whole-list
+	// overwrite on every PUT). Operator-assigned filter/group labels are
+	// durable metadata, NOT a derived observability stream, so — like
+	// run_gitmeta — they carry NO TTL: a tagged run keeps its tags for as
+	// long as the run document survives.
+	_, err = s.runTags.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "run_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("run_id_unique"),
+	})
+	if err != nil && !mongoutil.IsIndexConflict(err) {
+		return fmt.Errorf("store/mongo: ensure run_tags index: %w", err)
+	}
+
 	return nil
+}
+
+// ttlIndexModel builds a MongoDB TTL index on the top-level `ts` date
+// field expiring documents after ttlDays. Shared by the derived
+// observability streams (events, run_logs, run_plans) which retain on
+// the same eventsTTLDays knob. expireAfterSeconds is an int32, so a very
+// large TTL (> ~24855 days) would overflow the cast to a negative value;
+// clamp to int32 max (~68 years) instead.
+func ttlIndexModel(name string, ttlDays int) mongo.IndexModel {
+	secs := int64(ttlDays) * 86400
+	const maxTTLSeconds = int64(1<<31 - 1)
+	if secs > maxTTLSeconds {
+		secs = maxTTLSeconds
+	}
+	return mongo.IndexModel{
+		Keys:    bson.D{{Key: "ts", Value: 1}},
+		Options: options.Index().SetName(name).SetExpireAfterSeconds(int32(secs)),
+	}
 }

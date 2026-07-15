@@ -291,6 +291,65 @@ no subprocess fork). To use `claude_code` with API-key auth, set
 Same logic as claude_code: only OAuth flips it to "available" for
 auto-resolution. `OPENAI_API_KEY` alone routes to `claw`.
 
+#### Sandbox and `full_access`
+
+A codex node runs under codex's own sandbox. `readonly: true` always selects
+`read-only` (and takes precedence over a conflicting `full_access: true`).
+Otherwise, an omitted/empty `tools:` list keeps Iterion's normal
+"native tools unrestricted" contract and selects `workspace-write`; a non-empty
+list uses `read-only` only when all declared tools are known readers, and
+`workspace-write` when it contains a writer/shell tool (both Iterion snake_case
+names and Claude-style names are recognised). Unknown/custom names conservatively
+select `workspace-write`; use `readonly: true` for an explicit lock-down.
+
+With Codex's default configuration neither `read-only` nor `workspace-write`
+allows **network egress** — so a codex agent cannot reach an external API (e.g.
+codex's built-in `imagegen`, or any HTTP call). A user-level Codex config can
+override workspace-write network policy; Iterion does not currently rewrite that
+file, so operators who require a hard network boundary should use an Iterion
+Docker/Kubernetes sandbox with a backend that supports it.
+
+To grant network access, the pipeline author sets `full_access: true` on the
+node. It lifts the sandbox to `danger-full-access` (unrestricted network +
+out-of-workspace writes) — the same posture as `codex exec -s
+danger-full-access`. It is **off by default and opt-in per node** in the workflow:
+
+```
+agent make_cover:
+  backend: "codex"
+  full_access: true    # codex sandbox -> danger-full-access (needed for imagegen / network)
+  user: cover_prompt
+```
+
+Other backends ignore `full_access` (they do not impose the codex sandbox).
+
+> **Outer-sandbox limitation:** the pinned Codex Agent SDK cannot yet route its
+> subprocess through Iterion's Docker/Kubernetes command builder. Iterion fails
+> such a node explicitly instead of silently launching the CLI on the host. Set
+> `sandbox: none` to rely on Codex's own sandbox, or use `claude_code`/`claw`
+> when the outer container boundary is required.
+
+#### Image inputs (`images:`)
+
+A codex node can receive **input images** for image-to-image via the node-level
+`images:` list. Each entry is a templated path, resolved per run against the
+node's `input`/`vars`/etc. and forwarded to the codex CLI as `-i`. Empty results
+(e.g. an optional reference that doesn't apply this run) are dropped.
+
+```
+agent keyframe:
+  backend: "codex"
+  full_access: true
+  images: ["{{input.prev_frame}}", "{{input.identity_anchor}}"]
+  user: keyframe_prompt
+```
+
+Use it to seed a generation from a prior image (e.g. reusing the previous
+keyframe for visual continuity, or a character-identity anchor). Non-codex
+backends ignore `images:` (claude_code/codex reach launch-time `attachments:`
+by path + the `read_image` tool for vision; native multimodal forwarding is
+claw-only).
+
 ### `claw`
 
 `claw` is in-process and pluralised across providers. It reports
@@ -308,6 +367,10 @@ When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider — currently
 `anthropic/claude-opus-4-8` for Anthropic and
 `openai/gpt-5.4-mini` for OpenAI.
+
+For web search & fetch on claw (the `web_search`/`web_fetch` tools, the
+SearXNG → Brave → DuckDuckGo backend ladder, `ITERION_WEB_SEARCH`, and the
+Firecrawl MCP tier), see [web-search.md](web-search.md).
 
 ### OpenAI via ChatGPT forfait (Codex CLI OAuth)
 
@@ -377,6 +440,51 @@ surface. Reproducing Codex CLI's OAuth flow from a third-party tool is
 gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
+
+## Third-party agent CLIs (`kimi`, and the CLI-agent seam)
+
+Some agent CLIs have an argument protocol **disjoint from claude-code's**
+Session mode (`--print`, prompt on stdin, `--append-system-prompt`, …), so
+neither `backend: claude_code` nor the per-node `command:` override (which
+only swaps the *binary* while keeping claude-code's argv) can drive them.
+Moonshot's **`kimi-code`** is the motivating case — it takes the prompt as
+`-p <prompt>` (`kimi --print …` errors with `unknown option '--print'`):
+
+```
+kimi -p <prompt> --output-format {text,stream-json} [-m <alias>]
+```
+
+iterion ships a dedicated **`kimi`** backend for it:
+
+```yaml
+agent implement:
+  backend: "kimi"
+  model: "kimi-code/kimi-for-coding" # complete kimi-code alias is preserved
+  system: "…the task…"
+```
+
+Under the hood, `kimi` is a concrete instance of a generic **CLI-agent
+backend** (`delegate.CLIAgentBackend` + `CLIAgentProtocol`, see
+[ADR-065](adr/065-dedicated-cli-agent-backend.md)) that builds the target
+CLI's *own* command line, runs it with a wall-clock timeout (inside the run's
+sandbox container when one is active), parses its role-based `stream-json`
+stdout (with backward compatibility for the former claude-code-style events)
+into the structured result, and retries
+on a no-output / network transient. Adding another such CLI is a new protocol
+*value*, not new plumbing.
+
+Behavioural notes specific to CLI-agent backends:
+
+- **Explicit opt-in.** `kimi` is never auto-detected; you select it with
+  `backend: "kimi"`. No Moonshot credential silently re-targets a run.
+- **Credentials** are resolved by the CLI itself from its own env/config (e.g.
+  `$MOONSHOT_API_KEY`) — iterion inherits the host environment and does not
+  fight the CLI's native resolution.
+- **Tools are not host-gated.** Like `codex`, kimi runs with its *own* built-in
+  toolset; a node's `tools:` list is advisory. For a hard tool-permission
+  boundary use `claude_code` (permission gate) or `claw` (native restriction).
+- **Effort** has no effect (kimi has no reasoning-effort dial); **sessions**
+  are captured for observability but resume/fork is not yet wired.
 
 ## Editor UX
 

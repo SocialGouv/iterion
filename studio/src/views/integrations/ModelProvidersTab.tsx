@@ -1,4 +1,4 @@
-import OAuthConnections from "@/views/settings/OAuthConnections";
+import OAuthConnections from "@/views/account/OAuthConnections";
 
 // Model providers groups the LLM subscriptions a team's bots run on
 // (Claude Code / OpenAI Codex forfait OAuth). Split out of the forge tab so

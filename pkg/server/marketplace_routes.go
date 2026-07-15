@@ -9,7 +9,12 @@ import (
 	"github.com/SocialGouv/iterion/pkg/botinstall"
 	"github.com/SocialGouv/iterion/pkg/botregistry"
 	"github.com/SocialGouv/iterion/pkg/marketplace"
+	"github.com/SocialGouv/iterion/pkg/plugin"
 )
+
+// marketplaceIconMaxBytes caps the submit-time Icon field — an emoji or
+// short glyph, never free prose.
+const marketplaceIconMaxBytes = 32
 
 // marketplaceSubmitRequest is the wire body for
 // POST /api/v1/marketplace/submit. Same shape as the bot-install
@@ -20,6 +25,9 @@ type marketplaceSubmitRequest struct {
 	Ref     string   `json:"ref,omitempty"`
 	Path    string   `json:"path,omitempty"`
 	Tags    []string `json:"tags,omitempty"`
+	// Icon is an optional emoji / short glyph for the marketplace card
+	// (both kinds). Trimmed; capped at marketplaceIconMaxBytes.
+	Icon string `json:"icon,omitempty"`
 	// Scope is the requested visibility (cloud only). Ignored in local
 	// mode. Validated against the server's allowed scopes; empty falls
 	// back to the configured default.
@@ -27,10 +35,12 @@ type marketplaceSubmitRequest struct {
 }
 
 // marketplaceInstallResponse is what the install endpoint returns:
-// the install Result plus the post-bump entry so the studio can show
-// the updated install count without a follow-up GET.
+// the kind-specific install payload (Install for bots, Plugin for
+// plugins) plus the post-bump entry so the studio can show the
+// updated install count without a follow-up GET.
 type marketplaceInstallResponse struct {
-	Install *botinstall.Result `json:"install"`
+	Install *botinstall.Result `json:"install,omitempty"`
+	Plugin  *plugin.View       `json:"plugin,omitempty"`
 	Entry   *marketplace.Entry `json:"entry"`
 }
 
@@ -47,15 +57,30 @@ func (s *Server) requireMarketplace(w http.ResponseWriter, r *http.Request) bool
 }
 
 // handleMarketplaceList answers GET /api/v1/marketplace/bots. Query
-// params: `q` (free-text), `tag` (exact match). Returns {bots: [...]}
-// for consistency with the existing /api/v1/bots envelope.
+// params: `q` (free-text), `tag` (exact match), `kind` (bot|plugin),
+// `sort` (popular|recent|name). Returns {bots: [...]} for consistency
+// with the existing /api/v1/bots envelope.
 func (s *Server) handleMarketplaceList(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMarketplace(w, r) {
+		return
+	}
+	kind := marketplace.Kind(strings.TrimSpace(r.URL.Query().Get("kind")))
+	switch kind {
+	case "", marketplace.KindBot, marketplace.KindPlugin:
+	default:
+		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: unknown kind %q (want %s|%s)", kind, marketplace.KindBot, marketplace.KindPlugin)
+		return
+	}
+	sortBy := strings.TrimSpace(r.URL.Query().Get("sort"))
+	if err := marketplace.ValidateSort(sortBy); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
 		return
 	}
 	q := marketplace.Query{
 		Text:   r.URL.Query().Get("q"),
 		Tag:    r.URL.Query().Get("tag"),
+		Kind:   kind,
+		Sort:   sortBy,
 		Viewer: s.marketplaceViewer(r),
 	}
 	entries, err := s.marketplace.List(r.Context(), q)
@@ -100,9 +125,10 @@ func (s *Server) handleMarketplaceGet(w http.ResponseWriter, r *http.Request) {
 // handleMarketplaceSubmit answers POST /api/v1/marketplace/submit. Like
 // /api/v1/bots/install it clones an arbitrary URL server-side and so is
 // LOCAL-MODE ONLY — cloud deployments must go through their own vetted
-// submission path. botinstall.Inspect validates the bundle without
-// writing anything to the workspace; on success we derive the registry
-// slug + persist the entry.
+// submission path. marketplace.InspectSource validates the source
+// without writing anything to the workspace and detects its kind (bot
+// bundle or plugin); on success we derive the registry slug + persist
+// the entry.
 func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMarketplace(w, r) {
 		return
@@ -131,37 +157,49 @@ func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: repo_url is required")
 		return
 	}
-	md, err := botinstall.Inspect(r.Context(), botinstall.Options{
-		Source: req.RepoURL,
-		Ref:    req.Ref,
-		Path:   req.Path,
-	})
+	icon := strings.TrimSpace(req.Icon)
+	if len(icon) > marketplaceIconMaxBytes {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: icon exceeds %d bytes", marketplaceIconMaxBytes)
+		return
+	}
+	info, err := marketplace.InspectSource(r.Context(), req.RepoURL, req.Ref, req.Path)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: inspect: %v", err)
 		return
 	}
-	slug := botregistry.NormalizeName(md.Name)
-	if slug == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: bundle has no name")
-		return
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	entry := marketplace.Entry{
-		Slug:        slug,
-		Name:        md.Name,
-		DisplayName: md.DisplayName,
-		Description: md.Description,
-		Author:      md.Author,
-		Tags:        normalizeTags(req.Tags),
-		RepoURL:     req.RepoURL,
-		Ref:         req.Ref,
-		Subpath:     req.Path,
-		Version:     md.Version,
-		README:      md.README,
-		Presets:     toEntryPresets(md.Presets),
-		Source:      marketplace.SourceGit,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+	var entry marketplace.Entry
+	switch info.Kind {
+	case marketplace.KindPlugin:
+		entry = marketplace.EntryFromPlugin(info.Plugin, req.RepoURL, req.Ref, req.Path)
+		entry.Tags = normalizeTags(req.Tags)
+		entry.CreatedAt = now
+		entry.UpdatedAt = now
+	default: // bot
+		md := info.Bot
+		entry = marketplace.Entry{
+			Slug:        botregistry.NormalizeName(md.Name),
+			Name:        md.Name,
+			DisplayName: md.DisplayName,
+			Description: md.Description,
+			Author:      md.Author,
+			Tags:        normalizeTags(req.Tags),
+			RepoURL:     req.RepoURL,
+			Ref:         req.Ref,
+			Subpath:     req.Path,
+			Version:     md.Version,
+			README:      md.README,
+			Presets:     toEntryPresets(md.Presets),
+			Source:      marketplace.SourceGit,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+	}
+	entry.Icon = icon
+	slug := entry.Slug
+	if slug == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: %s has no name", info.Kind)
+		return
 	}
 	if cloud {
 		// Resolve + validate the requested scope, land the entry pending,
@@ -177,6 +215,17 @@ func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request)
 			entry.Slug = slug + "@" + submitter.TeamID
 			slug = entry.Slug
 		}
+	}
+	// A slug can't change kind through a re-submit: a bot slug stays a
+	// bot, a plugin slug stays a plugin (409 instead of a silent morph).
+	existing, exists, err := s.marketplace.Get(r.Context(), slug)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "marketplace: get: %v", err)
+		return
+	}
+	if exists && marketplace.EffectiveKind(*existing) != marketplace.EffectiveKind(entry) {
+		s.httpErrorFor(w, r, http.StatusConflict, "marketplace: slug %q already exists as a %s entry", slug, marketplace.EffectiveKind(*existing))
+		return
 	}
 	if err := s.marketplace.Upsert(r.Context(), entry); err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "marketplace: upsert: %v", err)
@@ -199,10 +248,12 @@ func (s *Server) handleMarketplaceSubmit(w http.ResponseWriter, r *http.Request)
 
 // handleMarketplaceInstall answers
 // POST /api/v1/marketplace/bots/{slug}/install. Resolves the registry
-// entry, forwards to botinstall.Install with the persisted repo
-// coordinates, bumps the install counter, and returns the install
-// result plus the refreshed entry. Local-mode only (same constraint
-// as POST /api/v1/bots/install).
+// entry and installs per its kind: a bot forwards to botinstall.Install
+// (into the workspace's .botz/, workspace required); a plugin — a
+// binary-adjacent, host-global install under ~/.iterion/plugins/ — is
+// super-admin gated and forwards to plugin.InstallWith. Both bump the
+// install counter and return the refreshed entry. Local-mode only
+// (same constraint as POST /api/v1/bots/install).
 func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMarketplace(w, r) {
 		return
@@ -212,10 +263,6 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 	}
 	if s.cfg.Mode == "cloud" {
 		s.httpErrorFor(w, r, http.StatusForbidden, "marketplace: install is not available in cloud mode")
-		return
-	}
-	if s.cfg.WorkDir == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: no workspace configured to install into")
 		return
 	}
 	slug := strings.TrimSpace(r.PathValue("slug"))
@@ -232,20 +279,46 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 		s.httpErrorFor(w, r, http.StatusNotFound, "marketplace: %q not found", slug)
 		return
 	}
-	// `?force=true` overwrites an existing install — the studio "Update"
-	// path sends it so re-installing a drifted version succeeds instead
-	// of erroring "already exists".
-	force := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true")
-	res, err := botinstall.Install(r.Context(), botinstall.Options{
-		Source:  entry.RepoURL,
-		Ref:     entry.Ref,
-		Path:    entry.Subpath,
-		Force:   force,
-		Workdir: s.cfg.WorkDir,
-	})
-	if err != nil {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: install: %v", err)
-		return
+	resp := marketplaceInstallResponse{}
+	if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
+		// Plugins land in ~/.iterion/plugins/ (host-global, affects every
+		// workspace this binary serves) — super-admin only. No workspace
+		// is required for this branch.
+		if !s.isSuperAdmin(r) {
+			s.httpErrorFor(w, r, http.StatusForbidden, "marketplace: plugin install requires a super-admin")
+			return
+		}
+		name, err := plugin.InstallWith(r.Context(), plugin.InstallOptions{
+			Source:  entry.RepoURL,
+			Ref:     entry.Ref,
+			Subpath: entry.Subpath,
+		})
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: install plugin: %v", err)
+			return
+		}
+		resp.Plugin = s.pluginViewAfterInstall(name)
+	} else {
+		if s.cfg.WorkDir == "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: no workspace configured to install into")
+			return
+		}
+		// `?force=true` overwrites an existing install — the studio "Update"
+		// path sends it so re-installing a drifted version succeeds instead
+		// of erroring "already exists".
+		force := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true")
+		res, err := botinstall.Install(r.Context(), botinstall.Options{
+			Source:  entry.RepoURL,
+			Ref:     entry.Ref,
+			Path:    entry.Subpath,
+			Force:   force,
+			Workdir: s.cfg.WorkDir,
+		})
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: install: %v", err)
+			return
+		}
+		resp.Install = res
 	}
 	// Best-effort: a counter bump failure must not fail the install
 	// (the file is already on disk; the operator cares about the
@@ -258,14 +331,40 @@ func (s *Server) handleMarketplaceInstall(w http.ResponseWriter, r *http.Request
 	if refreshed == nil {
 		refreshed = entry
 	}
-	s.writeJSONFor(w, r, marketplaceInstallResponse{Install: res, Entry: refreshed})
+	resp.Entry = refreshed
+	s.writeJSONFor(w, r, resp)
+}
+
+// pluginViewAfterInstall re-loads the plugin registry and projects the
+// freshly installed plugin's View. Best-effort like the install-counter
+// bump: the install itself already succeeded, so a registry re-read
+// failure is logged, not surfaced as a request error.
+func (s *Server) pluginViewAfterInstall(name string) *plugin.View {
+	reg, err := plugin.Load()
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("marketplace: reload plugin registry after installing %q: %v", name, err)
+		}
+		return nil
+	}
+	p, ok := reg.Get(name)
+	if !ok {
+		if s.logger != nil {
+			s.logger.Warn("marketplace: plugin %q not found in registry right after install", name)
+		}
+		return nil
+	}
+	v := p.View()
+	return &v
 }
 
 // handleMarketplaceUninstall answers
 // DELETE /api/v1/marketplace/bots/{slug}/install. Resolves the registry
-// entry to recover the install name, removes the workspace bundle, and
-// returns the (unchanged) entry so the studio can flip the card back to
-// "Install". Local-mode only — workspace-mutating, same as install.
+// entry to recover the install name and removes the installed artifact
+// per its kind: a bot's workspace bundle (workspace required), or a
+// plugin under ~/.iterion/plugins/ (super-admin gated, same as
+// install). Returns the (unchanged) entry so the studio can flip the
+// card back to "Install". Local-mode only — same as install.
 func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Request) {
 	if !s.requireMarketplace(w, r) {
 		return
@@ -275,10 +374,6 @@ func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Reque
 	}
 	if s.cfg.Mode == "cloud" {
 		s.httpErrorFor(w, r, http.StatusForbidden, "marketplace: uninstall is not available in cloud mode")
-		return
-	}
-	if s.cfg.WorkDir == "" {
-		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: no workspace configured to uninstall from")
 		return
 	}
 	slug := strings.TrimSpace(r.PathValue("slug"))
@@ -293,6 +388,24 @@ func (s *Server) handleMarketplaceUninstall(w http.ResponseWriter, r *http.Reque
 	}
 	if !ok {
 		s.httpErrorFor(w, r, http.StatusNotFound, "marketplace: %q not found", slug)
+		return
+	}
+	if marketplace.EffectiveKind(*entry) == marketplace.KindPlugin {
+		if !s.isSuperAdmin(r) {
+			s.httpErrorFor(w, r, http.StatusForbidden, "marketplace: plugin uninstall requires a super-admin")
+			return
+		}
+		// Plugins install under their manifest name (entry.Name), not
+		// the registry slug.
+		if err := plugin.Uninstall(entry.Name); err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: uninstall plugin: %v", err)
+			return
+		}
+		s.writeJSONFor(w, r, entry)
+		return
+	}
+	if s.cfg.WorkDir == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "marketplace: no workspace configured to uninstall from")
 		return
 	}
 	// The bundle installs under its manifest name (entry.Name), not the

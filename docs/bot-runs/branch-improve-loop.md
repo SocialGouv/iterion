@@ -1,5 +1,138 @@
 # Billy — branch-improvement validation
 
+## 2026-07-10 — /billy command on a Dependabot PR: 4 engine gaps peeled live, then a clean push-back under the App identity (runs 019f4bd4 / 019f4c46 / 019f4c86 / 019f4ccb)
+
+- Status: **validated (cloud E2E, command path) — 5 engine fixes found live, all landed in-session.**
+  Mission: make Dependabot PR [#80](https://github.com/SocialGouv/iterion/pull/80)
+  mergeable (bump `x/crypto` to 0.52.0 past a CRITICAL advisory cluster Vetty
+  flagged + fix the failing CI OpenAPI drift). Final run 019f4ccb: 22 min,
+  `push_back: true`, **2 commits pushed onto the PR** as
+  `iterion-forge-83fde406[bot]` (`52a4072d9` crypto bump + tidy/vendor,
+  `d766e1d03` openapi regen) + verdict comment posted under the App.
+- Versions: bot v2 · iterion `499957c31`→`6dd452c2a` · chart 0.37.2→0.37.4.
+- Method: `/billy <mission>` PR comment (args → `scope_notes`) → board-mode
+  card → dispatcher → cloud runner. ~$4/run. The mission text included the
+  memory guidance (skip the vite build, `go test -p 2`) after an OOM.
+- The onion, one layer per run (each failure = a real engine fix):
+  1. run 019f4bd4: campaign did PERFECT work (crypto bump + openapi regen,
+     verified) but `mr_gate.push_back: false` → commits stranded on the
+     runner's ephemeral storage branch. Fix `642b1ba0d`: the command path now
+     stamps `push_branch`/`open_mr` (parity with the pull_request-event path).
+  2. Same run also exposed that `ensureBoardCard` rebuilt BotArgs from scratch
+     — cloud launches use card BotArgs ONLY, so `pr_url`/branch vars never
+     reached the run (also why Billy never commented). Fix `bc2918024`.
+  3. run 019f4c46: **OOMKilled at 4Gi** during the verify suite (exit 137, pod
+     restart, banked commits lost with the pod FS). Infra fix: runner limit
+     8Gi (infra-apps `44b7fb4`). JetStream redelivered the run — recovery
+     worked — but the re-attempt then pushed with a DEAD App token.
+  4. runs 019f4c46/019f4c86: `Invalid username or token` on push + gh 401 on
+     comment — the sealed bundle snapshots the 1h installation token at
+     LAUNCH; long/redelivered runs outlive it. Fix `6dd452c2a` (#99): the
+     publisher records generic-secret store IDs on the bundle and the runner
+     re-reads them every 5 min, atomically rewriting
+     `/run/iterion/secrets/<name>`; tools `cat` the file per use.
+- Engine hardening (this session, all deployed): `499957c31` PR head/base
+  resolution for PR-surface commands · `642b1ba0d` push-back vars ·
+  `bc2918024` board-card PR context · `6031a357e` executor agent-stream lines
+  now persist to the run log (the studio per-node Logs tab was empty on every
+  cloud run) · `6dd452c2a` mid-run file-secret refresh (#99).
+- Lessons for next run: a dep-bump branch is typically BEHIND main — the CI
+  drift gate runs on the merge-ref, so regen-style fixes must happen on an
+  updated branch (`gh pr update-branch` first, or Billy should update it);
+  keep verify memory-aware on 8Gi pods (skip frontend builds, cap `-p`).
+
+## 2026-07-09 — first CLOUD runs: PR-webhook → Billy on the devbox runner (runs 019f43a3 / 019f43c7 / 019f4551)
+
+- Status: **validated (cloud E2E) — 3 engine/bot gaps found live, all fixed in-session.**
+  The full production trigger chain ran for the first time: real GitHub PR
+  ([#84](https://github.com/SocialGouv/iterion/pull/84), `Fixes #83`) → forge
+  webhook (`selectForgePRBot` routes Billy, not Revi) → NATS queue → devbox
+  runner pod (uid 1000) → campaign/verify/gate.
+- Versions: bot @ `1d076a618` (adds the push-back tail) · iterion `:edge`
+  36fb786b5→56a5680f1 · runner image `iterion-runner-devbox:edge` ·
+  webhook `d291059c` (bots review-pr + branch-improve-loop + feature-dev,
+  block_fork_prs, author allowlist Viczei+devthejo).
+- Method: PR-open/reopen events on SocialGouv/iterion#84 (a real fix: the
+  vv0.32.0/vmain version-injection bug). Re-triggers need a NEW head sha +
+  close/reopen — the delivery idem key is (PR#, head sha) and launch-success
+  rows are terminal; `/billy` comments from the connection identity are
+  loop-guard-filtered (self).
+- Result per run:
+  - `019f43a3` **failed in 17s**: Billy's inline `sandbox:` block → kubernetes
+    driver → `ITERION_POD_IP env var is empty` (the chart deliberately doesn't
+    provision sibling-pod sandboxing). → **Fix 1** `36fb786b5`:
+    `ITERION_SANDBOX_OVERRIDE=none` (CLI-strength, beats the workflow block;
+    chart auto-sets it when `runner.sandbox.enabled=false`) — the runner pod IS
+    the isolation boundary.
+  - `019f43c7` **finished, 1-pass converged (~7 min)**: verify.sh settled on
+    `devbox run -- go build ./...` + targeted tests — the repo's devbox-pinned
+    Go toolchain, i.e. the devbox-first-class runner goal proven live. campaign
+    caught a REAL defect (the PR's new test file wasn't gofmt-clean — CI lint
+    would have rejected it) and committed the fix (`ef540115`)… which **died
+    with the pod-ephemeral worktree**: `mr_gate` open_mr=false went straight to
+    done. → **Fix 2** `1d076a618`: deterministic push-back — webhook passes
+    `push_branch` (PR source branch); `mr_gate → push_auth_probe →
+    push_back_tool` (no-LLM python3 push, rev-list oracle so a
+    converged-no-commits pass no-ops, token redacted from failures).
+  - `019f4551` **finished; new path routed** (`…gate>mr_gate>push_auth_probe>done`)
+    but the probe found NO credential: `materializeFileSecretsNoSandbox` gated
+    on the STATIC `wf.Sandbox != nil` — under the override the run executes
+    in-pod and nobody materialized `forge_token` (the launch HAD sealed it into
+    the bundle: the stored secret's last_used_at == launch instant). → **Fix 3**
+    `56a5680f1`: gate on the RESOLVED decision via new
+    `runtime.WorkflowSandboxActive(wf, override, default)`.
+- Value: the run 019f43c7 catch (gofmt) was real and manually reapplied as
+  `a2cf464a9`; the three fixes harden the entire cloud-runner class of bots
+  (any bot with a sandbox block + file secrets), not just Billy.
+- Findings / misses: secret-resolution failures are SILENT at several layers
+  (`buildGenericResolution` ok=false without a log; publisher skips empty
+  plaintexts) — an erreurs-explicites hardening candidate. CI race job flake:
+  `TestReconcileStalled_ForceReapsCtxIgnoringWorker` (pkg/dispatcher) failed on
+  56a5680f1, 5× green locally with -race — known concurrency-flake family.
+- Engine hardening: `36fb786b5` (+ chart 0.33.0, umbrella `3a20e24`),
+  `1d076a618`, `56a5680f1`; stale factory comment `afbdd6be3`.
+- Lessons for next run: consult the RESOLVED sandbox mode everywhere run
+  inputs depend on it; self-triggering a webhook from the connection identity
+  hits the loop-guard (use a fresh head sha + close/reopen, or another actor);
+  first devbox run per pod re-downloads the Nix toolchain (~2-4 min — the PVC
+  warm-store follow-on).
+
+### The issue → Featurly → PR half of the cycle (runs 019f4582 / 019f4590, fixes 4–6)
+
+Labeling an issue `implement` is meant to route to the implementer (Featurly)
+and open a PR that then re-triggers Billy — the other half of the loop. Two
+more gaps surfaced, both fixed live:
+
+- **Routing (fix 4, `2281a2eff`)**: a 3-bot webhook with no pinned default
+  routed `issues/labeled` to **review-pr** (run 019f4582), which stopped at
+  `diff_precheck` — an issue has no diff to review. `resolveReviewBot`'s
+  SelectBot→review-pr fallback is right for a PR delivery, wrong for an issue.
+  New `selectIssueLabeledBot` (pinned default → feature-dev → fallback), the
+  issue-path counterpart to `selectForgePRBot`, wired on GitHub+GitLab.
+  Validated: issue #86 → run **019f4590 = feature_dev**, and Featurly shipped a
+  genuine, high-quality feature (threaded a `*log.Logger` through the whole
+  generic-secret resolution path so silent credential drops become greppable —
+  the erreurs-explicites finding the debugging itself surfaced), build+test
+  green.
+- **Forge token on the board-launch path (fixes 5+6, `483e69a3f` + `9b339c999`)**:
+  Featurly implemented but `forge_auth_probe` found no `forge_token`, so it
+  never opened its PR (`secrets_ref` null). Root cause: an issue-labeled
+  delivery makes a **board card**, and the board coordinator
+  ([boarddispatch.go](../../pkg/server/boarddispatch.go)) launches via
+  `runs.Launch(BotID)` — which resolves generic secrets by (tenant, bot)
+  **binding**, NOT the webhook secret override (that only reaches the direct
+  webhook path). Forge provisioning set only the override; the tier-3 name
+  fallback misses (stored `forge_github_<conn>` ≠ workflow `forge_token`). Fix:
+  the orchestrator now upserts a per-bot `forge_token` binding at provision
+  (fix 5), reconciled even on an idempotent re-provision so an
+  already-provisioned integration is backfilled (fix 6). This is a general
+  cloud-BaaS fix: EVERY board-launched bot that pushes (Featurly, Billy on the
+  board path) needed it, not just this cycle.
+- Standing gap (deferred): fully zero-touch issue handling still needs the
+  cloud dispatcher (the webhook `issues` path is labeled-only by design); and
+  carrying the webhook's secret_overrides/launch_vars onto the board card
+  itself would make the board path robust without a binding (belt-and-braces).
+
 ## 2026-07-08 — re-dogfood post-improvement (P1-P4), same PR #72 target, $1.80 (run 019f41af)
 
 - Status: **validated — reliability + integration confirmed; production excellent.**

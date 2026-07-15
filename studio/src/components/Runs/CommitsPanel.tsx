@@ -22,8 +22,11 @@ import {
 } from "@/api/runs";
 import { formatRelative } from "@/lib/format";
 
+import { ErrorNotice } from "@/components/shared/ErrorNotice";
+
 import CommitDetailDialog from "./CommitDetailDialog";
 import MergeConflictView from "./MergeConflictView";
+import PanelLoading from "@/components/shared/PanelLoading";
 
 interface CommitsPanelProps {
   runId: string;
@@ -51,6 +54,10 @@ export default function CommitsPanel({
 
   const commitCount = data?.commits.length ?? 0;
   const defaultSquashMessage = data?.default_squash_message ?? "";
+  // The merge form must never offer a merge over an unknown commit set:
+  // a failed or still-pending list fetch (or an "unavailable" reason
+  // from the backend) blocks the button alongside the plain empty case.
+  const commitsUnavailable = error !== null || !data || !data.available;
 
   return (
     <div className="flex flex-col min-h-0 min-w-0 flex-1 w-full">
@@ -74,10 +81,14 @@ export default function CommitsPanel({
       </header>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {error ? (
-          <EmptyState message={error} />
+          <ErrorNotice
+            error={error}
+            context="Couldn't read this run's commits"
+            className="m-2"
+          />
         ) : !data ? (
           loading ? (
-            <EmptyState message="Loading…" />
+            <PanelLoading />
           ) : (
             <EmptyState message="" />
           )
@@ -102,6 +113,7 @@ export default function CommitsPanel({
           runId={runId}
           run={run}
           commitCount={commitCount}
+          commitsUnavailable={commitsUnavailable}
           defaultSquashMessage={defaultSquashMessage}
           onMergeComplete={onMergeComplete}
         />
@@ -148,10 +160,29 @@ function CommitRow({
   );
 }
 
+// mergeBlockedReason returns the caption explaining why the merge
+// button is disabled, or null when merging is allowed. Split out so the
+// gate (empty list OR failed/unavailable list fetch) is unit-testable.
+export function mergeBlockedReason(
+  commitCount: number,
+  commitsUnavailable: boolean,
+): string | null {
+  if (commitsUnavailable) {
+    return "Merging is disabled because the commit list couldn't be read.";
+  }
+  if (commitCount === 0) {
+    return "No commits on the run branch — nothing to merge.";
+  }
+  return null;
+}
+
 interface MergeFooterProps {
   runId: string;
   run: RunHeader;
   commitCount: number;
+  // True when the commit list fetch failed or the backend reported the
+  // list unavailable — merging is blocked (never merge blind).
+  commitsUnavailable: boolean;
   // The message the backend would commit if no override is supplied.
   // Pre-rendered into the readonly preview; copied into the textarea
   // on first Edit so the user starts from the proposal rather than a
@@ -164,6 +195,7 @@ function MergeFooter({
   runId,
   run,
   commitCount,
+  commitsUnavailable,
   defaultSquashMessage,
   onMergeComplete,
 }: MergeFooterProps) {
@@ -339,6 +371,7 @@ function MergeFooter({
 
   const buttonLabel =
     strategy === "squash" ? "Squash and merge" : "Merge commit";
+  const blockedReason = mergeBlockedReason(commitCount, commitsUnavailable);
 
   return (
     <div className="shrink-0 border-t border-border-default px-3 py-2 space-y-2 bg-surface-1 max-h-[60%] overflow-y-auto">
@@ -376,12 +409,18 @@ function MergeFooter({
           {err}
         </div>
       )}
+      {blockedReason && (
+        <div className="text-caption text-fg-subtle">{blockedReason}</div>
+      )}
       <Button
         variant="primary"
         size="sm"
         onClick={() => void onSubmit()}
         loading={submitting}
-        disabled={editingMessage !== null && editingMessage.trim() === ""}
+        disabled={
+          blockedReason !== null ||
+          (editingMessage !== null && editingMessage.trim() === "")
+        }
         className="w-full"
       >
         {submitting ? "Merging…" : buttonLabel}
@@ -424,23 +463,25 @@ function SquashMessageEditor({
           Commit message
         </span>
         {isEditing ? (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onReset}
             disabled={disabled}
-            className="inline-flex items-center gap-1 text-caption text-fg-subtle hover:text-fg-default disabled:opacity-50"
+            leadingIcon={<ResetIcon />}
           >
-            <ResetIcon /> Reset
-          </button>
+            Reset
+          </Button>
         ) : (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={onStartEdit}
             disabled={disabled || !previewText}
-            className="inline-flex items-center gap-1 text-caption text-fg-subtle hover:text-fg-default disabled:opacity-50"
+            leadingIcon={<Pencil1Icon />}
           >
-            <Pencil1Icon /> Edit
-          </button>
+            Edit
+          </Button>
         )}
       </div>
       {isEditing ? (
@@ -613,6 +654,8 @@ function reasonLabel(reason: string | undefined): string {
       return "Run has no recorded base commit — cannot compute commit list";
     case "not_git_repo":
       return "Not a git repository";
+    case "history_unavailable":
+      return "Run history is no longer in this repo — the storage branch or base commit was pruned, or lives in another checkout";
     default:
       return reason ?? "Commits unavailable";
   }

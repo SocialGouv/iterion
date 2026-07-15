@@ -139,3 +139,22 @@ feature.
 - **Phase 2 (mini file-tree + multi-tab VS-Code-lite editor) reuses these
   endpoints unchanged** — only a directory-listing endpoint and the
   `EditorTabsView` wiring remain.
+
+### Update 2026-07-12 — the "hides the affordances rather than failing on click" consequence is now actually enforced
+
+The consequence above ("the UI hides the affordances rather than failing on
+click") was only half-true: `FilesPanel`'s "Edit .gitignore" was gated on
+the files-response `worktree_gone` reason, but `FileDiffDialog`'s "Edit
+file" button was wired unconditionally, so on a **cloud run** (worktree on
+the runner pod) or a finalized/gc'd local run it would still 409. The
+files-response reason was also the wrong signal — it's only populated once
+the panel fetches, and doesn't cover the cloud "worktree never on this pod"
+case cleanly.
+
+Fix: the run detail now carries a server-computed **`worktree_available`**
+boolean (`runview.RunHeader`, mirroring `resolveRunWorktreePath`'s own gate
+— `WorkDir != "" && dirExists(WorkDir)`). `RunView` derives one
+`onEditFile` handle from it and passes it (or `undefined`) to **both**
+entry points, so every editor affordance is uniformly absent when the
+endpoint would 409. This is the single, authoritative gate the earlier
+per-affordance heuristics only approximated.

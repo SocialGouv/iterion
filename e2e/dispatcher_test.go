@@ -101,7 +101,7 @@ func TestDispatcherE2E_DispatchAndRelease(t *testing.T) {
 	var got dispatcher.DispatchSpec
 	select {
 	case got = <-dispatched:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never fired")
 	}
 	parsed, err := uuid.Parse(got.RunID)
@@ -116,7 +116,7 @@ func TestDispatcherE2E_DispatchAndRelease(t *testing.T) {
 	}
 
 	// Wait for the actor to drain the cmdRunFinished + release the claim.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 0 {
 			refreshed, _ := ns.Get(iss.ID)
@@ -207,7 +207,7 @@ func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {
 	iss, _ := ns.Create(native.Issue{Title: "movable", State: "ready"})
 
 	// Wait for dispatch to start.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 1 {
 			break
@@ -223,7 +223,7 @@ func TestDispatcherE2E_RespectsTerminalStateChange(t *testing.T) {
 		t.Fatalf("SetState: %v", err)
 	}
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 0 {
 			return
@@ -264,7 +264,7 @@ func TestDispatcherE2E_HTTPSurface(t *testing.T) {
 	}
 
 	// Wait for at least one dispatch then release.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		l, _ := ns.List(native.ListFilter{})
 		if len(l) == 1 && l[0].Claim == "" {

@@ -50,6 +50,17 @@ export class ApiError extends Error {
   }
 }
 
+// is404 reports whether a thrown value represents an HTTP 404. Prefers
+// the typed ApiError.status check; the message-substring fallback exists
+// because a few fetchers (fetchToolBlob's direct fetch, and any older
+// path not yet routed through apiRequest) still throw plain Errors that
+// only carry the historical "API error <status>: …" message shape.
+// Remove the fallback once every fetcher throws ApiError.
+export function is404(err: unknown): boolean {
+  if (err instanceof ApiError) return err.status === 404;
+  return err instanceof Error && err.message.includes("API error 404");
+}
+
 // FeatureUnavailableError marks a server endpoint that is not enabled
 // on the current deployment (HTTP 404 on a domain route). Views catch
 // it and render an EmptyState "Not enabled on this server" instead of

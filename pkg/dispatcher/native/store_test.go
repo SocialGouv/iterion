@@ -85,6 +85,121 @@ func TestNewStorePrependsInboxToLegacyBoard(t *testing.T) {
 	}
 }
 
+func TestNewStoreInsertsAwaitingInputAfterInProgress(t *testing.T) {
+	// Simulate an existing operator's board.json that predates the
+	// `awaiting_input` state — the upgrade path must insert it right
+	// after `in_progress` so the dispatcher's paused-run parking
+	// (moveToAwaitingInput) works without manual board.json edits.
+	dir := t.TempDir()
+	legacy := Board{
+		States: []State{
+			{Name: StateInbox, Display: "Inbox"},
+			{Name: StateReady, Display: "Ready", Eligible: true},
+			{Name: StateInProgress, Display: "In progress", Eligible: true},
+			{Name: StateDone, Display: "Done", Terminal: true},
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(&legacy, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal legacy board: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "board.json"), data, 0o644); err != nil {
+		t.Fatalf("write legacy board: %v", err)
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	got := s.Board().States
+	if len(got) != 5 {
+		t.Fatalf("want 5 states after awaiting-input insert, got %d: %+v", len(got), got)
+	}
+	if got[2].Name != StateInProgress || got[3].Name != StateAwaitingInput {
+		t.Fatalf("want awaiting_input right after in_progress, got %+v", got)
+	}
+	if got[3].Eligible || got[3].Terminal {
+		t.Fatalf("awaiting_input must be non-eligible, non-terminal: %+v", got[3])
+	}
+
+	// Re-load to confirm the upgrade was persisted and is idempotent.
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore (second pass): %v", err)
+	}
+	if len(s2.Board().States) != 5 {
+		t.Fatalf("awaiting_input inserted twice: %+v", s2.Board().States)
+	}
+}
+
+func TestUpgradeBoardSchema(t *testing.T) {
+	// Pure-helper contract — the Mongo store applies this on READ (no
+	// persistence), so the filesystem-store tests above don't cover it.
+	legacy := &Board{States: []State{
+		{Name: StateBacklog, Display: "Backlog"},
+		{Name: StateReady, Display: "Ready", Eligible: true},
+		{Name: StateInProgress, Display: "In progress", Eligible: true},
+		{Name: StateDone, Display: "Done", Terminal: true},
+	}}
+	if !UpgradeBoardSchema(legacy) {
+		t.Fatal("legacy board must report changed")
+	}
+	names := make([]string, 0, len(legacy.States))
+	for _, s := range legacy.States {
+		names = append(names, s.Name)
+	}
+	want := []string{StateInbox, StateBacklog, StateReady, StateInProgress, StateAwaitingInput, StateDone}
+	if len(names) != len(want) {
+		t.Fatalf("states = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("states = %v, want %v", names, want)
+		}
+	}
+	if UpgradeBoardSchema(legacy) {
+		t.Fatal("second upgrade must be a no-op")
+	}
+	if UpgradeBoardSchema(DefaultBoard()) {
+		t.Fatal("DefaultBoard must not need upgrading")
+	}
+}
+
+func TestNewStoreLeavesCustomBoardWithoutInProgressUntouched(t *testing.T) {
+	// A fully custom board with no `in_progress` state gets NO
+	// awaiting_input insert — the dispatcher's "stays in place"
+	// fallback covers it.
+	dir := t.TempDir()
+	custom := Board{
+		States: []State{
+			{Name: StateInbox, Display: "Inbox"},
+			{Name: "triage", Display: "Triage", Eligible: true},
+			{Name: "shipped", Display: "Shipped", Terminal: true},
+		},
+		UpdatedAt: time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(&custom, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal custom board: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "board.json"), data, 0o644); err != nil {
+		t.Fatalf("write custom board: %v", err)
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if got := s.Board().States; len(got) != 3 {
+		t.Fatalf("custom board must be untouched, got %+v", got)
+	}
+	if s.Board().StateByName(StateAwaitingInput) != nil {
+		t.Fatal("awaiting_input must not be inserted into a board without in_progress")
+	}
+}
+
 func TestCreateAndGet(t *testing.T) {
 	s := newTestStore(t)
 	iss, err := s.Create(Issue{Title: "first", State: "ready"})
@@ -389,6 +504,64 @@ func TestSetLastRunWritesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSetAwaitingInputWritesAndIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
+
+	countEvents := func() int {
+		n := 0
+		_ = s.ScanEvents(func(e *Event) bool {
+			if e.Type == EvtIssueUpdated && e.IssueID == iss.ID {
+				n++
+			}
+			return true
+		})
+		return n
+	}
+
+	// Set true → flag persisted, one event.
+	if err := s.SetAwaitingInput(iss.ID, true); err != nil {
+		t.Fatalf("SetAwaitingInput(true): %v", err)
+	}
+	if got, _ := s.Get(iss.ID); !got.AwaitingInput {
+		t.Fatalf("awaiting_input not set: %+v", got)
+	}
+	if got := countEvents(); got != 1 {
+		t.Fatalf("first SetAwaitingInput should emit one event, got %d", got)
+	}
+
+	// Idempotent: same value → no new event.
+	if err := s.SetAwaitingInput(iss.ID, true); err != nil {
+		t.Fatalf("idempotent SetAwaitingInput: %v", err)
+	}
+	if got := countEvents(); got != 1 {
+		t.Fatalf("idempotent call should not emit a new event, got %d", got)
+	}
+
+	// Clear false → flag cleared, fresh event.
+	if err := s.SetAwaitingInput(iss.ID, false); err != nil {
+		t.Fatalf("SetAwaitingInput(false): %v", err)
+	}
+	if got, _ := s.Get(iss.ID); got.AwaitingInput {
+		t.Fatalf("awaiting_input not cleared: %+v", got)
+	}
+	if got := countEvents(); got != 2 {
+		t.Fatalf("clear should add one event, got %d", got)
+	}
+
+	// Round-trips through reopen — confirms the field is tagged.
+	if err := s.SetAwaitingInput(iss.ID, true); err != nil {
+		t.Fatalf("SetAwaitingInput(true) again: %v", err)
+	}
+	s2, err := NewStore(s.root)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got, _ := s2.Get(iss.ID); !got.AwaitingInput {
+		t.Fatalf("reopen lost awaiting_input flag: %+v", got)
+	}
+}
+
 func TestAddCommentPersistsAndEmits(t *testing.T) {
 	s := newTestStore(t)
 	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
@@ -436,6 +609,54 @@ func TestAddCommentPersistsAndEmits(t *testing.T) {
 	}
 	if len(got.Comments) != 1 || got.Comments[0].Body != "/willy-rgaa fix the contrast issues" {
 		t.Fatalf("reopen lost comment: %+v", got.Comments)
+	}
+}
+
+func TestSetLastRunAppendsRunHistory(t *testing.T) {
+	s := newTestStore(t)
+	iss, _ := s.Create(Issue{Title: "x", State: "ready"})
+
+	// Two different run ids → two RunRefs, newest-last.
+	if err := s.SetLastRun(iss.ID, "run-1", "/tmp/wd-1"); err != nil {
+		t.Fatalf("SetLastRun run-1: %v", err)
+	}
+	if err := s.SetLastRun(iss.ID, "run-2", "/tmp/wd-2"); err != nil {
+		t.Fatalf("SetLastRun run-2: %v", err)
+	}
+	got, _ := s.Get(iss.ID)
+	if len(got.Runs) != 2 {
+		t.Fatalf("expected 2 run refs, got %d: %+v", len(got.Runs), got.Runs)
+	}
+	if got.Runs[0].RunID != "run-1" || got.Runs[1].RunID != "run-2" {
+		t.Fatalf("run history not newest-last: %+v", got.Runs)
+	}
+	if got.Runs[1].Workdir != "/tmp/wd-2" {
+		t.Fatalf("workdir not captured: %+v", got.Runs[1])
+	}
+	if got.Runs[0].At.IsZero() {
+		t.Fatalf("At not stamped: %+v", got.Runs[0])
+	}
+
+	// Same run id again with a new workdir → still 2 refs, updated in place.
+	if err := s.SetLastRun(iss.ID, "run-1", "/tmp/wd-1-moved"); err != nil {
+		t.Fatalf("SetLastRun run-1 again: %v", err)
+	}
+	got2, _ := s.Get(iss.ID)
+	if len(got2.Runs) != 2 {
+		t.Fatalf("re-stamping same run id must not append, got %d: %+v", len(got2.Runs), got2.Runs)
+	}
+	if got2.Runs[0].RunID != "run-1" || got2.Runs[0].Workdir != "/tmp/wd-1-moved" {
+		t.Fatalf("dedup-update failed: %+v", got2.Runs)
+	}
+
+	// History survives reopen (field is tagged / persisted).
+	s2, err := NewStore(s.root)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	got3, _ := s2.Get(iss.ID)
+	if len(got3.Runs) != 2 || got3.Runs[1].RunID != "run-2" {
+		t.Fatalf("reopen lost run history: %+v", got3.Runs)
 	}
 }
 

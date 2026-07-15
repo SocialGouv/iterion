@@ -130,3 +130,156 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 	view, _ := reg.ViewFor(name)
 	s.writeJSONFor(w, r, view)
 }
+
+// handlePluginDetail answers GET /api/v1/plugins/{name} — the full detail
+// projection of one plugin (README, rewriters, MCP servers, mirrored files,
+// hook commands, lifecycle). Read-only, same open access as the list route.
+func (s *Server) handlePluginDetail(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin name required")
+		return
+	}
+	reg, err := plugin.Load()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if _, ok := reg.Get(name); !ok {
+		s.httpErrorFor(w, r, http.StatusNotFound, "plugin %q not found", name)
+		return
+	}
+	detail, err := reg.DetailFor(name)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	s.writeJSONFor(w, r, detail)
+}
+
+// lifecycleOutputCap bounds the subprocess output echoed back to the studio —
+// a runaway indexer must not stream unbounded bytes to the client.
+const lifecycleOutputCap = 64 << 10
+
+// lifecycleStreamWriter turns subprocess output into flushed NDJSON
+// {"output": …} lines so the studio renders progress live, capped at
+// lifecycleOutputCap (beyond: discarded, flagged on the trailer). It is
+// passed as BOTH Stdout and Stderr of the lifecycle command; os/exec
+// serializes Writes when the two are the same comparable writer, so no
+// lock is needed. It never returns a write error, so a client that
+// disconnects mid-stream never kills the subprocess.
+type lifecycleStreamWriter struct {
+	w         http.ResponseWriter
+	flusher   http.Flusher
+	written   int
+	truncated bool
+}
+
+func (b *lifecycleStreamWriter) Write(p []byte) (int, error) {
+	if remaining := lifecycleOutputCap - b.written; remaining > 0 {
+		chunk := p
+		if len(chunk) > remaining {
+			chunk = chunk[:remaining]
+			b.truncated = true
+		}
+		b.written += len(chunk)
+		b.writeLine(map[string]any{"output": string(chunk)})
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+// writeLine marshals one NDJSON event and flushes it to the client.
+func (b *lifecycleStreamWriter) writeLine(v map[string]any) {
+	line, err := json.Marshal(v)
+	if err != nil {
+		// Maps of strings/bools cannot fail to marshal; guard anyway.
+		return
+	}
+	_, _ = b.w.Write(append(line, '\n'))
+	if b.flusher != nil {
+		b.flusher.Flush()
+	}
+}
+
+// handlePluginLifecycle answers POST /api/v1/plugins/{name}/lifecycle/{phase}
+// (phase: index|refresh) — runs the plugin's manifest lifecycle command in the
+// server's workspace. Local-mode only (the command is arbitrary manifest shell
+// executed server-side) and super-admin gated via the route wrapper. Setup
+// problems (unknown plugin, no lifecycle block, empty phase command) are 4xx;
+// a command that RAN and failed is a 200 with ok:false so the studio can show
+// the captured output either way.
+func (s *Server) handlePluginLifecycle(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSafeOrigin(w, r) {
+		return
+	}
+	if s.cfg.Mode == "cloud" {
+		s.httpErrorFor(w, r, http.StatusForbidden, "plugin lifecycle is not available in cloud mode")
+		return
+	}
+	if s.cfg.WorkDir == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "no workspace configured: the lifecycle command executes in the workspace")
+		return
+	}
+	phase := r.PathValue("phase")
+	if phase != "index" && phase != "refresh" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "unknown lifecycle phase %q (want index|refresh)", phase)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin name required")
+		return
+	}
+	reg, err := plugin.Load()
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	p, ok := reg.Get(name)
+	if !ok {
+		s.httpErrorFor(w, r, http.StatusNotFound, "plugin %q not found", name)
+		return
+	}
+	// Validate the manifest declares this phase BEFORE running, so setup
+	// errors surface as 4xx instead of a false "command failed" result.
+	lc := p.Manifest.Contributes.Lifecycle
+	if lc == nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin %q has no lifecycle commands", name)
+		return
+	}
+	cmd := lc.Index
+	if phase == "refresh" {
+		cmd = lc.Refresh
+	}
+	if strings.TrimSpace(cmd) == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "plugin %q has no %q command", name, phase)
+		return
+	}
+	// Stream: each output chunk is an NDJSON {"output":…} line flushed as
+	// it arrives, closed by a {"done":true,…} trailer — the studio renders
+	// progress live instead of waiting on a one-shot blob. Setup errors
+	// above stay plain-JSON 4xx (the client checks res.ok before reading
+	// the stream).
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	out := &lifecycleStreamWriter{w: w, flusher: flusher}
+	runErr := plugin.RunLifecycle(r.Context(), reg, name, phase, s.cfg.WorkDir, out, out)
+	trailer := map[string]any{
+		"done":  true,
+		"name":  name,
+		"phase": phase,
+		"ok":    runErr == nil,
+	}
+	if out.truncated {
+		trailer["truncated"] = true
+	}
+	if runErr != nil {
+		trailer["error"] = runErr.Error()
+	}
+	out.writeLine(trailer)
+}

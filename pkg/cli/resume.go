@@ -205,6 +205,25 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 		runtime.WithForceResume(opts.Force),
 		runtime.WithBundle(bundleHandle),
 		runtime.WithPreset(r.Preset),
+		// Wire the subbot runner, mirroring the run path (run.go). Without
+		// it, ANY resumed run whose remaining graph contains a subbot node
+		// died with "no SubbotRunner is wired" — runs with subbots were
+		// unresumable as a class. The RunOptions below carries the resume
+		// flags that flow into child executors (permission gate, model/
+		// backend overrides, stub executor for tests).
+		runtime.WithSubbotRunner(subbotRunnerForCLI(iterFile, storeDir, s, logger, RunOptions{
+			StoreDir:        storeDir,
+			LogLevel:        opts.LogLevel,
+			NoInteractive:   opts.Background,
+			Background:      opts.Background,
+			Executor:        opts.Executor,
+			Permission:      opts.Permission,
+			PermissionAllow: opts.PermissionAllow,
+			PermissionAsk:   opts.PermissionAsk,
+			PermissionDeny:  opts.PermissionDeny,
+			ModelFor:        opts.ModelFor,
+			BackendFor:      opts.BackendFor,
+		})),
 	)
 
 	// Acquire exclusive run lock to prevent concurrent processes.
@@ -257,7 +276,7 @@ func RunResumeWithFile(ctx context.Context, iterFile string, opts ResumeOptions,
 
 	err = eng.Resume(ctx, opts.RunID, answers)
 	err = autoResumeLoop(ctx, eng, s, opts.RunID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
-	return reportResumeOutcome(p, s, opts.RunID, err, map[string]interface{}{
+	return reportResumeOutcome(p, s, opts.RunID, err, map[string]any{
 		"run_id":   opts.RunID,
 		"workflow": wf.Name,
 	})

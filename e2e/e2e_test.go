@@ -115,21 +115,21 @@ func tmpStore(t *testing.T) store.RunStore {
 // scenarioExecutor is a configurable stub executor for E2E tests.
 type scenarioExecutor struct {
 	mu       sync.Mutex
-	handlers map[string]func(map[string]interface{}) (map[string]interface{}, error)
+	handlers map[string]func(map[string]any) (map[string]any, error)
 	calls    []string // ordered log of executed node IDs
 }
 
 func newScenarioExecutor() *scenarioExecutor {
 	return &scenarioExecutor{
-		handlers: make(map[string]func(map[string]interface{}) (map[string]interface{}, error)),
+		handlers: make(map[string]func(map[string]any) (map[string]any, error)),
 	}
 }
 
-func (e *scenarioExecutor) on(nodeID string, fn func(map[string]interface{}) (map[string]interface{}, error)) {
+func (e *scenarioExecutor) on(nodeID string, fn func(map[string]any) (map[string]any, error)) {
 	e.handlers[nodeID] = fn
 }
 
-func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
 	e.mu.Lock()
 	e.calls = append(e.calls, node.NodeID())
 	e.mu.Unlock()
@@ -138,7 +138,7 @@ func (e *scenarioExecutor) Execute(_ context.Context, node ir.Node, input map[st
 		return fn(input)
 	}
 	// Default: return empty output with a _tokens marker for metrics.
-	return map[string]interface{}{"_tokens": 10, "_cost_usd": 0.001}, nil
+	return map[string]any{"_tokens": 10, "_cost_usd": 0.001}, nil
 }
 
 func (e *scenarioExecutor) callCount(nodeID string) int {
@@ -197,45 +197,45 @@ func TestSingleModel_HappyPath(t *testing.T) {
 	exec := newScenarioExecutor()
 
 	// Wire up stubs that produce the expected outputs.
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pr_title": "fix: typo", "pr_description": "...", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+fix", "changed_files": []string{"a.go"},
 			"repository_summary": "repo", "implementation_notes": []string{},
 			"risky_areas": []string{}, "_tokens": 100, "_cost_usd": 0.01,
 		}, nil
 	})
-	exec.on("reviewer", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("reviewer", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "minor issues", "issues": []string{"typo"},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{"fix typo"}, "confidence": "high",
 			"_tokens": 200, "_cost_usd": 0.02,
 		}, nil
 	})
-	exec.on("planner", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("planner", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "fix typo", "goals": []string{"fix"}, "ordered_steps": []string{"s1"},
 			"validation_steps": []string{"v1"}, "risks": []string{},
 			"addressed_issues": []string{"typo"}, "_tokens": 150, "_cost_usd": 0.015,
 		}, nil
 	})
-	exec.on("compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("compliance_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 			"_tokens": 80, "_cost_usd": 0.008,
 		}, nil
 	})
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "fixed", "files_changed": []string{"a.go"},
 			"commands_run": []string{}, "tests_run": []string{"go test"},
 			"remaining_risks": []string{}, "_tokens": 300, "_cost_usd": 0.03,
 		}, nil
 	})
-	exec.on("final_verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("final_verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 			"_tokens": 100, "_cost_usd": 0.01,
@@ -322,67 +322,67 @@ func TestSingleModel_RefineLoop(t *testing.T) {
 
 	refineCount := 0
 
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pr_title": "fix", "pr_description": "", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+", "changed_files": []string{"a.go"},
 			"repository_summary": "repo", "implementation_notes": []string{},
 			"risky_areas": []string{},
 		}, nil
 	})
-	exec.on("reviewer", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("reviewer", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "issues", "issues": []string{"x"},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "medium",
 		}, nil
 	})
-	exec.on("planner", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("planner", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "plan", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
 		}, nil
 	})
-	exec.on("compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("compliance_check", func(_ map[string]any) (map[string]any, error) {
 		// Always reject to enter the refine loop.
-		return map[string]interface{}{
+		return map[string]any{
 			"approved": false, "issues": []string{"incomplete"},
 			"blocking_reasons": []string{"gap"}, "recommended_fixes": []string{"fix"},
 			"confidence": "medium",
 		}, nil
 	})
-	exec.on("refine_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("refine_plan", func(_ map[string]any) (map[string]any, error) {
 		refineCount++
-		return map[string]interface{}{
+		return map[string]any{
 			"summary": "refined", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
 		}, nil
 	})
-	exec.on("compliance_check_after_refine", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("compliance_check_after_refine", func(_ map[string]any) (map[string]any, error) {
 		// Approve on first refinement.
 		if refineCount >= 1 {
-			return map[string]interface{}{
+			return map[string]any{
 				"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 				"recommended_fixes": []string{}, "confidence": "high",
 			}, nil
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"approved": false, "issues": []string{"still bad"},
 			"blocking_reasons": []string{"gap"}, "recommended_fixes": []string{},
 			"confidence": "low",
 		}, nil
 	})
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "done", "files_changed": []string{},
 			"commands_run": []string{}, "tests_run": []string{},
 			"remaining_risks": []string{},
 		}, nil
 	})
-	exec.on("final_verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("final_verify", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
@@ -429,51 +429,51 @@ func TestSingleModel_GlobalReloop(t *testing.T) {
 
 	contextBuilderCalls := 0
 
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
 		contextBuilderCalls++
-		return map[string]interface{}{
+		return map[string]any{
 			"pr_title": "fix", "pr_description": "", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+", "changed_files": []string{},
 			"repository_summary": "repo", "implementation_notes": []string{},
 			"risky_areas": []string{},
 		}, nil
 	})
-	exec.on("reviewer", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("reviewer", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "x", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
 		}, nil
 	})
-	exec.on("planner", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("planner", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "p", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
 		}, nil
 	})
-	exec.on("compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("compliance_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
 	})
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "done", "files_changed": []string{},
 			"commands_run": []string{}, "tests_run": []string{},
 			"remaining_risks": []string{},
 		}, nil
 	})
-	exec.on("final_verify", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("final_verify", func(_ map[string]any) (map[string]any, error) {
 		// Reject on first pass, approve on second.
 		if contextBuilderCalls >= 2 {
-			return map[string]interface{}{
+			return map[string]any{
 				"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 				"recommended_fixes": []string{}, "confidence": "high",
 			}, nil
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"approved": false, "issues": []string{"not good enough"},
 			"blocking_reasons": []string{}, "recommended_fixes": []string{},
 			"confidence": "low",
@@ -527,8 +527,8 @@ func TestDualParallel_HappyPath(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pr_title": "feat: parallel", "pr_description": "", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+code", "changed_files": []string{"b.go"},
 			"repository_summary": "repo", "implementation_notes": []string{},
@@ -536,65 +536,65 @@ func TestDualParallel_HappyPath(t *testing.T) {
 		}, nil
 	})
 
-	reviewOutput := func() (map[string]interface{}, error) {
-		return map[string]interface{}{
+	reviewOutput := func() (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "review", "issues": []string{"i1"},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
 			"_tokens": 150, "_cost_usd": 0.015,
 		}, nil
 	}
-	exec.on("claude_review", func(_ map[string]interface{}) (map[string]interface{}, error) { return reviewOutput() })
-	exec.on("gpt_review", func(_ map[string]interface{}) (map[string]interface{}, error) { return reviewOutput() })
+	exec.on("claude_review", func(_ map[string]any) (map[string]any, error) { return reviewOutput() })
+	exec.on("gpt_review", func(_ map[string]any) (map[string]any, error) { return reviewOutput() })
 
-	planOutput := func() (map[string]interface{}, error) {
-		return map[string]interface{}{
+	planOutput := func() (map[string]any, error) {
+		return map[string]any{
 			"summary": "plan", "goals": []string{}, "ordered_steps": []string{"s1"},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{}, "_tokens": 120, "_cost_usd": 0.012,
 		}, nil
 	}
-	exec.on("claude_plan", func(_ map[string]interface{}) (map[string]interface{}, error) { return planOutput() })
-	exec.on("gpt_plan", func(_ map[string]interface{}) (map[string]interface{}, error) { return planOutput() })
+	exec.on("claude_plan", func(_ map[string]any) (map[string]any, error) { return planOutput() })
+	exec.on("gpt_plan", func(_ map[string]any) (map[string]any, error) { return planOutput() })
 
-	synthOutput := func() (map[string]interface{}, error) {
-		return map[string]interface{}{
+	synthOutput := func() (map[string]any, error) {
+		return map[string]any{
 			"merged_summary": "synth", "agreements": []string{}, "disagreements": []string{},
 			"missing_items": []string{}, "final_steps": []string{}, "risk_notes": []string{},
 			"_tokens": 100, "_cost_usd": 0.01,
 		}, nil
 	}
-	exec.on("claude_plan_synthesis", func(_ map[string]interface{}) (map[string]interface{}, error) { return synthOutput() })
-	exec.on("gpt_plan_synthesis", func(_ map[string]interface{}) (map[string]interface{}, error) { return synthOutput() })
+	exec.on("claude_plan_synthesis", func(_ map[string]any) (map[string]any, error) { return synthOutput() })
+	exec.on("gpt_plan_synthesis", func(_ map[string]any) (map[string]any, error) { return synthOutput() })
 
-	exec.on("final_plan_merge", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("final_plan_merge", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "merged plan", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{}, "_tokens": 100, "_cost_usd": 0.01,
 		}, nil
 	})
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "applied", "files_changed": []string{},
 			"commands_run": []string{}, "tests_run": []string{},
 			"remaining_risks": []string{}, "_tokens": 300, "_cost_usd": 0.03,
 		}, nil
 	})
 
-	finalReviewOutput := func() (map[string]interface{}, error) {
-		return map[string]interface{}{
+	finalReviewOutput := func() (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "summary": "lgtm", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
 			"_tokens": 100, "_cost_usd": 0.01,
 		}, nil
 	}
-	exec.on("claude_final_review", func(_ map[string]interface{}) (map[string]interface{}, error) { return finalReviewOutput() })
-	exec.on("gpt_final_review", func(_ map[string]interface{}) (map[string]interface{}, error) { return finalReviewOutput() })
+	exec.on("claude_final_review", func(_ map[string]any) (map[string]any, error) { return finalReviewOutput() })
+	exec.on("gpt_final_review", func(_ map[string]any) (map[string]any, error) { return finalReviewOutput() })
 
-	exec.on("final_compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("final_compliance_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 			"_tokens": 80, "_cost_usd": 0.008,
@@ -677,9 +677,9 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 	exec := newScenarioExecutor()
 
 	contextCalls := 0
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
 		contextCalls++
-		return map[string]interface{}{
+		return map[string]any{
 			"pr_title": "feat", "pr_description": "", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+", "changed_files": []string{},
 			"repository_summary": "r", "implementation_notes": []string{},
@@ -687,8 +687,8 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 		}, nil
 	})
 
-	genericReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "r", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -697,8 +697,8 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 	exec.on("claude_review", genericReview)
 	exec.on("gpt_review", genericReview)
 
-	genericPlan := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericPlan := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "p", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
@@ -707,8 +707,8 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 	exec.on("claude_plan", genericPlan)
 	exec.on("gpt_plan", genericPlan)
 
-	genericSynth := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericSynth := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"merged_summary": "s", "agreements": []string{}, "disagreements": []string{},
 			"missing_items": []string{}, "final_steps": []string{}, "risk_notes": []string{},
 		}, nil
@@ -717,16 +717,16 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 	exec.on("gpt_plan_synthesis", genericSynth)
 
 	exec.on("final_plan_merge", genericPlan)
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "done", "files_changed": []string{},
 			"commands_run": []string{}, "tests_run": []string{},
 			"remaining_risks": []string{},
 		}, nil
 	})
 
-	genericFinalReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericFinalReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "summary": "ok", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -735,14 +735,14 @@ func TestDualParallel_GlobalReloop(t *testing.T) {
 	exec.on("claude_final_review", genericFinalReview)
 	exec.on("gpt_final_review", genericFinalReview)
 
-	exec.on("final_compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("final_compliance_check", func(_ map[string]any) (map[string]any, error) {
 		if contextCalls >= 2 {
-			return map[string]interface{}{
+			return map[string]any{
 				"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 				"recommended_fixes": []string{}, "confidence": "high",
 			}, nil
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"approved": false, "issues": []string{"no"}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "low",
 		}, nil
@@ -776,8 +776,8 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel_compliance.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pr_title": "feat", "pr_description": "", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+", "changed_files": []string{},
 			"repository_summary": "r", "implementation_notes": []string{},
@@ -785,8 +785,8 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 		}, nil
 	})
 
-	genericReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "r", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -795,8 +795,8 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 	exec.on("claude_review", genericReview)
 	exec.on("gpt_review", genericReview)
 
-	genericPlan := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericPlan := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "p", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
@@ -805,8 +805,8 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 	exec.on("claude_plan", genericPlan)
 	exec.on("gpt_plan", genericPlan)
 
-	genericSynth := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericSynth := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"merged_summary": "s", "agreements": []string{}, "disagreements": []string{},
 			"missing_items": []string{}, "final_steps": []string{}, "risk_notes": []string{},
 		}, nil
@@ -815,29 +815,29 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 	exec.on("gpt_plan_synthesis", genericSynth)
 	exec.on("final_plan_merge", genericPlan)
 
-	exec.on("plan_compliance_check_initial", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_compliance_check_initial", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
 	})
-	exec.on("technical_decision_gate", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("technical_decision_gate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"needs_human_input": false, "summary": "no human needed",
 			"decision_areas": []string{}, "questions": []string{},
 			"rationales": []string{}, "expected_decisions": []string{},
 		}, nil
 	})
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "done", "files_changed": []string{},
 			"commands_run": []string{}, "tests_run": []string{},
 			"remaining_risks": []string{},
 		}, nil
 	})
 
-	genericFinalReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericFinalReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "summary": "ok", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -845,8 +845,8 @@ func TestCompliance_HappyPath_NoHumanGate(t *testing.T) {
 	}
 	exec.on("claude_final_review", genericFinalReview)
 	exec.on("gpt_final_review", genericFinalReview)
-	exec.on("final_pr_compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("final_pr_compliance_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
@@ -877,8 +877,8 @@ func TestCompliance_HumanGate(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel_compliance.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pr_title": "feat", "pr_description": "", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+", "changed_files": []string{},
 			"repository_summary": "r", "implementation_notes": []string{},
@@ -886,8 +886,8 @@ func TestCompliance_HumanGate(t *testing.T) {
 		}, nil
 	})
 
-	genericReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "r", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -896,8 +896,8 @@ func TestCompliance_HumanGate(t *testing.T) {
 	exec.on("claude_review", genericReview)
 	exec.on("gpt_review", genericReview)
 
-	genericPlan := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericPlan := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "p", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
@@ -906,8 +906,8 @@ func TestCompliance_HumanGate(t *testing.T) {
 	exec.on("claude_plan", genericPlan)
 	exec.on("gpt_plan", genericPlan)
 
-	genericSynth := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericSynth := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"merged_summary": "s", "agreements": []string{}, "disagreements": []string{},
 			"missing_items": []string{}, "final_steps": []string{}, "risk_notes": []string{},
 		}, nil
@@ -916,42 +916,42 @@ func TestCompliance_HumanGate(t *testing.T) {
 	exec.on("gpt_plan_synthesis", genericSynth)
 	exec.on("final_plan_merge", genericPlan)
 
-	exec.on("plan_compliance_check_initial", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_compliance_check_initial", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
 	})
-	exec.on("technical_decision_gate", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("technical_decision_gate", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"needs_human_input": true, "summary": "need clarification",
 			"decision_areas": []string{"architecture"}, "questions": []string{"which pattern?"},
 			"rationales": []string{"ambiguous"}, "expected_decisions": []string{"DDD"},
 		}, nil
 	})
-	exec.on("integrate_human_clarifications", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("integrate_human_clarifications", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "updated plan", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
 		}, nil
 	})
-	exec.on("plan_compliance_check_post_human", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_compliance_check_post_human", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
 	})
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "done", "files_changed": []string{},
 			"commands_run": []string{}, "tests_run": []string{},
 			"remaining_risks": []string{},
 		}, nil
 	})
 
-	genericFinalReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericFinalReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "summary": "ok", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -959,8 +959,8 @@ func TestCompliance_HumanGate(t *testing.T) {
 	}
 	exec.on("claude_final_review", genericFinalReview)
 	exec.on("gpt_final_review", genericFinalReview)
-	exec.on("final_pr_compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("final_pr_compliance_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
@@ -999,7 +999,7 @@ func TestCompliance_HumanGate(t *testing.T) {
 	// (It will be written on resume.)
 
 	// Phase 2: Resume with human answers.
-	answers := map[string]interface{}{
+	answers := map[string]any{
 		"answered":  true,
 		"questions": []string{"which pattern?"},
 		"answers":   []string{"use DDD"},
@@ -1049,8 +1049,8 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "pr_refine_dual_model_parallel_compliance.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("context_builder", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("context_builder", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pr_title": "feat", "pr_description": "", "base_ref": "main",
 			"head_ref": "HEAD", "diff": "+", "changed_files": []string{},
 			"repository_summary": "r", "implementation_notes": []string{},
@@ -1058,8 +1058,8 @@ func TestCompliance_RefineLoop(t *testing.T) {
 		}, nil
 	})
 
-	genericReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "summary": "r", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -1068,8 +1068,8 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	exec.on("claude_review", genericReview)
 	exec.on("gpt_review", genericReview)
 
-	genericPlan := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericPlan := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "p", "goals": []string{}, "ordered_steps": []string{},
 			"validation_steps": []string{}, "risks": []string{},
 			"addressed_issues": []string{},
@@ -1078,8 +1078,8 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	exec.on("claude_plan", genericPlan)
 	exec.on("gpt_plan", genericPlan)
 
-	genericSynth := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericSynth := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"merged_summary": "s", "agreements": []string{}, "disagreements": []string{},
 			"missing_items": []string{}, "final_steps": []string{}, "risk_notes": []string{},
 		}, nil
@@ -1089,35 +1089,35 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	exec.on("final_plan_merge", genericPlan)
 
 	// Initial compliance FAILS → enters refine loop.
-	exec.on("plan_compliance_check_initial", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_compliance_check_initial", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": false, "issues": []string{"gap"}, "blocking_reasons": []string{"x"},
 			"recommended_fixes": []string{"fix"}, "confidence": "medium",
 		}, nil
 	})
 
-	exec.on("refine_plan_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("refine_plan_claude", func(_ map[string]any) (map[string]any, error) {
 		return genericPlan(nil)
 	})
 
 	// After Claude refine, compliance approves.
-	exec.on("plan_compliance_check_after_claude", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_compliance_check_after_claude", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
 	})
 
-	exec.on("act_on_plan", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_on_plan", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "done", "files_changed": []string{},
 			"commands_run": []string{}, "tests_run": []string{},
 			"remaining_risks": []string{},
 		}, nil
 	})
 
-	genericFinalReview := func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	genericFinalReview := func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "summary": "ok", "issues": []string{},
 			"blockers": []string{}, "compliance_gaps": []string{},
 			"recommendations": []string{}, "confidence": "high",
@@ -1125,8 +1125,8 @@ func TestCompliance_RefineLoop(t *testing.T) {
 	}
 	exec.on("claude_final_review", genericFinalReview)
 	exec.on("gpt_final_review", genericFinalReview)
-	exec.on("final_pr_compliance_check", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("final_pr_compliance_check", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"approved": true, "issues": []string{}, "blocking_reasons": []string{},
 			"recommended_fixes": []string{}, "confidence": "high",
 		}, nil
@@ -1174,36 +1174,36 @@ func TestCIFix_HappyPath(t *testing.T) {
 	wf := compileFixture(t, "ci_fix_until_green.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("diagnose", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("diagnose", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"root_cause": "missing import", "affected_files": []string{"main.go"},
 			"error_type": "compile", "confidence": "high",
 			"suggested_approach": "add import", "details": []string{},
 			"_tokens": 100, "_cost_usd": 0.01,
 		}, nil
 	})
-	exec.on("plan_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "add import", "ordered_steps": []string{"add import"},
 			"files_to_modify": []string{"main.go"}, "expected_outcome": "compiles",
 			"risks": []string{}, "_tokens": 80, "_cost_usd": 0.008,
 		}, nil
 	})
-	exec.on("act_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "import added",
 			"files_changed": []string{"main.go"}, "commands_run": []string{},
 			"_tokens": 150, "_cost_usd": 0.015,
 		}, nil
 	})
-	exec.on("run_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("run_ci", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"passed": true, "exit_code": 0, "logs": "all tests pass",
 			"failed_tests": []string{},
 		}, nil
 	})
-	exec.on("verify_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("verify_ci", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"green": true, "remaining_failures": []string{},
 			"summary": "CI green", "confidence": "high",
 			"_tokens": 60, "_cost_usd": 0.006,
@@ -1283,41 +1283,41 @@ func TestCIFix_FixLoop(t *testing.T) {
 	exec := newScenarioExecutor()
 
 	diagnoseCalls := 0
-	exec.on("diagnose", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("diagnose", func(_ map[string]any) (map[string]any, error) {
 		diagnoseCalls++
-		return map[string]interface{}{
+		return map[string]any{
 			"root_cause": "error", "affected_files": []string{"main.go"},
 			"error_type": "test", "confidence": "high",
 			"suggested_approach": "fix test", "details": []string{},
 		}, nil
 	})
-	exec.on("plan_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "fix", "ordered_steps": []string{},
 			"files_to_modify": []string{}, "expected_outcome": "pass",
 			"risks": []string{},
 		}, nil
 	})
-	exec.on("act_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "fixed",
 			"files_changed": []string{}, "commands_run": []string{},
 		}, nil
 	})
-	exec.on("run_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("run_ci", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"passed": diagnoseCalls >= 2, "exit_code": 0,
 			"logs": "logs", "failed_tests": []string{},
 		}, nil
 	})
-	exec.on("verify_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("verify_ci", func(_ map[string]any) (map[string]any, error) {
 		if diagnoseCalls >= 2 {
-			return map[string]interface{}{
+			return map[string]any{
 				"green": true, "remaining_failures": []string{},
 				"summary": "CI green", "confidence": "high",
 			}, nil
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"green": false, "remaining_failures": []string{"test_x"},
 			"summary": "still failing", "confidence": "high",
 		}, nil
@@ -1379,34 +1379,34 @@ func TestCIFix_LoopExhaustion(t *testing.T) {
 	wf := compileFixture(t, "ci_fix_until_green.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("diagnose", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("diagnose", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"root_cause": "deep bug", "affected_files": []string{},
 			"error_type": "logic", "confidence": "low",
 			"suggested_approach": "investigate", "details": []string{},
 		}, nil
 	})
-	exec.on("plan_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "attempt", "ordered_steps": []string{},
 			"files_to_modify": []string{}, "expected_outcome": "maybe",
 			"risks": []string{},
 		}, nil
 	})
-	exec.on("act_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "tried",
 			"files_changed": []string{}, "commands_run": []string{},
 		}, nil
 	})
-	exec.on("run_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("run_ci", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"passed": false, "exit_code": 1,
 			"logs": "FAIL", "failed_tests": []string{"test_hard"},
 		}, nil
 	})
-	exec.on("verify_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("verify_ci", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"green": false, "remaining_failures": []string{"test_hard"},
 			"summary": "still broken", "confidence": "high",
 		}, nil
@@ -1518,33 +1518,33 @@ func TestEventSequenceCoherence(t *testing.T) {
 	wf := compileFixture(t, "ci_fix_until_green.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("diagnose", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("diagnose", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"root_cause": "x", "affected_files": []string{},
 			"error_type": "y", "confidence": "high",
 			"suggested_approach": "z", "details": []string{},
 		}, nil
 	})
-	exec.on("plan_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("plan_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"summary": "p", "ordered_steps": []string{},
 			"files_to_modify": []string{}, "expected_outcome": "ok",
 			"risks": []string{},
 		}, nil
 	})
-	exec.on("act_fix", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("act_fix", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied": true, "summary": "d",
 			"files_changed": []string{}, "commands_run": []string{},
 		}, nil
 	})
-	exec.on("run_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("run_ci", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"passed": true, "exit_code": 0, "logs": "ok", "failed_tests": []string{},
 		}, nil
 	})
-	exec.on("verify_ci", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("verify_ci", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"green": true, "remaining_failures": []string{},
 			"summary": "green", "confidence": "high",
 		}, nil

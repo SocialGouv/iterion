@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 
 import { DeliveryStatusBadge } from "./DeliveryStatusBadge";
 
@@ -71,41 +72,37 @@ export function DeliveriesDrawer({
         </InlineBanner>
       )}
       {loading ? (
-        <EmptyState message="Loading…" />
+        <TableSkeleton rows={4} cols={5} />
       ) : deliveries.length === 0 ? (
         <EmptyState message="No deliveries yet. Push an event from the forge to see it appear here." />
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead className="text-fg-muted text-left">
-              <tr>
-                <th className="px-2 py-1">Status</th>
-                <th className="px-2 py-1">Received</th>
-                <th className="px-2 py-1">Event</th>
-                <th className="px-2 py-1">From</th>
-                <th className="px-2 py-1">Error</th>
-              </tr>
-            </thead>
-            <tbody>
-              {deliveries.map((d) => (
-                <tr key={d.id} className="border-t border-border-subtle">
-                  <td className="px-2 py-2">
-                    <DeliveryStatusBadge status={d.status} />
-                  </td>
-                  <td className="px-2 py-2 text-fg-muted whitespace-nowrap">
-                    {new Date(d.received_at).toLocaleString()}
-                  </td>
-                  <td className="px-2 py-2">
-                    {d.event_kind ?? "—"}
-                    {d.event_action ? ` / ${d.event_action}` : ""}
-                  </td>
-                  <td className="px-2 py-2 text-fg-muted">{d.source_ip ?? "—"}</td>
-                  <td className="px-2 py-2 text-danger">{d.error ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table caption={`Recent deliveries for webhook ${webhook.name}`} density="sm">
+          <THead>
+            <Th>Status</Th>
+            <Th>Received</Th>
+            <Th>Event</Th>
+            <Th>From</Th>
+            <Th>Error</Th>
+          </THead>
+          <TBody>
+            {deliveries.map((d) => (
+              <Tr key={d.id}>
+                <Td>
+                  <DeliveryStatusBadge status={d.status} />
+                </Td>
+                <Td className="text-fg-muted whitespace-nowrap">
+                  {new Date(d.received_at).toLocaleString()}
+                </Td>
+                <Td>
+                  {d.event_kind ?? "—"}
+                  {d.event_action ? ` / ${d.event_action}` : ""}
+                </Td>
+                <Td className="text-fg-muted">{d.source_ip ?? "—"}</Td>
+                <Td className="text-danger">{d.error ?? "—"}</Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
       )}
     </Dialog>
   );

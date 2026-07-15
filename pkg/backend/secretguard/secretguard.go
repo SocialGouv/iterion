@@ -266,29 +266,29 @@ func (g *Guard) RedactBytes(b []byte) []byte {
 // other types pass through unchanged. The returned value never aliases
 // the input's maps/slices, so callers can persist it without mutating
 // live data (node outputs feed downstream nodes and the checkpoint).
-func (g *Guard) RedactValue(v interface{}) interface{} {
+func (g *Guard) RedactValue(v any) any {
 	if g == nil {
 		return v
 	}
 	switch t := v.(type) {
 	case string:
 		return g.Redact(t)
-	case map[string]interface{}:
-		out := make(map[string]interface{}, len(t))
+	case map[string]any:
+		out := make(map[string]any, len(t))
 		for k, vv := range t {
 			out[k] = g.RedactValue(vv)
 		}
 		return out
-	case []interface{}:
-		out := make([]interface{}, len(t))
+	case []any:
+		out := make([]any, len(t))
 		for i, vv := range t {
 			out[i] = g.RedactValue(vv)
 		}
 		return out
-	case []map[string]interface{}:
-		out := make([]map[string]interface{}, len(t))
+	case []map[string]any:
+		out := make([]map[string]any, len(t))
 		for i, vv := range t {
-			out[i], _ = g.RedactValue(vv).(map[string]interface{})
+			out[i], _ = g.RedactValue(vv).(map[string]any)
 		}
 		return out
 	case []string:
@@ -304,11 +304,11 @@ func (g *Guard) RedactValue(v interface{}) interface{} {
 
 // RedactMap returns a redacted deep copy of m. Nil-safe; never mutates
 // the input.
-func (g *Guard) RedactMap(m map[string]interface{}) map[string]interface{} {
+func (g *Guard) RedactMap(m map[string]any) map[string]any {
 	if g == nil || m == nil {
 		return m
 	}
-	out := make(map[string]interface{}, len(m))
+	out := make(map[string]any, len(m))
 	for k, v := range m {
 		out[k] = g.RedactValue(v)
 	}

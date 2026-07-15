@@ -23,11 +23,15 @@ import { useRunStore, type WsState } from "@/store/run";
 
 import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
+import BackendsUsedRow from "./runHeader/BackendsUsedRow";
 import BotChip from "./runHeader/BotChip";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
 import FinalizationRow from "./runHeader/FinalizationRow";
 import ForkedFromRow from "./runHeader/ForkedFromRow";
+import RunChildrenPanel from "./runHeader/RunChildrenPanel";
+import NotesRow from "./runHeader/NotesRow";
 import RunNameEditor from "./runHeader/RunNameEditor";
+import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
 import { cancelTooltip } from "./runHeader/cancelTooltip";
@@ -81,6 +85,17 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // doesn't ship cross-process pause; cancel falls back via NATS but
   // pause has no NATS subject yet).
   const canPause = run.status === "running" && active;
+  // The WS "disconnected — data may be stale" banner is only meaningful
+  // while MORE live events are expected (running / queued). A paused or
+  // terminal run legitimately ENDS its event stream — the broker closes
+  // the channel on pause/completion and the WS emits `terminated`, which
+  // the client turns into wsState="closed" — so the data is complete, not
+  // stale. Without this gate a paused run (waiting for the operator's
+  // answer) shows a false "disconnected" alarm whose Reconnect re-triggers
+  // the same `terminated` immediately. Resume redials the WS on its own
+  // (wsReconnectToken), so the live tail returns when the run continues.
+  const liveStreamExpected =
+    run.status === "running" || run.status === "queued";
   // Fork is offered for every run that has a checkpoint to anchor on
   // — paused, finished, failed, cancelled. We don't gate by status
   // because "fork from a finished run" is a perfectly valid use case
@@ -358,6 +373,14 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           {/* run id lives on the copy-id button (row 1) + the Overview's
               Advanced details — no need to repeat the raw string here. */}
         </div>
+        {/* Row 3: the resolved backend/model chip row — one chip per
+            distinct pair the run's LLM nodes ran on. Nothing renders for
+            tool/compute-only runs. */}
+        {run.backends_used && run.backends_used.length > 0 && (
+          <BackendsUsedRow backends={run.backends_used} />
+        )}
+        {/* Row 4: operator-assigned filter/group tags (chips). */}
+        <RunTagsRow runId={run.id} />
       </div>
       {error && (
         <InlineBanner
@@ -369,11 +392,15 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           {error}
         </InlineBanner>
       )}
-      <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
+      {liveStreamExpected && (
+        <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
+      )}
       {showFinalization && <FinalizationRow run={run} />}
       {run.forked_from && <ForkedFromRow run={run} />}
+      <RunChildrenPanel run={run} />
       {run.source?.issue_id && <SourceTicketRow source={run.source} />}
       <ErrorHintRow run={run} onResume={() => setResumeOpen(true)} />
+      <NotesRow runId={run.id} />
 
       {canResume && (
         <ResumeDialog

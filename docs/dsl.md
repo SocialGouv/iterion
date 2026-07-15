@@ -36,6 +36,26 @@ prompt review_user:
   Previous feedback: {{outputs.prior_review.summary}}
 ```
 
+### Including an external file
+
+Use `{{include "relative/path.md"}}` inside a prompt body to inline the
+contents of an external file (e.g. a shared rules file) at **compile
+time** — the marker is replaced once with the file's text before the
+workflow is validated or run, so the injected content is auditable in
+the compiled workflow and there is no runtime file access:
+
+```iter
+prompt review_system:
+  You are a code reviewer.
+  {{include "rules/review-guidelines.md"}}
+```
+
+The path is resolved **relative to the directory of the `.bot` file**.
+Absolute paths, paths that escape the `.bot` directory (via `..` or a
+symlink resolving outside it), and files larger than 256 KiB are rejected
+with diagnostic `C055`, as is a missing file. Included text may itself contain `{{...}}` template
+references, which resolve normally after inclusion.
+
 ## Schemas
 
 Typed data contracts for structured agent I/O:
@@ -77,6 +97,7 @@ agent reviewer:
 |----------|-------------|
 | `model` | LLM model identifier (supports `${ENV_VAR}`) |
 | `backend` | Execution backend: `claw` (default, in-process LLM), `claude_code` (recommended for tool use), `codex` (discouraged, see [Delegation](delegation.md)) |
+| `command` | Per-node CLI binary override, honored by the `claude_code` backend: run this node with an alternate **claude-code-compatible** CLI instead of the default `claude` (e.g. a pinned build or a compatible wrapper). The target must speak the claude-code CLI protocol (Session mode: `--print`, `--input-format`/`--output-format stream-json` with the prompt on stdin, `--permission-mode`, `--append-system-prompt`) — a CLI with a different interface is **not** supported. Swaps the **binary only**, not credentials/endpoint. Supports `${ENV_VAR}`. Ignored (with a `C174` warning) on `claw`/`codex`. |
 | `input` / `output` | Schema references for structured I/O |
 | `publish` | Persist output as a named artifact |
 | `system` / `user` | Prompt references |
@@ -84,6 +105,7 @@ agent reviewer:
 | `tools` | List of allowed tool names |
 | `tool_max_steps` | Max tool-use iterations (0 = unlimited) |
 | `reasoning_effort` | Extended thinking: `low`, `medium`, `high`, `xhigh`, `max` |
+| `timeout` | Per-node wall-clock bound as a Go duration string, e.g. `"20m"`, `"1200s"` (supports `${ENV_VAR:-default}`). The node fails once this or the workflow budget deadline — whichever is tighter — expires. |
 | `readonly` | If `true`, prevents tool side effects (workspace safety) |
 
 ### Judge

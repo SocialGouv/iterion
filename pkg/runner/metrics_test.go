@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/SocialGouv/iterion/pkg/backend/model"
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -21,9 +22,71 @@ func (r *recordingEmitter) AppendEvent(_ context.Context, _ string, evt store.Ev
 	return &evt, nil
 }
 
+// planRecordingEmitter also satisfies model.PlanWriter, standing in for
+// the Mongo cloud store whose plan-snapshot capability the metricsEmitter
+// wrapper must forward rather than hide.
+type planRecordingEmitter struct {
+	recordingEmitter
+	snaps []store.PlanSnapshot
+}
+
+func (p *planRecordingEmitter) AppendPlanSnapshot(_ context.Context, _ string, snap store.PlanSnapshot) (store.PlanSnapshot, bool, error) {
+	snap.Seq = len(p.snaps)
+	p.snaps = append(p.snaps, snap)
+	return snap, true, nil
+}
+
+// TestMetricsEmitter_forwardsPlanWriter is the regression for the cloud
+// "No plans captured for this run." bug: the capture hook detects the
+// PlanWriter capability with `emitter.(PlanWriter)`, and the runner wraps
+// the store in a metricsEmitter — so the wrapper must itself satisfy
+// model.PlanWriter and delegate to the inner store, otherwise the plan
+// sink is silently nil on every cloud run.
+func TestMetricsEmitter_forwardsPlanWriter(t *testing.T) {
+	inner := &planRecordingEmitter{}
+	m := newMetricsEmitter(inner, metrics.New())
+
+	// The wrapper must advertise the capability (this is exactly the
+	// assertion NewStoreEventHooks performs on the emitter it receives).
+	pw, ok := model.EventEmitter(m).(model.PlanWriter)
+	if !ok {
+		t.Fatal("metricsEmitter does not satisfy model.PlanWriter — cloud plan capture stays disabled")
+	}
+
+	snap := store.PlanSnapshot{NodeID: "n", Tool: "TodoWrite", Todos: []store.PlanTodo{{Content: "a", Status: "pending"}}}
+	got, wrote, err := pw.AppendPlanSnapshot(context.Background(), "run-1", snap)
+	if err != nil {
+		t.Fatalf("forwarded append: %v", err)
+	}
+	if !wrote {
+		t.Error("wrote=false, want true (delegated to inner)")
+	}
+	if got.Seq != 0 {
+		t.Errorf("seq = %d, want 0", got.Seq)
+	}
+	if len(inner.snaps) != 1 {
+		t.Errorf("inner received %d snapshots, want 1 (not forwarded)", len(inner.snaps))
+	}
+}
+
+// TestMetricsEmitter_planWriterNoOpWhenInnerLacks locks in the benign
+// no-op: an inner store that is NOT a PlanWriter yields (snap, false,
+// nil) — identical to today's nil-planSink path, not a loud error.
+func TestMetricsEmitter_planWriterNoOpWhenInnerLacks(t *testing.T) {
+	m := newMetricsEmitter(&recordingEmitter{}, metrics.New())
+	snap := store.PlanSnapshot{NodeID: "n"}
+	_, wrote, err := m.AppendPlanSnapshot(context.Background(), "run-1", snap)
+	if err != nil {
+		t.Fatalf("no-op forward: unexpected error %v", err)
+	}
+	if wrote {
+		t.Error("wrote=true, want false (inner lacks PlanWriter)")
+	}
+}
+
 func TestToFloat(t *testing.T) {
 	cases := []struct {
-		in   interface{}
+		in   any
 		want float64
 	}{
 		{nil, 0},
@@ -82,7 +145,7 @@ func TestMetricsEmitter_observeLLMStepFinished_tokensAndCost(t *testing.T) {
 		Type:   store.EventLLMRequest,
 		RunID:  "run-1",
 		NodeID: "n1",
-		Data:   map[string]interface{}{"model": "claude-sonnet-4-6"},
+		Data:   map[string]any{"model": "claude-sonnet-4-6"},
 	})
 
 	// Step uses a model known to the cost table; both the tokens and
@@ -91,7 +154,7 @@ func TestMetricsEmitter_observeLLMStepFinished_tokensAndCost(t *testing.T) {
 		Type:   store.EventLLMStepFinished,
 		RunID:  "run-1",
 		NodeID: "n1",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"input_tokens":  float64(1000),
 			"output_tokens": float64(500),
 		},
@@ -129,7 +192,7 @@ func TestMetricsEmitter_unknownModel_costStaysZero(t *testing.T) {
 		Type:   store.EventLLMStepFinished,
 		RunID:  "run-2",
 		NodeID: "n9",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"input_tokens":  float64(100),
 			"output_tokens": float64(50),
 		},
@@ -149,7 +212,7 @@ func TestMetricsEmitter_delegateFinished_aggregatedTokens(t *testing.T) {
 		Type:   store.EventDelegateFinished,
 		RunID:  "run-3",
 		NodeID: "n2",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"backend": "claude_code",
 			"tokens":  float64(420),
 		},

@@ -1,5 +1,6 @@
 name: adr-cartograph
 display_name: Adry
+icon: 🗺️
 version: 2.0.0
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). The
 ## deterministic machinery is KEPT (scan_adrs inventory + cache,

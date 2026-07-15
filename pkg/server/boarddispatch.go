@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -23,6 +24,12 @@ type boardCoordinator interface {
 	Release(ctx context.Context, tenant, id, marker string) error
 }
 
+// errCardPaused marks a processBoardCard error whose run parked on a
+// human/operator gate (paused_waiting_human / paused_operator) rather than
+// failing. processCard routes such a card to the awaiting-input column, not
+// blocked.
+var errCardPaused = errors.New("board dispatcher: run paused awaiting input")
+
 // boardDispatcher polls the cloud board for eligible cards and runs each via
 // the injected process func (launch + poll-to-terminal). Multi-replica-safe
 // WITHOUT leader election: the per-card Claim is a CAS, so each card is claimed
@@ -37,6 +44,14 @@ type boardDispatcher struct {
 	inProgressState string
 	doneState       string
 	blockedState    string
+	awaitingState   string
+
+	// statusFor + clearBadge power the parked-card sweep (sweepParked).
+	// statusFor reads a run's persisted status for a tenant; clearBadge
+	// clears the card's denormalized awaiting-input hint. Both optional —
+	// a nil statusFor disables the sweep.
+	statusFor  func(ctx context.Context, tenant, runID string) (store.RunStatus, error)
+	clearBadge func(tenant, id string)
 
 	interval time.Duration
 	sem      chan struct{}
@@ -57,6 +72,7 @@ func newBoardDispatcher(coord boardCoordinator, process func(context.Context, st
 		inProgressState: native.StateInProgress,
 		doneState:       native.StateDone,
 		blockedState:    native.StateBlocked,
+		awaitingState:   native.StateAwaitingInput,
 		interval:        5 * time.Second,
 		sem:             make(chan struct{}, concurrency),
 		logger:          logger,
@@ -99,14 +115,69 @@ func (d *boardDispatcher) processCard(ctx context.Context, c boardmongo.Candidat
 	runErr := d.process(ctx, c.Tenant, c.Issue)
 	final := d.doneState
 	if runErr != nil {
-		final = d.blockedState
-		d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+		// A pause is not a failure: route the card to the awaiting-input
+		// column so the operator answers it there, not to blocked.
+		if errors.Is(runErr, errCardPaused) {
+			final = d.awaitingState
+		} else {
+			final = d.blockedState
+			d.warn("card %s/%s run failed: %v", c.Tenant, c.Issue.ID, runErr)
+		}
 	}
 	if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, final); err != nil {
 		d.warn("card %s/%s → %s: %v", c.Tenant, c.Issue.ID, final, err)
 	}
 	if err := d.coord.Release(ctx, c.Tenant, c.Issue.ID, d.marker); err != nil {
 		d.warn("card %s/%s release: %v", c.Tenant, c.Issue.ID, err)
+	}
+}
+
+// sweepParked reconciles cards parked in the awaiting-input column whose
+// runs have since reached a terminal status. A cloud card parks UNCLAIMED
+// (processCard moved it to awaitingState and released), and every resume
+// surface — answer-from-board, run console, CLI — completes the run outside
+// this dispatcher's poll loop (which returned at the pause), so without the
+// sweep the card strands in awaiting_input forever. Mirrors the local
+// dispatcher's reconcileParked (pkg/dispatcher/parked.go): finished →
+// doneState, hard-failed → blockedState; resumable statuses (paused_*,
+// failed_resumable, cancelled) and in-flight ones stay parked. Multi-replica
+// safe without claims: a concurrent double-move lands on the same final
+// state, and awaiting_input is not in `eligible` so no replica re-dispatches.
+func (d *boardDispatcher) sweepParked(ctx context.Context) {
+	if d.statusFor == nil {
+		return
+	}
+	cands, err := d.coord.ListEligible(ctx, []string{d.awaitingState}, 200)
+	if err != nil {
+		d.warn("parked sweep list: %v", err)
+		return
+	}
+	for _, c := range cands {
+		runID := c.Issue.LastRunID
+		if runID == "" {
+			continue
+		}
+		st, err := d.statusFor(ctx, c.Tenant, runID)
+		if err != nil {
+			continue // best-effort: unreadable run → leave the card alone
+		}
+		var target string
+		switch st {
+		case store.RunStatusFinished:
+			target = d.doneState
+			d.log("card %s/%s resumed out-of-band and finished (run=%s) — moving to %s", c.Tenant, c.Issue.ID, runID, target)
+		case store.RunStatusFailed:
+			target = d.blockedState
+			d.warn("card %s/%s resumed out-of-band and failed hard (run=%s) — moving to %s", c.Tenant, c.Issue.ID, runID, target)
+		default:
+			continue // still paused / resumable / in flight — genuinely awaiting the operator
+		}
+		if d.clearBadge != nil {
+			d.clearBadge(c.Tenant, c.Issue.ID)
+		}
+		if err := d.coord.SetState(ctx, c.Tenant, c.Issue.ID, target); err != nil {
+			d.warn("parked sweep move %s/%s → %s: %v", c.Tenant, c.Issue.ID, target, err)
+		}
 	}
 }
 
@@ -117,6 +188,7 @@ func (d *boardDispatcher) run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		d.tick(ctx)
+		d.sweepParked(ctx)
 		select {
 		case <-ctx.Done():
 			d.wg.Wait() // let in-flight cards finish their state transition
@@ -132,35 +204,114 @@ func (d *boardDispatcher) warn(format string, args ...any) {
 	}
 }
 
+func (d *boardDispatcher) log(format string, args ...any) {
+	if d.logger != nil {
+		d.logger.Info("board dispatcher: "+format, args...)
+	}
+}
+
 // processBoardCard is the cloud board dispatcher's process func: launch the
 // card's bot for its tenant through the run service (→ publisher), then poll
 // the run record until it terminates. Returns nil on a clean finish, an error
 // on failure or pause (the dispatcher then moves the card to blocked). The
 // tenant identity is stamped on ctx so the publisher seals credentials.
-// Reserved BotArgs keys carrying the repo a webhook-launched card targets.
-// ensureBoardCard stamps them; liftBoardRepo extracts them so they reach the
-// LaunchSpec (and not the bot as vars).
+// Reserved BotArgs keys carrying the launch context a webhook-launched card
+// targets — the repo to clone AND the webhook's BYOK key / secret overrides.
+// The board coordinator launches from the card and otherwise has NONE of this
+// (the webhook's own SecretOverrides/KeyOverrides never reach it). ensureBoardCard
+// stamps them; liftBoardLaunchContext extracts them into the LaunchSpec so they
+// don't leak to the bot as vars. Secret resolution ALSO works via a (tenant,bot)
+// binding — the override is the belt to that braces, and the only route for a
+// per-webhook KeyOverride (BYOK billing), which has no binding equivalent.
 const (
-	boardRepoURLKey = "__iterion_repo_url"
-	boardRepoRefKey = "__iterion_repo_ref"
+	boardRepoURLKey         = "__iterion_repo_url"
+	boardRepoRefKey         = "__iterion_repo_ref"
+	boardKeyOverridesKey    = "__iterion_key_overrides"
+	boardSecretOverridesKey = "__iterion_secret_overrides"
 )
 
-// liftBoardRepo splits a card's BotArgs into (bot vars, repoURL, repoRef),
-// removing the reserved repo keys from the vars so they don't leak to the bot.
-func liftBoardRepo(botArgs map[string]string) (map[string]string, string, string) {
-	repoURL := botArgs[boardRepoURLKey]
-	if repoURL == "" {
-		return botArgs, "", ""
+// boardLaunchContext is the non-var launch state lifted off a card's BotArgs.
+type boardLaunchContext struct {
+	Vars            map[string]string
+	RepoURL         string
+	RepoRef         string
+	KeyOverrides    map[string]string
+	SecretOverrides map[string]string
+}
+
+// liftBoardLaunchContext splits a card's BotArgs into the bot's vars and the
+// reserved launch context (repo + overrides), removing the reserved keys from
+// the vars so they never leak to the bot. A malformed override blob is dropped
+// (best-effort — never fail a launch on it).
+func liftBoardLaunchContext(botArgs map[string]string) boardLaunchContext {
+	lc := boardLaunchContext{
+		RepoURL: botArgs[boardRepoURLKey],
+		RepoRef: botArgs[boardRepoRefKey],
 	}
-	repoRef := botArgs[boardRepoRefKey]
-	vars := make(map[string]string, len(botArgs))
+	if blob := botArgs[boardKeyOverridesKey]; blob != "" {
+		_ = json.Unmarshal([]byte(blob), &lc.KeyOverrides)
+	}
+	if blob := botArgs[boardSecretOverridesKey]; blob != "" {
+		_ = json.Unmarshal([]byte(blob), &lc.SecretOverrides)
+	}
+	lc.Vars = make(map[string]string, len(botArgs))
 	for k, v := range botArgs {
-		if k == boardRepoURLKey || k == boardRepoRefKey {
+		switch k {
+		case boardRepoURLKey, boardRepoRefKey, boardKeyOverridesKey, boardSecretOverridesKey:
 			continue
 		}
-		vars[k] = v
+		lc.Vars[k] = v
 	}
-	return vars, repoURL, repoRef
+	return lc
+}
+
+// stampCardLastRun records the launched run on the tenant's board card via the
+// same SetLastRun seam the local dispatcher uses, resolved through CloudBoardFor
+// (the Mongo-backed store in cloud, a native store in tests). Best-effort: a
+// stamp failure never fails the run — the card simply lacks its live-run link.
+func (s *Server) stampCardLastRun(tenant, cardID, runID string) {
+	if s.cfg.CloudBoardFor == nil || runID == "" {
+		return
+	}
+	store := s.cfg.CloudBoardFor(tenant)
+	if store == nil {
+		return
+	}
+	if err := store.SetLastRun(cardID, runID, ""); err != nil && s.logger != nil {
+		s.logger.Warn("board dispatcher: stamp run %s on card %s/%s: %v", runID, tenant, cardID, err)
+	}
+}
+
+// setCardAwaitingInput denormalizes the pause hint onto the tenant's board
+// card via the same CloudBoardFor seam as stampCardLastRun, so the studio
+// grid can badge a paused card without an N+1 run fetch. Best-effort: a
+// write failure never fails the run. It is a HINT — the modal's answer
+// affordance still keys off getRun(last_run_id).status.
+func (s *Server) setCardAwaitingInput(tenant, cardID string, v bool) {
+	if s.cfg.CloudBoardFor == nil {
+		return
+	}
+	store := s.cfg.CloudBoardFor(tenant)
+	if store == nil {
+		return
+	}
+	if err := store.SetAwaitingInput(cardID, v); err != nil && s.logger != nil {
+		s.logger.Warn("board dispatcher: set awaiting-input=%v on card %s/%s: %v", v, tenant, cardID, err)
+	}
+}
+
+// boardRunStatus reads a run's persisted status for the parked-card sweep,
+// tenant-scoped exactly like processBoardCard's launch context.
+func (s *Server) boardRunStatus(ctx context.Context, tenant, runID string) (store.RunStatus, error) {
+	if s.runs == nil {
+		return "", errors.New("run service unavailable")
+	}
+	ctx = store.WithIdentity(ctx, tenant, "board-dispatcher")
+	run, err := s.runs.LoadRunCtx(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	return run.Status, nil
 }
 
 func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native.Issue) error {
@@ -175,22 +326,34 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 	if err != nil {
 		return err
 	}
-	// A webhook-launched card carries its target repo in reserved BotArgs keys
-	// (ensureBoardCard) — the coordinator otherwise has no repo. Lift them into
-	// the LaunchSpec so the runner clones, and strip them from the bot's vars.
-	vars, repoURL, repoRef := liftBoardRepo(iss.BotArgs)
+	// A webhook-launched card carries its launch context (repo + the webhook's
+	// BYOK key / secret overrides) in reserved BotArgs keys (ensureBoardCard) —
+	// the coordinator otherwise has none of it. Lift it into the LaunchSpec so
+	// the runner clones + the publisher applies the overrides, and strip the
+	// reserved keys from the bot's vars.
+	lc := liftBoardLaunchContext(iss.BotArgs)
 	res, err := s.runs.Launch(ctx, runview.LaunchSpec{
-		FilePath: path,
-		Source:   source,
-		BotID:    iss.Bot,
-		Vars:     vars,
-		RepoURL:  repoURL,
-		RepoRef:  repoRef,
+		FilePath:        path,
+		Source:          source,
+		BotID:           iss.Bot,
+		Vars:            lc.Vars,
+		RepoURL:         lc.RepoURL,
+		RepoRef:         lc.RepoRef,
+		KeyOverrides:    lc.KeyOverrides,
+		SecretOverrides: lc.SecretOverrides,
 	})
 	if err != nil {
 		return err
 	}
 	runID := res.RunID
+	// Stamp the launched run onto the card immediately (not after the run
+	// terminates) so the studio can link the LIVE run while it executes. The
+	// local dispatcher already does this via SetLastRun; the cloud coordinator
+	// launches through runs.Launch and must stamp the same seam itself.
+	s.stampCardLastRun(tenant, iss.ID, runID)
+	// A fresh dispatch supersedes any prior pause — clear the denormalized
+	// awaiting-input badge so the card doesn't show a stale ⏸.
+	s.setCardAwaitingInput(tenant, iss.ID, false)
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -200,10 +363,14 @@ func (s *Server) processBoardCard(ctx context.Context, tenant string, iss native
 				return nil
 			case st.IsTerminal():
 				return fmt.Errorf("run %s ended %s", runID, st)
-			case st == store.RunStatusPausedWaitingHuman || st == store.RunStatusPausedOperator:
-				// Parked on a human/operator gate — stop waiting; the card
-				// goes to blocked and the operator resumes the run.
-				return fmt.Errorf("run %s paused (%s)", runID, st)
+			case st.IsPaused():
+				// Parked on a human/operator gate — stop waiting; the operator
+				// resumes the run. Denormalize the pause hint so the grid can
+				// badge the card without a per-run fetch, and wrap errCardPaused
+				// so processCard routes the card to the awaiting-input column
+				// instead of blocked (a pause is not a failure).
+				s.setCardAwaitingInput(tenant, iss.ID, true)
+				return fmt.Errorf("run %s paused (%s): %w", runID, st, errCardPaused)
 			}
 		}
 		select {

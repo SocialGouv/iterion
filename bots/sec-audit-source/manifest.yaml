@@ -1,5 +1,6 @@
 name: sec-audit-source
 display_name: Seki
+icon: 🛡️
 version: 0.1.0
 description: |
   Universal source-code security auditor. Detects languages and

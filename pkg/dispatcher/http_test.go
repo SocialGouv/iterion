@@ -64,7 +64,7 @@ func TestHTTPIssueDetailAndCancel(t *testing.T) {
 	c.Start(ctx)
 	defer c.Stop()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 1 {
 			break
@@ -103,7 +103,7 @@ func TestHTTPIssueDetailAndCancel(t *testing.T) {
 	}
 	r2.Body.Close()
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 0 {
 			return

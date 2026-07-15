@@ -44,6 +44,54 @@ const PodIPEnvVar = "ITERION_POD_IP"
 // multi-GB images take 30-60s).
 const DefaultPodReadyTimeoutSecs = 180
 
+// Downward-API env vars the runner pod's Helm chart should inject so the
+// driver can set an ownerReference on every per-run resource (sandbox
+// pod, Secrets, NetworkPolicy) pointing back at the runner pod. When a
+// runner pod is deleted (deployment rollout, node drain, scale-down) the
+// cluster then cascade-GCs its whole sandbox footprint — including the
+// plaintext-credential Secret — without waiting for the label reaper.
+// Best-effort: unset → no ownerReference, and the run leans on
+// activeDeadlineSeconds + the reaper. Wire via:
+//
+//	env:
+//	  - name: ITERION_RUNNER_POD_NAME
+//	    valueFrom: {fieldRef: {fieldPath: metadata.name}}
+//	  - name: ITERION_RUNNER_POD_UID
+//	    valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+const (
+	RunnerPodNameEnvVar = "ITERION_RUNNER_POD_NAME"
+	RunnerPodUIDEnvVar  = "ITERION_RUNNER_POD_UID"
+)
+
+// deadlineMarginSecs is added to the run's budgeted max_duration when
+// deriving spec.activeDeadlineSeconds, so a run that legitimately uses
+// its full budget (plus sandbox setup/teardown slack) is never killed by
+// the deadline mid-work — the deadline only reaps genuinely-leaked pods.
+const deadlineMarginSecs int64 = 30 * 60 // 30 minutes
+
+// runnerPodOwner reads the runner pod's identity from the downward-API
+// env vars and returns an OwnerReference, or nil when the chart didn't
+// wire them (best-effort — the reaper + activeDeadlineSeconds remain).
+func runnerPodOwner() *OwnerReference {
+	name := os.Getenv(RunnerPodNameEnvVar)
+	uid := os.Getenv(RunnerPodUIDEnvVar)
+	if name == "" || uid == "" {
+		return nil
+	}
+	return &OwnerReference{APIVersion: "v1", Kind: "Pod", Name: name, UID: uid}
+}
+
+// activeDeadlineFor derives the sandbox pod's activeDeadlineSeconds from
+// the run's budgeted max_duration (seconds). Returns 0 (unbounded) when
+// the run has no duration budget — we never invent a cap the operator
+// didn't ask for, since the reaper is the backstop for unbounded runs.
+func activeDeadlineFor(maxDurationSecs int64) int64 {
+	if maxDurationSecs <= 0 {
+		return 0
+	}
+	return maxDurationSecs + deadlineMarginSecs
+}
+
 // New returns a kubernetes driver bound to the in-cluster service
 // account, or [sandbox.ErrUnavailable] when the host doesn't qualify
 // (no kubectl, no in-cluster token). Cheap — no API calls.
@@ -170,6 +218,15 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 
 	podName := podNameFor(info.RunID)
 
+	// Best-effort cascade-GC owner (the runner pod) + a bounded lifetime,
+	// so a runner killed mid-run before Cleanup fires doesn't leak the pod
+	// or its plaintext-credential Secret indefinitely (ADR-070). Both
+	// degrade gracefully: owner nil when the downward API isn't wired,
+	// deadline 0 when the run has no duration budget — the label reaper is
+	// the backstop for either.
+	owner := runnerPodOwner()
+	activeDeadline := activeDeadlineFor(info.MaxDurationSeconds)
+
 	// The in-pod workspace must live at the SAME absolute path the bot's
 	// tool/agent nodes use — RunInfo.WorkspacePath, the runner's worktree
 	// (= {{run.worktree}} / PROJECT_DIR) — exactly as the docker driver
@@ -188,7 +245,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	secretFilesSecretName := ""
 	if len(p.spec.SecretFiles) > 0 {
 		secretFilesSecretName = podName + "-secret-files"
-		secretManifest, err := BuildSecretFilesSecret(d.namespace, secretFilesSecretName, info.RunID, info.FriendlyName, p.spec.SecretFiles)
+		secretManifest, err := BuildSecretFilesSecret(d.namespace, secretFilesSecretName, info.RunID, info.FriendlyName, p.spec.SecretFiles, owner)
 		if err != nil {
 			return nil, fmt.Errorf("kubernetes: build file secrets secret: %w", err)
 		}
@@ -203,7 +260,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 	caSecretName := ""
 	if len(info.ProxyCACert) > 0 {
 		caSecretName = podName + "-ca"
-		caSecret, err := BuildCASecret(d.namespace, caSecretName, info.RunID, info.FriendlyName, info.ProxyCACert)
+		caSecret, err := BuildCASecret(d.namespace, caSecretName, info.RunID, info.FriendlyName, info.ProxyCACert, owner)
 		if err != nil {
 			if secretFilesSecretName != "" {
 				_ = deleteResource(ctx, d.namespace, "secret", secretFilesSecretName)
@@ -228,6 +285,8 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		ProxyEndpoint:         info.ProxyEndpoint,
 		CASecretName:          caSecretName,
 		SecretFilesSecretName: secretFilesSecretName,
+		Owner:                 owner,
+		ActiveDeadlineSeconds: activeDeadline,
 	})
 	if err != nil {
 		if caSecretName != "" {
@@ -266,6 +325,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		info:                  info,
 		caSecretName:          caSecretName,
 		secretFilesSecretName: secretFilesSecretName,
+		secretFiles:           append([]sandbox.SecretFileMount(nil), p.spec.SecretFiles...),
 	}
 
 	// V2-5: synthesise a per-run NetworkPolicy when the proxy is
@@ -295,6 +355,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 			RunID:        info.RunID,
 			FriendlyName: info.FriendlyName,
 			RunnerPodIP:  runnerIP,
+			Owner:        owner,
 		})
 		if err != nil {
 			_ = r.Cleanup(ctx)
@@ -371,12 +432,79 @@ type Run struct {
 	// secrets. Empty when the workflow declares no file secrets.
 	secretFilesSecretName string
 
+	// secretFiles is the current (post-refresh) ordered snapshot of the
+	// mounted file secrets. RefreshSecretFile re-applies the whole Secret
+	// with one value updated; keeping the snapshot means a later refresh
+	// of a DIFFERENT key doesn't revert this one to its launch value. The
+	// slice order is preserved so the indexed Secret keys (secret-<i>-...)
+	// stay stable and the projected-volume item mapping still resolves.
+	// Guarded by mu.
+	secretFiles []sandbox.SecretFileMount
+
 	mu      sync.Mutex
 	cleaned bool
 }
 
 // Driver returns "kubernetes".
 func (r *Run) Driver() string { return "kubernetes" }
+
+// RefreshSecretFile re-applies the per-run file-secrets Secret with the
+// named key's value updated, so a rotated short-lived token reaches the
+// mounted projected volume. Implements [sandbox.SecretFileRefresher].
+//
+// The value is never logged. kubelet propagates a Secret update to a
+// projected-volume mount within ~1 minute — well inside the refresh
+// cadence and a token's lifetime. NOTE: this covers the DEFAULT
+// directory-mounted secrets (`/run/iterion/secrets/*`); a secret with a
+// custom absolute mount_path is projected via `subPath`, which kubelet
+// does NOT auto-update — such a secret keeps its launch value. The Secret
+// itself is still refreshed here; only the subPath projection is stale.
+func (r *Run) RefreshSecretFile(ctx context.Context, name string, value []byte) error {
+	manifest, err := r.renderRefreshedSecret(name, value)
+	if err != nil {
+		return err
+	}
+	if err := applyManifest(ctx, r.namespace, manifest); err != nil {
+		return fmt.Errorf("kubernetes: refresh file secret %s: apply: %w", name, err)
+	}
+	return nil
+}
+
+// renderRefreshedSecret updates the in-memory snapshot with the named
+// key's new value and returns the re-rendered Secret manifest. Split out
+// from RefreshSecretFile (which then applies it) so the snapshot/render
+// logic is testable without a live kubectl.
+func (r *Run) renderRefreshedSecret(name string, value []byte) ([]byte, error) {
+	if len(value) == 0 {
+		return nil, fmt.Errorf("kubernetes: refresh file secret %s: empty value", name)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.secretFilesSecretName == "" {
+		return nil, fmt.Errorf("kubernetes: refresh: run has no file-secrets Secret")
+	}
+	updated := false
+	for i := range r.secretFiles {
+		if r.secretFiles[i].Name == name {
+			r.secretFiles[i].Value = value
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		return nil, fmt.Errorf("kubernetes: refresh: no mounted file secret %q", name)
+	}
+	// Re-apply with the SAME ownerReference the Secret was created with
+	// (runnerPodOwner is idempotent — it reads the downward-API env), or the
+	// refresh would strip the ownerReference and defeat the orphan-GC cascade
+	// (ADR-070). The two features (mid-run refresh + ownerReference GC) touch
+	// the same manifest and must agree.
+	manifest, err := BuildSecretFilesSecret(r.namespace, r.secretFilesSecretName, r.info.RunID, r.info.FriendlyName, r.secretFiles, runnerPodOwner())
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes: refresh file secret %s: build: %w", name, err)
+	}
+	return manifest, nil
+}
 
 // Command returns an *exec.Cmd that, when started, runs cmd inside
 // the sandbox pod via `kubectl exec`. Stdin/Stdout/Stderr on the
@@ -449,8 +577,10 @@ func (r *Run) Exec(ctx context.Context, cmd []string, opts sandbox.ExecOpts) (sa
 
 // Cleanup deletes the sandbox pod. Idempotent — kubectl's
 // --ignore-not-found handles the second call cleanly. Errors here
-// are non-fatal for the engine: a leaked pod will be GC'd by a
-// cluster-side controller (V2 ships a CronJob for this).
+// are non-fatal for the engine: a pod leaked because Cleanup never
+// fired (runner killed mid-run) is bounded by spec.activeDeadlineSeconds,
+// cascade-GC'd when the runner pod is deleted (ownerReference), and swept
+// by the label reaper (ReapOrphanResources) — see ADR-070.
 func (r *Run) Cleanup(_ context.Context) error {
 	r.mu.Lock()
 	if r.cleaned {

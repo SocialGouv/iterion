@@ -15,9 +15,14 @@ const (
 	StateBacklog    = "backlog"
 	StateReady      = "ready"
 	StateInProgress = "in_progress"
-	StateReview     = "review"
-	StateDone       = "done"
-	StateBlocked    = "blocked"
+	// StateAwaitingInput holds a dispatched card whose run paused waiting for
+	// a human answer (paused_waiting_human). Non-eligible (the dispatcher
+	// never re-picks it) and non-terminal (the run resumes on answer). The
+	// column-level expression of the per-card AwaitingInput badge.
+	StateAwaitingInput = "awaiting_input"
+	StateReview        = "review"
+	StateDone          = "done"
+	StateBlocked       = "blocked"
 )
 
 // FieldType enumerates the supported custom-field value kinds.
@@ -58,8 +63,12 @@ type View struct {
 	Search   string   `json:"search,omitempty"`
 	Labels   []string `json:"labels,omitempty"`
 	Assignee string   `json:"assignee,omitempty"`
-	Sort     string   `json:"sort,omitempty"`
-	GroupBy  string   `json:"group_by,omitempty"`
+	// Bot scopes the view to a single bot (Issue.Bot). Additive to the
+	// group-by-bot swimlane lens: this is a persisted FILTER, so an
+	// operator can save "the X pipeline" as a saved View.
+	Bot     string `json:"bot,omitempty"`
+	Sort    string `json:"sort,omitempty"`
+	GroupBy string `json:"group_by,omitempty"`
 }
 
 // Board is the kanban configuration: ordered states + custom field schema
@@ -91,6 +100,7 @@ func DefaultBoard() *Board {
 			{Name: StateBacklog, Display: "Backlog"},
 			{Name: StateReady, Display: "Ready", Eligible: true},
 			{Name: StateInProgress, Display: "In progress", Eligible: true},
+			{Name: StateAwaitingInput, Display: "Awaiting input"},
 			{Name: StateReview, Display: "Review"},
 			{Name: StateDone, Display: "Done", Terminal: true},
 			{Name: StateBlocked, Display: "Blocked", Terminal: true},
@@ -110,6 +120,41 @@ func (b *Board) StateByName(name string) *State {
 		}
 	}
 	return nil
+}
+
+// UpgradeBoardSchema applies the in-place upgrades a board persisted by an
+// older iterion needs to work with the current dispatcher, returning true
+// when it modified the board. Shared by the filesystem store
+// (loadOrInitBoard, which persists the result) and the Mongo store (Board(),
+// which normalizes on read). Idempotent; operator-customised boards keep
+// their ordering.
+//
+//   - `inbox` (bot-emitted findings land there) is prepended when missing.
+//   - `awaiting_input` (the dispatcher parks a paused card there) is
+//     inserted right after `in_progress` when missing. Boards without an
+//     `in_progress` state are fully custom — left untouched; the
+//     dispatcher's "stays in place" fallback covers them.
+func UpgradeBoardSchema(b *Board) bool {
+	changed := false
+	if b.StateByName(StateInbox) == nil {
+		b.States = append([]State{{Name: StateInbox, Display: "Inbox"}}, b.States...)
+		changed = true
+	}
+	if b.StateByName(StateAwaitingInput) == nil {
+		for i, st := range b.States {
+			if st.Name != StateInProgress {
+				continue
+			}
+			states := make([]State, 0, len(b.States)+1)
+			states = append(states, b.States[:i+1]...)
+			states = append(states, State{Name: StateAwaitingInput, Display: "Awaiting input"})
+			states = append(states, b.States[i+1:]...)
+			b.States = states
+			changed = true
+			break
+		}
+	}
+	return changed
 }
 
 // stateIndex returns the position of the state matching name, or -1.

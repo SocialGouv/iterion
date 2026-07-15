@@ -19,7 +19,7 @@ func TestScanPreviewURLs(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want []map[string]interface{}
+		want []map[string]any
 	}{
 		{
 			name: "empty input",
@@ -34,21 +34,21 @@ func TestScanPreviewURLs(t *testing.T) {
 		{
 			name: "plain url",
 			in:   "[iterion] preview_url=http://localhost:8000\n",
-			want: []map[string]interface{}{
+			want: []map[string]any{
 				{"url": "http://localhost:8000", "source": "tool-stdout", "scope": "external"},
 			},
 		},
 		{
 			name: "with kind and scope",
 			in:   "starting...\n[iterion] preview_url=http://localhost:3000 kind=dev-server scope=internal\ndone\n",
-			want: []map[string]interface{}{
+			want: []map[string]any{
 				{"url": "http://localhost:3000", "source": "tool-stdout", "scope": "internal", "kind": "dev-server"},
 			},
 		},
 		{
 			name: "two directives",
 			in:   "[iterion] preview_url=http://a/\nfoo\n[iterion] preview_url=http://b/ kind=deploy\n",
-			want: []map[string]interface{}{
+			want: []map[string]any{
 				{"url": "http://a/", "source": "tool-stdout", "scope": "external"},
 				{"url": "http://b/", "source": "tool-stdout", "scope": "external", "kind": "deploy"},
 			},
@@ -66,14 +66,14 @@ func TestScanPreviewURLs(t *testing.T) {
 		{
 			name: "ignores unknown kv pairs",
 			in:   "[iterion] preview_url=http://z/ foo=bar kind=dev-server\n",
-			want: []map[string]interface{}{
+			want: []map[string]any{
 				{"url": "http://z/", "source": "tool-stdout", "scope": "external", "kind": "dev-server"},
 			},
 		},
 		{
 			name: "trims whitespace",
 			in:   "  [iterion] preview_url=http://localhost:1/  \n",
-			want: []map[string]interface{}{
+			want: []map[string]any{
 				{"url": "http://localhost:1/", "source": "tool-stdout", "scope": "external"},
 			},
 		},

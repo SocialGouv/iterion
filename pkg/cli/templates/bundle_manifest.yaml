@@ -1,5 +1,8 @@
 name: my-bot
 display_name: My Bot
+# icon is an optional emoji identity shown on catalog cards, the bot
+# home page, and the launch modal (e.g. icon: "🦉").
+# icon: "🤖"
 version: 0.1.0
 description: A packaged iterion workflow.
 # when_to_use is the orchestrator-facing "use when" guidance — the same

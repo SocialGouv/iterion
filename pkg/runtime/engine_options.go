@@ -6,12 +6,24 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/sandbox"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // WithSubbotRunner wires the closure invoked by `subbot` nodes.
 func WithSubbotRunner(r SubbotRunner) EngineOption {
 	return func(e *Engine) { e.subbotRunner = r }
+}
+
+// WithSandboxRunObserver registers a callback invoked with the live
+// sandbox [sandbox.Run] immediately after it starts. The cloud runner
+// uses it to drive mid-run file-secret refresh against a driver that
+// implements [sandbox.SecretFileRefresher] (a long sandboxed run must
+// not push/comment with a token that expired since launch). The callback
+// must not block — spawn any long-lived work on a goroutine keyed to the
+// run's context. nil (the default) disables the hook.
+func WithSandboxRunObserver(fn func(sandbox.Run)) EngineOption {
+	return func(e *Engine) { e.sandboxRunObserver = fn }
 }
 
 // AttachmentPromoteFunc is invoked once at the start of a run, right
@@ -92,7 +104,7 @@ func WithAttachmentPromote(fn AttachmentPromoteFunc) EngineOption {
 // run the engine drives, so convention-specific logic (e.g. stamping
 // Run.WatchedIssueIDs from a dispatch node's `dispatched_ids` output)
 // can live in the wiring layer instead of the generic engine.
-func WithOnNodeFinished(fn func(runID, nodeID string, output map[string]interface{})) EngineOption {
+func WithOnNodeFinished(fn func(runID, nodeID string, output map[string]any)) EngineOption {
 	return func(e *Engine) { e.onNodeFinished = fn }
 }
 

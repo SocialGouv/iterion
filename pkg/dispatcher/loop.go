@@ -28,6 +28,7 @@ func (c *Dispatcher) tick(ctx context.Context) {
 
 	c.reconcileStalled(ctx, cfg)
 	c.refreshRunningStates(ctx)
+	c.reconcileParked(ctx)
 
 	if c.paused.Load() {
 		c.fireSnapshot()
@@ -364,7 +365,14 @@ func (c *Dispatcher) dispatch(ctx context.Context, iss tracker.Issue) {
 	// conflict (or any claim error) skips the issue with NO slot allocated and
 	// NO setup worker launched; the post-claim I/O offload below only runs
 	// AFTER a confirmed claim. See ADR-028 Step 4.
+	//
+	// Journal BEFORE Claim: a crash between the two leaves an entry the
+	// boot sweep resolves with an idempotent Release; the reverse order
+	// would leave an unjournalled live claim — exactly the stranding the
+	// journal exists to prevent.
+	c.claims.Record(claimEntry{IssueID: iss.ID, Identifier: iss.Identifier, Marker: c.hostMarker, ClaimedAt: time.Now().UTC()})
 	if err := c.tracker.Claim(ctx, iss.ID, c.hostMarker); err != nil {
+		c.claims.Remove(iss.ID)
 		if errors.Is(err, tracker.ErrClaimConflict) {
 			c.logger.Info("dispatcher: %s already claimed elsewhere, skipping", iss.Identifier)
 			return
@@ -629,6 +637,10 @@ func (c *Dispatcher) buildRunningEntry(iss tracker.Issue, runID string, attempt 
 	// workspace path; the finish-time stamp later upgrades it to the
 	// resolved worktree path.
 	c.stampLastRun(iss.ID, entry)
+	// A fresh dispatch (incl. a re-dispatch of a previously-parked issue)
+	// supersedes any prior pause — clear the denormalized awaiting-input
+	// badge so the card doesn't show a stale ⏸ while the new run executes.
+	c.setAwaitingInput(iss.ID, false)
 	return entry
 }
 

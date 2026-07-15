@@ -306,7 +306,10 @@ function OptionRow({
       className={`flex items-start gap-2 text-body rounded px-2 py-1.5 cursor-pointer border ${
         checked
           ? "border-accent/40 bg-accent-soft"
-          : "border-border-subtle hover:bg-surface-2"
+          : // border-default, not -subtle: these rows sit on a
+            // surface-1 card, and in dark theme border-subtle is the
+            // SAME hex as surface-1 — the cards read as floating text.
+            "border-border-default hover:bg-surface-2"
       } ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
     >
       {type === "radio" ? (
@@ -358,7 +361,8 @@ function OtherRow({
       className={`flex items-start gap-2 text-body rounded px-2 py-1.5 border ${
         checked
           ? "border-accent/40 bg-accent-soft"
-          : "border-border-subtle"
+          : // Same dark-theme rationale as OptionRow above.
+            "border-border-default"
       } ${disabled ? "opacity-60" : ""}`}
     >
       {type === "radio" ? (

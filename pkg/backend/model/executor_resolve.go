@@ -56,6 +56,13 @@ func (e *ClawExecutor) resolveBackendName(node ir.Node) string {
 	return delegate.BackendClaw
 }
 
+// EffectiveBackendName exposes the exact runtime resolution to safety checks.
+// In particular, callers must not reimplement this chain and accidentally miss
+// launch overrides, environment defaults, or credential-based auto-detection.
+func (e *ClawExecutor) EffectiveBackendName(node ir.Node) string {
+	return e.resolveBackendName(node)
+}
+
 // providerStep is one element of a resolved provider fallback chain: a
 // credential-routing hint paired with an optional per-element model
 // override. An empty Model means "inherit the node's `model:`" — the

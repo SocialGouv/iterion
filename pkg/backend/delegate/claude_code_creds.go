@@ -2,8 +2,10 @@ package delegate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -185,6 +187,60 @@ func providerFingerprint(env map[string]string) string {
 // inherited env var" (e.g. {"ANTHROPIC_BASE_URL": ""} actively
 // suppresses a stale z.ai value in the parent env when the hint asks
 // for Anthropic-direct).
+// claudeForfaitEnv wires the CLI to a per-run OAuth-forfait credentials.json
+// (desktop `claude login` shape) via CLAUDE_CONFIG_DIR — and actively
+// SUPPRESSES any Anthropic-flavoured credential inherited from the process
+// env. The claude CLI prefers ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN over the
+// OAuth token in CLAUDE_CONFIG_DIR, so a cloud runner that carries a shared
+// ANTHROPIC_API_KEY in its pod env (e.g. an operator-configured key, possibly
+// dead) would otherwise override the forfait — the run then fails with the
+// inherited key's error ("Credit balance is too low") even though a valid
+// forfait was resolved. Setting the vars to "" overrides the inheritance so the
+// CLI falls through to the OAuth token. Mirrors how the z.ai/anthropic hints
+// clear the base-URL/token to stop a stale value leaking in.
+func claudeForfaitEnv(dir string) map[string]string {
+	env := map[string]string{
+		"CLAUDE_CONFIG_DIR":    dir,
+		"ANTHROPIC_API_KEY":    "",
+		"ANTHROPIC_AUTH_TOKEN": "",
+		"ANTHROPIC_BASE_URL":   "",
+	}
+	// Also pass the OAuth access token via CLAUDE_CODE_OAUTH_TOKEN — the
+	// headless auth path the Claude Code CLI checks BEFORE the credentials file
+	// (and before any apiKeyHelper), the same one its own UI hints at
+	// ("export CLAUDE_CODE_OAUTH_TOKEN=<token>"). The file path
+	// ($CLAUDE_CONFIG_DIR/.credentials.json) works standalone — verified with
+	// the runner's exact CLI build — but a cloud runner's full inherited pod
+	// env can shadow it, so the CLI reports "Not logged in" despite a valid
+	// materialised forfait. Reading it here from the materialised file (kept
+	// fresh by the runner's refresh worker; re-read per spawn) makes the env
+	// token deterministically win. Best-effort: on any read/parse failure we
+	// fall back to the file path alone (prior behaviour).
+	if tok := readForfaitAccessToken(dir); tok != "" {
+		env["CLAUDE_CODE_OAUTH_TOKEN"] = tok
+	}
+	return env
+}
+
+// readForfaitAccessToken extracts claudeAiOauth.accessToken from the
+// materialised Claude Code credentials.json in dir. Returns "" (never an error)
+// when the file is absent or malformed — the caller degrades to the file path.
+func readForfaitAccessToken(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
+	if err != nil {
+		return ""
+	}
+	var v struct {
+		ClaudeAIOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return ""
+	}
+	return v.ClaudeAIOauth.AccessToken
+}
+
 func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string]string {
 	creds, hasCreds := secrets.CredentialsFromContext(ctx)
 
@@ -196,7 +252,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string
 				return map[string]string{"ANTHROPIC_API_KEY": k}
 			}
 			if d := creds.OAuthDir(string(secrets.OAuthKindClaudeCode)); d != "" {
-				return map[string]string{"CLAUDE_CONFIG_DIR": d}
+				return claudeForfaitEnv(d)
 			}
 		}
 		// Process-env path: rely on ANTHROPIC_API_KEY inherited by the
@@ -249,7 +305,7 @@ func anthropicCredEnvForCLI(ctx context.Context, providerHint string) map[string
 		case creds.APIKey(secrets.ProviderAnthropic) != "":
 			return map[string]string{"ANTHROPIC_API_KEY": creds.APIKey(secrets.ProviderAnthropic)}
 		case creds.OAuthDir(string(secrets.OAuthKindClaudeCode)) != "":
-			return map[string]string{"CLAUDE_CONFIG_DIR": creds.OAuthDir(string(secrets.OAuthKindClaudeCode))}
+			return claudeForfaitEnv(creds.OAuthDir(string(secrets.OAuthKindClaudeCode)))
 		}
 	}
 	// Env-fallback: ZAI_API_KEY is the convenience knob for desktop

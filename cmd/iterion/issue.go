@@ -24,7 +24,37 @@ Subcommands:
   update   Update title/body/labels/priority/assignee/fields
   close    Move an issue to the first terminal state
   board    Show or initialize the kanban board
+  import   Import a forge repo's issues into the board
 `,
+}
+
+// ---------------------------------------------------------------------------
+// import
+// ---------------------------------------------------------------------------
+
+var issueImportOpts cli.IssueImportOptions
+var issueImportCmd = &cobra.Command{
+	Use:   "import",
+	Short: "Import a self-hosted forge repo's issues into the native board",
+	Long: `Mirror a forge repo's issues into the native kanban board.
+
+Forge is the source of truth (one-way sync); pull requests are skipped.
+Open issues land in the first column, closed ones in the terminal column.
+The import is idempotent — re-running upserts existing cards, never
+duplicates them (so it doubles as an incremental --since sync).
+
+The forge token is read ONLY from the named environment variable
+(--token-env), never passed as a flag value.
+
+Example:
+  FORGE_TOKEN=... iterion issue import \
+    --forge forgejo --repo owner/name \
+    --base-url https://forge.example.com --token-env FORGE_TOKEN`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		issueImportOpts.StoreDir = issueStoreDir
+		return cli.RunIssueImport(newPrinter(), issueImportOpts)
+	},
 }
 
 // ---------------------------------------------------------------------------
@@ -230,9 +260,16 @@ func init() {
 	issueBoardInitCmd.Flags().StringVar(&issueBoardInitFrom, "from", "", "Load board.json from this file (default: built-in starter board)")
 	issueBoardInitCmd.Flags().BoolVar(&issueBoardInitForce, "force", false, "Overwrite existing board without prompt")
 
+	// import
+	issueImportCmd.Flags().StringVar(&issueImportOpts.Forge, "forge", "", "Forge provider: github|forgejo|gitlab (required)")
+	issueImportCmd.Flags().StringVar(&issueImportOpts.Repo, "repo", "", "Repository as owner/name (required)")
+	issueImportCmd.Flags().StringVar(&issueImportOpts.TokenEnv, "token-env", "", "Name of the env var holding the forge token (required; the value is never a flag)")
+	issueImportCmd.Flags().StringVar(&issueImportOpts.BaseURL, "base-url", "", "Forge base URL (default: provider SaaS host; required for self-hosted forgejo/gitlab)")
+	issueImportCmd.Flags().StringVar(&issueImportOpts.Since, "since", "", "Only import issues updated since this RFC3339 timestamp (default: full re-sync)")
+
 	issueBoardCmd.AddCommand(issueBoardShowCmd)
 	issueBoardCmd.AddCommand(issueBoardInitCmd)
 
-	issueCmd.AddCommand(issueCreateCmd, issueListCmd, issueShowCmd, issueMoveCmd, issueUpdateCmd, issueCloseCmd, issueBoardCmd)
+	issueCmd.AddCommand(issueCreateCmd, issueListCmd, issueShowCmd, issueMoveCmd, issueUpdateCmd, issueCloseCmd, issueBoardCmd, issueImportCmd)
 	rootCmd.AddCommand(issueCmd)
 }

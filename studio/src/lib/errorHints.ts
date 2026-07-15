@@ -68,6 +68,17 @@ const RULES: ErrorHintRule[] = [
     hint: "Check your connection and the configured base URL, then retry.",
   },
   {
+    // Git revision-range failures (run-commits/diff endpoints): the
+    // storage branch or base commit isn't reachable in this checkout —
+    // typical after a worktree GC, or when inspecting a run from
+    // another clone. Must precede the HTTP-status rules: the backend
+    // wraps the git stderr in an "API error 500" envelope, which would
+    // otherwise match the generic 5xx rule.
+    match: /invalid revision range|unknown revision|bad revision|not a valid ref/i,
+    title: "Run branch unavailable",
+    hint: "The run branch isn't available in this repo — it may have been pruned or live in another checkout.",
+  },
+  {
     match: /\b401\b|unauthorized|bad credentials|token_invalidated/i,
     title: "Authentication rejected",
     hint: "The token is missing, expired, or lacks scope. Regenerate it in Settings.",

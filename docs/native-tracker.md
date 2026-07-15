@@ -57,15 +57,18 @@ fields the operator can attach to issues. Defaults:
 ```jsonc
 {
   "states": [
-    { "name": "inbox",       "display": "Inbox" },
-    { "name": "backlog",     "display": "Backlog" },
-    { "name": "ready",       "display": "Ready",       "eligible": true },
-    { "name": "in_progress", "display": "In progress", "eligible": true },
-    { "name": "review",      "display": "Review" },
-    { "name": "done",        "display": "Done",        "terminal": true },
-    { "name": "blocked",     "display": "Blocked",     "terminal": true }
+    { "name": "inbox",          "display": "Inbox" },
+    { "name": "backlog",        "display": "Backlog" },
+    { "name": "ready",          "display": "Ready",       "eligible": true },
+    { "name": "in_progress",    "display": "In progress", "eligible": true },
+    { "name": "awaiting_input", "display": "Awaiting input" },
+    { "name": "review",         "display": "Review" },
+    { "name": "done",           "display": "Done",        "terminal": true },
+    { "name": "blocked",        "display": "Blocked",     "terminal": true }
   ],
-  "fields": []
+  "fields": [
+    { "name": "bot_args", "display": "Bot args", "type": "text" }
+  ]
 }
 ```
 
@@ -73,6 +76,16 @@ fields the operator can attach to issues. Defaults:
 post their out-of-scope observations there (labeled `findings`) so
 operators can triage on /board without a separate inbox surface —
 drag inbox → backlog to promote, delete the card to dismiss.
+
+`awaiting_input` holds a dispatched card whose run paused for input
+(a `human` node, or an operator soft-pause): the dispatcher parks the
+card there — non-eligible, claim retained — and a per-tick sweep moves
+it on once the run reaches a terminal status (see the "Paused runs"
+section in [docs/dispatcher.md](dispatcher.md)). Boards persisted by an
+older iterion are **schema-upgraded automatically** on store open
+(filesystem) or on read (Mongo): missing `inbox` is prepended, missing
+`awaiting_input` is inserted right after `in_progress`. Fully-custom
+boards without an `in_progress` state are left untouched.
 
 | Property            | Meaning                                                            |
 |---------------------|--------------------------------------------------------------------|
@@ -151,21 +164,27 @@ machine-readable output:
 iterion issue list --state ready --json | jq '.[].id'
 ```
 
-### Open CLI gap: per-ticket `bot` / `bot_args`
+### Per-ticket `bot` / `bot_args`
 
-The underlying `native.Issue` record carries dedicated typed
-fields `Bot` (string) and `BotArgs` (`map[string]string`) — see
-the REST surface below — but `iterion issue create` and
-`iterion issue update` do **not** yet expose `--bot` or
-`--bot-arg` flags. `--field key=value` lands in the freeform
-`Fields` map, NOT in `BotArgs`.
+The `native.Issue` record carries dedicated typed routing fields:
+`Bot` (string) and `BotArgs` (`map[string]string`). At **create**
+time the CLI exposes them directly:
 
-Until the CLI ships those flags, set the two routing fields via
-one of:
+```bash
+iterion issue create --title "Ship X" --state ready \
+  --bot feature-dev --bot-arg feature_prompt="Ship X exactly as specced"
+```
 
-- the REST API (`POST` / `PATCH` `/api/v1/native/issues` with
+(`--field key=value` is different: it lands in the freeform `Fields`
+map, NOT in `BotArgs`.) `iterion issue update` does not expose the
+two flags yet — to change routing on an EXISTING card use one of:
+
+- the REST API (`PATCH /api/v1/native/issues/{id}` with
   `{ "bot": "feature_dev", "bot_args": { "feature_prompt": "…" } }`),
-- a direct `native.Store.Create` / `Update` call from Go,
+- the board MCP / claw tools (`create_issue` and `set_bot` both accept
+  `bot` / `bot_args`, so a bot with the `board.create` / `board.assign`
+  capability can pin routing at create time),
+- the studio issue modal,
 - or rely on the dispatcher-side `assignee_workflows:` /
   `assignee_dispatch:` mappings keyed on `--assignee` (see
   [docs/dispatcher.md](dispatcher.md)).
@@ -218,6 +237,54 @@ as a local kanban for:
 - **Lightweight personal queue.** Replace a sticky-note `TODO.md`
   with something that survives reflows, accepts custom fields, and
   speaks JSON.
+
+## Feeding the first column (the canonical ingest contract)
+
+The board's leftmost column is the single, canonical entry point for new
+work — whatever puts a card there (CI, an API caller, another pipeline, or
+an operator clicking "add") uses the **same** contract:
+
+- **`POST /api/v1/native/issues` with no `state`.** `Store.Create` defaults
+  an empty `state` to the board's first column
+  ([store.go](../pkg/dispatcher/native/store.go) — `in.State = States[0].Name`),
+  so an ingester never needs to know the column's name. The body may carry
+  `bot` / `bot_args` to pin the pipeline that will run the card (parity across
+  REST, the MCP `create_issue` boardop, and claw's `mcp.iterion_board.create`).
+  Authenticate a machine caller with a `iap_` PAT (see *Programmatic access*).
+- **CI / external API (6a).** A CI job POSTs a finding straight onto the
+  first column — no dispatcher required.
+- **A pipeline feeding the board (6b).** A run-completion `run.finished`
+  trigger event chains a downstream launch (`serviceLauncher` /
+  `NativeBoardEffect`) that can create the next card.
+- **Forge import (6a, self-hosted).** `syncForgeIssuesToBoard`
+  ([board_forge.go](../pkg/server/board_forge.go)) is the store-agnostic core
+  that mirrors a repo's forge issues into a native board — one-way, forge is
+  the source of truth, cards land in the first column on create and refresh in
+  place on update (see ADR-071). The self-hosted entry point is
+  **`iterion issue import`**, which builds the forge client for you and drives
+  that same core against a local board:
+
+  ```sh
+  # github.com (base URL defaults to the github.com API):
+  GH_TOKEN=ghp_… iterion issue import \
+    --forge github --repo owner/name --token-env GH_TOKEN
+
+  # a self-hosted forgejo/gitlab (base URL is required):
+  FORGE_TOKEN=… iterion issue import \
+    --forge forgejo --repo owner/name \
+    --base-url https://forge.example.com --token-env FORGE_TOKEN \
+    --since 2026-07-01T00:00:00Z   # optional; empty = full re-sync
+  ```
+
+  The token is read **only** from the named env var (`--token-env`), never a
+  flag value. Pull requests are skipped; open issues land in the first column,
+  closed ones in the terminal column. The import is **idempotent** — re-running
+  upserts existing cards (keyed by a deterministic `native:<uuid>` derived from
+  `provider:repo#number`) instead of duplicating them, so it doubles as an
+  incremental `--since` sync. The command prints `created` / `updated` counts
+  (`--json` for machine output). The exported Go wrapper is
+  `server.ImportForgeIssues`, which keeps the forge-client provider switch in
+  one place.
 
 ## Programmatic access
 

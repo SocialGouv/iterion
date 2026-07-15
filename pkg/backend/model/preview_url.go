@@ -46,14 +46,14 @@ func scanDirectiveLines(output, directive string) [][]string {
 // `url`, optional `kind` and `scope` (defaulting to "external"), plus
 // `source: "tool-stdout"` so consumers can distinguish manual user
 // entry from workflow-emitted URLs.
-func scanPreviewURLs(output string) []map[string]interface{} {
+func scanPreviewURLs(output string) []map[string]any {
 	lines := scanDirectiveLines(output, previewURLDirective)
 	if len(lines) == 0 {
 		return nil
 	}
-	found := make([]map[string]interface{}, 0, len(lines))
+	found := make([]map[string]any, 0, len(lines))
 	for _, tokens := range lines {
-		data := map[string]interface{}{
+		data := map[string]any{
 			"url":    tokens[0],
 			"source": "tool-stdout",
 			"scope":  "external",

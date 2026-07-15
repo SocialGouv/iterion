@@ -111,7 +111,7 @@ func (s *Service) ListAllArtifacts(runID string) ([]RunArtifactSummary, error) {
 }
 
 // artifactTitle picks a short human title from artifact data, or "".
-func artifactTitle(data map[string]interface{}) string {
+func artifactTitle(data map[string]any) string {
 	for _, k := range []string{"title", "name"} {
 		if s, ok := data[k].(string); ok && s != "" {
 			return s
@@ -178,11 +178,12 @@ func (s *Service) OpenArtifactFileCtx(ctx context.Context, runID, relPath string
 }
 
 // ListPlanSnapshots returns the chronological plan snapshots captured for
-// a run (agents' TodoWrite/todo_write living TODO lists, persisted to
-// runs/<id>/plans/). Returns nil when the store doesn't satisfy PlanStore
-// (cloud mode) so the HTTP handler surfaces a clean empty list without
-// leaking the backend choice — mirroring ListArtifactFiles. Ascending Seq
-// order (chronological): the sequence shows how the plan evolved.
+// a run (agents' TodoWrite/todo_write living TODO lists — filesystem
+// runs/<id>/plans/ or the Mongo run_plans collection). Returns nil when
+// the store doesn't satisfy PlanStore so the HTTP handler surfaces a clean
+// empty list without leaking the backend choice — mirroring
+// ListArtifactFiles. Ascending Seq order (chronological): the sequence
+// shows how the plan evolved.
 func (s *Service) ListPlanSnapshots(runID string) ([]store.PlanSnapshot, error) {
 	return s.ListPlanSnapshotsCtx(context.Background(), runID)
 }
@@ -199,6 +200,74 @@ func (s *Service) ListPlanSnapshotsCtx(ctx context.Context, runID string) ([]sto
 	return ps.ListPlanSnapshots(ctx, runID)
 }
 
+// ListRunNotesCtx returns the run's freeform operator notes in
+// chronological order (filesystem runs/<id>/notes/ or the Mongo
+// run_notes collection). Returns nil when the store doesn't satisfy
+// RunNoteStore so the HTTP handler surfaces a clean empty list without
+// leaking the backend choice — mirroring ListPlanSnapshotsCtx.
+func (s *Service) ListRunNotesCtx(ctx context.Context, runID string) ([]store.RunNote, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	ns := store.AsRunNoteStore(s.store)
+	if ns == nil {
+		return nil, nil
+	}
+	return ns.ListRunNotes(ctx, runID)
+}
+
+// AddRunNoteCtx appends a freeform operator note (author + body) to the
+// run and returns the persisted note with its seq + timestamp populated.
+// author may be empty (the handler defaults it from the caller identity).
+// Returns an error when the store doesn't back the note seam so the
+// caller can surface a clear "not supported" rather than silently
+// dropping the note.
+func (s *Service) AddRunNoteCtx(ctx context.Context, runID, author, body string) (store.RunNote, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return store.RunNote{}, err
+	}
+	if strings.TrimSpace(body) == "" {
+		return store.RunNote{}, fmt.Errorf("runview: note body is required")
+	}
+	ns := store.AsRunNoteStore(s.store)
+	if ns == nil {
+		return store.RunNote{}, fmt.Errorf("runview: this store does not support run notes")
+	}
+	return ns.AppendRunNote(ctx, runID, store.RunNote{Author: author, Body: body})
+}
+
+// GetRunTagsCtx returns the run's operator-assigned tags (filter/group
+// chips shown in the studio run header). Returns an empty slice — never
+// nil — when the store doesn't satisfy RunTagStore or the run has none, so
+// the HTTP surface serves a clean empty list without leaking the backend
+// choice, mirroring ListPlanSnapshotsCtx.
+func (s *Service) GetRunTagsCtx(ctx context.Context, runID string) ([]string, error) {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	ts := store.AsRunTagStore(s.store)
+	if ts == nil {
+		return []string{}, nil
+	}
+	return ts.GetRunTags(ctx, runID)
+}
+
+// SetRunTagsCtx replaces the run's full tag set. tags must already be
+// normalized (see store.NormalizeTags). Returns a clear "unavailable"
+// error when the store doesn't persist tags — both the filesystem and
+// Mongo stores satisfy RunTagStore, so this only fires for a degenerate
+// store, which the PUT handler maps to a 500.
+func (s *Service) SetRunTagsCtx(ctx context.Context, runID string, tags []string) error {
+	if err := validatePathComponent("run ID", runID); err != nil {
+		return err
+	}
+	ts := store.AsRunTagStore(s.store)
+	if ts == nil {
+		return fmt.Errorf("runview: run tags unavailable for this store")
+	}
+	return ts.SetRunTags(ctx, runID, tags)
+}
+
 // ReadToolBlob streams a slice of a tool's stored I/O body (sidecar
 // blob written by the hooks layer when the call exceeded the inline
 // threshold). offset is the byte offset to start at; limit caps the
@@ -207,9 +276,9 @@ func (s *Service) ListPlanSnapshotsCtx(ctx context.Context, runID string) ([]sto
 // wrapping os.ErrNotExist when the blob doesn't exist.
 //
 // Returns a clear "unavailable" error when the store doesn't satisfy
-// ToolBlobStore (cloud mode today — the hooks layer falls back to
-// inline-only persistence in that case, so the studio doesn't issue
-// the fetch).
+// ToolBlobStore. Both the filesystem and Mongo (cloud) stores satisfy it;
+// for any store that does not, the hooks layer falls back to inline-only
+// persistence, so the studio doesn't issue the fetch.
 func (s *Service) ReadToolBlob(runID, toolUseID, kind string, offset, limit int64) ([]byte, int64, bool, error) {
 	return s.ReadToolBlobCtx(context.Background(), runID, toolUseID, kind, offset, limit)
 }

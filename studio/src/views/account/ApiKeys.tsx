@@ -1,0 +1,282 @@
+import { errorMessage } from "@/lib/errorHints";
+import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
+import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
+import { useConfirm } from "@/hooks/useConfirm";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
+import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
+import { useAuth } from "@/auth/AuthContext";
+import { useServerInfoStore } from "@/store/serverInfo";
+import {
+  type ApiKeyView,
+  type Provider,
+  createMyApiKey,
+  createTeamApiKey,
+  deleteApiKey,
+  listMyApiKeys,
+  listTeamApiKeys,
+  updateApiKey,
+} from "@/api/byok";
+
+const PROVIDER_OPTIONS: Provider[] = [
+  "anthropic",
+  "openai",
+  "bedrock",
+  "vertex",
+  "azure",
+  "openrouter",
+  "xai",
+];
+
+interface Props {
+  // When team is set, manage that team's keys; otherwise manage the
+  // current user's personal keys.
+  team?: { id: string; name: string };
+}
+
+export default function ApiKeysPanel({ team }: Props) {
+  const { activeRole, user } = useAuth();
+  // BYOK stores (/api/me/api-keys, /api/teams/{id}/api-keys) are only wired
+  // in cloud mode — gate on server_info BEFORE fetching so local/desktop
+  // mode never fires a doomed 404 request.
+  const serverInfo = useServerInfoStore((s) => s.info);
+  const isCloud = serverInfo?.mode === "cloud";
+  const [keys, setKeys] = useState<ApiKeyView[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const { confirm, dialog } = useConfirm();
+  const [draft, setDraft] = useState({
+    provider: "anthropic" as Provider,
+    name: "",
+    secret: "",
+    is_default: false,
+  });
+
+  const canManage = team
+    ? activeRole === "admin" || activeRole === "owner" || (user?.is_super_admin ?? false)
+    : true; // Personal keys are always editable by their owner.
+
+  const reload = async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const k = team ? await listTeamApiKeys(team.id) : await listMyApiKeys();
+      setKeys(k);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isCloud) return;
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [team?.id, isCloud]);
+
+  const submitAdd = async (ev: React.FormEvent) => {
+    ev.preventDefault();
+    setAdding(true);
+    setErr(null);
+    try {
+      if (team) {
+        await createTeamApiKey(team.id, draft);
+      } else {
+        await createMyApiKey(draft);
+      }
+      setShowAdd(false);
+      setDraft({ provider: "anthropic", name: "", secret: "", is_default: false });
+      void reload();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const toggleDefault = async (k: ApiKeyView) => {
+    try {
+      await updateApiKey(team ? { team_id: team.id } : { mine: true }, k.id, {
+        is_default: !k.is_default,
+      });
+      void reload();
+    } catch (e) {
+      setErr(errorMessage(e));
+    }
+  };
+
+  const remove = async (k: ApiKeyView) => {
+    const ok = await confirm({
+      title: "Delete API key?",
+      message: `Delete API key “${k.name}”? This cannot be undone.`,
+      confirmLabel: "Delete",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
+    try {
+      await deleteApiKey(team ? { team_id: team.id } : { mine: true }, k.id);
+      void reload();
+    } catch (e) {
+      setErr(errorMessage(e));
+    }
+  };
+
+  // Deliberate local-mode gate (not an error): no fetch fired, no mutating
+  // controls rendered. While server_info is still loading we fall through to
+  // the skeleton below instead of flashing this notice.
+  if (serverInfo && !isCloud) {
+    return (
+      <CloudOnlyNotice
+        title="API keys (BYOK)"
+        feature="Bring-your-own-key management"
+        hint={
+          serverInfo.secrets_enabled
+            ? "In local mode, credentials live in the sealed secret store — see the Secrets view."
+            : undefined
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {dialog}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">
+          {team ? `${team.name} — Team API keys` : "My API keys"}
+        </h2>
+        {canManage && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setShowAdd((v) => !v)}
+          >
+            {showAdd ? "Cancel" : "Add key"}
+          </Button>
+        )}
+      </div>
+
+      {showAdd && canManage && (
+        <form
+          onSubmit={submitAdd}
+          className="bg-surface-1 border border-border-subtle rounded p-4 space-y-3"
+        >
+          <div className="grid grid-cols-2 gap-3">
+            <Select
+              size="md"
+              value={draft.provider}
+              onChange={(e) => setDraft({ ...draft, provider: e.target.value as Provider })}
+            >
+              {PROVIDER_OPTIONS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </Select>
+            <Input
+              size="md"
+              placeholder="Name (e.g. prod-anthropic)"
+              value={draft.name}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              required
+            />
+          </div>
+          <Input
+            size="md"
+            type="password"
+            className="font-mono"
+            placeholder="API key (sk-ant-… / sk-… / etc.)"
+            value={draft.secret}
+            onChange={(e) => setDraft({ ...draft, secret: e.target.value })}
+            required
+            autoComplete="off"
+          />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={draft.is_default}
+              onChange={(e) => setDraft({ ...draft, is_default: e.target.checked })}
+            />
+            Set as default for this provider
+          </label>
+          <div className="text-xs text-fg-muted">
+            The secret is sealed at rest with the deployment master key and never returned after
+            this submission. Display surfaces show only the last four characters and a fingerprint.
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            type="submit"
+            loading={adding}
+          >
+            {adding ? "Saving…" : "Save key"}
+          </Button>
+        </form>
+      )}
+
+      {err && (
+        <InlineBanner tone="danger" layout="inline">
+          {err}
+        </InlineBanner>
+      )}
+
+      {loading ? (
+        <TableSkeleton rows={3} cols={7} />
+      ) : keys.length === 0 ? (
+        <EmptyState message="No keys yet." />
+      ) : (
+        <Table caption={team ? `${team.name} team API keys` : "My API keys"}>
+          <THead>
+            <Th>Provider</Th>
+            <Th>Name</Th>
+            <Th>Last4</Th>
+            <Th>Default</Th>
+            <Th>Created</Th>
+            <Th>Last used</Th>
+            <Th align="right" srLabel="Actions" />
+          </THead>
+          <TBody>
+            {keys.map((k) => (
+              <Tr key={k.id}>
+                <Td>{k.provider}</Td>
+                <Td>{k.name}</Td>
+                <Td className="font-mono">{k.last4 ?? "—"}</Td>
+                <Td>
+                  {canManage ? (
+                    <Checkbox
+                      aria-label={`Default key for ${k.provider}: ${k.name}`}
+                      checked={k.is_default}
+                      onChange={() => toggleDefault(k)}
+                    />
+                  ) : k.is_default ? "✓" : ""}
+                </Td>
+                <Td className="text-fg-muted">{new Date(k.created_at).toLocaleDateString()}</Td>
+                <Td className="text-fg-muted">
+                  {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "—"}
+                </Td>
+                <Td align="right">
+                  {canManage && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => remove(k)}
+                      className="text-danger hover:text-danger"
+                    >
+                      Delete
+                    </Button>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
+      )}
+    </div>
+  );
+}

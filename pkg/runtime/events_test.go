@@ -9,7 +9,7 @@ func TestRunEvents_Sticky(t *testing.T) {
 	re := newRunEvents()
 
 	// emit-then-wait: the channel is already closed, payload is available.
-	re.signal("ready", map[string]interface{}{"value": 42})
+	re.signal("ready", map[string]any{"value": 42})
 	select {
 	case <-re.waitChan("ready"):
 	default:
@@ -26,7 +26,7 @@ func TestRunEvents_Sticky(t *testing.T) {
 		t.Fatal("waitChan for an un-fired event must block")
 	default:
 	}
-	re.signal("later", map[string]interface{}{"value": 7})
+	re.signal("later", map[string]any{"value": 7})
 	select {
 	case <-ch:
 	default:
@@ -44,22 +44,22 @@ func TestRunEvents_Sticky(t *testing.T) {
 // per-key copy would leave the nested map aliased and let the mutation leak back.
 func TestRunEvents_PayloadDeepIsolation(t *testing.T) {
 	re := newRunEvents()
-	re.signal("nested", map[string]interface{}{
-		"meta": map[string]interface{}{"count": 1},
-		"tags": []interface{}{"a", "b"},
+	re.signal("nested", map[string]any{
+		"meta": map[string]any{"count": 1},
+		"tags": []any{"a", "b"},
 	})
 
 	// First waiter reads the payload and mutates the nested structures.
 	first := re.payloadFor("nested")
-	first["meta"].(map[string]interface{})["count"] = 999
-	first["tags"].([]interface{})[0] = "MUTATED"
+	first["meta"].(map[string]any)["count"] = 999
+	first["tags"].([]any)[0] = "MUTATED"
 
 	// A second, independent read must still see the original nested values.
 	second := re.payloadFor("nested")
-	if got := second["meta"].(map[string]interface{})["count"]; got != 1 {
+	if got := second["meta"].(map[string]any)["count"]; got != 1 {
 		t.Errorf("nested map leaked mutation: count = %v, want 1", got)
 	}
-	if got := second["tags"].([]interface{})[0]; got != "a" {
+	if got := second["tags"].([]any)[0]; got != "a" {
 		t.Errorf("nested slice leaked mutation: tags[0] = %v, want \"a\"", got)
 	}
 }
@@ -68,8 +68,8 @@ func TestRunEvents_PayloadDeepIsolation(t *testing.T) {
 // panic on a re-close and refreshes the payload.
 func TestRunEvents_DoubleSignal(t *testing.T) {
 	re := newRunEvents()
-	re.signal("e", map[string]interface{}{"n": 1})
-	re.signal("e", map[string]interface{}{"n": 2}) // must not panic on re-close
+	re.signal("e", map[string]any{"n": 1})
+	re.signal("e", map[string]any{"n": 2}) // must not panic on re-close
 	if got := re.payloadFor("e"); got["n"] != 2 {
 		t.Errorf("payload n = %v, want 2 (latest)", got["n"])
 	}

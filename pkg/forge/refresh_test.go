@@ -2,11 +2,38 @@ package forge
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// tenantScopedSecretStore mirrors the Mongo generic-secret store's contract:
+// Get/Update require the tenant on the ctx (the memory store does not, which is
+// why it never caught the refresh worker passing a tenant-less ctx). Seeding
+// via Create is left unchecked so tests can populate it with a plain ctx.
+type tenantScopedSecretStore struct {
+	*secrets.MemoryGenericSecretStore
+}
+
+var errNoTenant = errors.New("test store: tenant required on ctx")
+
+func (s tenantScopedSecretStore) Get(ctx context.Context, id string) (secrets.GenericSecret, error) {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return secrets.GenericSecret{}, errNoTenant
+	}
+	return s.MemoryGenericSecretStore.Get(ctx, id)
+}
+
+func (s tenantScopedSecretStore) Update(ctx context.Context, rec secrets.GenericSecret) error {
+	if t, ok := store.TenantFromContext(ctx); !ok || t == "" {
+		return errNoTenant
+	}
+	return s.MemoryGenericSecretStore.Update(ctx, rec)
+}
 
 type fakeRefresher struct {
 	newAccess string
@@ -100,6 +127,43 @@ func TestRefreshWorker_RotatesTokenAndSecret(t *testing.T) {
 	}
 }
 
+// TestRefreshWorker_RewritesManagedSecretWithTenantScopedStore pins the fix for
+// the tenant-context bug: the Mongo managed-secret store requires the tenant on
+// the ctx, but RunOnce iterates connections cross-tenant. If refreshOne doesn't
+// scope the ctx to the connection's tenant, the token mint succeeds and the
+// connection updates (keyed on _id) while the managed secret is NEVER rewritten
+// — leaving bot runs reading a stale, expired token (HTTP 401 in prod). This
+// uses a tenant-asserting store so the memory store's laxness can't hide it.
+func TestRefreshWorker_RewritesManagedSecretWithTenantScopedStore(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := tenantScopedSecretStore{secrets.NewMemoryGenericSecretStore()}
+	now := time.Unix(1700000000, 0).UTC()
+	_, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(2*time.Minute))
+
+	newExpiry := now.Add(time.Hour)
+	w := &RefreshWorker{
+		Connections: connStore,
+		Secrets:     secStore,
+		Sealer:      sealer,
+		Now:         func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher {
+			return fakeRefresher{newAccess: "fresh-token", expiresAt: newExpiry}
+		},
+	}
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v (the refresh must scope the ctx to the connection tenant)", err)
+	}
+	gs, err := secStore.Get(store.WithTenant(context.Background(), "t1"), secID)
+	if err != nil {
+		t.Fatalf("get managed secret: %v", err)
+	}
+	pt, err := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret)
+	if err != nil || string(pt) != "fresh-token" {
+		t.Errorf("managed secret = %q (err %v), want fresh-token — refresh did not rewrite it", string(pt), err)
+	}
+}
+
 func TestRefreshWorker_UnauthorizedMarksNeedsReauth(t *testing.T) {
 	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
 	connStore := NewMemoryConnectionStore()
@@ -124,6 +188,67 @@ func TestRefreshWorker_UnauthorizedMarksNeedsReauth(t *testing.T) {
 	pt, _ := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret)
 	if string(pt) != "old-access" {
 		t.Errorf("managed secret should be untouched on revoke, got %q", string(pt))
+	}
+}
+
+// countingRefresher records how many times Refresh is invoked so a test can
+// assert the worker stops re-minting a terminally-failed connection.
+type countingRefresher struct {
+	calls *int
+	err   error
+}
+
+func (c countingRefresher) Refresh(context.Context, Connection, string) (RefreshedToken, error) {
+	*c.calls++
+	return RefreshedToken{}, c.err
+}
+
+// A 422 "permissions not granted" is a PERMANENT config mismatch: the worker
+// must mark the connection degraded (with an actionable reason) and STOP
+// re-minting it every tick, rather than returning an error that re-logs each
+// cycle. Mirrors the ErrUnauthorized → needs_reauth test.
+func TestRefreshWorker_PermissionsNotGrantedMarksDegradedAndStops(t *testing.T) {
+	sealer, _ := secrets.NewAESGCMSealer(make([]byte, 32))
+	connStore := NewMemoryConnectionStore()
+	secStore := secrets.NewMemoryGenericSecretStore()
+	now := time.Unix(1700000000, 0).UTC()
+	_, secID := seedOAuthConn(t, sealer, connStore, secStore, now.Add(time.Minute))
+
+	calls := 0
+	w := &RefreshWorker{
+		Connections: connStore, Secrets: secStore, Sealer: sealer,
+		Now: func() time.Time { return now },
+		RefresherFor: func(Connection) TokenRefresher {
+			return countingRefresher{calls: &calls, err: fmt.Errorf("mint: %w", ErrPermissionsNotGranted)}
+		},
+	}
+	// First tick: mint 422s → mark degraded, swallowed (no worker error).
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce should swallow the terminal degrade, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("first tick Refresh calls = %d, want 1", calls)
+	}
+	conn, _ := connStore.Get(context.Background(), "conn-oauth")
+	if conn.Status != StatusDegraded {
+		t.Errorf("status = %q, want degraded", conn.Status)
+	}
+	if conn.StatusReason == "" {
+		t.Error("StatusReason must record the actionable remediation once")
+	}
+	// managed secret untouched on a degrade (same as revoke).
+	gs, _ := secStore.Get(context.Background(), secID)
+	pt, _ := secrets.OpenGenericSecret(sealer, secID, gs.SealedSecret)
+	if string(pt) != "old-access" {
+		t.Errorf("managed secret should be untouched on degrade, got %q", string(pt))
+	}
+	// Second tick: the still-expired connection is re-scanned, but a degraded
+	// connection must NOT be re-minted — no additional Refresh call, no re-log.
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("degraded connection re-minted: Refresh calls = %d, want 1 (stop re-minting)", calls)
 	}
 }
 

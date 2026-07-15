@@ -1,5 +1,6 @@
 name: whats-next
 display_name: Nexie
+icon: 🧭
 version: 0.2.0
 description: |
   Conversational co-CTO. ONE adaptive agent (claude_code + opus, full

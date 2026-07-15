@@ -51,7 +51,7 @@ const (
 // companion LLM. The production ClawExecutor implements it; the e2e scenario
 // stub may implement it to script companion turns without a real model.
 type ReviewCompanion interface {
-	ExecuteReviewCompanion(ctx context.Context, node *ir.HumanNode, systemText, userMessage string) (map[string]interface{}, error)
+	ExecuteReviewCompanion(ctx context.Context, node *ir.HumanNode, systemText, userMessage string) (map[string]any, error)
 }
 
 // execReviewGate handles the FIRST entry to a review gate (the Run path).
@@ -60,7 +60,7 @@ type ReviewCompanion interface {
 // for the human. Returns (nextNodeID, terminal, err): nextNodeID != "" means
 // advance; otherwise the run has paused (ErrRunPaused handled by the caller).
 func (e *Engine) execReviewGate(ctx context.Context, rs *runState, nodeID string, hn *ir.HumanNode) (string, bool, error) {
-	if err := e.emit(ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]interface{}{
+	if err := e.emit(ctx, rs.runID, store.EventNodeStarted, nodeID, map[string]any{
 		"kind":      hn.NodeKind().String(),
 		"iteration": e.currentLoopIteration(nodeID, rs.loopCounters),
 	}); err != nil {
@@ -90,7 +90,7 @@ func (e *Engine) execReviewGate(ctx context.Context, rs *runState, nodeID string
 // resumeReviewGate handles resuming a paused review gate. The answers carry a
 // __review_action that decides whether to continue the dialogue (reply),
 // squash-merge (approve_merge / force_merge), or request changes.
-func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.Checkpoint, hn *ir.HumanNode, answers map[string]interface{}) error {
+func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.Checkpoint, hn *ir.HumanNode, answers map[string]any) error {
 	runID := r.ID
 	nodeID := cp.NodeID
 	action := reviewActionOf(answers)
@@ -117,7 +117,7 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 
 	outputs := copyOutputs(cp.Outputs)
 	if outputs == nil {
-		outputs = make(map[string]map[string]interface{})
+		outputs = make(map[string]map[string]any)
 	}
 	artifactVersions := cp.ArtifactVersions
 	if artifactVersions == nil {
@@ -133,12 +133,12 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 	switch action {
 	case reviewActionApproveMerge, reviewActionForceMerge:
 		// Record the verdict, squash-merge during the pause, advance.
-		verdict := map[string]interface{}{"decision": "approved"}
+		verdict := map[string]any{"decision": "approved"}
 		mergeFromPrior(verdict, priorTurns)
 		return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, verdict, answers, true /* merge */)
 
 	case reviewActionRequestChanges:
-		verdict := map[string]interface{}{"decision": "changes_requested"}
+		verdict := map[string]any{"decision": "changes_requested"}
 		mergeFromPrior(verdict, priorTurns)
 		return e.gateResolveAndRun(ctx, r, rs, hn, nodeID, verdict, answers, false /* no merge */)
 
@@ -152,9 +152,9 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 		// stop re-invoking it. The human must conclude (approve / force-merge /
 		// request changes); further replies re-pause without growing the
 		// dialogue, so the gate always converges.
-		var companion map[string]interface{}
+		var companion map[string]any
 		if countCompanionTurns(priorTurns) >= hn.MaxTurns {
-			companion = map[string]interface{}{
+			companion = map[string]any{
 				"message":           "Maximum review turns reached. Please approve, force-merge, or request changes.",
 				"needs_human_input": true,
 			}
@@ -178,7 +178,7 @@ func (e *Engine) resumeReviewGate(ctx context.Context, r *store.Run, cp *store.C
 // output + node_finished), optionally squash-merges during the pause, then
 // drives execLoop from the selected edge to the terminal node and finalizes
 // the worktree. Used by the resume path (which owns its own execLoop).
-func (e *Engine) gateResolveAndRun(ctx context.Context, r *store.Run, rs *runState, hn *ir.HumanNode, nodeID string, verdict, answers map[string]interface{}, merge bool) error {
+func (e *Engine) gateResolveAndRun(ctx context.Context, r *store.Run, rs *runState, hn *ir.HumanNode, nodeID string, verdict, answers map[string]any, merge bool) error {
 	var next string
 	var err error
 	if merge {
@@ -202,7 +202,7 @@ func (e *Engine) gateResolveAndRun(ctx context.Context, r *store.Run, rs *runSta
 
 // gateMergeAndSelectEdge performs the squash-merge during the pause, records
 // the verdict as the node output + node_finished, and returns the next node.
-func (e *Engine) gateMergeAndSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, verdict, answers map[string]interface{}) (string, error) {
+func (e *Engine) gateMergeAndSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, verdict, answers map[string]any) (string, error) {
 	if err := e.performGateMerge(ctx, rs, hn, nodeID, answers); err != nil {
 		// A merge failure is resumable: preserve the checkpoint so the
 		// operator can fix the tree and re-approve / force.
@@ -215,7 +215,7 @@ func (e *Engine) gateMergeAndSelectEdge(ctx context.Context, rs *runState, hn *i
 // gateSelectEdge records the verdict as the node output, emits the answered
 // interaction + node_finished, persists the publish artifact, and selects
 // the outgoing edge. Shared by the merge and request-changes paths.
-func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, verdict map[string]interface{}) (string, error) {
+func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, verdict map[string]any) (string, error) {
 	rs.outputs[nodeID] = verdict
 
 	// Record the verdict on the interaction as the answer + emit events,
@@ -229,7 +229,7 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 			e.logger.Warn("runtime: review gate %q: persist answered interaction: %v", nodeID, werr)
 		}
 	}
-	if err := e.emit(ctx, rs.runID, store.EventHumanAnswersRecorded, nodeID, map[string]interface{}{
+	if err := e.emit(ctx, rs.runID, store.EventHumanAnswersRecorded, nodeID, map[string]any{
 		"interaction_id": interactionID,
 		"answers":        verdict,
 	}); err != nil {
@@ -244,7 +244,7 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 			return "", fmt.Errorf("runtime: review gate %q: write artifact: %w", nodeID, werr)
 		}
 		rs.artifactVersions[nodeID] = version + 1
-		if err := e.emit(ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]interface{}{
+		if err := e.emit(ctx, rs.runID, store.EventArtifactWritten, nodeID, map[string]any{
 			"publish": pub, "version": version,
 		}); err != nil && e.logger != nil {
 			e.logger.Warn("runtime: review gate %q: emit artifact_written: %v", nodeID, err)
@@ -269,7 +269,7 @@ func (e *Engine) gateSelectEdge(ctx context.Context, rs *runState, hn *ir.HumanN
 // final_commit / final_branch / merged_into / merge_status on run.json so the
 // run-end finalize is a no-op. answers may carry message/strategy/target
 // overrides from the studio merge form.
-func (e *Engine) performGateMerge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, answers map[string]interface{}) error {
+func (e *Engine) performGateMerge(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, answers map[string]any) error {
 	r, err := e.store.LoadRun(ctx, rs.runID)
 	if err != nil {
 		return fmt.Errorf("load run: %w", err)
@@ -333,7 +333,7 @@ func (e *Engine) performGateMerge(ctx context.Context, rs *runState, hn *ir.Huma
 	if err := e.persistGateMerge(ctx, rs.runID, finalSHA, finalName, res.MergedInto, res.MergedCommit, string(store.MergeStatusMerged), res.Strategy); err != nil {
 		return err
 	}
-	return e.emit(ctx, rs.runID, store.EventReviewMerged, nodeID, map[string]interface{}{
+	return e.emit(ctx, rs.runID, store.EventReviewMerged, nodeID, map[string]any{
 		"final_commit": finalSHA,
 		"merged_into":  res.MergedInto,
 		"strategy":     res.Strategy,
@@ -368,7 +368,7 @@ func (e *Engine) persistGateMerge(ctx context.Context, runID, finalCommit, final
 // pauseReviewGate pauses the run at the review gate, carrying the companion's
 // latest message + verdict + the merge configuration so the studio can render
 // the Review-&-Merge card. The full dialogue (turns) rides on the interaction.
-func (e *Engine) pauseReviewGate(rs *runState, nodeID string, hn *ir.HumanNode, companion map[string]interface{}, turns []store.InteractionTurn) error {
+func (e *Engine) pauseReviewGate(rs *runState, nodeID string, hn *ir.HumanNode, companion map[string]any, turns []store.InteractionTurn) error {
 	questions := e.buildNodeInputRS(nodeID, rs.scope())
 
 	message := stringAnswer(companion, "message")
@@ -382,7 +382,7 @@ func (e *Engine) pauseReviewGate(rs *runState, nodeID string, hn *ir.HumanNode, 
 		}
 	}
 
-	extra := map[string]interface{}{
+	extra := map[string]any{
 		"review":       true,
 		"instructions": message, // reuse the studio's existing instructions rendering
 		"posture":      hn.Posture,
@@ -407,10 +407,10 @@ func (e *Engine) pauseReviewGate(rs *runState, nodeID string, hn *ir.HumanNode, 
 // user message (diff context + dialogue transcript), then calls the executor.
 // When the executor doesn't implement ReviewCompanion (e.g. the e2e stub
 // without it), it returns a default result that pauses for the human.
-func (e *Engine) runReviewCompanion(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, turns []store.InteractionTurn) map[string]interface{} {
+func (e *Engine) runReviewCompanion(ctx context.Context, rs *runState, hn *ir.HumanNode, nodeID string, turns []store.InteractionTurn) map[string]any {
 	rc, ok := e.executor.(ReviewCompanion)
 	if !ok {
-		return map[string]interface{}{"needs_human_input": true}
+		return map[string]any{"needs_human_input": true}
 	}
 
 	questions := e.buildNodeInputRS(nodeID, rs.scope())
@@ -427,7 +427,7 @@ func (e *Engine) runReviewCompanion(ctx context.Context, rs *runState, hn *ir.Hu
 		if e.logger != nil {
 			e.logger.Warn("runtime: review gate %q: companion failed: %v — pausing for human", nodeID, err)
 		}
-		return map[string]interface{}{"needs_human_input": true}
+		return map[string]any{"needs_human_input": true}
 	}
 	return out
 }
@@ -492,7 +492,7 @@ func reviewDiffContext(wtCtx *worktreeContext) string {
 // resolveReviewURL renders the gate's review_url template (e.g.
 // "{{outputs.provision.url}}") against the run state. Returns "" when unset
 // or when a referenced output isn't available yet.
-func (e *Engine) resolveReviewURL(hn *ir.HumanNode, questions map[string]interface{}, rs *runState) string {
+func (e *Engine) resolveReviewURL(hn *ir.HumanNode, questions map[string]any, rs *runState) string {
 	if hn.ReviewURL == "" {
 		return ""
 	}
@@ -515,8 +515,8 @@ func (e *Engine) resolveReviewURL(hn *ir.HumanNode, questions map[string]interfa
 
 // emitReviewTurn emits a review_turn event (and, for companion turns with a
 // verdict, a review_verdict event) for the studio dialogue thread.
-func (e *Engine) emitReviewTurn(ctx context.Context, runID, nodeID, role string, turn int, companion map[string]interface{}) {
-	_ = e.emit(ctx, runID, store.EventReviewTurn, nodeID, map[string]interface{}{
+func (e *Engine) emitReviewTurn(ctx context.Context, runID, nodeID, role string, turn int, companion map[string]any) {
+	_ = e.emit(ctx, runID, store.EventReviewTurn, nodeID, map[string]any{
 		"role": role,
 		"turn": turn,
 	})
@@ -534,7 +534,7 @@ func (e *Engine) emitReviewTurn(ctx context.Context, runID, nodeID, role string,
 
 // reviewActionOf extracts the review action from resume answers, defaulting
 // to "reply" (the safe non-merging continuation) when unset/unknown.
-func reviewActionOf(answers map[string]interface{}) string {
+func reviewActionOf(answers map[string]any) string {
 	switch stringAnswer(answers, reviewActionKey) {
 	case reviewActionApproveMerge:
 		return reviewActionApproveMerge
@@ -560,7 +560,7 @@ func countCompanionTurns(turns []store.InteractionTurn) int {
 }
 
 // companionTurn builds an InteractionTurn from a companion result.
-func companionTurn(companion map[string]interface{}) store.InteractionTurn {
+func companionTurn(companion map[string]any) store.InteractionTurn {
 	return store.InteractionTurn{
 		Role:    "companion",
 		Content: stringAnswer(companion, "message"),
@@ -571,12 +571,12 @@ func companionTurn(companion map[string]interface{}) store.InteractionTurn {
 
 // reviewVerdict extracts the verdict fields (decision/confidence/blockers)
 // from a companion result. Returns nil when no decision was produced.
-func reviewVerdict(companion map[string]interface{}) map[string]interface{} {
+func reviewVerdict(companion map[string]any) map[string]any {
 	decision := stringAnswer(companion, "decision")
 	if decision == "" {
 		return nil
 	}
-	v := map[string]interface{}{"decision": decision}
+	v := map[string]any{"decision": decision}
 	if c := stringAnswer(companion, "confidence"); c != "" {
 		v["confidence"] = c
 	}
@@ -588,10 +588,10 @@ func reviewVerdict(companion map[string]interface{}) map[string]interface{} {
 
 // approvedVerdict builds the node output for an agent-verdict auto-merge,
 // pinning decision=approved while keeping the companion's confidence/blockers.
-func approvedVerdict(companion map[string]interface{}) map[string]interface{} {
+func approvedVerdict(companion map[string]any) map[string]any {
 	v := reviewVerdict(companion)
 	if v == nil {
-		v = map[string]interface{}{}
+		v = map[string]any{}
 	}
 	v["decision"] = "approved"
 	return v
@@ -600,7 +600,7 @@ func approvedVerdict(companion map[string]interface{}) map[string]interface{} {
 // mergeFromPrior copies confidence/blockers from the last companion turn into
 // an explicit-action verdict, so a human-approved/-rejected gate still carries
 // the agent's last assessment downstream.
-func mergeFromPrior(verdict map[string]interface{}, turns []store.InteractionTurn) {
+func mergeFromPrior(verdict map[string]any, turns []store.InteractionTurn) {
 	for i := len(turns) - 1; i >= 0; i-- {
 		if turns[i].Role == "companion" && turns[i].Verdict != nil {
 			for k, v := range turns[i].Verdict {
@@ -618,7 +618,7 @@ func mergeFromPrior(verdict map[string]interface{}, turns []store.InteractionTur
 
 // companionApproves reports whether the companion reached a high-confidence
 // approval that may auto-merge under posture: agent_verdict_ok.
-func companionApproves(companion map[string]interface{}) bool {
+func companionApproves(companion map[string]any) bool {
 	if needsHuman, ok := companion["needs_human_input"].(bool); ok && needsHuman {
 		return false
 	}
@@ -627,7 +627,7 @@ func companionApproves(companion map[string]interface{}) bool {
 }
 
 // stringAnswer reads a string-valued map entry, tolerating absent/non-string.
-func stringAnswer(m map[string]interface{}, key string) string {
+func stringAnswer(m map[string]any, key string) string {
 	if m == nil {
 		return ""
 	}

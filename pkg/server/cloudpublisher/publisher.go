@@ -27,6 +27,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
@@ -72,6 +74,25 @@ type Config struct {
 	// into the run bundle so the runner can materialise it for the
 	// CLI subprocess.
 	OAuthForfait secrets.OAuthStore
+	// ForgeConnections, when non-nil, lets the publisher resolve the
+	// github_app connection a run's forge_token came from and thread its
+	// bot login to the runner, so an installation token's commits are
+	// attributed to the App bot (the runner can't self-resolve it — see
+	// RunBundle.ForgeAppBotLogin).
+	ForgeConnections forge.ConnectionStore
+	// Identity, when non-nil, lets the publisher resolve a run's team
+	// to its parent org so the RunMessage carries the org id the launch
+	// gate metered the run on. The runner charges LLM spend to that key
+	// — without it (nil, or a pre-backfill org-less team) spend falls
+	// back to the team key and an org-level monthly cost cap can never
+	// accumulate against the org document.
+	Identity TeamResolver
+}
+
+// TeamResolver is the slice of the identity store the publisher needs
+// for org spend attribution.
+type TeamResolver interface {
+	GetTeam(ctx context.Context, id string) (identity.Team, error)
 }
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
@@ -89,12 +110,61 @@ type Publisher struct {
 	runSecrets     secrets.RunSecretsStore
 	sealer         secrets.Sealer
 	oauthForfait   secrets.OAuthStore
+	forgeConns     forge.ConnectionStore
+	identity       TeamResolver
+
+	// orgCache memoizes team → org id so the publish hot path doesn't
+	// add a Mongo read per launch (team/org membership changes are
+	// rare; a 5-minute staleness only delays which usage doc new spend
+	// lands on).
+	orgCacheMu sync.Mutex
+	orgCache   map[string]orgCacheEntry
 
 	// detached tracks fire-and-forget goroutines (e.g. MarkUsed
 	// observability writes) so Drain can wait for them on shutdown
 	// rather than letting orphan Mongo writes pile up against a
 	// pod that's already past the SIGTERM mark.
 	detached sync.WaitGroup
+}
+
+type orgCacheEntry struct {
+	orgID   string
+	expires time.Time
+}
+
+const orgCacheTTL = 5 * time.Minute
+
+// orgIDForTeam mirrors the launch gate's orgForTeam fallback: team →
+// OrgID, "" on any miss (resolver absent, unknown team, org-less
+// pre-backfill team) so the runner charges the tenant key — the same
+// key the gate metered such a launch on.
+func (p *Publisher) orgIDForTeam(ctx context.Context, teamID string) string {
+	if p.identity == nil || teamID == "" {
+		return ""
+	}
+	now := time.Now()
+	p.orgCacheMu.Lock()
+	if e, ok := p.orgCache[teamID]; ok && now.Before(e.expires) {
+		p.orgCacheMu.Unlock()
+		return e.orgID
+	}
+	p.orgCacheMu.Unlock()
+	t, err := p.identity.GetTeam(ctx, teamID)
+	if err != nil {
+		// Not cached: a transient identity-store miss must not pin ""
+		// for the TTL window.
+		if p.logger != nil {
+			p.logger.Warn("cloudpublisher: org resolve for team %s: %v (spend will charge the team key)", teamID, err)
+		}
+		return ""
+	}
+	p.orgCacheMu.Lock()
+	if p.orgCache == nil {
+		p.orgCache = make(map[string]orgCacheEntry)
+	}
+	p.orgCache[teamID] = orgCacheEntry{orgID: t.OrgID, expires: now.Add(orgCacheTTL)}
+	p.orgCacheMu.Unlock()
+	return t.OrgID
 }
 
 // New builds a Publisher.
@@ -128,6 +198,8 @@ func New(cfg Config) (*Publisher, error) {
 		runSecrets:     cfg.RunSecrets,
 		sealer:         cfg.Sealer,
 		oauthForfait:   cfg.OAuthForfait,
+		forgeConns:     cfg.ForgeConnections,
+		identity:       cfg.Identity,
 	}, nil
 }
 
@@ -159,6 +231,56 @@ func genericSecretNamesForWorkflow(wf *ir.Workflow) []string {
 	return names
 }
 
+// requiredSecretNamesForWorkflow returns the declared secret names that MUST
+// resolve to a non-empty value for the run to proceed: non-`optional` and with
+// no inline literal `value:` (a literal is always "resolved"). These are the
+// names the launch-time required-secret gate checks against the resolver's
+// output.
+func requiredSecretNamesForWorkflow(wf *ir.Workflow) []string {
+	if wf == nil || len(wf.Secrets) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(wf.Secrets))
+	for name, s := range wf.Secrets {
+		if s == nil || s.Optional || strings.TrimSpace(s.Value) != "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// appBotLoginForForgeToken returns the github_app bot login (e.g.
+// "iterion-forge-1234[bot]") whose managed secret backs the run's resolved
+// forge push token, or "" when the token is a PAT/OAuth/GitLab token (the
+// runner resolves those from the token's own /user) or the store is
+// unavailable. Best-effort: any store error yields "".
+func (p *Publisher) appBotLoginForForgeToken(ctx context.Context, tenantID string, resolved map[string]secrets.GenericResolution) string {
+	if p.forgeConns == nil || tenantID == "" {
+		return ""
+	}
+	var secretID string
+	for _, name := range []string{"forge_token", "github_token"} {
+		if r, ok := resolved[name]; ok && r.SecretID != "" {
+			secretID = r.SecretID
+			break
+		}
+	}
+	if secretID == "" {
+		return ""
+	}
+	conns, err := p.forgeConns.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	for _, c := range conns {
+		if c.Kind == forge.KindGitHubApp && c.ManagedSecretID == secretID && strings.TrimSpace(c.AccountLogin) != "" {
+			return c.AccountLogin
+		}
+	}
+	return ""
+}
+
 // resolveAndSealCredentials looks up every provider key visible to
 // (tenantID, ownerID), pairs it with any OAuth-forfait the owner has
 // connected, seals the resulting bundle, and persists it under a
@@ -183,6 +305,7 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 		APIKeys:            map[secrets.Provider]string{},
 		GenericSecrets:     map[string]string{},
 		GenericSecretHosts: map[string][]string{},
+		GenericSecretRefs:  map[string]string{},
 		OAuthCredentials:   map[string][]byte{},
 	}
 
@@ -233,14 +356,36 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 	// value means "resolve a stored secret of the same name" for this run.
 	if p.genericSecrets != nil && wf != nil && len(wf.Secrets) > 0 {
 		names := genericSecretNamesForWorkflow(wf)
-		resolved, err := secrets.ResolveGenericWithBindings(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer)
+		resolved, err := secrets.ResolveGenericWithBindings(ctx, p.genericSecrets, p.botBindings, tenantID, ownerID, botID, names, secretOverrides, p.sealer, p.logger)
 		if err != nil {
 			return "", fmt.Errorf("cloudpublisher: resolve workflow secrets: %w", err)
+		}
+		// Required-secret launch gate: a non-`optional` declared secret with no
+		// inline value MUST resolve to a non-empty value. If it resolves to
+		// nothing (store secret deleted, no binding, no override) fail the launch
+		// loudly here — never let the runner skip the empty value and run the bot
+		// with the credential unset. `optional: true` secrets are excluded and
+		// keep the runner's skip behaviour.
+		haveValue := make(map[string]bool, len(resolved))
+		for name, r := range resolved {
+			if len(r.Plaintext) > 0 {
+				haveValue[name] = true
+			}
+		}
+		if missing := secrets.UnresolvedRequired(requiredSecretNamesForWorkflow(wf), haveValue); len(missing) > 0 {
+			return "", secrets.RequiredSecretsError(missing, "this team/bot")
 		}
 		now := time.Now().UTC()
 		usedIDs := make([]string, 0, len(resolved))
 		for name, r := range resolved {
 			if len(r.Plaintext) == 0 {
+				// Resolved to a metadata-only record with no plaintext (e.g. a
+				// nil-sealer resolution). Skip it — but trace the drop so an
+				// operator debugging a missing credential isn't left grepping
+				// for nothing. Required secrets are already gated loudly above.
+				if p.logger != nil {
+					p.logger.Debug("cloudpublisher: generic secret %q resolved with empty plaintext (scope=%s) — not injected", name, r.SourceScope)
+				}
 				continue
 			}
 			bundle.GenericSecrets[name] = string(r.Plaintext)
@@ -250,6 +395,12 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 			// hosts in the secret guard. Empty = no binding restriction.
 			if len(r.AllowedHosts) > 0 {
 				bundle.GenericSecretHosts[name] = r.AllowedHosts
+			}
+			if r.SecretID != "" {
+				// ID only (never the value): lets the runner re-read the
+				// worker-refreshed store record mid-run — the snapshot above
+				// outlives short-TTL credentials (App tokens live 1h).
+				bundle.GenericSecretRefs[name] = r.SecretID
 			}
 			usedIDs = append(usedIDs, r.SecretID)
 		}
@@ -262,6 +413,13 @@ func (p *Publisher) resolveAndSealCredentials(ctx context.Context, runID, tenant
 					_ = p.genericSecrets.MarkUsed(bg, id, t)
 				}
 			})
+		}
+		// When the run's forge token came from a github_app connection,
+		// thread the App bot login so the runner can seed the App-bot git
+		// committer (an installation token can't `GET /user`). Best-effort:
+		// a lookup failure just leaves the neutral fallback identity.
+		if login := p.appBotLoginForForgeToken(ctx, tenantID, resolved); login != "" {
+			bundle.ForgeAppBotLogin = login
 		}
 	}
 
@@ -371,16 +529,19 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		CallbackToken:      spec.CallbackToken,
 		CallbackAnswerNode: spec.CallbackAnswerNode,
 	}
-	if err := p.store.SaveRun(ctx, r); err != nil {
-		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
-	}
-
 	// 1b. Resolve BYOK credentials and seal them under a fresh
 	//     secrets_ref. Empty ref means "no team-scoped credentials
-	//     configured" — the runner falls back to env.
+	//     configured" — the runner falls back to env. This runs BEFORE the
+	//     run record is persisted so a required-secret launch failure leaves
+	//     NO run record behind (never a stray queued/running run for a launch
+	//     that could not resolve its mandatory credentials).
 	secretsRef, err := p.resolveAndSealCredentials(ctx, runID, tenantID, ownerID, spec.BotID, wf, spec.KeyOverrides, spec.SecretOverrides)
 	if err != nil {
 		return 0, err
+	}
+
+	if err := p.store.SaveRun(ctx, r); err != nil {
+		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 
 	// 2. Build the RunMessage. We marshal the AST inline; T-42 will
@@ -402,6 +563,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		BackendConfig:  queue.BackendConfig{Default: queue.BackendClaw},
 		PublishedAtRFC: time.Now().UTC().Format(time.RFC3339Nano),
 		TenantID:       tenantID,
+		OrgID:          p.orgIDForTeam(ctx, tenantID),
 		OwnerID:        ownerID,
 		// Cap. 3 sharding: when this run is a child shard, the runner
 		// pod that picks it up sees its place in the set so the studio
@@ -421,6 +583,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		RepoURL: spec.RepoURL,
 		RepoSHA: spec.RepoRef,
 		BotID:   spec.BotID,
+		Budget:  budgetForWire(spec.Budget),
 	}
 	if err := p.publish(ctx, msg); err != nil {
 		// Best-effort: roll the run doc back to failed so the studio
@@ -525,21 +688,26 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		return fmt.Errorf("cloudpublisher: load prior run %s: %w", spec.RunID, loadErr)
 	}
 	priorStatus := prior.Status
-	// Flip status to queued so the runner doesn't short-circuit on the
-	// cooperative-cancel check + so the studio's QueueDepthBar reflects
-	// the in-flight resume.
-	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
-		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
-	}
-	// Re-resolve credentials for the resume publication. Keys may have
-	// rotated between launch and resume; using the prior run's secrets ref
-	// blindly would inject stale plaintext. Preserve the launching BotID so
-	// bot-secret bindings remain durable across pause/failure/TTL republishes.
+	// Re-resolve credentials BEFORE flipping the status: a resolution
+	// failure (store error, or the required-secret gate — e.g. the secret
+	// was deleted between the failure and the resume) must leave the run
+	// in its prior RESUMABLE status. Flipping first would strand it in
+	// queued: never claimed (nothing published), and no longer resumable
+	// from the studio. Keys may have rotated between launch and resume;
+	// using the prior run's secrets ref blindly would inject stale
+	// plaintext. Preserve the launching BotID so bot-secret bindings
+	// remain durable across pause/failure/TTL republishes.
 	secretsCtx := store.WithTenant(ctx, prior.TenantID)
 	secretsCtx = store.WithOwner(secretsCtx, prior.OwnerID)
 	secretsRef, secretsErr := p.resolveAndSealCredentials(secretsCtx, spec.RunID, prior.TenantID, prior.OwnerID, prior.BotID, wf, prior.KeyOverrides, prior.SecretOverrides)
 	if secretsErr != nil {
 		return secretsErr
+	}
+	// Flip status to queued so the runner doesn't short-circuit on the
+	// cooperative-cancel check + so the studio's QueueDepthBar reflects
+	// the in-flight resume.
+	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
+		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
 	msg := &queue.RunMessage{
 		V:            queue.SchemaVersion,
@@ -557,8 +725,11 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 		// Carry the prior run's tenant onto the resume publication so
 		// the runner re-acquires the lease in the right scope. We trust
 		// the loaded prior doc rather than ctx: a super-admin resuming
-		// from another team's UI must still target that team's tenant.
+		// from another team's UI must still target that team's tenant —
+		// and the resumed attempt's spend must charge that team's org,
+		// not the resumer's.
 		TenantID: prior.TenantID,
+		OrgID:    p.orgIDForTeam(ctx, prior.TenantID),
 		OwnerID:  prior.OwnerID,
 		// Preserve webhook/cloud source metadata so a resumed runner can
 		// reconstruct the same workspace as the original launch. ProjectPath
@@ -713,13 +884,29 @@ func (p *Publisher) goSafeDetached(label string, fn func()) {
 	}()
 }
 
+// budgetForWire converts launch-time budget overrides to their queue wire
+// mirror. Nil (or all-zero) overrides publish as nil so old payload diffs
+// stay byte-identical and the runner's nil-check stays meaningful.
+func budgetForWire(o *ir.BudgetOverrides) *queue.BudgetOverrides {
+	if o == nil || o.IsZero() {
+		return nil
+	}
+	return &queue.BudgetOverrides{
+		MaxCostUSD:          o.MaxCostUSD,
+		MaxTokens:           o.MaxTokens,
+		MaxDuration:         o.MaxDuration,
+		MaxIterations:       o.MaxIterations,
+		MaxParallelBranches: o.MaxParallelBranches,
+	}
+}
+
 // varsAsAny upgrades a string-keyed map to interface{} so the wire
 // payload can carry richer types if the launch spec ever evolves.
-func varsAsAny(in map[string]string) map[string]interface{} {
+func varsAsAny(in map[string]string) map[string]any {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]interface{}, len(in))
+	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
 	}

@@ -12,6 +12,7 @@ import {
 import type { ExecutionState, WireNode } from "@/api/runs";
 import { autoLayout } from "@/lib/autoLayout";
 import type { DelegateOutputMeta } from "@/lib/delegateMeta";
+import { FLOW_CONTROLS_STYLE } from "@/lib/flowTheme";
 import { useToggleSet } from "@/hooks/useToggleSet";
 
 import { useUIStore } from "@/store/ui";
@@ -550,7 +551,7 @@ export default function RunCanvasIR({
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={16} size={1} />
-        <Controls showInteractive={true} />
+        <Controls showInteractive={true} style={FLOW_CONTROLS_STYLE} />
       </ReactFlow>
     </div>
   );

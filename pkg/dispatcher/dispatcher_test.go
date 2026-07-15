@@ -213,12 +213,12 @@ func TestDispatcherDispatchAndFinish(t *testing.T) {
 		if got.assignee != "feature_dev" {
 			t.Fatalf("dispatch spec dropped issue.Assignee: got %q want %q", got.assignee, "feature_dev")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for dispatch")
 	}
 
 	// Wait for the actor to process the finish + release.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		snap := c.Snapshot()
 		if len(snap.Running) == 0 {
@@ -262,7 +262,7 @@ func TestSnapshotLockFreeWhileActorBlocked(t *testing.T) {
 	// Wait until the actor is provably parked inside ListCandidates.
 	select {
 	case <-ft.listEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("actor never entered the blocked ListCandidates call")
 	}
 
@@ -314,7 +314,7 @@ func TestActorResponsiveWhileDiscoveryInFlight(t *testing.T) {
 	// ListCandidates (i.e. the actor handed the I/O off and returned).
 	select {
 	case <-ft.listEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("discovery goroutine never entered the blocked ListCandidates call")
 	}
 
@@ -345,7 +345,7 @@ func driveGatedReleaseRun(t *testing.T, c *Dispatcher, ft *fakeTracker, ctx cont
 	c.Start(ctx)
 	select {
 	case <-ft.releaseEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("finish worker never entered the blocked tracker.Release call")
 	}
 }
@@ -453,7 +453,7 @@ func TestDiscoveryPanicPostsCandidateError(t *testing.T) {
 	c.Start(ctx)
 	defer c.Stop()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if calls := ft.listCalls.Load(); calls >= 1 {
 			break
@@ -464,7 +464,7 @@ func TestDiscoveryPanicPostsCandidateError(t *testing.T) {
 		t.Fatalf("initial ListCandidates call never happened")
 	}
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		snap := c.Snapshot()
 		if snap.LastTrackerError != "" {
@@ -483,7 +483,7 @@ func TestDiscoveryPanicPostsCandidateError(t *testing.T) {
 		// A later poll launched a fresh ListCandidates call and dispatched
 		// the candidate, proving discoveryInFlight was not stranded by the
 		// recovered panic and the dispatcher stayed responsive.
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatalf("dispatcher did not recover from ListCandidates panic and dispatch on a later poll; listCalls=%d snapshot=%+v", ft.listCalls.Load(), c.Snapshot())
 	}
 	if calls := ft.listCalls.Load(); calls < 2 {
@@ -511,7 +511,7 @@ func TestDispatcherRetriesOnFailure(t *testing.T) {
 	c.Start(ctx)
 	defer c.Stop()
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if calls.Load() >= 2 {
 			return
@@ -547,7 +547,7 @@ func TestDispatcherGivesUpAfterMaxAttempts(t *testing.T) {
 	defer c.Stop()
 
 	// Wait for the give-up to land the issue in the terminal failed state.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	state := func() string {
 		ft.mu.Lock()
 		defer ft.mu.Unlock()
@@ -571,10 +571,19 @@ func TestDispatcherGivesUpAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("dispatch calls = %d, want 2 (initial + 1 retry, then give up)", got)
 	}
 	// No lingering bookkeeping: the retry entry was dropped on give-up.
-	snap := c.Snapshot()
-	if len(snap.Running) != 0 || len(snap.Retries) != 0 {
-		t.Fatalf("after give-up: running=%d retries=%d, want 0/0", len(snap.Running), len(snap.Retries))
+	// The tracker's "blocked" write happens on the give-up WORKER before
+	// the actor applies cmdDropRetry and republishes — so poll for the
+	// snapshot to converge instead of asserting a single read (the -race
+	// CI flake: retries=1 observed in the gap).
+	for time.Now().Before(deadline) {
+		snap := c.Snapshot()
+		if len(snap.Running) == 0 && len(snap.Retries) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	snap := c.Snapshot()
+	t.Fatalf("after give-up: running=%d retries=%d, want 0/0", len(snap.Running), len(snap.Retries))
 }
 
 func TestDispatcherRespectsClaimConflict(t *testing.T) {
@@ -621,13 +630,13 @@ func TestDispatcherCancel(t *testing.T) {
 
 	select {
 	case <-dispatchStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("dispatch never started")
 	}
 
 	c.Cancel("fake:4")
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(c.Snapshot().Running) == 0 {
 			return

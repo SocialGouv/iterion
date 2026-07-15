@@ -54,6 +54,9 @@ type LLMStepInfo struct {
 	// in thinking blocks. Both are 0 when the step produced no thinking.
 	ReasoningTokens int
 	ThinkingMs      int
+	// Thinking is the extended-thinking text for this step (empty when the
+	// step produced no thinking).
+	Thinking string
 	// Iteration is the 0-based loop iteration (see LLMRequestInfo.Iteration).
 	Iteration int
 }
@@ -239,6 +242,7 @@ func toLLMStepInfo(step StepResult) LLMStepInfo {
 		CacheWriteTokens: step.Usage.CacheWriteTokens,
 		ReasoningTokens:  step.Usage.ReasoningTokens,
 		ThinkingMs:       step.Usage.ThinkingMs,
+		Thinking:         step.Thinking,
 	}
 }
 
@@ -275,8 +279,8 @@ func toLLMCompactInfo(info CompactInfo) LLMCompactInfo {
 // intentionally NOT marshalled here — the marshal is O(N) in
 // conversation length and only the runtime hook that writes to a
 // TurnStore actually needs the bytes. Callers that need them call
-// MarshalConversation on the info; callers that don't (cloud stores
-// without TurnStore, observability-only consumers) skip the cost.
+// MarshalConversation on the info; callers that don't (stores without a
+// TurnStore, observability-only consumers) skip the cost.
 func toLLMTurnCaptureInfo(info TurnCaptureInfo) LLMTurnCaptureInfo {
 	calls := make([]ToolCallEntry, len(info.Result.ToolCalls))
 	for i, tc := range info.Result.ToolCalls {

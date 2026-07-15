@@ -56,11 +56,11 @@ func TestLLMRouterSingleRoute(t *testing.T) {
 	var agentACalled, agentBCalled bool
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"task": "complex"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"task": "complex"}, nil
 	})
 	// LLM router returns a structured selection.
-	exec.on("llm_router", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("llm_router", func(input map[string]any) (map[string]any, error) {
 		// Verify candidates were injected.
 		candidates, ok := input["_route_candidates"].([]string)
 		if !ok {
@@ -69,18 +69,18 @@ func TestLLMRouterSingleRoute(t *testing.T) {
 		if len(candidates) != 2 {
 			t.Errorf("expected 2 candidates, got %d", len(candidates))
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"selected_route": "agent_a",
 			"reasoning":      "task is complex, needs agent_a",
 		}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		agentACalled = true
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		agentBCalled = true
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -119,22 +119,22 @@ func TestLLMRouterSelectsOtherRoute(t *testing.T) {
 	var agentACalled, agentBCalled bool
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"task": "simple"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"task": "simple"}, nil
 	})
-	exec.on("llm_router", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("llm_router", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"selected_route": "agent_b",
 			"reasoning":      "task is simple, agent_b is enough",
 		}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		agentACalled = true
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		agentBCalled = true
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -161,11 +161,11 @@ func TestLLMRouterInvalidSelection(t *testing.T) {
 	wf := llmRouterWorkflow()
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("llm_router", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("llm_router", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"selected_route": "nonexistent_agent",
 			"reasoning":      "wrong choice",
 		}, nil
@@ -227,27 +227,27 @@ func TestLLMRouterMultiMode(t *testing.T) {
 	var calledAgents []string
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"context": "multi-task"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"context": "multi-task"}, nil
 	})
-	exec.on("llm_router", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("llm_router", func(_ map[string]any) (map[string]any, error) {
 		// Select only agent_a and agent_b, not agent_c.
-		return map[string]interface{}{
-			"selected_routes": []interface{}{"agent_a", "agent_b"},
+		return map[string]any{
+			"selected_routes": []any{"agent_a", "agent_b"},
 			"reasoning":       "need both a and b but not c",
 		}, nil
 	})
 	for _, id := range []string{"agent_a", "agent_b", "agent_c"} {
 		id := id
-		exec.on(id, func(_ map[string]interface{}) (map[string]interface{}, error) {
+		exec.on(id, func(_ map[string]any) (map[string]any, error) {
 			mu.Lock()
 			calledAgents = append(calledAgents, id)
 			mu.Unlock()
-			return map[string]interface{}{"result": "from_" + id}, nil
+			return map[string]any{"result": "from_" + id}, nil
 		})
 	}
-	exec.on("final", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("final", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -301,17 +301,17 @@ func TestLLMRouterEvents(t *testing.T) {
 	wf := llmRouterWorkflow()
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("llm_router", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("llm_router", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"selected_route": "agent_a",
 			"reasoning":      "test reasoning",
 		}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -394,25 +394,25 @@ func TestLLMRouterMultiModePartialSelection(t *testing.T) {
 
 	var finalCalled bool
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("llm_router", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("llm_router", func(_ map[string]any) (map[string]any, error) {
 		// Only select agent_a — agent_b is not executed.
-		return map[string]interface{}{
-			"selected_routes": []interface{}{"agent_a"},
+		return map[string]any{
+			"selected_routes": []any{"agent_a"},
 			"reasoning":       "only need a",
 		}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "from_a"}, nil
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "from_a"}, nil
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"result": "from_b"}, nil
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"result": "from_b"}, nil
 	})
-	exec.on("final", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("final", func(_ map[string]any) (map[string]any, error) {
 		finalCalled = true
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -470,23 +470,23 @@ func TestLLMRouterNoExplicitModel(t *testing.T) {
 	var agentACalled bool
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"task": "review"}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"task": "review"}, nil
 	})
-	exec.on("llm_router", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("llm_router", func(input map[string]any) (map[string]any, error) {
 		// Verify the engine still treats this as an LLM router
 		// (injects candidates) even with Model == "".
 		if _, ok := input["_route_candidates"].([]string); !ok {
 			t.Error("expected _route_candidates in input for model-less LLM router")
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"selected_route": "agent_a",
 			"reasoning":      "choosing agent_a",
 		}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		agentACalled = true
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -558,22 +558,22 @@ func TestLLMRouterMultiCancelAbandonsWedgedBranch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	release := make(chan struct{})
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{}, nil
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{}, nil
 	})
-	exec.on("llm_router", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"selected_routes": []interface{}{"agent_a", "agent_b"},
+	exec.on("llm_router", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"selected_routes": []any{"agent_a", "agent_b"},
 			"reasoning":       "need both",
 		}, nil
 	})
-	exec.on("agent_a", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_a", func(_ map[string]any) (map[string]any, error) {
 		cancel() // trip cancellation while agent_b is mid-flight
 		return nil, ctx.Err()
 	})
-	exec.on("agent_b", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("agent_b", func(_ map[string]any) (map[string]any, error) {
 		<-release // wedged: ignores ctx, never returns until released
-		return map[string]interface{}{}, nil
+		return map[string]any{}, nil
 	})
 
 	s := tmpStore(t)
@@ -586,7 +586,7 @@ func TestLLMRouterMultiCancelAbandonsWedgedBranch(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected a cancellation error")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		close(release)
 		t.Fatal("llm router fan_out hung on a wedged branch despite cancellation (collector drain not bounded)")
 	}

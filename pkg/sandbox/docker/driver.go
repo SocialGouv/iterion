@@ -264,9 +264,10 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		}
 		args = append(args, "--mount", m)
 	}
+	var secretLocs map[string]secretFileLoc
 	if len(p.spec.SecretFiles) > 0 {
 		var err error
-		args, err = appendSecretFileMountArgs(args, p.spec.SecretFiles, &tempDirs)
+		args, secretLocs, err = appendSecretFileMountArgs(args, p.spec.SecretFiles, &tempDirs)
 		if err != nil {
 			return nil, err
 		}
@@ -403,6 +404,7 @@ func (d *Driver) Start(ctx context.Context, prepared sandbox.PreparedSpec, info 
 		info:                 info,
 		inContainerWorkspace: inContainerWorkspace,
 		tempDirs:             tempDirs,
+		secretFiles:          secretLocs,
 	}
 
 	if p.spec.PostCreate != "" {
@@ -460,6 +462,11 @@ type Run struct {
 	// and other ephemeral driver files. They are removed in Cleanup.
 	tempDirs []string
 
+	// secretFiles maps each mounted file secret's name to the host path
+	// backing its bind-mount, so RefreshSecretFile can rewrite it mid-run
+	// (a rotated short-lived token). Nil when the run has no file secrets.
+	secretFiles map[string]secretFileLoc
+
 	mu      sync.Mutex
 	stopped bool
 	cleaned bool
@@ -467,6 +474,73 @@ type Run struct {
 
 // Driver returns the runtime name — "docker" or "podman".
 func (r *Run) Driver() string { return string(r.driver.rt) }
+
+// RefreshSecretFile rewrites the host file backing a mounted file
+// secret's bind-mount so a rotated short-lived token propagates into the
+// running container (docker bind-mounts follow the host inode, so a
+// subsequent in-container `cat` reads the new value). Implements
+// [sandbox.SecretFileRefresher].
+//
+// The value is never logged. A directory-mounted secret (the default
+// /run/iterion/secrets case) is replaced atomically via temp-write +
+// rename inside the mounted dir; a single-file bind mount is rewritten
+// in place (rename would swap the inode the container has pinned).
+func (r *Run) RefreshSecretFile(_ context.Context, name string, value []byte) error {
+	if len(value) == 0 {
+		return fmt.Errorf("docker driver: refresh file secret %s: empty value", name)
+	}
+	loc, ok := r.secretFiles[name]
+	if !ok {
+		return fmt.Errorf("docker driver: refresh: no mounted file secret %q", name)
+	}
+	if loc.dirMounted {
+		// Atomic replace so a concurrent in-container `cat` never sees a
+		// torn write; the temp lives in the same mounted dir so rename is
+		// a same-filesystem move.
+		tmp := loc.hostPath + ".tmp"
+		if err := os.WriteFile(tmp, value, 0o400); err != nil {
+			return fmt.Errorf("docker driver: refresh file secret %s: write temp: %w", name, err)
+		}
+		if err := os.Rename(tmp, loc.hostPath); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("docker driver: refresh file secret %s: rename: %w", name, err)
+		}
+		return nil
+	}
+	// Single-file bind mount: the container has the inode pinned, so we
+	// must rewrite in place (a rename would swap the inode). The file was
+	// created 0o400, and the owner cannot open a read-only file for
+	// writing, so widen to 0o600 for the write then restore 0o400.
+	//
+	// Do NOT use os.WriteFile: its O_TRUNC zeroes the file BEFORE writing,
+	// so a concurrent in-container `cat` in that window reads an empty
+	// token. Instead open without O_TRUNC, write the new value at offset
+	// 0 (one write(2) syscall for a small token — a reader sees old-or-new
+	// bytes, not empty), then Truncate to the new length to drop any
+	// trailing bytes when the value shrank.
+	if err := os.Chmod(loc.hostPath, 0o600); err != nil {
+		return fmt.Errorf("docker driver: refresh file secret %s: chmod: %w", name, err)
+	}
+	f, err := os.OpenFile(loc.hostPath, os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("docker driver: refresh file secret %s: open: %w", name, err)
+	}
+	if _, err := f.WriteAt(value, 0); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("docker driver: refresh file secret %s: write: %w", name, err)
+	}
+	if err := f.Truncate(int64(len(value))); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("docker driver: refresh file secret %s: truncate: %w", name, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("docker driver: refresh file secret %s: close: %w", name, err)
+	}
+	if err := os.Chmod(loc.hostPath, 0o400); err != nil {
+		return fmt.Errorf("docker driver: refresh file secret %s: restore perm: %w", name, err)
+	}
+	return nil
+}
 
 // maxInlineArgBytes caps the size of a single argv element passed to
 // `docker exec`. Linux's ARG_MAX is typically 128 KiB–2 MiB for the
@@ -679,15 +753,29 @@ func writeSecretFileTemp(sf sandbox.SecretFileMount) (hostPath, dir string, err 
 	return hostPath, dir, nil
 }
 
-func appendSecretFileMountArgs(args []string, files []sandbox.SecretFileMount, tempDirs *[]string) ([]string, error) {
+// secretFileLoc records, per file secret, the host path backing its
+// bind-mount so [Run.RefreshSecretFile] can rewrite it mid-run.
+type secretFileLoc struct {
+	// hostPath is the bind-mount SOURCE on the host runner.
+	hostPath string
+	// dirMounted is true when the secret lives inside a bind-mounted
+	// DIRECTORY (the default `/run/iterion/secrets` case): a refresh can
+	// then atomically temp-write+rename within that dir. False when the
+	// secret is a single-FILE bind mount — rename would swap the inode
+	// and the container would keep the old one, so the refresh must
+	// rewrite the file in place.
+	dirMounted bool
+}
+
+func appendSecretFileMountArgs(args []string, files []sandbox.SecretFileMount, tempDirs *[]string) ([]string, map[string]secretFileLoc, error) {
 	defaultDirFiles := make([]sandbox.SecretFileMount, 0, len(files))
 	directFiles := make([]sandbox.SecretFileMount, 0, len(files))
 	for _, sf := range files {
 		if len(sf.Value) == 0 {
-			return nil, fmt.Errorf("docker driver: file secret %s has empty payload", sf.Name)
+			return nil, nil, fmt.Errorf("docker driver: file secret %s has empty payload", sf.Name)
 		}
 		if err := validateSecretFileMount(sf.MountPath); err != nil {
-			return nil, fmt.Errorf("docker driver: file secret %s: %w", sf.Name, err)
+			return nil, nil, fmt.Errorf("docker driver: file secret %s: %w", sf.Name, err)
 		}
 		if _, ok := secrets.RelativeToSecretFilesMountDir(sf.MountPath); ok {
 			defaultDirFiles = append(defaultDirFiles, sf)
@@ -696,32 +784,38 @@ func appendSecretFileMountArgs(args []string, files []sandbox.SecretFileMount, t
 		}
 	}
 
+	locs := make(map[string]secretFileLoc, len(files))
 	if len(defaultDirFiles) > 0 {
-		hostDir, err := writeSecretFilesDirTemp(defaultDirFiles)
+		hostDir, perFile, err := writeSecretFilesDirTemp(defaultDirFiles)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		*tempDirs = append(*tempDirs, hostDir)
 		args = append(args, "--mount", "type=bind,source="+hostDir+",target="+secrets.SecretFilesMountDir+",readonly")
+		for name, p := range perFile {
+			locs[name] = secretFileLoc{hostPath: p, dirMounted: true}
+		}
 	}
 
 	for _, sf := range directFiles {
 		hostPath, dir, err := writeSecretFileTemp(sf)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		*tempDirs = append(*tempDirs, dir)
 		args = append(args, "--mount", "type=bind,source="+hostPath+",target="+sf.MountPath+",readonly")
+		locs[sf.Name] = secretFileLoc{hostPath: hostPath, dirMounted: false}
 	}
-	return args, nil
+	return args, locs, nil
 }
 
-func writeSecretFilesDirTemp(files []sandbox.SecretFileMount) (dir string, err error) {
+func writeSecretFilesDirTemp(files []sandbox.SecretFileMount) (dir string, perFile map[string]string, err error) {
 	dir, err = os.MkdirTemp("", "iterion-secret-files-")
 	if err != nil {
-		return "", fmt.Errorf("docker driver: file secrets temp dir: %w", err)
+		return "", nil, fmt.Errorf("docker driver: file secrets temp dir: %w", err)
 	}
 	seen := map[string]string{}
+	perFile = make(map[string]string, len(files))
 	defer func() {
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -730,25 +824,26 @@ func writeSecretFilesDirTemp(files []sandbox.SecretFileMount) (dir string, err e
 	for _, sf := range files {
 		rel, ok := secrets.RelativeToSecretFilesMountDir(sf.MountPath)
 		if !ok {
-			return "", fmt.Errorf("docker driver: file secret %s mount_path %q is not under %s", sf.Name, sf.MountPath, secrets.SecretFilesMountDir)
+			return "", nil, fmt.Errorf("docker driver: file secret %s mount_path %q is not under %s", sf.Name, sf.MountPath, secrets.SecretFilesMountDir)
 		}
 		if prev := seen[rel]; prev != "" {
-			return "", fmt.Errorf("docker driver: file secrets %s and %s both target %s/%s", prev, sf.Name, secrets.SecretFilesMountDir, rel)
+			return "", nil, fmt.Errorf("docker driver: file secrets %s and %s both target %s/%s", prev, sf.Name, secrets.SecretFilesMountDir, rel)
 		}
 		seen[rel] = sf.Name
 		hostPath := filepath.Join(dir, filepath.FromSlash(rel))
 		cleanHostPath := filepath.Clean(hostPath)
 		if cleanHostPath == dir || !strings.HasPrefix(cleanHostPath, dir+string(filepath.Separator)) {
-			return "", fmt.Errorf("docker driver: file secret %s mount_path escapes temp dir", sf.Name)
+			return "", nil, fmt.Errorf("docker driver: file secret %s mount_path escapes temp dir", sf.Name)
 		}
 		if err := os.MkdirAll(filepath.Dir(cleanHostPath), 0o700); err != nil {
-			return "", fmt.Errorf("docker driver: create file secret dir %s: %w", sf.Name, err)
+			return "", nil, fmt.Errorf("docker driver: create file secret dir %s: %w", sf.Name, err)
 		}
 		if err := os.WriteFile(cleanHostPath, sf.Value, 0o400); err != nil {
-			return "", fmt.Errorf("docker driver: write file secret %s: %w", sf.Name, err)
+			return "", nil, fmt.Errorf("docker driver: write file secret %s: %w", sf.Name, err)
 		}
+		perFile[sf.Name] = cleanHostPath
 	}
-	return dir, nil
+	return dir, perFile, nil
 }
 
 func validateSecretFileMount(mountPath string) error {

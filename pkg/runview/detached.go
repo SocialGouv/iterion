@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/internal/proc"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
@@ -73,6 +74,10 @@ type detachedSpec struct {
 	Timeout    time.Duration
 	MergeInto  string // worktree finalization, Launch only
 	BranchName string // worktree finalization, Launch only
+	// Budget forwards launch-time budget overrides as the CLI's
+	// --max-* flags, so the detached runner applies the same caps the
+	// in-process path would. Launch only; nil = no override.
+	Budget *ir.BudgetOverrides
 }
 
 // buildRunnerCmd assembles the exec.Cmd for a detached-runner
@@ -91,6 +96,23 @@ func buildRunnerCmd(ctx context.Context, bin string, spec detachedSpec) (*exec.C
 		}
 		if spec.BranchName != "" {
 			args = append(args, "--branch-name", spec.BranchName)
+		}
+		if b := spec.Budget; b != nil {
+			if b.MaxCostUSD > 0 {
+				args = append(args, "--max-cost-usd", strconv.FormatFloat(b.MaxCostUSD, 'f', -1, 64))
+			}
+			if b.MaxTokens > 0 {
+				args = append(args, "--max-tokens", strconv.Itoa(b.MaxTokens))
+			}
+			if b.MaxDuration != "" {
+				args = append(args, "--max-duration", b.MaxDuration)
+			}
+			if b.MaxIterations > 0 {
+				args = append(args, "--max-iterations", strconv.Itoa(b.MaxIterations))
+			}
+			if b.MaxParallelBranches > 0 {
+				args = append(args, "--max-parallel-branches", strconv.Itoa(b.MaxParallelBranches))
+			}
 		}
 	case runnerCommandResume:
 		args = append(args, "resume", "--background", "--no-interactive", "--run-id", spec.RunID, "--file", spec.FilePath)
@@ -195,7 +217,17 @@ func (s *Service) spawnDetached(parent context.Context, spec detachedSpec) (*Lau
 		if pidS := store.AsPIDStore(s.store); pidS != nil {
 			_ = pidS.RemovePIDFile(spec.RunID)
 		}
-		s.broker.CloseRun(spec.RunID)
+		// Mirror spawnRun's pause handling: a paused runner exits like a
+		// terminal one, but the run is only dormant — keep WS subscribers
+		// so the pause/resume events reach them (the resume's tailers
+		// publish to the same broker runID).
+		paused := false
+		if r, err := s.store.LoadRun(store.WithoutTenantFilter(context.Background()), spec.RunID); err == nil {
+			paused = r.Status.IsPaused()
+		}
+		if !paused {
+			s.broker.CloseRun(spec.RunID)
+		}
 		s.dropRunLog(spec.RunID)
 		s.manager.Deregister(spec.RunID)
 	}()
@@ -223,8 +255,22 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	// point (see server.resolveWorkflowPath), so the spawned subprocess
 	// can read it from disk; we use the inline copy here to avoid an
 	// extra ReadFile for the pre-flight compile.
-	if _, _, err := compileForLaunch(spec.FilePath, spec.Source); err != nil {
+	wf, _, err := compileForLaunch(spec.FilePath, spec.Source)
+	if err != nil {
 		return nil, err
+	}
+
+	// Persist the run doc before the runner subprocess boots (mirrors
+	// spawnRun's pre-create): a GET /api/runs/{id} issued right after the
+	// launch response must not 404 while the runner is still forking. The
+	// runner engine's runResolveDoc claims the running doc instead of
+	// re-creating it, and overwrites Inputs with the preset-merged set.
+	inputs := make(map[string]any, len(spec.Vars))
+	for k, v := range spec.Vars {
+		inputs[k] = v
+	}
+	if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, inputs); err != nil {
+		return nil, fmt.Errorf("runview: create run: %w", err)
 	}
 
 	// LaunchSpec.Backend is honored only by the in-process spawnRun
@@ -251,8 +297,14 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 		Timeout:    spec.Timeout,
 		MergeInto:  spec.MergeInto,
 		BranchName: spec.BranchName,
+		Budget:     spec.Budget,
 	})
 	if err != nil {
+		// The doc was pre-created above; without a runner it would sit
+		// as a phantom "running" run forever — mark it failed instead.
+		if uerr := s.store.UpdateRunStatus(context.Background(), runID, store.RunStatusFailed, "runner failed to start: "+err.Error()); uerr != nil {
+			s.logger.Warn("runview: detached: mark %s failed: %v", runID, uerr)
+		}
 		s.dropRunLog(runID)
 		return nil, err
 	}
@@ -328,7 +380,7 @@ func pidAlive(pid int) error {
 // answers shaped like booleans, numbers, or objects we'd need a
 // JSON-aware --answers-file path; this stub is sufficient for the
 // common case of free-form text questions.
-func resumeAnswersToStrings(answers map[string]interface{}) (map[string]string, error) {
+func resumeAnswersToStrings(answers map[string]any) (map[string]string, error) {
 	out := make(map[string]string, len(answers))
 	for k, v := range answers {
 		switch tv := v.(type) {

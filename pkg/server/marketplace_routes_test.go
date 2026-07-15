@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"mime/multipart"
@@ -38,6 +39,24 @@ func writeFixtureBundle(t *testing.T, dir, name string) {
 	}
 	preset := "---\nname: focus\ndisplay_name: SRE focus\ndescription: bias toward reliability\nskills: [obs]\n---\nrun cool\n"
 	if err := os.WriteFile(filepath.Join(dir, "presets", "focus.md"), []byte(preset), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writePluginFixtureDir scaffolds a minimal plugin source (plugin.yaml
+// with a skills contribution + the skill file) that plugin.Inspect —
+// and so marketplace.InspectSource — accepts.
+func writePluginFixtureDir(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	man := "name: " + name + "\nversion: 0.2.0\ndescription: a test plugin\nauthor: jo\ncontributes:\n  skills:\n    - skills/foo.md\n"
+	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(man), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skill := "---\nname: foo\ndescription: test skill\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(dir, "skills", "foo.md"), []byte(skill), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -310,6 +329,243 @@ func TestMarketplace_ServerInfoFlagFalseWhenNil(t *testing.T) {
 	}
 	if info.MarketplaceEnabled {
 		t.Errorf("marketplace_enabled = true; want false")
+	}
+}
+
+func TestMarketplace_SubmitPluginKind(t *testing.T) {
+	repo := t.TempDir()
+	writePluginFixtureDir(t, repo, "my-plugin")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# plugin doc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newMarketplaceServer(t, t.TempDir())
+
+	rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+repo+`","icon":"🔌"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit = %d; %s", rec.Code, rec.Body.String())
+	}
+	var stored marketplace.Entry
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if stored.Kind != marketplace.KindPlugin {
+		t.Errorf("kind = %q, want %q", stored.Kind, marketplace.KindPlugin)
+	}
+	if stored.Slug != "my-plugin" || stored.Name != "my-plugin" {
+		t.Errorf("identity mismatch: %+v", stored)
+	}
+	if len(stored.Categories) != 1 || stored.Categories[0] != "skill" {
+		t.Errorf("categories = %v, want [skill]", stored.Categories)
+	}
+	if stored.Icon != "🔌" {
+		t.Errorf("icon = %q", stored.Icon)
+	}
+	if !strings.Contains(stored.README, "plugin doc") {
+		t.Errorf("README = %q", stored.README)
+	}
+}
+
+func TestMarketplace_SubmitIconRoundTripAndCap(t *testing.T) {
+	repo := t.TempDir()
+	writeFixtureBundle(t, repo, "mybot")
+	srv := newMarketplaceServer(t, t.TempDir())
+
+	rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+repo+`","icon":" 🤖 "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit = %d; %s", rec.Code, rec.Body.String())
+	}
+	var stored marketplace.Entry
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Icon != "🤖" {
+		t.Errorf("icon = %q, want trimmed emoji", stored.Icon)
+	}
+	// Get echoes it back.
+	rec = doJSON(t, srv, http.MethodGet, "/api/v1/marketplace/bots/mybot", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get = %d", rec.Code)
+	}
+	stored = marketplace.Entry{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Icon != "🤖" {
+		t.Errorf("icon after get = %q", stored.Icon)
+	}
+	// Over the 32-byte cap → 400.
+	long := strings.Repeat("x", marketplaceIconMaxBytes+1)
+	rec = doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+repo+`","icon":"`+long+`"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("oversized icon = %d, want 400; %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMarketplace_SlugKindConflict409(t *testing.T) {
+	botRepo := t.TempDir()
+	writeFixtureBundle(t, botRepo, "mybot")
+	pluginRepo := t.TempDir()
+	writePluginFixtureDir(t, pluginRepo, "mybot") // same slug, other kind
+	srv := newMarketplaceServer(t, t.TempDir())
+
+	if rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+botRepo+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("bot submit = %d; %s", rec.Code, rec.Body.String())
+	}
+	rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+pluginRepo+`"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("plugin submit over bot slug = %d, want 409; %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "already exists as a bot entry") {
+		t.Errorf("conflict message = %s", rec.Body.String())
+	}
+	// Re-submitting the same kind stays fine (registry refresh).
+	if rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+botRepo+`"}`); rec.Code != http.StatusOK {
+		t.Errorf("bot re-submit = %d; %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMarketplace_ListKindAndSortParams(t *testing.T) {
+	botRepo := t.TempDir()
+	writeFixtureBundle(t, botRepo, "mybot")
+	pluginRepo := t.TempDir()
+	writePluginFixtureDir(t, pluginRepo, "my-plugin")
+	srv := newMarketplaceServer(t, t.TempDir())
+
+	for _, repo := range []string{botRepo, pluginRepo} {
+		if rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+repo+`"}`); rec.Code != http.StatusOK {
+			t.Fatalf("submit %s = %d; %s", repo, rec.Code, rec.Body.String())
+		}
+	}
+	listSlugs := func(query string) []string {
+		t.Helper()
+		rec := doJSON(t, srv, http.MethodGet, "/api/v1/marketplace/bots"+query, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list%s = %d; %s", query, rec.Code, rec.Body.String())
+		}
+		var list struct {
+			Bots []marketplace.Entry `json:"bots"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(list.Bots))
+		for _, e := range list.Bots {
+			out = append(out, e.Slug)
+		}
+		return out
+	}
+	if got := listSlugs("?kind=plugin"); len(got) != 1 || got[0] != "my-plugin" {
+		t.Errorf("kind=plugin → %v", got)
+	}
+	if got := listSlugs("?kind=bot"); len(got) != 1 || got[0] != "mybot" {
+		t.Errorf("kind=bot → %v", got)
+	}
+	if got := listSlugs("?sort=name"); len(got) != 2 || got[0] != "my-plugin" {
+		t.Errorf("sort=name → %v", got)
+	}
+	if rec := doJSON(t, srv, http.MethodGet, "/api/v1/marketplace/bots?kind=gizmo", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("kind=gizmo = %d, want 400; %s", rec.Code, rec.Body.String())
+	}
+	if rec := doJSON(t, srv, http.MethodGet, "/api/v1/marketplace/bots?sort=bogus", ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("sort=bogus = %d, want 400; %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMarketplace_PluginInstallUninstall(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ITERION_HOME", home)
+	repo := t.TempDir()
+	writePluginFixtureDir(t, repo, "my-plugin")
+	workdir := t.TempDir()
+	srv := newMarketplaceServer(t, workdir)
+
+	if rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+repo+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("submit = %d; %s", rec.Code, rec.Body.String())
+	}
+	rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/bots/my-plugin/install", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install = %d; %s", rec.Code, rec.Body.String())
+	}
+	var resp marketplaceInstallResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if resp.Install != nil {
+		t.Errorf("bot install payload set for a plugin: %+v", resp.Install)
+	}
+	if !strings.Contains(rec.Body.String(), `"plugin"`) || strings.Contains(rec.Body.String(), `"install"`) {
+		t.Errorf("response shape: %s", rec.Body.String())
+	}
+	if resp.Plugin == nil || resp.Plugin.Name != "my-plugin" {
+		t.Errorf("plugin view = %+v", resp.Plugin)
+	}
+	if resp.Entry == nil || resp.Entry.Installs != 1 {
+		t.Errorf("entry after install = %+v", resp.Entry)
+	}
+	// The plugin lands under ITERION_HOME/plugins/, never the workspace.
+	if _, err := os.Stat(filepath.Join(home, "plugins", "my-plugin", "plugin.yaml")); err != nil {
+		t.Errorf("plugin not installed under ITERION_HOME: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(workdir, ".botz")); len(entries) != 0 {
+		t.Errorf("plugin install touched .botz/: %v", entries)
+	}
+
+	// Uninstall removes the installed plugin directory.
+	rec = doJSON(t, srv, http.MethodDelete, "/api/v1/marketplace/bots/my-plugin/install", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("uninstall = %d; %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "plugins", "my-plugin")); !os.IsNotExist(err) {
+		t.Errorf("plugin dir still present after uninstall: %v", err)
+	}
+}
+
+func TestMarketplace_PluginInstallNeedsNoWorkdir(t *testing.T) {
+	t.Setenv("ITERION_HOME", t.TempDir())
+	repo := t.TempDir()
+	writePluginFixtureDir(t, repo, "my-plugin")
+	srv := newMarketplaceServer(t, "") // no workspace configured
+
+	if rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+repo+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("submit = %d; %s", rec.Code, rec.Body.String())
+	}
+	if rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/bots/my-plugin/install", ""); rec.Code != http.StatusOK {
+		t.Errorf("plugin install without workdir = %d, want 200; %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMarketplace_DownloadPluginServesSourceZip(t *testing.T) {
+	repo := t.TempDir()
+	writePluginFixtureDir(t, repo, "my-plugin")
+	srv := newMarketplaceServer(t, t.TempDir())
+
+	if rec := doJSON(t, srv, http.MethodPost, "/api/v1/marketplace/submit", `{"repo_url":"`+repo+`"}`); rec.Code != http.StatusOK {
+		t.Fatalf("submit = %d; %s", rec.Code, rec.Body.String())
+	}
+	rec := doJSON(t, srv, http.MethodGet, "/api/v1/marketplace/bots/my-plugin/download", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download plugin = %d, want 200; %s", rec.Code, rec.Body.String())
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "my-plugin.zip") {
+		t.Errorf("Content-Disposition = %q, want my-plugin.zip", cd)
+	}
+	body := rec.Body.Bytes()
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("body is not a valid zip: %v", err)
+	}
+	hasManifest := false
+	for _, f := range zr.File {
+		if f.Name == "plugin.yaml" {
+			hasManifest = true
+		}
+	}
+	if !hasManifest {
+		var names []string
+		for _, f := range zr.File {
+			names = append(names, f.Name)
+		}
+		t.Errorf("zip is missing plugin.yaml at root; entries: %v", names)
 	}
 }
 

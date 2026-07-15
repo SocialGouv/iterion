@@ -45,7 +45,7 @@ func TestBuildPodManifest_CAInjection(t *testing.T) {
 
 func TestBuildCASecret(t *testing.T) {
 	pem := []byte("-----BEGIN CERTIFICATE-----\nMIIBdummy\n-----END CERTIFICATE-----\n")
-	out, err := BuildCASecret("ns", "iterion-run-x-ca", "x", "friendly", pem)
+	out, err := BuildCASecret("ns", "iterion-run-x-ca", "x", "friendly", pem, nil)
 	if err != nil {
 		t.Fatalf("BuildCASecret: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestBuildSecretFilesSecret(t *testing.T) {
 	out, err := BuildSecretFilesSecret("ns", "iterion-run-x-secret-files", "x", "friendly", []sandbox.SecretFileMount{{
 		Name:  "kubeconfig",
 		Value: []byte("apiVersion: v1"),
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("BuildSecretFilesSecret: %v", err)
 	}

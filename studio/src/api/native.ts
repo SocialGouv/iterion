@@ -39,6 +39,17 @@ export interface NativeIssue {
    *  per-issue dispatcher workspace. Surfaced in the IssueModal as a
    *  copy/vscode link so operators can inspect the diff manually. */
   last_workdir?: string;
+  /** Denormalized best-effort HINT that the issue's most recent run parked
+   *  awaiting human/operator input. Lets the board grid render a per-card
+   *  "⏸ Awaiting input" badge WITHOUT an N+1 run fetch. Not authoritative —
+   *  the IssueModal's answer affordance still keys off the run status; a
+   *  stale flag is corrected at the next card touch. */
+  awaiting_input?: boolean;
+  /** Append-only run history (mirrors Go's `runs`), newest-last, deduped by
+   *  run_id. The full history the Ticket tab renders as a list;
+   *  last_run_id/last_workdir remain the single-pointer back-compat view.
+   *  Absent on records written before run history was tracked. */
+  runs?: RunRef[];
   /** Typed forge linkage (mirrors Go's `external`). Present once a card is
    *  pushed to / synced from a forge. This is the canonical source of truth
    *  for the card's PR/CI panel + push semantics (replaces the legacy
@@ -46,6 +57,13 @@ export interface NativeIssue {
   external?: ExternalLink;
   created_at: string;
   updated_at: string;
+}
+
+// RunRef is one entry in an issue's run history (mirrors Go's native.RunRef).
+export interface RunRef {
+  run_id: string;
+  workdir?: string;
+  at: string;
 }
 
 // ExternalLink is a card's typed link to a forge issue/PR. `url` and `state`
@@ -73,6 +91,9 @@ export interface NativeView {
   search?: string;
   labels?: string[];
   assignee?: string;
+  // bot scopes the view to a single bot (NativeIssue.bot) — a persisted
+  // filter for saving "the X pipeline" lens. Additive to group_by="bot".
+  bot?: string;
   sort?: string;
   group_by?: string;
 }

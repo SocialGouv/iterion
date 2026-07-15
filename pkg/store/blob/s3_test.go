@@ -52,6 +52,31 @@ func TestArtifactKeyHappyPath(t *testing.T) {
 	}
 }
 
+// ToolBlobKey / ToolBlobRunPrefix lock the canonical tool-blob layout
+// (cloud ToolBlobStore twin) so a refactor can't drift the S3 key shape
+// the migration tool + retention sweepers depend on. Kind is validated.
+func TestToolBlobKeyHappyPath(t *testing.T) {
+	t.Parallel()
+
+	got, err := ToolBlobKey("run-001", "toolu_abc", "output")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "tools/run-001/toolu_abc/output"; got != want {
+		t.Fatalf("ToolBlobKey: got %q want %q", got, want)
+	}
+	if _, err := ToolBlobKey("run-001", "toolu_abc", "bogus"); err == nil {
+		t.Fatal("ToolBlobKey: expected error for invalid kind")
+	}
+	prefix, err := ToolBlobRunPrefix("run-001")
+	if err != nil {
+		t.Fatalf("ToolBlobRunPrefix: %v", err)
+	}
+	if want := "tools/run-001/"; prefix != want {
+		t.Fatalf("ToolBlobRunPrefix: got %q want %q", prefix, want)
+	}
+}
+
 // wrapNotFound exists only as a test-side mirror of how s3.go composes
 // the error: keep this in sync with isS3NotFound's call site.
 func wrapNotFound(key string) error {

@@ -31,6 +31,18 @@ export const BOT_IDENTITY: Record<string, BotIdentity> = {
   "sec-audit-source": { emoji: "🛡️", color: "text-persona-rose" },
   "sec-audit-deps": { emoji: "📦", color: "text-persona-orange" },
   "secured-renovacy": { emoji: "⬆️", color: "text-persona-lime" },
+  "adr-cartograph": { emoji: "🗺️", color: "text-persona-teal" },
+  "adr-rechallenge": { emoji: "🏛️", color: "text-persona-violet" },
+  bmady: { emoji: "📋", color: "text-persona-amber" },
+  "dep-update-guard": { emoji: "🦺", color: "text-persona-orange" },
+  "devbox-setup": { emoji: "⚙️", color: "text-persona-sky" },
+  evolve: { emoji: "🔮", color: "text-persona-violet" },
+  "feature-gap-fill": { emoji: "🧩", color: "text-persona-emerald" },
+  "revi-converse": { emoji: "💬", color: "text-persona-cyan" },
+  "rgaa-audit": { emoji: "♿", color: "text-persona-sky" },
+  "supply-shield": { emoji: "🔰", color: "text-persona-lime" },
+  "supply-shield-cve": { emoji: "🚨", color: "text-persona-rose" },
+  "test-coverage": { emoji: "🧪", color: "text-persona-emerald" },
 };
 
 const FALLBACK_COLORS = [
@@ -69,4 +81,19 @@ export function botIdentity(name: string | undefined | null): BotIdentity {
     emoji: "🤖",
     color: FALLBACK_COLORS[h % FALLBACK_COLORS.length] ?? "text-persona-sky",
   };
+}
+
+/**
+ * botVisual resolves a bot's visual identity from a registry entry.
+ * Emoji precedence: the manifest `icon` (entry.icon, operator-authored)
+ * wins over the built-in BOT_IDENTITY map, which wins over the generic
+ * hash fallback. The accent COLOUR always comes from the persona/hash
+ * path (`botIdentity`) — a manifest icon carries no colour, so the chip
+ * hue stays stable whether or not an icon is set.
+ */
+export function botVisual(entry: { name: string; icon?: string }): BotIdentity {
+  const base = botIdentity(entry.name);
+  const icon = entry.icon?.trim();
+  if (icon) return { emoji: icon, color: base.color };
+  return base;
 }

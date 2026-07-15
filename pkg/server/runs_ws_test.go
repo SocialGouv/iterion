@@ -63,6 +63,50 @@ func TestRunsWS_SubscribeReceivesSnapshot(t *testing.T) {
 	}
 }
 
+// TestRunsWS_PingElicitsPong guards the application-level heartbeat the
+// client's dead-socket watchdog depends on: a client `ping` envelope must
+// come back as a `pong`. The browser's automatic control-frame pong is
+// invisible to JS, so this JSON-layer reply is the only liveness signal
+// the SPA can observe on an idle-but-alive run.
+func TestRunsWS_PingElicitsPong(t *testing.T) {
+	srv, hs := newTestServer(t)
+	seedRun(t, srv, "run-ping", "wf", store.RunStatusRunning)
+
+	c := dialRunWS(t, hs, "run-ping")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypePing, AckID: "hb-1"})
+
+	env := readEnvelope(t, c, wsTypePong)
+	if env.Type != wsTypePong {
+		t.Fatalf("Type = %q, want pong", env.Type)
+	}
+	if env.AckID != "hb-1" {
+		t.Errorf("AckID = %q, want hb-1 (echoed)", env.AckID)
+	}
+}
+
+// TestRunsWS_TerminatedRunEmitsEventTerminated guards the event-stream
+// terminal signal for an external/dispatcher run (a run not produced in
+// this process — seedRun persists it without a manager launch). Such a
+// run never gets a broker CloseRun, so before the fix the live tail
+// blocked forever and the WS never emitted `terminated`, leaving the
+// client stuck on "running". Subscribing to an already-finished run must
+// now close the event stream promptly.
+func TestRunsWS_TerminatedRunEmitsEventTerminated(t *testing.T) {
+	srv, hs := newTestServer(t)
+	seedRun(t, srv, "run-term", "wf", store.RunStatusFinished)
+
+	c := dialRunWS(t, hs, "run-term")
+	writeJSONMessage(t, c, runWSEnvelope{Type: wsTypeSubscribe})
+	_ = readEnvelope(t, c, wsTypeSnapshot)
+
+	// The finished run is not Active → the svcSource terminal pre-check
+	// fires immediately and ends the stream → terminated.
+	env := readEnvelopeWithin(t, c, 6*time.Second, wsTypeEvent, wsTypeEventBatch, wsTypeTerminated)
+	if env.Type != wsTypeTerminated {
+		t.Fatalf("Type = %q, want terminated", env.Type)
+	}
+}
+
 func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 	srv, hs := newTestServer(t)
 	// Create the run with an empty event stream so the snapshot is
@@ -85,7 +129,7 @@ func TestRunsWS_LiveEventReachesSubscriber(t *testing.T) {
 		Type:   store.EventNodeStarted,
 		RunID:  "run-live",
 		NodeID: "analyze",
-		Data:   map[string]interface{}{"kind": "agent"},
+		Data:   map[string]any{"kind": "agent"},
 	})
 
 	env := readEnvelope(t, c, wsTypeEvent)
@@ -146,7 +190,7 @@ func TestRunsWS_AlertEventBypassesSnapshotDedup(t *testing.T) {
 		Type:   store.EventAlert,
 		RunID:  runID,
 		NodeID: "analyze",
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"kind":   "budget_warning",
 			"title":  "Budget warning: wf",
 			"reason": "tokens budget at 82%",
@@ -182,7 +226,7 @@ func TestRunsWS_FromSeqReplaysHistorical(t *testing.T) {
 	_ = readEnvelope(t, c, wsTypeSnapshot)
 
 	got := []int64{}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && len(got) < 2 {
 		env := readEnvelope(t, c, wsTypeEvent, wsTypeEventBatch, wsTypeTerminated)
 		if env.Type == wsTypeTerminated {

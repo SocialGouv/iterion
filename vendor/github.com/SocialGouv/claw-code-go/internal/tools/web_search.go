@@ -31,6 +31,19 @@ func braveSearchEndpoint() string {
 	return defaultBraveSearchURL
 }
 
+// searxngBaseURL returns the configured SearXNG instance base URL, or
+// "" when none is set. Unlike Brave/DDG this has no default: SearXNG is
+// self-hosted, so the base URL is the activation signal. SEARXNG_URL is
+// the primary env; SEARXNG_ENDPOINT is accepted as an alias because it
+// is the name Firecrawl already uses for the same setting. The base is
+// also the test-injection point (point it at an httptest server).
+func searxngBaseURL() string {
+	if v := os.Getenv("SEARXNG_URL"); v != "" {
+		return v
+	}
+	return os.Getenv("SEARXNG_ENDPOINT")
+}
+
 func ddgSearchEndpoint() string {
 	if v := os.Getenv("CLAW_WEB_SEARCH_DDG_URL"); v != "" {
 		return v
@@ -42,7 +55,7 @@ func ddgSearchEndpoint() string {
 func WebSearchTool() api.Tool {
 	return api.Tool{
 		Name:        "web_search",
-		Description: "Search the web and return a list of results with title, URL, and snippet. Uses Brave Search API if BRAVE_API_KEY is set, otherwise DuckDuckGo.",
+		Description: "Search the web and return a list of results with title, URL, and snippet. Uses a self-hosted SearXNG instance if SEARXNG_URL is set, else the Brave Search API if BRAVE_API_KEY is set, otherwise DuckDuckGo.",
 		InputSchema: api.InputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{
@@ -83,10 +96,76 @@ func ExecuteWebSearch(input map[string]any) (string, error) {
 		numResults = 20
 	}
 
+	if base := searxngBaseURL(); base != "" {
+		return searxngSearch(query, numResults, base)
+	}
 	if apiKey := os.Getenv("BRAVE_API_KEY"); apiKey != "" {
 		return braveSearch(query, numResults, apiKey)
 	}
 	return ddgSearch(query, numResults)
+}
+
+// searxngSearch queries a self-hosted SearXNG instance via its JSON API.
+// The instance must have the `json` output format enabled in its
+// settings (`search.formats` must include `json`); otherwise it returns
+// HTTP 403 and the caller sees an explicit error rather than a silent
+// empty result.
+func searxngSearch(query string, numResults int, base string) (string, error) {
+	params := url.Values{}
+	params.Set("q", query)
+	params.Set("format", "json")
+	params.Set("categories", "general")
+	params.Set("safesearch", "0")
+
+	endpoint := strings.TrimRight(base, "/") + "/search?" + params.Encode()
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("web_search: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "claw-code/0.1 (searxng)")
+
+	client := &http.Client{Timeout: searchTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("web_search (searxng): %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("web_search (searxng): HTTP %d (is the JSON format enabled in the instance settings?)", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("web_search (searxng): read body: %w", err)
+	}
+
+	var result struct {
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("web_search (searxng): parse response: %w", err)
+	}
+
+	if len(result.Results) == 0 {
+		return "No results found.", nil
+	}
+
+	if len(result.Results) > numResults {
+		result.Results = result.Results[:numResults]
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Search results for: %s\n\n", query)
+	for i, r := range result.Results {
+		fmt.Fprintf(&sb, "%d. %s\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Content)
+	}
+	return strings.TrimSpace(sb.String()), nil
 }
 
 // braveSearch queries the Brave Search API.

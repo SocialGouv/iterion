@@ -282,6 +282,7 @@ type jsonAgentDecl struct {
 	Model             string               `json:"model,omitempty"`
 	Backend           string               `json:"backend,omitempty"`
 	Provider          string               `json:"provider,omitempty"`
+	Command           string               `json:"command,omitempty"`
 	MCP               *jsonMCPConfigDecl   `json:"mcp,omitempty"`
 	Input             string               `json:"input,omitempty"`
 	Output            string               `json:"output,omitempty"`
@@ -297,7 +298,10 @@ type jsonAgentDecl struct {
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	Timeout           string               `json:"timeout,omitempty"`
 	Readonly          bool                 `json:"readonly,omitempty"`
+	FullAccess        bool                 `json:"full_access,omitempty"`
+	Images            []string             `json:"images,omitempty"`
 	Interaction       string               `json:"interaction,omitempty"`
 	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
 	InteractionModel  string               `json:"interaction_model,omitempty"`
@@ -316,6 +320,7 @@ type jsonJudgeDecl struct {
 	Model             string               `json:"model,omitempty"`
 	Backend           string               `json:"backend,omitempty"`
 	Provider          string               `json:"provider,omitempty"`
+	Command           string               `json:"command,omitempty"`
 	MCP               *jsonMCPConfigDecl   `json:"mcp,omitempty"`
 	Input             string               `json:"input,omitempty"`
 	Output            string               `json:"output,omitempty"`
@@ -331,7 +336,10 @@ type jsonJudgeDecl struct {
 	ToolMaxSteps      int                  `json:"tool_max_steps,omitempty"`
 	MaxTokens         int                  `json:"max_tokens,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	Timeout           string               `json:"timeout,omitempty"`
 	Readonly          bool                 `json:"readonly,omitempty"`
+	FullAccess        bool                 `json:"full_access,omitempty"`
+	Images            []string             `json:"images,omitempty"`
 	Interaction       string               `json:"interaction,omitempty"`
 	InteractionPrompt string               `json:"interaction_prompt,omitempty"`
 	InteractionModel  string               `json:"interaction_model,omitempty"`
@@ -625,6 +633,8 @@ type jsonLoopClause struct {
 	Name              string `json:"name,omitempty"`
 	MaxIterations     int    `json:"max_iterations,omitempty"`
 	MaxIterationsExpr string `json:"max_iterations_expr,omitempty"`
+	Unbounded         bool   `json:"unbounded,omitempty"`
+	FuelCap           int    `json:"fuel_cap,omitempty"`
 }
 
 type jsonWithEntry struct {
@@ -1011,6 +1021,7 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		Model:             a.Model,
 		Backend:           a.Backend,
 		Provider:          a.Provider,
+		Command:           a.Command,
 		MCP:               mcpConfigToJSON(a.MCP),
 		Input:             a.Input,
 		Output:            a.Output,
@@ -1026,7 +1037,10 @@ func agentToJSON(a *AgentDecl) *jsonAgentDecl {
 		ToolMaxSteps:      a.ToolMaxSteps,
 		MaxTokens:         a.MaxTokens,
 		ReasoningEffort:   a.ReasoningEffort,
+		Timeout:           a.Timeout,
 		Readonly:          a.Readonly,
+		FullAccess:        a.FullAccess,
+		Images:            a.Images,
 		Interaction:       interactionModeToStr[a.Interaction],
 		InteractionPrompt: a.InteractionPrompt,
 		InteractionModel:  a.InteractionModel,
@@ -1047,6 +1061,7 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		Model:             j.Model,
 		Backend:           j.Backend,
 		Provider:          j.Provider,
+		Command:           j.Command,
 		MCP:               mcpConfigToJSON(j.MCP),
 		Input:             j.Input,
 		Output:            j.Output,
@@ -1062,7 +1077,10 @@ func judgeToJSON(j *JudgeDecl) *jsonJudgeDecl {
 		ToolMaxSteps:      j.ToolMaxSteps,
 		MaxTokens:         j.MaxTokens,
 		ReasoningEffort:   j.ReasoningEffort,
+		Timeout:           j.Timeout,
 		Readonly:          j.Readonly,
+		FullAccess:        j.FullAccess,
+		Images:            j.Images,
 		Interaction:       interactionModeToStr[j.Interaction],
 		InteractionPrompt: j.InteractionPrompt,
 		InteractionModel:  j.InteractionModel,
@@ -1162,6 +1180,8 @@ func edgeToJSON(e *Edge) *jsonEdge {
 			Name:              e.Loop.Name,
 			MaxIterations:     e.Loop.MaxIterations,
 			MaxIterationsExpr: e.Loop.MaxIterationsExpr,
+			Unbounded:         e.Loop.Unbounded,
+			FuelCap:           e.Loop.FuelCap,
 		}
 	}
 	for _, w := range e.With {
@@ -1511,6 +1531,7 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			Model:             ja.Model,
 			Backend:           ja.Backend,
 			Provider:          ja.Provider,
+			Command:           ja.Command,
 			MCP:               mcpConfigFromJSON(ja.MCP),
 			Input:             ja.Input,
 			Output:            ja.Output,
@@ -1526,7 +1547,10 @@ func agentFromJSON(ja *jsonAgentDecl) (*AgentDecl, error) {
 			ToolMaxSteps:      ja.ToolMaxSteps,
 			MaxTokens:         ja.MaxTokens,
 			ReasoningEffort:   ja.ReasoningEffort,
+			Timeout:           ja.Timeout,
 			Readonly:          ja.Readonly,
+			FullAccess:        ja.FullAccess,
+			Images:            ja.Images,
 			Interaction:       interaction,
 			InteractionPrompt: ja.InteractionPrompt,
 			InteractionModel:  ja.InteractionModel,
@@ -1561,6 +1585,7 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			Model:             jj.Model,
 			Backend:           jj.Backend,
 			Provider:          jj.Provider,
+			Command:           jj.Command,
 			MCP:               mcpConfigFromJSON(jj.MCP),
 			Input:             jj.Input,
 			Output:            jj.Output,
@@ -1576,7 +1601,10 @@ func judgeFromJSON(jj *jsonJudgeDecl) (*JudgeDecl, error) {
 			ToolMaxSteps:      jj.ToolMaxSteps,
 			MaxTokens:         jj.MaxTokens,
 			ReasoningEffort:   jj.ReasoningEffort,
+			Timeout:           jj.Timeout,
 			Readonly:          jj.Readonly,
+			FullAccess:        jj.FullAccess,
+			Images:            jj.Images,
 			Interaction:       interaction,
 			InteractionPrompt: jj.InteractionPrompt,
 			InteractionModel:  jj.InteractionModel,
@@ -1716,6 +1744,8 @@ func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 			Name:              je.Loop.Name,
 			MaxIterations:     je.Loop.MaxIterations,
 			MaxIterationsExpr: je.Loop.MaxIterationsExpr,
+			Unbounded:         je.Loop.Unbounded,
+			FuelCap:           je.Loop.FuelCap,
 		}
 	}
 	for _, jw := range je.With {

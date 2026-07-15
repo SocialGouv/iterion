@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -157,5 +160,80 @@ func TestLoadWorkflow_RejectsMalformedIR(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "decode IR") {
 		t.Errorf("expected decode IR err, got %v", err)
+	}
+}
+
+// TestLoadWorkflow_ResolvesPluginMCPServers guards the cloud-run MCP path.
+// The runner hydrates a pre-compiled AST via loadWorkflow (ir.Compile only,
+// which does NOT merge plugin/project MCP servers) and must then call
+// mcp.PrepareWorkflow, exactly as executeRun does after the workspace is
+// known. Without that call every plugin-contributed server (firecrawl,
+// repo-falcon) is silently absent from the catalog, so `mcp.<server>.*`
+// resolves to zero tools — the bug that made the firecrawl plugin inert in
+// cloud runs while the studio/CLI paths (which compile via runview.compileWith)
+// worked. The env assertion additionally locks that the plugin's resolved env
+// (FIRECRAWL_API_URL) survives the catalog → ir.MCPServer → manager round-trip
+// so self-host routing isn't dropped at the ir.MCPServer bottleneck.
+func TestLoadWorkflow_ResolvesPluginMCPServers(t *testing.T) {
+	t.Setenv("ITERION_PLUGINS_ENABLE", "firecrawl")
+	t.Setenv("ITERION_PLUGIN_FIRECRAWL_API_URL", "http://iterion-firecrawl:3002")
+
+	const src = `prompt sys:
+  Use the tools.
+prompt usr:
+  go.
+schema out:
+  x: string
+agent a:
+  backend: "claw"
+  model: "openai/gpt-5.4-mini"
+  system: sys
+  user: usr
+  output: out
+  tools: [mcp.firecrawl.*]
+  mcp:
+    servers: [firecrawl]
+  session: fresh
+workflow main:
+  entry: a
+  a -> done
+`
+	pr := parser.Parse("firecrawl.bot", src)
+	for _, d := range pr.Diagnostics {
+		if d.Severity == parser.SeverityError {
+			t.Fatalf("parse error: %s", d.Error())
+		}
+	}
+	body, err := ast.MarshalFile(pr.File)
+	if err != nil {
+		t.Fatalf("marshal AST: %v", err)
+	}
+
+	// Faithful mirror of the runner: hydrate the pre-compiled AST, then
+	// resolve the MCP catalog against the workspace (executeRun's sequence).
+	wf, err := loadWorkflow(&queue.RunMessage{
+		RunID:        "r",
+		WorkflowName: "main",
+		IRCompiled:   body,
+	})
+	if err != nil {
+		t.Fatalf("loadWorkflow: %v", err)
+	}
+	// Precondition: ir.Compile alone must NOT resolve plugin servers — else
+	// this test would pass even if the runner dropped the PrepareWorkflow call.
+	if _, ok := wf.ResolvedMCPServers["firecrawl"]; ok {
+		t.Fatal("precondition failed: ir.Compile resolved the firecrawl plugin server on its own — test no longer guards the runner's PrepareWorkflow call")
+	}
+
+	if err := mcp.PrepareWorkflow(wf, t.TempDir()); err != nil {
+		t.Fatalf("PrepareWorkflow: %v", err)
+	}
+
+	fc, ok := wf.ResolvedMCPServers["firecrawl"]
+	if !ok {
+		t.Fatalf("firecrawl absent from ResolvedMCPServers after PrepareWorkflow — plugin MCP server not merged (%d servers resolved)", len(wf.ResolvedMCPServers))
+	}
+	if got := fc.Env["FIRECRAWL_API_URL"]; got != "http://iterion-firecrawl:3002" {
+		t.Errorf("FIRECRAWL_API_URL lost in ir.MCPServer round-trip: got %q, want the self-host URL", got)
 	}
 }

@@ -1,26 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getRun } from "@/api/runs";
+import { is404 } from "@/api/client";
+import { getRun, getRunWithRetry } from "@/api/runs";
 import { errorMessage } from "@/lib/errorHints";
-import { useRunStore } from "@/store/run";
+import { useRunStore, useRunStoreInstance } from "@/store/run";
 import { useUIStore } from "@/store/ui";
+
+// Low-frequency REST safety net for the open run's status. The WS is the
+// primary channel, but two backend gaps leave the status pill stuck on
+// "running" with a perfectly healthy socket: cloud (mongo change-stream)
+// and external/dispatcher (events.jsonl tail) runs never emit a
+// `terminated` frame nor close the event stream on completion, so a
+// missed terminal event is never corrected over the wire. This poll
+// re-fetches run.json when the run LOOKS live but stalled (no event for
+// SNAPSHOT_POLL_STALE_MS) or the socket is down — applySnapshot's
+// last_seq stale-guard makes a redundant fetch a no-op, so it can only
+// correct, never regress. Idle during healthy streaming (fresh events
+// keep the stale clock reset) — it fires only on an actual stall.
+const SNAPSHOT_POLL_MS = 12_000;
+const SNAPSHOT_POLL_STALE_MS = 45_000;
 
 // useRunSnapshot owns the run-console's REST snapshot fetch + event-
 // history hydration on run open. Both have non-trivial retry/abort
 // semantics that the host file should not have to carry inline.
 //
 // Snapshot fetch (with retry on 404):
-//   The launch API returns the run_id as soon as the engine goroutine
-//   is scheduled, but the goroutine still needs a beat to call
-//   store.CreateRun before run.json exists on disk. Fetching too early
-//   therefore 404s, and without a retry the page gets stuck in the
-//   skeleton until the user reloads — the WS path was supposed to fill
-//   the gap but doesn't always push the initial snapshot eagerly. A
-//   short backoff loop closes the race for the common case (run.json
-//   typically lands within ~50–200ms) without papering over a genuinely
-//   missing run.
+//   The retry loop itself lives in getRunWithRetry (@/api/runs) — see
+//   its doc comment for the run.json flush-race rationale and the
+//   404-vs-transient retry budgets.
 //
-//   The fetch loop is exposed via a callback so both the initial mount
+//   The fetch is exposed via a callback so both the initial mount
 //   effect AND the user-facing Retry button on RunViewLoadError can
 //   re-trigger it in place — no window.location.reload() (which would
 //   destroy tabs, scroll position, and chat dock state). The
@@ -84,45 +93,24 @@ export function useRunSnapshot(runId: string | null): RunSnapshotHandle {
     if (!runId) return;
     // Cancel any in-flight retry loop before kicking off a new one so
     // a Retry click (or a runId change) can't leave the previous loop
-    // ticking against the network in the background.
+    // ticking against the network in the background. Aborting the
+    // controller cancels both the in-flight request and any pending
+    // retry delay inside getRunWithRetry.
     loadAbortRef.current?.();
-    let cancelled = false;
-    let attempt = 0;
-    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
+    loadAbortRef.current = () => controller.abort();
     setLoadFailed(null);
-    const fetchWithRetry = () => {
-      getRun(runId)
-        .then((snap) => {
-          if (!cancelled) applySnapshot(snap);
-        })
-        .catch((err: Error) => {
-          if (cancelled) return;
-          attempt += 1;
-          const msg = err?.message ?? "";
-          const is404 = msg.includes("API error 404");
-          const cap = is404 ? 3 : 20;
-          if (attempt < cap) {
-            // Track the timer so the cleanup can cancel it. The
-            // prior implementation only flipped `cancelled` for the
-            // setState path; the timer kept firing for the full
-            // retry budget after navigation, hammering the network.
-            timerId = setTimeout(() => {
-              timerId = null;
-              if (!cancelled) fetchWithRetry();
-            }, 250);
-          } else if (!cancelled) {
-            setLoadFailed({ status: is404 ? 404 : 0, message: msg });
-          }
+    getRunWithRetry(runId, { signal: controller.signal })
+      .then((snap) => {
+        if (!controller.signal.aborted) applySnapshot(snap);
+      })
+      .catch((err: Error) => {
+        if (controller.signal.aborted || err?.name === "AbortError") return;
+        setLoadFailed({
+          status: is404(err) ? 404 : 0,
+          message: err?.message ?? "",
         });
-    };
-    loadAbortRef.current = () => {
-      cancelled = true;
-      if (timerId != null) {
-        clearTimeout(timerId);
-        timerId = null;
-      }
-    };
-    fetchWithRetry();
+      });
   }, [runId, applySnapshot]);
   useEffect(() => {
     fetchSnapshot();
@@ -141,6 +129,29 @@ export function useRunSnapshot(runId: string | null): RunSnapshotHandle {
       .then(applySnapshot)
       .catch(() => undefined);
   }, [runId, applySnapshot]);
+
+  // Status safety-net poll (see the SNAPSHOT_POLL_* rationale above).
+  const store = useRunStoreInstance();
+  useEffect(() => {
+    if (!runId) return;
+    const id = setInterval(() => {
+      const st = store.getState();
+      const status = st.snapshot?.run.status;
+      // Only a run we still expect to produce events; a settled run
+      // (terminal, paused, resumable) has nothing to correct here.
+      if (status !== "running") return;
+      const evs = st.events;
+      const lastTs = evs.length
+        ? Date.parse(evs[evs.length - 1]!.timestamp)
+        : 0;
+      const eventsStale =
+        lastTs > 0 && Date.now() - lastTs > SNAPSHOT_POLL_STALE_MS;
+      const wsDown = st.wsState !== "open";
+      if (!eventsStale && !wsDown) return;
+      getRun(runId).then(applySnapshot).catch(() => undefined);
+    }, SNAPSHOT_POLL_MS);
+    return () => clearInterval(id);
+  }, [runId, store, applySnapshot]);
 
   return { loadFailed, handleRetryLoad, refreshSnapshot };
 }

@@ -368,7 +368,7 @@ func RunRun(ctx context.Context, opts RunOptions, p *Printer) error {
 	err = runInteractiveResumeLoop(ctx, eng, s, runID, opts.NoInteractive, err)
 	err = autoResumeLoop(ctx, eng, s, runID, resolveAutoResume(opts.AutoResume, opts.Budget), err, logger)
 
-	runResult := map[string]interface{}{
+	runResult := map[string]any{
 		"run_id":   runID,
 		"workflow": workflowName,
 		"store":    storeDir,
@@ -485,7 +485,7 @@ type subbotDepthKey struct{}
 // output (mapped to outputs.<subbot>.<field> by the engine).
 func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *iterlog.Logger, opts RunOptions) runtime.SubbotRunner {
 	parentDir := filepath.Dir(parentPath)
-	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]interface{}, error) {
+	return func(ctx context.Context, req runtime.SubbotRequest) (map[string]any, error) {
 		depth, _ := ctx.Value(subbotDepthKey{}).(int)
 		if depth >= maxSubbotDepth {
 			return nil, fmt.Errorf("subbot recursion too deep (>%d) at %q — possible cycle", maxSubbotDepth, req.Source)
@@ -514,12 +514,18 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 
 		// Capture the child's terminal-node output (the last node before Done)
 		// as the subbot's result.
-		var last map[string]interface{}
+		var last map[string]any
 		childEng := runtime.New(childWf, s, childExec,
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
 			runtime.WithFilePath(childPath),
-			runtime.WithOnNodeFinished(func(_, _ string, out map[string]interface{}) {
+			// Wire the child engine with its own recursive runner so a child
+			// .bot that itself declares subbot nodes can run them (sources
+			// resolve relative to the CHILD's dir). Without this, nested
+			// subbots died with "no SubbotRunner is wired" even though the
+			// depth guard below exists precisely to bound that recursion.
+			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
+			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
 				if out != nil {
 					last = out
 				}
@@ -698,7 +704,7 @@ func bundleParentOf(path string) string {
 // enrichPausedResult loads checkpoint and interaction details from the store
 // and populates the result map with interaction_id, node_id, and questions.
 // It is used by both run and resume to enrich paused-output for CI consumers.
-func enrichPausedResult(s store.RunStore, runID string, result map[string]interface{}) {
+func enrichPausedResult(s store.RunStore, runID string, result map[string]any) {
 	r, err := s.LoadRun(context.Background(), runID)
 	if err != nil || r.Checkpoint == nil {
 		return
@@ -711,8 +717,8 @@ func enrichPausedResult(s store.RunStore, runID string, result map[string]interf
 }
 
 // printPausedQuestions prints human-readable question details from the result map.
-func printPausedQuestions(p *Printer, result map[string]interface{}) {
-	q, ok := result["questions"].(map[string]interface{})
+func printPausedQuestions(p *Printer, result map[string]any) {
+	q, ok := result["questions"].(map[string]any)
 	if !ok || len(q) == 0 {
 		return
 	}
@@ -731,12 +737,12 @@ func ParseVarFlags(flags []string) (map[string]string, error) {
 }
 
 // ParseAnswersFile reads a JSON file containing answer key-value pairs.
-func ParseAnswersFile(path string) (map[string]interface{}, error) {
+func ParseAnswersFile(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read answers file: %w", err)
 	}
-	var answers map[string]interface{}
+	var answers map[string]any
 	if err := json.Unmarshal(data, &answers); err != nil {
 		return nil, fmt.Errorf("cannot parse answers file: %w", err)
 	}

@@ -48,6 +48,12 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 	if got.AckWait != DefaultAckWait {
 		t.Errorf("AckWait: got %v want %v", got.AckWait, DefaultAckWait)
 	}
+	if got.MaxAckPending != DefaultMaxAckPending {
+		t.Errorf("MaxAckPending: got %d want %d", got.MaxAckPending, DefaultMaxAckPending)
+	}
+	if got.MaxAckPending <= 1 {
+		t.Errorf("MaxAckPending default %d must be >1 or the fleet serialises to one run", got.MaxAckPending)
+	}
 	if got.LockTTL != DefaultLockTTL {
 		t.Errorf("LockTTL: got %v want %v", got.LockTTL, DefaultLockTTL)
 	}
@@ -59,16 +65,17 @@ func TestApplyDefaults_PopulatesEverything(t *testing.T) {
 func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	logger := iterlog.New(iterlog.LevelDebug, nil)
 	in := Config{
-		StreamName:   "X",
-		DLQStream:    "Y",
-		KVBucket:     "Z",
-		ConsumerName: "C",
-		MaxAge:       1 * time.Hour,
-		DLQMaxAge:    2 * time.Hour,
-		MaxDeliver:   42,
-		AckWait:      30 * time.Second,
-		LockTTL:      15 * time.Second,
-		Logger:       logger,
+		StreamName:    "X",
+		DLQStream:     "Y",
+		KVBucket:      "Z",
+		ConsumerName:  "C",
+		MaxAge:        1 * time.Hour,
+		DLQMaxAge:     2 * time.Hour,
+		MaxDeliver:    42,
+		AckWait:       30 * time.Second,
+		MaxAckPending: 12,
+		LockTTL:       15 * time.Second,
+		Logger:        logger,
 	}
 	got := applyDefaults(in)
 	if got != in {

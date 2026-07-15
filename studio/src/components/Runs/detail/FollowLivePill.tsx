@@ -16,6 +16,7 @@ export function FollowLivePill({
     <button
       type="button"
       onClick={onToggle}
+      aria-pressed={followLive}
       className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-caption border transition-colors ${
         followLive
           ? "bg-success-soft border-success text-success-fg"

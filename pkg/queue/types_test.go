@@ -13,7 +13,7 @@ func TestRunMessage_RoundTripJSON(t *testing.T) {
 		WorkflowName:   "demo",
 		WorkflowHash:   "sha256:deadbeef",
 		IRCompiled:     json.RawMessage(`{"nodes":[]}`),
-		Vars:           map[string]interface{}{"k": "v"},
+		Vars:           map[string]any{"k": "v"},
 		BotID:          "review-pr",
 		BackendConfig:  BackendConfig{Default: BackendClaw},
 		Trace:          TraceContext{TraceID: "0123456789abcdef0123456789abcdef"},
@@ -160,9 +160,9 @@ func TestRunMessage_ValidateNilReceiver(t *testing.T) {
 
 func TestSchemaVersionConstant(t *testing.T) {
 	// Pinning the constant is a deliberate guard: bumping it should be a
-	// conscious commit, not an accident. v=3 (2026-06-10) added BotID
-	// so cloud runners can qualify structured bot memory.
-	if SchemaVersion != 3 {
-		t.Errorf("SchemaVersion = %d, want 3 (bump intentionally)", SchemaVersion)
+	// conscious commit, not an accident. v=4 (2026-07-11) added Budget
+	// so launch-time budget overrides reach the cloud runner.
+	if SchemaVersion != 4 {
+		t.Errorf("SchemaVersion = %d, want 4 (bump intentionally)", SchemaVersion)
 	}
 }

@@ -173,10 +173,11 @@ func (r *Registry) registerDefaults() {
 		//     keep using the access_token captured at first resolve.
 		//     Codex CLI rotates tokens ~hourly; restart the daemon to
 		//     refresh, or set a tight max_duration on dispatcher jobs.
-		//   - Cloud mode: bypasses runner-materialised per-tenant
-		//     OAuth state in secrets.CredentialsFromContext. Cloud
-		//     deployments must use the API-key BYOK path until the
-		//     factory learns to consume creds.OAuthDir("codex").
+		//   - This disk factory is the process-env / desktop path. Cloud
+		//     mode instead resolves the tenant's per-run codex forfait via
+		//     ResolveWithContext → openAIFromCtxForfait (reads
+		//     Credentials.OAuthDir("codex")), so a runner with no ~/.codex
+		//     still uses the connected ChatGPT-forfait.
 		apiKey := os.Getenv("OPENAI_API_KEY")
 		oauthPref := os.Getenv("ITERION_OPENAI_USE_OAUTH")
 		oauthDisabled := oauthPref == "0" || cfg.BaseURL != ""
@@ -184,9 +185,7 @@ func (r *Registry) registerDefaults() {
 		shouldTryOAuth := !oauthDisabled && (apiKey == "" || oauthForced)
 		if shouldTryOAuth {
 			if view, err := secrets.LoadCodexCredentialsFromDisk(); err == nil && view.IsChatGPTMode() {
-				cfg.OAuthToken = view.Tokens.AccessToken
-				cfg.OpenAIChatGPTAccountID = view.Tokens.AccountID
-				cfg.OpenAIClientVersion = codexCLIVersion()
+				applyCodexOAuth(&cfg, view)
 				return p.NewClient(withClientIdentity(cfg))
 			}
 		}
@@ -396,7 +395,17 @@ func (r *Registry) ResolveWithContext(ctx context.Context, spec string) (api.API
 	}
 	overrideKey := creds(providerName)
 	if overrideKey == "" {
-		// No tenant-scoped key for this provider — fall back to the
+		// No tenant-scoped BYOK key. For openai, try the tenant's RESOLVED
+		// codex ChatGPT-forfait before falling back: in cloud mode the disk
+		// factory (r.Resolve) reads the pod's ~/.codex, which is empty — the
+		// per-run forfait lives in Credentials.OAuthDir("codex"). Closes the
+		// documented "factory learns to consume creds.OAuthDir(codex)" gap.
+		if providerName == "openai" {
+			if client, ok, err := r.openAIFromCtxForfait(ctx, modelID); ok {
+				return client, err
+			}
+		}
+		// No tenant-scoped credential for this provider — fall back to the
 		// shared resolver (env vars + cache).
 		return r.Resolve(spec)
 	}
@@ -436,4 +445,66 @@ func SetCredentialsLookup(fn func(ctx context.Context) (func(provider string) st
 
 func credentialsLookup(ctx context.Context) (credentialsResolver, bool) {
 	return credentialsLookupFn(ctx)
+}
+
+// applyCodexOAuth stamps a Codex ChatGPT-forfait view onto a provider config
+// (Bearer OAuth token + account id + client version header). Shared by the
+// disk-based factory and the ctx-resolved (cloud) path so both build an
+// identical ChatGPT-mode client.
+func applyCodexOAuth(cfg *api.ProviderConfig, view secrets.CodexCredentialsView) {
+	cfg.OAuthToken = view.Tokens.AccessToken
+	cfg.OpenAIChatGPTAccountID = view.Tokens.AccountID
+	cfg.OpenAIClientVersion = codexCLIVersion()
+}
+
+// openAIFromCtxForfait builds an OpenAI ChatGPT-forfait client from the
+// tenant's per-run-materialised codex credentials (Credentials.OAuthDir),
+// honouring the same disable knobs as the disk factory. Returns ok=false when
+// OAuth is disabled, no codex dir is resolved, or the dir has no ChatGPT-mode
+// auth.json — the caller then falls back to the shared resolver.
+func (r *Registry) openAIFromCtxForfait(ctx context.Context, modelID string) (api.APIClient, bool, error) {
+	if os.Getenv("ITERION_OPENAI_USE_OAUTH") == "0" || os.Getenv("OPENAI_BASE_URL") != "" {
+		return nil, false, nil
+	}
+	dir := oauthDirLookup(ctx, "codex")
+	if dir == "" {
+		return nil, false, nil
+	}
+	view, err := secrets.LoadCodexCredentialsFrom(dir)
+	if err != nil || !view.IsChatGPTMode() {
+		return nil, false, nil
+	}
+	cfg := api.ProviderConfig{Model: modelID, BaseURL: os.Getenv("OPENAI_BASE_URL")}
+	applyCodexOAuth(&cfg, view)
+	client, cerr := openaiprovider.New().NewClient(withClientIdentity(cfg))
+	return client, true, cerr
+}
+
+// oauthDirResolver maps an OAuth kind ("codex" / "claude_code") to its
+// per-run materialised credentials dir, or "" when absent.
+type oauthDirResolver func(kind string) string
+
+// oauthDirLookupFn is the indirection that lets pkg/runner inject a reader of
+// Credentials.OAuthDir from ctx, keeping this package's coupling to the runner
+// injection-based (mirrors credentialsLookupFn). Default: no-op.
+var oauthDirLookupFn = func(ctx context.Context) (oauthDirResolver, bool) {
+	return nil, false
+}
+
+// SetOAuthDirLookup wires a per-ctx OAuth-dir reader. The runner calls this at
+// boot with a closure over secrets.CredentialsFromContext(ctx).OAuthDir.
+// Idempotent; latest call wins.
+func SetOAuthDirLookup(fn func(ctx context.Context) (func(kind string) string, bool)) {
+	oauthDirLookupFn = func(ctx context.Context) (oauthDirResolver, bool) {
+		f, ok := fn(ctx)
+		return oauthDirResolver(f), ok
+	}
+}
+
+func oauthDirLookup(ctx context.Context, kind string) string {
+	f, ok := oauthDirLookupFn(ctx)
+	if !ok || f == nil {
+		return ""
+	}
+	return f(kind)
 }

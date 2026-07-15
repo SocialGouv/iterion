@@ -15,7 +15,7 @@ import (
 // `{{vars.workspace_dir}}` resolves to the empty string and downstream
 // tools that need a real path silently no-op (we never reach the tools
 // here, but keeping the value realistic surfaces clearer errors).
-var securedRenovacyStubInputs = map[string]interface{}{
+var securedRenovacyStubInputs = map[string]any{
 	"workspace_dir":        "/tmp/sr-stub",
 	"user_prompt":          "",
 	"override_install_cmd": "",
@@ -33,28 +33,28 @@ var securedRenovacyStubInputs = map[string]interface{}{
 // the legacy primary-mirror fields). Used by every secured-renovacy
 // test as the head session for every downstream edge templating
 // `{{outputs.detect_stack.X}}`.
-func stackProfileStub() map[string]interface{} {
-	return map[string]interface{}{
-		"ecosystems": []interface{}{
-			map[string]interface{}{
+func stackProfileStub() map[string]any {
+	return map[string]any{
+		"ecosystems": []any{
+			map[string]any{
 				"id":          "yarn",
 				"pkg_manager": "yarn",
 				"repo_kind":   "single-package",
-				"workspaces":  []interface{}{},
+				"workspaces":  []any{},
 				"upgrade_cmd": "yarn up",
 				"install_cmd": "yarn install",
-				"lock_files":  []interface{}{"yarn.lock"},
-				"manifests":   []interface{}{"package.json"},
+				"lock_files":  []any{"yarn.lock"},
+				"manifests":   []any{"package.json"},
 				"notes":       "",
 			},
 		},
 		"primary_ecosystem_id": "yarn",
 		"pkg_manager":          "yarn",
 		"repo_kind":            "single-package",
-		"workspaces":           []interface{}{},
+		"workspaces":           []any{},
 		"upgrade_cmd":          "yarn up",
 		"install_cmd":          "yarn install",
-		"lock_files":           []interface{}{"yarn.lock"},
+		"lock_files":           []any{"yarn.lock"},
 		"notes":                "",
 		"_session_id":          "sess-detect-1",
 		"_session_fingerprint": "fp-detect-1",
@@ -89,16 +89,16 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("detect_stack", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("detect_stack", func(_ map[string]any) (map[string]any, error) {
 		return stackProfileStub(), nil
 	})
-	exec.on("capture_start_sha", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"sha": "deadbeef0000000000000000000000000000beef"}, nil
+	exec.on("capture_start_sha", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"sha": "deadbeef0000000000000000000000000000beef"}, nil
 	})
-	exec.on("discover_outdated", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"packages": []interface{}{
-				map[string]interface{}{
+	exec.on("discover_outdated", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"packages": []any{
+				map[string]any{
 					"name":      "left-pad",
 					"current":   "1.0.0",
 					"target":    "1.0.1",
@@ -111,61 +111,61 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 			},
 			"count":                1,
 			"raw":                  "left-pad 1.0.0 → 1.0.1",
-			"per_ecosystem_counts": map[string]interface{}{"yarn": 1},
+			"per_ecosystem_counts": map[string]any{"yarn": 1},
 		}, nil
 	})
-	exec.on("bucket_patches", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"patches": []interface{}{
-				map[string]interface{}{"name": "left-pad", "current": "1.0.0", "target": "1.0.1"},
+	exec.on("bucket_patches", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"patches": []any{
+				map[string]any{"name": "left-pad", "current": "1.0.0", "target": "1.0.1"},
 			},
 			"has_patches":           true,
 			"patches_count":         1,
-			"attempted_after_batch": map[string]interface{}{"left-pad": "1.0.1"},
+			"attempted_after_batch": map[string]any{"left-pad": "1.0.1"},
 		}, nil
 	})
-	exec.on("batch_upgrade_patches", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("batch_upgrade_patches", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success":        true,
 			"output":         "left-pad 1.0.0 → 1.0.1",
-			"upgraded_specs": []interface{}{"left-pad@1.0.1"},
+			"upgraded_specs": []any{"left-pad@1.0.1"},
 		}, nil
 	})
-	exec.on("batch_commit", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("batch_commit", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success":   true,
 			"committed": true,
 			"output":    "committed abc1234",
 			"sha":       "abc1234567890123456789012345678901234567",
 		}, nil
 	})
-	exec.on("write_audit_md", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("write_audit_md", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success":   true,
 			"output":    "audit md amended into abc1234 (left-pad-1.0.0-to-1.0.1.md)",
 			"was_batch": true,
 		}, nil
 	})
-	exec.on("bucket_families", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"families":       []interface{}{},
+	exec.on("bucket_families", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"families":       []any{},
 			"has_families":   false,
 			"families_count": 0,
-			"solos":          []interface{}{},
+			"solos":          []any{},
 			"solos_count":    0,
 		}, nil
 	})
-	exec.on("select_candidate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("select_candidate", func(_ map[string]any) (map[string]any, error) {
 		// Patch fast-track path → arrive here with attempted ledger non-empty
 		// and no remaining survivors → has_more:false, only_patches:true.
-		return map[string]interface{}{
+		return map[string]any{
 			"selected_package":       "",
 			"current_version":        "",
 			"target_version":         "",
 			"risk":                   "patch",
 			"has_more":               false,
 			"attempted_count":        1,
-			"cumulative_attempted":   map[string]interface{}{"left-pad": "1.0.1"},
+			"cumulative_attempted":   map[string]any{"left-pad": "1.0.1"},
 			"fix_loop_max":           1,
 			"ecosystem":              "yarn",
 			"kind":                   "library",
@@ -176,8 +176,8 @@ func TestSecuredRenovacy_PatchFastTrack(t *testing.T) {
 			"cap_reason":             "exhausted",
 		}, nil
 	})
-	exec.on("emit_sbom", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("emit_sbom", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success": true,
 			"path":    "docs/renovacy/sbom-abc1234.json",
 			"count":   1,
@@ -237,16 +237,16 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "secured-renovacy/main.bot")
 	exec := newScenarioExecutor()
 
-	exec.on("detect_stack", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("detect_stack", func(_ map[string]any) (map[string]any, error) {
 		return stackProfileStub(), nil
 	})
-	exec.on("capture_start_sha", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"sha": "deadbeef0000000000000000000000000000beef"}, nil
+	exec.on("capture_start_sha", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"sha": "deadbeef0000000000000000000000000000beef"}, nil
 	})
-	exec.on("discover_outdated", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"packages": []interface{}{
-				map[string]interface{}{
+	exec.on("discover_outdated", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"packages": []any{
+				map[string]any{
 					"name": "react", "current": "18.2.0", "target": "18.3.0",
 					"risk": "minor", "ecosystem": "yarn",
 					"kind": "library", "dep_type": "runtime", "workspace": "",
@@ -254,30 +254,30 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 			},
 			"count":                1,
 			"raw":                  "react 18.2.0 → 18.3.0",
-			"per_ecosystem_counts": map[string]interface{}{"yarn": 1},
+			"per_ecosystem_counts": map[string]any{"yarn": 1},
 		}, nil
 	})
-	exec.on("bucket_patches", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"patches":               []interface{}{},
+	exec.on("bucket_patches", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"patches":               []any{},
 			"has_patches":           false,
 			"patches_count":         0,
-			"attempted_after_batch": map[string]interface{}{},
+			"attempted_after_batch": map[string]any{},
 		}, nil
 	})
 
 	hasMore := onceTrueThenFalse()
-	exec.on("select_candidate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("select_candidate", func(_ map[string]any) (map[string]any, error) {
 		more := hasMore()
 		if more {
-			return map[string]interface{}{
+			return map[string]any{
 				"selected_package":       "react",
 				"current_version":        "18.2.0",
 				"target_version":         "18.3.0",
 				"risk":                   "minor",
 				"has_more":               true,
 				"attempted_count":        0,
-				"cumulative_attempted":   map[string]interface{}{},
+				"cumulative_attempted":   map[string]any{},
 				"fix_loop_max":           3,
 				"ecosystem":              "yarn",
 				"kind":                   "library",
@@ -288,109 +288,109 @@ func TestSecuredRenovacy_PerPackageMinor(t *testing.T) {
 				"cap_reason":             "",
 			}, nil
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"selected_package":       "",
 			"has_more":               false,
 			"attempted_count":        1,
-			"cumulative_attempted":   map[string]interface{}{"react": "18.3.0"},
+			"cumulative_attempted":   map[string]any{"react": "18.3.0"},
 			"only_patches_attempted": false,
 			"remaining_count":        0,
 			"cap_reason":             "exhausted",
 		}, nil
 	})
-	exec.on("resolve_pkg_ecosystem", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("resolve_pkg_ecosystem", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pkg_manager": "yarn", "install_cmd": "yarn install", "upgrade_cmd": "yarn up",
-			"workspaces": []interface{}{}, "lock_files": []interface{}{"yarn.lock"},
+			"workspaces": []any{}, "lock_files": []any{"yarn.lock"},
 			"notes": "", "resolved_id": "yarn", "matched": true,
 		}, nil
 	})
-	exec.on("security_audit", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("security_audit", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"safe":               true,
-			"cves":               []interface{}{},
-			"malware_signals":    []interface{}{},
+			"cves":               []any{},
+			"malware_signals":    []any{},
 			"source":             "osv-scanner",
 			"raw":                "no advisories",
-			"blockers":           []interface{}{},
+			"blockers":           []any{},
 			"fix_plan":           "",
-			"advisory_chains":    []interface{}{},
-			"auditors_consulted": []interface{}{"osv-scanner"},
+			"advisory_chains":    []any{},
+			"auditors_consulted": []any{"osv-scanner"},
 			"_session_id":        "sess-audit-1",
 		}, nil
 	})
-	exec.on("changelog_review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("changelog_review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"has_breaking":               false,
-			"breaking_changes":           []interface{}{},
-			"alignment_steps":            []interface{}{},
-			"references":                 []interface{}{"https://github.com/facebook/react/releases/tag/v18.3.0"},
+			"breaking_changes":           []any{},
+			"alignment_steps":            []any{},
+			"references":                 []any{"https://github.com/facebook/react/releases/tag/v18.3.0"},
 			"confidence":                 "high",
-			"peer_dependency_changes":    []interface{}{},
-			"engine_requirement_changes": []interface{}{},
+			"peer_dependency_changes":    []any{},
+			"engine_requirement_changes": []any{},
 			"_session_id":                "sess-changelog-1",
 		}, nil
 	})
-	exec.on("upgrade", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "output": "upgraded react"}, nil
+	exec.on("upgrade", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "output": "upgraded react"}, nil
 	})
-	exec.on("install", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "output": "installed"}, nil
+	exec.on("install", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "output": "installed"}, nil
 	})
-	exec.on("align_code", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("align_code", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success": true, "summary": "no consuming code changes needed",
 			"_session_id": "sess-align-1",
 		}, nil
 	})
-	exec.on("validate_upgrade", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("validate_upgrade", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"stable":       true,
-			"blockers":     []interface{}{},
+			"blockers":     []any{},
 			"fix_plan":     "",
 			"confidence":   "high",
-			"commands_run": []interface{}{"yarn typecheck", "yarn test"},
+			"commands_run": []any{"yarn typecheck", "yarn test"},
 		}, nil
 	})
-	exec.on("prepare_commit", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("prepare_commit", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"type":         "chore",
 			"scope":        "deps",
 			"subject":      "react 18.2.0 → 18.3.0",
 			"full_message": "chore(deps): react 18.2.0 → 18.3.0",
-			"files":        []interface{}{"package.json", "yarn.lock"},
+			"files":        []any{"package.json", "yarn.lock"},
 			"committed":    false,
 		}, nil
 	})
-	exec.on("commit_changes", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("commit_changes", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success": true,
 			"output":  "committed abc1234",
 			"sha":     "abc1234567890123456789012345678901234567",
 		}, nil
 	})
-	exec.on("write_audit_md", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("write_audit_md", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success":   true,
 			"output":    "audit md amended into abc1234 (react-18.2.0-to-18.3.0.md)",
 			"was_batch": false,
 		}, nil
 	})
-	exec.on("p2_campaign", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("p2_campaign", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"review_clean": true, "commits_this_pass": 1, "issues_remaining": "",
 			"needs_human": false, "human_note": "", "summary": "reviewed the series",
 			"_tokens": 5,
 		}, nil
 	})
-	exec.on("p2_verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
+	exec.on("p2_verify_build", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
 	})
-	exec.on("p2_verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+	exec.on("p2_verify_run", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
-	exec.on("emit_sbom", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "path": "docs/renovacy/sbom-abc.json", "count": 1}, nil
+	exec.on("emit_sbom", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "path": "docs/renovacy/sbom-abc.json", "count": 1}, nil
 	})
 
 	s := tmpStore(t)
@@ -427,16 +427,16 @@ func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
 	exec := newScenarioExecutor()
 
 	// Reuse all per-package stubs from PerPackageMinor.
-	exec.on("detect_stack", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("detect_stack", func(_ map[string]any) (map[string]any, error) {
 		return stackProfileStub(), nil
 	})
-	exec.on("capture_start_sha", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"sha": "deadbeef0000000000000000000000000000beef"}, nil
+	exec.on("capture_start_sha", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"sha": "deadbeef0000000000000000000000000000beef"}, nil
 	})
-	exec.on("discover_outdated", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"packages": []interface{}{
-				map[string]interface{}{
+	exec.on("discover_outdated", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"packages": []any{
+				map[string]any{
 					"name": "react", "current": "18.2.0", "target": "18.3.0",
 					"risk": "minor", "ecosystem": "yarn",
 					"kind": "library", "dep_type": "runtime", "workspace": "",
@@ -444,129 +444,129 @@ func TestSecuredRenovacy_FixLoopThenCommit(t *testing.T) {
 			},
 			"count":                1,
 			"raw":                  "react minor",
-			"per_ecosystem_counts": map[string]interface{}{"yarn": 1},
+			"per_ecosystem_counts": map[string]any{"yarn": 1},
 		}, nil
 	})
-	exec.on("bucket_patches", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"patches": []interface{}{}, "has_patches": false,
-			"patches_count": 0, "attempted_after_batch": map[string]interface{}{},
+	exec.on("bucket_patches", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"patches": []any{}, "has_patches": false,
+			"patches_count": 0, "attempted_after_batch": map[string]any{},
 		}, nil
 	})
 	hasMore := onceTrueThenFalse()
-	exec.on("select_candidate", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("select_candidate", func(_ map[string]any) (map[string]any, error) {
 		if hasMore() {
-			return map[string]interface{}{
+			return map[string]any{
 				"selected_package": "react", "current_version": "18.2.0", "target_version": "18.3.0",
 				"risk": "minor", "has_more": true, "attempted_count": 0,
-				"cumulative_attempted": map[string]interface{}{},
+				"cumulative_attempted": map[string]any{},
 				"fix_loop_max":         3, "ecosystem": "yarn", "kind": "library",
 				"dep_type": "runtime", "workspace": "",
 				"only_patches_attempted": false, "remaining_count": 1, "cap_reason": "",
 			}, nil
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"selected_package": "", "has_more": false, "attempted_count": 1,
-			"cumulative_attempted":   map[string]interface{}{"react": "18.3.0"},
+			"cumulative_attempted":   map[string]any{"react": "18.3.0"},
 			"only_patches_attempted": false, "remaining_count": 0, "cap_reason": "exhausted",
 		}, nil
 	})
-	exec.on("resolve_pkg_ecosystem", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("resolve_pkg_ecosystem", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"pkg_manager": "yarn", "install_cmd": "yarn install", "upgrade_cmd": "yarn up",
-			"workspaces": []interface{}{}, "lock_files": []interface{}{"yarn.lock"},
+			"workspaces": []any{}, "lock_files": []any{"yarn.lock"},
 			"notes": "", "resolved_id": "yarn", "matched": true,
 		}, nil
 	})
-	exec.on("security_audit", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"safe": true, "cves": []interface{}{}, "malware_signals": []interface{}{},
-			"source": "osv-scanner", "raw": "ok", "blockers": []interface{}{},
-			"fix_plan": "", "advisory_chains": []interface{}{},
-			"auditors_consulted": []interface{}{"osv-scanner"}, "_session_id": "sess-audit-1",
+	exec.on("security_audit", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"safe": true, "cves": []any{}, "malware_signals": []any{},
+			"source": "osv-scanner", "raw": "ok", "blockers": []any{},
+			"fix_plan": "", "advisory_chains": []any{},
+			"auditors_consulted": []any{"osv-scanner"}, "_session_id": "sess-audit-1",
 		}, nil
 	})
-	exec.on("changelog_review", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"has_breaking": false, "breaking_changes": []interface{}{},
-			"alignment_steps": []interface{}{}, "references": []interface{}{},
+	exec.on("changelog_review", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
+			"has_breaking": false, "breaking_changes": []any{},
+			"alignment_steps": []any{}, "references": []any{},
 			"confidence":                 "high",
-			"peer_dependency_changes":    []interface{}{},
-			"engine_requirement_changes": []interface{}{},
+			"peer_dependency_changes":    []any{},
+			"engine_requirement_changes": []any{},
 			"_session_id":                "sess-changelog-1",
 		}, nil
 	})
-	exec.on("upgrade", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "output": "upgraded"}, nil
+	exec.on("upgrade", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "output": "upgraded"}, nil
 	})
-	exec.on("install", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "output": "installed"}, nil
+	exec.on("install", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "output": "installed"}, nil
 	})
-	exec.on("align_code", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "summary": "aligned", "_session_id": "sess-align-1"}, nil
+	exec.on("align_code", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "summary": "aligned", "_session_id": "sess-align-1"}, nil
 	})
 
 	// validate_upgrade: first call → unstable (drives fix_loop);
 	//                   second call → stable (commit lands).
 	validateCalls := 0
-	exec.on("validate_upgrade", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("validate_upgrade", func(_ map[string]any) (map[string]any, error) {
 		validateCalls++
 		if validateCalls == 1 {
-			return map[string]interface{}{
+			return map[string]any{
 				"stable":       false,
-				"blockers":     []interface{}{"typecheck failed in src/App.tsx"},
+				"blockers":     []any{"typecheck failed in src/App.tsx"},
 				"fix_plan":     "update prop types for React 18.3 changes",
 				"confidence":   "high",
-				"commands_run": []interface{}{"yarn typecheck"},
+				"commands_run": []any{"yarn typecheck"},
 			}, nil
 		}
-		return map[string]interface{}{
+		return map[string]any{
 			"stable":       true,
-			"blockers":     []interface{}{},
+			"blockers":     []any{},
 			"fix_plan":     "",
 			"confidence":   "high",
-			"commands_run": []interface{}{"yarn typecheck", "yarn test"},
+			"commands_run": []any{"yarn typecheck", "yarn test"},
 		}, nil
 	})
-	exec.on("fix_after_upgrade", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("fix_after_upgrade", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"applied":       true,
 			"summary":       "fixed prop types in src/App.tsx",
-			"files_changed": []interface{}{"src/App.tsx"},
+			"files_changed": []any{"src/App.tsx"},
 			"_session_id":   "sess-fix-after-1",
 		}, nil
 	})
-	exec.on("prepare_commit", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("prepare_commit", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"type": "chore", "scope": "deps", "subject": "react 18.2.0 → 18.3.0",
 			"full_message": "chore(deps): react 18.2.0 → 18.3.0",
-			"files":        []interface{}{"package.json", "yarn.lock", "src/App.tsx"},
+			"files":        []any{"package.json", "yarn.lock", "src/App.tsx"},
 			"committed":    false,
 		}, nil
 	})
-	exec.on("commit_changes", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("commit_changes", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"success": true, "output": "committed", "sha": "abc1234",
 		}, nil
 	})
-	exec.on("write_audit_md", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "output": "amended", "was_batch": false}, nil
+	exec.on("write_audit_md", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "output": "amended", "was_batch": false}, nil
 	})
-	exec.on("p2_campaign", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
+	exec.on("p2_campaign", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{
 			"review_clean": true, "commits_this_pass": 1, "issues_remaining": "",
 			"needs_human": false, "human_note": "", "summary": "reviewed the series",
 			"_tokens": 5,
 		}, nil
 	})
-	exec.on("p2_verify_build", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
+	exec.on("p2_verify_build", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"prepared": true, "summary": "verify.sh written", "_tokens": 1}, nil
 	})
-	exec.on("p2_verify_run", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
+	exec.on("p2_verify_run", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"passed": true, "skipped": false, "exit_code": 0, "log_tail": "", "_tokens": 1}, nil
 	})
-	exec.on("emit_sbom", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"success": true, "path": "docs/renovacy/sbom.json", "count": 1}, nil
+	exec.on("emit_sbom", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"success": true, "path": "docs/renovacy/sbom.json", "count": 1}, nil
 	})
 
 	s := tmpStore(t)

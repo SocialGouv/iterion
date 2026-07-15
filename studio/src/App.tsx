@@ -3,6 +3,7 @@ import { Route, Switch, useLocation } from "wouter";
 
 import AppShell from "@/components/shared/AppShell";
 import BootLoading from "@/components/shared/BootLoading";
+import ServerUnreachable from "@/components/shared/ServerUnreachable";
 
 // Routes are React.lazy'd so each view ships its own chunk and the
 // initial download covers only the shell + AuthGate. The eager imports
@@ -13,6 +14,9 @@ const WhatsNextView = lazy(() => import("@/components/WhatsNext/WhatsNextView"))
 const EditorTabsView = lazy(() => import("@/components/Editor/EditorTabsView"));
 const LaunchView = lazy(() => import("@/components/Runs/LaunchView"));
 const RunsTabsView = lazy(() => import("@/components/Runs/RunsTabsView"));
+const BotsView = lazy(() => import("@/views/Bots"));
+const BotHomeView = lazy(() => import("@/views/Bots/BotHome"));
+const BotBuilderView = lazy(() => import("@/views/Bots/BotBuilder"));
 const BoardView = lazy(() => import("@/views/Board"));
 const LabelsView = lazy(() => import("@/views/Board/Labels"));
 const FieldsView = lazy(() => import("@/views/Board/Fields"));
@@ -26,10 +30,10 @@ const SkillsView = lazy(() => import("@/views/Skills"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
-const Settings = lazy(() => import("@/views/Settings"));
+const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
 const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginModal"));
-const SettingsPage = lazy(() => import("@/views/settings/SettingsPage"));
+const SettingsPage = lazy(() => import("@/views/account/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
 const OrgPage = lazy(() => import("@/views/orgs/OrgPage"));
@@ -106,7 +110,7 @@ function ScopedPaneReauth() {
 // session so the AuthGate consults the URL when it sees the
 // "anonymous" state and dispatches to the matching public view.
 function AuthGate() {
-  const { status, signOut, isRestricted } = useAuth();
+  const { status, signOut, isRestricted, retryConnection } = useAuth();
   const [location] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
 
@@ -118,11 +122,12 @@ function AuthGate() {
   }, [signOut]);
 
   if (status === "loading") {
-    return (
-      <div className="h-screen flex items-center justify-center bg-surface-0 text-fg-muted">
-        Loading…
-      </div>
-    );
+    return <BootLoading />;
+  }
+  // Backend down ≠ signed out: show the reconnect screen, never the
+  // sign-in form (a local no-auth operator has no credentials to give).
+  if (status === "unreachable") {
+    return <ServerUnreachable onRetry={retryConnection} />;
   }
   if (status === "anonymous") {
     // A workspace pane (iframe) can't run its own auth — the desktop owns the
@@ -132,13 +137,7 @@ function AuthGate() {
       return <ScopedPaneReauth />;
     }
     return (
-      <Suspense
-        fallback={
-          <div className="h-screen flex items-center justify-center bg-surface-0 text-fg-muted">
-            Loading…
-          </div>
-        }
-      >
+      <Suspense fallback={<BootLoading />}>
         <Switch>
           <Route path="/auth/password/change" component={ForcedPasswordChange} />
           <Route path="/auth/forgot-password" component={ForgotPassword} />
@@ -346,6 +345,22 @@ function AuthedApp() {
               <RunsTabsView />
             </ErrorBoundary>
           </Route>
+          {/* Order matters: the literal /bots/new must win over /bots/:name. */}
+          <Route path="/bots/new">
+            <ErrorBoundary area="Bot builder view">
+              <BotBuilderView />
+            </ErrorBoundary>
+          </Route>
+          <Route path="/bots/:name">
+            <ErrorBoundary area="Bot home view">
+              <BotHomeView />
+            </ErrorBoundary>
+          </Route>
+          <Route path="/bots">
+            <ErrorBoundary area="Bots view">
+              <BotsView />
+            </ErrorBoundary>
+          </Route>
           <Route path="/account" component={SettingsPage} />
           <Route path="/orgs/:id" component={OrgPage} />
           <Route path="/teams/:id" component={TeamPage} />
@@ -440,7 +455,7 @@ function AuthedApp() {
       {/* Settings + ProjectSwitcher are also lazy and need their own
           Suspense boundary because they unmount/remount on open/close. */}
       <Suspense fallback={null}>
-        <Settings
+        <SettingsDialog
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
           tab={settingsTab}

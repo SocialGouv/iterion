@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -18,7 +19,7 @@ import (
 // CreateRun inserts a new run document with status=queued. Cloud
 // runs always start queued; the runner pod transitions them to
 // running on pickup (plan §F T-31).
-func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]interface{}) (*store.Run, error) {
+func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs map[string]any) (*store.Run, error) {
 	now := time.Now().UTC()
 	r := &store.Run{
 		FormatVersion:  store.RunFormatVersion,
@@ -51,7 +52,7 @@ func (s *Store) CreateRun(ctx context.Context, id, workflowName string, inputs m
 // schema version (plan §D.5).
 func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	r, err := mongoutil.FindOne[store.Run](ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}),
-		fmt.Errorf("store/mongo: run %s not found", id),
+		fmt.Errorf("store/mongo: run %s not found: %w", id, store.ErrRunNotFound),
 		fmt.Sprintf("store/mongo: load run %s", id))
 	if err != nil {
 		return nil, err
@@ -82,6 +83,20 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	if err := s.blob.DeleteRunAttachments(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete attachments %s: %w", id, err)
 	}
+	if err := s.blob.DeleteRunToolBlobs(ctx, id); err != nil {
+		return fmt.Errorf("store/mongo: blob delete tool blobs %s: %w", id, err)
+	}
+	if err := s.blob.DeleteRunFiles(ctx, id); err != nil {
+		return fmt.Errorf("store/mongo: blob delete run files %s: %w", id, err)
+	}
+	// Also sweep the runner-local scratch dir if this store owns one (a
+	// runner-side store; server-side stores leave runFilesScratch empty
+	// so the join is harmless but the tree never exists).
+	if s.runFilesScratch != "" {
+		if err := os.RemoveAll(s.runFilesScratchDir(id)); err != nil {
+			return fmt.Errorf("store/mongo: remove run files scratch %s: %w", id, err)
+		}
+	}
 	children := []struct {
 		name string
 		coll *mongo.Collection
@@ -90,6 +105,12 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 		{"run_seq", s.runSeq},
 		{"interactions", s.interactions},
 		{"user_messages", s.userMessages},
+		{"run_gitmeta", s.runGitMeta},
+		{"run_plans", s.runPlans},
+		{"run_notes", s.runNotes},
+		{"run_turns", s.runTurns},
+		{"run_logs", s.runLogs},
+		{"run_tags", s.runTags},
 	}
 	for _, c := range children {
 		if _, err := c.coll.DeleteMany(ctx, withTenantFilter(ctx, bson.M{"run_id": id})); err != nil {
@@ -195,6 +216,58 @@ func (s *Store) ListRuns(ctx context.Context) ([]string, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store/mongo: list runs: %w", err)
+	}
+	defer cur.Close(ctx)
+
+	ids := []string{}
+	for cur.Next(ctx) {
+		var doc struct {
+			ID string `bson:"_id"`
+		}
+		if err := cur.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("store/mongo: decode run id: %w", err)
+		}
+		ids = append(ids, doc.ID)
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("store/mongo: cursor: %w", err)
+	}
+	return ids, nil
+}
+
+// ListRunsBySourceIssue returns the ids of runs whose source.issue_id
+// equals issueID (the card←run reverse edge), sorted by created_at
+// ascending. Indexed by (tenant_id, source.issue_id, created_at); tenant
+// scope is enforced when ctx carries a tenant_id. Refs #125 (T4b).
+func (s *Store) ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error) {
+	if issueID == "" {
+		return []string{}, nil
+	}
+	return s.listRunIDsBy(ctx, bson.M{"source.issue_id": issueID}, "list runs by source issue")
+}
+
+// ListChildRuns returns the ids of runs whose parent_run_id equals
+// parentRunID (a run's shard/child subtree), sorted by created_at
+// ascending. Indexed by (tenant_id, parent_run_id, created_at); tenant
+// scope is enforced when ctx carries a tenant_id. Refs #125 (T4b).
+func (s *Store) ListChildRuns(ctx context.Context, parentRunID string) ([]string, error) {
+	if parentRunID == "" {
+		return []string{}, nil
+	}
+	return s.listRunIDsBy(ctx, bson.M{"parent_run_id": parentRunID}, "list child runs")
+}
+
+// listRunIDsBy runs an indexed Find over the runs collection with the
+// given (tenant-wrapped) filter, projecting _id and sorting by
+// created_at ascending. Shared by the reverse-tree queries.
+func (s *Store) listRunIDsBy(ctx context.Context, filter bson.M, what string) ([]string, error) {
+	cur, err := s.runs.Find(
+		ctx,
+		withTenantFilter(ctx, filter),
+		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store/mongo: %s: %w", what, err)
 	}
 	defer cur.Close(ctx)
 

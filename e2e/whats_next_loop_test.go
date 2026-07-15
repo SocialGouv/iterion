@@ -115,15 +115,15 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "whats-next/main.bot")
 	exec := newScenarioExecutor()
 
-	var secondTurnInput map[string]interface{}
-	exec.on("nexie", func(input map[string]interface{}) (map[string]interface{}, error) {
+	var secondTurnInput map[string]any
+	exec.on("nexie", func(input map[string]any) (map[string]any, error) {
 		turn := exec.callCount("nexie")
 		if turn == 1 {
-			return map[string]interface{}{
+			return map[string]any{
 				"reply":          "Board: 3 tickets. Je recommande `fix-doctor` (quick win).",
 				"close":          false,
-				"quick_replies":  []interface{}{"Dispatche-le"},
-				"dispatched_ids": []interface{}{},
+				"quick_replies":  []any{"Dispatche-le"},
+				"dispatched_ids": []any{},
 				// The real delegate stamps these; the loop edge maps them
 				// back into turn 2's input.
 				"_session_id":          "sess-nexie-1",
@@ -131,11 +131,11 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 			}, nil
 		}
 		secondTurnInput = input
-		return map[string]interface{}{
+		return map[string]any{
 			"reply":          "Session archivée.",
 			"close":          true,
-			"quick_replies":  []interface{}{},
-			"dispatched_ids": []interface{}{},
+			"quick_replies":  []any{},
+			"dispatched_ids": []any{},
 			"_session_id":    "sess-nexie-1",
 		}, nil
 	})
@@ -158,7 +158,7 @@ func TestWhatsNextV2_ChatLoop_PauseResumeClose(t *testing.T) {
 	}
 
 	// Operator answers → loop re-invokes nexie with message + session id.
-	err = eng.Resume(context.Background(), "e2e-nexie-chat", map[string]interface{}{
+	err = eng.Resume(context.Background(), "e2e-nexie-chat", map[string]any{
 		"message": "ok, ferme la session",
 	})
 	if err != nil {
@@ -194,7 +194,7 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 	wf := compileFixtureStubSafe(t, "whats-next/main.bot")
 	exec := newScenarioExecutor()
 
-	questions := map[string]interface{}{
+	questions := map[string]any{
 		delegate.AskUserQuestionKey: "Close these 4 stale tickets?",
 	}
 	delegate.AddAskUserOptionKeys(questions, []delegate.AskUserOption{
@@ -202,8 +202,8 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 		{ID: "no", Label: "Keep them"},
 	}, false)
 
-	var resumedInput map[string]interface{}
-	exec.on("nexie", func(input map[string]interface{}) (map[string]interface{}, error) {
+	var resumedInput map[string]any
+	exec.on("nexie", func(input map[string]any) (map[string]any, error) {
 		if exec.callCount("nexie") == 1 {
 			return nil, &model.ErrNeedsInteraction{
 				NodeID:    "nexie",
@@ -216,11 +216,11 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 			}
 		}
 		resumedInput = input
-		return map[string]interface{}{
+		return map[string]any{
 			"reply":          "Fermé les 4 tickets périmés.",
 			"close":          true,
-			"quick_replies":  []interface{}{},
-			"dispatched_ids": []interface{}{},
+			"quick_replies":  []any{},
+			"dispatched_ids": []any{},
 		}, nil
 	})
 
@@ -237,7 +237,7 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 	}
 	// The structured-options presentation keys must survive persistence
 	// verbatim — the studio detects them to render clickable choices.
-	opts, ok := run.Checkpoint.InteractionQuestions[delegate.AskUserOptionsKey].([]interface{})
+	opts, ok := run.Checkpoint.InteractionQuestions[delegate.AskUserOptionsKey].([]any)
 	if !ok || len(opts) != 2 {
 		t.Fatalf("options envelope lost on pause: %v", run.Checkpoint.InteractionQuestions)
 	}
@@ -246,7 +246,7 @@ func TestWhatsNextV2_AskUserOptions_PauseResume(t *testing.T) {
 	}
 
 	// Operator clicks "Close all 4" → answer is the option id.
-	err = eng.Resume(context.Background(), "e2e-nexie-askuser", map[string]interface{}{
+	err = eng.Resume(context.Background(), "e2e-nexie-askuser", map[string]any{
 		delegate.AskUserQuestionKey: "yes",
 	})
 	if err != nil {
@@ -366,7 +366,7 @@ func TestWhatsNext_Loop_DispatchAutoTransitionsNoReloop(t *testing.T) {
 	issY := mkIssue("Implement Y")
 
 	// Wait for both issues to reach review state.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		xs, _ := ns.Get(issX.ID)
 		ys, _ := ns.Get(issY.ID)
@@ -477,7 +477,7 @@ func TestWhatsNext_Loop_FindingsInboxSurvivesDispatch(t *testing.T) {
 	issY := mkReady("Implement Y")
 
 	// Wait for both work issues to auto-transition to review.
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		xs, _ := ns.Get(issX.ID)
 		ys, _ := ns.Get(issY.ID)

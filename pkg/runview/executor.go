@@ -141,6 +141,26 @@ func declaredSecretNames(wf *ir.Workflow) []string {
 	return names
 }
 
+// requiredSecretNames returns the declared secret names that MUST resolve to a
+// non-empty value for the run to proceed: non-`optional` and with no inline
+// literal `value:` (a literal is materialised at exec, never resolved from the
+// store). These feed the launch-time required-secret gate — mirroring the cloud
+// publisher's requiredSecretNamesForWorkflow so a required secret that resolves
+// to nothing fails identically on either launch path. Nil-safe.
+func requiredSecretNames(wf *ir.Workflow) []string {
+	if wf == nil || len(wf.Secrets) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(wf.Secrets))
+	for name, s := range wf.Secrets {
+		if s == nil || s.Optional || strings.TrimSpace(s.Value) != "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
 func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.Workflow == nil {
 		return nil, fmt.Errorf("runview: workflow is required")
@@ -170,9 +190,22 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	if spec.LocalSecrets != nil && spec.LocalSealer != nil {
 		if _, already := secrets.CredentialsFromContext(ctx); !already {
 			names := declaredSecretNames(spec.Workflow)
-			creds, err := secrets.ResolveLocalCredentials(ctx, spec.LocalSecrets, spec.LocalSealer, names)
+			creds, err := secrets.ResolveLocalCredentials(ctx, spec.LocalSecrets, spec.LocalSealer, names, spec.Logger)
 			if err != nil {
 				return nil, fmt.Errorf("runview: resolve local secrets: %w", err)
+			}
+			// Required-secret launch gate (parity with the cloud publisher): a
+			// non-`optional` declared secret with no inline value MUST resolve to
+			// a non-empty value. If it resolves to nothing, fail the launch here
+			// rather than running the bot with the credential unset.
+			haveValue := make(map[string]bool, len(creds.Generic))
+			for name, v := range creds.Generic {
+				if v != "" {
+					haveValue[name] = true
+				}
+			}
+			if missing := secrets.UnresolvedRequired(requiredSecretNames(spec.Workflow), haveValue); len(missing) > 0 {
+				return nil, secrets.RequiredSecretsError(missing, "this workspace")
 			}
 			ctx = secrets.WithCredentials(ctx, creds)
 		}
@@ -280,7 +313,10 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		opts = append(opts, model.WithMCPManager(mcpManager))
 	}
 
-	clawDefaults := tool.ClawDefaults{Workspace: workspace}
+	clawDefaults := tool.ClawDefaults{
+		Workspace:        workspace,
+		IncludeWebSearch: tool.ResolveWebSearchEnabled(),
+	}
 	if planDir != "" {
 		clawDefaults.PlanMode = &clawtools.PlanModeState{Active: &planActive, Dir: planDir}
 	}
@@ -316,6 +352,11 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		if err != nil {
 			spec.Logger.Warn("runview: open native board store at %s: %v — board MCP tools disabled", dispatcherStoreDir, err)
 		} else {
+			// The store owns an fsnotify watcher goroutine + inotify fd; hand
+			// it to the executor so Close() releases it. Otherwise every
+			// BuildExecutor call leaks one — acute under parallel subbot
+			// fan-out (one executor per child).
+			opts = append(opts, model.WithExtraClosers(ns))
 			boardCfg := &tool.BoardConfig{
 				Store: ns,
 				Capabilities: []string{
@@ -357,7 +398,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	executor := model.NewClawExecutor(reg, spec.Workflow, opts...)
 
 	if len(spec.Vars) > 0 {
-		v := make(map[string]interface{}, len(spec.Vars))
+		v := make(map[string]any, len(spec.Vars))
 		for k, val := range spec.Vars {
 			v[k] = val
 		}
@@ -411,7 +452,12 @@ func buildMCPManager(wf *ir.Workflow, storeDir string, logger *iterlog.Logger) (
 			Args:      expandedArgs,
 			URL:       os.ExpandEnv(server.URL),
 			Headers:   server.Headers,
-			Auth:      mcp.FromIRAuth(server.Auth),
+			// Env is already fully resolved at catalog-build time (plugin
+			// {{config.*}} placeholders expanded by loadPluginServers) — copy
+			// verbatim, no os.ExpandEnv (a secret value may legitimately
+			// contain a `$`).
+			Env:  server.Env,
+			Auth: mcp.FromIRAuth(server.Auth),
 		}
 		if server.Auth != nil {
 			hasAuth = true

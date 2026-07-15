@@ -17,14 +17,17 @@ export function BoardFilters({
   searchQuery,
   labelFilter,
   assigneeFilter,
+  botFilter,
   allLabels,
   allAssignees,
+  allBots,
   total,
   filtered,
   onSearchChange,
   onLabelToggle,
   onClearLabels,
   onAssigneeChange,
+  onBotChange,
   sortMode,
   onSortChange,
   groupMode,
@@ -36,14 +39,17 @@ export function BoardFilters({
   searchQuery: string;
   labelFilter: Set<string>;
   assigneeFilter: string;
+  botFilter: string;
   allLabels: string[];
   allAssignees: string[];
+  allBots: string[];
   total: number;
   filtered: number;
   onSearchChange: (v: string) => void;
   onLabelToggle: (l: string) => void;
   onClearLabels: () => void;
   onAssigneeChange: (v: string) => void;
+  onBotChange: (v: string) => void;
   sortMode: SortMode;
   onSortChange: (m: SortMode) => void;
   groupMode: GroupMode;
@@ -55,7 +61,10 @@ export function BoardFilters({
   onReset: () => void;
 }) {
   const filtersActive =
-    searchQuery.trim() !== "" || labelFilter.size > 0 || assigneeFilter !== "";
+    searchQuery.trim() !== "" ||
+    labelFilter.size > 0 ||
+    assigneeFilter !== "" ||
+    botFilter !== "";
   return (
     <div className="px-3 py-2 border-b border-border-default bg-surface-1 flex flex-wrap items-center gap-2 text-xs">
       <div className="min-w-[200px] flex-shrink-0">
@@ -78,6 +87,22 @@ export function BoardFilters({
             {allAssignees.map((a) => (
               <option key={a} value={a}>
                 @{a}
+              </option>
+            ))}
+          </Select>
+        </div>
+      )}
+      {allBots.length > 0 && (
+        <div className="w-auto">
+          <Select
+            value={botFilter}
+            onChange={(e) => onBotChange(e.target.value)}
+            aria-label="Filter by bot"
+          >
+            <option value="">All bots</option>
+            {allBots.map((b) => (
+              <option key={b} value={b}>
+                {b}
               </option>
             ))}
           </Select>

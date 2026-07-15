@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { defaultConventionalMessage } from "./CommitsPanel";
+import {
+  defaultConventionalMessage,
+  mergeBlockedReason,
+} from "./CommitsPanel";
 import type { RunHeader } from "@/api/runs";
 
 function header(partial: Partial<RunHeader>): RunHeader {
@@ -63,5 +66,19 @@ describe("defaultConventionalMessage", () => {
     expect(defaultConventionalMessage(run)).toBe(
       "docs: Update README and onboarding docs",
     );
+  });
+});
+
+describe("mergeBlockedReason", () => {
+  it("blocks when the commit list is unavailable, even with a nonzero count", () => {
+    expect(mergeBlockedReason(3, true)).toMatch(/commit list couldn't be read/);
+  });
+
+  it("blocks when there are zero commits", () => {
+    expect(mergeBlockedReason(0, false)).toMatch(/nothing to merge/i);
+  });
+
+  it("allows merging with commits and a healthy list", () => {
+    expect(mergeBlockedReason(2, false)).toBeNull();
   });
 });

@@ -149,7 +149,7 @@ type SandboxParams struct {
 	FriendlyName  string
 	RepoRoot      string
 	WorkspacePath string
-	SecretVars    map[string]interface{}
+	SecretVars    map[string]any
 	CLIOverride   string // "" means no override
 	GlobalDefault string // "" means no global default
 	DefaultImage  string // "" lets the runtime pick the built-in default
@@ -161,7 +161,7 @@ type SandboxParams struct {
 	HostStateOverride string
 	HostStateDefault  string
 
-	EmitEvent func(store.EventType, map[string]interface{}) error
+	EmitEvent func(store.EventType, map[string]any) error
 	Logger    *iterlog.Logger
 	// AttachmentsHostDir, when non-empty, is bind-mounted read-only
 	// into the container at AttachmentsContainerPath so {{attachments.X}}
@@ -221,6 +221,23 @@ type SandboxParams struct {
 	BoardMCPHandler http.Handler
 }
 
+// workflowMaxDurationSeconds returns the workflow budget's max_duration
+// as whole seconds (0 = unbounded / unset / unparseable). Drivers that
+// can self-terminate a leaked sandbox (kubernetes → activeDeadlineSeconds)
+// consume it via [sandbox.RunInfo.MaxDurationSeconds]. Mirrors the
+// env-expansion the shared budget applies so a `${VAR:-2h}` form resolves
+// identically.
+func workflowMaxDurationSeconds(wf *ir.Workflow) int64 {
+	if wf == nil || wf.Budget == nil || wf.Budget.MaxDuration == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(ir.ExpandEnvWithDefault(wf.Budget.MaxDuration))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return int64(d.Seconds())
+}
+
 // resolveAndStartSandbox produces an [activeSandbox] for the workflow's
 // active sandbox spec, or (nil, nil) when no sandbox is requested.
 //
@@ -250,7 +267,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// sandbox_build_failed / sandbox_started and the operator has no
 	// signal that the run is unobservable.
 	rawEmit := p.EmitEvent
-	emitEvent := func(ev store.EventType, payload map[string]interface{}) error {
+	emitEvent := func(ev store.EventType, payload map[string]any) error {
 		err := rawEmit(ev, payload)
 		if err != nil && logger != nil {
 			logger.Warn("runtime: emit %s event for run %s: %v", ev, p.RunID, err)
@@ -324,7 +341,7 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	// so operators can audit it and opt out by setting `backend:` on
 	// the affected nodes.
 	if p.Workflow != nil && containsClawNode(p.Workflow) {
-		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]interface{}{
+		_ = emitEvent(store.EventSandboxClawRoutedViaRunner, map[string]any{
 			"reason":         "claw nodes will run via iterion-claw-runner inside the container",
 			"limitations_v1": "no MCP servers, no mid-tool-loop ask_user — see docs/sandbox.md",
 		})
@@ -347,11 +364,12 @@ func resolveAndStartSandbox(ctx context.Context, p SandboxParams) (*activeSandbo
 	}
 
 	info := sandbox.RunInfo{
-		RunID:         p.RunID,
-		FriendlyName:  p.FriendlyName,
-		WorkspacePath: p.WorkspacePath,
-		ProxyEndpoint: proxyEndpoint,
-		ProxyCACert:   proxyCACert,
+		RunID:              p.RunID,
+		FriendlyName:       p.FriendlyName,
+		WorkspacePath:      p.WorkspacePath,
+		ProxyEndpoint:      proxyEndpoint,
+		ProxyCACert:        proxyCACert,
+		MaxDurationSeconds: workflowMaxDurationSeconds(p.Workflow),
 	}
 
 	prepared, err := driver.Prepare(ctx, *spec)
@@ -457,7 +475,7 @@ func startNetworkProxy(
 	driver sandbox.Driver,
 	runID string,
 	rewriter netproxy.SecretRewriter,
-	emitEvent func(store.EventType, map[string]interface{}) error,
+	emitEvent func(store.EventType, map[string]any) error,
 	logger *iterlog.Logger,
 ) (*netproxy.Proxy, string, []byte, error) {
 	mode, rules := ResolveNetworkPolicy(spec)
@@ -500,7 +518,7 @@ func startNetworkProxy(
 		Policy: policy,
 		Token:  token,
 		OnBlocked: func(host, reason string) {
-			_ = emitEvent(store.EventNetworkBlocked, map[string]interface{}{
+			_ = emitEvent(store.EventNetworkBlocked, map[string]any{
 				"host":   host,
 				"reason": reason,
 				"run_id": runID,
@@ -740,6 +758,19 @@ func pickMode(wf *ir.Workflow, cli, global string) (string, string) {
 		return global, "ITERION_SANDBOX_DEFAULT"
 	}
 	return "", "default (no sandbox)"
+}
+
+// WorkflowSandboxActive reports whether a run of wf under the given
+// CLI-strength override + global default resolves to an ACTIVE sandbox —
+// the same pickMode precedence the engine itself applies. Callers that
+// deliver run inputs differently for sandboxed vs in-pod execution (e.g.
+// the cloud runner's file-secret materialization) must consult THIS,
+// never wf.Sandbox directly: under ITERION_SANDBOX_OVERRIDE=none a
+// workflow's static sandbox block is present but neutralized, and the
+// run executes directly in the pod.
+func WorkflowSandboxActive(wf *ir.Workflow, cliOverride, globalDefault string) bool {
+	mode, _ := pickMode(wf, cliOverride, globalDefault)
+	return sandbox.Mode(mode).IsActive()
 }
 
 // workflowHostState returns the workflow-scope host_state declaration
@@ -1126,9 +1157,9 @@ type boardMCPSetter interface {
 // A non-nil error means the sandbox was requested but couldn't start.
 // The caller is responsible for failing the run; the returned cleanup
 // is a noop in that case but safe to defer.
-func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string, worktreeGitDir string, inputs map[string]interface{}) (func(), error) {
+func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string, worktreeGitDir string, inputs map[string]any) (func(), error) {
 	noopCleanup := func() {}
-	emitForSandbox := func(t store.EventType, data map[string]interface{}) error {
+	emitForSandbox := func(t store.EventType, data map[string]any) error {
 		return e.emit(ctx, runID, t, "", data)
 	}
 	var attachHost string
@@ -1136,9 +1167,12 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 		attachHost = filepath.Join(e.store.Root(), "runs", runID, "attachments")
 	}
 	// Pre-create the per-run artifact-files directory so the bind mount
-	// has a source to point at. RunFilesStore is filesystem-only — when
-	// the store doesn't satisfy it (cloud / Mongo), runFilesHost stays
-	// empty and resolveAndStartSandbox skips the mount silently. Errors
+	// has a source to point at. Both the filesystem store and the Mongo
+	// (cloud) store satisfy RunFilesStore — the filesystem store's dir IS
+	// the read source, while the Mongo store returns a runner-local
+	// scratch dir it later bridges to S3 (see pkg/store/mongo/runfiles.go).
+	// A store that doesn't satisfy the interface leaves runFilesHost empty
+	// and resolveAndStartSandbox skips the mount silently. Errors
 	// from EnsureRunFilesDir are logged but not fatal: the worst case is
 	// in-sandbox tools see ITERION_ARTIFACT_FILES_DIR unset and either
 	// fall back to a tmpdir or skip writing — far less disruptive than
@@ -1157,7 +1191,7 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if e.bundle != nil {
 		bundleHost = e.bundle.Dir
 	}
-	var secretVars map[string]interface{}
+	var secretVars map[string]any
 	if workflowHasFileSecrets(e.workflow) {
 		secretVars = e.resolveVars(inputs)
 	}
@@ -1191,6 +1225,13 @@ func (e *Engine) startSandbox(ctx context.Context, runID string, repoRoot string
 	if active != nil && active.run != nil {
 		if s, ok := e.executor.(sandboxSetter); ok {
 			s.SetSandbox(active.run)
+		}
+		// Hand the live Run to the host observer (cloud runner) so it can
+		// start mid-run file-secret refresh against the driver's
+		// SecretFileRefresher. Must not block — the runner spawns its
+		// refresh loop on a goroutine keyed to the run ctx.
+		if e.sandboxRunObserver != nil {
+			e.sandboxRunObserver(active.run)
 		}
 		// C082: hand the per-run board MCP endpoint to the executor so it
 		// can wire Task.BoardHTTPEndpoint/BoardRunToken for sandboxed

@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
+	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
 	"github.com/SocialGouv/iterion/pkg/webhooks/gitlab"
@@ -91,6 +93,68 @@ func TestGitLabWebhook_HappyPath(t *testing.T) {
 	// delivery recorded as launched
 	if list, _ := s.webhookDeliveries.ListByWebhook(context.Background(), "t1", "w1", 10); len(list) != 1 || list[0].Status != webhooks.StatusLaunched || list[0].RunID != "run-123" {
 		t.Fatalf("delivery: %+v", list)
+	}
+}
+
+// glDraftMR is a draft MR opened — must be filtered (never auto-launched)
+// even though the action is "open".
+const glDraftMR = `{
+  "object_kind": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {"iid": 9, "action": "open", "source_branch": "wip/x", "target_branch": "main",
+    "title": "Draft: Add X", "description": "wip", "url": "https://gitlab.com/acme/widgets/-/merge_requests/9",
+    "draft": true, "work_in_progress": true, "last_commit": {"id": "sha9"}}
+}`
+
+// glReadyMR is the draft→ready transition (update clearing changes.draft):
+// GitLab's stand-in for a ready-for-review action — this MUST launch.
+const glReadyMR = `{
+  "object_kind": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {"iid": 9, "action": "update", "source_branch": "wip/x", "target_branch": "main",
+    "title": "Add X", "description": "ready", "url": "https://gitlab.com/acme/widgets/-/merge_requests/9",
+    "draft": false, "work_in_progress": false, "last_commit": {"id": "sha9"}},
+  "changes": {"draft": {"previous": true, "current": false}}
+}`
+
+func TestGitLabWebhook_DraftMRNotAutoLaunched(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-x", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(glConfig()), glDraftMR, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK {
+		t.Fatalf("draft MR should be a filtered 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("draft MR status=%q want filtered", resp["status"])
+	}
+	if calls != 0 {
+		t.Fatalf("draft MR must NOT launch a bot (calls=%d)", calls)
+	}
+}
+
+func TestGitLabWebhook_ReadyForReviewLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	var gotBot string
+	s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotBot = botID
+		return "run-ready", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(glConfig()), glReadyMR, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("ready MR should launch (202), got %d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 1 || gotBot != "review-pr" {
+		t.Fatalf("ready MR must launch review bot once: calls=%d bot=%q", calls, gotBot)
 	}
 }
 
@@ -514,5 +578,71 @@ func TestGitLabWebhook_FiltersAndRejects(t *testing.T) {
 
 	if calls != 0 {
 		t.Fatalf("no launch should have happened, got %d", calls)
+	}
+}
+
+// raceMissDeliveries simulates the concurrent-duplicate race: the
+// step-1 replay check misses for the first `forcedMisses` lookups (as
+// it does when two deliveries of the same event are in flight at
+// once), then delegates to the real store.
+type raceMissDeliveries struct {
+	webhooks.DeliveryStore
+	forcedMisses int
+}
+
+func (r *raceMissDeliveries) GetByIdempotencyKey(ctx context.Context, key string) (webhooks.Delivery, error) {
+	if r.forcedMisses > 0 {
+		r.forcedMisses--
+		return webhooks.Delivery{}, webhooks.ErrNotFound
+	}
+	return r.DeliveryStore.GetByIdempotencyKey(ctx, key)
+}
+
+// TestGitLabWebhook_ConcurrentDuplicateReleasesQuota reproduces the
+// double-metering race: two deliveries of the same event both pass the
+// step-1 replay check and both charge the monthly run counter, but only
+// the idempotency-insert winner launches. The loser must release its
+// quota unit — the counter ends at exactly one metered run.
+func TestGitLabWebhook_ConcurrentDuplicateReleasesQuota(t *testing.T) {
+	s := newWebhookTestServer(t)
+	s.webhookDeliveries = &raceMissDeliveries{DeliveryStore: webhooks.NewMemoryDeliveryStore(), forcedMisses: 2}
+	counter := orgusage.NewMemoryCounter()
+	s.orgUsage = counter
+	now := time.Now().UTC()
+	if _, err := s.authStore().CreateOrg(context.Background(), identity.Org{ID: "o1", Name: "o1", Slug: "o1", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.authStore().CreateTeam(context.Background(), identity.Team{ID: "t1", OrgID: "o1", Name: "t1", Slug: "t1", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		return "run-1", nil
+	}
+	cfg := glConfig()
+
+	w1 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w1, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w1.Code != http.StatusAccepted {
+		t.Fatalf("first delivery: code=%d body=%s", w1.Code, w1.Body.String())
+	}
+	// Second delivery of the SAME event; its replay check misses (forced),
+	// so it meters, then loses the idempotency insert.
+	w2 := httptest.NewRecorder()
+	s.handleGitLabWebhook(w2, glReq(gitlabCtx(cfg), glOpenMR, gitlab.EventHeaderMergeRequest))
+	if w2.Code != http.StatusOK {
+		t.Fatalf("duplicate delivery: code=%d body=%s", w2.Code, w2.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w2.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusDuplicate || resp["run_id"] != "run-1" {
+		t.Fatalf("duplicate resp: %v", resp)
+	}
+	// The org's monthly counter must reflect ONE launch, not two.
+	u, err := counter.Usage(context.Background(), "o1", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Runs != 1 {
+		t.Fatalf("org monthly runs = %d, want 1 (loser must release its quota unit)", u.Runs)
 	}
 }

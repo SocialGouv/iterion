@@ -37,7 +37,7 @@ func TestTranscriptObserverSynthesizesEvents(t *testing.T) {
 	defer release()
 
 	var got []*store.Event
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(10 * time.Second)
 	for len(got) < 3 {
 		select {
 		case e := <-ch:

@@ -208,7 +208,9 @@
    * (override in the [data-theme="light"] block). Dark values live here in
    * @theme (applied at :root for the default/dark theme). Consume via the
    * generated utilities: bg-scrim-modal | bg-scrim-popover | bg-scrim-soft. */
-  --color-scrim-modal: rgb(0 0 0 / 0.55);
+  /* Dark surfaces are already near-black, so the modal scrim needs to be
+   * heavier than light theme's to visibly recede the page behind. */
+  --color-scrim-modal: rgb(0 0 0 / 0.68);
   --color-scrim-popover: rgb(0 0 0 / 0.4);
   --color-scrim-soft: rgb(0 0 0 / 0.2);
 }
@@ -524,6 +526,23 @@ select:focus:not(:focus-visible) {
 
 .animate-fade-in-opacity {
   animation: fade-in-opacity var(--motion-base) var(--motion-ease);
+}
+
+/* Right-edge sheet entrance (ui/Drawer). Pinned to the viewport edge, so
+ * translateX never extends past it — no scrollbar flash. */
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right var(--motion-base) var(--motion-ease);
 }
 
 /* Hide the persistent bounding box around selected nodes (shown after rectangle selection completes) */

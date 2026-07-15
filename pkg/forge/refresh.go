@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TokenRefresher renews one connection's admin credential. Per-provider
@@ -96,6 +97,21 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	if r == nil {
 		return nil // not refreshable (PAT) — skip
 	}
+	// A degraded connection failed on a PERMANENT config mismatch (see
+	// markDegraded). Re-minting it every tick can never self-heal — it just
+	// re-hits the forge and re-spams the warning — so skip it until an
+	// operator reconnect flips it back to StatusActive.
+	if conn.Status == StatusDegraded {
+		return nil
+	}
+	// RunOnce iterates connections across every tenant, so its ctx carries no
+	// tenant. The managed-secret store is tenant-scoped (Get/Update require the
+	// tenant on the ctx); without this the token mint succeeds and the
+	// connection updates (its store keys on _id only), but rewriteManagedSecret
+	// silently fails to persist the fresh token — leaving bot runs reading a
+	// stale, expired installation token (HTTP 401). Scope the ctx to THIS
+	// connection's tenant for all its store writes.
+	ctx = store.WithTenant(ctx, conn.TenantID)
 	cur, err := openConnectionSecret(w.Sealer, conn.ID, conn.SealedPayload)
 	if err != nil {
 		return err
@@ -104,6 +120,14 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
 			return w.markRevoked(ctx, conn)
+		}
+		// A permission mismatch is a PERMANENT config error (the install was
+		// approved with fewer permissions than iterion now requests). Mark the
+		// connection degraded — recording the actionable reason ONCE — so the
+		// worker stops re-minting it, instead of returning the error (which the
+		// server would Warn-log every 10-minute tick).
+		if errors.Is(err, ErrPermissionsNotGranted) {
+			return w.markDegraded(ctx, conn, err)
 		}
 		return err
 	}
@@ -126,6 +150,7 @@ func (w *RefreshWorker) refreshOne(ctx context.Context, conn Connection) error {
 	now := w.now()
 	conn.SealedPayload = sealed
 	conn.Status = StatusActive
+	conn.StatusReason = "" // a successful mint clears any prior degrade/reauth reason
 	conn.LastRefreshedAt = &now
 	if !out.ExpiresAt.IsZero() {
 		exp := out.ExpiresAt
@@ -168,6 +193,21 @@ func (w *RefreshWorker) rewriteManagedSecret(ctx context.Context, secretID, toke
 func (w *RefreshWorker) markRevoked(ctx context.Context, conn Connection) error {
 	now := w.now()
 	conn.Status = StatusNeedsReauth
+	conn.UpdatedAt = now
+	return w.Connections.Update(ctx, conn)
+}
+
+// markDegraded flips a connection to StatusDegraded on a permanent config
+// mismatch (ErrPermissionsNotGranted), stamping GitHub's own message plus the
+// remediation onto StatusReason. refreshOne then skips the connection on every
+// later tick, so the reason surfaces once rather than re-logging each cycle. A
+// reconnect/re-provision resets Status to StatusActive, clearing it.
+func (w *RefreshWorker) markDegraded(ctx context.Context, conn Connection, cause error) error {
+	now := w.now()
+	conn.Status = StatusDegraded
+	conn.StatusReason = fmt.Sprintf(
+		"%v — an org admin must re-approve the installation with the updated permissions, or the connection should be removed",
+		cause)
 	conn.UpdatedAt = now
 	return w.Connections.Update(ctx, conn)
 }

@@ -21,6 +21,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/SocialGouv/iterion/bots"
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -49,6 +51,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/attachments/{name}/url", s.handlePresignAttachment)
 	s.mux.HandleFunc("GET /api/server/info", s.handleServerInfo)
 	s.mux.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
+	s.mux.HandleFunc("GET /api/runs/{id}/children", s.handleListRunChildren)
 	s.mux.HandleFunc("GET /api/runs/{id}/events", s.handleGetRunEvents)
 	s.mux.HandleFunc("GET /api/runs/{id}/workflow", s.handleGetRunWorkflow)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts", s.handleListAllArtifacts)
@@ -56,6 +59,10 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/artifacts/{node}/{version}", s.handleGetArtifact)
 	s.mux.HandleFunc("GET /api/runs/{id}/tools/{toolUseID}/{kind}", s.handleGetToolBlob)
 	s.mux.HandleFunc("GET /api/runs/{id}/plans", s.handleListPlans)
+	s.mux.HandleFunc("GET /api/runs/{id}/notes", s.handleListNotes)
+	s.mux.HandleFunc("POST /api/runs/{id}/notes", s.handleAddNote)
+	s.mux.HandleFunc("GET /api/runs/{id}/tags", s.handleGetRunTags)
+	s.mux.HandleFunc("PUT /api/runs/{id}/tags", s.handleSetRunTags)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files", s.handleListArtifactFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files/{path...}", s.handleGetArtifactFile)
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
@@ -154,6 +161,12 @@ type launchRunRequest struct {
 	// glob, or kind keyword) and wins over the node's DSL backend:/model:.
 	// See runview.ModelOverrideEntry.
 	ModelOverrides []runview.ModelOverrideEntry `json:"model_overrides,omitempty"`
+	// Budget carries run-level budget-cap overrides for the workflow's
+	// `budget:` block — the HTTP twin of the CLI --max-* flags. Non-zero
+	// fields win over the DSL/recipe budget; zero fields inherit. A bad
+	// max_duration is a 400. Not supported for queued cloud runs yet
+	// (rejected with a 400, never silently dropped).
+	Budget *launchBudgetSpec `json:"budget,omitempty"`
 	// Cap. 3 sharding fields. When ParentRunID is non-empty, this
 	// launch is a shard child of an existing parent run; the server
 	// propagates the fields to the persisted Run document and (in
@@ -181,6 +194,36 @@ type launchRunRequest struct {
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
 }
 
+// launchBudgetSpec is the wire shape of launchRunRequest.Budget. Field
+// types mirror ir.Budget (MaxDuration stays a Go duration string, parsed
+// via time.ParseDuration at admission).
+type launchBudgetSpec struct {
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
+	MaxTokens           int     `json:"max_tokens,omitempty"`
+	MaxDuration         string  `json:"max_duration,omitempty"`
+	MaxIterations       int     `json:"max_iterations,omitempty"`
+	MaxParallelBranches int     `json:"max_parallel_branches,omitempty"`
+}
+
+// toOverrides projects the wire shape onto the engine's override type,
+// returning nil when every field is zero (no override requested).
+func (b *launchBudgetSpec) toOverrides() *ir.BudgetOverrides {
+	if b == nil {
+		return nil
+	}
+	o := ir.BudgetOverrides{
+		MaxCostUSD:          b.MaxCostUSD,
+		MaxTokens:           b.MaxTokens,
+		MaxDuration:         b.MaxDuration,
+		MaxIterations:       b.MaxIterations,
+		MaxParallelBranches: b.MaxParallelBranches,
+	}
+	if o.IsZero() {
+		return nil
+	}
+	return &o
+}
+
 type launchRunResponse struct {
 	RunID  string `json:"run_id"`
 	Status string `json:"status"`
@@ -191,10 +234,10 @@ type resumeRunRequest struct {
 	// Source carries the workflow contents inline. Used in cloud mode
 	// when the resumer (studio) wants to push a possibly-modified
 	// workflow without depending on the server pod's filesystem.
-	Source  string                 `json:"source,omitempty"`
-	Answers map[string]interface{} `json:"answers,omitempty"`
-	Force   bool                   `json:"force,omitempty"`
-	Timeout string                 `json:"timeout,omitempty"`
+	Source  string         `json:"source,omitempty"`
+	Answers map[string]any `json:"answers,omitempty"`
+	Force   bool           `json:"force,omitempty"`
+	Timeout string         `json:"timeout,omitempty"`
 }
 
 type cancelRunResponse struct {
@@ -209,6 +252,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	filter := runview.ListFilter{
 		Workflow: q.Get("workflow"),
 		Repo:     q.Get("repo"),
+		Bundle:   q.Get("bot"),
 		Node:     q.Get("node"),
 	}
 	if status := q.Get("status"); status != "" {
@@ -235,7 +279,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list runs: %v", err)
 		return
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"runs": out})
+	s.writeJSONFor(w, r, map[string]any{"runs": out})
 }
 
 func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
@@ -244,7 +288,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Launch admission: suspend → concurrency → rate → cost cap →
 	// monthly run quota (which also meters). Super-admin bypasses.
-	if d := s.gateLaunch(r.Context()); d != nil {
+	if _, d := s.gateLaunch(r.Context()); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
@@ -298,6 +342,18 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid timeout")
 		return
 	}
+	budget := req.Budget.toOverrides()
+	if budget != nil {
+		// Validate max_duration at admission so the caller gets a 400
+		// with the offending value instead of a launch-time failure.
+		// Cloud mode forwards the overrides on queue.RunMessage.Budget;
+		// the runner applies them under its multitenant ceiling.
+		if err := budget.Validate(); err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "invalid budget: %v", err)
+			span.SetStatus(codes.Error, "invalid budget")
+			return
+		}
+	}
 
 	// Detach lifecycle from the HTTP request context so a client
 	// disconnect doesn't abort the run, but keep the trace span so
@@ -332,6 +388,7 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		Permission:         req.Permission,
 		ReviewMode:         req.ReviewMode,
 		ModelOverrides:     req.ModelOverrides,
+		Budget:             budget,
 		ParentRunID:        req.ParentRunID,
 		ShardIndex:         req.ShardIndex,
 		ShardCount:         req.ShardCount,
@@ -444,6 +501,36 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSONFor(w, r, snap)
 }
 
+// handleListRunChildren returns the shard/child subtree of a run — every
+// run whose ParentRunID equals {id}, ordered by created_at ascending
+// (T4b, refs #125). The tree UI that renders these under a run is a
+// separate follow-up; this endpoint is the data source.
+func (s *Server) handleListRunChildren(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
+		return
+	}
+	if xs, _, err := s.resolveCrossStore(r); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+		return
+	} else if xs != nil {
+		children, err := runview.BuildChildrenFromStore(r.Context(), xs, id)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "list run children from cross-store: %v", err)
+			return
+		}
+		s.writeJSONFor(w, r, map[string]any{"runs": children})
+		return
+	}
+	children, err := s.runs.ListChildren(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusInternalServerError, "list run children: %v", err)
+		return
+	}
+	s.writeJSONFor(w, r, map[string]any{"runs": children})
+}
+
 func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -465,7 +552,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 		if events == nil {
 			events = []*store.Event{}
 		}
-		s.writeJSONFor(w, r, map[string]interface{}{"events": events})
+		s.writeJSONFor(w, r, map[string]any{"events": events})
 		return
 	}
 	events, err := s.runs.LoadEventsCtx(r.Context(), id, from, to)
@@ -476,7 +563,7 @@ func (s *Server) handleGetRunEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []*store.Event{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"events": events})
+	s.writeJSONFor(w, r, map[string]any{"events": events})
 }
 
 func (s *Server) handleGetRunWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -530,7 +617,7 @@ func (s *Server) handleListAllArtifacts(w http.ResponseWriter, r *http.Request) 
 	if out == nil {
 		out = []runview.RunArtifactSummary{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"artifacts": out})
+	s.writeJSONFor(w, r, map[string]any{"artifacts": out})
 }
 
 func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -556,7 +643,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	if out == nil {
 		out = []runview.ArtifactSummary{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"artifacts": out})
+	s.writeJSONFor(w, r, map[string]any{"artifacts": out})
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
@@ -597,7 +684,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 // Errors:
 //   - 400 missing id/toolUseID/kind or kind not in {input,output}
 //   - 404 blob not found (call never produced one — i.e. fit inline)
-//   - 503 store doesn't satisfy ToolBlobStore (cloud mode today)
+//   - 503 store doesn't satisfy ToolBlobStore (both filesystem and Mongo do)
 func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	toolUseID := r.PathValue("toolUseID")
@@ -660,10 +747,11 @@ func (s *Server) handleGetToolBlob(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListPlans returns the chronological plan snapshots captured for a
-// run — the agents' TodoWrite/todo_write living TODO lists, persisted to
-// runs/<id>/plans/. Ascending seq order (chronological). Returns an empty
-// array (not 404) for a valid run that captured no plans — older runs
-// predate the feature, and cloud stores don't back it — so the studio's
+// run — the agents' TodoWrite/todo_write living TODO lists (filesystem
+// runs/<id>/plans/ or the Mongo run_plans collection in cloud mode).
+// Ascending seq order (chronological). Returns an empty array (not 404)
+// for a valid run that captured no plans — e.g. an agent that never
+// called TodoWrite, or a run predating the feature — so the studio's
 // Plans panel renders a clean empty state. Tenant-scoped like the other
 // run sub-resource handlers (load the run under the caller's context
 // first so the mongo tenant filter rejects cross-tenant requests).
@@ -685,7 +773,7 @@ func (s *Server) handleListPlans(w http.ResponseWriter, r *http.Request) {
 	if plans == nil {
 		plans = []store.PlanSnapshot{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"plans": plans})
+	s.writeJSONFor(w, r, map[string]any{"plans": plans})
 }
 
 // handleListArtifactFiles returns the manifest of tool-produced files
@@ -700,6 +788,14 @@ func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request)
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id")
 		return
 	}
+	// Tenant gate: the S3 read path keys on runID only (no tenant prefix),
+	// so cross-tenant isolation MUST be enforced here by loading the run
+	// under the caller's tenant ctx first — mirrors handleGetToolBlob.
+	// Without it a caller could list another team's artifact files.
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		return
+	}
 	files, err := s.runs.ListArtifactFilesCtx(r.Context(), id)
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "list artifact files: %v", err)
@@ -708,7 +804,7 @@ func (s *Server) handleListArtifactFiles(w http.ResponseWriter, r *http.Request)
 	if files == nil {
 		files = []store.RunFileInfo{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"files": files})
+	s.writeJSONFor(w, r, map[string]any{"files": files})
 }
 
 // handleGetArtifactFile streams one tool-produced file by relative
@@ -722,6 +818,11 @@ func (s *Server) handleGetArtifactFile(w http.ResponseWriter, r *http.Request) {
 	relPath := r.PathValue("path")
 	if id == "" || relPath == "" {
 		s.httpErrorFor(w, r, http.StatusBadRequest, "missing run id or file path")
+		return
+	}
+	// Tenant gate before the tenant-blind S3 read (see handleListArtifactFiles).
+	if _, err := s.runs.LoadRunCtx(r.Context(), id); err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "artifact file not found")
 		return
 	}
 	rc, info, err := s.runs.OpenArtifactFileCtx(r.Context(), id, relPath)
@@ -957,11 +1058,11 @@ func (s *Server) handlePauseRun(w http.ResponseWriter, r *http.Request) {
 // stays decoupled from the service struct (we can deprecate fields
 // without breaking ForkSpec consumers).
 type forkRunRequest struct {
-	NodeID     string                 `json:"node_id"`
-	TurnIndex  int                    `json:"turn_index,omitempty"`
-	RewindCode bool                   `json:"rewind_code,omitempty"`
-	ForkName   string                 `json:"fork_name,omitempty"`
-	NewInputs  map[string]interface{} `json:"new_inputs,omitempty"`
+	NodeID     string         `json:"node_id"`
+	TurnIndex  int            `json:"turn_index,omitempty"`
+	RewindCode bool           `json:"rewind_code,omitempty"`
+	ForkName   string         `json:"fork_name,omitempty"`
+	NewInputs  map[string]any `json:"new_inputs,omitempty"`
 }
 
 func (s *Server) handleForkRun(w http.ResponseWriter, r *http.Request) {
@@ -1051,7 +1152,7 @@ func (s *Server) handleListQueuedMessages(w http.ResponseWriter, r *http.Request
 	if msgs == nil {
 		msgs = []store.QueuedUserMessage{}
 	}
-	s.writeJSONFor(w, r, map[string]interface{}{"messages": msgs})
+	s.writeJSONFor(w, r, map[string]any{"messages": msgs})
 }
 
 type queueMessageRequest struct {
@@ -1138,7 +1239,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	// monthly quota — a resume consumes run budget like a launch), else
 	// a capped org keeps executing in-flight work via operator/auto
 	// resume. Super-admin bypasses.
-	if d := s.gateLaunch(r.Context()); d != nil {
+	if _, d := s.gateLaunch(r.Context()); d != nil {
 		s.writeLaunchDenial(w, r, d)
 		return
 	}
@@ -1156,16 +1257,20 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid request")
 		return
 	}
+	// Load the run once: its persisted FilePath is the fallback when the body
+	// omits one, and its TenantID is required to scope the resume's Mongo
+	// queries (see below). LoadRunCtx looks a run up by id without a tenant
+	// filter, so it is safe to call before the tenant is on the context.
+	runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
+		span.SetStatus(codes.Error, "run not found")
+		return
+	}
 	// Resolve file path: explicit body wins, falling back to the
 	// FilePath persisted at launch.
 	filePath := req.FilePath
 	if filePath == "" {
-		runMeta, err := s.runs.LoadRunCtx(r.Context(), id)
-		if err != nil {
-			s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
-			span.SetStatus(codes.Error, "run not found")
-			return
-		}
 		filePath = runMeta.FilePath
 		if filePath == "" && req.Source == "" {
 			s.httpErrorFor(w, r, http.StatusBadRequest, "file_path or source is required (run has no persisted FilePath)")
@@ -1202,6 +1307,22 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.WithoutCancel(spanCtx)
+	// Scope the resume to a tenant: Resume runs tenant-scoped store queries
+	// (cloud Mongo) that panic without a tenant on the context — the HTTP
+	// middleware authenticates the /api/runs route but does NOT stamp the store
+	// tenant marker (unlike the /api/teams/{id}/… routes). Prefer the run's own
+	// TenantID (the authoritative owner — a super-admin may resume a run in any
+	// team); fall back to the caller's active team when the run has none, which
+	// happens for a run orphaned before it ever executed (the runner stamps
+	// TenantID at execution start, so a never-run queued/failed row can be
+	// empty). Empty on a local single-tenant store → WithTenant no-ops.
+	tenantID := runMeta.TenantID
+	if tenantID == "" {
+		if id, ok := auth.FromContext(r.Context()); ok {
+			tenantID = id.TeamID
+		}
+	}
+	ctx = store.WithTenant(ctx, tenantID)
 	res, err := s.runs.Resume(ctx, runview.ResumeSpec{
 		RunID:    id,
 		FilePath: absPath,

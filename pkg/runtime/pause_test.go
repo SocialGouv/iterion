@@ -35,12 +35,12 @@ func TestPauseSignalProducesPausedOperatorStatus(t *testing.T) {
 
 	pauseCh := make(chan struct{})
 	exec := newStubExecutor()
-	exec.on("step1", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step1", func(_ map[string]any) (map[string]any, error) {
 		// Pause AFTER step1 succeeds and writes its checkpoint, so we
 		// see the engine pause at step2's pre-execute boundary with
 		// the checkpoint NodeID set to step2.
 		close(pauseCh)
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	s := tmpStore(t)
@@ -142,14 +142,14 @@ func TestPauseResumeRoundTrip(t *testing.T) {
 	pauseCh := make(chan struct{})
 	exec := newStubExecutor()
 	step1Count, step2Count := 0, 0
-	exec.on("step1", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step1", func(_ map[string]any) (map[string]any, error) {
 		step1Count++
 		close(pauseCh) // fires once; subsequent runs use a different exec/eng
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
-	exec.on("step2", func(_ map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("step2", func(_ map[string]any) (map[string]any, error) {
 		step2Count++
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 	s := tmpStore(t)
 	eng := New(wf, s, exec, WithPauseSignal(pauseCh))

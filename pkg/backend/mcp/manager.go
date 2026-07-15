@@ -27,7 +27,7 @@ type ToolInfo struct {
 // ToolCallResult is the MCP result returned by tools/call.
 type ToolCallResult struct {
 	Content           []ToolContent `json:"content,omitempty"`
-	StructuredContent interface{}   `json:"structuredContent,omitempty"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
 	IsError           bool          `json:"isError,omitempty"`
 }
 
@@ -62,7 +62,7 @@ type clientInfo struct {
 type protocolClient interface {
 	Ping(ctx context.Context) error
 	ListTools(ctx context.Context) ([]ToolInfo, error)
-	CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*ToolCallResult, error)
+	CallTool(ctx context.Context, toolName string, args map[string]any) (*ToolCallResult, error)
 	ListResources(ctx context.Context) ([]ResourceInfo, error)
 	ReadResource(ctx context.Context, uri string) (ResourceContent, error)
 	Close() error
@@ -228,6 +228,16 @@ func (m *Manager) HealthCheck(ctx context.Context, servers []string) error {
 // exit; the per-call timeout caps the leak window.
 const mcpHealthPingTimeout = 5 * time.Second
 
+// mcpDiscoveryEmptyRetries / mcpDiscoveryEmptyBackoff bound the retry-on-empty
+// in ensureServer: an MCP server can answer tools/list before it finishes
+// registering its tools right after initialize. Up to 6 extra re-lists spaced
+// 500ms apart (~3s) covers that startup race without stalling a genuinely
+// tool-less server for long.
+const (
+	mcpDiscoveryEmptyRetries = 6
+	mcpDiscoveryEmptyBackoff = 500 * time.Millisecond
+)
+
 // ServerNames returns the names of every server known to the catalog
 // (whether or not it has been connected yet). The order is stable but
 // unspecified.
@@ -347,11 +357,31 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 	if toolsList == nil {
 		didListTools = true
 		var listErr error
-		toolsList, listErr = client.ListTools(ctx)
-		if listErr != nil {
-			return false, fmt.Errorf("mcp: discover tools for %q: %w", server, listErr)
+		// Retry-on-empty. A server (notably fastmcp-based ones like
+		// firecrawl-mcp) can answer tools/list right after `initialize` but
+		// BEFORE it finishes registering its tools, returning [] on the first
+		// call. Re-list a few times with a short backoff on the SAME session so
+		// a startup race doesn't leave the server tool-less for the whole run.
+		// A genuinely tool-less server just costs a few cheap re-lists.
+		for attempt := 0; ; attempt++ {
+			toolsList, listErr = client.ListTools(ctx)
+			if listErr != nil {
+				return false, fmt.Errorf("mcp: discover tools for %q: %w", server, listErr)
+			}
+			if len(toolsList) > 0 || attempt >= mcpDiscoveryEmptyRetries {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(mcpDiscoveryEmptyBackoff):
+			}
 		}
-		if m.cache != nil {
+		// NEVER cache an empty tool list — a startup race (above) shouldn't
+		// poison the persistent disk cache and starve EVERY later run on the pod
+		// (fast empty cache hit → 0 tools forever). Only a non-empty discovery
+		// is durable enough to cache.
+		if m.cache != nil && len(toolsList) > 0 {
 			_ = m.cache.Set(server, state.cfg, toolsList) // best-effort
 		}
 	}
@@ -368,7 +398,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 		// different signature won't have its args overwritten.
 		toolHasLimitParam := schemaDeclaresLimit(info.InputSchema)
 		if err := registry.RegisterMCP(serverName, toolName, info.Description, info.InputSchema, func(callCtx context.Context, input json.RawMessage) (string, error) {
-			var args map[string]interface{}
+			var args map[string]any
 			if len(input) > 0 && string(input) != "null" {
 				if err := json.Unmarshal(input, &args); err != nil {
 					return "", fmt.Errorf("mcp: decode input for %s.%s: %w", serverName, toolName, err)
@@ -386,7 +416,7 @@ func (m *Manager) ensureServer(ctx context.Context, registry *tool.Registry, ser
 			if fmtErr != nil && toolName == "Read" && toolHasLimitParam &&
 				strings.Contains(fmtErr.Error(), "exceeds maximum allowed tokens") {
 				if args == nil {
-					args = make(map[string]interface{})
+					args = make(map[string]any)
 				}
 				// Shrink to 300 and retry when no caller-supplied limit exists
 				// OR the current limit is still above 300. The DefaultSanitization
@@ -445,7 +475,7 @@ func (m *Manager) smokeTestWorkspace(ctx context.Context, client protocolClient,
 	switch {
 	case toolNames["Bash"]:
 		// Claude Code exposes Bash — run a quick "ls" in workDir.
-		args := map[string]interface{}{
+		args := map[string]any{
 			"command":     "ls >/dev/null 2>&1 && pwd",
 			"description": "smoke test: verify workspace access",
 		}
@@ -459,7 +489,7 @@ func (m *Manager) smokeTestWorkspace(ctx context.Context, client protocolClient,
 		}
 	case toolNames["codex"]:
 		// Codex exposes a single "codex" tool — ask it to list files.
-		args := map[string]interface{}{
+		args := map[string]any{
 			"prompt":          "Run: ls -la . && pwd",
 			"cwd":             workDir,
 			"sandbox":         "read-only",
@@ -618,7 +648,7 @@ func stringsFromContent(content []ToolContent) string {
 	return strings.Join(out, "\n")
 }
 
-func (m *Manager) applySanitizationRules(toolName string, args map[string]interface{}, workDir string) {
+func (m *Manager) applySanitizationRules(toolName string, args map[string]any, workDir string) {
 	if args == nil {
 		return
 	}

@@ -22,7 +22,7 @@ func TestFork_HappyPath(t *testing.T) {
 		t.Fatalf("seed store: %v", err)
 	}
 	parentID := "run-fork-parent"
-	if _, err := st.CreateRun(context.Background(), parentID, "wf", map[string]interface{}{"x": 1}); err != nil {
+	if _, err := st.CreateRun(context.Background(), parentID, "wf", map[string]any{"x": 1}); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
 	// Park the parent with a checkpoint shaped like the engine would
@@ -33,10 +33,10 @@ func TestFork_HappyPath(t *testing.T) {
 	}
 	parent.Checkpoint = &store.Checkpoint{
 		NodeID: "step2",
-		Outputs: map[string]map[string]interface{}{
+		Outputs: map[string]map[string]any{
 			"step1": {"value": "alpha"},
 		},
-		Vars: map[string]interface{}{"workflow_var": "v"},
+		Vars: map[string]any{"workflow_var": "v"},
 	}
 	parent.WorkflowHash = "hash-abc"
 	parent.Status = store.RunStatusCancelled
@@ -127,7 +127,7 @@ func TestFork_LatestTurn(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	parent, _ := st.LoadRun(context.Background(), parentID)
-	parent.Checkpoint = &store.Checkpoint{NodeID: "nodeA", Outputs: map[string]map[string]interface{}{}}
+	parent.Checkpoint = &store.Checkpoint{NodeID: "nodeA", Outputs: map[string]map[string]any{}}
 	parent.Status = store.RunStatusCancelled
 	if err := st.SaveRun(context.Background(), parent); err != nil {
 		t.Fatalf("save: %v", err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -137,7 +138,7 @@ func (c *compiler) workflowInteractionDefault() InteractionMode {
 	return InteractionNone
 }
 
-func (c *compiler) errorf(code DiagCode, format string, args ...interface{}) {
+func (c *compiler) errorf(code DiagCode, format string, args ...any) {
 	c.diags = append(c.diags, Diagnostic{
 		Code:     code,
 		Severity: SeverityError,
@@ -145,7 +146,7 @@ func (c *compiler) errorf(code DiagCode, format string, args ...interface{}) {
 	})
 }
 
-func (c *compiler) warnf(code DiagCode, format string, args ...interface{}) {
+func (c *compiler) warnf(code DiagCode, format string, args ...any) {
 	c.diags = append(c.diags, Diagnostic{
 		Code:     code,
 		Severity: SeverityWarning,
@@ -156,7 +157,7 @@ func (c *compiler) warnf(code DiagCode, format string, args ...interface{}) {
 // errorfAt is a variant of errorf that attaches authoritative attribution
 // (nodeID and/or edgeID) so downstream tooling can render the diagnostic on
 // the precise node or edge instead of guessing from the message text.
-func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string, args ...interface{}) {
+func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
 	c.diags = append(c.diags, Diagnostic{
 		Code:     code,
 		Severity: SeverityError,
@@ -167,7 +168,7 @@ func (c *compiler) errorfAt(code DiagCode, nodeID, edgeID string, format string,
 }
 
 // warnfAt is the warning counterpart to errorfAt.
-func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, args ...interface{}) {
+func (c *compiler) warnfAt(code DiagCode, nodeID, edgeID string, format string, args ...any) {
 	c.diags = append(c.diags, Diagnostic{
 		Code:     code,
 		Severity: SeverityWarning,
@@ -718,13 +719,23 @@ func (c *compiler) compilePrompts() {
 			continue
 		}
 		seen[p.Name] = true
-		refs, err := ParseRefs(p.Body)
+		// Expand {{include "..."}} markers once, at compile time, before
+		// ParseRefs sees the body — the injected file content becomes part
+		// of the resolved prompt (auditable, no runtime file reads).
+		// Resolve relative to the .bot source directory, carried on the
+		// declaration's span (like MergeBundlePrompts reads bundle files
+		// relative to the bundle dir).
+		body, incErrs := expandPromptIncludes(p.Body, filepath.Dir(p.Span.Start.File))
+		for _, e := range incErrs {
+			c.errorf(DiagBadPromptInclude, "prompt %q: %v", p.Name, e)
+		}
+		refs, err := ParseRefs(body)
 		if err != nil {
 			c.errorf(DiagBadTemplateRef, "prompt %q: %v", p.Name, err)
 		}
 		c.prompts[p.Name] = &Prompt{
 			Name:         p.Name,
-			Body:         p.Body,
+			Body:         body,
 			TemplateRefs: refs,
 		}
 	}
@@ -776,11 +787,15 @@ func (c *compiler) buildLLMNodeShared(kind, name string, d *ast.LLMDecl) (LLMFie
 			Model:           model,
 			Backend:         d.Backend,
 			Provider:        d.Provider,
+			Command:         d.Command,
 			SystemPrompt:    d.System,
 			UserPrompt:      d.User,
 			MaxTokens:       d.MaxTokens,
 			ReasoningEffort: d.ReasoningEffort,
+			Timeout:         d.Timeout,
 			Readonly:        d.Readonly,
+			FullAccess:      d.FullAccess,
+			Images:          d.Images,
 		}, SchemaFields{
 			InputSchema:  d.Input,
 			OutputSchema: d.Output,
@@ -1244,6 +1259,7 @@ func (c *compiler) compileSubbots() {
 			With:         c.compileWithMappings(sd.Name, sd.With),
 			OutputSchema: sd.Output,
 			Needs:        sd.Needs,
+			Isolated:     sd.Isolated,
 		}
 	}
 }
@@ -1542,7 +1558,7 @@ func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) ma
 			c.errorf(DiagDuplicatePreset, "preset %q declared more than once", entry.Name)
 			continue
 		}
-		values := make(map[string]interface{}, len(entry.Values))
+		values := make(map[string]any, len(entry.Values))
 		for _, pv := range entry.Values {
 			v, ok := vars[pv.Key]
 			if !ok {
@@ -1569,7 +1585,7 @@ func (c *compiler) compilePresets(pb *ast.PresetsBlock, vars map[string]*Var) ma
 // matching the declared VarType. Returns (value, true) on success and
 // (nil, false) on a type mismatch. VarJSON and VarStringArray accept
 // string literals (the runtime parses them on demand).
-func coercePresetLiteral(lit *ast.Literal, vt VarType) (interface{}, bool) {
+func coercePresetLiteral(lit *ast.Literal, vt VarType) (any, bool) {
 	if lit == nil {
 		return nil, false
 	}
@@ -1600,7 +1616,7 @@ func coercePresetLiteral(lit *ast.Literal, vt VarType) (interface{}, bool) {
 // literalNaturalValue returns the Go value a literal carries by its own kind,
 // ignoring any declared target type. Used as the fallback when a value fails
 // type coercion (C109) so downstream references still resolve to something.
-func literalNaturalValue(lit *ast.Literal) interface{} {
+func literalNaturalValue(lit *ast.Literal) any {
 	if lit == nil {
 		return nil
 	}

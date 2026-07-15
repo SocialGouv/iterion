@@ -26,26 +26,26 @@ func TestValidateOutput_StringArrayEnumEnforced(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		val     interface{}
+		val     any
 		wantErr string
 	}{
 		{
 			name:    "rejects out-of-enum",
-			val:     []interface{}{"red", "purple"},
+			val:     []any{"red", "purple"},
 			wantErr: "not in enum",
 		},
 		{
 			name: "accepts all-valid",
-			val:  []interface{}{"red", "green", "blue"},
+			val:  []any{"red", "green", "blue"},
 		},
 		{
 			name: "accepts empty array",
-			val:  []interface{}{},
+			val:  []any{},
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := ValidateOutput(map[string]interface{}{"tags": c.val}, schema)
+			err := ValidateOutput(map[string]any{"tags": c.val}, schema)
 			if c.wantErr == "" {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)

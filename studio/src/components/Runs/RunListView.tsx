@@ -315,15 +315,16 @@ export default function RunListView() {
             so the user can tell at a glance how each run was
             triggered without expanding the row. */}
         <table className="w-full text-xs hidden sm:table">
+          <caption className="sr-only">Runs</caption>
           <thead className="text-fg-subtle">
             <tr className="border-b border-border-default">
-              <th className="text-left px-4 py-2 font-medium">Run</th>
-              <th className="text-left px-4 py-2 font-medium">Workflow</th>
-              <th className="text-left px-4 py-2 font-medium">Source</th>
-              <th className="text-left px-4 py-2 font-medium">Status</th>
-              <th className="text-left px-4 py-2 font-medium">Started</th>
-              <th className="text-left px-4 py-2 font-medium">Duration</th>
-              <th className="text-left px-4 py-2 font-medium">Run ID</th>
+              <th scope="col" className="text-left px-4 py-2 font-medium">Run</th>
+              <th scope="col" className="text-left px-4 py-2 font-medium">Workflow</th>
+              <th scope="col" className="text-left px-4 py-2 font-medium">Source</th>
+              <th scope="col" className="text-left px-4 py-2 font-medium">Status</th>
+              <th scope="col" className="text-left px-4 py-2 font-medium">Started</th>
+              <th scope="col" className="text-left px-4 py-2 font-medium">Duration</th>
+              <th scope="col" className="text-left px-4 py-2 font-medium">Run ID</th>
             </tr>
           </thead>
           <tbody>

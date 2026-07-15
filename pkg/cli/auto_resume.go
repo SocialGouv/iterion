@@ -245,7 +245,7 @@ func emitAutoResume(ctx context.Context, s store.RunStore, runID string, attempt
 		Type:      store.EventRunAutoResumed,
 		RunID:     runID,
 		Timestamp: time.Now(),
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"attempt":  attempt,
 			"max":      max,
 			"code":     nonEmptyCode(code),

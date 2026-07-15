@@ -13,8 +13,13 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const variantClass: Record<ButtonVariant, string> = {
+  // Disabled primary keeps the accent fill dimmed (uniform opacity)
+  // instead of collapsing to a gray surface chip — a gated submit must
+  // still read as "the primary button, currently unavailable", not as
+  // a passive label. disabled:hover:bg-accent pins the fill because a
+  // disabled button still matches :hover in CSS.
   primary:
-    "bg-accent text-fg-onAccent hover:bg-accent-hover disabled:bg-surface-2 disabled:text-fg-subtle",
+    "bg-accent text-fg-onAccent hover:bg-accent-hover disabled:opacity-50 disabled:hover:bg-accent",
   secondary:
     "bg-surface-2 text-fg-default hover:bg-surface-3 disabled:bg-surface-1 disabled:text-fg-subtle border border-border-default",
   ghost:

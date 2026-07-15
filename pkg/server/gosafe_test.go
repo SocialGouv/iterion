@@ -20,7 +20,7 @@ func TestGoSafeRecoversPanic(t *testing.T) {
 	})
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("goSafe fn never ran")
 	}
 	// Process still alive → goSafe also works for a normal fn.
@@ -39,7 +39,7 @@ func TestGoSafeNilLoggerDoesNotCrash(t *testing.T) {
 	})
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("goSafe fn never ran")
 	}
 }

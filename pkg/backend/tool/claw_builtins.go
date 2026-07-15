@@ -499,9 +499,10 @@ type ClawDefaults struct {
 	PlanMode *clawtools.PlanModeState
 
 	// IncludeWebSearch toggles registration of the `web_search` tool.
-	// Off by default because it falls back to scraping DuckDuckGo Lite
-	// when BRAVE_API_KEY is unset, which is brittle; tests typically
-	// override the URL via env to point at a fixture.
+	// Production callers resolve it via ResolveWebSearchEnabled (env
+	// ITERION_WEB_SEARCH + configured search backends); tests set it
+	// directly. The tool self-degrades SearXNG → Brave → DuckDuckGo
+	// Lite at execute time based on env.
 	IncludeWebSearch bool
 
 	// IncludeComputerUse toggles screenshot + computer_use registration.

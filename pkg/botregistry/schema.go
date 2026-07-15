@@ -250,7 +250,7 @@ func presetSpecToWire(ps bundle.PresetSpec) *Preset {
 // presetLiteralFromYAML maps a YAML-native preset var value to the typed
 // literal wire shape (kind + typed field + raw), matching ast jsonenc so the
 // studio renders file-preset values exactly like in-source ones.
-func presetLiteralFromYAML(v interface{}) *Literal {
+func presetLiteralFromYAML(v any) *Literal {
 	switch t := v.(type) {
 	case string:
 		return &Literal{Kind: "string", StrVal: t, Raw: t}

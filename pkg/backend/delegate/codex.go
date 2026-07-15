@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	codexsdk "github.com/ethpandaops/codex-agent-sdk-go"
 
@@ -32,6 +34,13 @@ type CodexBackend struct {
 
 // Execute runs the codex CLI with the given task using the Codex Agent SDK.
 func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
+	if task.Sandbox != nil && task.Sandbox.Driver() != "noop" {
+		return Result{ExitCode: -1, BackendName: BackendCodex}, fmt.Errorf(
+			"delegate: codex cannot run inside Iterion %s sandbox with the pinned SDK; "+
+				"set sandbox: none or use claude_code/claw",
+			task.Sandbox.Driver(),
+		)
+	}
 	if task.WorkDir != "" {
 		if err := validateWorkDir(task.WorkDir, task.BaseDir); err != nil {
 			return Result{}, err
@@ -48,6 +57,12 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
 	}
+	if model := strings.TrimPrefix(task.Model, "openai/"); model != "" {
+		opts = append(opts, codexsdk.WithModel(model))
+	}
+	if task.ToolMaxSteps > 0 {
+		opts = append(opts, codexsdk.WithMaxTurns(task.ToolMaxSteps))
+	}
 	// Codex executes its built-in shell without routing tool_use through any
 	// SDK callback, so per-name allow/deny at the SDK level has no effect on
 	// the shell. Our only real lever is codex's sandbox mode. Translate the
@@ -55,18 +70,20 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	// node do its job. bypassPermissions skips user-escalation prompts so
 	// non-interactive runs don't hang; the explicit Sandbox wins over the
 	// permission-mode default via session.go:187.
-	opts = append(opts, codexsdk.WithSandbox(codexSandboxForAllowedTools(task.AllowedTools)))
+	sandboxMode := codexSandboxForTask(task)
+	opts = append(opts, codexsdk.WithSandbox(sandboxMode))
 	opts = append(opts, codexsdk.WithPermissionMode("bypassPermissions"))
 
 	if b.Command != "" {
 		opts = append(opts, codexsdk.WithCliPath(b.Command))
 	}
 
-	// Structured output: when tools are present we skip WithOutputSchema on the
-	// work pass and rely on a dedicated formatting pass (formatOutput) to
-	// guarantee schema-conforming JSON via session resume. Without tools the
-	// single-pass WithOutputSchema is enough.
-	needsTwoPass := len(task.OutputSchema) > 0 && len(task.AllowedTools) > 0
+	// Structured output always uses a dedicated formatting pass via session
+	// resume. Codex's native tools cannot currently be disabled by Iterion: even
+	// a readonly task with no declared tools may read/grep/shell. Applying the
+	// schema to the work pass would therefore combine tools + strict output in
+	// exactly the mode this split is designed to avoid.
+	needsTwoPass := codexNeedsTwoPass(task)
 	if len(task.OutputSchema) > 0 && !needsTwoPass {
 		opts = append(opts, codexsdk.WithOutputSchema(string(task.OutputSchema)))
 	}
@@ -83,45 +100,32 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	}
 
 	// Stream stderr for live observability and capture for diagnostics.
-	var stderrBuf strings.Builder
-	// Phase C+D: per-run credential injection. Order of preference:
-	//   1. Tenant-scoped OPENAI_API_KEY (BYOK) — direct API billing.
-	//   2. User OAuth-forfait — auth.json materialised in tmp by the
-	//      runner; we point CODEX_HOME at it.
-	// At most one is set so the CLI's auth source is unambiguous.
-	if creds, ok := secrets.CredentialsFromContext(ctx); ok {
-		envOverride := map[string]string{}
-		switch {
-		case creds.APIKey(secrets.ProviderOpenAI) != "":
-			envOverride["OPENAI_API_KEY"] = creds.APIKey(secrets.ProviderOpenAI)
-		case creds.OAuthDir(string(secrets.OAuthKindCodex)) != "":
-			envOverride["CODEX_HOME"] = creds.OAuthDir(string(secrets.OAuthKindCodex))
-		}
-		if len(envOverride) > 0 {
-			opts = append(opts, codexsdk.WithEnv(envOverride))
-		}
+	var stderrCapture codexStderrCapture
+	// Keep credential setup in one helper: structured-output formatting starts a
+	// second CLI process and must use the exact same per-run auth source.
+	if envOverride := codexCredEnvForCLI(ctx); len(envOverride) > 0 {
+		opts = append(opts, codexsdk.WithEnv(envOverride))
 	}
 
 	opts = append(opts, codexsdk.WithStderr(func(line string) {
-		stderrBuf.WriteString(line)
-		stderrBuf.WriteString("\n")
+		stderrCapture.AppendLine(line)
 		if line != "" {
 			b.Logger.Info("[%s#%d/codex:err] %s", task.NodeID, task.Iteration, line)
 		}
 	}))
 
-	resultMsg, totalDuration, lastThreadID, err := b.runQueryWithRetry(ctx, task, task.UserPrompt, opts)
+	resultMsg, totalDuration, lastThreadID, err := b.runQueryWithRetry(ctx, task, task.UserPrompt, task.Images, opts)
 	if err != nil {
 		return Result{
 			Duration:    totalDuration,
 			ExitCode:    -1,
-			Stderr:      stderrBuf.String(),
+			Stderr:      stderrCapture.String(),
 			BackendName: BackendCodex,
 		}, err
 	}
 
 	if resultMsg == nil {
-		diag := inspectCodexRollout(lastThreadID)
+		diag := inspectCodexRollout(ctx, lastThreadID)
 		errMsg := fmt.Sprintf("delegate: codex: no result message received after %d attempts", maxCodexRetries)
 		if diag != "" {
 			errMsg += " (" + diag + ")"
@@ -129,7 +133,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 		return Result{
 			Duration:    totalDuration,
 			ExitCode:    -1,
-			Stderr:      stderrBuf.String(),
+			Stderr:      stderrCapture.String(),
 			BackendName: BackendCodex,
 		}, fmt.Errorf("%s", errMsg)
 	}
@@ -137,7 +141,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	result := Result{
 		Duration:    totalDuration,
 		ExitCode:    0,
-		Stderr:      stderrBuf.String(),
+		Stderr:      stderrCapture.String(),
 		BackendName: BackendCodex,
 		SessionID:   resultMsg.SessionID,
 	}
@@ -152,12 +156,17 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	if resultMsg.IsError && resultMsg.Subtype != "success" {
 		return result, fmt.Errorf("delegate: codex error: subtype=%s", resultMsg.Subtype)
 	}
+	if terminalErr := codexTerminalFailure(resultMsg, result.Stderr); terminalErr != nil {
+		return result, terminalErr
+	}
 
-	// Two-pass execution: when tools + schema are both present, Pass 1 output
-	// is free-form text. Run Pass 2 with WithOutputSchema + read-only sandbox
-	// (no writes during formatting) to guarantee structured output via session
-	// resume.
-	if needsTwoPass && resultMsg.SessionID != "" {
+	// Pass 1 output is free-form text. Pass 2 uses WithOutputSchema + read-only
+	// sandbox (no writes during formatting) to guarantee structured output via
+	// session resume.
+	if needsTwoPass {
+		if resultMsg.SessionID == "" {
+			return result, fmt.Errorf("delegate: codex structured output requires a resumable session, but the work pass returned no session ID")
+		}
 		const maxFmtAttempts = 2
 		for attempt := 1; attempt <= maxFmtAttempts; attempt++ {
 			b.Logger.Debug("codex [formatting pass %d/%d] starting structured output extraction (session=%s)", attempt, maxFmtAttempts, resultMsg.SessionID)
@@ -178,9 +187,15 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			result.FormattingPassUsed = true
 
 			output, rawLen, fallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
-			if fallback && attempt < maxFmtAttempts {
-				b.Logger.Warn("codex [formatting pass %d/%d] produced fallback text, retrying", attempt, maxFmtAttempts)
+			if (len(output) == 0 || fallback) && attempt < maxFmtAttempts {
+				b.Logger.Warn("codex [formatting pass %d/%d] produced empty/fallback output, retrying", attempt, maxFmtAttempts)
 				continue
+			}
+			if len(output) == 0 {
+				return result, fmt.Errorf("delegate: codex formatting pass returned empty structured output")
+			}
+			if fallback {
+				return result, fmt.Errorf("delegate: codex formatting pass did not return schema-conforming JSON")
 			}
 			result.Output = output
 			result.RawOutputLen = rawLen
@@ -188,6 +203,7 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 			cost.Annotate(result.Output, task.Model, totalIn, totalOut)
 			return result, nil
 		}
+		return result, fmt.Errorf("delegate: codex formatting pass exhausted without a result")
 	}
 
 	output, rawLen, fallback := parseSDKOutput(resultMsg.Result, resultMsg.StructuredOutput, task.OutputSchema)
@@ -195,30 +211,8 @@ func (b *CodexBackend) Execute(ctx context.Context, task Task) (Result, error) {
 	result.RawOutputLen = rawLen
 	result.ParseFallback = fallback
 
-	// Recovery pass: if schema is set but we got empty/fallback output, retry
-	// via session resume with WithOutputSchema. Mirrors claude_code.go:219-238.
-	if (len(output) == 0 || fallback) && len(task.OutputSchema) > 0 && resultMsg.SessionID != "" {
-		b.Logger.Debug("codex: empty output with schema — attempting recovery formatting pass (session=%s)", resultMsg.SessionID)
-		fmtRM, fmtDuration, fmtErr := b.formatOutput(ctx, task, resultMsg.SessionID)
-		result.Duration += fmtDuration
-		if fmtErr == nil {
-			if fmtRM.Usage != nil {
-				totalIn += fmtRM.Usage.InputTokens
-				totalOut += fmtRM.Usage.OutputTokens
-				result.Tokens = totalIn + totalOut
-			}
-			result.FormattingPassUsed = true
-			fmtOutput, fmtRawLen, fmtFallback := parseSDKOutput(fmtRM.Result, fmtRM.StructuredOutput, task.OutputSchema)
-			if len(fmtOutput) > 0 {
-				result.Output = fmtOutput
-				result.RawOutputLen = fmtRawLen
-				result.ParseFallback = fmtFallback
-			} else {
-				b.Logger.Warn("codex: recovery formatting pass also produced empty output")
-			}
-		} else {
-			b.Logger.Warn("codex: recovery formatting pass failed: %v", fmtErr)
-		}
+	if len(result.Output) == 0 {
+		return result, fmt.Errorf("delegate: codex returned empty output")
 	}
 
 	cost.Annotate(result.Output, task.Model, totalIn, totalOut)
@@ -230,16 +224,17 @@ const maxCodexRetries = 3
 // runQueryWithRetry drives codex Query to completion, retrying up to
 // maxCodexRetries when the process exits without producing a ResultMessage
 // (a known transient failure mode).
-func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt string, opts []codexsdk.Option) (*codexsdk.ResultMessage, time.Duration, string, error) {
+func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt string, images []string, opts []codexsdk.Option) (*codexsdk.ResultMessage, time.Duration, string, error) {
 	var totalDuration time.Duration
 	var lastThreadID string
+	content := codexQueryContent(prompt, images)
 
 	for attempt := 1; attempt <= maxCodexRetries; attempt++ {
 		startTime := time.Now()
 		var resultMsg *codexsdk.ResultMessage
 		var queryErr error
 
-		for msg, err := range codexsdk.Query(ctx, codexsdk.Text(prompt), opts...) {
+		for msg, err := range codexsdk.Query(ctx, content, opts...) {
 			if err != nil {
 				queryErr = err
 				break
@@ -274,7 +269,7 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 		// No ResultMessage: inspect the rollout log to classify the failure.
 		// Overflow is not retryable — same prompt will overflow again and
 		// burn tokens. Break with a clear error so the caller fails fast.
-		diag := inspectCodexRollout(lastThreadID)
+		diag := inspectCodexRollout(ctx, lastThreadID)
 		if strings.Contains(diag, "context window") {
 			return nil, totalDuration, lastThreadID, fmt.Errorf("delegate: codex: %s", diag)
 		}
@@ -307,16 +302,46 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 	return nil, totalDuration, lastThreadID, fmt.Errorf("delegate: codex: no result after %d attempts", maxCodexRetries)
 }
 
+// codexLocalImageBlock mirrors the current app-server turn/start input shape.
+// codex-agent-sdk-go v0.0.13 rewrites its public LocalImageInput block to the
+// obsolete local_image variant while marshaling, so keep the compatibility
+// shim at our adapter boundary until the dependency is upgraded.
+type codexLocalImageBlock struct {
+	Type string `json:"type"`
+	Path string `json:"path"`
+}
+
+func (b *codexLocalImageBlock) BlockType() string { return b.Type }
+
+func codexQueryContent(prompt string, images []string) codexsdk.UserMessageContent {
+	if len(images) == 0 {
+		return codexsdk.Text(prompt)
+	}
+
+	blocks := make([]codexsdk.ContentBlock, 0, len(images)+1)
+	blocks = append(blocks, codexsdk.TextInput(prompt))
+	for _, path := range images {
+		blocks = append(blocks, &codexLocalImageBlock{
+			Type: codexsdk.BlockTypeLocalImage,
+			Path: path,
+		})
+	}
+
+	return codexsdk.Blocks(blocks...)
+}
+
 // formatOutput performs a second pass: resumes the work-pass session with
 // WithOutputSchema and a tight formatting prompt. Sandbox is forced to
 // read-only so the pass cannot mutate state while rendering the final JSON.
 func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID string) (*codexsdk.ResultMessage, time.Duration, error) {
+	var stderrCapture codexStderrCapture
 	opts := []codexsdk.Option{
 		codexsdk.WithResume(sessionID),
 		codexsdk.WithOutputSchema(string(task.OutputSchema)),
 		codexsdk.WithSandbox("read-only"),
 		codexsdk.WithPermissionMode("bypassPermissions"),
 		codexsdk.WithStderr(func(line string) {
+			stderrCapture.AppendLine(line)
 			if line != "" {
 				b.Logger.Info("[%s#%d/fmt] %s", task.NodeID, task.Iteration, line)
 			}
@@ -325,16 +350,22 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID st
 	if task.WorkDir != "" {
 		opts = append(opts, codexsdk.WithCwd(task.WorkDir))
 	}
+	if model := strings.TrimPrefix(task.Model, "openai/"); model != "" {
+		opts = append(opts, codexsdk.WithModel(model))
+	}
 	if b.Command != "" {
 		opts = append(opts, codexsdk.WithCliPath(b.Command))
 	}
 	if task.ReasoningEffort != "" {
 		opts = append(opts, codexsdk.WithEffort(mapReasoningEffort(task.ReasoningEffort)))
 	}
+	if envOverride := codexCredEnvForCLI(ctx); len(envOverride) > 0 {
+		opts = append(opts, codexsdk.WithEnv(envOverride))
+	}
 
 	prompt := "Format your complete findings as JSON matching the required output schema. Do not call any tools; just return the JSON."
 
-	rm, duration, _, err := b.runQueryWithRetry(ctx, task, prompt, opts)
+	rm, duration, _, err := b.runQueryWithRetry(ctx, task, prompt, nil, opts)
 	if err != nil {
 		return nil, duration, err
 	}
@@ -343,6 +374,9 @@ func (b *CodexBackend) formatOutput(ctx context.Context, task Task, sessionID st
 	}
 	if rm.IsError && rm.Subtype != "success" {
 		return rm, duration, fmt.Errorf("codex formatting pass error: subtype=%s", rm.Subtype)
+	}
+	if terminalErr := codexTerminalFailure(rm, stderrCapture.String()); terminalErr != nil {
+		return rm, duration, terminalErr
 	}
 	return rm, duration, nil
 }
@@ -416,16 +450,26 @@ func (b *CodexBackend) logAssistantActivity(nodeID string, iteration int, msg *c
 // of ~/.codex/sessions/.../rollout-*-<threadID>.jsonl. Used when codex exits
 // without sending turn.completed/turn.failed (e.g. context-window overflow).
 // Returns "" when nothing useful can be extracted.
-func inspectCodexRollout(threadID string) string {
+func inspectCodexRollout(ctx context.Context, threadID string) string {
 	if threadID == "" {
 		return ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	codexHome := ""
+	if env := codexCredEnvForCLI(ctx); env != nil {
+		codexHome = env["CODEX_HOME"]
+	}
+	if codexHome == "" {
+		codexHome = os.Getenv("CODEX_HOME")
+	}
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		codexHome = filepath.Join(home, ".codex")
 	}
 	// Codex writes rollouts to ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl.
-	pattern := filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+threadID+".jsonl")
+	pattern := filepath.Join(codexHome, "sessions", "*", "*", "*", "rollout-*-"+threadID+".jsonl")
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {
 		return ""
@@ -500,22 +544,236 @@ func contentBlocksText(blocks []codexsdk.ContentBlock) string {
 	return truncate(sb.String(), 500)
 }
 
+// codexStderrCapture is safe for SDK callbacks, which may run on their own
+// stderr-draining goroutine while the query loop reads the accumulated text.
+type codexStderrCapture struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (c *codexStderrCapture) AppendLine(line string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.buf.WriteString(line)
+	c.buf.WriteString("\n")
+}
+
+func (c *codexStderrCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+// codexCredEnvForCLI resolves the per-run Codex credential environment. Keep
+// this shared by the work and formatting passes: the latter resumes the first
+// pass in a new CLI process and otherwise loses tenant-scoped auth.
+func codexCredEnvForCLI(ctx context.Context) map[string]string {
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if key := creds.APIKey(secrets.ProviderOpenAI); key != "" {
+		return map[string]string{
+			"OPENAI_API_KEY": key,
+			"CODEX_API_KEY":  "",
+		}
+	}
+	if dir := creds.OAuthDir(string(secrets.OAuthKindCodex)); dir != "" {
+		// A shared runner key must not shadow the per-run ChatGPT OAuth bundle.
+		return map[string]string{
+			"CODEX_HOME":     dir,
+			"OPENAI_API_KEY": "",
+			"CODEX_API_KEY":  "",
+		}
+	}
+	return nil
+}
+
+// codexTerminalFailure recognises the SDK failure mode where Codex emits a
+// nominal ResultMessage whose text is actually a terminal CLI/API error.
+// Without this guard a single-string schema can wrap that text as a valid
+// result, or an empty result can look like a successful side-effect-only task.
+func codexTerminalFailure(rm *codexsdk.ResultMessage, stderr string) error {
+	if rm == nil {
+		return nil
+	}
+	// A schema-validated payload is authoritative. Stale stderr or a human-facing
+	// textual summary must never turn a valid structured result into a failure.
+	if hasNonEmptyStructuredOutput(rm.StructuredOutput) {
+		return nil
+	}
+	resultText := ""
+	if rm.Result != nil {
+		resultText = strings.TrimSpace(*rm.Result)
+	}
+	if isCodexBareLimitNotice(resultText) {
+		return &ErrRateLimited{Provider: BackendCodex, Detail: resultText}
+	}
+	if resultText != "" && hasCodexTerminalErrorEnvelope(resultText) {
+		lower := strings.ToLower(resultText)
+		if isCodexRateLimitError(lower) {
+			return &ErrRateLimited{Provider: BackendCodex, Detail: resultText}
+		}
+		if isCodexTerminalNetworkError(lower) {
+			return &ErrTransient{Provider: BackendCodex, Reason: "network", Detail: resultText}
+		}
+		if isCodexAuthOrAPIStatusError(lower) {
+			return fmt.Errorf("delegate: codex terminal error: %s", truncate(resultText, 500))
+		}
+	}
+	if resultText == "" && MatchesNetworkSignature(stderr) {
+		return &ErrTransient{
+			Provider: BackendCodex,
+			Reason:   "network",
+			Detail:   truncate(strings.TrimSpace(stderr), 500),
+		}
+	}
+	return nil
+}
+
+// isCodexBareLimitNotice covers short provider notices that the CLI can expose
+// as a nominal ResultMessage without an "Error:" envelope. Prefix matching plus
+// a tight length cap avoids classifying normal agent discussion of quotas or
+// capacity as a terminal failure.
+func isCodexBareLimitNotice(text string) bool {
+	if len(text) == 0 || len(text) > 300 {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, prefix := range []string{
+		"you've hit your usage limit",
+		"you’ve hit your usage limit",
+		"you have hit your usage limit",
+		"you've hit your limit",
+		"you’ve hit your limit",
+		"usage limit reached",
+		"rate limit exceeded",
+		"quota exceeded",
+		"selected model is at capacity",
+		"we're currently experiencing high demand",
+		"we’re currently experiencing high demand",
+		"we are currently experiencing high demand",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			rest := strings.TrimSpace(strings.TrimPrefix(lower, prefix))
+			first, _ := utf8.DecodeRuneInString(rest)
+			if rest == "" || strings.ContainsRune(".!:;·—-…", first) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isCodexRateLimitError(lower string) bool {
+	return strings.Contains(lower, "unexpected status 429") ||
+		strings.Contains(lower, "rate limit exceeded") ||
+		strings.Contains(lower, "you've hit your usage limit") ||
+		strings.Contains(lower, "usage limit reached") ||
+		strings.Contains(lower, "quota exceeded") ||
+		strings.Contains(lower, "insufficient_quota")
+}
+
+func isCodexTerminalNetworkError(lower string) bool {
+	for _, signature := range []string{
+		"stream disconnected", "error sending request", "unable to connect to api",
+		"connection refused", "connection reset", "connection closed before",
+		"unexpected eof", "tls handshake timeout", "temporary failure in name resolution",
+		"unexpected status 500", "unexpected status 502", "unexpected status 503",
+		"unexpected status 504",
+	} {
+		if strings.Contains(lower, signature) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCodexTerminalErrorEnvelope limits classification to the shapes emitted by
+// the CLI itself. Ordinary task output such as "Failed tests: ..." or
+// "Error handling strategy: ..." must remain valid content.
+func hasCodexTerminalErrorEnvelope(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, prefix := range []string{
+		"error:", "fatal:", "api error:", "stream disconnected",
+		"connection closed", "connection reset", "connection refused",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodexAuthOrAPIStatusError(lower string) bool {
+	return strings.Contains(lower, "unexpected status 401") ||
+		strings.Contains(lower, "unexpected status 403") ||
+		strings.Contains(lower, "401 unauthorized") ||
+		strings.Contains(lower, "403 forbidden") ||
+		strings.Contains(lower, "authentication failed") ||
+		strings.Contains(lower, "missing bearer or basic authentication") ||
+		strings.Contains(lower, "unexpected status 4") ||
+		strings.Contains(lower, "unexpected status 5")
+}
+
+func hasNonEmptyStructuredOutput(value any) bool {
+	if value == nil {
+		return false
+	}
+	if obj, ok := value.(map[string]any); ok {
+		return len(obj) > 0
+	}
+	b, err := json.Marshal(value)
+	return err == nil && string(b) != "null" && string(b) != "{}" && string(b) != "[]"
+}
+
 // codexSandboxForAllowedTools picks the least-privilege codex sandbox mode
-// compatible with the intent expressed by AllowedTools:
-//   - empty allowlist or read-only tools only → "read-only"
-//   - any mutating tool (Bash/Edit/Write/NotebookEdit) → "workspace-write"
+// compatible with the intent expressed by a non-empty AllowedTools list.
+// Iterion accepts both Claude-style TitleCase names and its native snake_case
+// aliases, so normalise before deciding whether filesystem mutation is needed.
 //
 // "danger-full-access" is intentionally never chosen here — workflows that
 // truly need unrestricted network or out-of-workspace writes must request it
-// via an explicit codex config override, not by listing a mutating tool.
+// with the node-level `full_access: true`, not by listing a mutating tool.
 func codexSandboxForAllowedTools(allowed []string) string {
 	for _, t := range allowed {
-		switch t {
-		case "Bash", "Edit", "Write", "NotebookEdit":
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "read", "read_file", "readfile", "cat", "glob", "grep", "ls":
+			continue
+		case "bash", "shell", "sh",
+			"edit", "edit_file", "file_edit", "multiedit", "str_replace",
+			"write", "write_file", "writefile",
+			"notebookedit", "notebook_edit", "patch", "apply_patch", "run_command":
+			return "workspace-write"
+		default:
+			// Unknown/custom tool names cannot prove the task is read-only. Prefer
+			// preserving writer semantics; explicit `readonly:` remains the lock.
 			return "workspace-write"
 		}
 	}
 	return "read-only"
+}
+
+// codexSandboxForTask maps the DSL's access intent to Codex. readonly is the
+// explicit lock-down and wins over a conflicting full_access opt-in.
+// With neither flag, an empty tools list means "native toolset unrestricted"
+// throughout Iterion, so Codex must receive workspace-write rather than silently
+// changing that contract to read-only. A restricted list is classified by name.
+func codexSandboxForTask(task Task) string {
+	if task.Readonly {
+		return "read-only"
+	}
+	if task.FullAccess {
+		return "danger-full-access"
+	}
+	if len(task.AllowedTools) == 0 {
+		return "workspace-write"
+	}
+	return codexSandboxForAllowedTools(task.AllowedTools)
+}
+
+func codexNeedsTwoPass(task Task) bool {
+	return len(task.OutputSchema) > 0
 }
 
 // mapReasoningEffort converts iterion reasoning effort strings to Codex SDK Effort constants.

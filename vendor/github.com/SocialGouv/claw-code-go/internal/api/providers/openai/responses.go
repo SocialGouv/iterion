@@ -23,10 +23,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/SocialGouv/claw-code-go/internal/api"
 	"github.com/SocialGouv/claw-code-go/internal/api/httputil"
+	"github.com/SocialGouv/claw-code-go/internal/api/providers/openaiwire"
 	"github.com/SocialGouv/claw-code-go/internal/api/sseutil"
 )
 
@@ -63,6 +65,26 @@ type oaiResponsesRequest struct {
 
 type oaiReasoningConfig struct {
 	Effort string `json:"effort,omitempty"`
+	// Summary requests streamed reasoning summaries
+	// (response.reasoning_summary_text.delta events), which claw surfaces
+	// as Anthropic-style "thinking" content blocks. "auto" lets the API
+	// pick the richest level the model supports.
+	Summary string `json:"summary,omitempty"`
+}
+
+// reasoningSummaryLevel resolves the reasoning.summary request value.
+// Default "auto"; CLAW_OPENAI_REASONING_SUMMARY overrides ("off" disables
+// requesting summaries entirely — kill-switch for backends that reject
+// the field or orgs not verified for summaries).
+func reasoningSummaryLevel() string {
+	switch v := os.Getenv("CLAW_OPENAI_REASONING_SUMMARY"); v {
+	case "":
+		return "auto"
+	case "off":
+		return ""
+	default:
+		return v
+	}
 }
 
 type oaiResponsesMessage struct {
@@ -156,6 +178,11 @@ type oaiResponsesUsage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
+	// ReasoningTokens (output_tokens_details.reasoning_tokens) is the
+	// exact billed reasoning-token count; 0 when the API omits it.
+	OutputTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 // ----- Dispatch decision ----------------------------------------------------
@@ -266,7 +293,10 @@ func (c *Client) buildResponsesRequest(req api.CreateMessageRequest) (*oaiRespon
 	}
 
 	if req.ReasoningEffort != "" {
-		r.Reasoning = &oaiReasoningConfig{Effort: req.ReasoningEffort}
+		r.Reasoning = &oaiReasoningConfig{
+			Effort:  req.ReasoningEffort,
+			Summary: reasoningSummaryLevel(),
+		}
 	}
 
 	if req.ToolChoice != nil {
@@ -356,11 +386,13 @@ func convertMessagesToResponsesInput(messages []api.Message) []oaiResponsesMessa
 func convertToolsToResponses(tools []api.Tool) ([]oaiResponsesTool, error) {
 	out := make([]oaiResponsesTool, 0, len(tools))
 	for _, t := range tools {
-		params, err := json.Marshal(map[string]interface{}{
-			"type":       t.InputSchema.Type,
-			"properties": t.InputSchema.Properties,
-			"required":   t.InputSchema.Required,
-		})
+		// Same normalisation as the chat path (openaiwire.ConvertTools): a nil
+		// `required` must be OMITTED, not marshalled as `null` — the responses
+		// API validator rejects null with "None is not of type 'array'", which
+		// silently killed every MCP tool that has only optional parameters
+		// (e.g. firecrawl_interact / firecrawl_monitor_create). Routing both
+		// transports through the shared helper keeps them from drifting.
+		params, err := openaiwire.NormalizedParameters(t.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("openai: marshal input schema for tool %q: %w", t.Name, err)
 		}
@@ -463,26 +495,62 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		// per-tool-call state. Some events use "item_id" directly, others
 		// reach us via the Item embedded in output_item.added.
 		fnByItem = make(map[string]*sseutil.ToolCallAccumulator)
+		// Map keyed by reasoning-item id: reasoning summaries stream as
+		// response.reasoning_summary_text.delta (or raw reasoning as
+		// response.reasoning_text.delta) and are surfaced as
+		// Anthropic-style "thinking" content blocks so downstream
+		// consumers see OpenAI reasoning exactly like Anthropic extended
+		// thinking.
+		reasonByItem = make(map[string]*pendingText)
 		// textOpenOrder records the order text blocks were opened in, so
 		// the post-loop sweep emits content_block_stop in a deterministic
 		// (open-order) sequence rather than Go's randomised map order.
-		textOpenOrder []string
-		fnOpenOrder   []string
-		stopReason    = "end_turn"
-		outputTokens  int
+		textOpenOrder   []string
+		fnOpenOrder     []string
+		reasonOpenOrder []string
+		stopReason      = "end_turn"
+		outputTokens    int
+		reasoningTokens int
 	)
 
-	closeText := func(itemID string) bool {
-		if itemID == "" {
-			return true
-		}
-		t := textByItem[itemID]
+	// closeBlock emits content_block_stop for a started, not-yet-closed
+	// block. Shared by the text and reasoning close paths and the
+	// post-loop sweeps so the stop-guard state machine exists once.
+	closeBlock := func(t *pendingText) bool {
 		if t == nil || !t.started || t.closed {
 			return true
 		}
 		t.closed = true
 		return send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex})
 	}
+
+	closeText := func(itemID string) bool {
+		if itemID == "" {
+			return true
+		}
+		return closeBlock(textByItem[itemID])
+	}
+
+	// openReasoning starts (once) the "thinking" content block for a
+	// reasoning item and returns it. Entries are created only here and
+	// start immediately, so a second call is a pure lookup. Emission
+	// failure is reported through the ok result, mirroring send().
+	openReasoning := func(itemID string) (*pendingText, bool) {
+		if r := reasonByItem[itemID]; r != nil {
+			return r, true
+		}
+		r := &pendingText{blockIndex: nextBlockIndex, started: true}
+		nextBlockIndex++
+		reasonByItem[itemID] = r
+		reasonOpenOrder = append(reasonOpenOrder, itemID)
+		return r, send(api.StreamEvent{
+			Type:         api.EventContentBlockStart,
+			Index:        r.blockIndex,
+			ContentBlock: api.ContentBlockInfo{Type: "thinking", Index: r.blockIndex},
+		})
+	}
+
+	closeReasoning := func(itemID string) bool { return closeBlock(reasonByItem[itemID]) }
 
 	for scanner.Scan() {
 		wd.Touch() // any received line (incl. comments/keepalives) = stream alive
@@ -583,7 +651,55 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 					nextBlockIndex++
 				}
 			case "reasoning":
-				// reasoning items are not surfaced as content blocks
+				// Reasoning content streams via the dedicated
+				// reasoning_summary_text / reasoning_text delta events
+				// below; the block opens on the first delta so a
+				// summary-less reasoning item produces no empty block.
+			}
+
+		case "response.output_item.done":
+			// Only consumed for reasoning items: the reasoning block
+			// closes here so downstream start→stop timing brackets the
+			// actual reasoning phase (text items close on their own
+			// output_text.done).
+			if ev.Item != nil && ev.Item.Type == "reasoning" {
+				if !closeReasoning(ev.Item.ID) {
+					return
+				}
+			}
+
+		case "response.reasoning_summary_part.added":
+			// A new summary paragraph within the same reasoning item:
+			// separate it from the previous one. The first part precedes
+			// the block's first delta (nothing started yet), so no
+			// leading separator is emitted.
+			if r := reasonByItem[ev.ItemID]; r != nil && r.started && !r.closed {
+				if !send(api.StreamEvent{
+					Type:  api.EventContentBlockDelta,
+					Index: r.blockIndex,
+					Delta: api.Delta{Type: "thinking_delta", Thinking: "\n\n"},
+				}) {
+					return
+				}
+			}
+
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			// Reasoning summaries (api.openai.com + ChatGPT-Codex) and raw
+			// reasoning text (deployments exposing it) both map onto one
+			// "thinking" block per reasoning item.
+			r, ok := openReasoning(ev.ItemID)
+			if !ok {
+				return
+			}
+			if r.closed || ev.Delta == "" {
+				continue
+			}
+			if !send(api.StreamEvent{
+				Type:  api.EventContentBlockDelta,
+				Index: r.blockIndex,
+				Delta: api.Delta{Type: "thinking_delta", Thinking: ev.Delta},
+			}) {
+				return
 			}
 
 		case "response.output_text.delta":
@@ -675,6 +791,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		case "response.completed":
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
+				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
 			}
 			// Reconcile any function_call accumulator that landed
 			// without call_id/name at output_item.added time (under-
@@ -723,6 +840,7 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 			// a successful empty turn.
 			if ev.Response != nil && ev.Response.Usage != nil {
 				outputTokens = ev.Response.Usage.OutputTokens
+				reasoningTokens = ev.Response.Usage.OutputTokensDetails.ReasoningTokens
 			}
 			reason := "unknown"
 			if ev.Response != nil && ev.Response.IncompleteDetails != nil && ev.Response.IncompleteDetails.Reason != "" {
@@ -758,15 +876,16 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		return
 	}
 
-	// Close any text blocks that were opened but not explicitly closed
-	// by a response.output_text.done event, in the order they were opened.
-	for _, id := range textOpenOrder {
-		t := textByItem[id]
-		if t == nil || !t.started || t.closed {
-			continue
+	// Close any reasoning blocks whose output_item.done never arrived,
+	// then any text blocks not explicitly closed by their own done event,
+	// each in open order.
+	for _, id := range reasonOpenOrder {
+		if !closeReasoning(id) {
+			return
 		}
-		t.closed = true
-		if !send(api.StreamEvent{Type: api.EventContentBlockStop, Index: t.blockIndex}) {
+	}
+	for _, id := range textOpenOrder {
+		if !closeBlock(textByItem[id]) {
 			return
 		}
 	}
@@ -780,10 +899,12 @@ func (c *Client) streamResponsesEvents(ctx context.Context, resp *http.Response,
 		}
 	}
 
+	usage := api.UsageDelta{OutputTokens: outputTokens}
+	usage.OutputTokensDetails.ThinkingTokens = reasoningTokens
 	if !send(api.StreamEvent{
 		Type:       api.EventMessageDelta,
 		StopReason: stopReason,
-		Usage:      api.UsageDelta{OutputTokens: outputTokens},
+		Usage:      usage,
 	}) {
 		return
 	}

@@ -63,8 +63,11 @@ export default function InspectorEmpty() {
       className="h-full"
       // overflow-x-auto so the row stays reachable when a bundle's "Bot"
       // tab pushes the tab count to 7 — without it the last tab(s) were
-      // clipped at the inspector's default width.
-      listClassName="shrink-0 px-2 overflow-x-auto"
+      // clipped at the inspector's default width. The scrollbar itself is
+      // hidden (scrollbar-width:none + ::-webkit-scrollbar) so the strip
+      // scrolls without reserving a permanent scrollbar row; keyboard
+      // focus / wheel / drag still scroll it.
+      listClassName="shrink-0 px-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     />
   );
 }

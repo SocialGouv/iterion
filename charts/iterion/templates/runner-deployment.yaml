@@ -40,6 +40,26 @@ spec:
       # SIGTERM grace: runner drains its in-flight run + republishes
       # to NATS before exiting (T-28).
       terminationGracePeriodSeconds: 90
+      {{- if .Values.runner.cache.enabled }}
+      initContainers:
+        # Ensure the Go cache subdirs exist and are writable by the uid-1000
+        # devbox runner. Relies on the pod fsGroup (set to 1000 for the devbox
+        # image) making the RWX volume group-writable; use a storageClass that
+        # honours fsGroup, or pre-chown the volume.
+        - name: init-runner-cache
+          {{- if .Values.runner.image }}
+          image: {{ .Values.runner.image | quote }}
+          {{- else }}
+          image: {{ include "iterion.image" . }}
+          {{- end }}
+          imagePullPolicy: {{ .Values.runner.imagePullPolicy | default .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml (default .Values.containerSecurityContext .Values.runner.containerSecurityContext) | nindent 12 }}
+          command: ["sh", "-c", "mkdir -p {{ .Values.runner.cache.mountPath }}/go/pkg/mod {{ .Values.runner.cache.mountPath }}/go/build"]
+          volumeMounts:
+            - name: build-cache
+              mountPath: {{ .Values.runner.cache.mountPath | quote }}
+      {{- end }}
       containers:
         - name: iterion-runner
           {{- if .Values.runner.image }}
@@ -56,17 +76,44 @@ spec:
           {{- end }}
           args:
             {{- toYaml .Values.runner.args | nindent 12 }}
-          {{- if .Values.runner.sandbox.enabled }}
-          # Downward API: ITERION_POD_IP is required for the kubernetes
-          # sandbox driver's ProxyConfig() (pkg/sandbox/kubernetes), so
-          # the network proxy advertises a routable address to sibling
-          # sandbox pods. The "host.docker.internal" alias used by the
-          # docker driver does not exist in pure k8s pod networking.
+          {{- if or .Values.runner.sandbox.enabled .Values.runner.cache.enabled }}
           env:
+            {{- if .Values.runner.sandbox.enabled }}
+            # Downward API: ITERION_POD_IP is required for the kubernetes
+            # sandbox driver's ProxyConfig() (pkg/sandbox/kubernetes), so
+            # the network proxy advertises a routable address to sibling
+            # sandbox pods. The "host.docker.internal" alias used by the
+            # docker driver does not exist in pure k8s pod networking.
             - name: ITERION_POD_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            # Downward API: the runner pod's own name + uid, stamped as the
+            # ownerReference on every per-run sandbox resource (pod, both
+            # Secrets, NetworkPolicy) so the cluster cascade-GCs them when
+            # this runner pod is deleted — closing the
+            # plaintext-credential-at-rest leak for a runner killed mid-run
+            # (ADR-068 / pkg/sandbox/kubernetes runnerPodOwner).
+            - name: ITERION_RUNNER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ITERION_RUNNER_POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            {{- end }}
+            {{- if .Values.runner.cache.enabled }}
+            # Point Go's module + build caches at the shared RWX volume so a
+            # fresh clone reuses downloaded modules and compiled objects across
+            # runs and across pods (incl. scaled-up ones). `devbox run -- go …`
+            # inherits these. If NFS small-file latency on GOCACHE hurts, point
+            # GOCACHE at a per-pod emptyDir instead (keep GOMODCACHE shared).
+            - name: GOMODCACHE
+              value: {{ printf "%s/go/pkg/mod" .Values.runner.cache.mountPath | quote }}
+            - name: GOCACHE
+              value: {{ printf "%s/go/build" .Values.runner.cache.mountPath | quote }}
+            {{- end }}
           {{- end }}
           envFrom:
             - configMapRef:
@@ -85,6 +132,23 @@ spec:
             # cloudpublisher writes. Phase C+D.
             - secretRef:
                 name: {{ default (printf "%s-auth" (include "iterion.fullname" .)) .Values.secrets.auth.existingSecret }}
+            {{- end }}
+          volumeMounts:
+            # Writable tmpfs for file secrets (secrets.SecretFilesMountDir =
+            # /run/iterion/secrets). In a SANDBOXED run the sandbox driver
+            # creates this mount inside the sibling container; an IN-POD run
+            # (ITERION_SANDBOX_OVERRIDE=none — the runner IS the isolation
+            # boundary) materializes the workflow's `as: file` secrets here
+            # directly, but /run is root-owned and the devbox runner is uid
+            # 1000, so without a group-writable mount `mkdir /run/iterion`
+            # fails and e.g. forge_token never reaches the bot (no PR opened).
+            # medium: Memory keeps the plaintext off disk.
+            - name: run-iterion
+              mountPath: /run/iterion
+            {{- if .Values.runner.cache.enabled }}
+            # Shared warm Go module + build cache (see runner-cache-pvc.yaml).
+            - name: build-cache
+              mountPath: {{ .Values.runner.cache.mountPath | quote }}
             {{- end }}
           resources:
             {{- toYaml .Values.runner.resources | nindent 12 }}
@@ -110,4 +174,17 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
+      volumes:
+        # In-pod file-secret scratch (see the volumeMount above). Group-writable
+        # via the pod fsGroup, so the uid-1000 devbox runner can create
+        # /run/iterion/secrets/<name>. Memory-backed so secret plaintext never
+        # touches the node disk.
+        - name: run-iterion
+          emptyDir:
+            medium: Memory
+        {{- if .Values.runner.cache.enabled }}
+        - name: build-cache
+          persistentVolumeClaim:
+            claimName: {{ .Values.runner.cache.existingClaim | default (printf "%s-runner-cache" (include "iterion.fullname" .)) }}
+        {{- end }}
 {{- end -}}

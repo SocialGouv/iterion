@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -39,14 +40,16 @@ func (c AppConfig) UserAuthConfigured() bool { return c.ClientID != "" && c.Clie
 
 // RuntimeInstallationPermissions is the least-privilege permission subset an
 // installation token minted for iterion is pinned to — exactly what the forge
-// layer needs (read/push code, open+comment PRs, manage the per-repo webhook,
-// the mandatory metadata baseline) and nothing more. Mirrors the App manifest
-// (BuildAppManifest); pinning it at mint time means a token stays minimal even
-// if the installation is later granted broader permissions on the forge.
+// layer needs (read/push code, open+comment PRs, comment the source issue for
+// the MR back-link, manage the per-repo webhook, the mandatory metadata
+// baseline) and nothing more. Mirrors the App manifest (BuildAppManifest);
+// pinning it at mint time means a token stays minimal even if the installation
+// is later granted broader permissions on the forge.
 func RuntimeInstallationPermissions() map[string]string {
 	return map[string]string{
 		"contents":         "write",
 		"pull_requests":    "write",
+		"issues":           "write", // finalize_mr posts the PR URL back on the source issue
 		"metadata":         "read",
 		"repository_hooks": "write",
 	}
@@ -115,7 +118,22 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		return "", time.Time{}, forge.ErrUnauthorized
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", time.Time{}, statusErr("mint installation token", resp.StatusCode)
+		// GitHub's 4xx body always names the cause (e.g. a 422 "there is at
+		// least one repository that does not exist or is not accessible to the
+		// … installation", or an ungranted permission). Surfacing it turns an
+		// opaque "HTTP 422" into an actionable message instead of masking the
+		// root cause (erreurs-explicites).
+		err := mintTokenErr(resp)
+		// A 422 whose body reports the requested permissions are NOT GRANTED is
+		// a permanent config mismatch (the install was approved with a narrower
+		// permission set than iterion now requests). Classify it as the terminal
+		// forge.ErrPermissionsNotGranted so the refresh worker marks the
+		// connection degraded and stops re-minting it every tick, while keeping
+		// GitHub's own actionable message in the wrapped error.
+		if resp.StatusCode == http.StatusUnprocessableEntity && isPermissionsNotGranted(err) {
+			return "", time.Time{}, fmt.Errorf("%w: %w", forge.ErrPermissionsNotGranted, err)
+		}
+		return "", time.Time{}, err
 	}
 	var out struct {
 		Token     string `json:"token"`
@@ -129,6 +147,52 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 		exp = now.Add(time.Hour)
 	}
 	return out.Token, exp, nil
+}
+
+// mintTokenErr wraps the base status error with GitHub's own explanation from
+// the response body (message + first field error), so a 422 says WHY. The body
+// is a short GitHub error JSON; a decode failure falls back to the bare status
+// error. Never includes any token (this is the pre-auth mint call).
+func mintTokenErr(resp *http.Response) error {
+	base := statusErr("mint installation token", resp.StatusCode)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil || len(raw) == 0 {
+		return base
+	}
+	var ghErr struct {
+		Message string `json:"message"`
+		Errors  []struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+			Field   string `json:"field"`
+		} `json:"errors"`
+	}
+	if json.Unmarshal(raw, &ghErr) != nil || ghErr.Message == "" {
+		return base
+	}
+	detail := ghErr.Message
+	if len(ghErr.Errors) > 0 {
+		e := ghErr.Errors[0]
+		if msg := strings.TrimSpace(e.Message); msg != "" {
+			detail += ": " + msg
+		} else if e.Field != "" || e.Code != "" {
+			detail += " (" + strings.TrimSpace(e.Field+" "+e.Code) + ")"
+		}
+	}
+	return fmt.Errorf("%w: %s", base, detail)
+}
+
+// isPermissionsNotGranted reports whether a mint error's message matches
+// GitHub's "The permissions requested are not granted to this installation"
+// 422 body — the permanent permission-mismatch signal (distinct from the
+// "repository does not exist" 422). Matched on the already-surfaced message so
+// it survives mintTokenErr's message/errors[] extraction.
+func isPermissionsNotGranted(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "permissions") && strings.Contains(msg, "not granted")
 }
 
 // AppClient is a forge.Admin for one GitHub-App installation. It mints +

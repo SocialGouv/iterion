@@ -1,10 +1,13 @@
-// Reconciliation between marketplace entries and the bots already
-// installed in the workspace (.botz/). A registry entry's `name` is the
-// manifest name, which is also the installed bot's `name` — so we match
-// on that.
+// Reconciliation between marketplace entries and the artifacts already
+// installed locally — bots in the workspace (.botz/), plugins in
+// ~/.iterion/plugins/. A registry entry's `name` is the manifest name,
+// which is also the installed artifact's `name` — so we match on that,
+// within the entry's kind (a bot and a plugin sharing a name never
+// cross-match).
 
 import type { BotEntry } from "@/api/bots";
 import type { MarketplaceEntry } from "@/api/marketplace";
+import type { PluginView } from "@/api/plugins";
 
 /** InstalledState is the tri-state a marketplace card renders:
  *  - "absent"    → not in the workspace (offer Install)
@@ -23,15 +26,26 @@ export function buildInstalledVersions(bots: BotEntry[]): InstalledVersions {
   return m;
 }
 
+/** buildInstalledPluginVersions indexes the plugin registry views by
+ *  name — the plugin-kind counterpart of buildInstalledVersions. */
+export function buildInstalledPluginVersions(plugins: PluginView[]): InstalledVersions {
+  const m: InstalledVersions = new Map();
+  for (const p of plugins) m.set(p.name, p.version);
+  return m;
+}
+
 /** resolveInstalledState computes a card's tri-state from the registry
- *  entry and the installed-versions index. An entry is "update" only when
- *  both versions parse and the registry's is strictly newer; otherwise a
- *  present bot is "installed" (never silently flagged stale on a version
- *  we can't compare). */
+ *  entry and the installed-versions indexes — bots for bot entries,
+ *  plugins for plugin entries. An entry is "update" only when both
+ *  versions parse and the registry's is strictly newer; otherwise a
+ *  present artifact is "installed" (never silently flagged stale on a
+ *  version we can't compare). */
 export function resolveInstalledState(
   entry: MarketplaceEntry,
-  installed: InstalledVersions,
+  installedBots: InstalledVersions,
+  installedPlugins: InstalledVersions = new Map(),
 ): InstalledState {
+  const installed = (entry.kind ?? "bot") === "plugin" ? installedPlugins : installedBots;
   if (!installed.has(entry.name)) return "absent";
   const have = installed.get(entry.name);
   if (entry.version && have && compareVersions(entry.version, have) > 0) {

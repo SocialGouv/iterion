@@ -69,6 +69,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 			return nil, fmt.Errorf("branch_name: %w", err)
 		}
 	}
+	// Validate budget overrides up front so a malformed max_duration fails
+	// the launch synchronously instead of being silently dropped by
+	// newSharedBudget. Mirrors pkg/cli/run.go's pre-flight Validate.
+	if spec.Budget != nil {
+		if err := spec.Budget.Validate(); err != nil {
+			return nil, fmt.Errorf("budget: %w", err)
+		}
+	}
 	runID := spec.RunID
 	if runID == "" {
 		generated, err := store.GenerateRunID()
@@ -87,6 +95,9 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	// instead of reading from disk — the server pod has no shared
 	// filesystem with the client.
 	if s.publisher != nil {
+		// Budget overrides ride the RunMessage (queue.RunMessage.Budget);
+		// the runner applies them after loading the workflow, under its
+		// multitenant cloud ceiling.
 		wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 		if err != nil {
 			return nil, err
@@ -110,6 +121,14 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 	if err != nil {
 		return nil, err
+	}
+
+	// Apply budget overrides AFTER compile but BEFORE BuildExecutor — the
+	// executor snapshots Budget at construction, so a later mutation would
+	// be invisible to the model/cost layer. Same ordering contract as the
+	// CLI path (pkg/cli/run.go).
+	if spec.Budget != nil {
+		ir.ApplyBudgetOverrides(wf, *spec.Budget)
 	}
 
 	_, runLogger := s.prepareRunLog(runID)
@@ -145,7 +164,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		runtime.MergeBundlePresets(wf, b, runLogger)
 	}
 
-	inputs := make(map[string]interface{}, len(spec.Vars))
+	inputs := make(map[string]any, len(spec.Vars))
 	if spec.Preset != "" {
 		preset, ok := wf.Presets[spec.Preset]
 		if !ok {
@@ -195,6 +214,7 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
+		inputs,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -305,6 +325,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
+		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -321,7 +342,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 
 // validateResumable returns nil if r is in a state from which Resume
 // can proceed; otherwise it returns a descriptive error.
-func validateResumable(r *store.Run, answers map[string]interface{}) error {
+func validateResumable(r *store.Run, answers map[string]any) error {
 	switch r.Status {
 	case store.RunStatusPausedWaitingHuman:
 		if len(answers) == 0 {
@@ -354,6 +375,7 @@ func (s *Service) spawnRun(
 	promote runtime.AttachmentPromoteFunc,
 	preset string,
 	modelOverrides []store.RunModelOverride,
+	precreateInputs map[string]any,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
 	lock, err := s.store.LockRun(context.Background(), runID)
@@ -367,6 +389,20 @@ func (s *Service) spawnRun(
 		_ = lock.Unlock()
 		s.dropRunLog(runID)
 		return nil, regErr
+	}
+
+	// Launch path only (nil on resume, whose doc already exists): persist
+	// the run doc BEFORE returning, so a GET /api/runs/{id} issued right
+	// after the launch response never 404s on the engine goroutine still
+	// being scheduled. The engine's runResolveDoc sees the running doc and
+	// claims it instead of re-creating.
+	if precreateInputs != nil {
+		if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs); err != nil {
+			s.manager.Deregister(runID)
+			_ = lock.Unlock()
+			s.dropRunLog(runID)
+			return nil, fmt.Errorf("runview: create run: %w", err)
+		}
 	}
 
 	var cancelTimeout context.CancelFunc
@@ -407,10 +443,21 @@ func (s *Service) spawnRun(
 
 	done := make(chan struct{})
 	go func() {
+		var paused bool
 		defer close(done)
 		defer s.unregisterRunEngine(runID)
 		defer s.dropRunLog(runID)
-		defer s.broker.CloseRun(runID)
+		// Keep WS subscribers across a pause: the goroutine exits on
+		// ErrRunPaused(Operator) like on any outcome, but the run is only
+		// dormant — the resume's goroutine publishes to the same broker
+		// runID, and dropping subscribers here loses the very events that
+		// announce the pause/resume (the human-gate form then lags until a
+		// reload). Terminal outcomes still close the stream.
+		defer func() {
+			if !paused {
+				s.broker.CloseRun(runID)
+			}
+		}()
 		defer s.manager.Deregister(runID)
 		defer func() { _ = lock.Unlock() }()
 		if cancelTimeout != nil {
@@ -430,6 +477,7 @@ func (s *Service) spawnRun(
 		defer stopBoard()
 
 		bodyErr := body(ctx, eng)
+		paused = errors.Is(bodyErr, runtime.ErrRunPaused) || errors.Is(bodyErr, runtime.ErrRunPausedOperator)
 		s.logRunOutcome(runID, bodyErr)
 		// Fire the run-completion webhook (no-op unless the run carries a
 		// callback URL). Uses a fresh, tenant-unfiltered ctx: the run ctx
@@ -440,10 +488,11 @@ func (s *Service) spawnRun(
 			nctx := store.WithoutTenantFilter(context.Background())
 			s.completionNotifier.FireForRun(nctx, s.store, runID)
 		}
-		// Emit the run-completion trigger event ("runned by iterion"): a
+		// Emit the run-outcome trigger event ("runned by iterion"): a
 		// finished/failed/cancelled run can fire downstream runs (pipelines,
-		// on-failure escalation). No-op unless an event publisher is wired.
-		s.emitRunCompletion(runID, bodyErr)
+		// on-failure escalation), and a paused run marks its board card
+		// "awaiting input". No-op unless an event publisher is wired.
+		s.emitRunOutcome(runID, bodyErr)
 		// On cancel, the engine flipped run.Status to cancelled but didn't
 		// run finalizeWorktree (that's the success path only). If the run
 		// produced commits, RecoverFinalize promotes the worktree HEAD to
@@ -566,7 +615,7 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 // future board transitions back to this run. The convention lives here,
 // not in the generic engine, so the runtime stays decoupled from a
 // bot-specific schema field.
-func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]interface{}) {
+func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]any) {
 	if output == nil {
 		return
 	}
@@ -582,7 +631,7 @@ func (s *Service) stampWatchedFromOutput(runID, _ string, output map[string]inte
 // extractStringIDs coerces a node-output value into a slice of non-empty
 // string IDs. Tolerates the JSON shapes a `json`-typed schema field
 // decodes into: []interface{} of strings, []string, or a single string.
-func extractStringIDs(v interface{}) []string {
+func extractStringIDs(v any) []string {
 	switch t := v.(type) {
 	case []string:
 		out := make([]string, 0, len(t))
@@ -592,7 +641,7 @@ func extractStringIDs(v interface{}) []string {
 			}
 		}
 		return out
-	case []interface{}:
+	case []any:
 		out := make([]string, 0, len(t))
 		for _, e := range t {
 			if str, ok := e.(string); ok && str != "" {
@@ -612,7 +661,7 @@ func extractStringIDs(v interface{}) []string {
 		// a phantom `"[]"` watch (which then 404s in the run console), and
 		// a populated one contributes its real elements.
 		if s[0] == '[' {
-			var arr []interface{}
+			var arr []any
 			if err := json.Unmarshal([]byte(s), &arr); err == nil {
 				return extractStringIDs(arr)
 			}

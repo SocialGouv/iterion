@@ -151,11 +151,11 @@ func synthesiseInputForSchema(schema json.RawMessage, toolName, workspace string
 		Type       string `json:"type"`
 		Required   []string
 		Properties map[string]struct {
-			Type        string      `json:"type"`
-			Enum        []any       `json:"enum,omitempty"`
-			Default     any         `json:"default,omitempty"`
-			Description string      `json:"description,omitempty"`
-			Items       interface{} `json:"items,omitempty"`
+			Type        string `json:"type"`
+			Enum        []any  `json:"enum,omitempty"`
+			Default     any    `json:"default,omitempty"`
+			Description string `json:"description,omitempty"`
+			Items       any    `json:"items,omitempty"`
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(schema, &s); err != nil {

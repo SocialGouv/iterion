@@ -6,7 +6,7 @@ import {
   listArtifactFiles,
   type ArtifactFile,
 } from "@/api/runs";
-import { Dialog, Popover } from "@/components/ui";
+import { Button, Dialog, Popover } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
 import { useRunStore } from "@/store/run";
@@ -157,13 +157,9 @@ export default function ArtifactFilesPanel({ runId }: Props) {
     return (
       <div className="h-full overflow-auto px-4 py-3 text-xs">
         <div className="text-danger">Failed to load artifacts: {error}</div>
-        <button
-          type="button"
-          className="mt-2 text-fg-link hover:underline"
-          onClick={fetchNow}
-        >
+        <Button variant="secondary" size="sm" className="mt-2" onClick={fetchNow}>
           Retry
-        </button>
+        </Button>
       </div>
     );
   }
@@ -219,16 +215,17 @@ export default function ArtifactFilesPanel({ runId }: Props) {
         ) : (
           <div className="flex-1 overflow-auto">
             <table className="w-full">
+              <caption className="sr-only">Run workspace files</caption>
               <thead className="sticky top-0 bg-surface-1 border-b border-border-default">
                 <tr className="text-left text-fg-subtle">
-                  <th className="px-3 py-2 font-normal">Path</th>
-                  <th className="px-3 py-2 font-normal text-right whitespace-nowrap">
+                  <th scope="col" className="px-3 py-2 font-normal">Path</th>
+                  <th scope="col" className="px-3 py-2 font-normal text-right whitespace-nowrap">
                     Size
                   </th>
-                  <th className="px-3 py-2 font-normal whitespace-nowrap">
+                  <th scope="col" className="px-3 py-2 font-normal whitespace-nowrap">
                     Modified
                   </th>
-                  <th className="px-3 py-2 font-normal text-right">Actions</th>
+                  <th scope="col" className="px-3 py-2 font-normal text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -295,13 +292,13 @@ export default function ArtifactFilesPanel({ runId }: Props) {
             </span>
           }
           footer={
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => triggerDownload({ path: preview.path, size: preview.size })}
-              className="px-3 py-1.5 text-xs rounded border border-border-default hover:bg-surface-2"
             >
               Download
-            </button>
+            </Button>
           }
         >
           <PreviewBody preview={preview} />
@@ -343,16 +340,12 @@ function DownloadsButton({
       align="end"
       contentClassName="w-[28rem] max-h-[60vh] flex flex-col"
       trigger={
-        <button
-          type="button"
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-border-subtle hover:bg-surface-2 text-fg-default"
-          title="Downloads"
-        >
+        <Button variant="ghost" size="sm" title="Downloads">
           <span>Downloads</span>
           <span className="ml-1 inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded bg-surface-2 text-fg-subtle text-caption font-mono">
             {count}
           </span>
-        </button>
+        </Button>
       }
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle">

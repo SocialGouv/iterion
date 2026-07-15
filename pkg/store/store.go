@@ -264,6 +264,17 @@ type FilesystemRunStore struct {
 	// loading the JSONL when nothing changed. Read+write under `mu`.
 	inboxVersion map[string]uint64
 
+	// eventsUnsynced marks runs whose events.jsonl has appended bytes
+	// that a failed fsync left without a durability guarantee.
+	// AppendEvent treats an fsync failure as non-fatal (advancing Seq
+	// keeps the stream monotonic), but run.json — written atomically
+	// WITH fsync — must not durably reference state whose events never
+	// reached disk: a power loss would then recover a checkpoint ahead
+	// of its event log. writeRun re-syncs a flagged run's events file
+	// first (the write-ahead ordering barrier) and only proceeds when
+	// that succeeds. Guarded by `mu`.
+	eventsUnsynced map[string]bool
+
 	// logPositionFn returns the current per-run log buffer byte total
 	// for stamping Event.LogOffset at AppendEvent time. nil disables
 	// stamping (LogOffset stays 0). Wired post-construction by the
@@ -335,10 +346,11 @@ func New(root string, opts ...StoreOption) (*FilesystemRunStore, error) {
 	// Failures (read-only FS, permission, etc.) are non-fatal.
 	_ = ensureGitignore(root)
 	s := &FilesystemRunStore{
-		root:         root,
-		seq:          make(map[string]int64),
-		seqSeed:      make(map[string]bool),
-		inboxVersion: make(map[string]uint64),
+		root:           root,
+		seq:            make(map[string]int64),
+		seqSeed:        make(map[string]bool),
+		inboxVersion:   make(map[string]uint64),
+		eventsUnsynced: make(map[string]bool),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -375,7 +387,7 @@ func (s *FilesystemRunStore) Root() string { return s.root }
 // instead of resetting an existing run's metadata/checkpoint. Resume and
 // crash-recovery code relies on run.json being the authoritative identity
 // and checkpoint record for a run.
-func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName string, inputs map[string]interface{}) (*Run, error) {
+func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName string, inputs map[string]any) (*Run, error) {
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}
@@ -422,6 +434,13 @@ func (s *FilesystemRunStore) loadRunRaw(id string) (*Run, error) {
 	p := s.runJSONPath(id)
 	data, err := os.ReadFile(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// Wrap the shared sentinel (alongside the underlying
+			// os.ErrNotExist the ReadFile error already carries) so callers
+			// can distinguish genuine absence from a transient read failure
+			// via errors.Is(err, ErrRunNotFound) — see ErrRunNotFound.
+			return nil, fmt.Errorf("store: load run %s: %w: %w", id, ErrRunNotFound, err)
+		}
 		return nil, fmt.Errorf("store: load run %s: %w", id, err)
 	}
 	var r Run
@@ -689,6 +708,68 @@ func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// ListRunsBySourceIssue returns the ids of runs whose Source.IssueID
+// equals issueID (the card←run reverse edge), sorted by created_at
+// ascending. At local scale we scan ListRuns + LoadRun each and filter
+// — mirroring how the other fs-side filters work (runview.List) — since
+// the filesystem store has no secondary index. Runs that fail to load
+// are skipped rather than failing the whole query.
+func (s *FilesystemRunStore) ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error) {
+	if issueID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.Source != nil && r.Source.IssueID == issueID
+	})
+}
+
+// ListChildRuns returns the ids of runs whose ParentRunID equals
+// parentRunID (a run's shard/child subtree), sorted by created_at
+// ascending. Same scan-and-filter strategy as ListRunsBySourceIssue.
+func (s *FilesystemRunStore) ListChildRuns(ctx context.Context, parentRunID string) ([]string, error) {
+	if parentRunID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.ParentRunID == parentRunID
+	})
+}
+
+// filterRunsSorted scans every run, keeps those matching pred, and
+// returns their ids sorted by CreatedAt ascending. Shared by the
+// fs-side reverse-tree queries.
+func (s *FilesystemRunStore) filterRunsSorted(ctx context.Context, pred func(*Run) bool) ([]string, error) {
+	ids, err := s.ListRuns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type match struct {
+		id string
+		at time.Time
+	}
+	var matches []match
+	for _, id := range ids {
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("store: skip run %s during reverse-query scan: %v", id, err)
+			}
+			continue
+		}
+		if pred(r) {
+			matches = append(matches, match{id: r.ID, at: r.CreatedAt})
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		return matches[i].at.Before(matches[j].at)
+	})
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m.id)
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
@@ -843,9 +924,17 @@ func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Ev
 	// fsync failure as fatal used to leave the in-memory seq counter
 	// pinned at evt.Seq, so the next AppendEvent would assign the same
 	// Seq to a different event and produce duplicate sequence numbers
-	// in the file. Log instead, and advance seq.
-	if err := f.Sync(); err != nil && s.logger != nil {
-		s.logger.Warn("store: fsync event for run %s seq %d: %v — line written but not durable", runID, evt.Seq, err)
+	// in the file. Log instead, advance seq, and flag the run so the
+	// next run.json write re-syncs the events file first (writeRun's
+	// ordering barrier) — the checkpoint must never be durably ahead
+	// of its event log.
+	if err := f.Sync(); err != nil {
+		s.eventsUnsynced[runID] = true
+		if s.logger != nil {
+			s.logger.Warn("store: fsync event for run %s seq %d: %v — line written but not durable", runID, evt.Seq, err)
+		}
+	} else {
+		delete(s.eventsUnsynced, runID)
 	}
 
 	// Always advance once the bytes are in the file. fsync confirms
@@ -1597,7 +1686,40 @@ func (s *FilesystemRunStore) writeRun(r *Run) error {
 	if err != nil {
 		return fmt.Errorf("store: marshal run: %w", err)
 	}
+	// Write-ahead ordering barrier: if an earlier AppendEvent fsync
+	// failed, re-sync events.jsonl BEFORE the checkpoint write. run.json
+	// is written atomically with fsync, so without the barrier a power
+	// loss could recover a checkpoint that references events which never
+	// reached disk. Failing here is consistent with writeFileAtomic's
+	// own hard-fail on fsync: if the disk can't persist the log, it
+	// can't persist the checkpoint either.
+	if s.eventsUnsynced[r.ID] {
+		if err := s.syncEventsLocked(r.ID); err != nil {
+			return fmt.Errorf("store: write run %s blocked — events.jsonl re-sync after an earlier fsync failure: %w", r.ID, err)
+		}
+	}
 	// Atomic write: run.json is the authoritative resume checkpoint
 	// (per CLAUDE.md). A torn write would lose all prior checkpoint state.
 	return writeFileAtomic(s.runJSONPath(r.ID), data, filePerm)
+}
+
+// syncEventsLocked fsyncs the run's events.jsonl and clears its
+// unsynced flag. Called under s.mu. A missing events file counts as
+// synced (nothing to persist — the failed append may have been the
+// file's first line on a path that never materialised).
+func (s *FilesystemRunStore) syncEventsLocked(runID string) error {
+	f, err := os.OpenFile(s.eventsPath(runID), os.O_RDWR, filePerm)
+	if err != nil {
+		if os.IsNotExist(err) {
+			delete(s.eventsUnsynced, runID)
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	delete(s.eventsUnsynced, runID)
+	return nil
 }

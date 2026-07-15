@@ -202,12 +202,13 @@ func (w *fileWriter) writeAgents(agents []*ast.AgentDecl) {
 			writeMCPConfigBlock(&w.b, a.MCP, "  ")
 		}
 		writeAgentFields(&w.b, llmFields{
-			Model: a.Model, Backend: a.Backend, Provider: a.Provider,
+			Model: a.Model, Backend: a.Backend, Provider: a.Provider, Command: a.Command,
 			Input: a.Input, Output: a.Output, Publish: a.Publish,
 			System: a.System, User: a.User, Session: a.Session,
 			Tools: a.Tools, ToolPolicy: a.ToolPolicy, Capabilities: a.Capabilities, Skills: a.Skills,
 			ToolMaxSteps: a.ToolMaxSteps, MaxTokens: a.MaxTokens, ReasoningEffort: a.ReasoningEffort,
-			Readonly: a.Readonly, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
+			Timeout:  a.Timeout,
+			Readonly: a.Readonly, FullAccess: a.FullAccess, Images: a.Images, Interaction: a.Interaction, InteractionPrompt: a.InteractionPrompt,
 			InteractionModel: a.InteractionModel, Await: a.Await,
 			Compress: a.Compress, Permission: a.Permission, Needs: a.Needs,
 		})
@@ -232,12 +233,13 @@ func (w *fileWriter) writeJudges(judges []*ast.JudgeDecl) {
 			writeMCPConfigBlock(&w.b, j.MCP, "  ")
 		}
 		writeAgentFields(&w.b, llmFields{
-			Model: j.Model, Backend: j.Backend, Provider: j.Provider,
+			Model: j.Model, Backend: j.Backend, Provider: j.Provider, Command: j.Command,
 			Input: j.Input, Output: j.Output, Publish: j.Publish,
 			System: j.System, User: j.User, Session: j.Session,
 			Tools: j.Tools, ToolPolicy: j.ToolPolicy, Capabilities: j.Capabilities, Skills: j.Skills,
 			ToolMaxSteps: j.ToolMaxSteps, MaxTokens: j.MaxTokens, ReasoningEffort: j.ReasoningEffort,
-			Readonly: j.Readonly, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
+			Timeout:  j.Timeout,
+			Readonly: j.Readonly, FullAccess: j.FullAccess, Images: j.Images, Interaction: j.Interaction, InteractionPrompt: j.InteractionPrompt,
 			InteractionModel: j.InteractionModel, Await: j.Await,
 			Compress: j.Compress, Permission: j.Permission, Needs: j.Needs,
 		})
@@ -453,6 +455,9 @@ func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
 		}
 		if len(s.Needs) > 0 {
 			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(s.Needs, ", "))
+		}
+		if s.Isolated {
+			writeProp(&w.b, "isolated", "true")
 		}
 	}
 }
@@ -828,7 +833,7 @@ func quoteList(vals []string) string {
 // silently corrupt the emitted source. Field names mirror ast.AgentDecl
 // / ast.JudgeDecl so the call-site literals read as a direct projection.
 type llmFields struct {
-	Model, Backend, Provider            string
+	Model, Backend, Provider, Command   string
 	Input, Output, Publish              string
 	System, User                        string
 	Session                             ast.SessionMode
@@ -837,7 +842,10 @@ type llmFields struct {
 	Skills                              []string
 	ToolMaxSteps, MaxTokens             int
 	ReasoningEffort                     string
+	Timeout                             string
 	Readonly                            bool
+	FullAccess                          bool
+	Images                              []string
 	Interaction                         ast.InteractionMode
 	InteractionPrompt, InteractionModel string
 	Await                               ast.AwaitMode
@@ -855,6 +863,9 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	}
 	if f.Provider != "" {
 		writeQuotedProp(b, "provider", f.Provider)
+	}
+	if f.Command != "" {
+		writeQuotedProp(b, "command", f.Command)
 	}
 	if f.Input != "" {
 		writeIdentProp(b, "input", f.Input)
@@ -900,8 +911,17 @@ func writeAgentFields(b *strings.Builder, f llmFields) {
 	if f.ReasoningEffort != "" {
 		writeReasoningEffortProp(b, f.ReasoningEffort)
 	}
+	if f.Timeout != "" {
+		writeQuotedProp(b, "timeout", f.Timeout)
+	}
 	if f.Readonly {
 		writeProp(b, "readonly", "true")
+	}
+	if f.FullAccess {
+		writeProp(b, "full_access", "true")
+	}
+	if len(f.Images) > 0 {
+		fmt.Fprintf(b, "  images: [%s]\n", quoteList(f.Images))
 	}
 	if f.Interaction != ast.InteractionNone {
 		writeProp(b, "interaction", f.Interaction.String())

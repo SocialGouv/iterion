@@ -48,6 +48,24 @@ export default function EditorTabsView() {
     useTabsStore.getState().openTab("editor", { file: fileParam });
   }, [fileParam]);
 
+  // Cold-start restore: persisted tabs rehydrate dormant (hydrated:false)
+  // and only flip on activation. The persisted ACTIVE tab is never
+  // clicked, so without this it shows as selected in the strip while the
+  // pane below stays blank (only hydrated tabs are mounted). Re-activating
+  // it hydrates it and mounts its EditorTabHost, which reloads the
+  // document from the tab's file param. Also repoints a dangling active
+  // id (e.g. active tab filtered out by project scoping) to the first
+  // visible tab.
+  useEffect(() => {
+    if (tabs.length === 0) return;
+    const active = tabs.find((t) => t.id === activeTabId);
+    if (!active) {
+      useTabsStore.getState().setActive(tabs[0]!.id);
+    } else if (!active.hydrated) {
+      useTabsStore.getState().setActive(active.id);
+    }
+  }, [tabs, activeTabId]);
+
   // Tab → URL: synchronous on user action. Click → activate + push URL.
   const handleSelect = useCallback(
     (id: string) => {

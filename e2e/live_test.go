@@ -327,7 +327,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 		"19. Bulk operations: multi-select tasks (checkboxes), bulk move to column, bulk delete, bulk tag assignment\n" +
 		"20. Time tracking: each task has an optional timer (start/stop), elapsed time displayed on the card in HH:MM:SS format, total time per column shown in statistics"
 
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -339,7 +339,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 		t.Fatalf("Failed to create snapshots dir: %v", err)
 	}
 
-	onFinished := func(_ string, nodeID string, output map[string]interface{}) {
+	onFinished := func(_ string, nodeID string, output map[string]any) {
 		if nodeID != "claude_implement" && nodeID != "gpt_implement" {
 			return
 		}
@@ -365,7 +365,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 	// 5-hour timeout — planning + validation + implementation + review phases (ambitious criteria).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Hour)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"task_description":    taskDescription,
 		"acceptance_criteria": acceptanceCriteria,
 		"workspace_dir":       workspaceDir,
@@ -510,7 +510,7 @@ func TestLive_Lite_DualModel_PlanImplementReview(t *testing.T) {
 			evt := events[i]
 			if evt.Type == store.EventNodeFinished && evt.NodeID == "review_judge" && evt.Data != nil {
 				if output, ok := evt.Data["output"]; ok {
-					if outMap, ok := output.(map[string]interface{}); ok {
+					if outMap, ok := output.(map[string]any); ok {
 						if approved, ok := outMap["approved"].(bool); ok && approved {
 							verdictFound = true
 							t.Logf("VERDICT (review_judge): approved=true, confidence=%v", outMap["confidence"])
@@ -672,7 +672,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		"13. Smooth animations: line hover highlight, correct/wrong answer feedback (flash green/red), timer pulse when < 10s\n" +
 		"14. Responsive layout: playable on both desktop and mobile (touch-friendly line selection on small screens)"
 
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -684,7 +684,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 		t.Fatalf("Failed to create snapshots dir: %v", err)
 	}
 
-	onFinished := func(_ string, nodeID string, output map[string]interface{}) {
+	onFinished := func(_ string, nodeID string, output map[string]any) {
 		if nodeID != "implement" && nodeID != "claude_fix" && nodeID != "gpt_fix" {
 			return
 		}
@@ -709,7 +709,7 @@ func TestLive_Lite_SessionContinuity_ReviewFix(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"task_description":    taskDescription,
 		"acceptance_criteria": acceptanceCriteria,
 		"workspace_dir":       workspaceDir,
@@ -921,7 +921,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -929,7 +929,7 @@ func TestLive_Full_ExhaustiveDSLCoverage(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"task_description": "Write the number 42 to a file called answer.txt in the workspace directory.",
 		"workspace_dir":    workspaceDir,
 	}
@@ -1255,7 +1255,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
 
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -1264,7 +1264,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"task":          "Write the number 42 to a file named result.txt in the workspace directory. Just the two characters '4' and '2', no trailing newline.",
 		"workspace_dir": workspaceDir,
 	}
@@ -1312,7 +1312,7 @@ func TestLive_Lite_SessionInheritValidation(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.Data == nil {
 			continue
 		}
-		out, ok := evt.Data["output"].(map[string]interface{})
+		out, ok := evt.Data["output"].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -1463,7 +1463,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	}
 	cacheFiller := fillerSB.String()
 
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 		"cache_filler":  cacheFiller,
 	})
@@ -1477,7 +1477,7 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
-	inputs := map[string]interface{}{
+	inputs := map[string]any{
 		"topic": "spring rain",
 		"brief": "Build a tiny CLI tool that lists todo items grouped by priority. The implementation language is Go and the storage is JSON files.",
 		"pairs": []map[string]int{
@@ -1527,10 +1527,10 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	}
 
 	// === Per-phase output sanity checks ===
-	outputOf := func(nodeID string) map[string]interface{} {
+	outputOf := func(nodeID string) map[string]any {
 		for _, evt := range events {
 			if evt.Type == store.EventNodeFinished && evt.NodeID == nodeID && evt.Data != nil {
-				if out, ok := evt.Data["output"].(map[string]interface{}); ok {
+				if out, ok := evt.Data["output"].(map[string]any); ok {
 					return out
 				}
 			}
@@ -1551,8 +1551,8 @@ func TestLive_Lite_ClawComprehensive(t *testing.T) {
 	} else {
 		name, _ := out["project_name"].(string)
 		count, _ := out["total_phase_count"].(float64)
-		phaseNames, _ := out["phase_names"].([]interface{})
-		risks, _ := out["primary_risks"].([]interface{})
+		phaseNames, _ := out["phase_names"].([]any)
+		risks, _ := out["primary_risks"].([]any)
 		if name == "" || count <= 0 || len(phaseNames) == 0 || len(risks) == 0 {
 			t.Errorf("structured_only: invalid output (name=%q count=%v phases=%d risks=%d): %v",
 				name, count, len(phaseNames), len(risks), out)
@@ -1752,7 +1752,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 		model.WithEventHooks(hooks),
 	)
 	defer executor.Close()
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -1766,7 +1766,7 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 
 	t.Log("Starting live claw built-in tools run...")
 	start := time.Now()
-	runErr := eng.Run(ctx, runID, map[string]interface{}{
+	runErr := eng.Run(ctx, runID, map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 	elapsed := time.Since(start)
@@ -1824,13 +1824,13 @@ func TestLive_Lite_ClawBuiltinTools(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "builder" || evt.Data == nil {
 			continue
 		}
-		out, ok := evt.Data["output"].(map[string]interface{})
+		out, ok := evt.Data["output"].(map[string]any)
 		if !ok {
 			continue
 		}
 		applied, _ := out["applied"].(bool)
 		bashOut, _ := out["bash_output"].(string)
-		toolsUsed, _ := out["tools_used"].([]interface{})
+		toolsUsed, _ := out["tools_used"].([]any)
 		t.Logf("builder.applied = %v", applied)
 		t.Logf("builder.bash_output = %q", bashOut)
 		t.Logf("builder.tools_used = %v", toolsUsed)
@@ -1926,7 +1926,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		model.WithEventHooks(hooks),
 	)
 	defer executor.Close()
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"image_path": imagePath,
 	})
 
@@ -1940,7 +1940,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 
 	t.Log("Starting live claw read_image run...")
 	start := time.Now()
-	runErr := eng.Run(ctx, runID, map[string]interface{}{
+	runErr := eng.Run(ctx, runID, map[string]any{
 		"image_path": imagePath,
 	})
 	t.Logf("Run completed in %s", time.Since(start).Round(time.Second))
@@ -1981,7 +1981,7 @@ func TestLive_Lite_ClawReadImage(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "visioner" || evt.Data == nil {
 			continue
 		}
-		out, ok := evt.Data["output"].(map[string]interface{})
+		out, ok := evt.Data["output"].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -2081,7 +2081,7 @@ func TestLive_Lite_ClawReasoningEffort(t *testing.T) {
 	// test is to verify iterion's *propagation*, which happens before the
 	// API actually replies. The event we assert on is emitted by
 	// fireOnRequest() at the start of every call.
-	runErr := eng.Run(ctx, runID, map[string]interface{}{
+	runErr := eng.Run(ctx, runID, map[string]any{
 		"question": "Briefly: why is the sky blue?",
 	})
 	if runErr != nil {
@@ -2204,7 +2204,7 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 		model.WithEventHooks(hooks),
 	)
 	defer executor.Close()
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -2212,7 +2212,7 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	if runErr := eng.Run(ctx, runID, map[string]interface{}{}); runErr != nil {
+	if runErr := eng.Run(ctx, runID, map[string]any{}); runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
 	}
 	r, _ := s.LoadRun(context.Background(), runID)
@@ -2255,13 +2255,13 @@ func TestLive_Lite_ClawMCP(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "mcp_caller" || evt.Data == nil {
 			continue
 		}
-		out, _ := evt.Data["output"].(map[string]interface{})
+		out, _ := evt.Data["output"].(map[string]any)
 		if out == nil {
 			continue
 		}
 		greeting, _ := out["greeting"].(string)
 		reversed, _ := out["reversed"].(string)
-		toolsUsed, _ := out["tools_used"].([]interface{})
+		toolsUsed, _ := out["tools_used"].([]any)
 		t.Logf("greeting = %q", greeting)
 		t.Logf("reversed = %q", reversed)
 		t.Logf("tools_used = %v", toolsUsed)
@@ -2318,7 +2318,7 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 
 	executor := newLiveExecutor(t, wf, s, runID, workspaceDir)
 	defer executor.Close()
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -2346,7 +2346,7 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	if runErr := eng.Run(ctx, runID, map[string]interface{}{
+	if runErr := eng.Run(ctx, runID, map[string]any{
 		"text": longText,
 	}); runErr != nil {
 		t.Fatalf("Run error: %v", runErr)
@@ -2368,7 +2368,7 @@ func TestLive_Lite_ClawLongContext(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "summarizer" || evt.Data == nil {
 			continue
 		}
-		out, _ := evt.Data["output"].(map[string]interface{})
+		out, _ := evt.Data["output"].(map[string]any)
 		if out == nil {
 			continue
 		}
@@ -2483,7 +2483,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		model.WithEventHooks(hooks),
 	)
 	defer executor.Close()
-	executor.SetVars(map[string]interface{}{
+	executor.SetVars(map[string]any{
 		"workspace_dir": workspaceDir,
 	})
 
@@ -2497,7 +2497,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 
 	t.Log("Starting live claw subagents run...")
 	start := time.Now()
-	runErr := eng.Run(ctx, runID, map[string]interface{}{
+	runErr := eng.Run(ctx, runID, map[string]any{
 		"topic_a": "Summarize Go interfaces in two lines",
 		"topic_b": "List three concurrency primitives in Go",
 	})
@@ -2539,7 +2539,7 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		if evt.Type != store.EventNodeFinished || evt.NodeID != "coordinator" || evt.Data == nil {
 			continue
 		}
-		out, ok := evt.Data["output"].(map[string]interface{})
+		out, ok := evt.Data["output"].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -2551,8 +2551,8 @@ func TestLive_Lite_ClawSubagents(t *testing.T) {
 		case float64:
 			spawnCount = int(v)
 		}
-		ids, _ := out["agent_ids"].([]interface{})
-		statuses, _ := out["statuses"].([]interface{})
+		ids, _ := out["agent_ids"].([]any)
+		statuses, _ := out["statuses"].([]any)
 		t.Logf("coordinator.spawn_count = %d", spawnCount)
 		t.Logf("coordinator.agent_ids   = %v", ids)
 		t.Logf("coordinator.statuses    = %v", statuses)

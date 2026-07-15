@@ -2,6 +2,8 @@ package delegate
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -107,8 +109,59 @@ func TestAnthropicCredEnv_HintAnthropicFallsToOAuthDir(t *testing.T) {
 		string(secrets.OAuthKindClaudeCode): "/tmp/iterion-oauth-claude",
 	})
 	got := anthropicCredEnvForCLI(ctx, "anthropic")
-	if got["CLAUDE_CONFIG_DIR"] != "/tmp/iterion-oauth-claude" {
-		t.Errorf("CLAUDE_CONFIG_DIR: got %q, want /tmp/iterion-oauth-claude", got["CLAUDE_CONFIG_DIR"])
+	assertForfaitEnv(t, got, "/tmp/iterion-oauth-claude")
+}
+
+func TestAnthropicCredEnv_AutoForfaitSuppressesInheritedKey(t *testing.T) {
+	resetClaudeCredEnv(t)
+	// A shared, possibly-dead ANTHROPIC_API_KEY in the runner's pod env must
+	// NOT shadow a resolved per-run forfait: the returned map suppresses it
+	// (""), and mergeCmdEnv (claudesdk) turns that into an absent var so the
+	// CLI uses the CLAUDE_CONFIG_DIR OAuth token.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-dead-shared")
+	ctx := ctxWithCreds(t, nil, map[string]string{
+		string(secrets.OAuthKindClaudeCode): "/tmp/iterion-oauth-claude",
+	})
+	got := anthropicCredEnvForCLI(ctx, "")
+	assertForfaitEnv(t, got, "/tmp/iterion-oauth-claude")
+}
+
+// assertForfaitEnv pins the forfait env contract: the OAuth config dir is
+// wired and every Anthropic-flavoured credential that could shadow it is
+// explicitly emptied (suppression signal consumed by mergeCmdEnv).
+func assertForfaitEnv(t *testing.T, got map[string]string, wantDir string) {
+	t.Helper()
+	if got["CLAUDE_CONFIG_DIR"] != wantDir {
+		t.Errorf("CLAUDE_CONFIG_DIR: got %q, want %q", got["CLAUDE_CONFIG_DIR"], wantDir)
+	}
+	for _, k := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"} {
+		v, present := got[k]
+		if !present || v != "" {
+			t.Errorf("%s must be present and empty (suppression): present=%v val=%q", k, present, v)
+		}
+	}
+}
+
+// When the materialised dir holds a real credentials.json, the resolver also
+// exports CLAUDE_CODE_OAUTH_TOKEN — the first-precedence headless auth path
+// that bypasses a cloud runner's env shadowing the credentials FILE. A dir
+// without a readable file degrades to the file path (no token key).
+func TestClaudeForfaitEnv_ExportsOAuthTokenFromFile(t *testing.T) {
+	dir := t.TempDir()
+	blob := `{"claudeAiOauth":{"accessToken":"sk-ant-oat-TESTTOKEN","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(blob), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := claudeForfaitEnv(dir)
+	assertForfaitEnv(t, got, dir)
+	if got["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat-TESTTOKEN" {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN: got %q, want the file's accessToken", got["CLAUDE_CODE_OAUTH_TOKEN"])
+	}
+
+	// No file → no token key, file path preserved.
+	bare := claudeForfaitEnv(t.TempDir())
+	if _, present := bare["CLAUDE_CODE_OAUTH_TOKEN"]; present {
+		t.Errorf("CLAUDE_CODE_OAUTH_TOKEN must be absent when no credentials file is present: %v", bare)
 	}
 }
 

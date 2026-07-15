@@ -45,6 +45,7 @@ const (
 	DiagArtifactLabelsNoPublish  DiagCode = "C049" // artifact_labels: set on a node with no publish: (nothing to attach to)
 	DiagMemoryInvalidVisibility  DiagCode = "C170" // memory: unknown visibility value
 	DiagMemoryVisibilityConflict DiagCode = "C171" // memory: visibility: with the legacy project_root:
+	DiagBadPromptInclude         DiagCode = "C055" // prompt {{include "..."}} marker could not be resolved
 
 	// Attachments diagnostics
 	DiagDuplicateAttachment       DiagCode = "C050" // attachment name declared more than once
@@ -108,6 +109,7 @@ const (
 	DiagPermissionRulesNoGate   DiagCode = "C111" // allow/ask/deny rules declared but the resolved permission mode is "" or off (warning)
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
 	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
+	DiagInvalidNodeTimeout      DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
 	// Event-driven primitives (ADR-051): emit/wait nodes.
 	DiagEventNoName     DiagCode = "C196" // emit/wait node with no `event:` name (error)
 	DiagWaitNoTimeout   DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)

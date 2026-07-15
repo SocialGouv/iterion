@@ -41,7 +41,7 @@ func (s *Store) WriteArtifact(ctx context.Context, a *store.Artifact) error {
 		Type:   store.EventArtifactWritten,
 		RunID:  a.RunID,
 		NodeID: a.NodeID,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"version":    a.Version,
 			"written_at": a.WrittenAt,
 		},

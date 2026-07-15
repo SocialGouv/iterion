@@ -154,6 +154,19 @@ vars:
   ## "native:<id>" (local board) or a forge issue URL. When set, finalize_mr
   ## posts the opened MR's URL back as a comment on it.
   source_issue_ref: string = ""
+  ## PR-context push-back: the existing forge branch the run's commits belong
+  ## to (the PR's source branch). When set with open_mr=false and the campaign
+  ## banked commits, the deterministic push_back_tool pushes HEAD to it — the
+  ## PR-webhook trigger sets this so Billy's fixes land ON the PR instead of
+  ## dying with the ephemeral cloud-runner worktree. Empty (default) keeps
+  ## today's behaviour (commits stay on the local storage branch).
+  push_branch: string = ""
+  ## The PR Billy is hardening, as a forge URL
+  ## (https://github.com/<owner>/<repo>/pull/<n>). When set, post_pr_feedback
+  ## posts Billy's review verdict as a comment ON that PR so the author sees
+  ## the conclusion (what was corrected, or "reviewed clean") in the forge, not
+  ## only in the iterion run. The PR-webhook trigger sets it. Empty = skip.
+  pr_url: string = ""
 
 secrets:
   ## Forge access for push + MR creation + the issue back-link. Mounted as a
@@ -342,6 +355,56 @@ prompt verify_user:
 
 ## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
 
+prompt review_system:
+  You are an adversarial code reviewer running as a stage INSIDE the branch
+  loop, BEFORE the work is pushed back / opened as an MR. Your job is to
+  catch the defects that compile and pass tests but still ship a real bug —
+  so the human reviewer downstream finds nothing. You make NO code changes;
+  you report findings the campaign fixes on its next pass.
+
+  Read the `code-review-invariants` skill FIRST. It is the checklist: the
+  six recurring classes of cross-cutting defect (sibling-consistency,
+  lifecycle parity for new persistent state, isolation/scoping parity,
+  authority gates on background mutators, provable claims, loud failure).
+
+  Procedure:
+    1. If `build_passed` is false, the tree is mid-implementation — return
+       `clean: true` with empty findings immediately (the build failure is
+       handled by the deterministic gate; do not review a broken tree).
+    2. Review the branch's own work: `git diff $(git merge-base <base_ref or
+       the repo default branch> HEAD)` and the matching `--stat` for the
+       whole footprint.
+    3. For each new/changed unit, walk the invariant checklist. VERIFY a
+       suspected violation against the code (open the sibling, confirm the
+       boundary is really absent) before reporting — a false finding wastes
+       a whole pass.
+    4. `prior_findings` carries what you flagged last pass. Do NOT re-raise
+       unless the current diff still shows it unaddressed.
+
+  Blocking bar — be disciplined, this loop must converge:
+    - Block (`clean: false`) ONLY on a HIGH-CONFIDENCE defect in the six
+      invariant classes: a real correctness, security/isolation, lifecycle,
+      authority, false-claim, or silent-failure bug you have verified.
+    - Do NOT block on style, naming, preference, or "could be nicer". A diff
+      with no new persistent state, no new access path, no background
+      mutator, no over-claim, consistent with siblings, is CLEAN — say so.
+      A false block costs a whole campaign pass; under-flagging a nit is free.
+
+  Output: `clean` (true when nothing blocking) and `findings` (when not
+  clean: specific, actionable — file:line, which invariant, why it is a real
+  bug, the fix). Empty when clean.
+
+prompt review_user:
+  Review the working tree at {{vars.workspace_dir}}.
+  Base: {{input.base_ref}}   ·   build passed: {{input.build_passed}}
+
+  Findings you raised last pass (do not re-raise unless still unaddressed):
+  {{input.prior_findings}}
+
+  Adversarially review this branch's diff against the `code-review-invariants`
+  checklist. Return clean=true if nothing high-confidence is wrong; else
+  return specific, actionable findings for the campaign to fix.
+
 prompt finalize_mr_system:
   You finalize a converged branch-improvement run by opening ONE merge/pull
   request for the SERIES of per-pass commits this run produced, then
@@ -382,6 +445,37 @@ prompt finalize_mr_user:
 
   Push the branch, open the MR/PR, post the back-link when a source issue is
   given, and return the structured result.
+
+prompt post_feedback_system:
+  You are Billy leaving your review verdict AS A COMMENT on the pull request you
+  just hardened, so the author reads your conclusion in the forge — not only in
+  an iterion run they never see. Post ONE concise, respectful comment and stop.
+
+  ## How to post
+  Authenticate gh from the mounted forge token, then comment on the PR:
+    tok=$(cat /run/iterion/secrets/forge_token 2>/dev/null) || tok="$GH_TOKEN"
+    GH_TOKEN="$tok" gh pr comment <pr_url> --body-file <file>
+  Write the body to a scratch file (never inline a multi-paragraph --body). If
+  pr_url is empty, do nothing and return posted=false, note="no pr_url".
+
+  ## What to write (Markdown, no decorative bold, honest)
+  - A one-line verdict: "Reviewed clean — nothing to change." when the branch
+    was clean and you pushed nothing; else "Hardened this PR — pushed N fix(es)."
+  - 2–5 bullets of what you actually found / changed, grounded in the review
+    summary. Do NOT invent issues; if the summary says clean, say clean.
+  - If you pushed commits, note they are on this branch for the author to review.
+  - Sign off as an automated iterion review so the author knows it's a bot.
+
+  Do NOT re-review, re-run tests, or push code here — that already happened. This
+  node ONLY posts the comment. Return {posted, note}.
+
+prompt post_feedback_user:
+  PR to comment on (empty → skip): {{input.pr_url}}
+  Branch was clean (no real issues found): {{input.branch_clean}}
+  Commits pushed to the PR branch this run: {{input.commits_pushed}} ({{input.push_reason}})
+
+  Your review summary to distil into the comment:
+  {{input.review_summary}}
 
 ## ─── Schemas ────────────────────────────────────────────────────
 
@@ -437,8 +531,37 @@ schema gate_state:
   converged: bool
   fail_log: string
 
+## review is the in-loop adversarial self-review (ADR: push the downstream
+## review INTO the loop so the pushed-back branch ships pre-refined).
+schema review_input:
+  base_ref: string
+  build_passed: bool
+  prior_findings: string
+
+schema review_output:
+  clean: bool
+  findings: string
+
 schema mr_gate_output:
   open_mr: bool
+  push_back: bool
+
+## push_back_tool output — deterministic result of the PR-branch push.
+schema push_state:
+  pushed: bool
+  reason: string
+
+## post_pr_feedback I/O — Billy's review verdict comment on the PR.
+schema post_feedback_input:
+  pr_url: string
+  review_summary: string
+  branch_clean: bool
+  commits_pushed: bool
+  push_reason: string
+
+schema post_feedback_output:
+  posted: bool
+  note: string
 
 ## forge_auth_probe output — deterministic "can we push?" so finalize_mr (an
 ## LLM agent) is only ever entered when a push credential actually exists.
@@ -551,6 +674,15 @@ script = os.path.join(scratch, 'verify.sh')
 if not os.path.exists(script):
     print(json.dumps({'passed': True, 'skipped': True, 'exit_code': 0, 'log_tail': 'verify_build produced no verify.sh in the scratch dir; build/test gate SKIPPED (counted as pass, but surfaced) -- verify_build should write the script'}))
     raise SystemExit(0)
+def tree_state():
+    try:
+        p = subprocess.run(['git', '-C', ws, 'status', '--porcelain'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+        if p.returncode != 0:
+            return None
+        return set(l for l in p.stdout.splitlines() if l.strip())
+    except Exception:
+        return None
+pre = tree_state()
 rc = 0
 out = ''
 try:
@@ -563,6 +695,43 @@ except subprocess.TimeoutExpired as e:
 except Exception as e:
     out = 'verify_run could not execute the script: ' + str(e)
     rc = 1
+# Deterministic codegen-drift tail (stack-agnostic; the gate stays
+# deterministic per ADR-044). Only on a GREEN verify: (1) if the repo's own
+# CI enforces a drift gate, verify.sh must mirror it; (2) a green verify
+# must not leave new changes in the tree (regen output belongs in a commit).
+if rc == 0:
+    import glob
+    def has_drift_gate(text):
+        for l in text.splitlines():
+            if ('diff' in l and ('--exit-code' in l or '--quiet' in l)) or 'status --porcelain' in l:
+                return True
+        return False
+    ci_hit = ''
+    for pat in ('.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml'):
+        for f in sorted(glob.glob(os.path.join(ws, pat))):
+            try:
+                if has_drift_gate(open(f, encoding='utf-8', errors='replace').read()):
+                    ci_hit = os.path.relpath(f, ws)
+                    break
+            except OSError:
+                pass
+        if ci_hit:
+            break
+    if ci_hit:
+        try:
+            vs = open(script, encoding='utf-8', errors='replace').read()
+        except OSError:
+            vs = ''
+        if not has_drift_gate(vs):
+            rc = 3
+            out = out + chr(10) + 'DRIFT GATE MISSING: CI (' + ci_hit + ') enforces a codegen-drift gate but ' + script + ' has none -- edit the script per the verify-build skill section 1b (run the repo regen command, then: git diff --exit-code).'
+    if rc == 0 and pre is not None:
+        post = tree_state()
+        if post is not None:
+            fresh = sorted(post - pre)
+            if fresh:
+                rc = 4
+                out = out + chr(10) + 'UNCOMMITTED REGEN OUTPUT: a green verify left new changes in the tree; commit (or gitignore) them:' + chr(10) + chr(10).join(fresh[:50])
 try:
     with open(os.path.join(scratch, 'verify.log'), 'w', encoding='utf-8') as lf:
         lf.write(out)
@@ -579,18 +748,39 @@ print(json.dumps({'passed': rc == 0, 'skipped': False, 'exit_code': rc, 'log_tai
 ## converged = green AND the branch diff is clean. On a RED pass fail_log
 ## carries the real build failure to the campaign; empty when green. No LLM,
 ## no shell.
+## review — adversarial in-loop self-review (readonly). Runs after the
+## deterministic build gate; reads the code-review-invariants skill and the
+## branch diff, and blocks convergence ONLY on a high-confidence defect in
+## the six invariant classes. The downstream reviewer's job, moved into the
+## loop so the pushed-back branch ships clean. claude_code (read/git), readonly.
+agent review:
+  backend: "claude_code"
+  model: "${ITERION_VIBE_MODEL_REVIEW:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_VIBE_EFFORT_REVIEW:-high}"
+  input: review_input
+  output: review_output
+  system: review_system
+  user: review_user
+  session: fresh
+  readonly: true
+
 compute gate:
   output: gate_state
   expr:
-    converged: "outputs.verify_run.passed && outputs.campaign.branch_clean"
-    fail_log: "if(outputs.verify_run.passed, '', outputs.verify_run.log_tail)"
+    converged: "outputs.verify_run.passed && outputs.campaign.branch_clean && outputs.review.clean"
+    fail_log: "if(outputs.verify_run.passed, if(outputs.review.clean, '', outputs.review.findings), outputs.verify_run.log_tail)"
 
-## mr_gate lifts vars.open_mr into a bool output field so the two outgoing
-## edges use the C012-exhaustive simple form. No LLM, no shell.
+## mr_gate routes the post-convergence tail into at most ONE of two
+## mutually-exclusive booleans (the unconditional edge to done is the C012
+## fallback when neither matches): open_mr (finalize path), push_back
+## (PR-context: no MR wanted but a target forge branch is declared — whether
+## anything NEW exists to push is decided by push_back_tool's own rev-list,
+## the in-repo truth across all passes). No LLM, no shell.
 compute mr_gate:
   output: mr_gate_output
   expr:
     open_mr: "vars.open_mr"
+    push_back: "!vars.open_mr && vars.push_branch != ''"
 
 ## forge_auth_probe — DETERMINISTIC pre-flight for the push. finalize_mr is an
 ## LLM agent (claude_code, opus); entering it with NO push credential mounted
@@ -621,6 +811,83 @@ print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOK
 "`
   output: forge_auth_state
 
+## push_auth_probe — the push-back path's copy of the credential pre-flight
+## (a graph node is a unique instance, so the open_mr and push_back paths
+## each carry their own probe). Same contract as forge_auth_probe.
+tool push_auth_probe:
+  command: `python3 -c "
+import os, subprocess, json
+tok = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(tok) and os.path.getsize(tok) > 0:
+        print(json.dumps({'available': True, 'reason': 'file:' + tok})); raise SystemExit(0)
+except OSError:
+    pass
+for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+    if os.environ.get(v):
+        print(json.dumps({'available': True, 'reason': 'env:' + v})); raise SystemExit(0)
+try:
+    r = subprocess.run(['gh', 'auth', 'status'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if r.returncode == 0:
+        print(json.dumps({'available': True, 'reason': 'gh host auth'})); raise SystemExit(0)
+except Exception:
+    pass
+print(json.dumps({'available': False, 'reason': 'no forge_token secret, no *_TOKEN env, no gh host auth'}))
+"`
+  output: forge_auth_state
+
+## push_back_tool — DETERMINISTIC push of the run's HEAD onto the declared
+## forge branch (the PR's source branch). The in-repo truth decides: when
+## rev-list shows nothing new over origin/<push_branch> it no-ops cleanly, so
+## a converged-with-no-commits pass never errors. The token comes from the
+## mounted forge_token secret or a *_TOKEN env and is redacted from any
+## failure output; it is tried under the common forge basic-auth usernames
+## (x-access-token = GitHub, oauth2 = GitLab-style). No LLM — the push is a
+## mechanical act once the campaign banked the commits.
+tool push_back_tool:
+  command: `PUSH_BRANCH={{vars.push_branch}} python3 -c "
+import os, subprocess, json, re
+branch = os.environ.get('PUSH_BRANCH', '').strip()
+if not branch:
+    print(json.dumps({'pushed': False, 'reason': 'no push_branch declared'})); raise SystemExit(0)
+def run(*a, **kw):
+    return subprocess.run(list(a), capture_output=True, text=True, timeout=kw.get('timeout', 120))
+r = run('git', 'fetch', 'origin', branch)
+if r.returncode != 0:
+    print(json.dumps({'pushed': False, 'reason': 'fetch origin/' + branch + ' failed: ' + (r.stderr or r.stdout).strip()[-160:]})); raise SystemExit(0)
+r = run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD')
+ahead = int((r.stdout or '0').strip() or '0') if r.returncode == 0 else -1
+if ahead == 0:
+    print(json.dumps({'pushed': False, 'reason': 'nothing to push: HEAD not ahead of origin/' + branch})); raise SystemExit(0)
+tok = ''
+p = '/run/iterion/secrets/forge_token'
+try:
+    if os.path.isfile(p) and os.path.getsize(p) > 0:
+        tok = open(p).read().strip()
+except OSError:
+    pass
+if not tok:
+    for v in ('GH_TOKEN', 'GITHUB_TOKEN', 'GITLAB_TOKEN', 'FORGEJO_TOKEN', 'GITEA_TOKEN'):
+        if os.environ.get(v):
+            tok = os.environ[v].strip(); break
+if not tok:
+    print(json.dumps({'pushed': False, 'reason': 'no forge token available'})); raise SystemExit(0)
+r = run('git', 'remote', 'get-url', 'origin')
+m = re.match(r'https://(?:[^@/]+@)?([^/]+)/(.+?)(?:\\.git)?$', (r.stdout or '').strip())
+if not m:
+    print(json.dumps({'pushed': False, 'reason': 'origin is not an https remote'})); raise SystemExit(0)
+host, path = m.group(1), m.group(2)
+last = ''
+for user in ('x-access-token', 'oauth2'):
+    url = 'https://' + user + ':' + tok + '@' + host + '/' + path + '.git'
+    r = run('git', 'push', url, 'HEAD:refs/heads/' + branch, timeout=180)
+    if r.returncode == 0:
+        print(json.dumps({'pushed': True, 'reason': 'pushed ' + str(ahead) + ' commit(s) HEAD->' + branch + ' as ' + user})); raise SystemExit(0)
+    last = (r.stderr or r.stdout).strip().replace(tok, '***')[-200:]
+print(json.dumps({'pushed': False, 'reason': 'push failed: ' + last}))
+"`
+  output: push_state
+
 ## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-pass commits.
 ## claude_code so the bundled forge-mr-create skill is mirrored and the board
 ## comment tool (native back-link) is available. Only reached when
@@ -639,6 +906,22 @@ agent finalize_mr:
   ## headroom for a degenerate credential-probe spin that forge_auth_probe now
   ## makes impossible (the node is only entered when a push credential exists).
   tool_max_steps: 20
+
+## post_pr_feedback — Billy leaves his review verdict as a COMMENT on the PR he
+## just hardened, so the author sees the conclusion in the forge. claude_code
+## for gh + the mounted forge_token; low effort (it only distils a summary +
+## posts one comment). Reached on the PR-context path after push_back_tool.
+agent post_pr_feedback:
+  backend: "claude_code"
+  model: "${ITERION_BRANCH_IMPROVE_FEEDBACK_MODEL:-claude-opus-4-8}"
+  reasoning_effort: "${ITERION_BRANCH_IMPROVE_FEEDBACK_EFFORT:-low}"
+  input: post_feedback_input
+  output: post_feedback_output
+  system: post_feedback_system
+  user: post_feedback_user
+  tools: [bash, read_file]
+  ## ~3-5 commands nominal (write body file + gh pr comment); 8 is headroom.
+  tool_max_steps: 8
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -689,7 +972,13 @@ workflow branch_improve_loop:
   verify_probe -> verify_run when fresh
   verify_probe -> verify_build when not fresh
   verify_build -> verify_run
-  verify_run -> gate
+  ## In-loop adversarial review of the branch diff before the gate decides.
+  verify_run -> review with {
+    base_ref:       "{{vars.base_ref}}",
+    build_passed:   "{{outputs.verify_run.passed}}",
+    prior_findings: "{{outputs.gate.fail_log}}"
+  }
+  review -> gate
 
   ## Converged (green AND the campaign reports the branch diff clean) → ship
   ## what is banked (optional MR, else finish).
@@ -708,11 +997,32 @@ workflow branch_improve_loop:
   ## Unconditional fallthrough after the loop-back retries are spent.
   gate -> mr_gate
 
-  ## Converged (or capped) → optional MR path, else finish. When open_mr, first
-  ## the deterministic forge_auth_probe checks a push credential EXISTS before we
-  ## pay the finalize_mr agent turn.
+  ## Converged (or capped) → exactly one of: MR path, PR push-back path, or
+  ## finish (mr_gate's three booleans are mutually exclusive). Each remote
+  ## path first pays a ~100ms deterministic credential probe before any
+  ## agent/push work.
   mr_gate -> forge_auth_probe when open_mr
-  mr_gate -> done when not open_mr
+  mr_gate -> push_auth_probe when push_back
+  mr_gate -> done
+
+  ## PR-context push-back: credential present → deterministically push the
+  ## run's HEAD onto the PR's source branch (push_back_tool no-ops when
+  ## rev-list shows nothing new). Absent → finish; the commits stay on the
+  ## engine's storage branch (ephemeral on cloud runners — the probe result
+  ## says why in the run report).
+  push_auth_probe -> push_back_tool when available
+  push_auth_probe -> done when not available
+  ## After the deterministic push (pushed or clean no-op), Billy posts his
+  ## review verdict as a comment ON the PR so the author reads the conclusion
+  ## in the forge, carrying the campaign summary + the push result.
+  push_back_tool -> post_pr_feedback with {
+    pr_url:         "{{vars.pr_url}}",
+    review_summary: "{{outputs.campaign.summary}}",
+    branch_clean:   "{{outputs.campaign.branch_clean}}",
+    commits_pushed: "{{outputs.push_back_tool.pushed}}",
+    push_reason:    "{{outputs.push_back_tool.reason}}"
+  }
+  post_pr_feedback -> done
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
   ## per-pass commits) + opens the MR/PR and (when source_issue_ref is set)

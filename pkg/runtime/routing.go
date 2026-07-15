@@ -45,7 +45,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	}
 
 	// Emit router node_started with round-robin metadata.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
 		"kind":              "router",
 		"mode":              "round_robin",
 		"iteration":         e.currentLoopIteration(routerNodeID, rs.loopCounters),
@@ -68,7 +68,7 @@ func (e *Engine) execRoundRobin(ctx context.Context, rs *runState, routerNodeID 
 	// `iterion inspect --events`) can reconstruct the path taken. The
 	// condition + LLM router paths already emit this; the round-robin
 	// branch had been the only mode skipping it.
-	if err := e.emit(rs.ctx, rs.runID, store.EventEdgeSelected, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventEdgeSelected, routerNodeID, map[string]any{
 		"from":              routerNodeID,
 		"to":                selected.To,
 		"round_robin_index": counter,
@@ -95,7 +95,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 
 	// Emit node_started.
 	iter := e.currentLoopIteration(routerNodeID, rs.loopCounters)
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeStarted, routerNodeID, map[string]any{
 		"kind":      "router",
 		"mode":      "llm",
 		"iteration": iter,
@@ -150,7 +150,7 @@ func (e *Engine) execLLMRouter(ctx context.Context, rs *runState, routerNodeID s
 }
 
 // execLLMRouterSingle handles single-route LLM selection.
-func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output map[string]interface{}, candidates []string) (string, error) {
+func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output map[string]any, candidates []string) (string, error) {
 	selected, ok := output["selected_route"].(string)
 	if !ok || selected == "" {
 		return "", &RuntimeError{
@@ -179,7 +179,7 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 	reasoning, _ := output["reasoning"].(string)
 
 	// Emit node_finished.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
 		"selected_route": selected,
 		"reasoning":      reasoning,
 	}); err != nil {
@@ -187,7 +187,7 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 	}
 
 	// Emit edge_selected.
-	if err := e.emit(rs.ctx, rs.runID, store.EventEdgeSelected, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventEdgeSelected, routerNodeID, map[string]any{
 		"from": routerNodeID,
 		"to":   selected,
 	}); err != nil {
@@ -199,7 +199,7 @@ func (e *Engine) execLLMRouterSingle(rs *runState, routerNodeID string, output m
 
 // execLLMRouterMulti handles multi-route LLM selection by fanning out
 // to the LLM-selected subset of outgoing edges.
-func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNodeID string, output map[string]interface{}, candidates []string) (string, error) {
+func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNodeID string, output map[string]any, candidates []string) (string, error) {
 	selectedRaw, ok := output["selected_routes"]
 	if !ok {
 		return "", &RuntimeError{
@@ -212,7 +212,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	// Parse selected routes from the output.
 	var selected []string
 	switch v := selectedRaw.(type) {
-	case []interface{}:
+	case []any:
 		for _, item := range v {
 			s, ok := item.(string)
 			if !ok {
@@ -260,7 +260,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	reasoning, _ := output["reasoning"].(string)
 
 	// Emit node_finished.
-	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]interface{}{
+	if err := e.emit(rs.ctx, rs.runID, store.EventNodeFinished, routerNodeID, map[string]any{
 		"selected_routes": selected,
 		"reasoning":       reasoning,
 	}); err != nil {
@@ -286,7 +286,7 @@ func (e *Engine) execLLMRouterMulti(ctx context.Context, rs *runState, routerNod
 	branchCtx, cancelBranches := context.WithCancel(ctx)
 	defer cancelBranches()
 	resultsCh := e.launchBranches(branchCtx, cancelBranches, rs, routerNodeID, plan)
-	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, len(plan.edges), routerNodeID, "llm_router_multi")
+	results, ctxErr := e.collectBranches(ctx, branchCtx, cancelBranches, resultsCh, plan.branchIDs(routerNodeID), rs, routerNodeID, "llm_router_multi")
 	if ctxErr != nil {
 		return "", e.wrapContextErr(ctxErr)
 	}

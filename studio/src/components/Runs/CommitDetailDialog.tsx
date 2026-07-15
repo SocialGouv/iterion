@@ -244,6 +244,13 @@ function CommitFileDiff({ runId, sha, path }: CommitFileDiffProps) {
       </div>
     );
   }
+  if (diff.oversized) {
+    return (
+      <div className="h-full flex items-center justify-center text-sm text-fg-subtle">
+        File too large to display
+      </div>
+    );
+  }
   return (
     <DiffEditor
       theme={monacoTheme}

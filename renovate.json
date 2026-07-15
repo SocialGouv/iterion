@@ -25,6 +25,17 @@
       "depNameTemplate": "go",
       "datasourceTemplate": "golang-version",
       "versioningTemplate": "go"
+    },
+    {
+      "customType": "regex",
+      "description": "Inline `# renovate: datasource=… depName=… versioning=…` pins. Captures the version on the line right after the comment, in ANY file (e.g. the pinned firecrawl-mcp in Dockerfile.runner-devbox's ARG and pkg/plugin/builtin/firecrawl/plugin.yaml's npx arg — both MUST stay in lockstep, so a bump PR touches both). To pin another tool anywhere, drop the same comment above its version line.",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile\\.runner-devbox$/",
+        "/(^|/)pkg/plugin/builtin/firecrawl/plugin\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+[^\\n]*?(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ]
     }
   ],
   "packageRules": [
@@ -75,7 +86,15 @@
     {
       "description": "Group devbox (Nix) version-pinned package updates from the custom manager.",
       "matchManagers": ["custom.regex"],
+      "matchDepNames": ["go"],
       "groupName": "devbox"
+    },
+    {
+      "description": "firecrawl-mcp is pinned in BOTH the runner Dockerfile ARG and the firecrawl plugin manifest; group them so one PR bumps both in lockstep. Labelled security — it's a supply-chain-sensitive runtime download baked into the runner image.",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["firecrawl-mcp"],
+      "groupName": "firecrawl-mcp",
+      "labels": ["dependencies", "security"]
     }
   ],
   "vulnerabilityAlerts": {

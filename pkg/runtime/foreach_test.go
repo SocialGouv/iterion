@@ -64,19 +64,19 @@ func TestForeachSequential(t *testing.T) {
 	var got []string
 
 	exec := newStubExecutor()
-	exec.on("entry", func(_ map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{"items": []interface{}{
-			map[string]interface{}{"id": "a"},
-			map[string]interface{}{"id": "b"},
-			map[string]interface{}{"id": "c"},
+	exec.on("entry", func(_ map[string]any) (map[string]any, error) {
+		return map[string]any{"items": []any{
+			map[string]any{"id": "a"},
+			map[string]any{"id": "b"},
+			map[string]any{"id": "c"},
 		}}, nil
 	})
-	exec.on("proc", func(input map[string]interface{}) (map[string]interface{}, error) {
+	exec.on("proc", func(input map[string]any) (map[string]any, error) {
 		id, _ := input["id"].(string)
 		mu.Lock()
 		got = append(got, id)
 		mu.Unlock()
-		return map[string]interface{}{"ok": true}, nil
+		return map[string]any{"ok": true}, nil
 	})
 
 	s := tmpStore(t)

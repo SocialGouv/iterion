@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -493,6 +494,22 @@ func parseSSEData(data string) (StreamEvent, error) {
 //     adaptive where required and an "off" sentinel suppressing the default;
 //   - temperature/top_p are omitted on models that reject them (400), and
 //     frequency/presence penalties are never forwarded (not Messages API params).
+// thinkingDisplayLevel resolves the thinking.display value applied to
+// adaptive requests that don't set one. Default "summarized" (readable
+// summary text); CLAW_ANTHROPIC_THINKING_DISPLAY overrides — "omitted"
+// trades visibility for faster time-to-first-text-token, "off" stops
+// sending the field entirely.
+func thinkingDisplayLevel() string {
+	switch v := os.Getenv("CLAW_ANTHROPIC_THINKING_DISPLAY"); v {
+	case "":
+		return "summarized"
+	case "off":
+		return ""
+	default:
+		return v
+	}
+}
+
 func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 	wireMessages := stripInternalFields(req.Messages)
 
@@ -537,6 +554,16 @@ func marshalAnthropicRequest(req CreateMessageRequest) ([]byte, error) {
 		case profile.ThinkingMode == "adaptive" && thinking.Type == "enabled":
 			thinking = &ThinkingConfig{Type: "adaptive"} // manual budgets 400 here
 		}
+	}
+	// Thinking display: Opus 4.8/4.7 and Sonnet 5 default display to
+	// "omitted" (empty thinking text, signature only), so request the
+	// readable summary on adaptive requests unless the caller set one.
+	// CLAW_ANTHROPIC_THINKING_DISPLAY overrides ("off" disables sending
+	// the field — kill-switch for endpoints that reject it).
+	if thinking != nil && thinking.Type == "adaptive" && thinking.Display == "" {
+		cp := *thinking
+		cp.Display = thinkingDisplayLevel()
+		thinking = &cp
 	}
 
 	// Sampling params the model rejects must be omitted.

@@ -2,7 +2,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeftIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
 
-import { Button, Dialog, Input } from "@/components/ui";
+import { Button, Dialog, Input, Spinner } from "@/components/ui";
 import { listFilesystem, type FilesystemListing } from "@/api/projects";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { ErrorNotice } from "@/components/shared/ErrorNotice";
@@ -191,7 +191,9 @@ function BrowsePanel({ initialPath, onPick, onBack }: BrowsePanelProps) {
       </div>
       <div className="max-h-72 overflow-y-auto border border-border-default rounded bg-surface-1">
         {loading && (
-          <div className="px-3 py-2 text-micro text-fg-subtle italic">Loading…</div>
+          <div className="flex items-center gap-1.5 px-3 py-2 text-micro text-fg-subtle">
+            <Spinner size="xs" /> Loading…
+          </div>
         )}
         {error && <ErrorNotice error={error} />}
         {listing && !loading && listing.entries.length === 0 && (

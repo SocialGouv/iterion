@@ -10,7 +10,7 @@ import (
 // parseSDKOutput converts SDK result fields into a delegate Result.Output map.
 // It prioritizes structuredOutput over resultText, falling back to JSON extraction
 // from markdown and finally plain text wrapping.
-func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]interface{}, rawLen int, fallback bool) {
+func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.RawMessage) (output map[string]any, rawLen int, fallback bool) {
 	// Priority 1: structured output from SDK — only when non-empty.
 	// claude-code's stream-json emits `structured_output: {}` for
 	// tool-using sessions where no second-pass formatter ran (i.e.
@@ -21,7 +21,7 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 	// resultText path so the assistant's final markdown JSON block
 	// can be extracted instead.
 	if structuredOutput != nil {
-		if obj, ok := structuredOutput.(map[string]interface{}); ok {
+		if obj, ok := structuredOutput.(map[string]any); ok {
 			if len(obj) > 0 {
 				return obj, 0, false
 			}
@@ -29,7 +29,7 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 			// Non-map types: round-trip via JSON.
 			b, err := json.Marshal(structuredOutput)
 			if err == nil {
-				var obj map[string]interface{}
+				var obj map[string]any
 				if json.Unmarshal(b, &obj) == nil && len(obj) > 0 {
 					return obj, len(b), false
 				}
@@ -43,7 +43,7 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 		rawLen = len(text)
 
 		// Try direct JSON object parse.
-		var obj map[string]interface{}
+		var obj map[string]any
 		if json.Unmarshal([]byte(text), &obj) == nil {
 			return obj, rawLen, false
 		}
@@ -55,13 +55,46 @@ func parseSDKOutput(resultText *string, structuredOutput any, outputSchema json.
 			}
 		}
 
-		// Fallback: wrap raw text.
-		output = map[string]interface{}{"text": text}
+		// Fallback: wrap raw text. If the output schema expects exactly one
+		// required field of type "string" (e.g. shell_result {result}), a
+		// text-only backend — kimi, or any CLI agent that cannot emit a
+		// JSON-schema-shaped result like claude_code/codex do — satisfies it
+		// by placing its final text in that field. Treat this as a VALID
+		// result (fallback=false), not a validation failure. Multi-field or
+		// non-string schemas still require real JSON and keep the {"text":…}
+		// fallback so the retry path can ask the model for structured output.
+		if field := singleRequiredStringField(outputSchema); field != "" {
+			return map[string]any{field: text}, rawLen, false
+		}
+		output = map[string]any{"text": text}
 		fb := len(outputSchema) > 0
 		return output, rawLen, fb
 	}
 
-	return map[string]interface{}{}, 0, false
+	return map[string]any{}, 0, false
+}
+
+// singleRequiredStringField returns the name of the schema's sole required
+// field when that field is of type "string", or "" otherwise. Lets a
+// text-output backend satisfy a single-string-field schema (e.g. shell_result)
+// by wrapping its final text under that field.
+func singleRequiredStringField(outputSchema json.RawMessage) string {
+	if len(outputSchema) == 0 {
+		return ""
+	}
+	var s struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(outputSchema, &s) != nil || len(s.Required) != 1 {
+		return ""
+	}
+	if prop, ok := s.Properties[s.Required[0]]; ok && prop.Type == "string" {
+		return s.Required[0]
+	}
+	return ""
 }
 
 // validateWorkDir checks that workDir resolves to a path within baseDir.

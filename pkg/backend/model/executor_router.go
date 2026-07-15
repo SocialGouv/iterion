@@ -114,7 +114,7 @@ func routerRoutingInstruction(candidates []string) string {
 }
 
 // executeLLMRouterUnified is the unified LLM router path that works with any backend.
-func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.RouterNode, input map[string]interface{}) (map[string]interface{}, error) {
+func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.RouterNode, input map[string]any) (map[string]any, error) {
 	backendName := e.resolveBackendName(node)
 
 	if e.backendRegistry == nil {
@@ -135,7 +135,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	switch v := candidatesRaw.(type) {
 	case []string:
 		candidates = v
-	case []interface{}:
+	case []any:
 		for _, item := range v {
 			s, ok := item.(string)
 			if !ok {
@@ -148,7 +148,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	}
 
 	// Build clean input (without internal keys) for the prompt.
-	cleanInput := make(map[string]interface{})
+	cleanInput := make(map[string]any)
 	for k, v := range input {
 		if !strings.HasPrefix(k, "_") {
 			cleanInput[k] = v
@@ -223,7 +223,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 	// extraction from the text. Routers must produce structured output.
 	if result.ParseFallback {
 		if textVal, ok := output["text"].(string); ok {
-			var parsed map[string]interface{}
+			var parsed map[string]any
 			if json.Unmarshal([]byte(textVal), &parsed) == nil {
 				output = parsed
 			} else {
@@ -260,7 +260,7 @@ func (e *ClawExecutor) executeLLMRouterUnified(ctx context.Context, node *ir.Rou
 //
 // Valid values are defined in ir.ValidReasoningEfforts: low, medium, high, xhigh, max.
 // Invalid dynamic values are silently ignored (falls back to the static property).
-func resolveReasoningEffort(nodeEffort string, input map[string]interface{}) string {
+func resolveReasoningEffort(nodeEffort string, input map[string]any) string {
 	if v, ok := input["_reasoning_effort"]; ok {
 		if s, ok := v.(string); ok && ir.ValidReasoningEfforts[s] {
 			return s

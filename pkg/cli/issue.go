@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,8 +9,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
+	"github.com/SocialGouv/iterion/pkg/forge"
+	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -315,6 +319,67 @@ func RunIssueClose(p *Printer, opts IssueRefOptions) error {
 		return nil
 	}
 	p.Line("Closed %s → %s", shortID(iss.ID), iss.State)
+	return nil
+}
+
+// IssueImportOptions captures the flags for `iterion issue import`: mirror a
+// self-hosted forge repo's issues into the native board.
+type IssueImportOptions struct {
+	IssueCommonOptions
+	Forge    string // github | forgejo | gitlab
+	Repo     string // owner/name
+	TokenEnv string // NAME of the env var holding the forge token (never the value)
+	BaseURL  string // forge API base; empty = provider default
+	Since    string // RFC3339; empty = full re-sync
+}
+
+// RunIssueImport imports a forge repo's issues into the native board, reusing
+// the store-agnostic sync core via server.ImportForgeIssues. The token is read
+// only from the NAMED env var (secrets discipline — never a flag value). The
+// import is idempotent: re-running upserts existing cards instead of
+// duplicating them.
+func RunIssueImport(p *Printer, opts IssueImportOptions) error {
+	provider := forge.Provider(strings.TrimSpace(opts.Forge))
+	if !provider.Valid() {
+		return fmt.Errorf("issue import: --forge must be one of github|forgejo|gitlab, got %q", opts.Forge)
+	}
+	if strings.TrimSpace(opts.Repo) == "" {
+		return errors.New("issue import: --repo is required (owner/name)")
+	}
+	if strings.TrimSpace(opts.TokenEnv) == "" {
+		return errors.New("issue import: --token-env is required (name of the env var holding the forge token)")
+	}
+	token := os.Getenv(opts.TokenEnv)
+	if token == "" {
+		return fmt.Errorf("issue import: env var %q is empty or unset", opts.TokenEnv)
+	}
+	var since time.Time
+	if s := strings.TrimSpace(opts.Since); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return fmt.Errorf("issue import: --since must be RFC3339, got %q: %w", opts.Since, err)
+		}
+		since = t
+	}
+	board, _, err := openNativeStore(opts.IssueCommonOptions)
+	if err != nil {
+		return err
+	}
+	created, updated, err := server.ImportForgeIssues(
+		context.Background(), provider, strings.TrimSpace(opts.BaseURL), token, opts.Repo, board, since)
+	if err != nil {
+		return fmt.Errorf("issue import: %w", err)
+	}
+	if p.Format == OutputJSON {
+		p.JSON(struct {
+			Created int `json:"created"`
+			Updated int `json:"updated"`
+		}{Created: created, Updated: updated})
+		return nil
+	}
+	p.Line("Imported %s from %s", opts.Repo, provider)
+	p.KV("Created", strconv.Itoa(created))
+	p.KV("Updated", strconv.Itoa(updated))
 	return nil
 }
 

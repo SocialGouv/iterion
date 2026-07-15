@@ -18,9 +18,16 @@ import "time"
 type EventType string
 
 const (
-	EventRunStarted         EventType = "run_started"
-	EventBranchStarted      EventType = "branch_started"
-	EventBranchFinished     EventType = "branch_finished"
+	EventRunStarted     EventType = "run_started"
+	EventBranchStarted  EventType = "branch_started"
+	EventBranchFinished EventType = "branch_finished"
+	// EventBranchAbandoned marks a fan-out branch still running when the
+	// collector stopped waiting for it (cancelled fan-out + grace period
+	// elapsed — a branch wedged in executor.Execute ignoring ctx). The
+	// branch has no branch_finished; consumers use this to close the
+	// in-flight gauge and surface the potential resource leak.
+	// Data: {router, mode, grace_period, reason}
+	EventBranchAbandoned    EventType = "branch_abandoned"
 	EventNodeStarted        EventType = "node_started"
 	EventLLMRequest         EventType = "llm_request"
 	EventLLMPrompt          EventType = "llm_prompt"
@@ -255,13 +262,13 @@ const (
 // time field) + run_id partition key. The Mongo backend assigns _id
 // itself (ObjectId), so we don't expose one here.
 type Event struct {
-	Seq       int64                  `json:"seq" bson:"seq"`      // monotonic sequence within the run
-	Timestamp time.Time              `json:"timestamp" bson:"ts"` // wall-clock time
-	Type      EventType              `json:"type" bson:"type"`
-	RunID     string                 `json:"run_id" bson:"run_id"`
-	BranchID  string                 `json:"branch_id,omitempty" bson:"branch_id,omitempty"`
-	NodeID    string                 `json:"node_id,omitempty" bson:"node_id,omitempty"`
-	Data      map[string]interface{} `json:"data,omitempty" bson:"data,omitempty"`
+	Seq       int64          `json:"seq" bson:"seq"`      // monotonic sequence within the run
+	Timestamp time.Time      `json:"timestamp" bson:"ts"` // wall-clock time
+	Type      EventType      `json:"type" bson:"type"`
+	RunID     string         `json:"run_id" bson:"run_id"`
+	BranchID  string         `json:"branch_id,omitempty" bson:"branch_id,omitempty"`
+	NodeID    string         `json:"node_id,omitempty" bson:"node_id,omitempty"`
+	Data      map[string]any `json:"data,omitempty" bson:"data,omitempty"`
 	// TenantID partitions events for change-stream + RBAC filtering.
 	// Stamped from ctx at write time in cloud mode; empty for local
 	// runs and legacy filesystem events.

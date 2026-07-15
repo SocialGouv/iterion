@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
+import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
@@ -108,6 +109,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           onCreate={canManage ? () => setCreating("team") : undefined}
         />
         <SecretsTable
+          caption="Team secrets"
           secrets={teamSecrets}
           loading={loading}
           emptyText={
@@ -128,6 +130,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           onCreate={() => setCreating("me")}
         />
         <SecretsTable
+          caption="My secrets"
           secrets={mySecrets}
           loading={loading}
           emptyText="No personal secrets yet."
@@ -200,6 +203,7 @@ function SecretsSectionHeader({
 }
 
 function SecretsTable({
+  caption,
   secrets,
   loading,
   emptyText,
@@ -207,6 +211,7 @@ function SecretsTable({
   onRotate,
   onDelete,
 }: {
+  caption: string;
   secrets: GenericSecretView[];
   loading: boolean;
   emptyText: string;
@@ -214,35 +219,33 @@ function SecretsTable({
   onRotate: (rec: GenericSecretView) => void;
   onDelete: (rec: GenericSecretView) => void;
 }) {
-  if (loading) return <EmptyState message="Loading…" />;
+  if (loading) return <TableSkeleton rows={4} cols={6} />;
   if (secrets.length === 0) return <EmptyState message={emptyText} />;
   return (
-    <div className="overflow-x-auto"><table className="w-full text-sm">
-      <thead className="text-xs uppercase tracking-wider text-fg-muted text-left">
-        <tr>
-          <th className="px-2 py-1">Name</th>
-          <th className="px-2 py-1">Last4</th>
-          <th className="px-2 py-1">Fingerprint</th>
-          <th className="px-2 py-1">Created</th>
-          <th className="px-2 py-1">Last used</th>
-          <th className="px-2 py-1 text-right">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table caption={caption}>
+      <THead>
+        <Th>Name</Th>
+        <Th>Last4</Th>
+        <Th>Fingerprint</Th>
+        <Th>Created</Th>
+        <Th>Last used</Th>
+        <Th align="right">Actions</Th>
+      </THead>
+      <TBody>
         {secrets.map((s) => (
-          <tr key={s.id} className="border-t border-border-subtle">
-            <td className="px-2 py-2 font-mono">{s.name}</td>
-            <td className="px-2 py-2 font-mono text-fg-muted">…{s.last4 ?? "????"}</td>
-            <td className="px-2 py-2 font-mono text-fg-muted text-xs break-all">
+          <Tr key={s.id}>
+            <Td className="font-mono">{s.name}</Td>
+            <Td className="font-mono text-fg-muted">…{s.last4 ?? "????"}</Td>
+            <Td className="font-mono text-fg-muted text-xs break-all">
               {s.fingerprint ? s.fingerprint.slice(0, 12) : "—"}
-            </td>
-            <td className="px-2 py-2 text-fg-muted text-xs">
+            </Td>
+            <Td className="text-fg-muted text-xs">
               {new Date(s.created_at).toLocaleString()}
-            </td>
-            <td className="px-2 py-2 text-fg-muted text-xs">
+            </Td>
+            <Td className="text-fg-muted text-xs">
               {s.last_used_at ? new Date(s.last_used_at).toLocaleString() : "—"}
-            </td>
-            <td className="px-2 py-2 text-right space-x-1 whitespace-nowrap">
+            </Td>
+            <Td align="right" className="space-x-1 whitespace-nowrap">
               {canManage && (
                 <>
                   <Button size="sm" variant="ghost" onClick={() => onRotate(s)}>
@@ -258,11 +261,11 @@ function SecretsTable({
                   </Button>
                 </>
               )}
-            </td>
-          </tr>
+            </Td>
+          </Tr>
         ))}
-      </tbody>
-    </table></div>
+      </TBody>
+    </Table>
   );
 }
 

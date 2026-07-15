@@ -15,6 +15,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
       <textarea
         ref={ref}
         className={`${base} ${ringClass} ${className}`.trim()}
+        aria-invalid={error || undefined}
         {...rest}
       />
     );

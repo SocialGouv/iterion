@@ -44,10 +44,10 @@ type PlanSnapshot struct {
 // PlanStore is an optional interface implemented by stores that persist
 // the chronological plan snapshots a run's agents produce via their
 // TodoWrite/todo_write tool. The filesystem store backs it with
-// runs/<id>/plans/<NNNN>.json (zero-padded sequence). Mongo (cloud)
-// stores do NOT implement it today; the capture hook nil-checks and
-// simply skips persistence in that case (see the cloud-parity note in
-// AsPlanStore).
+// runs/<id>/plans/<NNNN>.json (zero-padded sequence); the Mongo (cloud)
+// store backs it with the run_plans collection (one doc per snapshot,
+// keyed run_id + seq). The capture hook still nil-checks so a store
+// without the seam simply skips persistence.
 //
 // Persistence is best-effort: the caller (the tool-started hook) must
 // never fail an in-flight LLM call on a plan-write error.
@@ -59,6 +59,13 @@ type PlanStore interface {
 	// (previous, false, nil) is returned — TodoWrite fires often with no
 	// change. Otherwise the snapshot is written and (snap, true, nil) is
 	// returned with Seq populated.
+	//
+	// The dedupe is best-effort under CONCURRENT identical appends: the
+	// filesystem impl serialises under a mutex, but the Mongo impl's
+	// counter allocation gives racing identical writers distinct seqs, so
+	// both may persist. A run's snapshots come from one process, so the
+	// race is theoretical; the cost is a redundant identical snapshot,
+	// never a lost one.
 	AppendPlanSnapshot(ctx context.Context, runID string, snap PlanSnapshot) (PlanSnapshot, bool, error)
 	// ListPlanSnapshots returns every persisted plan snapshot for the run
 	// in chronological (ascending Seq) order. A run with no plans/ dir
@@ -67,11 +74,10 @@ type PlanStore interface {
 }
 
 // AsPlanStore returns s as PlanStore when the backend persists plan
-// snapshots, or nil otherwise. Filesystem stores satisfy it; cloud
-// (Mongo) stores currently do not — the seam mirrors RunLogStore /
-// ToolBlobStore, so a future Mongo-backed plans collection slots in
-// behind the same interface without touching the capture hook or the
-// HTTP surface. Callers MUST nil-check.
+// snapshots, or nil otherwise. Both the filesystem store and the Mongo
+// (cloud) store satisfy it — the seam mirrors RunLogStore / ToolBlobStore,
+// so the capture hook and the HTTP surface are backend-agnostic. Callers
+// MUST nil-check (a store without the seam, or a nil store).
 func AsPlanStore(s RunStore) PlanStore {
 	if s == nil {
 		return nil

@@ -112,10 +112,19 @@ depend on the parent directory already existing in the sandbox image.
 
 #### `optional: true`
 
-By default a declared file secret with no resolved value (no `value:`
-expr, no host env, no stored/bound secret) is a hard run error. Mark it
-`optional: true` to skip the mount silently instead — for a bot that
-only needs the credential on *some* runs:
+By default a declared secret with no resolved value (no `value:` expr,
+no host env, no stored/bound secret) is a **hard launch error** — the
+launch fails loudly, naming the secret (`secret "x" is declared required
+by the workflow but resolves to nothing …`), and **no run record is
+created**. The gate runs at launch on both paths — the cloud publisher
+(`resolveAndSealCredentials`, before the run is persisted) and the local
+/ in-process path (`runview.BuildExecutor`) — so a required credential
+that resolves to nothing can never let a bot proceed unauthenticated
+(push with no token, call an API with no key). A webhook-triggered launch
+records the failure as `StatusLaunchError` on its delivery trail.
+
+Mark a secret `optional: true` to skip it silently instead — for a bot
+that only needs the credential on *some* runs:
 
 ```iter
 secrets:
@@ -147,6 +156,20 @@ Driver behaviour:
 - Kubernetes: creates a per-run opaque Secret, mounts the default secret
   directory read-only (or custom file targets via `subPath`), and deletes
   the Secret with the sandbox pod.
+
+**Mid-run refresh (ADR-069).** A file secret is a launch-time snapshot,
+but a short-lived credential (e.g. a 1h GitHub App installation token)
+would go stale on a long run that pushes/comments near the end. The cloud
+runner re-reads each file secret's store record on a 5-minute cadence and,
+when it rotated, propagates the fresh value into the running sandbox —
+docker rewrites the bind-mount source file, kubernetes re-applies the
+Secret (kubelet refreshes the projected volume within ~1min). This covers
+the default directory-mounted secrets on both drivers. **Caveat:** a
+kubernetes secret with a custom absolute `mount_path` is projected via
+`subPath`, which kubelet does *not* auto-update, so that projection stays
+at its launch value until pod restart; put refreshable tokens under the
+default `/run/iterion/secrets` directory. Reads are tenant-scoped and the
+value is never logged.
 
 Cloud setup API:
 

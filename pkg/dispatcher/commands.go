@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -396,7 +397,14 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	// it degrades to a single fresh re-run that re-parks at the same point.
 	if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
 		c.stampLastRun(issueID, r)
-		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — left claimed and in-progress, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
+		c.setAwaitingInput(issueID, true)
+		// Move the card into the dedicated "awaiting input" column so the
+		// board shows "this pipeline needs me" at the column level (not only
+		// the per-card badge). Best-effort: a custom board without the state,
+		// or an external tracker that rejects it, keeps the card in place (the
+		// retained claim already blocks re-dispatch either way).
+		c.moveToAwaitingInput(issueID, r.Identifier)
+		c.logger.Info("dispatcher: %s paused awaiting input (run=%s): %v — moved to awaiting-input, kept claimed, NOT retried. Resume it from the run console; the issue keeps a live link via last_run.", r.Identifier, r.RunID, err)
 		c.fireSnapshot()
 		return
 	}
@@ -436,6 +444,9 @@ func (c *Dispatcher) finishRun(ctx context.Context, issueID string, err error) {
 	}
 	switch {
 	case err == nil:
+		// A clean terminal run is no longer awaiting input — clear the
+		// denormalized board badge (best-effort HINT; see setAwaitingInput).
+		c.setAwaitingInput(issueID, false)
 		// Honesty guard: a "clean" finish with no commit produced nothing
 		// directly mergeable, yet the transition below still moves the
 		// issue to CompletedState (default "review") — where an operator
@@ -629,6 +640,9 @@ func (c *Dispatcher) releaseClaim(ctx context.Context, issueID, identifier strin
 		!errors.Is(err, tracker.ErrClaimConflict) {
 		c.logger.Warn("dispatcher: release %s: %v", identifier, err)
 	}
+	// Drop the journal entry even on the benign races above — in all of
+	// them the claim is no longer ours to recover at the next boot.
+	c.claims.Remove(issueID)
 }
 
 // stampLastRun records the (run_id, workdir) pair on the tracker
@@ -656,6 +670,41 @@ func (c *Dispatcher) stampLastRun(issueID string, r *runningEntry) {
 	}
 	if err := setter.SetLastRun(issueID, r.RunID, workdir); err != nil {
 		c.logger.Warn("dispatcher: stamp last-run on %s: %v", r.Identifier, err)
+	}
+}
+
+// setAwaitingInput denormalizes the pause-hint flag onto the tracker
+// issue so the board grid can badge the card without an N+1 run fetch.
+// Only native trackers implement SetAwaitingInput — external trackers
+// (github, forgejo) silently skip via the failed type-assertion, same
+// as stampLastRun. Best-effort: a write failure is logged at warn and
+// does not derail the pause/finish/dispatch path.
+//
+// Set true when a run parks on pause; cleared false on the paths the
+// dispatcher controls (clean terminal finish, re-dispatch). It is a
+// HINT — a console-only resume the dispatcher never observes leaves the
+// flag stale until the next card touch corrects it; the modal's
+// authoritative check stays getRun(last_run_id).status.
+func (c *Dispatcher) setAwaitingInput(issueID string, v bool) {
+	setter, ok := c.tracker.(interface {
+		SetAwaitingInput(id string, v bool) error
+	})
+	if !ok {
+		return
+	}
+	if err := setter.SetAwaitingInput(issueID, v); err != nil {
+		c.logger.Warn("dispatcher: set awaiting-input=%v on %s: %v", v, issueID, err)
+	}
+}
+
+// moveToAwaitingInput best-effort transitions a paused card into the
+// StateAwaitingInput column. A board without that state (custom schema) or an
+// external tracker that rejects the transition leaves the card in place — the
+// retained claim already blocks re-dispatch, so this is a display-only
+// refinement, never load-bearing.
+func (c *Dispatcher) moveToAwaitingInput(issueID, identifier string) {
+	if err := c.tracker.UpdateState(context.Background(), issueID, native.StateAwaitingInput); err != nil {
+		c.logger.Info("dispatcher: %s stays in place (no awaiting-input column): %v", identifier, err)
 	}
 }
 

@@ -151,8 +151,8 @@ type AskUserAnswerData struct {
 // (tool_called, llm_request, …) — the launcher persists them via the
 // engine's normal emit path.
 type EventData struct {
-	Type    string                 `json:"type"`
-	Payload map[string]interface{} `json:"payload,omitempty"`
+	Type    string         `json:"type"`
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 // MaxEnvelopeLineBytes caps each NDJSON line. 4 MiB covers typical
@@ -283,7 +283,7 @@ func NewResultEnvelope(result IOResult) (Envelope, error) {
 
 // NewEventEnvelope builds an event envelope passing-through an
 // observability event from the runner to the launcher's events.jsonl.
-func NewEventEnvelope(eventType string, payload map[string]interface{}) (Envelope, error) {
+func NewEventEnvelope(eventType string, payload map[string]any) (Envelope, error) {
 	data, err := json.Marshal(EventData{Type: eventType, Payload: payload})
 	if err != nil {
 		return Envelope{}, fmt.Errorf("delegate: marshal event: %w", err)
