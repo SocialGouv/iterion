@@ -18,7 +18,7 @@ import (
 // bots. Both are best-effort enhancements over the dispatcher poll — a host
 // without fsnotify simply falls back to the 30s poll.
 type TriggerCoordinator struct {
-	bus       *eventbus.InProcBus
+	bus       eventbus.Bus
 	source    *trigger.BoardSource
 	scheduler *trigger.Scheduler
 	cancelSub func()
@@ -66,8 +66,10 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 
 // Bus returns the coordinator's event bus so other producers (the run
 // service's run-completion source) publish onto the same bus the evaluator
-// consumes. Returns nil for a nil coordinator.
-func (t *TriggerCoordinator) Bus() *eventbus.InProcBus {
+// consumes. The concrete type is InProcBus for local/self-host and NATSBus in
+// cloud multi-replica; callers only Publish, so they take the interface.
+// Returns nil for a nil coordinator.
+func (t *TriggerCoordinator) Bus() eventbus.Bus {
 	if t == nil {
 		return nil
 	}
