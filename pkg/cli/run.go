@@ -520,6 +520,11 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithWorkflowHash(hash),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
+			// Wire the child engine with its own recursive runner so a child
+			// .bot that itself declares subbot nodes can run them (sources
+			// resolve relative to the CHILD's dir). Without this, nested
+			// subbots died with "no SubbotRunner is wired" even though the
+			// depth guard below exists precisely to bound that recursion.
 			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
 			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
 				if out != nil {

@@ -42,8 +42,12 @@ type PullRequest struct {
 	Body    string `json:"body"`
 	HTMLURL string `json:"html_url"`
 	State   string `json:"state"`
-	Head    Ref    `json:"head"`
-	Base    Ref    `json:"base"`
+	// Draft is GitHub's / Gitea's work-in-progress flag. A draft PR must not
+	// auto-launch a bot — the author is still iterating; the trigger is the
+	// `ready_for_review` action (or open/reopen while not draft).
+	Draft bool `json:"draft"`
+	Head  Ref  `json:"head"`
+	Base  Ref  `json:"base"`
 }
 
 type Ref struct {

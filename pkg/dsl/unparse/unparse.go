@@ -456,6 +456,9 @@ func (w *fileWriter) writeSubbots(subbots []*ast.SubbotDecl) {
 		if len(s.Needs) > 0 {
 			fmt.Fprintf(&w.b, "  needs: [%s]\n", strings.Join(s.Needs, ", "))
 		}
+		if s.Isolated {
+			writeProp(&w.b, "isolated", "true")
+		}
 	}
 }
 

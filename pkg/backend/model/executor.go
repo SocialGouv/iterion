@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -137,6 +138,14 @@ type ClawExecutor struct {
 	// for node_finished output redaction, (b) materialise ${secret.X}
 	// placeholders at tool/shell exec (Layer 1). Nil disables it.
 	secretGuard *secretguard.Guard
+
+	// extraClosers are auxiliary resources opened during executor
+	// construction (e.g. the native board store, whose fsnotify watcher runs
+	// a goroutine + holds an inotify instance) that must be released on
+	// Close(). Without this each BuildExecutor call leaks one watcher — acute
+	// under parallel subbot fan-out, which builds one executor per child and
+	// can march toward fs.inotify.max_user_instances.
+	extraClosers []io.Closer
 }
 
 // SetSandbox installs the live sandbox handle on the executor. The
@@ -182,6 +191,20 @@ func WithToolRegistry(tr *tool.Registry) ClawExecutorOption {
 // WithMCPManager sets the generic MCP manager used to lazily discover MCP tools.
 func WithMCPManager(m *mcp.Manager) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.mcpManager = m }
+}
+
+// WithExtraClosers registers auxiliary resources (nil entries ignored) to be
+// released when the executor is closed — e.g. the native board store opened for
+// board.* MCP tools, whose fsnotify watcher would otherwise leak a goroutine +
+// inotify fd per BuildExecutor call. Close() aggregates their errors.
+func WithExtraClosers(closers ...io.Closer) ClawExecutorOption {
+	return func(e *ClawExecutor) {
+		for _, c := range closers {
+			if c != nil {
+				e.extraClosers = append(e.extraClosers, c)
+			}
+		}
+	}
 }
 
 // WithToolPolicy sets the tool execution policy on the executor.
@@ -499,10 +522,14 @@ func (e *ClawExecutor) MCPHealthCheck(ctx context.Context, servers []string) err
 // Close releases resources held by the executor, including MCP server
 // connections. It should be called when the executor is no longer needed.
 func (e *ClawExecutor) Close() error {
+	var errs []error
 	if e.mcpManager != nil {
-		return e.mcpManager.Close()
+		errs = append(errs, e.mcpManager.Close())
 	}
-	return nil
+	for _, c := range e.extraClosers {
+		errs = append(errs, c.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // SetVars merges run-level workflow variables into the executor's

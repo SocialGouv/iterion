@@ -159,23 +159,30 @@ func TestParsePullRequest_MalformedFails(t *testing.T) {
 func TestIsReviewable(t *testing.T) {
 	cases := []struct {
 		action string
+		draft  bool
 		want   bool
 	}{
-		{"opened", true},
-		{"reopened", true},
+		{"opened", false, true},
+		{"reopened", false, true},
+		// A draft PR being marked ready-for-review is THE auto-trigger.
+		{"ready_for_review", false, true},
+		// A DRAFT PR never auto-triggers, whatever the action — the author
+		// is still iterating; the trigger is ready_for_review (draft=false).
+		{"opened", true, false},
+		{"reopened", true, false},
 		// GitHub spells the push action "synchronize"; Gitea spells it
 		// "synchronized". Both must filter, since re-review is on-demand.
-		{"synchronize", false},
-		{"synchronized", false},
-		{"edited", false},
-		{"labeled", false},
-		{"closed", false},
-		{"review_requested", false},
+		{"synchronize", false, false},
+		{"synchronized", false, false},
+		{"edited", false, false},
+		{"labeled", false, false},
+		{"closed", false, false},
+		{"review_requested", false, false},
 	}
 	for _, c := range cases {
-		p := Parsed{Action: c.action}
+		p := Parsed{Action: c.action, Draft: c.draft}
 		if got := p.IsReviewable(); got != c.want {
-			t.Errorf("action=%q => %v want %v", c.action, got, c.want)
+			t.Errorf("action=%q draft=%v => %v want %v", c.action, c.draft, got, c.want)
 		}
 	}
 }

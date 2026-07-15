@@ -1259,6 +1259,7 @@ func (c *compiler) compileSubbots() {
 			With:         c.compileWithMappings(sd.Name, sd.With),
 			OutputSchema: sd.Output,
 			Needs:        sd.Needs,
+			Isolated:     sd.Isolated,
 		}
 	}
 }

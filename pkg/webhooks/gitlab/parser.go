@@ -23,6 +23,14 @@ type Parsed struct {
 	OldRev         string
 	Labels         []string
 	SenderUsername string // the actor that opened/reopened the MR (e.g. "renovate")
+	// Draft reports whether the MR is currently a work-in-progress draft. A
+	// draft MR never auto-triggers a bot (IsReviewable is false).
+	Draft bool
+	// BecameReady is true when THIS event is the draft→ready transition
+	// (GitLab's `changes.draft` went true→false on an `update`). It is the
+	// GitLab equivalent of GitHub's `ready_for_review` action — the moment a
+	// draft becomes reviewable — since GitLab has no dedicated action for it.
+	BecameReady bool
 }
 
 // ParseMergeRequest decodes a GitLab merge_request webhook body.
@@ -41,6 +49,15 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 			labels = append(labels, l.Title)
 		}
 	}
+	// A draft→ready transition is an `update` whose changes show draft (or the
+	// deprecated work_in_progress alias) going true→false.
+	becameReady := false
+	if c := e.Changes.Draft; c != nil && c.Previous && !c.Current {
+		becameReady = true
+	}
+	if c := e.Changes.WorkInProgress; c != nil && c.Previous && !c.Current {
+		becameReady = true
+	}
 	return Parsed{
 		ProjectID:      e.Project.ID,
 		ProjectPath:    e.Project.PathWithNamespace,
@@ -57,18 +74,28 @@ func ParseMergeRequest(body []byte) (Parsed, error) {
 		OldRev:         oa.OldRev,
 		Labels:         labels,
 		SenderUsername: e.User.Username,
+		Draft:          oa.Draft || oa.WorkInProgress,
+		BecameReady:    becameReady,
 	}, nil
 }
 
 // IsReviewable reports whether the MR action should AUTO-trigger a review.
-// Only open/reopen do: a review fires once when the MR is created (or
-// reopened). Pushes to the MR ("update" with a new head) deliberately do
-// NOT re-trigger — auto-review-on-every-push was found too heavy. Re-review
-// after a push is on-demand via the `/revi` note command instead.
+// A DRAFT MR is never auto-reviewable — the author is still iterating, so
+// auto-running a bot wastes budget and churns an unfinished branch. Otherwise
+// a review fires when the MR is created (open), reopened, or marked ready
+// (the `update` that clears draft — GitLab's stand-in for a ready action).
+// Plain pushes to the MR ("update" with a new head, draft unchanged)
+// deliberately do NOT re-trigger — auto-review-on-every-push was found too
+// heavy; re-review after a push is on-demand via the `/revi` note command.
 func (p Parsed) IsReviewable() bool {
+	if p.Draft {
+		return false
+	}
 	switch p.Action {
 	case "open", "reopen":
 		return true
+	case "update":
+		return p.BecameReady
 	default:
 		return false
 	}
