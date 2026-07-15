@@ -22,6 +22,15 @@ export function pipelineFiltersActive(f: PipelineFilterState): boolean {
   return f.query.trim() !== "" || f.bot !== "" || f.labels.size > 0;
 }
 
+// cardBotIdentity is the value the bot dropdown filters on: the bot id when
+// the run carries one (catalog / bundle launches), else the workflow name.
+// Loose .bot files (no manifest.yaml → not a bundle) produce runs with an
+// empty bot_id; without the fallback those pipelines were simply absent from
+// the dropdown.
+export function cardBotIdentity(card: PipelineBoardCard): string {
+  return card.bot_id || card.workflow_name || "";
+}
+
 // collectFilterOptions derives the dropdown vocabularies from the cards
 // actually on the board — including labels created on the fly by bots.
 export function collectFilterOptions(cards: PipelineBoardCard[]): {
@@ -31,7 +40,8 @@ export function collectFilterOptions(cards: PipelineBoardCard[]): {
   const bots = new Set<string>();
   const labels = new Set<string>();
   for (const card of cards) {
-    if (card.bot_id) bots.add(card.bot_id);
+    const identity = cardBotIdentity(card);
+    if (identity) bots.add(identity);
     for (const l of card.labels ?? []) labels.add(l);
   }
   return {
@@ -42,7 +52,8 @@ export function collectFilterOptions(cards: PipelineBoardCard[]): {
 
 // filterPipelineCards applies the active filters. Search matches the card's
 // title, body, workflow name, run id, and issue id (case-insensitive);
-// selected labels must ALL be present; bot is an exact match.
+// selected labels must ALL be present; bot is an exact match on the card's
+// bot identity (bot_id, falling back to workflow_name — see cardBotIdentity).
 export function filterPipelineCards(
   cards: PipelineBoardCard[],
   f: PipelineFilterState,
@@ -63,7 +74,7 @@ export function filterPipelineCards(
         .toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    if (bot && card.bot_id !== bot) return false;
+    if (bot && cardBotIdentity(card) !== bot) return false;
     if (f.labels.size > 0) {
       const have = new Set(card.labels ?? []);
       for (const l of f.labels) {

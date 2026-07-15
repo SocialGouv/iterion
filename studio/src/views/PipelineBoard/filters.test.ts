@@ -30,10 +30,21 @@ describe("collectFilterOptions", () => {
     const { allBots, allLabels } = collectFilterOptions([
       card({ bot_id: "zeta", labels: ["urgent", "audio"] }),
       card({ bot_id: "alpha", labels: ["audio"] }),
-      card({}), // no bot, no labels
+      card({}), // no bot, no workflow, no labels
     ]);
     expect(allBots).toEqual(["alpha", "zeta"]);
     expect(allLabels).toEqual(["audio", "urgent"]);
+  });
+
+  it("falls back to workflow_name when bot_id is empty (loose .bot runs)", () => {
+    // A run launched from a loose main.bot (no manifest.yaml → not a
+    // bundle) has no bot identity; its workflow name must still appear in
+    // the dropdown or the pipeline is unfilterable.
+    const { allBots } = collectFilterOptions([
+      card({ workflow_name: "shorts_historical_series" }),
+      card({ bot_id: "pipeline-board-demo", workflow_name: "pipeline_board_demo" }),
+    ]);
+    expect(allBots).toEqual(["pipeline-board-demo", "shorts_historical_series"]);
   });
 });
 
@@ -60,6 +71,19 @@ describe("filterPipelineCards", () => {
   it("filters by exact bot", () => {
     const f = { ...emptyPipelineFilters(), bot: "shorts" };
     expect(filterPipelineCards(cards, f).map((c) => c.id)).toEqual(["a", "b"]);
+  });
+
+  it("bot filter matches the workflow_name fallback for bot-less runs", () => {
+    const looseCards = [
+      card({ id: "x", workflow_name: "shorts_historical_series" }),
+      card({ id: "y", bot_id: "pipeline-board-demo", workflow_name: "pipeline_board_demo" }),
+    ];
+    const f = { ...emptyPipelineFilters(), bot: "shorts_historical_series" };
+    expect(filterPipelineCards(looseCards, f).map((c) => c.id)).toEqual(["x"]);
+    // A card whose bot_id is set does NOT also answer to its workflow name —
+    // the identity is bot_id first, one value per card.
+    const f2 = { ...emptyPipelineFilters(), bot: "pipeline_board_demo" };
+    expect(filterPipelineCards(looseCards, f2)).toEqual([]);
   });
 
   it("labels combine with AND, mirroring /board", () => {
