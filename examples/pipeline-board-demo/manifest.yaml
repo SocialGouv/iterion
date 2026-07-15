@@ -1,0 +1,20 @@
+name: pipeline-board-demo
+display_name: Pipeline Board Demo
+icon: 🧪
+version: 0.1.0
+description: |
+  Zero-LLM demo of the /pipelines board: fans out three ISOLATED sub-bots in
+  parallel (subbot + fan_out_each), each producing real media (PNG cover,
+  playable WAV track, mp4 stub) into its own run's artifact area, then
+  pausing on its own human review. After all three are approved from the
+  card's sidebar, the PARENT pauses on a final human review; approving it
+  lands the card in Done with the release notes as output. Tool / compute /
+  human / subbot only — no API keys, runs in seconds.
+when_to_use: |
+  Use to demo or smoke-test the pipeline board end to end: parallel sub-bot
+  fan-out, child + parent human gates answered from the card sidebar, and
+  produced-elements aggregation (image/audio preview) across the whole run
+  tree. Not a production workflow.
+author: iterion — examples/pipeline-board-demo
+schema_version: 1
+enabled: true

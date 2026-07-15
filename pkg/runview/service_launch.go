@@ -461,6 +461,11 @@ func (s *Service) spawnRun(
 	}
 
 	opts := s.engineOptions(runLogger, hash, filePath, runName, fin)
+	// Subbot nodes need a host-supplied runner (the bare engine can't compile
+	// a child .bot — import cycle with runview). Wired on BOTH the launch and
+	// resume paths; without it, in-process studio runs of subbot-bearing bots
+	// died with "no SubbotRunner is wired" (only the CLI paths were covered).
+	opts = append(opts, runtime.WithSubbotRunner(s.subbotRunnerFor(filePath, runLogger)))
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
 	}

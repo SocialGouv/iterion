@@ -109,9 +109,29 @@ run_ticket -> merge when validated
   `readonly:`. See [Fanning subbots out in parallel](#fanning-subbots-out-in-parallel)
   below — it is what makes the parallel pattern legal.
 - A depth guard bounds nested subbot recursion. Diagnostic **C119** (no `source`).
-- The runtime invokes a host-supplied `SubbotRunner`; the `iterion run` CLI
-  wires one that compiles + runs the child sharing the parent store. (Studio /
-  cloud wiring + parent↔child run linkage in the UI are follow-ons.)
+- The runtime invokes a host-supplied `SubbotRunner`; both the `iterion run`
+  CLI (`pkg/cli/run.go`) and the studio's in-process engine
+  (`pkg/runview/subbot.go`, wired for Launch AND Resume) provide one that
+  compiles + runs the child sharing the parent store. Children carry
+  `ParentRunID`, which is what folds them into the parent's card on the
+  `/pipelines` board.
+
+### Human gates inside a child (pause / park / resume)
+
+A child `.bot` may contain `human` nodes. When the child pauses, the **child
+run** persists `paused_waiting_human` (checkpoint + interaction) and the
+parent's subbot node **parks**: the parent stays `running`, holding its branch
+slot, while `AwaitSubbotTerminal` polls the store. The pending review surfaces
+on the parent's pipeline-board card (with its exact child `run_id`/`node_id`);
+answering it from the card's sidebar — or `iterion resume --run-id <child>` —
+resumes the child **externally**, and once it reaches a terminal state the
+parent picks up its terminal output (reconstructed from the child's
+`node_finished` events) and continues. Several gates in one child, and gates
+across parallel `isolated:` children, all work the same way — each pause is
+just another answerable review on the parent's card. A child that ends
+`failed`/`failed_resumable`/`cancelled` after its pause fails the parent's
+subbot node (resuming the PARENT re-runs that subbot with a fresh child).
+Runnable demo: [examples/pipeline-board-demo](../examples/pipeline-board-demo/main.bot).
 
 ### Fanning subbots out in parallel
 

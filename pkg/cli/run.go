@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -534,6 +535,15 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		)
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
 		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
+			// A human gate inside the child pauses the CHILD run (its doc is
+			// paused_waiting_human with a checkpoint + interaction); that is
+			// not a parent failure. Park this subbot node until the operator
+			// answers the child's review (pipeline-board sidebar / `iterion
+			// resume --run-id <child>`) and the child reaches a terminal
+			// state, then pick up its output from the store.
+			if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
+				return runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+			}
 			return nil, err
 		}
 		return last, nil

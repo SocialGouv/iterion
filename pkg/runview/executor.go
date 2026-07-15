@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/plugin"
 	"github.com/SocialGouv/iterion/pkg/runtime"
 	"github.com/SocialGouv/iterion/pkg/secrets"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // rewriteChainFromPlugins loads the plugin registry and builds the command-
@@ -291,6 +292,17 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	}
 	if spec.BotID != "" {
 		opts = append(opts, model.WithBotID(spec.BotID))
+	}
+	// Export the run's artifact_files scratch area to HOST tool nodes as
+	// ITERION_ARTIFACT_FILES_DIR. Sandboxed runs get the variable from the
+	// container env (pkg/runtime/sandbox.go bind-mounts the same dir); this
+	// closes the host/sandbox parity gap where a bot writing its outputs
+	// there only worked sandboxed. Best-effort: stores without the files
+	// area (or a mkdir failure) just leave the variable unset, as before.
+	if fs, ok := spec.Store.(store.RunFilesStore); ok {
+		if dir, derr := fs.EnsureRunFilesDir(ctx, spec.RunID); derr == nil && dir != "" {
+			opts = append(opts, model.WithArtifactFilesDir(dir))
+		}
 	}
 
 	checker := buildToolChecker(spec.Workflow)
