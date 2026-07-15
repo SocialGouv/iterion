@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getRunWorkflow, type ExecutionState } from "@/api/runs";
 import { useRunStore } from "@/store/run";
 import { useUIStore } from "@/store/ui";
+import { useInlineSubbotData } from "@/hooks/useInlineSubbotData";
 import { useRunChildren } from "@/hooks/useRunChildren";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import {
@@ -320,6 +321,11 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     }
     return m;
   }, [childrenByNode]);
+  // Inline subbot expansion feeds: child workflow shape per subbot node
+  // + polled child executions, so the MAIN canvas can render each
+  // subbot's constituent pipeline in place (lib/subbotRunGraph).
+  const { childWorkflowsByNode, childExecutionsByRun } =
+    useInlineSubbotData(childrenByNode);
 
   const liveExecutions = useMemo(
     () => Array.from(executionsById.values()),
@@ -522,6 +528,8 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                       onToggleFollowLive={handleToggleFollowLive}
                       subRunsByNode={childrenByNode}
                       onOpenChildRun={handleSelectFlowTab}
+                      childWorkflowsByNode={childWorkflowsByNode}
+                      childExecutionsByRun={childExecutionsByRun}
                     />
                   </div>
                   {/* Child canvases mount on first activation, then stay
