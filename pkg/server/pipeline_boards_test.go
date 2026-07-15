@@ -409,11 +409,11 @@ func TestPipelineBoardTaskCreateEnsuresUniqueTitle(t *testing.T) {
 	if got := create("Episode"); got != "Episode" {
 		t.Errorf("first = %q, want %q", got, "Episode")
 	}
-	if got := create("Episode"); got != "Episode 2" {
-		t.Errorf("second = %q, want %q", got, "Episode 2")
+	if got := create("Episode"); got != "#2 - Episode" {
+		t.Errorf("second = %q, want %q", got, "#2 - Episode")
 	}
-	if got := create("Episode"); got != "Episode 3" {
-		t.Errorf("third = %q, want %q", got, "Episode 3")
+	if got := create("Episode"); got != "#3 - Episode" {
+		t.Errorf("third = %q, want %q", got, "#3 - Episode")
 	}
 	// A distinct title is untouched.
 	if got := create("Other"); got != "Other" {

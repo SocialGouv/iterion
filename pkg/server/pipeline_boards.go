@@ -292,9 +292,10 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 }
 
 // uniquePipelineTitle keeps board card titles distinct: if `desired` is
-// already a ticket's title, it appends the smallest " N" (N≥2) that is free
-// ("Episode" → "Episode 2" → "Episode 3"). Best-effort — a list error just
-// returns the desired title unchanged.
+// already a ticket's title, it prefixes the smallest free "#N - " (N≥2)
+// ("Episode" → "#2 - Episode" → "#3 - Episode"). The counter is a PREFIX so
+// it stays visible even when a long title is truncated. Best-effort — a list
+// error just returns the desired title unchanged.
 func uniquePipelineTitle(boardStore native.BoardStore, desired string) string {
 	existing, err := boardStore.List(native.ListFilter{})
 	if err != nil {
@@ -310,7 +311,7 @@ func uniquePipelineTitle(boardStore native.BoardStore, desired string) string {
 		return desired
 	}
 	for n := 2; n < 100000; n++ {
-		candidate := fmt.Sprintf("%s %d", desired, n)
+		candidate := fmt.Sprintf("#%d - %s", n, desired)
 		if _, clash := taken[candidate]; !clash {
 			return candidate
 		}
