@@ -46,6 +46,7 @@ jobs:
     outputs:
       owner_lc: ${{ steps.vars.outputs.owner_lc }}
       base_tag: ${{ steps.vars.outputs.base_tag }}
+      app_version: ${{ steps.vars.outputs.app_version }}
       build_sandbox: ${{ steps.vars.outputs.build_sandbox }}
     steps:
       - id: vars
@@ -58,6 +59,14 @@ jobs:
           else
             echo "base_tag=edge" >> "$GITHUB_OUTPUT"
           fi
+          # Clean semver for appinfo.Version (the Dockerfile prepends the
+          # single "v"). github.ref_name is the wrong source: a tag is
+          # already v-prefixed ("v0.32.0" → binary reports "vv0.32.0") and a
+          # branch push is its name ("main" → "vmain", which also flips
+          # appinfo.SandboxImageTag() onto a phantom ":vmain" sandbox tag).
+          # package.json is the single source of truth — release tags are
+          # release-it bumps of it, so tag builds and main builds agree.
+          echo "app_version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/package.json?ref=${GITHUB_SHA}" --jq '.content' | base64 -d | jq -r '.version')" >> "$GITHUB_OUTPUT"
           # Whether to (re)build the sandbox image chain (slim→full→sec). It is
           # sequential + expensive (~26 min) and prod's server/runner image does
           # NOT depend on it, so we do NOT rebuild it on every main push — only
@@ -93,7 +102,7 @@ jobs:
       context: .
       file: Dockerfile
       build-args: |
-        VERSION=${{ github.ref_name }}
+        VERSION=${{ needs.prep.outputs.app_version }}
         COMMIT=${{ github.sha }}
       is-pr: ${{ github.event_name == 'pull_request' }}
       # Full multi-arch (+ sign + SBOM) ONLY on release tags. main's `:edge` is
