@@ -14,8 +14,8 @@ import (
 )
 
 // runLogDoc is one append-only chunk of a run's raw log byte stream
-// (ADR-053). The runner pod is the single writer per run (queue
-// MaxAckPending=1 + run lock) and allocates offsets from a local
+// (ADR-053). The runner pod is the single writer per run (per-pod
+// sequential loop + run lock) and allocates offsets from a local
 // counter seeded from RunLogSize at claim time; the unique
 // (run_id, offset) index is the race/redelivery safety net. The server
 // pod's log stream source tails inserts via a change stream and the

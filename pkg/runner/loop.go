@@ -3,8 +3,9 @@
 // distributed lease, hydrates the workflow IR, and executes runs
 // against the Mongo+S3 store.
 //
-// One runner pod handles one in-flight run at a time
-// (MaxAckPending=1 on the JetStream consumer); horizontal scale
+// One runner pod handles one in-flight run at a time (its fetch loop
+// is sequential; the shared consumer's MaxAckPending caps fleet-wide
+// in-flight deliveries); horizontal scale
 // comes from spawning more pods (KEDA scales on lag — see plan §F
 // T-36 runner-keda-scaledobject.yaml).
 //
@@ -975,8 +976,8 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lo
 			// InProgress() the broker redelivers the message to a sibling
 			// and, after MaxDeliver attempts, drops it from the queue —
 			// destroying the crash-recovery safety net while the run is
-			// still healthy and head-of-line-blocking the consumer
-			// (MaxAckPending=1). Best-effort: a transient miss is retried
+			// still healthy and head-of-line-blocking one of the consumer's
+			// MaxAckPending slots. Best-effort: a transient miss is retried
 			// on the next tick, well inside AckWait.
 			if err := delivery.InProgress(); err != nil {
 				r.cfg.Logger.Warn("runner: heartbeat InProgress failed: %v", err)
@@ -1122,8 +1123,8 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	// under a prior run's identity). The per-run forge_token FILE is already
 	// isolated above; this isolates the CLI's own persisted auth. The delegate
 	// subprocess inherits these from os.Environ(); no-op for sandboxed runs
-	// (fresh container HOME). Safe because the runner is sequential
-	// (MaxAckPending=1).
+	// (fresh container HOME). Safe because each runner pod processes one
+	// run at a time (sequential fetch loop).
 	if cliDir, derr := os.MkdirTemp("", "iterion-cli-"); derr == nil {
 		prevGlab, hadGlab := os.LookupEnv("GLAB_CONFIG_DIR")
 		prevGH, hadGH := os.LookupEnv("GH_CONFIG_DIR")
@@ -1594,7 +1595,7 @@ func extractRepoHost(repoURL string) (string, error) {
 // gitOpTimeout bounds a single runner-side git subprocess. Without it a
 // clone/fetch against a wedged remote hangs on the run ctx alone — and a
 // run launched without --timeout has NO deadline, so the git subprocess
-// pins the MaxAckPending=1 runner pod indefinitely while the heartbeat
+// pins the runner pod (one in-flight run each) indefinitely while the heartbeat
 // keeps the lease alive (the heartbeat proves the pod lives, not that
 // the clone progresses). GIT_TERMINAL_PROMPT=0 covers the credential
 // prompt, not a stalled TCP transfer. Override with

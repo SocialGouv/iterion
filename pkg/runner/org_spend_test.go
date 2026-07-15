@@ -60,7 +60,7 @@ func TestRecordOrgSpendKey(t *testing.T) {
 // TestGitOpTimeoutBoundsSubprocess proves runGit is wall-clock bounded
 // even when the caller's ctx has no deadline — the exact shape of a run
 // launched without --timeout, where a wedged clone used to pin the
-// MaxAckPending=1 pod forever.
+// runner pod (one in-flight run each) forever.
 func TestGitOpTimeoutBoundsSubprocess(t *testing.T) {
 	old := gitOpTimeout
 	gitOpTimeout = 300 * time.Millisecond
