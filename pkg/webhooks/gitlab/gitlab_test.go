@@ -57,22 +57,83 @@ func TestParseMergeRequest_RejectsNonMR(t *testing.T) {
 
 func TestIsReviewable(t *testing.T) {
 	cases := []struct {
-		action, oldrev, head string
-		want                 bool
+		action             string
+		draft, becameReady bool
+		want               bool
 	}{
-		{"open", "", "h", true},
-		{"reopen", "", "h", true},
-		{"update", "old", "h", false}, // push no longer auto-triggers (re-review is on-demand via /revi)
-		{"update", "h", "h", false},   // metadata edit
-		{"update", "", "h", false},    // label-only
-		{"close", "", "h", false},
-		{"approved", "", "h", false},
+		{"open", false, false, true},
+		{"reopen", false, false, true},
+		{"update", false, false, false}, // push no longer auto-triggers (re-review is on-demand via /revi)
+		{"close", false, false, false},
+		{"approved", false, false, false},
+		// A currently-draft MR never auto-triggers, whatever the action.
+		{"open", true, false, false},
+		{"reopen", true, false, false},
+		// The draft→ready transition (update clearing draft) IS the trigger —
+		// GitLab has no dedicated ready action, so it rides `update`.
+		{"update", false, true, true},
+		// Draft cleared but still marked draft (defensive) must not trigger.
+		{"update", true, true, false},
 	}
 	for _, c := range cases {
-		p := Parsed{Action: c.action, OldRev: c.oldrev, HeadSHA: c.head}
+		p := Parsed{Action: c.action, Draft: c.draft, BecameReady: c.becameReady}
 		if p.IsReviewable() != c.want {
-			t.Errorf("action=%q oldrev=%q head=%q => %v want %v", c.action, c.oldrev, c.head, p.IsReviewable(), c.want)
+			t.Errorf("action=%q draft=%v becameReady=%v => %v want %v", c.action, c.draft, c.becameReady, p.IsReviewable(), c.want)
 		}
+	}
+}
+
+// mrDraftOpenPayload is a draft MR opened — must be filtered (never
+// auto-launched) even though the action is "open".
+const mrDraftOpenPayload = `{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {
+    "iid": 8, "action": "open", "source_branch": "wip/x", "target_branch": "main",
+    "title": "Draft: Add X", "url": "https://gitlab.com/acme/widgets/-/merge_requests/8",
+    "draft": true, "work_in_progress": true, "last_commit": {"id": "abc123"}
+  }
+}`
+
+// mrReadyPayload is the draft→ready transition: an `update` whose
+// changes.draft went true→false. This IS the auto-trigger.
+const mrReadyPayload = `{
+  "object_kind": "merge_request",
+  "event_type": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {
+    "iid": 8, "action": "update", "source_branch": "wip/x", "target_branch": "main",
+    "title": "Add X", "url": "https://gitlab.com/acme/widgets/-/merge_requests/8",
+    "draft": false, "work_in_progress": false, "last_commit": {"id": "abc123"}
+  },
+  "changes": {"draft": {"previous": true, "current": false}}
+}`
+
+func TestParseMergeRequest_Draft(t *testing.T) {
+	draft, err := ParseMergeRequest([]byte(mrDraftOpenPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !draft.Draft {
+		t.Error("draft MR must parse Draft=true")
+	}
+	if draft.IsReviewable() {
+		t.Error("draft MR (action=open) must NOT be auto-reviewable")
+	}
+
+	ready, err := ParseMergeRequest([]byte(mrReadyPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Draft {
+		t.Error("ready MR must parse Draft=false")
+	}
+	if !ready.BecameReady {
+		t.Error("draft→ready update must set BecameReady")
+	}
+	if !ready.IsReviewable() {
+		t.Error("draft→ready transition MUST be auto-reviewable")
 	}
 }
 

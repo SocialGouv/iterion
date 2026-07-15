@@ -96,6 +96,68 @@ func TestGitLabWebhook_HappyPath(t *testing.T) {
 	}
 }
 
+// glDraftMR is a draft MR opened — must be filtered (never auto-launched)
+// even though the action is "open".
+const glDraftMR = `{
+  "object_kind": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {"iid": 9, "action": "open", "source_branch": "wip/x", "target_branch": "main",
+    "title": "Draft: Add X", "description": "wip", "url": "https://gitlab.com/acme/widgets/-/merge_requests/9",
+    "draft": true, "work_in_progress": true, "last_commit": {"id": "sha9"}}
+}`
+
+// glReadyMR is the draft→ready transition (update clearing changes.draft):
+// GitLab's stand-in for a ready-for-review action — this MUST launch.
+const glReadyMR = `{
+  "object_kind": "merge_request",
+  "project": {"id": 42, "path_with_namespace": "acme/widgets", "git_http_url": "https://gitlab.com/acme/widgets.git"},
+  "object_attributes": {"iid": 9, "action": "update", "source_branch": "wip/x", "target_branch": "main",
+    "title": "Add X", "description": "ready", "url": "https://gitlab.com/acme/widgets/-/merge_requests/9",
+    "draft": false, "work_in_progress": false, "last_commit": {"id": "sha9"}},
+  "changes": {"draft": {"previous": true, "current": false}}
+}`
+
+func TestGitLabWebhook_DraftMRNotAutoLaunched(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	s.webhookLaunchBot = func(_ context.Context, _ string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		return "run-x", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(glConfig()), glDraftMR, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusOK {
+		t.Fatalf("draft MR should be a filtered 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("draft MR status=%q want filtered", resp["status"])
+	}
+	if calls != 0 {
+		t.Fatalf("draft MR must NOT launch a bot (calls=%d)", calls)
+	}
+}
+
+func TestGitLabWebhook_ReadyForReviewLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var calls int
+	var gotBot string
+	s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		calls++
+		gotBot = botID
+		return "run-ready", nil
+	}
+	w := httptest.NewRecorder()
+	s.handleGitLabWebhook(w, glReq(gitlabCtx(glConfig()), glReadyMR, gitlab.EventHeaderMergeRequest))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("ready MR should launch (202), got %d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 1 || gotBot != "review-pr" {
+		t.Fatalf("ready MR must launch review bot once: calls=%d bot=%q", calls, gotBot)
+	}
+}
+
 func TestGitLabWebhook_Idempotent(t *testing.T) {
 	s := newWebhookTestServer(t)
 	var calls int

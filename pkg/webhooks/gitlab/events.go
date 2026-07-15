@@ -17,6 +17,26 @@ type MergeRequestEvent struct {
 	Project          Project          `json:"project"`
 	ObjectAttributes ObjectAttributes `json:"object_attributes"`
 	Labels           []Label          `json:"labels"`
+	// Changes records the before/after of attributes touched by this event.
+	// GitLab has no dedicated "ready_for_review" action — a draft MR marked
+	// ready arrives as an `update` whose Changes.Draft went true→false, so
+	// the handler must inspect this to distinguish it from a plain push.
+	Changes Changes `json:"changes"`
+}
+
+// Changes is the top-level `changes` object GitLab sends on `update`
+// events. We decode only the draft-transition fields. Pointers so a
+// missing key is distinguishable from a present {false,false}.
+type Changes struct {
+	Draft          *BoolChange `json:"draft"`
+	WorkInProgress *BoolChange `json:"work_in_progress"` // deprecated alias GitLab still emits
+}
+
+// BoolChange is the {previous,current} pair GitLab uses for a boolean
+// attribute inside `changes`.
+type BoolChange struct {
+	Previous bool `json:"previous"`
+	Current  bool `json:"current"`
 }
 
 type Project struct {
@@ -37,6 +57,11 @@ type ObjectAttributes struct {
 	URL          string `json:"url"`
 	OldRev       string `json:"oldrev"`
 	LastCommit   Commit `json:"last_commit"`
+	// Draft is GitLab's work-in-progress flag (14.0+); WorkInProgress is the
+	// deprecated alias older GitLab still sends. Either set ⇒ the MR must not
+	// auto-launch a bot; the trigger is the update that clears it.
+	Draft          bool `json:"draft"`
+	WorkInProgress bool `json:"work_in_progress"`
 }
 
 type Commit struct {

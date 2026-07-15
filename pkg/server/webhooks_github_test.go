@@ -119,6 +119,30 @@ const ghTicketPR = `{
   "sender": {"login": "alice"}
 }`
 
+// ghDraftTicketPR: a same-repo ticket PR opened as a DRAFT — must NOT
+// auto-launch a bot (the author is still iterating).
+const ghDraftTicketPR = `{
+  "action": "opened", "number": 9,
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 9, "title": "Add subtract", "body": "Implements subtraction.\n\nFixes #12", "draft": true,
+    "html_url": "https://github.com/acme/widgets/pull/9", "state": "open",
+    "head": {"ref": "feat/subtract", "sha": "aaa111", "repo": {"full_name": "acme/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
+  "sender": {"login": "alice"}
+}`
+
+// ghReadyForReviewPR: the draft above marked ready-for-review — THE
+// auto-trigger (draft flag now false).
+const ghReadyForReviewPR = `{
+  "action": "ready_for_review", "number": 9,
+  "repository": {"id": 42, "full_name": "acme/widgets", "clone_url": "https://github.com/acme/widgets.git"},
+  "pull_request": {"number": 9, "title": "Add subtract", "body": "Implements subtraction.\n\nFixes #12", "draft": false,
+    "html_url": "https://github.com/acme/widgets/pull/9", "state": "open",
+    "head": {"ref": "feat/subtract", "sha": "aaa111", "repo": {"full_name": "acme/widgets"}},
+    "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
+  "sender": {"login": "alice"}
+}`
+
 // ghDequeuedPR: a PR ejected from the merge queue for a conflict → the
 // auto-heal path dispatches Billy to rebase+resolve+repush.
 const ghDequeuedPR = `{
@@ -130,6 +154,54 @@ const ghDequeuedPR = `{
     "base": {"ref": "main", "repo": {"full_name": "acme/widgets"}}},
   "sender": {"login": "alice"}
 }`
+
+// A DRAFT PR never auto-launches a bot — the author is still iterating.
+func TestGitHubWebhook_DraftPRNotAutoLaunched(t *testing.T) {
+	s := newWebhookTestServer(t)
+	launched := 0
+	s.webhookLaunchBot = func(context.Context, string, map[string]string, string, string, string, map[string]string, map[string]string) (string, error) {
+		launched++
+		return "run-x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghDraftTicketPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != webhooks.StatusFiltered {
+		t.Fatalf("draft PR must be filtered, got %q", resp["status"])
+	}
+	if launched != 0 {
+		t.Fatalf("draft PR must NOT auto-launch any bot, launched=%d", launched)
+	}
+}
+
+// Marking a draft PR ready-for-review IS the auto-trigger: this ticket PR
+// then routes to the branch-improvement bot exactly like a fresh open.
+func TestGitHubWebhook_ReadyForReviewLaunches(t *testing.T) {
+	s := newWebhookTestServer(t)
+	var gotBot string
+	s.webhookLaunchBot = func(_ context.Context, botID string, _ map[string]string, _, _, _ string, _, _ map[string]string) (string, error) {
+		gotBot = botID
+		return "run-x", nil
+	}
+	cfg, pt := ghConfig(t, s)
+	cfg.BotIDs = []string{"review-pr", "branch-improve-loop"}
+
+	w := httptest.NewRecorder()
+	s.handleGitHubWebhook(w, ghReq(ghCtx(cfg), ghReadyForReviewPR, prforge.EventHeaderPullRequest, pt))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	if gotBot != branchImproveBotID {
+		t.Fatalf("ready_for_review ticket PR should route to %q, got %q", branchImproveBotID, gotBot)
+	}
+}
 
 // TestGitHubWebhook_DequeuedPRAutoHeals: a merge-queue ejection for a conflict
 // dispatches Billy to reconcile the branch with the base + re-enter the queue.
