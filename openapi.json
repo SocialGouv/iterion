@@ -1,6 +1,127 @@
 {
   "components": {
     "schemas": {
+      "BackendUsage": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "node_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "backend",
+          "node_count"
+        ],
+        "type": "object"
+      },
+      "Checkpoint": {
+        "properties": {
+          "artifact_versions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "backend_conversation": {
+            "format": "byte",
+            "type": "string"
+          },
+          "backend_name": {
+            "type": "string"
+          },
+          "backend_pending_tool_use_id": {
+            "type": "string"
+          },
+          "backend_session_id": {
+            "type": "string"
+          },
+          "budget_cost_usd": {
+            "type": "number"
+          },
+          "budget_elapsed_ns": {
+            "type": "integer"
+          },
+          "budget_iterations_used": {
+            "type": "integer"
+          },
+          "budget_tokens_used": {
+            "type": "integer"
+          },
+          "cost_usd_total": {
+            "type": "number"
+          },
+          "interaction_id": {
+            "type": "string"
+          },
+          "interaction_questions": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "loop_counters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "loop_current_output": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "loop_previous_output": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "node_attempts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "outputs": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "round_robin_counters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "vars": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "node_id",
+          "interaction_id",
+          "outputs",
+          "loop_counters",
+          "artifact_versions",
+          "vars"
+        ],
+        "type": "object"
+      },
       "Comment": {
         "properties": {
           "author": {
@@ -100,6 +221,62 @@
           "created_by",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "ExecutionState": {
+        "properties": {
+          "branch_id": {
+            "type": "string"
+          },
+          "current_event_seq": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "first_seq": {
+            "type": "integer"
+          },
+          "ir_node_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_artifact_version": {
+            "type": "integer"
+          },
+          "last_seq": {
+            "type": "integer"
+          },
+          "loop_iteration": {
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "execution_id",
+          "ir_node_id",
+          "branch_id",
+          "loop_iteration",
+          "status",
+          "current_event_seq",
+          "first_seq",
+          "last_seq"
         ],
         "type": "object"
       },
@@ -558,6 +735,211 @@
         ],
         "type": "object"
       },
+      "RunBudget": {
+        "properties": {
+          "max_cost_usd": {
+            "type": "number"
+          },
+          "max_duration": {
+            "type": "string"
+          },
+          "max_iterations": {
+            "type": "integer"
+          },
+          "max_parallel_branches": {
+            "type": "integer"
+          },
+          "max_tokens": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RunHeader": {
+        "properties": {
+          "active_duration_ms": {
+            "type": "integer"
+          },
+          "auto_merge": {
+            "type": "boolean"
+          },
+          "backends_used": {
+            "items": {
+              "$ref": "#/components/schemas/BackendUsage"
+            },
+            "type": "array"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/RunBudget"
+          },
+          "bundle_display_name": {
+            "type": "string"
+          },
+          "bundle_name": {
+            "type": "string"
+          },
+          "checkpoint": {
+            "$ref": "#/components/schemas/Checkpoint"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "current_run_start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "final_branch": {
+            "type": "string"
+          },
+          "final_branch_error": {
+            "type": "string"
+          },
+          "final_commit": {
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "loops": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RunLoopProgress"
+            },
+            "type": "object"
+          },
+          "merge_status": {
+            "type": "string"
+          },
+          "merge_strategy": {
+            "type": "string"
+          },
+          "merged_commit": {
+            "type": "string"
+          },
+          "merged_into": {
+            "type": "string"
+          },
+          "model_overrides": {
+            "items": {
+              "$ref": "#/components/schemas/RunModelOverride"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent_node_id": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "type": "string"
+          },
+          "queue_position": {
+            "type": "integer"
+          },
+          "shard_count": {
+            "type": "integer"
+          },
+          "shard_index": {
+            "type": "integer"
+          },
+          "shard_label": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RunSource"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "watched_issue_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "work_dir": {
+            "type": "string"
+          },
+          "workflow_hash": {
+            "type": "string"
+          },
+          "workflow_name": {
+            "type": "string"
+          },
+          "worktree": {
+            "type": "boolean"
+          },
+          "worktree_available": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "workflow_name",
+          "status",
+          "created_at",
+          "updated_at",
+          "worktree_available",
+          "active_duration_ms"
+        ],
+        "type": "object"
+      },
+      "RunLoopProgress": {
+        "properties": {
+          "current": {
+            "type": "integer"
+          },
+          "max": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "current"
+        ],
+        "type": "object"
+      },
+      "RunModelOverride": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
       "RunRef": {
         "properties": {
           "at": {
@@ -574,6 +956,151 @@
         "required": [
           "run_id",
           "at"
+        ],
+        "type": "object"
+      },
+      "RunSnapshot": {
+        "properties": {
+          "executions": {
+            "items": {
+              "$ref": "#/components/schemas/ExecutionState"
+            },
+            "type": "array"
+          },
+          "last_seq": {
+            "type": "integer"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunHeader"
+          }
+        },
+        "required": [
+          "run",
+          "executions",
+          "last_seq"
+        ],
+        "type": "object"
+      },
+      "RunSource": {
+        "properties": {
+          "issue_id": {
+            "type": "string"
+          },
+          "issue_identifier": {
+            "type": "string"
+          },
+          "issue_title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "RunSummary": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "auto_merge": {
+            "type": "boolean"
+          },
+          "bundle_display_name": {
+            "type": "string"
+          },
+          "bundle_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "final_branch": {
+            "type": "string"
+          },
+          "final_branch_error": {
+            "type": "string"
+          },
+          "final_commit": {
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "merge_status": {
+            "type": "string"
+          },
+          "merge_strategy": {
+            "type": "string"
+          },
+          "merged_commit": {
+            "type": "string"
+          },
+          "merged_into": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent_node_id": {
+            "type": "string"
+          },
+          "parent_run_id": {
+            "type": "string"
+          },
+          "project_path": {
+            "type": "string"
+          },
+          "queue_position": {
+            "type": "integer"
+          },
+          "repo_root": {
+            "type": "string"
+          },
+          "shard_count": {
+            "type": "integer"
+          },
+          "shard_index": {
+            "type": "integer"
+          },
+          "shard_label": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "work_dir": {
+            "type": "string"
+          },
+          "workflow_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workflow_name",
+          "status",
+          "created_at",
+          "updated_at",
+          "active"
         ],
         "type": "object"
       },
@@ -620,6 +1147,122 @@
           "name",
           "token_last4",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "WireEdge": {
+        "properties": {
+          "condition": {
+            "type": "string"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "loop": {
+            "type": "string"
+          },
+          "negated": {
+            "type": "boolean"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "WireNode": {
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "isolated": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_schema": {
+            "items": {
+              "$ref": "#/components/schemas/WireSchemaField"
+            },
+            "type": "array"
+          },
+          "reasoning_effort": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "WireSchemaField": {
+        "properties": {
+          "enum_values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "type": "object"
+      },
+      "WireWorkflow": {
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/WireEdge"
+            },
+            "type": "array"
+          },
+          "entry": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/WireNode"
+            },
+            "type": "array"
+          },
+          "stale_hash": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "entry",
+          "nodes",
+          "edges"
         ],
         "type": "object"
       },
@@ -3046,8 +3689,26 @@
       "get": {
         "operationId": "getRuns",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "runs": {
+                      "items": {
+                        "$ref": "#/components/schemas/RunSummary"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "runs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/runs",
@@ -3126,8 +3787,15 @@
       "get": {
         "operationId": "getRunsById",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSnapshot"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/runs/{id}",
@@ -3438,8 +4106,26 @@
       "get": {
         "operationId": "getRunsByIdChildren",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "runs": {
+                      "items": {
+                        "$ref": "#/components/schemas/RunSummary"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "runs"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/runs/{id}/children",
@@ -4278,8 +4964,15 @@
       "get": {
         "operationId": "getRunsByIdWorkflow",
         "responses": {
-          "default": {
-            "description": "Response"
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireWorkflow"
+                }
+              }
+            },
+            "description": "OK"
           }
         },
         "summary": "GET /api/runs/{id}/workflow",

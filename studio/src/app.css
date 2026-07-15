@@ -98,6 +98,7 @@
   --color-node-fail: #ef4444;    /* red-500 */
   --color-node-start: #10b981;   /* emerald-500 */
   --color-node-group: #6366f1;   /* indigo-500 — group/parent container */
+  --color-node-subbot: #a855f7;  /* purple-500 — subbot child-workflow frame */
 
   /* Selection — used by canvas + edge + sub-node highlighting */
   --color-selected: #60a5fa;     /* blue-400 */
@@ -322,6 +323,7 @@
   --color-node-fail: #b91c1c;      /* red-700 */
   --color-node-start: #047857;     /* emerald-700 */
   --color-node-group: #4338ca;     /* indigo-700 */
+  --color-node-subbot: #7e22ce;    /* purple-700 */
   --color-selected: #1d4ed8;       /* blue-700 */
   --color-layer-schemas: #6d28d9;  /* violet-700 */
   --color-layer-prompts: #0f766e;  /* teal-700 */

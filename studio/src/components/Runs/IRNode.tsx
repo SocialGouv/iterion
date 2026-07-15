@@ -2,8 +2,9 @@ import { useState } from "react";
 import type { Node, NodeProps } from "@xyflow/react";
 import { Handle, Position } from "@xyflow/react";
 
-import type { ExecutionState } from "@/api/runs";
+import type { ExecutionState, RunSummary } from "@/api/runs";
 import type { NodeKind } from "@/api/types";
+import { statusDotClass } from "@/lib/subRuns";
 import { Popover } from "@/components/ui";
 import { ContextUsageBar } from "@/components/ui/ContextUsageBar";
 import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
@@ -18,6 +19,10 @@ import { statusClasses, type UnifiedStatus } from "./runStatusClasses";
 // affordance. Tuned to match the 200px node width — beyond ~6 the strip
 // either wraps or the node grows taller.
 const INLINE_PIPS_MAX = 6;
+
+// Maximum per-child status dots on a subbot card's sub-run chip before
+// truncating — same 200px width budget as the pip strip.
+const SUBRUN_DOTS_MAX = 8;
 
 // Palette cycled through iteration indices so a loop body that fired
 // 5 times shows pip 0 cyan, pip 1 violet, pip 2 amber, etc. Independent
@@ -86,12 +91,24 @@ interface IRNodeData extends Record<string, unknown> {
   // (every item passes through, e.g. mark_ip/route); count < total → a
   // routed split (only a subset reached this node, e.g. a per-type stub).
   replication?: { count: number; total: number } | null;
+  // Subbot node identity (wire contract C2): the child .bot file this
+  // node runs + whether the child executes in an isolated workspace.
+  // Present only for kind === "subbot".
+  subbot?: { source?: string; isolated?: boolean };
+  // Child runs this subbot node spawned — a display-only status-dot row
+  // on the COMPACT card (once the child workflow loads, the node
+  // expands into a frame whose tabs take over). Absent until the first
+  // child run is observed.
+  subRuns?: { children: RunSummary[] };
+  // Display label override: inline subbot child nodes show their
+  // frame-local name instead of the `${subbotId}::${childId}` id.
+  label?: string;
 }
 
 type IRNodeType = Node<IRNodeData, "irnode">;
 
 export default function IRNode({ data }: NodeProps<IRNodeType>) {
-  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta, replication } =
+  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta, replication, subbot, subRuns, label: labelOverride } =
     data;
   // Multi-instance badge: count/total when split, ×N when on the common
   // per-item path. Distinguishes "mark_ip ran 38×" (×38) from "code_stub
@@ -155,7 +172,7 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
       <div className="flex items-center gap-1.5 font-medium truncate">
         <NodeIcon kind={kind as NodeKind} size={14} className="shrink-0" />
         <span className="truncate" title={id}>
-          {id}
+          {labelOverride ?? id}
         </span>
         {isEntry && (
           <span
@@ -188,6 +205,24 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
             : `${selectedStatus} · iter ${activeIdx + 1}/${executions.length}`}
         </span>
       </div>
+
+      {/* Subbot identity: which .bot file the node runs (mono, like a
+          command line) + an isolated-workspace mini-chip. */}
+      {kind === "subbot" && subbot?.source && (
+        <div className="mt-1 flex items-center gap-1 text-caption text-fg-subtle min-w-0">
+          <span className="font-mono truncate" title={subbot.source}>
+            {subbot.source}
+          </span>
+          {subbot.isolated && (
+            <span
+              className="px-1 rounded border border-border-default bg-surface-2 text-fg-muted text-[8px] uppercase shrink-0"
+              title="isolated: the child run executes in its own workspace"
+            >
+              isolated
+            </span>
+          )}
+        </div>
+      )}
 
       {hasMeta && (
         <>
@@ -243,7 +278,35 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
         />
       )}
 
+      {subRuns && subRuns.children.length > 0 && (
+        <SubRunChip children_={subRuns.children} />
+      )}
+
       <Handle type="source" position={Position.Bottom} className="!bg-fg-subtle" />
+    </div>
+  );
+}
+
+// SubRunChip is the compact "N sub-runs" status row on a COMPACT subbot
+// card: one status dot per child (capped to fit the 200px width budget)
+// + count label. Display-only — the transient pre-expansion state; once
+// the child workflow loads the node becomes a frame with its own tabs.
+function SubRunChip({ children_ }: { children_: RunSummary[] }) {
+  const shown = children_.slice(0, SUBRUN_DOTS_MAX);
+  const label = `${children_.length} sub-run${children_.length === 1 ? "" : "s"}`;
+  return (
+    <div
+      className="mt-1.5 flex items-center gap-1 text-[9px] font-mono rounded border border-border-default bg-surface-1 px-1.5 h-[16px] text-fg-muted max-w-full"
+      title={label}
+    >
+      {shown.map((c) => (
+        <span
+          key={c.id}
+          className={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${statusDotClass(c.status)}`}
+          aria-hidden
+        />
+      ))}
+      <span className="truncate">{label}</span>
     </div>
   );
 }

@@ -123,6 +123,7 @@ type jsonFile struct {
 	Humans      []*jsonHumanDecl      `json:"humans,omitempty"`
 	Tools       []*jsonToolNodeDecl   `json:"tools,omitempty"`
 	Computes    []*jsonComputeDecl    `json:"computes,omitempty"`
+	Subbots     []*jsonSubbotDecl     `json:"subbots,omitempty"`
 	Emits       []*jsonEmitDecl       `json:"emits,omitempty"`
 	Waits       []*jsonWaitDecl       `json:"waits,omitempty"`
 	Workflows   []*jsonWorkflowDecl   `json:"workflows,omitempty"`
@@ -570,6 +571,15 @@ type jsonComputeExpr struct {
 	Expr string `json:"expr,omitempty"`
 }
 
+type jsonSubbotDecl struct {
+	Name     string           `json:"name"`
+	Source   string           `json:"source,omitempty"`
+	With     []*jsonWithEntry `json:"with,omitempty"`
+	Output   string           `json:"output,omitempty"`
+	Needs    []string         `json:"needs,omitempty"`
+	Isolated bool             `json:"isolated,omitempty"`
+}
+
 type jsonEmitDecl struct {
 	Name  string           `json:"name,omitempty"`
 	Event string           `json:"event,omitempty"`
@@ -745,6 +755,19 @@ func toJSON(f *File) *jsonFile {
 			jc.Expr = append(jc.Expr, &jsonComputeExpr{Key: e.Key, Expr: e.Expr})
 		}
 		jf.Computes = append(jf.Computes, jc)
+	}
+	for _, s := range f.Subbots {
+		js := &jsonSubbotDecl{
+			Name:     s.Name,
+			Source:   s.Source,
+			Output:   s.Output,
+			Needs:    s.Needs,
+			Isolated: s.Isolated,
+		}
+		for _, w := range s.With {
+			js.With = append(js.With, &jsonWithEntry{Key: w.Key, Value: w.Value})
+		}
+		jf.Subbots = append(jf.Subbots, js)
 	}
 	for _, em := range f.Emits {
 		je := &jsonEmitDecl{Name: em.Name, Event: em.Event}
@@ -1350,6 +1373,20 @@ func fromJSON(jf *jsonFile) (*File, error) {
 			cd.Expr = append(cd.Expr, &ComputeExpr{Key: je.Key, Expr: je.Expr})
 		}
 		f.Computes = append(f.Computes, cd)
+	}
+
+	for _, js := range jf.Subbots {
+		sd := &SubbotDecl{
+			Name:     js.Name,
+			Source:   js.Source,
+			Output:   js.Output,
+			Needs:    js.Needs,
+			Isolated: js.Isolated,
+		}
+		for _, w := range js.With {
+			sd.With = append(sd.With, &WithEntry{Key: w.Key, Value: w.Value})
+		}
+		f.Subbots = append(f.Subbots, sd)
 	}
 
 	for _, je := range jf.Emits {

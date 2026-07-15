@@ -3,6 +3,7 @@ import { useDocumentStore, useDocumentStoreInstance } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { useUIStore } from "@/store/ui";
 import { makeEdgeId, isAuxiliaryNodeId } from "@/lib/documentToGraph";
+import { isSubbotChildId } from "@/lib/subbotGraph";
 import { useEscapeStack } from "@/hooks/useEscapeStack";
 import type { LayerKind } from "@/lib/constants";
 
@@ -26,7 +27,9 @@ function announceNewNode(
 }
 
 function isEditableNode(id: string): boolean {
-  return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id);
+  // Subbot child nodes belong to another file — copy/duplicate/delete
+  // must never act on them.
+  return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id) && !isSubbotChildId(id);
 }
 
 interface CanvasKeyboardDeps {
@@ -135,7 +138,8 @@ export function useCanvasKeyboard(deps: CanvasKeyboardDeps): (e: KeyboardEvent) 
           .concat((document?.routers ?? []).map((r) => r.name))
           .concat((document?.humans ?? []).map((h) => h.name))
           .concat((document?.tools ?? []).map((t) => t.name))
-          .concat((document?.computes ?? []).map((c) => c.name));
+          .concat((document?.computes ?? []).map((c) => c.name))
+          .concat((document?.subbots ?? []).map((sb) => sb.name));
         if (allEditable.length === 0) return;
         onSelectAll(allEditable);
         addToast(`Selected ${allEditable.length} node${allEditable.length === 1 ? "" : "s"}`, "info");

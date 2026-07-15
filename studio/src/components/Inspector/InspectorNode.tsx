@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
+import { useTabsStore } from "@/store/tabs";
 import { NODE_COLORS, NODE_ICONS, softColor } from "@/lib/constants";
+import { getAllNodeNames } from "@/lib/defaults";
+import { parseSubbotChildId, resolveSubbotSource } from "@/lib/subbotGraph";
 import type {
   AgentDecl,
   ComputeDecl,
@@ -9,6 +13,7 @@ import type {
   JudgeDecl,
   NodeKind,
   RouterDecl,
+  SubbotDecl,
   ToolNodeDecl,
 } from "@/api/types";
 import AgentForm from "@/components/Panels/forms/AgentForm";
@@ -16,9 +21,11 @@ import RouterForm from "@/components/Panels/forms/RouterForm";
 import HumanForm from "@/components/Panels/forms/HumanForm";
 import ToolForm from "@/components/Panels/forms/ToolForm";
 import ComputeForm from "@/components/Panels/forms/ComputeForm";
+import { CheckboxField, CommittedTextField, NodeFormHeader, SelectFieldWithCreate, TextField } from "@/components/Panels/forms/FormField";
+import { useSchemaPromptCreators } from "@/hooks/useSchemaPromptCreators";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import NodeRunsChip from "./NodeRunsChip";
-import { IconButton } from "@/components/ui";
+import { Button, IconButton } from "@/components/ui";
 import { TrashIcon } from "@radix-ui/react-icons";
 
 const TERMINAL_DESCRIPTIONS: Record<string, string> = {
@@ -35,7 +42,7 @@ const TERMINAL_LABELS: Record<string, string> = {
 
 interface NodeMatch {
   kind: NodeKind;
-  decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl;
+  decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl | SubbotDecl;
 }
 
 export default function InspectorNode({ nodeId }: { nodeId: string }) {
@@ -54,8 +61,16 @@ export default function InspectorNode({ nodeId }: { nodeId: string }) {
     for (const h of document.humans) if (h.name === nodeId) return { kind: "human", decl: h };
     for (const t of document.tools) if (t.name === nodeId) return { kind: "tool", decl: t };
     for (const c of document.computes ?? []) if (c.name === nodeId) return { kind: "compute", decl: c };
+    for (const sb of document.subbots ?? []) if (sb.name === nodeId) return { kind: "subbot", decl: sb };
     return null;
   }, [document, nodeId]);
+
+  // Node inside an expanded subbot frame — belongs to the CHILD file, so
+  // there is nothing to edit here; show a read-only notice + open button.
+  const external = parseSubbotChildId(nodeId);
+  if (external) {
+    return <SubbotChildNotice subbotId={external.subbotId} childId={external.childId} />;
+  }
 
   // Terminal nodes
   if (TERMINAL_DESCRIPTIONS[nodeId]) {
@@ -218,8 +233,124 @@ function NodeForm({ match }: { match: NodeMatch }) {
       return <ToolForm decl={match.decl as ToolNodeDecl} />;
     case "compute":
       return <ComputeForm decl={match.decl as ComputeDecl} />;
+    case "subbot":
+      return <SubbotForm decl={match.decl as SubbotDecl} />;
     default:
       return <p className="text-fg-subtle text-xs">Terminal node (no editable properties)</p>;
   }
+}
+
+/** Opens a subbot's child .bot file in its own editor tab (same flow as
+ *  RecentFilesPanel: openTab + URL so deep-link state stays in sync). */
+function useOpenChildBot() {
+  const currentFilePath = useDocumentStore((s) => s.currentFilePath);
+  const [, setLocation] = useLocation();
+  return (source: string | undefined) => {
+    if (!source) return;
+    const path = resolveSubbotSource(currentFilePath, source);
+    useTabsStore.getState().openTab("editor", { file: path });
+    setLocation(`/editor?file=${encodeURIComponent(path)}`);
+  };
+}
+
+function SubbotForm({ decl }: { decl: SubbotDecl }) {
+  const document = useDocumentStore((s) => s.document);
+  const updateSubbot = useDocumentStore((s) => s.updateSubbot);
+  const renameNode = useDocumentStore((s) => s.renameNode);
+  const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
+  const { createSchema } = useSchemaPromptCreators();
+  const openChild = useOpenChildBot();
+
+  const schemaOptions = (document?.schemas ?? []).map((s) => ({ value: s.name, label: s.name }));
+  const withEntries = decl.with ?? [];
+
+  return (
+    <div className="space-y-1">
+      <NodeFormHeader color={NODE_COLORS.subbot} icon={NODE_ICONS.subbot} label="Subbot" />
+      <CommittedTextField
+        label="Name"
+        value={decl.name}
+        onChange={(v) => renameNode(decl.name, v)}
+        onCommit={(v) => setSelectedNode(v)}
+        validate={(v) => {
+          if (!v.trim()) return "Name cannot be empty";
+          if (/\s/.test(v)) return "Name cannot contain spaces";
+          const names = getAllNodeNames(document!);
+          names.delete(decl.name);
+          if (names.has(v)) return "Name already exists";
+          return null;
+        }}
+      />
+      <TextField
+        label="Source"
+        value={decl.source ?? ""}
+        onChange={(v) => updateSubbot(decl.name, { source: v || undefined })}
+        placeholder="child.bot"
+        help="Path of the child .bot file, relative to this file. The child runs as a separate run per invocation."
+      />
+      <SelectFieldWithCreate
+        label="Output Schema"
+        value={decl.output ?? ""}
+        onChange={(v) => updateSubbot(decl.name, { output: v || undefined })}
+        options={schemaOptions}
+        allowEmpty
+        emptyLabel="-- none --"
+        onCreate={createSchema}
+        help="Optional. Schema the child run's final output is validated against."
+      />
+      <CheckboxField
+        label="Isolated"
+        checked={decl.isolated ?? false}
+        onChange={(v) => updateSubbot(decl.name, { isolated: v || undefined })}
+        help="Assert the child confines its writes to its own run store — required for parallel fan-out."
+      />
+      {withEntries.length > 0 && (
+        <div className="pt-1">
+          <div className="text-caption uppercase tracking-wider text-fg-subtle mb-1">With mappings</div>
+          <div className="space-y-0.5">
+            {withEntries.map((w, i) => (
+              <div key={i} className="flex items-center gap-1 text-xs font-mono bg-surface-1 border border-border-default rounded px-1.5 py-0.5">
+                <span className="text-fg-default">{w.key}</span>
+                <span className="text-fg-subtle">=</span>
+                <span className="text-fg-muted truncate" title={w.value}>{w.value}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-caption text-fg-subtle mt-1">Read-only — edit mappings in the source view.</p>
+        </div>
+      )}
+      <div className="pt-2">
+        <Button variant="secondary" size="sm" disabled={!decl.source} onClick={() => openChild(decl.source)}>
+          Open child bot
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Read-only notice for a node that belongs to an expanded subbot's child
+ *  graph — the node lives in ANOTHER file, so the inspector only names it
+ *  and offers to open the child bot. */
+function SubbotChildNotice({ subbotId, childId }: { subbotId: string; childId: string }) {
+  const document = useDocumentStore((s) => s.document);
+  const openChild = useOpenChildBot();
+  const decl = (document?.subbots ?? []).find((sb) => sb.name === subbotId);
+  const source = decl?.source ?? "";
+  return (
+    <div className="p-3 space-y-2">
+      <div className="flex items-center gap-3 rounded-md border border-border-default bg-surface-1 px-3 py-3">
+        <span className="text-xl">{NODE_ICONS.subbot}</span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-fg-default truncate">{childId}</p>
+          <p className="text-xs text-fg-subtle mt-0.5">
+            Belongs to {source || `subbot ${subbotId}`} (subbot {subbotId}) — read-only here.
+          </p>
+        </div>
+      </div>
+      <Button variant="secondary" size="sm" disabled={!source} onClick={() => openChild(source)}>
+        Open {source || "child bot"}
+      </Button>
+    </div>
+  );
 }
 

@@ -147,3 +147,47 @@ func TestListRunChildren_CrossStore(t *testing.T) {
 		t.Errorf("shard-0 tuple = {parent=%q label=%q}, want {parent-xs docs}", s0.ParentRunID, s0.ShardLabel)
 	}
 }
+
+// TestListRunChildren_ParentNodeID pins contract C3 on the children wire:
+// a child run spawned by a subbot node carries parent_node_id (the IR node
+// id of the spawning subbot node in the parent workflow) in the JSON.
+func TestListRunChildren_ParentNodeID(t *testing.T) {
+	srv, hs := newTestServer(t)
+	seedRun(t, srv, "parent-sb", "wf_parent", store.RunStatusRunning)
+
+	st, err := store.New(srv.cfg.StoreDir)
+	if err != nil {
+		t.Fatalf("open seed store: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := st.CreateRun(ctx, "sb-child", "wf_child", nil); err != nil {
+		t.Fatalf("CreateRun sb-child: %v", err)
+	}
+	r, err := st.LoadRun(ctx, "sb-child")
+	if err != nil {
+		t.Fatalf("LoadRun sb-child: %v", err)
+	}
+	r.ParentRunID = "parent-sb"
+	r.ParentNodeID = "produce_episode"
+	if err := st.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun sb-child: %v", err)
+	}
+
+	resp, err := http.Get(hs.URL + "/api/runs/parent-sb/children")
+	if err != nil {
+		t.Fatalf("GET children: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var out struct {
+		Runs []runview.RunSummary `json:"runs"`
+	}
+	decodeJSONResp(t, resp, &out)
+	if len(out.Runs) != 1 {
+		t.Fatalf("len = %d, want 1 (%+v)", len(out.Runs), out.Runs)
+	}
+	if got := out.Runs[0].ParentNodeID; got != "produce_episode" {
+		t.Errorf("parent_node_id = %q, want %q", got, "produce_episode")
+	}
+}

@@ -583,6 +583,11 @@ func testReverseTreeQueries(t *testing.T, s store.RunStore) {
 			r.Source = &store.RunSource{Kind: store.RunSourceKindDispatcher, IssueID: issueID}
 		}
 		r.ParentRunID = parentID
+		if parentID != "" {
+			// Contract C3: subbot-spawned children also record WHICH node
+			// spawned them; assert the field round-trips per backend below.
+			r.ParentNodeID = "sb_node"
+		}
 		r.CreatedAt = createdAt
 		if err := s.SaveRun(ctx, r); err != nil {
 			t.Fatalf("SaveRun %s: %v", id, err)
@@ -648,6 +653,15 @@ func testReverseTreeQueries(t *testing.T, s store.RunStore) {
 			if len(got) != 0 {
 				t.Errorf("ListChildRuns(%q) = %v, want empty", q, got)
 			}
+		}
+
+		// ParentNodeID must round-trip alongside ParentRunID (contract C3).
+		child, err := s.LoadRun(ctx, "shard_0")
+		if err != nil {
+			t.Fatalf("LoadRun shard_0: %v", err)
+		}
+		if child.ParentNodeID != "sb_node" {
+			t.Errorf("shard_0 ParentNodeID = %q, want %q", child.ParentNodeID, "sb_node")
 		}
 	})
 }

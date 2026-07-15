@@ -2,11 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useParams } from "wouter";
 import { Group, Panel } from "react-resizable-panels";
+import { useQuery } from "@tanstack/react-query";
 
-import { type ExecutionState } from "@/api/runs";
+import { getRunWorkflow, type ExecutionState } from "@/api/runs";
 import { useRunStore } from "@/store/run";
 import { useUIStore } from "@/store/ui";
+import { useInlineSubbotData } from "@/hooks/useInlineSubbotData";
+import { useRunChildren } from "@/hooks/useRunChildren";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
+import { groupChildrenByNode, isSettledRunStatus } from "@/lib/subRuns";
 import { useLayoutPersistence } from "@/hooks/useLayoutPersistence";
 import { useRunToasts } from "@/hooks/useRunToasts";
 import { useRunKeyboard } from "@/hooks/useRunKeyboard";
@@ -49,6 +53,11 @@ import { useHorizontalLayout } from "./runView/useHorizontalLayout";
 import { useRunConsoleLayout } from "./runView/useRunConsoleLayout";
 import { useRunSnapshot } from "./runView/useRunSnapshot";
 import { useSelectionState } from "./runView/useSelectionState";
+
+// Poll cadence for the children query while the parent (or any child)
+// is still active — subbot children are spawned mid-run, so the run
+// console must notice them appearing without a reload.
+const SUBRUN_POLL_MS = 3000;
 
 interface RunViewProps {
   // Passed by RunTabHost when this view is hosted in a tab subtree.
@@ -245,6 +254,60 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   const wsHandle = useRunWebSocket(runId);
   useRunToasts(events, snapshot?.last_seq);
 
+  // --- Inline subbot expansion feeds ------------------------------------
+  // Children of this run + the parent IR (for grouping children by
+  // their spawning subbot node). The IR is immutable per run → long
+  // staleTime; RunCanvasIR keeps its own plain fetch (useWorkflowLoad),
+  // so this adds one request, not a second lifecycle.
+  const parentWfQuery = useQuery({
+    queryKey: ["run-workflow", runId],
+    queryFn: () => getRunWorkflow(runId!),
+    enabled: !!runId,
+    staleTime: 5 * 60_000,
+  });
+  const parentWf = parentWfQuery.data ?? null;
+  const runStatusForPoll = snapshot?.run.status;
+  const { data: childRuns } = useRunChildren(runId, true, {
+    refetchIntervalMs: SUBRUN_POLL_MS,
+    parentActive:
+      runStatusForPoll !== undefined && !isSettledRunStatus(runStatusForPoll),
+  });
+
+  const childrenByNode = useMemo(
+    () => groupChildrenByNode(childRuns, parentWf),
+    [childRuns, parentWf],
+  );
+  // Per-frame active tab picks (frameId -> child run id). Owned here so
+  // the recursive data hook can follow the SELECTED chain into nested
+  // subbots (a frame's selection decides whose children load next).
+  const [subRunPicks, setSubRunPicks] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    setSubRunPicks(new Map());
+  }, [runId]);
+  const handleSelectSubRunChild = useCallback(
+    (frameId: string, childRunId: string) => {
+      setSubRunPicks((prev) => {
+        if (prev.get(frameId) === childRunId) return prev;
+        const next = new Map(prev);
+        next.set(frameId, childRunId);
+        return next;
+      });
+    },
+    [],
+  );
+  // Child workflow shape per (possibly nested) subbot frame + polled
+  // executions of each frame's selected child, so the canvas renders
+  // every subbot's constituent pipeline in place — frames within frames
+  // for nested subbots (lib/subbotRunGraph).
+  const {
+    subRunsByNode,
+    childWorkflowsByNode,
+    childExecutionsByRun,
+    selectedChildByFrame,
+  } = useInlineSubbotData(childrenByNode, subRunPicks);
+
   const liveExecutions = useMemo(
     () => Array.from(executionsById.values()),
     [executionsById],
@@ -425,6 +488,11 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                   runtimeOverrideByNode={runtimeOverrideByNode}
                   followLive={followLiveNode}
                   onToggleFollowLive={handleToggleFollowLive}
+                  subRunsByNode={subRunsByNode}
+                  childWorkflowsByNode={childWorkflowsByNode}
+                  childExecutionsByRun={childExecutionsByRun}
+                  selectedChildByFrame={selectedChildByFrame}
+                  onSelectChild={handleSelectSubRunChild}
                 />
               </div>
             </Panel>
