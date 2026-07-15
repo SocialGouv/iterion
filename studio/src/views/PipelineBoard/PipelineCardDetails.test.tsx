@@ -125,6 +125,23 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain("Inputs");
   });
 
+  it("Failed card shows the failure reason + inputs + produced elements", () => {
+    const html = render(
+      makeCard({
+        column_id: "failed",
+        run_id: "run-ko",
+        status: "failed_resumable",
+        error: "budget exceeded at node compose",
+        entry_input: { topic: "jazz" },
+      }),
+    );
+    expect(html).toContain("Failure");
+    expect(html).toContain("budget exceeded at node compose");
+    expect(html).toContain("Inputs");
+    expect(html).toContain('data-testid="produced"');
+    expect(html).toContain('data-run-ids="run-ko"');
+  });
+
   it("Done card shows inputs + result + produced elements", () => {
     const html = render(
       makeCard({

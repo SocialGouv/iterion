@@ -35,6 +35,7 @@ const columns = [
   { id: "todo", title: "Todo", kind: "todo" },
   { id: "in_progress", title: "In progress", kind: "in_progress" },
   { id: "done", title: "Done", kind: "done" },
+  { id: "failed", title: "Failed", kind: "failed" },
 ];
 
 function makeCard(partial: Partial<PipelineBoardCard>): PipelineBoardCard {
@@ -152,25 +153,44 @@ describe("PipelineColumns", () => {
     expect(html).not.toContain("wf_name_meta");
   });
 
-  it("renders a failed ticket in Draft with a Failed badge, its error, and Retry", () => {
+  it("renders a failed pipeline in the Failed lane with its reason and Retry", () => {
     const html = render(
       makeBoard([
         makeCard({
           id: "failed",
-          column_id: "draft",
+          column_id: "failed",
           kind: "run",
           title: "Broke last time",
           issue_id: "iss-2",
           run_id: "run-old",
+          status: "failed_resumable",
           failed: true,
           error: "kaboom",
         }),
       ]),
     );
 
-    expect(html).toContain("Failed");
-    expect(html).toContain("kaboom");
-    expect(html).toContain("Retry");
+    expect(html).toContain("kaboom"); // the reason stays visible
+    expect(html).toContain("Retry"); // ticket-backed → retryable to Todo
+  });
+
+  it("a failed pipeline without a ticket shows the reason but no Retry", () => {
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "failed-standalone",
+          column_id: "failed",
+          kind: "run",
+          title: "Manual run",
+          run_id: "run-solo",
+          status: "failed",
+          failed: true,
+          error: "exploded",
+        }),
+      ]),
+    );
+    expect(html).toContain("exploded");
+    expect(html).not.toContain("Retry");
   });
 
   it("shows a Blocked tag naming the gate + progress; the form lives in the sidebar only", () => {
@@ -281,17 +301,22 @@ describe("move buttons (no drag & drop)", () => {
 });
 
 describe("move helpers", () => {
-  it("canMoveToTodo: draft-only, task-backed or failed", () => {
+  it("canMoveToTodo: draft tasks stage; failed-lane tickets retry", () => {
     expect(canMoveToTodo(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" }))).toBe(true);
+    expect(
+      canMoveToTodo(makeCard({ column_id: "failed", kind: "run", issue_id: "iss-1", failed: true })),
+    ).toBe(true);
+    // Legacy tolerance: a failed card still projected into draft stays retryable.
     expect(
       canMoveToTodo(makeCard({ column_id: "draft", kind: "run", issue_id: "iss-1", failed: true })),
     ).toBe(true);
-    // Not in draft / executing / no ticket → immobile.
+    // Not draft/failed lane, executing, or no ticket → immobile.
     expect(canMoveToTodo(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-1" }))).toBe(false);
     expect(
       canMoveToTodo(makeCard({ column_id: "draft", kind: "run", issue_id: "iss-1", status: "running" })),
     ).toBe(false);
     expect(canMoveToTodo(makeCard({ column_id: "draft", kind: "task" }))).toBe(false);
+    expect(canMoveToTodo(makeCard({ column_id: "failed", kind: "run", failed: true }))).toBe(false);
   });
 
   it("canMoveToDraft: todo-only, unlaunched task-backed tickets", () => {
@@ -322,13 +347,13 @@ describe("move helpers", () => {
 });
 
 describe("isTicketEditable", () => {
-  it("allows editing not-yet-run task-backed tickets", () => {
+  it("allows editing not-yet-run task-backed tickets (incl. failed-lane fixes)", () => {
     expect(
       isTicketEditable(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" })),
     ).toBe(true);
     expect(
       isTicketEditable(
-        makeCard({ column_id: "draft", kind: "run", issue_id: "iss-2", failed: true }),
+        makeCard({ column_id: "failed", kind: "run", issue_id: "iss-2", failed: true }),
       ),
     ).toBe(true);
     expect(

@@ -1,17 +1,17 @@
 // Pipeline board — read-model client for the single, global, runtime-derived
 // board. Distinct from api/native.ts: /board remains the editable backlog,
 // while this API projects every root pipeline (and not-yet-launched native
-// task) into four fixed, non-draggable lanes. Card position is derived from
-// server state only — there is no drag-and-drop here.
+// task) into five fixed, non-draggable lanes. Card position is derived from
+// server state only — moves are explicit button-driven ready-state writes.
 
 import { apiRequest } from "./client";
 import type { NativeIssue } from "./native";
 
 const BASE = "/api/v1/pipeline-board";
 
-// The four fixed lanes, in the order the server emits them.
+// The five fixed lanes, in the order the server emits them.
 export interface PipelineBoardColumn {
-  id: string; // "todo" | "in_progress" | "done" | "attention"
+  id: string; // "draft" | "todo" | "in_progress" | "done" | "failed"
   title: string;
   kind: string;
 }

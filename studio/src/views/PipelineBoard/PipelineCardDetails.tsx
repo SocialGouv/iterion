@@ -95,6 +95,8 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 //   - In progress, awaiting human input  → + the response form (first, so the
 //                                          operator's action is front and centre).
 //   - Done                               → Inputs + Result + Produced elements.
+//   - Failed                             → Failure reason + Inputs + Produced
+//                                          elements (what it made before dying).
 // Exported (separately from the panel wrapper) so it can be unit-tested in
 // isolation from the docked-panel chrome.
 export function PipelineCardDetailsBody({
@@ -111,7 +113,9 @@ export function PipelineCardDetailsBody({
   const reviews = card.pending_reviews ?? [];
   const showProduced =
     !!card.run_id &&
-    (card.column_id === "in_progress" || card.column_id === "done");
+    (card.column_id === "in_progress" ||
+      card.column_id === "done" ||
+      card.column_id === "failed");
   // The whole pipeline tree — root + sub-bots — so a sub-bot's produced
   // elements surface here too. Falls back to the root run for older
   // projections that don't emit the tree.
@@ -137,6 +141,15 @@ export function PipelineCardDetailsBody({
         <section aria-label="Response required" className="space-y-2">
           <SectionHeading>Response required</SectionHeading>
           <SequentialReviews card={card} onResolved={onRefetch} />
+        </section>
+      )}
+
+      {card.column_id === "failed" && card.error && (
+        <section aria-label="Failure" className="space-y-2">
+          <SectionHeading>Failure</SectionHeading>
+          <InlineBanner tone="danger" layout="inline">
+            {card.error}
+          </InlineBanner>
         </section>
       )}
 

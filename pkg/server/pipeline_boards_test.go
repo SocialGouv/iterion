@@ -154,11 +154,11 @@ func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 	return projection
 }
 
-// The four fixed lanes, in order.
+// The five fixed lanes, in order.
 func TestPipelineBoardHasFourFixedColumns(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	projection := env.projection(t)
-	want := []string{pipelineColumnDraft, pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone}
+	want := []string{pipelineColumnDraft, pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone, pipelineColumnFailed}
 	if len(projection.Columns) != len(want) {
 		t.Fatalf("columns = %+v, want %v", projection.Columns, want)
 	}
@@ -246,7 +246,7 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 	}
 }
 
-// Root status maps to the four lanes; queued is TODO (waiting for a slot).
+// Root status maps to the five lanes; queued is TODO (waiting for a slot).
 func TestPipelineBoardColumnBucketing(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	cases := []struct {
@@ -257,10 +257,10 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		{"r-running", store.RunStatusRunning, pipelineColumnInProgress},
 		{"r-paused", store.RunStatusPausedWaitingHuman, pipelineColumnInProgress},
 		{"r-finished", store.RunStatusFinished, pipelineColumnDone},
-		{"r-failed", store.RunStatusFailed, pipelineColumnDraft},
-		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnDraft},
-		{"r-cancelled", store.RunStatusCancelled, pipelineColumnDraft},
-		{"r-operator", store.RunStatusPausedOperator, pipelineColumnDraft},
+		{"r-failed", store.RunStatusFailed, pipelineColumnFailed},
+		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnFailed},
+		{"r-cancelled", store.RunStatusCancelled, pipelineColumnFailed},
+		{"r-operator", store.RunStatusPausedOperator, pipelineColumnFailed},
 	}
 	for _, c := range cases {
 		env.seedRun(t, c.id, "review", c.status, func(run *store.Run) {
@@ -285,10 +285,10 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		if card.ColumnID != c.column {
 			t.Errorf("%s column = %q, want %q", c.id, card.ColumnID, c.column)
 		}
-		// Failed runs land in Draft and must carry the Failed flag so the UI
-		// distinguishes them from not-yet-ready drafts.
-		if c.column == pipelineColumnDraft && !card.Failed {
-			t.Errorf("%s in Draft must have Failed=true", c.id)
+		// Failed runs land in the FAILED lane and must carry the Failed flag
+		// so the UI offers Retry and shows the error as the reason.
+		if c.column == pipelineColumnFailed && !card.Failed {
+			t.Errorf("%s in Failed must have Failed=true", c.id)
 		}
 	}
 	queued := findPipelineCard(t, projection.Cards, "run:r-queued")

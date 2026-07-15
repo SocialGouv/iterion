@@ -83,18 +83,22 @@ function columnAccent(id: string): string {
       return "bg-info";
     case "done":
       return "bg-success";
+    case "failed":
+      return "bg-danger";
     default:
       return "bg-accent";
   }
 }
 
 // Ticket movement is BUTTON-driven — there is no drag & drop on this board.
-// canMoveToTodo: a Draft task-backed ticket that is not executing — a
-// not-yet-launched task, or a failed ticket (retry). Running / paused /
+// canMoveToTodo: a ticket-backed card that is not executing — a Draft task
+// being staged, or a Failed pipeline being retried. Running / paused /
 // queued / finished runs are fixed by run state.
 export function canMoveToTodo(card: PipelineBoardCardDTO): boolean {
-  if (!card.issue_id || card.column_id !== "draft") return false;
-  return card.kind === "task" || card.failed === true;
+  if (!card.issue_id) return false;
+  if (card.column_id === "draft") return card.kind === "task" || card.failed === true;
+  if (card.column_id === "failed") return card.failed === true;
+  return false;
 }
 
 // canMoveToDraft: a ready-but-unlaunched Todo task goes back to Draft. A
@@ -104,13 +108,14 @@ export function canMoveToDraft(card: PipelineBoardCardDTO): boolean {
 }
 
 // isTicketEditable reports whether a ticket can still be edited before it
-// runs: it must be task-backed (issue_id) and not executing — a Draft card
-// (a task, or a failed run being retried) or a ready-but-unlaunched Todo task
-// card. In-progress / done cards and queued runs are fixed.
+// runs: it must be task-backed (issue_id) and not executing — a Draft card,
+// a Failed pipeline being fixed before retry, or a ready-but-unlaunched Todo
+// task card. In-progress / done cards and queued runs are fixed.
 export function isTicketEditable(card: PipelineBoardCardDTO): boolean {
   if (!card.issue_id) return false;
   return (
     card.column_id === "draft" ||
+    card.column_id === "failed" ||
     (card.column_id === "todo" && card.kind === "task")
   );
 }
@@ -264,6 +269,7 @@ export function PipelineCard({ card, onMoveTicket, onEditTask, onOpenCard }: Car
       {card.column_id === "todo" && <TodoStatus card={card} />}
       {card.column_id === "in_progress" && <InProgressStatus card={card} />}
       {card.column_id === "done" && <DoneStatus card={card} />}
+      {card.column_id === "failed" && <FailedStatus card={card} />}
 
       <div className="flex items-center gap-2 border-t border-border-default pt-2 text-micro">
         {card.run_id ? (
@@ -460,6 +466,23 @@ function DoneStatus({ card }: { card: PipelineBoardCardDTO }) {
   return (
     <div className="flex flex-wrap items-center gap-1">
       <StatusChip status={card.status} />
+    </div>
+  );
+}
+
+// Failed: the terminal status + the failure REASON. Retry (→ Todo) and Edit
+// live in the footer for ticket-backed cards.
+function FailedStatus({ card }: { card: PipelineBoardCardDTO }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1">
+        <StatusChip status={card.status} />
+      </div>
+      {card.error && (
+        <InlineBanner tone="danger" layout="inline">
+          {card.error}
+        </InlineBanner>
+      )}
     </div>
   );
 }

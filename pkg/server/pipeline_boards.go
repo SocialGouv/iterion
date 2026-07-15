@@ -27,6 +27,7 @@ const (
 	pipelineColumnTodo       = "todo"
 	pipelineColumnInProgress = "in_progress"
 	pipelineColumnDone       = "done"
+	pipelineColumnFailed     = "failed"
 
 	pipelineTreeMaxDepth = 20
 	pipelineTreeMaxCards = 500
@@ -43,7 +44,7 @@ const (
 	pipelineArtifactProbeCap = 24
 )
 
-// PipelineBoardColumn is one of the four fixed lanes. Unlike the previous
+// PipelineBoardColumn is one of the five fixed lanes. Unlike the previous
 // per-bot board there are no derived interaction columns — human reviews
 // live inside the IN_PROGRESS card that blocks on them.
 type PipelineBoardColumn struct {
@@ -53,15 +54,16 @@ type PipelineBoardColumn struct {
 }
 
 // pipelineColumns is the fixed, client-order column set. Draft holds
-// not-yet-ready tickets AND tickets whose last run failed (with a Failed
-// flag); the operator drags a ticket Draft→Todo to mark it ready, then the
-// local launch loop starts it when a concurrency slot frees.
+// not-yet-ready tickets; Failed holds pipelines whose run ended in failure
+// (with the reason) until the operator retries them to Todo; the local
+// launch loop starts ready tickets when a concurrency slot frees.
 func pipelineColumns() []PipelineBoardColumn {
 	return []PipelineBoardColumn{
 		{ID: pipelineColumnDraft, Title: "Draft", Kind: "draft"},
 		{ID: pipelineColumnTodo, Title: "Todo", Kind: "todo"},
 		{ID: pipelineColumnInProgress, Title: "In progress", Kind: "in_progress"},
 		{ID: pipelineColumnDone, Title: "Done", Kind: "done"},
+		{ID: pipelineColumnFailed, Title: "Failed", Kind: "failed"},
 	}
 }
 
@@ -110,9 +112,9 @@ type PipelineBoardCard struct {
 	BotID        string          `json:"bot_id,omitempty"`
 	Status       store.RunStatus `json:"status,omitempty"`
 	Error        string          `json:"error,omitempty"`
-	// Failed is true when the card sits in Draft because its run failed /
-	// was cancelled (as opposed to a not-yet-ready draft ticket). The UI
-	// renders a "failed" badge so the operator can fix and re-drag to Todo.
+	// Failed is true when the card sits in the FAILED lane because its run
+	// failed / was cancelled. The UI shows the Error as the reason and
+	// offers a Retry (move back to Todo) on ticket-backed cards.
 	Failed bool `json:"failed,omitempty"`
 	// Ready reflects whether a task-backed card's ticket is in a
 	// launch-eligible (ready) state — used by the UI to place run-less
@@ -1079,9 +1081,9 @@ func pipelineColumnForRoot(root *store.Run, reviews []PipelineBoardPendingReview
 	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman:
 		return pipelineColumnInProgress
 	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
-		// A failed/cancelled run sends its ticket back to Draft (Failed
-		// flag) so the operator can fix it and re-drag it to Todo.
-		return pipelineColumnDraft
+		// A failed/cancelled run lands in the FAILED lane (with its error
+		// as the reason) until the operator retries it back to Todo.
+		return pipelineColumnFailed
 	default:
 		return pipelineColumnInProgress
 	}
