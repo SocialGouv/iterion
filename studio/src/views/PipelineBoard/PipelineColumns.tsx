@@ -12,8 +12,6 @@ import { Badge, Card, InlineBanner, StatusBadge } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 
-import { SequentialReviews } from "./SequentialReviews";
-
 interface Props {
   board: PipelineBoard;
   onRefetch: () => void;
@@ -168,7 +166,6 @@ export function PipelineColumns({ board, onRefetch, onEditTask, onOpenCard }: Pr
             key={column.id}
             column={column}
             cards={cards.filter((card) => card.column_id === column.id)}
-            onRefetch={onRefetch}
             onDropTicket={onDropTicket}
             onEditTask={onEditTask}
             onOpenCard={onOpenCard}
@@ -182,14 +179,12 @@ export function PipelineColumns({ board, onRefetch, onEditTask, onOpenCard }: Pr
 function PipelineColumn({
   column,
   cards,
-  onRefetch,
   onDropTicket,
   onEditTask,
   onOpenCard,
 }: {
   column: PipelineBoardColumn;
   cards: PipelineBoardCardDTO[];
-  onRefetch: () => void;
   onDropTicket: (issueId: string, columnId: string) => void;
   onEditTask?: (card: PipelineBoardCardDTO) => void;
   onOpenCard?: (card: PipelineBoardCardDTO) => void;
@@ -250,7 +245,6 @@ function PipelineColumn({
             <PipelineCard
               key={card.id}
               card={card}
-              onRefetch={onRefetch}
               onEditTask={onEditTask}
               onOpenCard={onOpenCard}
             />
@@ -263,12 +257,11 @@ function PipelineColumn({
 
 interface CardProps {
   card: PipelineBoardCardDTO;
-  onRefetch: () => void;
   onEditTask?: (card: PipelineBoardCardDTO) => void;
   onOpenCard?: (card: PipelineBoardCardDTO) => void;
 }
 
-export function PipelineCard({ card, onRefetch, onEditTask, onOpenCard }: CardProps) {
+export function PipelineCard({ card, onEditTask, onOpenCard }: CardProps) {
   const timestamp = card.updated_at || card.created_at;
   const draggable = isTicketDraggable(card);
   const editable = !!onEditTask && isTicketEditable(card);
@@ -324,9 +317,7 @@ export function PipelineCard({ card, onRefetch, onEditTask, onOpenCard }: CardPr
 
       {card.column_id === "draft" && <DraftBody card={card} />}
       {card.column_id === "todo" && <TodoBody card={card} />}
-      {card.column_id === "in_progress" && (
-        <InProgressBody card={card} onRefetch={onRefetch} />
-      )}
+      {card.column_id === "in_progress" && <InProgressBody card={card} />}
       {card.column_id === "done" && <DoneBody card={card} />}
 
       {card.labels && card.labels.length > 0 && (
@@ -495,21 +486,24 @@ function stringifyValue(value: unknown): string {
 
 // --- IN_PROGRESS lane -----------------------------------------------------
 
-function InProgressBody({
-  card,
-  onRefetch,
-}: {
-  card: PipelineBoardCardDTO;
-  onRefetch: () => void;
-}) {
-  if (card.pending_reviews && card.pending_reviews.length > 0) {
-    return <SequentialReviews card={card} onResolved={onRefetch} />;
-  }
+// The card stays a STATUS surface: progress + badges only. The human-review
+// form lives exclusively in the details sidebar (open the card) — a pending
+// gate shows here as a "Blocked" tag, never as an inline form.
+function InProgressBody({ card }: { card: PipelineBoardCardDTO }) {
   const descendants = card.descendant_count ?? 0;
+  const reviews = card.pending_reviews?.length ?? 0;
   return (
     <div className="space-y-2">
       <ProgressBar executed={card.tree_executed_nodes} total={card.tree_total_nodes} />
       <div className="flex flex-wrap items-center gap-1">
+        {reviews > 0 && (
+          <Badge
+            variant="warning"
+            title="Waiting on a human review — open the card to answer it"
+          >
+            Blocked — {reviews > 1 ? `${reviews} human reviews` : "human review"}
+          </Badge>
+        )}
         <StatusChip status={card.status} />
         {descendants > 0 && (
           <Badge variant="neutral">

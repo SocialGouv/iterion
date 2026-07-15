@@ -656,3 +656,25 @@ func TestRunFiles_ModeCombined_WorktreeGone(t *testing.T) {
 		t.Errorf("Reason: want worktree_gone, got %q", out.Reason)
 	}
 }
+
+// The pipeline-board sidebar's inline players key on the artifact-file
+// Content-Type: an audio/video extension served as application/octet-stream
+// renders as "preview not available" instead of a player.
+func TestArtifactFileContentType_MediaTypes(t *testing.T) {
+	cases := map[string]string{
+		"track.wav":       "audio/wav",
+		"theme.MP3":       "audio/mpeg",
+		"clip.mp4":        "video/mp4",
+		"clip.webm":       "video/webm",
+		"cover.jpg":       "image/jpeg",
+		"cover.webp":      "image/webp",
+		"report.pdf":      "application/pdf",
+		"unknown.zzz":     "application/octet-stream",
+		"renders/out.mov": "video/quicktime",
+	}
+	for path, want := range cases {
+		if got := artifactFileContentType(path); got != want {
+			t.Errorf("artifactFileContentType(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

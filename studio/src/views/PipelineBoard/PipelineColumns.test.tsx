@@ -21,24 +21,6 @@ vi.mock("wouter", () => ({
   ),
 }));
 
-vi.mock("@/components/Runs/conversation/HumanPromptForm", () => ({
-  default: (props: {
-    runId: string;
-    nodeId: string;
-    questions: Record<string, unknown>;
-    sourceOverride?: string | null;
-  }) => (
-    <div
-      data-testid="human-prompt"
-      data-run-id={props.runId}
-      data-node-id={props.nodeId}
-      data-source-null={props.sourceOverride === null ? "yes" : "no"}
-    >
-      {JSON.stringify(props.questions)}
-    </div>
-  ),
-}));
-
 import {
   PipelineColumns,
   dropTicketToColumn,
@@ -178,7 +160,7 @@ describe("PipelineColumns", () => {
     expect(html).not.toContain('draggable="true"');
   });
 
-  it("folds a paused descendant's review into the root's in_progress card", () => {
+  it("shows a Blocked tag + progress for pending reviews — the form lives in the sidebar only", () => {
     const html = render(
       makeBoard([
         makeCard({
@@ -202,11 +184,35 @@ describe("PipelineColumns", () => {
       ]),
     );
 
-    expect(html).toContain('data-run-id="run-child"');
-    expect(html).toContain('data-node-id="approval"');
-    expect(html).toContain('data-source-null="yes"');
-    expect(html).toContain("Ship it?");
+    // The blocked tag replaces the inline review form…
+    expect(html).toContain("Blocked — human review");
+    expect(html).not.toContain('data-testid="human-prompt"');
+    expect(html).not.toContain("Ship it?");
+    // …while the tree progress stays visible.
+    expect(html).toContain("5 / 10 nodes");
     expect(count(html, 'role="article"')).toBe(1); // child is folded, not its own card
+  });
+
+  it("pluralizes the Blocked tag for several pending reviews", () => {
+    const html = render(
+      makeBoard([
+        makeCard({
+          id: "run:multi",
+          column_id: "in_progress",
+          run_id: "run-multi",
+          status: "running",
+          tree_executed_nodes: 2,
+          tree_total_nodes: 8,
+          pending_reviews: [
+            { run_id: "c1", node_id: "review", depth: 1 },
+            { run_id: "c2", node_id: "review", depth: 1 },
+            { run_id: "c3", node_id: "review", depth: 1 },
+          ],
+        }),
+      ]),
+    );
+    expect(html).toContain("Blocked — 3 human reviews");
+    expect(html).toContain("2 / 8 nodes");
   });
 });
 

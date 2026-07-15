@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { Link } from "wouter";
 
@@ -20,6 +20,8 @@ import {
   artifactFileURL,
   listArtifactFiles,
   listRunFiles,
+  type RunFile,
+  type RunFilesMode,
 } from "@/api/runs";
 import { Badge, Button, Dialog, EmptyState, IconButton, Spinner } from "@/components/ui";
 import { usePreview, type PreviewState } from "@/components/Runs/usePreview";
@@ -27,6 +29,33 @@ import { formatBytes, formatRelative } from "@/lib/format";
 
 import { producedKindLabel, type ProducedFileKind } from "./fileKind";
 import { aggregateProducedItems, type ProducedItem } from "./producedItems";
+
+// Monaco diff, loaded on click only — keeps the pipelines route chunk slim.
+const FileDiffDialog = lazy(() => import("@/components/Runs/FileDiffDialog"));
+
+// A worktree-change item selected for diffing: the exact run that produced it
+// plus the git range matching its lifecycle (committed → branch range,
+// uncommitted → working tree), mirroring FilesPanel's per-row scope.
+interface DiffTarget {
+  runId: string;
+  file: RunFile;
+  mode: RunFilesMode;
+}
+
+function diffTargetFor(item: ProducedItem): DiffTarget {
+  return {
+    runId: item.runId,
+    file: {
+      path: item.path,
+      status: item.status ?? "M",
+      added: item.added ?? 0,
+      deleted: item.deleted ?? 0,
+      ...(item.binary !== undefined ? { binary: item.binary } : {}),
+      ...(item.lifecycle ? { lifecycle: item.lifecycle } : {}),
+    },
+    mode: item.lifecycle === "committed" ? "branch" : "uncommitted",
+  };
+}
 
 // Statuses past which the run's outputs no longer change — polling stops.
 const TERMINAL = new Set(["finished", "failed", "cancelled"]);
@@ -81,13 +110,18 @@ export function ProducedElements({ runIds, status }: Props) {
   );
 
   const { preview, openPreview, closePreview } = usePreview(effectiveRunIds[0] ?? null);
-  // The run the open preview belongs to — the download link must target it,
-  // not the root.
+  // The run + media kind of the open preview — the download link must target
+  // the producing run, and the kind drives the player fallback when the
+  // content type is generic (older stores serving application/octet-stream).
   const [previewRunId, setPreviewRunId] = useState("");
+  const [previewKind, setPreviewKind] = useState<ProducedFileKind>("other");
   const handlePreview = (item: ProducedItem) => {
     setPreviewRunId(item.runId);
+    setPreviewKind(item.kind);
     openPreview({ path: item.path, size: item.size ?? 0 }, item.runId);
   };
+  // Worktree-change item being diffed (Monaco before/after), if any.
+  const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
 
   const loading =
     fileQueries.some((q) => q.isLoading) || artifactQueries.some((q) => q.isLoading);
@@ -150,9 +184,21 @@ export function ProducedElements({ runIds, status }: Props) {
               item={item}
               multiRun={multiRun}
               onPreview={() => handlePreview(item)}
+              onDiff={() => setDiffTarget(diffTargetFor(item))}
             />
           ))}
         </ul>
+      )}
+
+      {diffTarget && (
+        <Suspense fallback={null}>
+          <FileDiffDialog
+            runId={diffTarget.runId}
+            file={diffTarget.file}
+            mode={diffTarget.mode}
+            onClose={() => setDiffTarget(null)}
+          />
+        </Suspense>
       )}
 
       {preview && (
@@ -178,7 +224,7 @@ export function ProducedElements({ runIds, status }: Props) {
             </a>
           }
         >
-          <PreviewBody preview={preview} />
+          <PreviewBody preview={preview} kind={previewKind} />
         </Dialog>
       )}
     </section>
@@ -214,12 +260,15 @@ function ProducedRow({
   item,
   multiRun,
   onPreview,
+  onDiff,
 }: {
   item: ProducedItem;
   // When the pipeline has more than one run, tag each row with its owning run
   // so a sub-bot's output is attributable.
   multiRun: boolean;
   onPreview: () => void;
+  // Opens the before/after Monaco diff — worktree-change items only.
+  onDiff: () => void;
 }) {
   const label = `${producedKindLabel(item.kind)} · ${item.path}`;
   const dir = item.path.includes("/")
@@ -241,13 +290,14 @@ function ProducedRow({
             {item.name}
           </button>
         ) : (
-          <Link
-            href={consoleHref}
-            title={`${label} — open in run console`}
-            className="block max-w-full truncate text-xs font-medium text-fg-default hover:text-accent-text hover:underline"
+          <button
+            type="button"
+            onClick={onDiff}
+            title={`${label} — view the diff (current vs before)`}
+            className="block max-w-full truncate text-left text-xs font-medium text-fg-default hover:text-accent-text hover:underline"
           >
             {item.name}
-          </Link>
+          </button>
         )}
         <div className="flex items-center gap-1.5 text-micro text-fg-subtle">
           {item.source === "artifact" ? (
@@ -302,13 +352,18 @@ function ProducedRow({
           </a>
         </div>
       ) : (
-        <Link
-          href={consoleHref}
-          aria-label={`Open ${item.name} in the run console`}
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-subtle hover:bg-surface-2 hover:text-fg-default"
-        >
-          <ExternalLinkIcon />
-        </Link>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button variant="ghost" size="sm" onClick={onDiff}>
+            Diff
+          </Button>
+          <Link
+            href={consoleHref}
+            aria-label={`Open ${item.name} in the run console`}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-subtle hover:bg-surface-2 hover:text-fg-default"
+          >
+            <ExternalLinkIcon />
+          </Link>
+        </div>
       )}
     </li>
   );
@@ -316,8 +371,11 @@ function ProducedRow({
 
 // PreviewBody renders an inline preview for the fetched artifact: images,
 // audio, and video play in-place; text shows in a <pre>; anything else falls
-// back to the Download action in the dialog footer.
-function PreviewBody({ preview }: { preview: PreviewState }) {
+// back to the Download action in the dialog footer. The media branch keys on
+// the response Content-Type first, falling back to the extension-derived
+// `kind` — so a store serving application/octet-stream for a .wav/.mp4 still
+// gets a player (the browser sniffs the payload).
+function PreviewBody({ preview, kind }: { preview: PreviewState; kind: ProducedFileKind }) {
   if (preview.loading) {
     return (
       <div className="flex h-48 items-center justify-center gap-2 text-xs text-fg-subtle">
@@ -336,23 +394,23 @@ function PreviewBody({ preview }: { preview: PreviewState }) {
     );
   }
   if (preview.blobURL) {
-    if (preview.contentType.startsWith("image/")) {
+    if (preview.contentType.startsWith("image/") || kind === "image") {
       return (
         <div className="flex max-h-[70vh] items-center justify-center overflow-auto rounded bg-surface-0 p-3">
           <img src={preview.blobURL} alt={preview.path} className="max-w-full" />
         </div>
       );
     }
-    if (preview.contentType.startsWith("audio/")) {
+    if (preview.contentType.startsWith("audio/") || kind === "audio") {
       return (
         <div className="flex items-center justify-center rounded bg-surface-0 p-6">
-          <audio controls src={preview.blobURL} className="w-full">
+          <audio controls autoPlay src={preview.blobURL} className="w-full">
             Your browser cannot play this audio file.
           </audio>
         </div>
       );
     }
-    if (preview.contentType.startsWith("video/")) {
+    if (preview.contentType.startsWith("video/") || kind === "video") {
       return (
         <div className="flex items-center justify-center rounded bg-surface-0 p-3">
           <video controls src={preview.blobURL} className="max-h-[70vh] max-w-full">

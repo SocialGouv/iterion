@@ -46,12 +46,24 @@ function basename(path: string): string {
   return i >= 0 ? path.slice(i + 1) : path;
 }
 
+// artifactRecency orders two artifact items newest-first by modified_at (a
+// missing/empty timestamp sorts last), tie-breaking on path then run for
+// stability. Newest-first because the freshest output is almost always the
+// one the operator opens to answer a pending review.
+function artifactRecency(a: ProducedItem, b: ProducedItem): number {
+  const ta = a.modifiedAt ?? "";
+  const tb = b.modifiedAt ?? "";
+  if (ta !== tb) return tb.localeCompare(ta); // ISO timestamps: lexicographic = chronological
+  return a.path.localeCompare(b.path) || a.runId.localeCompare(b.runId);
+}
+
 // mergeProducedItems folds one run's artifact-file manifest and worktree
-// change list into an ordered list: artifacts first (the explicit outputs),
-// then worktree additions/modifications, each channel sorted by path. A
-// worktree entry whose status is a pure deletion ("D") is excluded — a
-// removed file is not something the pipeline produced. `runId` is the owning
-// run so keys stay unique when several runs in a tree are merged together.
+// change list into an ordered list: artifacts first (the explicit outputs,
+// NEWEST first), then worktree additions/modifications sorted by path (git
+// reports no per-file mtime). A worktree entry whose status is a pure
+// deletion ("D") is excluded — a removed file is not something the pipeline
+// produced. `runId` is the owning run so keys stay unique when several runs
+// in a tree are merged together.
 export function mergeProducedItems(
   files: RunFile[] | undefined,
   artifacts: ArtifactFile[] | undefined,
@@ -59,7 +71,11 @@ export function mergeProducedItems(
 ): ProducedItem[] {
   const out: ProducedItem[] = [];
 
-  const arts = [...(artifacts ?? [])].sort((a, b) => a.path.localeCompare(b.path));
+  const arts = [...(artifacts ?? [])].sort(
+    (a, b) =>
+      (b.modified_at ?? "").localeCompare(a.modified_at ?? "") ||
+      a.path.localeCompare(b.path),
+  );
   for (const a of arts) {
     out.push({
       key: `artifact:${runId}:${a.path}`,
@@ -96,9 +112,11 @@ export function mergeProducedItems(
 }
 
 // aggregateProducedItems merges every run in a pipeline tree into one list,
-// then orders it globally: artifacts before worktree changes, each group by
-// path. Per-run results arrive positionally aligned with `runIds` (index i =
-// runIds[i]); a missing slot (still loading / errored) contributes nothing.
+// then orders it globally: artifacts first, NEWEST first (across runs — the
+// freshest output is the one a pending review is usually about), then
+// worktree changes by path (git reports no per-file mtime). Per-run results
+// arrive positionally aligned with `runIds` (index i = runIds[i]); a missing
+// slot (still loading / errored) contributes nothing.
 export function aggregateProducedItems(
   runIds: string[],
   files: Array<RunFile[] | undefined>,
@@ -108,12 +126,10 @@ export function aggregateProducedItems(
   runIds.forEach((runId, i) => {
     all.push(...mergeProducedItems(files[i], artifacts[i], runId));
   });
-  all.sort((a, b) =>
-    a.source === b.source
-      ? a.path.localeCompare(b.path) || a.runId.localeCompare(b.runId)
-      : a.source === "artifact"
-        ? -1
-        : 1,
-  );
+  all.sort((a, b) => {
+    if (a.source !== b.source) return a.source === "artifact" ? -1 : 1;
+    if (a.source === "artifact") return artifactRecency(a, b);
+    return a.path.localeCompare(b.path) || a.runId.localeCompare(b.runId);
+  });
   return all;
 }

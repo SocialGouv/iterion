@@ -9,18 +9,19 @@ function file(partial: Partial<RunFile> & { path: string }): RunFile {
 }
 
 describe("mergeProducedItems", () => {
-  it("lists artifacts first, then worktree changes, each sorted by path", () => {
+  it("lists artifacts NEWEST first, then worktree changes by path", () => {
     const items = mergeProducedItems(
       [file({ path: "src/b.ts" }), file({ path: "src/a.ts" })],
       [
-        { path: "renders/z.mp4", size: 10, modified_at: "2026-07-15T00:00:00Z" },
-        { path: "renders/a.png", size: 5, modified_at: "2026-07-15T00:00:00Z" },
+        { path: "renders/old.png", size: 5, modified_at: "2026-07-15T00:00:00Z" },
+        { path: "renders/new.mp4", size: 10, modified_at: "2026-07-15T09:30:00Z" },
       ],
       "run-1",
     );
+    // The freshest output leads — it's the one a pending review is about.
     expect(items.map((i) => i.path)).toEqual([
-      "renders/a.png",
-      "renders/z.mp4",
+      "renders/new.mp4",
+      "renders/old.png",
       "src/a.ts",
       "src/b.ts",
     ]);
@@ -31,6 +32,18 @@ describe("mergeProducedItems", () => {
       "change",
     ]);
     expect(items.every((i) => i.runId === "run-1")).toBe(true);
+  });
+
+  it("ties on equal timestamps fall back to path order", () => {
+    const items = mergeProducedItems(
+      [],
+      [
+        { path: "b.png", size: 1, modified_at: "2026-07-15T00:00:00Z" },
+        { path: "a.png", size: 1, modified_at: "2026-07-15T00:00:00Z" },
+      ],
+      "run-1",
+    );
+    expect(items.map((i) => i.path)).toEqual(["a.png", "b.png"]);
   });
 
   it("classifies each item and carries its channel metadata", () => {
@@ -83,18 +96,20 @@ describe("mergeProducedItems", () => {
 });
 
 describe("aggregateProducedItems", () => {
-  it("merges every run in the tree and orders artifacts before changes", () => {
+  it("merges every run in the tree, freshest artifact first across runs", () => {
     const items = aggregateProducedItems(
       ["run-root", "run-child"],
       [[file({ path: "root.go" })], [file({ path: "child.py" })]],
       [
-        [{ path: "root.png", size: 1, modified_at: "2026-07-15T00:00:00Z" }],
-        [{ path: "child.mp3", size: 2, modified_at: "2026-07-15T00:00:00Z" }],
+        // The root's artifact is NEWER than the child's — it must lead even
+        // though the root comes first in the tree and "r" sorts after "c".
+        [{ path: "root.png", size: 1, modified_at: "2026-07-15T10:00:00Z" }],
+        [{ path: "child.mp3", size: 2, modified_at: "2026-07-15T08:00:00Z" }],
       ],
     );
     expect(items.map((i) => `${i.source}:${i.runId}:${i.path}`)).toEqual([
-      "artifact:run-child:child.mp3",
       "artifact:run-root:root.png",
+      "artifact:run-child:child.mp3",
       "change:run-child:child.py",
       "change:run-root:root.go",
     ]);

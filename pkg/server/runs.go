@@ -891,6 +891,36 @@ func artifactFileContentType(path string) string {
 		return "image/png"
 	case ".svg":
 		return "image/svg+xml"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".pdf":
+		return "application/pdf"
+	// Audio/video produced by media pipelines — without these the studio's
+	// inline players get application/octet-stream and refuse to render.
+	case ".wav":
+		return "audio/wav"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".ogg", ".oga":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
+	case ".m4a":
+		return "audio/mp4"
+	case ".opus":
+		return "audio/opus"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".mov":
+		return "video/quicktime"
+	case ".mkv":
+		return "video/x-matroska"
 	default:
 		return "application/octet-stream"
 	}
