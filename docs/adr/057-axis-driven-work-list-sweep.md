@@ -6,6 +6,13 @@ chunks) with an **axis-driven work-list sweep**. ADR-055's landing/convergence
 machinery (per-item verify gate, incremental commit, bounded loops) is kept;
 what changes is the **unit of work** and how it is discovered.
 
+> Superseded for the improve loops by
+> [ADR-058](058-minimal-framing-lean-on-the-agent.md): the encoded
+> reviewer/fixer sweep graph is gone — one campaign agent carries the
+> axis and the work-list inside its contract. This ADR remains the
+> reference for the sweep mechanics (axis definition, work-list
+> discovery, done-oracle re-enumeration).
+
 ## Context
 
 Two dogfood facts and one observed human workflow forced this.

@@ -153,7 +153,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 ```
 .bot source → Lexer (indent-sensitive tokens) → Parser (recursive-descent) → AST
   → ir.Compile() → IR Workflow (nodes + edges + schemas + prompts + budget)
-  → Diagnostics from ir.Compile() / ir.Validate() (sparse codes C001–C086: compile errors, reachability, routing, cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
+  → Diagnostics from ir.Compile() / ir.Validate() (sparse codes C001–C199: compile errors, reachability, routing, cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
   → runtime.Engine.Run() → execution with events, budget, and persistence
 ```
 
@@ -196,10 +196,11 @@ src -> dst with {field: "{{ref}}"}      # data mapping
 
 ### Backend selection
 
-Three backends are wired:
+Four backends are wired:
 - `claw` (default, in-process) — recommended for read-only LLM nodes (judges, reviewers, planners). Use any provider model claw supports, e.g. `model: "openai/gpt-5.4-mini"` or `model: "anthropic/claude-sonnet-4-6"`.
 - `claude_code` — recommended for nodes that need real tool/shell access (implementers, fixers).
 - `codex` — **deprecated / frozen — do NOT do new implementation work on the codex delegate** (`pkg/backend/delegate/codex.go`). Kept only for backward compatibility and live-test coverage (`task test:live`); do not extend it (e.g. new error handling, network-resilience retyping, tool wiring) — apply such work to `claude_code`/`claw` only. The IR compiler emits `C030` for any node using it. Background: codex SDK cannot configure its tool set (`AllowedTools`/`CanUseTool` don't gate the built-in shell), it tends to fill its own context window, and its iterion integration is less ergonomic. New workflows must not adopt it.
+- `kimi` — Moonshot's kimi-code CLI driven through the generic CLI-agent seam (ADR-065, [pkg/backend/delegate/kimi.go](pkg/backend/delegate/kimi.go)): `backend: "kimi"`, prompt via `-p`, stream-json output, model alias passed through verbatim (e.g. `model: "kimi-code/kimi-for-coding"`); credentials are resolved by the CLI itself from its own env/config. Sessions are best-effort — resume/fork are not wired for CLI-agent backends, so each node runs fresh.
 
 **Auto-detection.** When neither the node (`backend:`) nor the workflow (`default_backend:`) names a backend, and `ITERION_DEFAULT_BACKEND` is unset, the resolver in [pkg/backend/model/executor.go:resolveBackendName](pkg/backend/model/executor.go) probes the host for credentials (Claude Code OAuth, ANTHROPIC_API_KEY, OPENAI_API_KEY, AWS, GCP) and picks the first match in `ITERION_BACKEND_PREFERENCE` (default `claude_code,claw` — codex is intentionally excluded). When `model:` is also empty and the resolved backend is `claw`, the runtime substitutes a sensible model spec for the first available provider. The studio surfaces the live detection via the toolbar BackendStatusPill and disables Run when no credential is found. See [docs/backends.md](docs/backends.md).
 
@@ -308,7 +309,7 @@ V2-6 wires `sandbox.build:` via `docker buildx build` on the local docker driver
 
 - **RuntimeError** (`pkg/runtime/errors.go`) — structured error with `Code` (type `ErrorCode`), `Message`, `NodeID`, `Hint`, `Cause`
   - Codes: `NODE_NOT_FOUND`, `NO_OUTGOING_EDGE`, `LOOP_EXHAUSTED`, `BUDGET_EXCEEDED`, `EXECUTION_FAILED`, `WORKSPACE_SAFETY`, `TIMEOUT`, `CANCELLED`, `JOIN_FAILED`, `RESUME_INVALID`
-- **Diagnostics** (`pkg/dsl/ir/compile.go`, `pkg/dsl/ir/validate.go`) — compile-time warnings/errors with sparse codes C001–C086 (unknown refs, routing issues, unreachable nodes, undeclared cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
+- **Diagnostics** (`pkg/dsl/ir/compile.go`, `pkg/dsl/ir/validate.go`) — compile-time warnings/errors with sparse codes C001–C199 (unknown refs, routing issues, unreachable nodes, undeclared cycles, attachments, presets, capability checks (C080–C082), cursor declarations (C083–C086), etc.)
 - **Sentinel errors**: `ErrRunPaused` (resumable), `ErrRunCancelled` (resumable with checkpoint), `ErrBudgetExceeded`
 - **Resumable failures**: Most runtime failures produce `failed_resumable` status with a checkpoint. See `docs/resume.md` for the exhaustive matrix.
 
@@ -905,8 +906,10 @@ matching every pinned version in go.mod / package-lock.json / requirements.txt
 pip-audit heuristics still need an installed tree, and the code-pattern /
 typosquat-corpus malware signals remain pending (native:3a81df64), so a run
 still banners partial coverage — but it is no longer a 0-finding scaffold.
-(In a sandboxed run the board MCP is unavailable, so findings land in the
-markdown report, not the board, until C082's HTTP board path lands.)
+(In a sandboxed run the board tools ride the HTTP transport —
+`/api/v1/mcp/board` with an ephemeral run token; known gap: on Linux
+docker the in-container endpoint can be unreachable (native:e6cd506e),
+in which case findings land in the markdown report instead of the board.)
 
 Each cron line routes through `iterion schedule run <name>`, which
 re-reads `~/.iterion/schedules.yaml` so the manifest stays authoritative;

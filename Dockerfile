@@ -73,7 +73,7 @@ ENV CGO_ENABLED=0 GOFLAGS="-mod=vendor -trimpath"
 RUN --mount=type=cache,target=/root/.cache/go-build \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w \
-              -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION} \
+              -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Version=v${VERSION#v} \
               -X github.com/SocialGouv/iterion/pkg/internal/appinfo.Commit=${COMMIT}" \
     -o /out/iterion ./cmd/iterion
 

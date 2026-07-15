@@ -21,6 +21,24 @@ func loadEnv(cfg *Config) error {
 	lookupString("ITERION_NATS_STREAM", &cfg.NATS.Stream)
 	lookupString("ITERION_NATS_KV_BUCKET", &cfg.NATS.KVBucket)
 	lookupString("ITERION_NATS_DLQ_STREAM", &cfg.NATS.DLQStream)
+	if err := lookupInt("ITERION_NATS_MAX_ACK_PENDING", &cfg.NATS.MaxAckPending); err != nil {
+		return err
+	}
+	if err := lookupDuration("ITERION_NATS_ACK_WAIT", &cfg.NATS.AckWait); err != nil {
+		return err
+	}
+	if err := lookupInt("ITERION_NATS_MAX_DELIVER", &cfg.NATS.MaxDeliver); err != nil {
+		return err
+	}
+	if err := lookupDuration("ITERION_NATS_MAX_AGE", &cfg.NATS.MaxAge); err != nil {
+		return err
+	}
+	if err := lookupDuration("ITERION_NATS_DLQ_MAX_AGE", &cfg.NATS.DLQMaxAge); err != nil {
+		return err
+	}
+	if err := lookupInt("ITERION_NATS_MAX_PAYLOAD", &cfg.NATS.MaxPayload); err != nil {
+		return err
+	}
 
 	lookupString("ITERION_MONGO_URI", &cfg.Mongo.URI)
 	lookupString("ITERION_MONGO_DB", &cfg.Mongo.DB)

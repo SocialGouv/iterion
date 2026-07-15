@@ -21,9 +21,10 @@ const ssrfPinMarker = "# iterion-runner ssrf-pin"
 //
 // It returns a restore func that removes ONLY the lines this call added (it
 // re-reads and filters, so a concurrent unrelated edit is preserved). The
-// caller treats any error as "could not pin" and proceeds — the pod egress
-// NetworkPolicy is the authoritative control. Pure on hostsPath, so it is
-// unit-testable with a temp file.
+// caller treats any error as "could not pin" and proceeds — the clone-guard
+// CONNECT proxy (startCloneGuardProxy) is the connect-time control for https
+// clones; the pin is belt-and-braces and the only rebinding cover for ssh
+// remotes. Pure on hostsPath, so it is unit-testable with a temp file.
 func pinHostInHostsFile(hostsPath, host string, ip net.IP) (func(), error) {
 	if host == "" || ip == nil {
 		return nil, fmt.Errorf("ssrf-pin: empty host or ip")

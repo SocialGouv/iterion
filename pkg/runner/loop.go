@@ -3,8 +3,9 @@
 // distributed lease, hydrates the workflow IR, and executes runs
 // against the Mongo+S3 store.
 //
-// One runner pod handles one in-flight run at a time
-// (MaxAckPending=1 on the JetStream consumer); horizontal scale
+// One runner pod handles one in-flight run at a time (its fetch loop
+// is sequential; the shared consumer's MaxAckPending caps fleet-wide
+// in-flight deliveries); horizontal scale
 // comes from spawning more pods (KEDA scales on lag — see plan §F
 // T-36 runner-keda-scaledobject.yaml).
 //
@@ -975,8 +976,8 @@ func (r *Runner) heartbeat(ctx context.Context, runCancel context.CancelFunc, lo
 			// InProgress() the broker redelivers the message to a sibling
 			// and, after MaxDeliver attempts, drops it from the queue —
 			// destroying the crash-recovery safety net while the run is
-			// still healthy and head-of-line-blocking the consumer
-			// (MaxAckPending=1). Best-effort: a transient miss is retried
+			// still healthy and head-of-line-blocking one of the consumer's
+			// MaxAckPending slots. Best-effort: a transient miss is retried
 			// on the next tick, well inside AckWait.
 			if err := delivery.InProgress(); err != nil {
 				r.cfg.Logger.Warn("runner: heartbeat InProgress failed: %v", err)
@@ -1122,8 +1123,8 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 	// under a prior run's identity). The per-run forge_token FILE is already
 	// isolated above; this isolates the CLI's own persisted auth. The delegate
 	// subprocess inherits these from os.Environ(); no-op for sandboxed runs
-	// (fresh container HOME). Safe because the runner is sequential
-	// (MaxAckPending=1).
+	// (fresh container HOME). Safe because each runner pod processes one
+	// run at a time (sequential fetch loop).
 	if cliDir, derr := os.MkdirTemp("", "iterion-cli-"); derr == nil {
 		prevGlab, hadGlab := os.LookupEnv("GLAB_CONFIG_DIR")
 		prevGH, hadGH := os.LookupEnv("GH_CONFIG_DIR")
@@ -1385,31 +1386,45 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	}
 	// SSRF connect-time hardening for the two TOCTOU vectors validateRepoTarget
 	// alone can't close (it resolves but git re-resolves at connect time):
-	//   (a) DNS rebinding — pin the validated public IP for the host in
-	//       /etc/hosts so git resolves to the SAME address we just checked.
-	//       Best-effort: needs a writable /etc/hosts. On a non-root runner it
-	//       is kubelet-owned and unwritable — expected, so we log once at info
-	//       and proceed (unexpected failures still warn per-clone).
+	//   (a) DNS rebinding — the clone-guard CONNECT proxy below is the
+	//       enforcing layer: git dials through a loopback proxy that
+	//       re-resolves the CONNECT host through the same SSRF guard and dials
+	//       ONLY the validated IP, so it holds on non-root pods too. The
+	//       /etc/hosts pin stays as belt-and-braces (it also covers ssh
+	//       remotes) but is best-effort: on a non-root runner the file is
+	//       kubelet-owned and unwritable — expected, logged once at info.
 	//   (b) HTTP 302 → internal — disabled per git invocation below
-	//       (http.followRedirects=false); the clone URL is already canonical https.
-	// The pod-level egress NetworkPolicy (block RFC1918/metadata) remains the
-	// authoritative control — VALIDATE THIS PATH IN CLOUD E2E (runner /etc/hosts
-	// writability + clone still succeeds). See loop.go validateRepoTarget note.
-	if host, herr := extractRepoHost(msg.RepoURL); herr == nil && pinnedIP != nil {
+	//       (http.followRedirects=false), and the proxy's single-host
+	//       allowlist refuses any off-host CONNECT regardless.
+	// The pod-level egress NetworkPolicy (block RFC1918/metadata) stays as
+	// infra defence-in-depth on top.
+	host, hostErr := extractRepoHost(msg.RepoURL)
+	if hostErr == nil && pinnedIP != nil {
 		if restore, perr := pinHostInHostsFile(runnerHostsFile, host, pinnedIP); perr == nil {
 			defer restore()
 		} else if pinUnavailable(perr) {
 			// Expected & permanent on a non-root runner: /etc/hosts is a
 			// kubelet-managed bind-mount owned by root, so the pin can never
-			// land here. Log ONCE at info — the pre-check + pod egress
-			// NetworkPolicy is the authoritative control.
+			// land here. Log ONCE at info — the clone-guard proxy is the
+			// connect-time control.
 			r.ssrfPinUnavailableOnce.Do(func() {
-				r.cfg.Logger.Info("runner: SSRF IP-pin unavailable on this runner: %s not writable (non-root); pre-check + pod egress policy is the control (%v)", runnerHostsFile, perr)
+				r.cfg.Logger.Info("runner: SSRF IP-pin unavailable on this runner: %s not writable (non-root); the clone-guard proxy is the connect-time control (%v)", runnerHostsFile, perr)
 			})
 		} else {
 			// Unexpected: writable file but the write still failed. Keep warning per-clone.
-			r.cfg.Logger.Warn("runner: SSRF IP-pin skipped for %s→%s (%v); relying on pre-check + pod egress policy", host, pinnedIP, perr)
+			r.cfg.Logger.Warn("runner: SSRF IP-pin skipped for %s→%s (%v); the clone-guard proxy is the connect-time control", host, pinnedIP, perr)
 		}
+	}
+	// git honours HTTPS_PROXY for http(s) transports only; ssh remotes keep
+	// the pre-check + hosts pin + pod egress policy as their guard.
+	var gitEnv []string
+	if hostErr == nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.RepoURL)), "https://") {
+		endpoint, stopProxy, perr := startCloneGuardProxy(host, !cloneAllowPrivate())
+		if perr != nil {
+			return "", fmt.Errorf("runner: %w", perr)
+		}
+		defer stopProxy()
+		gitEnv = cloneGuardEnv(endpoint)
 	}
 	dir := filepath.Join(r.cfg.WorkDir, "repos", msg.RunID)
 	if err := os.RemoveAll(dir); err != nil {
@@ -1431,11 +1446,11 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	// -c http.followRedirects=false closes SSRF vector (b): a 302 from the
 	// validated canonical https host to an internal address must not be
 	// auto-followed by git.
-	if err := r.runGit(ctx, "", tok, "-c", "http.followRedirects=false", "clone", "--no-tags", "--quiet", cloneURL, dir); err != nil {
+	if err := r.runGitEnv(ctx, "", tok, gitEnv, "-c", "http.followRedirects=false", "clone", "--no-tags", "--quiet", cloneURL, dir); err != nil {
 		return "", err
 	}
 	if ref := strings.TrimSpace(msg.RepoSHA); ref != "" {
-		if err := r.runGit(ctx, dir, tok, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
+		if err := r.runGitEnv(ctx, dir, tok, gitEnv, "-c", "http.followRedirects=false", "fetch", "--no-tags", "--quiet", "origin", ref); err != nil {
 			return "", err
 		}
 		if err := r.runGit(ctx, dir, tok, "checkout", "--quiet", "-B", ref, "FETCH_HEAD"); err != nil {
@@ -1539,17 +1554,15 @@ func validateRepoTarget(ctx context.Context, repoURL, repoSHA string) (net.IP, e
 	if err != nil {
 		return nil, fmt.Errorf("runner: reject repo url: %w", err)
 	}
-	allowPrivate := os.Getenv("ITERION_RUNNER_CLONE_ALLOW_PRIVATE") == "1"
-	// DEFENCE-IN-DEPTH, NOT COMPLETE: this resolves the host to confirm it is a
-	// public address, but the resolved IP is intentionally not bound to the
-	// subsequent `git clone/fetch` (runGit), which re-resolves the hostname at
-	// connect time. A DNS-rebinding answer (public IP here, internal IP for git)
-	// or a 302 redirect to an internal address therefore still slips past this
-	// check — a real TOCTOU. The complete fix is connect-time enforcement
-	// (route runner git through the netproxy / a pod egress policy) or IP
-	// pinning; tracked on the board (SSRF DNS-rebinding TOCTOU in
-	// validateRepoTarget, source:sec-audit-self). Keep this pre-check as the
-	// first line, but do not treat it as full SSRF protection.
+	allowPrivate := cloneAllowPrivate()
+	// First line of defence: refuse non-public hosts before any subprocess
+	// spawns, and feed the resolved IP to the /etc/hosts pin. On its own this
+	// would be TOCTOU-incomplete (git re-resolves the hostname at connect
+	// time); the enforcing layer is the clone-guard CONNECT proxy
+	// (startCloneGuardProxy) prepareRepoWorkspace routes https git through,
+	// which re-validates and pins the resolved IP at the moment of the dial.
+	// ssh remotes are not proxied — for them this pre-check, the hosts pin and
+	// the pod egress policy remain the guard.
 	ip, err := httpdial.ResolvePublicHost(ctx, host, !allowPrivate)
 	if err != nil {
 		return nil, fmt.Errorf("runner: repo host %q is not a public address (set ITERION_RUNNER_CLONE_ALLOW_PRIVATE=1 to allow internal forges): %w", host, err)
@@ -1594,7 +1607,7 @@ func extractRepoHost(repoURL string) (string, error) {
 // gitOpTimeout bounds a single runner-side git subprocess. Without it a
 // clone/fetch against a wedged remote hangs on the run ctx alone — and a
 // run launched without --timeout has NO deadline, so the git subprocess
-// pins the MaxAckPending=1 runner pod indefinitely while the heartbeat
+// pins the runner pod (one in-flight run each) indefinitely while the heartbeat
 // keeps the lease alive (the heartbeat proves the pod lives, not that
 // the clone progresses). GIT_TERMINAL_PROMPT=0 covers the credential
 // prompt, not a stalled TCP transfer. Override with
@@ -1614,6 +1627,13 @@ func defaultGitOpTimeout() time.Duration {
 // authed clone URL never leaks into logs. Each invocation is bounded by
 // gitOpTimeout on top of the caller's ctx.
 func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) error {
+	return r.runGitEnv(ctx, dir, tok, nil, args...)
+}
+
+// runGitEnv is runGit with extra environment entries appended after the
+// baseline (later entries win) — network git ops use it to route through the
+// clone-guard proxy via HTTPS_PROXY.
+func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []string, args ...string) error {
 	if gitOpTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, gitOpTimeout)
@@ -1632,6 +1652,7 @@ func (r *Runner) runGit(ctx context.Context, dir, tok string, args ...string) er
 	// Never prompt for credentials (fail fast instead of hanging), and ignore
 	// any host-level git config in the runner image.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1")
+	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		detail, shown := strings.TrimSpace(string(out)), strings.Join(args, " ")
