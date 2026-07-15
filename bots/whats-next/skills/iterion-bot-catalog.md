@@ -265,6 +265,7 @@ dispatcher routes on it), never the persona.
 | Evoly | `evolve` |
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
+| Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
 | Revi | `review-pr` |
 | Acci | `rgaa-audit` |
@@ -556,6 +557,23 @@ without re-architecting what already works.
   greenfield (no existing partial implementation to preserve).
 - **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
+
+### `pipeline-board-demo` — Pipeline Board Demo
+
+Zero-LLM demo of the /pipelines board: fans out three ISOLATED sub-bots in
+parallel (subbot + fan_out_each), each producing real media (PNG cover,
+playable WAV track, mp4 stub) into its own run's artifact area, then
+pausing on its own human review. After all three are approved from the
+card's sidebar, the PARENT pauses on a final human review; approving it
+lands the card in Done with the release notes as output. Tool / compute /
+human / subbot only — no API keys, runs in seconds.
+
+- **Use when**:
+  Use to demo or smoke-test the pipeline board end to end: parallel sub-bot
+  fan-out, child + parent human gates answered from the card sidebar, and
+  produced-elements aggregation (image/audio preview) across the whole run
+  tree. Not a production workflow.
+- **Path**: `examples/pipeline-board-demo/main.bot`
 
 ### `revi-converse` — Revi (converse)
 
