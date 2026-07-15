@@ -425,6 +425,7 @@ func watchDetachedExit(s *Service, runID string, pid int, done chan struct{}) {
 // failed_resumable so the next server boot can offer one-click resume.
 func (s *Service) Stop(ctx context.Context) {
 	s.stopPeriodicReconcile()
+	s.stopPipelineScheduler()
 	s.manager.Stop(ctx)
 }
 
@@ -450,6 +451,9 @@ func (s *Service) Stop(ctx context.Context) {
 func (s *Service) Drain(ctx context.Context) {
 	s.draining.Store(true)
 	s.stopPeriodicReconcile()
+	// Queued pipelines stay persisted as queued docs and are recovered on
+	// the next boot, so stopping the scheduler here never strands them.
+	s.stopPipelineScheduler()
 
 	// Stop the alert manager's stall-poll goroutine. It was started with
 	// context.Background() (so it outlives per-run contexts), so Drain is

@@ -84,6 +84,7 @@ type Engine struct {
 	recoveryDispatch         RecoveryDispatch         // optional; consulted on node execution failure
 	workflowHash             string                   // SHA-256 of the .bot source, set via WithWorkflowHash
 	filePath                 string                   // absolute .bot source path, set via WithFilePath
+	parentRunID              string                   // immediate parent run, set via WithParentRunID for nested executions
 	preset                   string                   // in-source preset name selected at launch, set via WithPreset
 	runName                  string                   // deterministic human-friendly run label, set via WithRunName
 	source                   *store.RunSource         // originating action metadata (dispatcher → issue ref), set via WithSource

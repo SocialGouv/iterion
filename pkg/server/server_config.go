@@ -355,6 +355,14 @@ type Config struct {
 	// application/zip, application/gzip, application/x-tar).
 	AllowedUploadMIMEs []string
 
+	// MaxConcurrentPipelines caps how many ROOT pipelines the run
+	// console service runs at once (the cross-run limit
+	// `max_parallel_branches` never provided). 0 leaves the
+	// ITERION_MAX_CONCURRENT_PIPELINES env default (unlimited if unset).
+	// Threaded into runview.WithMaxConcurrentPipelines. Inert in cloud
+	// mode (the publisher path bypasses the local gate).
+	MaxConcurrentPipelines int
+
 	// Alerts, when non-nil, enables run-health alerting (stall / budget /
 	// failure) on the run console service. The settings carry the webhook
 	// URL, stall window, deep-link base URL and an optional desktop sink;

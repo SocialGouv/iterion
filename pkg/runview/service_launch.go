@@ -118,6 +118,34 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		return s.launchDetached(parent, runID, spec)
 	}
 
+	// Local pipeline-concurrency gate. Only ROOT launches (no parent)
+	// count against the cap; a child belongs to a root that already holds
+	// a slot, so children always start immediately. nil queue = unlimited
+	// (existing behaviour). Over the limit, the launch is parked as a
+	// queued doc (surfaced on the board's TODO lane) and started later by
+	// the scheduler when a slot frees.
+	if spec.ParentRunID == "" && s.pipelineQueue != nil {
+		admitted, pos := s.pipelineQueue.admitOrEnqueue(runID, spec)
+		if !admitted {
+			return s.enqueuePipeline(parent, runID, spec, pos)
+		}
+		res, startErr := s.startInProcess(parent, runID, spec, true)
+		if startErr != nil {
+			// Release the reserved slot so a failed start can't wedge the queue.
+			s.pipelineQueue.slotFreed(runID)
+		}
+		return res, startErr
+	}
+	return s.startInProcess(parent, runID, spec, true)
+}
+
+// startInProcess compiles + builds + spawns a run in this process. It is
+// the shared body of an immediate Launch and the scheduler's start of a
+// previously-queued root. precreate controls doc creation: true mints a
+// fresh running doc (the normal launch path); false starts against an
+// existing queued doc (the engine's runResolveDoc transitions it
+// queued→running), used when the concurrency gate deferred the launch.
+func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
 	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 	if err != nil {
 		return nil, err
@@ -212,9 +240,16 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		answerNode: spec.CallbackAnswerNode,
 	}
 
+	precreateInputs := inputs
+	if !precreate {
+		// The queued doc already exists; let the engine claim it
+		// (queued→running via runResolveDoc) instead of re-creating.
+		precreateInputs = nil
+	}
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
-		inputs,
+		spec.ParentRunID,
+		precreateInputs,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -325,6 +360,7 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
+		r.ParentRunID,
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -375,6 +411,7 @@ func (s *Service) spawnRun(
 	promote runtime.AttachmentPromoteFunc,
 	preset string,
 	modelOverrides []store.RunModelOverride,
+	parentRunID string,
 	precreateInputs map[string]any,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
@@ -397,11 +434,24 @@ func (s *Service) spawnRun(
 	// being scheduled. The engine's runResolveDoc sees the running doc and
 	// claims it instead of re-creating.
 	if precreateInputs != nil {
-		if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs); err != nil {
+		created, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+		if err != nil {
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
 			return nil, fmt.Errorf("runview: create run: %w", err)
+		}
+		// ParentRunID is part of the launch identity, so persist it before
+		// returning just like the run document itself. The engine option below
+		// remains the authoritative path for direct/non-precreated runs.
+		if parentRunID != "" {
+			created.ParentRunID = parentRunID
+			if err := s.store.SaveRun(context.Background(), created); err != nil {
+				s.manager.Deregister(runID)
+				_ = lock.Unlock()
+				s.dropRunLog(runID)
+				return nil, fmt.Errorf("runview: save parent run: %w", err)
+			}
 		}
 	}
 
@@ -411,6 +461,11 @@ func (s *Service) spawnRun(
 	}
 
 	opts := s.engineOptions(runLogger, hash, filePath, runName, fin)
+	// Subbot nodes need a host-supplied runner (the bare engine can't compile
+	// a child .bot — import cycle with runview). Wired on BOTH the launch and
+	// resume paths; without it, in-process studio runs of subbot-bearing bots
+	// died with "no SubbotRunner is wired" (only the CLI paths were covered).
+	opts = append(opts, runtime.WithSubbotRunner(s.subbotRunnerFor(filePath, runLogger)))
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
 	}
@@ -419,6 +474,9 @@ func (s *Service) spawnRun(
 	}
 	if preset != "" {
 		opts = append(opts, runtime.WithPreset(preset))
+	}
+	if parentRunID != "" {
+		opts = append(opts, runtime.WithParentRunID(parentRunID))
 	}
 	// Persist launch-time model/backend overrides on the run record
 	// (display-only) so the studio Overview shows what it launched with.
@@ -458,6 +516,12 @@ func (s *Service) spawnRun(
 				s.broker.CloseRun(runID)
 			}
 		}()
+		// Release this root's pipeline-concurrency slot AFTER Deregister
+		// (defers run LIFO, so this line must come BEFORE the Deregister
+		// defer), so the run is fully deregistered before the scheduler
+		// admits the next waiter. A no-op for run IDs that never held a
+		// slot (children, resumes, or when the cap is disabled).
+		defer s.pipelineQueue.slotFreed(runID)
 		defer s.manager.Deregister(runID)
 		defer func() { _ = lock.Unlock() }()
 		if cancelTimeout != nil {

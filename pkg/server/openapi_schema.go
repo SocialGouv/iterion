@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/pat"
 )
@@ -75,6 +76,22 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/orgs/{id}":       {response: orgView{}},
 		"POST /api/admin/orgs/{id}/restore": {response: orgView{}},
 		"POST /api/admin/orgs/{id}/status":  {request: setOrgStatusReq{}, response: orgView{}},
+
+		// Global pipeline board — a single execution projection of every
+		// root pipeline (ADR-074). Additive to the native backlog (/board).
+		"GET /api/v1/pipeline-board": {response: PipelineBoardResponse{}},
+		"POST /api/v1/pipeline-board/tasks": {
+			request:  pipelineBoardTaskRequest{},
+			response: native.Issue{},
+		},
+		"POST /api/v1/pipeline-board/tasks/{id}/ready": {
+			request:  pipelineBoardReadyRequest{},
+			response: native.Issue{},
+		},
+		"PATCH /api/v1/pipeline-board/tasks/{id}": {
+			request:  pipelineBoardUpdateRequest{},
+			response: native.Issue{},
+		},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {

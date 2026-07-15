@@ -76,6 +76,14 @@ export default function GlobalCommandPalette() {
         run: () => setLocation("/board"),
       },
       {
+        id: "nav.pipelines",
+        group: "Navigate",
+        title: "Pipelines",
+        keywords: ["pipeline", "boards", "human input", "bots"],
+        disabled: !serverInfo?.native_tracker_enabled,
+        run: () => setLocation("/pipelines"),
+      },
+      {
         id: "nav.dispatcher",
         group: "Navigate",
         title: "Dispatcher",

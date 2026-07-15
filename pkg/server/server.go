@@ -389,7 +389,10 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 			s.runs = svc
 		}
 	case storeDir != "":
-		svcOpts := []runview.ServiceOption{runview.WithLogger(logger)}
+		svcOpts := []runview.ServiceOption{
+			runview.WithLogger(logger),
+			runview.WithMaxConcurrentPipelines(cfg.MaxConcurrentPipelines),
+		}
 		if cfg.WorkDir != "" {
 			svcOpts = append(svcOpts, runview.WithWorkDir(cfg.WorkDir))
 		}

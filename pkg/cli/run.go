@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -513,12 +515,17 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		}
 
 		// Capture the child's terminal-node output (the last node before Done)
-		// as the subbot's result.
-		var last map[string]any
+		// as the subbot's result. The callback fires concurrently when the
+		// child fans out parallel branches, so the capture is mutex-guarded.
+		var (
+			lastMu sync.Mutex
+			last   map[string]any
+		)
 		childEng := runtime.New(childWf, s, childExec,
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
 			runtime.WithFilePath(childPath),
+			runtime.WithParentRunID(req.ParentRunID),
 			// Wire the child engine with its own recursive runner so a child
 			// .bot that itself declares subbot nodes can run them (sources
 			// resolve relative to the CHILD's dir). Without this, nested
@@ -527,12 +534,23 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
 			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
 				if out != nil {
+					lastMu.Lock()
 					last = out
+					lastMu.Unlock()
 				}
 			}),
 		)
 		childCtx := context.WithValue(ctx, subbotDepthKey{}, depth+1)
 		if err := childEng.Run(childCtx, childRunID, req.Vars); err != nil {
+			// A human gate inside the child pauses the CHILD run (its doc is
+			// paused_waiting_human with a checkpoint + interaction); that is
+			// not a parent failure. Park this subbot node until the operator
+			// answers the child's review (pipeline-board sidebar / `iterion
+			// resume --run-id <child>`) and the child reaches a terminal
+			// state, then pick up its output from the store.
+			if errors.Is(err, runtime.ErrRunPaused) || errors.Is(err, runtime.ErrRunPausedOperator) {
+				return runview.AwaitSubbotTerminal(childCtx, s, childRunID, logger)
+			}
 			return nil, err
 		}
 		return last, nil

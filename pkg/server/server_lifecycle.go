@@ -50,6 +50,12 @@ func (s *Server) ListenAndServe() error {
 	if s.runs != nil {
 		go s.runStagedUploadReaper()
 	}
+	// Studio's built-in pipeline launcher: start ready tickets (dragged into
+	// Todo) when a concurrency slot frees. Only when no external dispatcher
+	// owns the board (which would otherwise race to claim the same tickets).
+	if s.pipelineAdmissionEnabled() {
+		go s.runPipelineAdmissionLoop()
+	}
 	// MVP3b: fan native-board issue-state transitions out to runs that
 	// subscribed (Run.WatchedIssueIDs). No-op when no native tracker is
 	// wired or the events tail can't start.

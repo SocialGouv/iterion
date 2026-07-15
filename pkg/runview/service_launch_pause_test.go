@@ -80,3 +80,45 @@ func TestLaunch_PersistsRunBeforeReturn_AndPauseKeepsSubscribers(t *testing.T) {
 		t.Errorf("SubscriberCount after pause = %d, want 1 (subscribers must survive a pause)", n)
 	}
 }
+
+func TestLaunch_PersistsParentRunIDBeforeReturn(t *testing.T) {
+	dir := t.TempDir()
+	botPath := filepath.Join(dir, "pause_demo.bot")
+	if err := os.WriteFile(botPath, []byte(pausingBot), 0o644); err != nil {
+		t.Fatalf("write bot: %v", err)
+	}
+
+	svc, err := NewService(dir, WithLogger(iterlog.Nop()))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	res, err := svc.Launch(context.Background(), LaunchSpec{
+		RunID:       "run-local-child",
+		FilePath:    botPath,
+		ParentRunID: "run-local-parent",
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	child, err := svc.store.LoadRun(context.Background(), res.RunID)
+	if err != nil {
+		t.Fatalf("LoadRun immediately after Launch: %v", err)
+	}
+	if child.ParentRunID != "run-local-parent" {
+		t.Fatalf("ParentRunID = %q, want run-local-parent", child.ParentRunID)
+	}
+	children, err := svc.ListChildren(context.Background(), "run-local-parent")
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].ID != res.RunID {
+		t.Fatalf("ListChildren = %+v, want %q", children, res.RunID)
+	}
+
+	select {
+	case <-res.Done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("run goroutine did not exit (expected immediate human pause)")
+	}
+}

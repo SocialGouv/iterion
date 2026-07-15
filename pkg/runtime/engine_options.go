@@ -161,6 +161,13 @@ func WithFilePath(path string) EngineOption {
 	return func(e *Engine) { e.filePath = path }
 }
 
+// WithParentRunID records the immediate parent of a nested run. Empty values
+// are ignored so pickup/resume paths that do not re-supply the option preserve
+// any lineage already stored on the run document.
+func WithParentRunID(parentRunID string) EngineOption {
+	return func(e *Engine) { e.parentRunID = parentRunID }
+}
+
 // WithRunName records a deterministic, human-friendly label on the
 // run metadata at creation. Display-only — the canonical identifier
 // remains the run ID. Optional — empty string is ignored.

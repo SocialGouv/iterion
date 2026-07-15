@@ -6,17 +6,18 @@ import (
 )
 
 var studioOpts struct {
-	port               int
-	bind               string
-	dir                string
-	storeDir           string
-	noBrowser          bool
-	noBrowserPane      bool
-	maxUploadSize      int64
-	maxTotalUploadSize int64
-	maxUploadsPerRun   int
-	allowUploadMime    []string
-	botsPaths          []string
+	port                   int
+	bind                   string
+	dir                    string
+	storeDir               string
+	noBrowser              bool
+	noBrowserPane          bool
+	maxUploadSize          int64
+	maxTotalUploadSize     int64
+	maxUploadsPerRun       int
+	allowUploadMime        []string
+	botsPaths              []string
+	maxConcurrentPipelines int
 }
 
 var studioCmd = &cobra.Command{
@@ -25,17 +26,18 @@ var studioCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cli.RunStudio(cmd.Context(), cli.StudioOptions{
-			Port:               studioOpts.port,
-			Bind:               studioOpts.bind,
-			Dir:                studioOpts.dir,
-			StoreDir:           studioOpts.storeDir,
-			NoBrowser:          studioOpts.noBrowser,
-			NoBrowserPane:      studioOpts.noBrowserPane,
-			MaxUploadSize:      studioOpts.maxUploadSize,
-			MaxTotalUploadSize: studioOpts.maxTotalUploadSize,
-			MaxUploadsPerRun:   studioOpts.maxUploadsPerRun,
-			AllowUploadMime:    studioOpts.allowUploadMime,
-			BotsPaths:          studioOpts.botsPaths,
+			Port:                   studioOpts.port,
+			Bind:                   studioOpts.bind,
+			Dir:                    studioOpts.dir,
+			StoreDir:               studioOpts.storeDir,
+			NoBrowser:              studioOpts.noBrowser,
+			NoBrowserPane:          studioOpts.noBrowserPane,
+			MaxUploadSize:          studioOpts.maxUploadSize,
+			MaxTotalUploadSize:     studioOpts.maxTotalUploadSize,
+			MaxUploadsPerRun:       studioOpts.maxUploadsPerRun,
+			AllowUploadMime:        studioOpts.allowUploadMime,
+			BotsPaths:              studioOpts.botsPaths,
+			MaxConcurrentPipelines: studioOpts.maxConcurrentPipelines,
 		}, newPrinter())
 	},
 }
@@ -57,5 +59,6 @@ func init() {
 	f.IntVar(&studioOpts.maxUploadsPerRun, "max-uploads-per-run", 0, "Max distinct attachments per run (0 = 20)")
 	f.StringSliceVar(&studioOpts.allowUploadMime, "allow-upload-mime", nil, "Allowed upload MIME patterns (default: image/*, application/pdf, text/*, ...)")
 	f.StringSliceVar(&studioOpts.botsPaths, "bots-path", nil, "Directories or files to scan for bots (default: <dir>/bots, <dir>/examples, <dir>/.botz)")
+	f.IntVar(&studioOpts.maxConcurrentPipelines, "max-concurrent-pipelines", 3, "Max root pipelines running at once (0 = unlimited). Over the cap, launches wait in the pipeline board's Todo lane and start as slots free.")
 	rootCmd.AddCommand(studioCmd)
 }

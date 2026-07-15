@@ -132,7 +132,7 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 // runResolveDoc loads-or-creates the run doc, transitioning a queued
 // row to running for cloud-pickup or rejecting an already-terminal
 // run, then stamps any engine-level metadata (workflow hash, file
-// path, run name, merge strategy, auto-merge, preset, bundle hash)
+// path, parent run, run name, merge strategy, auto-merge, preset, bundle hash)
 // onto the persisted record.
 func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[string]any) (*store.Run, error) {
 	var run *store.Run
@@ -173,12 +173,15 @@ func (e *Engine) runResolveDoc(ctx context.Context, runID string, inputs map[str
 		}
 		run = created
 	}
-	if e.workflowHash != "" || e.filePath != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
+	if e.workflowHash != "" || e.filePath != "" || e.parentRunID != "" || e.runName != "" || e.mergeStrategy != "" || e.autoMerge || e.preset != "" || e.bundle != nil || e.source != nil || e.callbackURL != "" || len(e.modelOverrides) > 0 || e.workflow.Budget != nil {
 		if e.workflowHash != "" {
 			run.WorkflowHash = e.workflowHash
 		}
 		if e.filePath != "" {
 			run.FilePath = e.filePath
+		}
+		if e.parentRunID != "" {
+			run.ParentRunID = e.parentRunID
 		}
 		if e.runName != "" {
 			run.Name = e.runName

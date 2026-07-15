@@ -457,6 +457,21 @@ type Service struct {
 	// + the wired SpendStore. nil when the cap is disabled (no limit, or
 	// a store that can't persist a ledger — e.g. cloud Mongo).
 	dailyCap *runtime.DailyCapGuard
+
+	// maxConcurrentPipelines caps how many ROOT pipelines run at once on
+	// this machine (the cross-run limit `max_parallel_branches` never
+	// provided). 0 disables the cap. Set via WithMaxConcurrentPipelines
+	// (CLI flag) or the ITERION_MAX_CONCURRENT_PIPELINES env.
+	maxConcurrentPipelines int
+	// pipelineQueue is the local admission gate + FIFO built from
+	// maxConcurrentPipelines. nil = unlimited (in-process launches start
+	// eagerly, exactly as before). Only the in-process (non-publisher,
+	// non-detached) local path honours it.
+	pipelineQueue *pipelineQueue
+	// pipelineStop ends the pipeline scheduler goroutine (see
+	// startPipelineScheduler). Closed by Drain/Stop via pipelineStopOnce.
+	pipelineStop     chan struct{}
+	pipelineStopOnce sync.Once
 }
 
 // ServiceOption configures a Service at construction time.
@@ -522,6 +537,20 @@ func (s *Service) AlertManager() *alert.Manager { return s.alertManager }
 // service stays in local-mode (in-process engine).
 func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
 	return func(s *Service) { s.publisher = p }
+}
+
+// WithMaxConcurrentPipelines caps how many ROOT pipelines run at once on
+// this machine. Over-limit launches wait in a FIFO (surfaced on the
+// pipeline board's TODO lane) and start when a slot frees. 0 (or
+// negative) disables the cap — every launch starts eagerly, as before.
+// The CLI wires it from --max-concurrent-pipelines; a non-positive value
+// leaves the ITERION_MAX_CONCURRENT_PIPELINES env default to apply.
+func WithMaxConcurrentPipelines(n int) ServiceOption {
+	return func(s *Service) {
+		if n > 0 {
+			s.maxConcurrentPipelines = n
+		}
+	}
 }
 
 // WithLocalSecrets wires the local (non-cloud) sealed secret store + its
@@ -641,6 +670,18 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		runtime.DailyCapConfig{MaxCostPerDayUSD: s.maxCostPerDayUSD},
 	)
 
+	// Build the local pipeline-concurrency gate from the
+	// ITERION_MAX_CONCURRENT_PIPELINES env default when no explicit cap was
+	// wired. nil (unlimited) when the resolved value is non-positive. Only
+	// in-process (local) mode has a gate: the cloud publisher path bypasses
+	// Launch's in-process branch entirely, so a queue there would be inert.
+	if s.maxConcurrentPipelines <= 0 {
+		s.maxConcurrentPipelines = envMaxConcurrentPipelines()
+	}
+	if s.publisher == nil {
+		s.pipelineQueue = newPipelineQueue(s.maxConcurrentPipelines)
+	}
+
 	if s.alertSettings != nil {
 		s.alertManager = s.buildAlertManager(*s.alertSettings)
 		s.alertManager.Start(context.Background())
@@ -668,6 +709,12 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	s.reconcileSandboxContainers()
 	s.reconcileSandboxK8sResources()
 	s.startPeriodicReconcile()
+	// Recover any pipelines left waiting in the queue by a previous
+	// process lifetime (persisted as queued docs), then start the
+	// scheduler that admits them as slots free. No-op when the cap is
+	// disabled (pipelineQueue == nil).
+	s.rebuildPipelineQueue()
+	s.startPipelineScheduler()
 	return s, nil
 }
 
@@ -750,6 +797,31 @@ func envDailyCostCap() float64 {
 		return 0
 	}
 	return f
+}
+
+// envMaxConcurrentPipelines parses ITERION_MAX_CONCURRENT_PIPELINES as a
+// positive integer cap on concurrent root pipelines, returning 0
+// (disabled) when unset or unparseable.
+func envMaxConcurrentPipelines() int {
+	v := os.Getenv("ITERION_MAX_CONCURRENT_PIPELINES")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// PipelineConcurrency returns the current state of the local pipeline
+// concurrency gate (limit, active, waiting) for server_info. A disabled
+// cap reports Enabled=false.
+func (s *Service) PipelineConcurrency() PipelineConcurrencyStatus {
+	if s == nil {
+		return PipelineConcurrencyStatus{}
+	}
+	return s.pipelineQueue.status()
 }
 
 // inboxBinder returns the runtime's operator-chatbox plumbing

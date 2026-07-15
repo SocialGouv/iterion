@@ -1,0 +1,49 @@
+## Child bot of the pipeline-board demo: produces one episode's media into its
+## OWN run's artifact area (a real 8x8 PNG cover, a real playable 0.5s WAV
+## track, an mp4 stub), then pauses on a HUMAN review — which surfaces in the
+## parent's card on /pipelines as an answerable review, with the media
+## previewable from the sidebar. Tool-only + human: no LLM, no API keys.
+vars:
+  episode: string = "ep"
+
+schema produce_out:
+  episode: string
+  ready: bool
+
+schema review_out:
+  approved: bool
+  notes: string
+
+schema episode_out:
+  episode: string
+  verdict: string
+
+## base64 -d is not strictly POSIX but ships with coreutils on every Linux
+## host + all iterion sandbox images; dd provides the WAV's silent payload.
+tool produce:
+  command: `set -e
+EP={{vars.episode}}
+mkdir -p "$ITERION_ARTIFACT_FILES_DIR"
+printf 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGM4YWODFTEMLQkAZZlQAVIPr1MAAAAASUVORK5CYII=' | base64 -d > "$ITERION_ARTIFACT_FILES_DIR/cover-$EP.png"
+{ printf 'UklGRmQfAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAfAAA=' | base64 -d; dd if=/dev/zero bs=1000 count=8 2>/dev/null; } > "$ITERION_ARTIFACT_FILES_DIR/track-$EP.wav"
+printf 'stub video payload' > "$ITERION_ARTIFACT_FILES_DIR/clip-$EP.mp4"
+printf '{"episode":"%s","ready":true}' "$EP"`
+  output: produce_out
+
+## The sub-bot's human gate: the parent parks this branch until the review is
+## answered from the pipeline-board sidebar (or `iterion resume`).
+human review:
+  output: review_out
+
+compute wrap:
+  output: episode_out
+  expr:
+    episode: "outputs.produce.episode"
+    verdict: "outputs.review.notes"
+
+workflow episode:
+  entry: produce
+  produce -> review
+  review  -> wrap when approved
+  review  -> fail when not approved
+  wrap    -> done

@@ -1,0 +1,424 @@
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
+
+import type { BotEntryWithSchema } from "@/api/bots";
+import type { VarField } from "@/api/types";
+import {
+  createPipelineTask,
+  updatePipelineTask,
+  type CreatePipelineTaskInput,
+  type PipelineBoardCard,
+  type PipelineTaskPatch,
+} from "@/api/pipelineBoards";
+import VarFieldInput, {
+  defaultStringFor,
+} from "@/components/shared/VarFieldInput";
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  InlineBanner,
+  Input,
+  TagInput,
+  Textarea,
+} from "@/components/ui";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { isVarMissing, isVarRequired, RequiredPill } from "@/lib/varValidation";
+import { useBotsStore } from "@/store/bots";
+import { BotPicker } from "@/views/Board/BotPicker";
+
+interface Props {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: () => void;
+  // When set, the dialog edits this existing (Backlog / ready-but-unlaunched)
+  // ticket instead of creating a new one: the form pre-fills from the card
+  // and Save PATCHes it. The ready-state stays under the “→ Todo” / “→ Backlog” buttons,
+  // so the "Ready to run" checkbox is hidden in edit mode.
+  editTask?: PipelineBoardCard;
+}
+
+// coerceEntryInput turns a card's entry_input (launch vars / bot_args, whose
+// values may be non-strings) into the string map the arg form edits.
+function coerceEntryInput(
+  input: Record<string, unknown> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!input) return out;
+  for (const [key, value] of Object.entries(input)) {
+    if (value === null || value === undefined) continue;
+    out[key] =
+      typeof value === "string"
+        ? value
+        : typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value);
+  }
+  return out;
+}
+
+/**
+ * isPrimaryVar decides which of a bot's vars is the pipeline's *primary
+ * input* — the one thing the operator actually chooses — versus a
+ * technical parameter that belongs behind the "Advanced" accordion.
+ *
+ * A var is primary when the bot author left it for the operator to fill:
+ * a non-bool var whose resolved default is empty (no default at all, or a
+ * placeholder like `requested_character = ""`). Bools and vars carrying a
+ * concrete default (`max_parallel = 5`, `type_id = "…"`) are technical.
+ * This keeps the form honest without any per-bot config: e.g. the
+ * historical-series `main` surfaces only its character, and `episode`
+ * surfaces character + episode_index.
+ */
+function isPrimaryVar(field: VarField): boolean {
+  if (field.type === "bool") return false;
+  return defaultStringFor(field).trim() === "";
+}
+
+export default function AddTaskDialog(props: Props) {
+  // Mount a fresh form for every open cycle. Besides making reset semantics
+  // obvious, this avoids synchronously mirroring `open` into state.
+  if (!props.open) return null;
+  return <AddTaskDialogContent {...props} />;
+}
+
+function VarFieldRow({
+  field,
+  value,
+  onChange,
+}: {
+  field: VarField;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const required = isVarRequired(field);
+  const invalid = isVarMissing(field, value);
+  return (
+    <div className="grid grid-cols-[160px_1fr] items-start gap-3">
+      <label htmlFor={`bot-arg-${field.name}`} className="pt-1">
+        <div className="flex items-baseline gap-2">
+          <span className="font-mono text-xs font-medium">{field.name}</span>
+          {required && <RequiredPill />}
+        </div>
+        <div className="text-caption text-fg-subtle">{field.type}</div>
+      </label>
+      <VarFieldInput
+        field={field}
+        value={value}
+        onChange={onChange}
+        required={required}
+        invalid={invalid}
+      />
+    </div>
+  );
+}
+
+function AddTaskDialogContent({
+  open,
+  onOpenChange,
+  onCreated,
+  editTask,
+}: Props) {
+  const isEdit = !!editTask;
+  const [botName, setBotName] = useState(editTask?.bot_id ?? "");
+  const [title, setTitle] = useState(editTask?.title ?? "");
+  const [body, setBody] = useState(editTask?.body ?? "");
+  const [labels, setLabels] = useState<string[]>(editTask?.labels ?? []);
+  const [priority, setPriority] = useState(editTask?.priority ?? 0);
+  const [botArgs, setBotArgs] = useState<Record<string, string>>(() =>
+    coerceEntryInput(editTask?.entry_input),
+  );
+  const [start, setStart] = useState(false);
+  // Open Advanced by default when editing so the title / description / labels /
+  // priority the operator came to change are visible without a click.
+  const [advancedOpen, setAdvancedOpen] = useState(isEdit);
+  const action = useAsyncAction();
+
+  // Shared bot catalog store — fetched once across all consumers. The board
+  // is global, so the operator picks which bot runs this task here.
+  const bots = useBotsStore((s) => s.bots);
+  const botsError = useBotsStore((s) => s.error);
+  const fetchBots = useBotsStore((s) => s.fetch);
+  useEffect(() => {
+    if (bots === null) void fetchBots();
+  }, [bots, fetchBots]);
+
+  const selectedBot: BotEntryWithSchema | null = useMemo(() => {
+    if (!botName || !bots) return null;
+    return bots.find((b) => b.name === botName) ?? null;
+  }, [botName, bots]);
+
+  const botEnabled = selectedBot?.enabled !== false;
+  const hasSchemaError = Boolean(selectedBot?.schema_error);
+
+  const fields: VarField[] = useMemo(
+    () => (selectedBot?.vars?.fields ?? []) as VarField[],
+    [selectedBot],
+  );
+  const primaryFields = useMemo(() => fields.filter(isPrimaryVar), [fields]);
+  const technicalFields = useMemo(
+    () => fields.filter((f) => !isPrimaryVar(f)),
+    [fields],
+  );
+
+  const argValue = (f: VarField) => botArgs[f.name] ?? defaultStringFor(f);
+  const setArg = (name: string, v: string) =>
+    setBotArgs((prev) => ({ ...prev, [name]: v }));
+
+  const missingRequiredArgs = useMemo(
+    () =>
+      fields.some((f) =>
+        isVarMissing(f, botArgs[f.name] ?? defaultStringFor(f)),
+      ),
+    [fields, botArgs],
+  );
+
+  // The title auto-derives from the primary inputs so the operator only has
+  // to pick the input principal; they can still override it under Advanced.
+  const derivedTitle = useMemo(() => {
+    const values = primaryFields
+      .map((f) => (botArgs[f.name] ?? "").trim())
+      .filter(Boolean);
+    if (values.length > 0) return values.join(" · ");
+    return selectedBot?.display_name?.trim() || botName.trim();
+  }, [primaryFields, botArgs, selectedBot, botName]);
+
+  const effectiveTitle = title.trim() || derivedTitle;
+  const canSubmit =
+    botName.trim().length > 0 &&
+    effectiveTitle.length > 0 &&
+    !missingRequiredArgs;
+
+  const submit = async () => {
+    if (!canSubmit) {
+      action.setError(
+        botName.trim().length === 0
+          ? "Choose a bot for this task."
+          : missingRequiredArgs
+            ? "Fill the required inputs before saving the task."
+            : "A task title is required.",
+      );
+      return;
+    }
+    if (isEdit && editTask?.issue_id) {
+      const patch: PipelineTaskPatch = {
+        bot: botName.trim(),
+        title: effectiveTitle,
+        body: body.trim(),
+        labels,
+        priority,
+        bot_args: botArgs,
+      };
+      const result = await action.run(() =>
+        updatePipelineTask(editTask.issue_id as string, patch),
+      );
+      if (result === undefined) return;
+      onOpenChange(false);
+      onCreated();
+      return;
+    }
+    const input: CreatePipelineTaskInput = {
+      bot: botName.trim(),
+      title: effectiveTitle,
+      ...(body.trim() ? { body: body.trim() } : {}),
+      ...(labels.length > 0 ? { labels } : {}),
+      ...(priority !== 0 ? { priority } : {}),
+      ...(Object.keys(botArgs).length > 0 ? { bot_args: botArgs } : {}),
+      ...(start && botEnabled ? { start: true } : {}),
+    };
+    const result = await action.run(() => createPipelineTask(input));
+    if (result === undefined) return;
+    onOpenChange(false);
+    onCreated();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={isEdit ? "Edit ticket" : "Add pipeline task"}
+      description={
+        isEdit
+          ? "Edit this backlog ticket before it runs. Technical parameters sit under Advanced."
+          : "Pick the pipeline to run and its input. Technical parameters sit under Advanced."
+      }
+      widthClass="max-w-2xl"
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            loading={action.busy}
+            disabled={!canSubmit}
+            onClick={() => void submit()}
+          >
+            {isEdit ? "Save" : start && botEnabled ? "Add to Todo" : "Add to Backlog"}
+          </Button>
+        </>
+      }
+    >
+      <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
+        {action.error && (
+          <InlineBanner tone="danger" layout="inline">
+            {action.error}
+          </InlineBanner>
+        )}
+
+        <div>
+          <div className="mb-1 text-xs text-fg-muted">Pipeline</div>
+          {botsError ? (
+            <div className="text-xs text-warning-fg">
+              Could not load bots: {botsError}
+            </div>
+          ) : bots == null ? (
+            <div className="text-xs italic text-fg-subtle">Loading bots…</div>
+          ) : bots.length === 0 ? (
+            <div className="text-xs italic text-fg-subtle">
+              No bots discovered. Configure <code>--bots-path</code> on the
+              studio.
+            </div>
+          ) : (
+            <BotPicker value={botName} bots={bots} onChange={setBotName} />
+          )}
+        </div>
+
+        {/* Primary input(s): the one thing the operator actually chooses. */}
+        {selectedBot && !hasSchemaError && primaryFields.length > 0 && (
+          <div className="space-y-3">
+            {primaryFields.map((f) => (
+              <VarFieldRow
+                key={f.name}
+                field={f}
+                value={argValue(f)}
+                onChange={(v) => setArg(f.name, v)}
+              />
+            ))}
+          </div>
+        )}
+        {selectedBot &&
+          !hasSchemaError &&
+          fields.length > 0 &&
+          primaryFields.length === 0 && (
+            <p className="text-micro italic text-fg-subtle">
+              This pipeline takes no primary input — every parameter has a
+              default and lives under Advanced.
+            </p>
+          )}
+        {hasSchemaError && (
+          <div className="text-micro text-warning-fg">
+            The bot&apos;s workflow failed to parse, so its inputs can&apos;t be
+            shown here. You can still add the task; only keys the workflow
+            declares as vars take effect.
+          </div>
+        )}
+
+        {/* Advanced: title override, technical params, tracker metadata. */}
+        <div className="border-t border-border-default pt-3">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((o) => !o)}
+            aria-expanded={advancedOpen}
+            className="flex w-full items-center gap-1.5 text-caption uppercase tracking-wide text-fg-subtle transition-colors hover:text-fg-default"
+          >
+            {advancedOpen ? (
+              <ChevronDownIcon className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRightIcon className="h-3.5 w-3.5" />
+            )}
+            Advanced parameters
+          </button>
+
+          {advancedOpen && (
+            <div className="mt-3 space-y-4">
+              <label className="block">
+                <span className="mb-1 block text-xs text-fg-muted">Title</span>
+                <Input
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder={derivedTitle || "What should this pipeline do?"}
+                  size="md"
+                />
+                <span className="mt-1 block text-micro text-fg-subtle">
+                  Leave blank to name the card{" "}
+                  <span className="font-mono">{derivedTitle || "…"}</span>.
+                </span>
+              </label>
+
+              {selectedBot && !hasSchemaError && technicalFields.length > 0 && (
+                <div className="space-y-3">
+                  {technicalFields.map((f) => (
+                    <VarFieldRow
+                      key={f.name}
+                      field={f}
+                      value={argValue(f)}
+                      onChange={(v) => setArg(f.name, v)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              <label className="block">
+                <span className="mb-1 block text-xs text-fg-muted">
+                  Description
+                </span>
+                <Textarea
+                  value={body}
+                  onChange={(event) => setBody(event.target.value)}
+                  placeholder="Context, acceptance criteria, links…"
+                  rows={3}
+                />
+              </label>
+
+              <div>
+                <div className="mb-1 text-xs text-fg-muted">Labels</div>
+                <TagInput
+                  value={labels}
+                  onChange={setLabels}
+                  placeholder="Add label…"
+                />
+              </div>
+
+              <label className="block max-w-40">
+                <span className="mb-1 block text-xs text-fg-muted">
+                  Priority
+                </span>
+                <Input
+                  type="number"
+                  value={String(priority)}
+                  onChange={(event) =>
+                    setPriority(Number(event.target.value) || 0)
+                  }
+                  min={0}
+                  title="Higher numbers launch first from Todo; equal priorities go oldest-first. 0 = unprioritized."
+                />
+                <span className="mt-1 block text-micro text-fg-subtle">
+                  Higher launches first from Todo.
+                </span>
+              </label>
+            </div>
+          )}
+        </div>
+
+        {!isEdit && (
+          <div className="border-t border-border-default pt-4">
+            <Checkbox
+              checked={start}
+              onChange={(event) => setStart(event.target.checked)}
+              disabled={!botName || !botEnabled}
+              label="Ready to run"
+              help={
+                !botName
+                  ? "Pick a pipeline first."
+                  : botEnabled
+                    ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Backlog until you stage it with its “→ Todo” button."
+                    : "This bot is disabled. The ticket stays in Backlog; enable the bot, then stage it with “→ Todo” to run."
+              }
+            />
+          </div>
+        )}
+      </div>
+    </Dialog>
+  );
+}

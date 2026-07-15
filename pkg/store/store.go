@@ -409,6 +409,42 @@ func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName strin
 	return r, nil
 }
 
+// CreateQueuedRun persists a new run with status "queued" — the state
+// the pipeline board renders in its TODO lane while the run waits for a
+// local concurrency slot. It mirrors CreateRun's exclusive-create
+// contract (a reused run ID fails) but additionally stamps the file path
+// and bot id so the local scheduler can compile + start the run later,
+// and the board can render a meaningful card, without an in-memory
+// launch spec. The engine's runResolveDoc transitions the doc
+// queued→running on pickup, so no engine change is needed to start it.
+//
+// Implements store.QueuedRunCreator (filesystem-only; cloud stores
+// already create runs queued via CreateRun).
+func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName, filePath, botID string, inputs map[string]any) (*Run, error) {
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	r := &Run{
+		FormatVersion:  RunFormatVersion,
+		ID:             id,
+		WorkflowName:   workflowName,
+		FilePath:       filePath,
+		BotID:          botID,
+		Status:         RunStatusQueued,
+		Inputs:         inputs,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		QueuedAt:       &now,
+		LaunchEnv:      CaptureLaunchEnv(),
+		IterionVersion: appinfo.FullVersion(),
+	}
+	if err := s.writeRunNew(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // SaveRun persists the run metadata to disk. Protected by mu so it
 // cannot race against UpdateRunStatus / SaveCheckpoint / WriteArtifact
 // — two runners reconciling the same orphan via RecoverFinalize, or a
