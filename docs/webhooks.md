@@ -85,10 +85,15 @@ stay intact for the provider handler's signature recomputation
 Single URL, two event kinds dispatched on `X-Gitlab-Event`
 ([pkg/server/webhooks_gitlab.go](../pkg/server/webhooks_gitlab.go)):
 
-- **`Merge Request Hook`** — auto-review on `open`/`reopen`. Pushes that
-  produce action `update` deliberately do **not** re-trigger (auto-review
-  on every push was found too noisy; cf.
-  [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go)).
+- **`Merge Request Hook`** — auto-review on `open`/`reopen`, and on the
+  **draft→ready transition**. A **draft MR never auto-launches** (the author
+  is still iterating — auto-running a bot wastes budget and churns an
+  unfinished branch). GitLab has no dedicated ready action, so the trigger is
+  the `update` whose `changes.draft` (or the deprecated `work_in_progress`)
+  went `true→false`. Ordinary pushes (action `update` with an unchanged draft
+  flag) deliberately do **not** re-trigger — auto-review on every push was
+  found too noisy; cf.
+  [pkg/webhooks/gitlab/parser.go:IsReviewable](../pkg/webhooks/gitlab/parser.go).
 - **`Note Hook`** — on-demand re-review. Only acts when the note hangs
   off an open MR **and** its first non-whitespace token is exactly
   `/revi`. Quoting "please run /revi" mid-text does not trigger
@@ -117,7 +122,14 @@ event paths trigger; ping / push / everything else is silently filtered
 (returns 200 — a 4xx makes GitHub disable the webhook after repeated
 failures; [pkg/server/webhooks_github.go](../pkg/server/webhooks_github.go)):
 
-- **`pull_request`** with action `opened` or `reopened` → PR auto-review.
+- **`pull_request`** with action `opened`, `reopened`, or `ready_for_review`
+  → PR auto-review. A **draft PR never auto-launches** (the `draft` flag is
+  honoured on every action — the trigger is `ready_for_review`, which clears
+  it). A **fork PR** (head branch in a different repo) is likewise never
+  auto-launched: it is untrusted, so a repo collaborator must trigger a bot
+  manually via the `/command` path — the anti budget-exhaustion boundary
+  ([pkg/webhooks/prforge/parser.go:IsReviewable](../pkg/webhooks/prforge/parser.go) +
+  `IsCrossRepo`).
 - **`issue_comment`** → the universal `/command` slash path (e.g.
   `/featurly <prompt>`), routed through the command registry.
 - **`issues`** with action `labeled` → launches the webhook's bot with
@@ -146,6 +158,14 @@ deployments); same for `X-Forgejo-Event` / `X-Gitea-Event`. The
 signature header is treated as a hex digest with or without the
 `sha256=` prefix
 ([pkg/server/webhooks_forgejo.go:forgejoSignatureHeader](../pkg/server/webhooks_forgejo.go)).
+
+The same draft/fork guards as GitHub apply (shared `prforge` parser):
+a draft PR (`pull_request.draft == true`) never auto-launches, and a fork
+PR never auto-launches. **Caveat:** Forgejo/Gitea has no `ready_for_review`
+webhook action (marking a WIP PR ready arrives as `edited`, which does not
+auto-trigger), so on Forgejo the draft→ready re-trigger is on-demand — a
+collaborator reopens the PR or uses the `/command` path. The no-draft and
+no-fork guarantees hold regardless.
 
 ### Generic (`POST /api/webhooks/generic/{id}`)
 

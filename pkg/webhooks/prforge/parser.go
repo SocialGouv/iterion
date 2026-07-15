@@ -32,6 +32,10 @@ type Parsed struct {
 	// DequeueReason is the merge-queue eject reason on a `dequeued`
 	// action (e.g. "MERGE_CONFLICT", "CI_FAILURE"). Empty otherwise.
 	DequeueReason string
+	// Draft reports whether the PR is a work-in-progress draft. A draft PR
+	// never auto-triggers a bot (IsReviewable is false); the trigger is the
+	// `ready_for_review` action that clears it.
+	Draft bool
 }
 
 // healableDequeueReasons are the merge-queue eject reasons that a
@@ -84,6 +88,7 @@ func ParsePullRequest(body []byte) (Parsed, error) {
 		SenderLogin:      e.Sender.Login,
 		HeadRepoFullName: pr.Head.Repo.FullName,
 		DequeueReason:    e.Reason,
+		Draft:            pr.Draft,
 	}, nil
 }
 
@@ -99,13 +104,19 @@ func (p Parsed) IsCrossRepo() bool {
 }
 
 // IsReviewable reports whether the PR action should AUTO-trigger a
-// review. Same contract as gitlab.Parsed.IsReviewable — only opened /
-// reopened. Subsequent push actions ("synchronize" on GitHub-shaped
-// payloads, "synchronized" on Gitea-shaped payloads) deliberately do
-// NOT re-trigger; re-review is on-demand.
+// review. A DRAFT PR is never auto-reviewable — the author is still
+// iterating, and auto-running a bot on it wastes budget and churns an
+// unfinished branch; the trigger is instead `ready_for_review` (which
+// clears the draft flag). Otherwise: only opened / reopened. Subsequent
+// push actions ("synchronize" on GitHub-shaped payloads, "synchronized"
+// on Gitea-shaped payloads) deliberately do NOT re-trigger; re-review is
+// on-demand.
 func (p Parsed) IsReviewable() bool {
+	if p.Draft {
+		return false
+	}
 	switch p.Action {
-	case "opened", "reopened":
+	case "opened", "reopened", "ready_for_review":
 		return true
 	default:
 		return false
