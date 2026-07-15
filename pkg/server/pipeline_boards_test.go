@@ -389,6 +389,38 @@ func TestPipelineBoardTaskCreatePinsBotFromBody(t *testing.T) {
 	}
 }
 
+func TestPipelineBoardTaskCreateEnsuresUniqueTitle(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	create := func(title string) string {
+		t.Helper()
+		resp, err := http.Post(env.http.URL+"/api/v1/pipeline-board/tasks", "application/json",
+			bytes.NewBufferString(`{"bot":"review","title":"`+title+`"}`))
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		if resp.StatusCode != http.StatusCreated {
+			resp.Body.Close()
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+		var out native.Issue
+		decodeJSONResp(t, resp, &out)
+		return out.Title
+	}
+	if got := create("Episode"); got != "Episode" {
+		t.Errorf("first = %q, want %q", got, "Episode")
+	}
+	if got := create("Episode"); got != "Episode 2" {
+		t.Errorf("second = %q, want %q", got, "Episode 2")
+	}
+	if got := create("Episode"); got != "Episode 3" {
+		t.Errorf("third = %q, want %q", got, "Episode 3")
+	}
+	// A distinct title is untouched.
+	if got := create("Other"); got != "Other" {
+		t.Errorf("distinct = %q, want %q", got, "Other")
+	}
+}
+
 func TestPipelineBoardTaskCreateRejectsCrossOrigin(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	req, err := http.NewRequest(

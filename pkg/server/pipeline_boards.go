@@ -273,7 +273,7 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		}
 	}
 	issue, err := boardStore.Create(native.Issue{
-		Title:    req.Title,
+		Title:    uniquePipelineTitle(boardStore, req.Title),
 		Body:     strings.TrimSpace(req.Body),
 		State:    state,
 		Labels:   append([]string(nil), req.Labels...),
@@ -289,6 +289,33 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 	s.reflectAllowedOrigin(w, r)
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(issue)
+}
+
+// uniquePipelineTitle keeps board card titles distinct: if `desired` is
+// already a ticket's title, it appends the smallest " N" (N≥2) that is free
+// ("Episode" → "Episode 2" → "Episode 3"). Best-effort — a list error just
+// returns the desired title unchanged.
+func uniquePipelineTitle(boardStore native.BoardStore, desired string) string {
+	existing, err := boardStore.List(native.ListFilter{})
+	if err != nil {
+		return desired
+	}
+	taken := make(map[string]struct{}, len(existing))
+	for _, iss := range existing {
+		if iss != nil {
+			taken[iss.Title] = struct{}{}
+		}
+	}
+	if _, clash := taken[desired]; !clash {
+		return desired
+	}
+	for n := 2; n < 100000; n++ {
+		candidate := fmt.Sprintf("%s %d", desired, n)
+		if _, clash := taken[candidate]; !clash {
+			return candidate
+		}
+	}
+	return desired
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
