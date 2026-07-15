@@ -125,6 +125,34 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain("Inputs");
   });
 
+  it("an interrupted blocked pipeline gets the explanation banner next to its review form", () => {
+    const html = render(
+      makeCard({
+        column_id: "in_progress",
+        run_id: "run-orphan",
+        status: "failed_resumable",
+        failed: true,
+        pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+      }),
+    );
+    expect(html).toContain("Response required");
+    expect(html).toContain("interrupted");
+    expect(html).toContain('data-testid="human-prompt"');
+  });
+
+  it("a healthy blocked pipeline has no interrupted banner", () => {
+    const html = render(
+      makeCard({
+        column_id: "in_progress",
+        run_id: "run-ok",
+        status: "running",
+        pending_reviews: [{ run_id: "c1", node_id: "review", depth: 1 }],
+      }),
+    );
+    expect(html).toContain("Response required");
+    expect(html).not.toContain("interrupted");
+  });
+
   it("Failed card shows the failure reason + inputs + produced elements", () => {
     const html = render(
       makeCard({

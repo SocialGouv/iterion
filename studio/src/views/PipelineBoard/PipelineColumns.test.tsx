@@ -230,7 +230,10 @@ describe("PipelineColumns", () => {
     expect(html).not.toContain("child");
   });
 
-  it("a blocked pipeline whose root was interrupted gets an explicit tag, not a scary chip", () => {
+  it("a blocked pipeline shows ONLY the Blocked tag, even when its root is resumable-failed", () => {
+    // A resumable process state (restart-orphaned parked parent) is the
+    // system's business — the card must not surface it; the sidebar
+    // explains it next to the review form.
     const html = render(
       makeBoard([
         makeCard({
@@ -247,8 +250,7 @@ describe("PipelineColumns", () => {
       ]),
     );
     expect(html).toContain("Blocked — human review · review");
-    expect(html).toContain("Interrupted — resume needed");
-    // The raw failed_resumable chip stays hidden while reviews are pending.
+    expect(html).not.toContain("Interrupted");
     expect(html).not.toContain("Failed (resumable)");
   });
 

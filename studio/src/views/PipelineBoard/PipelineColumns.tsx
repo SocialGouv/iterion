@@ -424,10 +424,10 @@ function TodoStatus({ card }: { card: PipelineBoardCardDTO }) {
 // In progress: tree progress + a Blocked tag naming WHY (the pending human
 // gate) when the pipeline waits on a review. The review form itself lives
 // exclusively in the details sidebar. While blocked, the root's own status
-// chip is NOISE (Blocked already says it) — except when the root run was
-// interrupted (e.g. a server restart orphaned it to failed_resumable while
-// its children still hold reviews): that state gets an explicit tag, because
-// answering the reviews alone will not finish the pipeline.
+// chip is NOISE — Blocked already says everything the operator can act on.
+// A resumable process state (e.g. a restart orphaned the parked parent) is
+// the SYSTEM's business, not the card's: the details sidebar explains it
+// next to the review form, and #205 tracks making it self-heal entirely.
 function InProgressStatus({ card }: { card: PipelineBoardCardDTO }) {
   const reviews = card.pending_reviews ?? [];
   const blockedLabel =
@@ -439,22 +439,12 @@ function InProgressStatus({ card }: { card: PipelineBoardCardDTO }) {
       <ProgressBar executed={card.tree_executed_nodes} total={card.tree_total_nodes} />
       <div className="flex flex-wrap items-center gap-1">
         {reviews.length > 0 ? (
-          <>
-            <Badge
-              variant="warning"
-              title="Waiting on a human review — open the card to answer it"
-            >
-              {blockedLabel}
-            </Badge>
-            {card.failed && (
-              <Badge
-                variant="danger"
-                title="The pipeline's run was interrupted (e.g. a server restart). Answering the reviews resumes the CHILD runs, but the pipeline itself needs a resume from the run console to pick up their results and finish."
-              >
-                Interrupted — resume needed
-              </Badge>
-            )}
-          </>
+          <Badge
+            variant="warning"
+            title="Waiting on a human review — open the card to answer it"
+          >
+            {blockedLabel}
+          </Badge>
         ) : (
           <StatusChip status={card.status} />
         )}
