@@ -15,7 +15,7 @@ import { formatRelative } from "@/lib/format";
 interface Props {
   board: PipelineBoard;
   onRefetch: () => void;
-  // Opens the edit dialog for a still-editable (Draft / ready-unlaunched)
+  // Opens the edit dialog for a still-editable (Backlog / ready-unlaunched)
   // ticket. Absent → no Edit affordance is shown.
   onEditTask?: (card: PipelineBoardCardDTO) => void;
   // Opens the right-hand details sidebar for a card. Absent → cards are not
@@ -75,7 +75,7 @@ function humanizeToken(value: string): string {
 
 function columnAccent(id: string): string {
   switch (id) {
-    case "draft":
+    case "backlog":
       return "bg-fg-subtle";
     case "todo":
       return "bg-warning";
@@ -91,37 +91,37 @@ function columnAccent(id: string): string {
 }
 
 // Ticket movement is BUTTON-driven — there is no drag & drop on this board.
-// canMoveToTodo: a ticket-backed card that is not executing — a Draft task
+// canMoveToTodo: a ticket-backed card that is not executing — a Backlog task
 // being staged, or a Failed pipeline being retried. Running / paused /
 // queued / finished runs are fixed by run state.
 export function canMoveToTodo(card: PipelineBoardCardDTO): boolean {
   if (!card.issue_id) return false;
-  if (card.column_id === "draft") return card.kind === "task" || card.failed === true;
+  if (card.column_id === "backlog") return card.kind === "task" || card.failed === true;
   if (card.column_id === "failed") return card.failed === true;
   return false;
 }
 
-// canMoveToDraft: a ready-but-unlaunched Todo task goes back to Draft. A
+// canMoveToBacklog: a ready-but-unlaunched Todo task goes back to Backlog. A
 // queued RUN sitting in Todo is fixed by run state.
-export function canMoveToDraft(card: PipelineBoardCardDTO): boolean {
+export function canMoveToBacklog(card: PipelineBoardCardDTO): boolean {
   return !!card.issue_id && card.column_id === "todo" && card.kind === "task";
 }
 
 // isTicketEditable reports whether a ticket can still be edited before it
-// runs: it must be task-backed (issue_id) and not executing — a Draft card,
+// runs: it must be task-backed (issue_id) and not executing — a Backlog card,
 // a Failed pipeline being fixed before retry, or a ready-but-unlaunched Todo
 // task card. In-progress / done cards and queued runs are fixed.
 export function isTicketEditable(card: PipelineBoardCardDTO): boolean {
   if (!card.issue_id) return false;
   return (
-    card.column_id === "draft" ||
+    card.column_id === "backlog" ||
     card.column_id === "failed" ||
     (card.column_id === "todo" && card.kind === "task")
   );
 }
 
 // moveTicket flips a ticket's ready state (true → Todo, staged for the launch
-// loop; false → back to Draft), then refetches the board.
+// loop; false → back to Backlog), then refetches the board.
 export async function moveTicket(
   issueId: string,
   ready: boolean,
@@ -265,7 +265,7 @@ export function PipelineCard({ card, onMoveTicket, onEditTask, onOpenCard }: Car
     >
       <CardTitle card={card} />
 
-      {card.column_id === "draft" && <DraftStatus card={card} />}
+      {card.column_id === "backlog" && <BacklogStatus card={card} />}
       {card.column_id === "todo" && <TodoStatus card={card} />}
       {card.column_id === "in_progress" && <InProgressStatus card={card} />}
       {card.column_id === "done" && <DoneStatus card={card} />}
@@ -300,15 +300,15 @@ export function PipelineCard({ card, onMoveTicket, onEditTask, onOpenCard }: Car
               {card.failed ? "Retry" : "→ Todo"}
             </button>
           )}
-          {canMoveToDraft(card) && card.issue_id && (
+          {canMoveToBacklog(card) && card.issue_id && (
             <button
               type="button"
               onClick={() => onMoveTicket(card.issue_id as string, false)}
               className="text-accent-text hover:underline"
-              aria-label={`Back to Draft: ${card.title}`}
-              title="Unstage this ticket back to Draft"
+              aria-label={`Back to Backlog: ${card.title}`}
+              title="Unstage this ticket back to Backlog"
             >
-              → Draft
+              → Backlog
             </button>
           )}
           {openable && (
@@ -386,8 +386,8 @@ function PriorityBadge({ priority }: { priority?: number }) {
   );
 }
 
-// Draft: why the ticket is here — failed (with the error) or being prepared.
-function DraftStatus({ card }: { card: PipelineBoardCardDTO }) {
+// Backlog: why the ticket is here — failed (with the error) or being prepared.
+function BacklogStatus({ card }: { card: PipelineBoardCardDTO }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-1">

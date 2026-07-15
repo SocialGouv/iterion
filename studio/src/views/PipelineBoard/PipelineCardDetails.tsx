@@ -98,7 +98,7 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 }
 
 // PipelineCardDetailsBody composes the sidebar sections by lane:
-//   - Todo / Draft (no run started)      → Inputs only.
+//   - Todo / Backlog (no run started)   → Inputs only.
 //   - In progress                        → Inputs + Produced elements.
 //   - In progress, awaiting human input  → + the response form (first, so the
 //                                          operator's action is front and centre).

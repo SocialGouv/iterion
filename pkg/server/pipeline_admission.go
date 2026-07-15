@@ -38,7 +38,7 @@ func (s *Server) dispatcherActivelyLaunching() bool {
 }
 
 // runPipelineAdmissionLoop is the studio's minimal, pipeline-cap-scoped
-// dispatcher: it launches tickets the operator marked ready (dragged into
+// dispatcher: it launches tickets the operator marked ready (staged into
 // Todo) whenever a concurrency slot is free. Without it, "ready" tickets
 // would sit forever unless the operator ran a full `iterion dispatch`.
 // Stops when the server shuts down.
@@ -122,7 +122,7 @@ func sortReadyTickets(ready []*native.Issue) {
 
 // pipelineTicketLaunchable reports whether a ready ticket has no run that is
 // active or already finished — i.e. it is fresh, or its last run failed and
-// the operator re-dragged it to Todo to retry.
+// the operator retried it to Todo.
 func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *native.Issue) bool {
 	if rs == nil {
 		return true
@@ -151,7 +151,7 @@ func pipelineTicketLaunchable(ctx context.Context, rs store.RunStore, iss *nativ
 // can't be double-picked by the next tick), launches its bot through the
 // concurrency gate, and stamps the resulting run onto the ticket so the
 // projection folds them into one card. A launch failure reverts the ticket
-// to Draft.
+// to Backlog.
 func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStore, iss *native.Issue) {
 	entry, found, err := s.findBot(iss.Bot)
 	if err != nil {
@@ -175,7 +175,7 @@ func (s *Server) launchReadyTicket(runs *runview.Service, board native.BoardStor
 	})
 	if err != nil {
 		s.logger.Warn("pipeline admission: launch ticket %s: %v", iss.ID, err)
-		// Return it to Draft so it isn't stuck claimed with no run.
+		// Return it to Backlog so it isn't stuck claimed with no run.
 		if _, rErr := board.SetState(iss.ID, native.StateInbox); rErr != nil {
 			s.logger.Warn("pipeline admission: revert ticket %s: %v", iss.ID, rErr)
 		}

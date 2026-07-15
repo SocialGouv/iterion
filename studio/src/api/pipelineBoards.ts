@@ -11,7 +11,7 @@ const BASE = "/api/v1/pipeline-board";
 
 // The five fixed lanes, in the order the server emits them.
 export interface PipelineBoardColumn {
-  id: string; // "draft" | "todo" | "in_progress" | "done" | "failed"
+  id: string; // "backlog" | "todo" | "in_progress" | "done" | "failed"
   title: string;
   kind: string;
 }
@@ -59,8 +59,8 @@ export interface PipelineBoardCard {
   status?: string;
   error?: string;
 
-  // Draft lane — the ticket's last run failed/cancelled (retry by dragging it
-  // to Todo), as opposed to a not-yet-ready draft ticket.
+  // Failed lane — the ticket's last run failed/cancelled (Retry stages it
+  // back to Todo), as opposed to a not-yet-ready Backlog ticket.
   failed?: boolean;
   // Todo lane — a task-backed ticket in the ready state (waiting for a
   // concurrency slot; the studio auto-launches it when one frees).
@@ -297,8 +297,8 @@ export async function createPipelineTask(
 }
 
 // markPipelineTaskReady flips a task-backed ticket between the ready (Todo)
-// and draft states — the write behind the board's "→ Todo" / "→ Draft" move
-// buttons. The studio auto-launches ready tickets when a concurrency slot
+// and backlog states — the write behind the board's "→ Todo" / "→ Backlog"
+// move buttons. The studio auto-launches ready tickets when a concurrency slot
 // frees.
 export async function markPipelineTaskReady(
   taskId: string,
@@ -313,7 +313,7 @@ export async function markPipelineTaskReady(
   );
 }
 
-// PipelineTaskPatch is the editable surface of a not-yet-run (Draft/ready)
+// PipelineTaskPatch is the editable surface of a not-yet-run (Backlog/ready)
 // ticket. All fields optional — only sent fields are applied server-side.
 export interface PipelineTaskPatch {
   title?: string;
@@ -324,7 +324,7 @@ export interface PipelineTaskPatch {
   bot_args?: Record<string, string>;
 }
 
-// updatePipelineTask edits a Draft (or ready-but-unlaunched) ticket before it
+// updatePipelineTask edits a Backlog (or ready-but-unlaunched) ticket before it
 // runs — title, input (bot_args), bot, description, labels, priority.
 export async function updatePipelineTask(
   taskId: string,

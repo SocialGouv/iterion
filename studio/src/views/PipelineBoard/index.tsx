@@ -104,7 +104,7 @@ export default function PipelineBoardView() {
             <h1 className="text-display font-semibold text-fg-default">Pipeline board</h1>
             <p className="mt-0.5 max-w-3xl text-xs text-fg-muted">
               Every launched pipeline (and not-yet-started task) across all bots, bucketed
-              into five fixed lanes. Running cards are placed by run state; stage a Draft
+              into five fixed lanes. Running cards are placed by run state; stage a Backlog
               ticket with its “→ Todo” button (or edit it first), retry a Failed one, and
               click any card for details.
             </p>

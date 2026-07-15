@@ -31,9 +31,9 @@ interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
-  // When set, the dialog edits this existing (Draft / ready-but-unlaunched)
+  // When set, the dialog edits this existing (Backlog / ready-but-unlaunched)
   // ticket instead of creating a new one: the form pre-fills from the card
-  // and Save PATCHes it. The ready-state stays under the Draft ↔ Todo drag,
+  // and Save PATCHes it. The ready-state stays under the “→ Todo” / “→ Backlog” buttons,
   // so the "Ready to run" checkbox is hidden in edit mode.
   editTask?: PipelineBoardCard;
 }
@@ -239,7 +239,7 @@ function AddTaskDialogContent({
       title={isEdit ? "Edit ticket" : "Add pipeline task"}
       description={
         isEdit
-          ? "Edit this draft ticket before it runs. Technical parameters sit under Advanced."
+          ? "Edit this backlog ticket before it runs. Technical parameters sit under Advanced."
           : "Pick the pipeline to run and its input. Technical parameters sit under Advanced."
       }
       widthClass="max-w-2xl"
@@ -254,7 +254,7 @@ function AddTaskDialogContent({
             disabled={!canSubmit}
             onClick={() => void submit()}
           >
-            {isEdit ? "Save" : start && botEnabled ? "Add to Todo" : "Add to Draft"}
+            {isEdit ? "Save" : start && botEnabled ? "Add to Todo" : "Add to Backlog"}
           </Button>
         </>
       }
@@ -412,8 +412,8 @@ function AddTaskDialogContent({
                 !botName
                   ? "Pick a pipeline first."
                   : botEnabled
-                    ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Draft until you drag it to Todo."
-                    : "This bot is disabled. The ticket stays in Draft; enable the bot, then drag it to Todo to run."
+                    ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Backlog until you stage it with its “→ Todo” button."
+                    : "This bot is disabled. The ticket stays in Backlog; enable the bot, then stage it with “→ Todo” to run."
               }
             />
           </div>

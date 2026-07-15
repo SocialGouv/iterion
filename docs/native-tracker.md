@@ -235,7 +235,7 @@ many pipelines at once — not a saved filter and not a replacement for `/board`
 - `/board` remains the editable, shared dispatcher backlog;
 - `/pipelines` is one global projection of every **root** pipeline, across all
   bots;
-- it has five fixed lanes — `Draft`, `Todo`, `In progress`, `Done`, `Failed`;
+- it has five fixed lanes — `Backlog`, `Todo`, `In progress`, `Done`, `Failed`;
 - each card is one root pipeline; its descendant runs are **folded into the
   root card** (aggregate node progress + a list of pending human reviews), not
   shown as separate cards;
@@ -246,9 +246,9 @@ many pipelines at once — not a saved filter and not a replacement for `/board`
   time.
 
 Lane semantics — the board is **task-centric**:
-- `Draft` = tickets being prepared;
+- `Backlog` = tickets being prepared;
 - `Todo` = tickets you staged with the card's **“→ Todo”** button, plus runs
-  waiting for a local slot (queued); “→ Draft” unstages an unlaunched ticket.
+  waiting for a local slot (queued); “→ Backlog” unstages an unlaunched ticket.
   The launch loop starts ready tickets **highest priority first** (the same
   `P{n}` field /board sorts on; ties go oldest-first) — set it from the
   ticket's Edit dialog, shown as a `P{n}` badge on the card;
@@ -269,8 +269,8 @@ perform an N+1 traversal over issues, checkpoints and child runs:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/v1/pipeline-board` | GET | Global projection: 5 fixed lanes + one folded card per root pipeline (progress, pending reviews, output, concurrency) |
-| `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required **in the body**; `{start:true}` creates it ready (Todo), else Draft |
-| `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` flips a ticket ready↔draft — the backend of the “→ Todo” / “→ Draft” / Retry buttons |
+| `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required **in the body**; `{start:true}` creates it ready (Todo), else Backlog |
+| `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` flips a ticket ready↔backlog — the backend of the “→ Todo” / “→ Backlog” / Retry buttons |
 
 **Local concurrency cap.** `iterion studio` caps concurrent **root** pipelines
 at `--max-concurrent-pipelines` (default 3; also

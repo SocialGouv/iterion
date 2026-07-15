@@ -59,7 +59,8 @@ the view is a projection of persisted run state, cards are **not** drag targets.
 
 > **Amended 2026-07-15:** a fifth **Failed** lane was added — failed/cancelled
 > runs now land there (error shown as the reason, Retry button back to Todo)
-> instead of returning to Draft with a `failed` flag. Ticket movement is now
+> instead of returning to Draft with a `failed` flag (and the Draft lane was
+> since renamed **Backlog**, wire id `backlog`). Ticket movement is now
 > **button-driven** (“→ Todo” / “→ Draft” / Retry); the Draft↔Todo drag
 > described below was removed, and the review form moved from the card body to
 > the card's details sidebar. See docs/native-tracker.md for the current

@@ -158,7 +158,7 @@ func (e *pipelineBoardTestEnv) projection(t *testing.T) PipelineBoardResponse {
 func TestPipelineBoardHasFourFixedColumns(t *testing.T) {
 	env := newPipelineBoardTestEnv(t)
 	projection := env.projection(t)
-	want := []string{pipelineColumnDraft, pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone, pipelineColumnFailed}
+	want := []string{pipelineColumnBacklog, pipelineColumnTodo, pipelineColumnInProgress, pipelineColumnDone, pipelineColumnFailed}
 	if len(projection.Columns) != len(want) {
 		t.Fatalf("columns = %+v, want %v", projection.Columns, want)
 	}
@@ -572,7 +572,7 @@ func TestPipelineBoardProjectsTaskDraftVsTodo(t *testing.T) {
 
 	projection := env.projection(t)
 	d := findPipelineCard(t, projection.Cards, "task:"+draft.ID)
-	if d.Kind != "task" || d.ColumnID != pipelineColumnDraft || d.Ready {
+	if d.Kind != "task" || d.ColumnID != pipelineColumnBacklog || d.Ready {
 		t.Errorf("draft card = %+v, want kind=task column=draft ready=false", d)
 	}
 	if d.EntryInput["scope"] != "api" {
@@ -618,7 +618,7 @@ func TestPipelineBoardTaskReadyTogglesState(t *testing.T) {
 	if got := post(false); got.State != native.StateInbox {
 		t.Errorf("ready=false state = %q, want %q", got.State, native.StateInbox)
 	}
-	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnDraft {
+	if card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID); card.ColumnID != pipelineColumnBacklog {
 		t.Errorf("after unready: card column = %q, want draft", card.ColumnID)
 	}
 }
@@ -652,7 +652,7 @@ func TestPipelineBoardTaskUpdateEditsDraft(t *testing.T) {
 	}
 	// The edit shows on the board's Draft card.
 	card := findPipelineCard(t, env.projection(t).Cards, "task:"+issue.ID)
-	if card.Title != "Polished" || card.ColumnID != pipelineColumnDraft || card.EntryInput["scope"] != "new" {
+	if card.Title != "Polished" || card.ColumnID != pipelineColumnBacklog || card.EntryInput["scope"] != "new" {
 		t.Errorf("edited draft card = %+v", card)
 	}
 

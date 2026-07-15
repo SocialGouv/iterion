@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PipelineBoard, PipelineBoardCard } from "@/api/pipelineBoards";
 
 // PipelineColumns imports markPipelineTaskReady for the button-driven
-// Draft ↔ Todo moves.
+// Backlog ↔ Todo moves.
 const { markReadyMock } = vi.hoisted(() => ({ markReadyMock: vi.fn() }));
 vi.mock("@/api/pipelineBoards", () => ({
   markPipelineTaskReady: markReadyMock,
@@ -24,14 +24,14 @@ vi.mock("wouter", () => ({
 
 import {
   PipelineColumns,
-  canMoveToDraft,
+  canMoveToBacklog,
   canMoveToTodo,
   isTicketEditable,
   moveTicket,
 } from "./PipelineColumns";
 
 const columns = [
-  { id: "draft", title: "Draft", kind: "draft" },
+  { id: "backlog", title: "Backlog", kind: "backlog" },
   { id: "todo", title: "Todo", kind: "todo" },
   { id: "in_progress", title: "In progress", kind: "in_progress" },
   { id: "done", title: "Done", kind: "done" },
@@ -42,7 +42,7 @@ function makeCard(partial: Partial<PipelineBoardCard>): PipelineBoardCard {
   return {
     id: "card",
     kind: "run",
-    column_id: "draft",
+    column_id: "backlog",
     title: "Card",
     executed_nodes: 0,
     total_nodes: 0,
@@ -77,10 +77,10 @@ beforeEach(() => {
 });
 
 describe("PipelineColumns", () => {
-  it("buckets cards client-side into the four fixed lanes", () => {
+  it("buckets cards client-side into the fixed lanes", () => {
     const html = render(
       makeBoard([
-        makeCard({ id: "d", column_id: "draft", kind: "task", issue_id: "iss-1", title: "Draft task" }),
+        makeCard({ id: "d", column_id: "backlog", kind: "task", issue_id: "iss-1", title: "Backlog task" }),
         makeCard({
           id: "t",
           column_id: "todo",
@@ -109,7 +109,7 @@ describe("PipelineColumns", () => {
       ]),
     );
 
-    expect(html).toContain("Draft task");
+    expect(html).toContain("Backlog task");
     expect(html).toContain("Queued run");
     expect(html).toContain("#2"); // queue position badge (Todo)
     expect(html).toContain("12 / 40 nodes"); // progress (in_progress)
@@ -123,10 +123,10 @@ describe("PipelineColumns", () => {
       makeBoard([
         makeCard({
           id: "d",
-          column_id: "draft",
+          column_id: "backlog",
           kind: "task",
           issue_id: "iss-1",
-          title: "Draft task",
+          title: "Lean task",
           body: "long ticket description",
           labels: ["labelled-x"],
           entry_input: { topic: "jazz-input" },
@@ -249,10 +249,10 @@ describe("PipelineColumns", () => {
 });
 
 describe("priority", () => {
-  it("shows the P badge on Draft / Todo / Failed cards (the launch-order dial)", () => {
+  it("shows the P badge on Backlog / Todo / Failed cards (the launch-order dial)", () => {
     const html = render(
       makeBoard([
-        makeCard({ id: "d", column_id: "draft", kind: "task", issue_id: "iss-1", priority: 5 }),
+        makeCard({ id: "d", column_id: "backlog", kind: "task", issue_id: "iss-1", priority: 5 }),
         makeCard({ id: "t", column_id: "todo", kind: "task", issue_id: "iss-2", priority: 3 }),
         makeCard({
           id: "f",
@@ -310,15 +310,15 @@ describe("card details affordance", () => {
 });
 
 describe("move buttons (no drag & drop)", () => {
-  it("a Draft task shows → Todo; a Todo task shows → Draft", () => {
+  it("a Backlog task shows → Todo; a Todo task shows → Backlog", () => {
     const html = render(
       makeBoard([
-        makeCard({ id: "d", column_id: "draft", kind: "task", issue_id: "iss-1", title: "Prep me" }),
+        makeCard({ id: "d", column_id: "backlog", kind: "task", issue_id: "iss-1", title: "Prep me" }),
         makeCard({ id: "t", column_id: "todo", kind: "task", issue_id: "iss-2", title: "Staged" }),
       ]),
     );
     expect(html).toContain("→ Todo");
-    expect(html).toContain("→ Draft");
+    expect(html).toContain("→ Backlog");
   });
 
   it("run-backed cards get no move buttons", () => {
@@ -330,37 +330,37 @@ describe("move buttons (no drag & drop)", () => {
       ]),
     );
     expect(html).not.toContain("→ Todo");
-    expect(html).not.toContain("→ Draft");
+    expect(html).not.toContain("→ Backlog");
   });
 });
 
 describe("move helpers", () => {
-  it("canMoveToTodo: draft tasks stage; failed-lane tickets retry", () => {
-    expect(canMoveToTodo(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" }))).toBe(true);
+  it("canMoveToTodo: backlog tasks stage; failed-lane tickets retry", () => {
+    expect(canMoveToTodo(makeCard({ column_id: "backlog", kind: "task", issue_id: "iss-1" }))).toBe(true);
     expect(
       canMoveToTodo(makeCard({ column_id: "failed", kind: "run", issue_id: "iss-1", failed: true })),
     ).toBe(true);
-    // Legacy tolerance: a failed card still projected into draft stays retryable.
+    // Legacy tolerance: a failed card still projected into backlog stays retryable.
     expect(
-      canMoveToTodo(makeCard({ column_id: "draft", kind: "run", issue_id: "iss-1", failed: true })),
+      canMoveToTodo(makeCard({ column_id: "backlog", kind: "run", issue_id: "iss-1", failed: true })),
     ).toBe(true);
-    // Not draft/failed lane, executing, or no ticket → immobile.
+    // Not backlog/failed lane, executing, or no ticket → immobile.
     expect(canMoveToTodo(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-1" }))).toBe(false);
     expect(
-      canMoveToTodo(makeCard({ column_id: "draft", kind: "run", issue_id: "iss-1", status: "running" })),
+      canMoveToTodo(makeCard({ column_id: "backlog", kind: "run", issue_id: "iss-1", status: "running" })),
     ).toBe(false);
-    expect(canMoveToTodo(makeCard({ column_id: "draft", kind: "task" }))).toBe(false);
+    expect(canMoveToTodo(makeCard({ column_id: "backlog", kind: "task" }))).toBe(false);
     expect(canMoveToTodo(makeCard({ column_id: "failed", kind: "run", failed: true }))).toBe(false);
   });
 
-  it("canMoveToDraft: todo-only, unlaunched task-backed tickets", () => {
-    expect(canMoveToDraft(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-1" }))).toBe(true);
+  it("canMoveToBacklog: todo-only, unlaunched task-backed tickets", () => {
+    expect(canMoveToBacklog(makeCard({ column_id: "todo", kind: "task", issue_id: "iss-1" }))).toBe(true);
     // A queued RUN in Todo is fixed by run state.
     expect(
-      canMoveToDraft(makeCard({ column_id: "todo", kind: "run", issue_id: "iss-1", status: "queued" })),
+      canMoveToBacklog(makeCard({ column_id: "todo", kind: "run", issue_id: "iss-1", status: "queued" })),
     ).toBe(false);
-    expect(canMoveToDraft(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" }))).toBe(false);
-    expect(canMoveToDraft(makeCard({ column_id: "todo", kind: "task" }))).toBe(false);
+    expect(canMoveToBacklog(makeCard({ column_id: "backlog", kind: "task", issue_id: "iss-1" }))).toBe(false);
+    expect(canMoveToBacklog(makeCard({ column_id: "todo", kind: "task" }))).toBe(false);
   });
 
   it("moveTicket(true) stages to Todo, then refetches", async () => {
@@ -371,7 +371,7 @@ describe("move helpers", () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("moveTicket(false) unstages to Draft", async () => {
+  it("moveTicket(false) unstages to Backlog", async () => {
     markReadyMock.mockResolvedValue(undefined);
     const onDone = vi.fn();
     await moveTicket("iss-1", false, onDone);
@@ -383,7 +383,7 @@ describe("move helpers", () => {
 describe("isTicketEditable", () => {
   it("allows editing not-yet-run task-backed tickets (incl. failed-lane fixes)", () => {
     expect(
-      isTicketEditable(makeCard({ column_id: "draft", kind: "task", issue_id: "iss-1" })),
+      isTicketEditable(makeCard({ column_id: "backlog", kind: "task", issue_id: "iss-1" })),
     ).toBe(true);
     expect(
       isTicketEditable(
@@ -411,20 +411,20 @@ describe("isTicketEditable", () => {
         makeCard({ column_id: "todo", kind: "run", issue_id: "iss-6", status: "queued" }),
       ),
     ).toBe(false);
-    expect(isTicketEditable(makeCard({ column_id: "draft", kind: "task" }))).toBe(false);
+    expect(isTicketEditable(makeCard({ column_id: "backlog", kind: "task" }))).toBe(false);
   });
 
   it("renders an Edit affordance only for editable cards when a handler is given", () => {
     const editableHtml = renderToStaticMarkup(
       <PipelineColumns
         board={makeBoard([
-          makeCard({ id: "e", column_id: "draft", kind: "task", issue_id: "iss-1", title: "Draft task" }),
+          makeCard({ id: "e", column_id: "backlog", kind: "task", issue_id: "iss-1", title: "Backlog task" }),
         ])}
         onRefetch={() => {}}
         onEditTask={() => {}}
       />,
     );
-    expect(editableHtml).toContain("Edit ticket Draft task");
+    expect(editableHtml).toContain("Edit ticket Backlog task");
 
     const runningHtml = renderToStaticMarkup(
       <PipelineColumns
