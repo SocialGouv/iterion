@@ -23,8 +23,10 @@
 ##                             (ADR-058: gates deterministic, v2).
 ##   commit         (agent)    commit the alignment onto the PR branch
 ##                             and push it back via forge_token.
-##   post_feedback  (agent)    post ONE complete review comment on the
-##                             PR: verdict + evidence + what to watch.
+##   post_feedback  (tool)     DETERMINISTIC: compose ONE review comment
+##                             from the structured verdict + POST it via
+##                             the forge REST API (no LLM — can't be
+##                             rate-limited at the final step).
 ##   escalate       (human)    llm_or_human — auto-answers a trivial
 ##                             question, pauses for a real architectural
 ##                             decision.
@@ -299,64 +301,6 @@ prompt commit_user:
   Alignment summary: {{input.breaking_summary}}
 
   Follow the skill's token-auth push recipe and emit `commit_output`.
-
-prompt feedback_system:
-  You post ONE complete review comment onto the dependency-update PR
-  summarising what Vetty found and did. You post a comment — you NEVER
-  approve, request-changes, or merge.
-
-  Read `.claude/skills/dependency-pr-guard.md` ("Posting the comment")
-  for the forge-agnostic REST call (detect the forge from the PR URL
-  host; authenticate with the `forge_token` file; post a PR/MR comment).
-  No host `gh`/`glab` is assumed — use the REST API with the token.
-
-  If `input.pr_url` is empty (a local run), publish NOTHING: return
-  posted=false with skipped_reason "no pr_url". Never pretend to post.
-
-  COMMENT CONTENT (markdown — be complete but tight). Open with a one-line
-  verdict badge keyed off `input.verdict`:
-    - hold_security  → "🛑 HOLD — supply-chain risk; not aligned/merged"
-    - needs_decision → "🧭 Needs a human decision (architectural)"
-    - hold_unstable  → "⚠️ HOLD — build/tests not green after alignment"
-    - committed      → "✅ Aligned — code updated on this branch; review & merge"
-    - clean          → "✅ Safe bump — no code alignment needed"
-  Then sections, including only the ones that apply:
-    ## Security & supply-chain   — {{input.audit_summary}}; list CVEs
-       resolved/introduced and any malware signals.
-    ## Code alignment            — {{input.align_summary}}; the files
-       changed and what broke (when committed).
-    ## Reliability               — {{input.validate_summary}}; the
-       commands run and their outcome.
-    ## Decision needed           — {{input.escalation}} (only for
-       needs_decision) — the precise question for the human.
-    ## What Vetty did            — one line: committed alignment to this
-       branch / held / nothing to align. ALWAYS state Vetty did NOT merge.
-  Note any coverage caveat honestly (e.g. a scanner was unavailable).
-
-  VERIFY (anti-façade): after posting, re-fetch the comment (the skill
-  gives the read call) and put its URL in `comment_url`. `posted` MUST
-  reflect the re-fetch, not an optimistic self-estimate.
-
-  Emit `feedback_output`: posted, comment_url, skipped_reason, summary.
-
-prompt feedback_user:
-  Post the review comment for this dependency PR.
-
-  PR URL:        {{input.pr_url}}
-  Verdict:       {{input.verdict}}
-
-  Security:      {{input.audit_summary}}
-  CVEs:          {{input.cves}}
-  Malware:       {{input.malware_signals}}
-  Alignment:     {{input.align_summary}}
-  Reliability:   {{input.validate_summary}}
-  Commit:        {{input.commit_summary}}
-  Escalation:    {{input.escalation}}
-
-  Compose the comment per your system prompt, post it via the forge REST
-  API using the forge_token, re-fetch to verify, and emit
-  `feedback_output`. Your FINAL action MUST be the structured
-  `feedback_output` with all fields set — never finish with prose.
 
 prompt escalate_instructions:
   A dependency bump needs a STRUCTURING ARCHITECTURAL decision before the
