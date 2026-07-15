@@ -10,6 +10,12 @@ import { formatRelative } from "@/lib/format";
 import AddTaskDialog from "./AddTaskDialog";
 import PipelineCardDetails from "./PipelineCardDetails";
 import { PipelineColumns } from "./PipelineColumns";
+import { PipelineFilters } from "./PipelineFilters";
+import {
+  collectFilterOptions,
+  emptyPipelineFilters,
+  filterPipelineCards,
+} from "./filters";
 import { findFollowCard } from "./selection";
 
 const POLL_INTERVAL_MS = 3000;
@@ -21,6 +27,8 @@ export default function PipelineBoardView() {
   // its live version is re-derived from each poll so status / reviews /
   // produced elements stay current while the drawer is open.
   const [selected, setSelected] = useState<PipelineBoardCard | null>(null);
+  // Client-side filters (search / bot / labels), mirroring /board's bar.
+  const [filters, setFilters] = useState(emptyPipelineFilters);
 
   const query = useQuery({
     queryKey: ["pipeline-board"],
@@ -79,10 +87,14 @@ export default function PipelineBoardView() {
 
   // Re-locate the open card in the latest projection (id can change as a task
   // becomes a run); fall back to the snapshot and flag it stale when the card
-  // has left the board entirely.
+  // has left the board entirely. Selection tracks the FULL card set — a card
+  // hidden by a filter keeps its open sidebar.
   const liveSelected = selected ? findFollowCard(board.cards, selected) : null;
   const detailCard = liveSelected ?? selected;
   const detailStale = selected !== null && liveSelected === null;
+
+  const filterOptions = collectFilterOptions(board.cards);
+  const filteredCards = filterPipelineCards(board.cards, filters);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -107,16 +119,10 @@ export default function PipelineBoardView() {
                 {concurrency.max > 0 ? ` · max ${concurrency.max}` : ""}
               </span>
             )}
-            <span>
-              {board.cards.length} card{board.cards.length === 1 ? "" : "s"}
-            </span>
             {board.generated_at && (
-              <>
-                <span>·</span>
-                <span title={board.generated_at}>
-                  updated {formatRelative(board.generated_at)}
-                </span>
-              </>
+              <span title={board.generated_at}>
+                updated {formatRelative(board.generated_at)}
+              </span>
             )}
           </div>
         </div>
@@ -133,6 +139,18 @@ export default function PipelineBoardView() {
         )}
       </div>
 
+      {board.cards.length > 0 && (
+        <PipelineFilters
+          filters={filters}
+          allBots={filterOptions.allBots}
+          allLabels={filterOptions.allLabels}
+          total={board.cards.length}
+          filtered={filteredCards.length}
+          onChange={setFilters}
+          onReset={() => setFilters(emptyPipelineFilters())}
+        />
+      )}
+
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {board.cards.length === 0 ? (
@@ -148,7 +166,7 @@ export default function PipelineBoardView() {
             />
           ) : (
             <PipelineColumns
-              board={board}
+              board={{ ...board, cards: filteredCards }}
               onRefetch={() => void query.refetch()}
               onEditTask={setEditTask}
               onOpenCard={setSelected}
