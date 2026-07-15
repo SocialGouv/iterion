@@ -3877,6 +3877,7 @@ export interface components {
             title: string;
             total_nodes: number;
             tree_executed_nodes: number;
+            tree_run_ids?: string[];
             tree_total_nodes: number;
             /** Format: date-time */
             updated_at: string;

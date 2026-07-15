@@ -393,6 +393,12 @@
           "tree_executed_nodes": {
             "type": "integer"
           },
+          "tree_run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "tree_total_nodes": {
             "type": "integer"
           },
