@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sync"
 	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -80,8 +81,12 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		// Capture the child's terminal-node output (the last node before Done)
 		// as the subbot's result, composing with the service's watch-stamping
 		// hook (WithOnNodeFinished is single-slot, so engineOptions' default
-		// would otherwise be lost).
-		var last map[string]any
+		// would otherwise be lost). The callback fires concurrently when the
+		// child fans out parallel branches, so the capture is mutex-guarded.
+		var (
+			lastMu sync.Mutex
+			last   map[string]any
+		)
 		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{})
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
@@ -91,7 +96,9 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			runtime.WithSubbotRunner(s.subbotRunnerFor(childPath, runLogger)),
 			runtime.WithOnNodeFinished(func(runID, nodeID string, out map[string]any) {
 				if out != nil {
+					lastMu.Lock()
 					last = out
+					lastMu.Unlock()
 				}
 				s.stampWatchedFromOutput(runID, nodeID, out)
 			}),

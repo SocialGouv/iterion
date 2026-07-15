@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -514,8 +515,12 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 		}
 
 		// Capture the child's terminal-node output (the last node before Done)
-		// as the subbot's result.
-		var last map[string]any
+		// as the subbot's result. The callback fires concurrently when the
+		// child fans out parallel branches, so the capture is mutex-guarded.
+		var (
+			lastMu sync.Mutex
+			last   map[string]any
+		)
 		childEng := runtime.New(childWf, s, childExec,
 			runtime.WithLogger(logger),
 			runtime.WithWorkflowHash(hash),
@@ -529,7 +534,9 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithSubbotRunner(subbotRunnerForCLI(childPath, storeDir, s, logger, opts)),
 			runtime.WithOnNodeFinished(func(_, _ string, out map[string]any) {
 				if out != nil {
+					lastMu.Lock()
 					last = out
+					lastMu.Unlock()
 				}
 			}),
 		)

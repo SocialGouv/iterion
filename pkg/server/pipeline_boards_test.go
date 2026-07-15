@@ -260,7 +260,9 @@ func TestPipelineBoardColumnBucketing(t *testing.T) {
 		{"r-failed", store.RunStatusFailed, pipelineColumnFailed},
 		{"r-resumable", store.RunStatusFailedResumable, pipelineColumnFailed},
 		{"r-cancelled", store.RunStatusCancelled, pipelineColumnFailed},
-		{"r-operator", store.RunStatusPausedOperator, pipelineColumnFailed},
+		// An operator soft-pause is resumable mid-flight state, NOT a
+		// failure — it must never offer Retry-from-zero (L1, PR review).
+		{"r-operator", store.RunStatusPausedOperator, pipelineColumnInProgress},
 	}
 	for _, c := range cases {
 		env.seedRun(t, c.id, "review", c.status, func(run *store.Run) {

@@ -21,7 +21,7 @@ import (
 // its root card as aggregate progress + a flat list of pending human
 // reviews. It is a read model over the runtime + native tracker, not a
 // second mutable store — cards are positioned by persisted run state, so
-// there is no drag-and-drop. See docs/native-tracker.md + ADR-073.
+// there is no drag-and-drop. See docs/native-tracker.md + ADR-074.
 const (
 	pipelineColumnBacklog    = "backlog"
 	pipelineColumnTodo       = "todo"
@@ -392,14 +392,20 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 	}
 	if req.Bot != nil {
 		bot := strings.TrimSpace(*req.Bot)
-		if bot != "" {
-			if _, found, ferr := s.findBot(bot); ferr != nil {
-				s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: discover bot: %v", ferr)
-				return
-			} else if !found {
-				s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board update: bot %q not found", bot)
-				return
-			}
+		// An empty bot would silently unbind the ticket — it then never
+		// launches and folds into Backlog with no UX to recover. Creation
+		// already rejects a missing bot; the patch must too (unbinding, if
+		// ever wanted, should be an explicit operation, not a blank field).
+		if bot == "" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: bot cannot be empty")
+			return
+		}
+		if _, found, ferr := s.findBot(bot); ferr != nil {
+			s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: discover bot: %v", ferr)
+			return
+		} else if !found {
+			s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board update: bot %q not found", bot)
+			return
 		}
 		patch.Bot = &bot
 	}
@@ -1078,9 +1084,13 @@ func pipelineColumnForRoot(root *store.Run, reviews []PipelineBoardPendingReview
 		return pipelineColumnTodo
 	case store.RunStatusFinished:
 		return pipelineColumnDone
-	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman:
+	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
+		// An operator soft-pause is a RESUMABLE mid-flight state (the run
+		// console offers Resume), not a failure — it stays In progress with
+		// its "paused" status chip rather than landing in Failed with a
+		// Retry-from-zero affordance.
 		return pipelineColumnInProgress
-	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		// A failed/cancelled run lands in the FAILED lane (with its error
 		// as the reason) until the operator retries it back to Todo.
 		return pipelineColumnFailed
@@ -1093,7 +1103,7 @@ func pipelineColumnForRoot(root *store.Run, reviews []PipelineBoardPendingReview
 // opposed to a not-yet-ready backlog ticket).
 func pipelineRunFailed(status store.RunStatus) bool {
 	switch status {
-	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator:
+	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
 		return true
 	default:
 		return false

@@ -516,12 +516,13 @@ func (s *Service) spawnRun(
 				s.broker.CloseRun(runID)
 			}
 		}()
-		defer s.manager.Deregister(runID)
-		// Release this root's pipeline-concurrency slot AFTER Deregister,
-		// so the slot is genuinely free before the scheduler admits the
-		// next waiter. A no-op for run IDs that never held a slot
-		// (children, resumes, or when the cap is disabled).
+		// Release this root's pipeline-concurrency slot AFTER Deregister
+		// (defers run LIFO, so this line must come BEFORE the Deregister
+		// defer), so the run is fully deregistered before the scheduler
+		// admits the next waiter. A no-op for run IDs that never held a
+		// slot (children, resumes, or when the cap is disabled).
 		defer s.pipelineQueue.slotFreed(runID)
+		defer s.manager.Deregister(runID)
 		defer func() { _ = lock.Unlock() }()
 		if cancelTimeout != nil {
 			defer cancelTimeout()
