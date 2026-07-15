@@ -210,6 +210,32 @@ describe("PipelineColumns", () => {
   });
 });
 
+describe("card details affordance", () => {
+  it("renders a Details affordance for every card when onOpenCard is given", () => {
+    const html = renderToStaticMarkup(
+      <PipelineColumns
+        board={makeBoard([
+          makeCard({ id: "a", column_id: "in_progress", run_id: "r1", status: "running", title: "Running" }),
+          makeCard({ id: "b", column_id: "done", run_id: "r2", status: "finished", title: "Done" }),
+        ])}
+        onRefetch={() => {}}
+        onOpenCard={() => {}}
+      />,
+    );
+    expect(html).toContain("Details for Running");
+    expect(html).toContain("Details for Done");
+  });
+
+  it("omits the Details affordance when onOpenCard is absent", () => {
+    const html = render(
+      makeBoard([
+        makeCard({ id: "a", column_id: "in_progress", run_id: "r1", status: "running", title: "Running" }),
+      ]),
+    );
+    expect(html).not.toContain("aria-label=\"Details for");
+  });
+});
+
 describe("drag-and-drop helpers", () => {
   it("only allows dragging non-executing task-backed tickets", () => {
     expect(isTicketDraggable(makeCard({ kind: "task", issue_id: "iss-1" }))).toBe(true);

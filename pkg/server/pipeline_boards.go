@@ -133,6 +133,11 @@ type PipelineBoardCard struct {
 	TreeTotalNodes    int `json:"tree_total_nodes"`
 	// DescendantCount is how many child runs the tree folded into this card.
 	DescendantCount int `json:"descendant_count,omitempty"`
+	// TreeRunIDs is the flattened run tree — the root first, then every
+	// descendant in walk order. The studio fans out over these to aggregate
+	// the whole pipeline's produced elements (a sub-bot's outputs surface on
+	// the root's card, not just the root's own).
+	TreeRunIDs []string `json:"tree_run_ids,omitempty"`
 	// PendingReviews are the human gates the tree is currently blocked on
 	// (root + descendants), presented one at a time by the card.
 	PendingReviews []PipelineBoardPendingReview `json:"pending_reviews,omitempty"`
@@ -829,7 +834,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 	b.includedRuns[root.ID] = struct{}{}
 
 	rootExec, rootTotal := b.runProgress(root)
-	treeExec, treeTotal, descCount, reviews := b.aggregateTree(root)
+	treeExec, treeTotal, descCount, reviews, treeRunIDs := b.aggregateTree(root)
 
 	title := strings.TrimSpace(root.Name)
 	if title == "" {
@@ -855,6 +860,7 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		TreeExecutedNodes: treeExec,
 		TreeTotalNodes:    treeTotal,
 		DescendantCount:   descCount,
+		TreeRunIDs:        treeRunIDs,
 		PendingReviews:    reviews,
 		CreatedAt:         root.CreatedAt,
 		UpdatedAt:         root.UpdatedAt,
@@ -883,10 +889,11 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 }
 
 // aggregateTree walks root ∪ descendants, summing node-weighted progress,
-// counting descendants, and collecting every pending human review. It
+// counting descendants, collecting every pending human review, and gathering
+// the flattened run-id list (root first, then descendants in walk order). It
 // reuses the depth / cycle guards; a finished subtree contributes without
 // an event scan (see runProgress).
-func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, treeTotal, descCount int, reviews []PipelineBoardPendingReview) {
+func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, treeTotal, descCount int, reviews []PipelineBoardPendingReview, runIDs []string) {
 	visited := map[string]struct{}{}
 	var walk func(run *store.Run, depth int)
 	walk = func(run *store.Run, depth int) {
@@ -902,6 +909,7 @@ func (b *pipelineProjectionBuilder) aggregateTree(root *store.Run) (treeExec, tr
 			return
 		}
 		visited[run.ID] = struct{}{}
+		runIDs = append(runIDs, run.ID)
 		if depth > 0 {
 			descCount++
 			// A descendant is included in the root's card, so mark it so it

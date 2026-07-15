@@ -20,6 +20,37 @@ interface Props {
   // Opens the edit dialog for a still-editable (Draft / ready-unlaunched)
   // ticket. Absent → no Edit affordance is shown.
   onEditTask?: (card: PipelineBoardCardDTO) => void;
+  // Opens the right-hand details sidebar for a card. Absent → cards are not
+  // clickable and no Details affordance is shown.
+  onOpenCard?: (card: PipelineBoardCardDTO) => void;
+}
+
+// isInteractiveClick reports whether a card click landed on (or inside) an
+// interactive descendant — a link, button, or form control — rather than the
+// card's inert chrome. Card-level clicks open the details sidebar; clicks on
+// the title link, the Edit button, or an inline review form must keep doing
+// their own thing, so those are ignored here. The walk stops at the card
+// element itself (the handler's currentTarget).
+function isInteractiveClick(e: React.MouseEvent): boolean {
+  const boundary = e.currentTarget;
+  let node = e.target as HTMLElement | null;
+  while (node && node !== boundary) {
+    const tag = node.tagName;
+    if (
+      tag === "A" ||
+      tag === "BUTTON" ||
+      tag === "INPUT" ||
+      tag === "TEXTAREA" ||
+      tag === "SELECT" ||
+      tag === "LABEL" ||
+      node.getAttribute("role") === "button" ||
+      node.hasAttribute("data-no-card-open")
+    ) {
+      return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
 }
 
 // The MIME the Draft ↔ Todo drag carries — the ticket's issue_id.
@@ -105,7 +136,7 @@ export async function dropTicketToColumn(
   onDone();
 }
 
-export function PipelineColumns({ board, onRefetch, onEditTask }: Props) {
+export function PipelineColumns({ board, onRefetch, onEditTask, onOpenCard }: Props) {
   const { columns, cards } = board;
   const [dropError, setDropError] = useState<string | null>(null);
 
@@ -140,6 +171,7 @@ export function PipelineColumns({ board, onRefetch, onEditTask }: Props) {
             onRefetch={onRefetch}
             onDropTicket={onDropTicket}
             onEditTask={onEditTask}
+            onOpenCard={onOpenCard}
           />
         ))}
       </div>
@@ -153,12 +185,14 @@ function PipelineColumn({
   onRefetch,
   onDropTicket,
   onEditTask,
+  onOpenCard,
 }: {
   column: PipelineBoardColumn;
   cards: PipelineBoardCardDTO[];
   onRefetch: () => void;
   onDropTicket: (issueId: string, columnId: string) => void;
   onEditTask?: (card: PipelineBoardCardDTO) => void;
+  onOpenCard?: (card: PipelineBoardCardDTO) => void;
 }) {
   const [dragOver, setDragOver] = useState(false);
   const droppable = readyStateForDropColumn(column.id) !== null;
@@ -218,6 +252,7 @@ function PipelineColumn({
               card={card}
               onRefetch={onRefetch}
               onEditTask={onEditTask}
+              onOpenCard={onOpenCard}
             />
           ))
         )}
@@ -230,19 +265,35 @@ interface CardProps {
   card: PipelineBoardCardDTO;
   onRefetch: () => void;
   onEditTask?: (card: PipelineBoardCardDTO) => void;
+  onOpenCard?: (card: PipelineBoardCardDTO) => void;
 }
 
-export function PipelineCard({ card, onRefetch, onEditTask }: CardProps) {
+export function PipelineCard({ card, onRefetch, onEditTask, onOpenCard }: CardProps) {
   const timestamp = card.updated_at || card.created_at;
   const draggable = isTicketDraggable(card);
   const editable = !!onEditTask && isTicketEditable(card);
+  const openable = !!onOpenCard;
 
   return (
     <Card
-      className={`space-y-2 p-3 ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
+      className={`space-y-2 p-3 ${draggable ? "cursor-grab active:cursor-grabbing" : ""} ${
+        openable && !draggable ? "cursor-pointer" : ""
+      }`}
+      interactive={openable}
       data-card-id={card.id}
       role="article"
       aria-label={`${card.title}, ${humanizeToken(card.kind)}`}
+      onClick={
+        openable
+          ? (e) => {
+              // Clicks on the title link, Edit / Details buttons, or an inline
+              // review form act on their own; only inert-chrome clicks open
+              // the sidebar.
+              if (isInteractiveClick(e)) return;
+              onOpenCard?.(card);
+            }
+          : undefined
+      }
       draggable={draggable || undefined}
       onDragStart={
         draggable && card.issue_id
@@ -302,6 +353,16 @@ export function PipelineCard({ card, onRefetch, onEditTask }: CardProps) {
           <span className="text-fg-subtle">Not started</span>
         )}
         <span className="ml-auto flex items-center gap-2">
+          {openable && (
+            <button
+              type="button"
+              onClick={() => onOpenCard?.(card)}
+              className="text-accent-text hover:underline"
+              aria-label={`Details for ${card.title}`}
+            >
+              Details
+            </button>
+          )}
           {editable && (
             <button
               type="button"

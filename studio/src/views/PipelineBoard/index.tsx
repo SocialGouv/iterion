@@ -8,13 +8,19 @@ import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 
 import AddTaskDialog from "./AddTaskDialog";
+import PipelineCardDetails from "./PipelineCardDetails";
 import { PipelineColumns } from "./PipelineColumns";
+import { findFollowCard } from "./selection";
 
 const POLL_INTERVAL_MS = 3000;
 
 export default function PipelineBoardView() {
   const [addTaskOpen, setAddTaskOpen] = useState(false);
   const [editTask, setEditTask] = useState<PipelineBoardCard | null>(null);
+  // The card whose details sidebar is open. Held as the click-time snapshot;
+  // its live version is re-derived from each poll so status / reviews /
+  // produced elements stay current while the drawer is open.
+  const [selected, setSelected] = useState<PipelineBoardCard | null>(null);
 
   const query = useQuery({
     queryKey: ["pipeline-board"],
@@ -71,6 +77,13 @@ export default function PipelineBoardView() {
   const board = query.data;
   const { concurrency } = board;
 
+  // Re-locate the open card in the latest projection (id can change as a task
+  // becomes a run); fall back to the snapshot and flag it stale when the card
+  // has left the board entirely.
+  const liveSelected = selected ? findFollowCard(board.cards, selected) : null;
+  const detailCard = liveSelected ?? selected;
+  const detailStale = selected !== null && liveSelected === null;
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="shrink-0 space-y-2 px-4 py-3">
@@ -119,24 +132,38 @@ export default function PipelineBoardView() {
         )}
       </div>
 
-      {board.cards.length === 0 ? (
-        <EmptyState
-          title="No pipelines yet"
-          message="Add a task to feed Todo, or launch a bot. Running pipelines and their human reviews appear here automatically."
-          action={
-            <Button variant="primary" size="sm" onClick={() => setAddTaskOpen(true)}>
-              Add first task
-            </Button>
-          }
-          className="flex-1"
-        />
-      ) : (
-        <PipelineColumns
-          board={board}
-          onRefetch={() => void query.refetch()}
-          onEditTask={setEditTask}
-        />
-      )}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {board.cards.length === 0 ? (
+            <EmptyState
+              title="No pipelines yet"
+              message="Add a task to feed Todo, or launch a bot. Running pipelines and their human reviews appear here automatically."
+              action={
+                <Button variant="primary" size="sm" onClick={() => setAddTaskOpen(true)}>
+                  Add first task
+                </Button>
+              }
+              className="flex-1"
+            />
+          ) : (
+            <PipelineColumns
+              board={board}
+              onRefetch={() => void query.refetch()}
+              onEditTask={setEditTask}
+              onOpenCard={setSelected}
+            />
+          )}
+        </div>
+
+        {detailCard && (
+          <PipelineCardDetails
+            card={detailCard}
+            stale={detailStale}
+            onClose={() => setSelected(null)}
+            onRefetch={() => void query.refetch()}
+          />
+        )}
+      </div>
 
       <AddTaskDialog
         open={addTaskOpen}

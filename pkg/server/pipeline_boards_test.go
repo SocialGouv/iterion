@@ -236,6 +236,11 @@ func TestPipelineBoardFoldsDescendantsAndCollectsReviews(t *testing.T) {
 	if pr.InteractionID != "int-child" || pr.Questions["approved"] != "Ship it?" {
 		t.Errorf("pending review interaction = %+v", pr)
 	}
+	// The whole tree's run ids surface so the studio can aggregate a sub-bot's
+	// produced elements onto the root card (root first, then descendants).
+	if len(root.TreeRunIDs) != 2 || root.TreeRunIDs[0] != "run-root" || root.TreeRunIDs[1] != "run-child" {
+		t.Errorf("tree_run_ids = %v, want [run-root run-child]", root.TreeRunIDs)
+	}
 	if !hasPipelineCard(projection.Cards, "run:run-other") {
 		t.Errorf("standalone root of another bot missing (board is global): %+v", projection.Cards)
 	}

@@ -76,6 +76,9 @@ export interface PipelineBoardCard {
   tree_executed_nodes: number;
   tree_total_nodes: number;
   descendant_count?: number;
+  // The whole run tree (root first, then descendants). The sidebar fans out
+  // over these to aggregate every sub-bot's produced elements onto the card.
+  tree_run_ids?: string[];
   pending_reviews?: PipelineBoardPendingReview[];
 
   // DONE lane — the pipeline's output (final_answer, else latest artifact).
@@ -238,6 +241,9 @@ export function normalizePipelineBoardCard(
     tree_total_nodes: intValue(source.tree_total_nodes, 0),
     ...(numberValue(source.descendant_count) !== undefined
       ? { descendant_count: numberValue(source.descendant_count) }
+      : {}),
+    ...(stringArray(source.tree_run_ids) !== undefined
+      ? { tree_run_ids: stringArray(source.tree_run_ids) }
       : {}),
     ...(reviews !== undefined ? { pending_reviews: reviews } : {}),
     ...(text(source.output) ? { output: text(source.output) } : {}),

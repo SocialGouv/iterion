@@ -35,7 +35,13 @@ export interface PreviewState {
 
 export interface UsePreviewResult {
   preview: PreviewState | null;
-  openPreview: (target: { path: string; size: number }) => void;
+  // openPreview fetches an artifact file for preview. `runIdOverride` targets
+  // a run other than the hook's default — used by the pipeline sidebar to
+  // preview a sub-bot's output (each produced item names its owning run).
+  openPreview: (
+    target: { path: string; size: number },
+    runIdOverride?: string,
+  ) => void;
   closePreview: () => void;
 }
 
@@ -62,8 +68,9 @@ export function usePreview(runId: string | null): UsePreviewResult {
   }, []);
 
   const openPreview = useCallback(
-    (target: { path: string; size: number }) => {
-      if (!runId) return;
+    (target: { path: string; size: number }, runIdOverride?: string) => {
+      const effectiveRunId = runIdOverride ?? runId;
+      if (!effectiveRunId) return;
       const myGen = ++previewGenRef.current;
       setPreview({
         path: target.path,
@@ -74,7 +81,7 @@ export function usePreview(runId: string | null): UsePreviewResult {
         blobURL: null,
         contentType: "",
       });
-      fetchArtifactFile(runId, target.path)
+      fetchArtifactFile(effectiveRunId, target.path)
         .then(async ({ blob, contentType }) => {
           if (myGen !== previewGenRef.current) return;
           const isText = TEXT_MIME_PREFIXES.some((p) => contentType.startsWith(p));
