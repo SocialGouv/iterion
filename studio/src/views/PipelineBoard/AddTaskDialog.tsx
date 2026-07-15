@@ -391,7 +391,11 @@ function AddTaskDialogContent({
                     setPriority(Number(event.target.value) || 0)
                   }
                   min={0}
+                  title="Higher numbers launch first from Todo; equal priorities go oldest-first. 0 = unprioritized."
                 />
+                <span className="mt-1 block text-micro text-fg-subtle">
+                  Higher launches first from Todo.
+                </span>
               </label>
             </div>
           )}

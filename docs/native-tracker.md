@@ -248,7 +248,10 @@ many pipelines at once — not a saved filter and not a replacement for `/board`
 Lane semantics — the board is **task-centric**:
 - `Draft` = tickets being prepared;
 - `Todo` = tickets you staged with the card's **“→ Todo”** button, plus runs
-  waiting for a local slot (queued); “→ Draft” unstages an unlaunched ticket;
+  waiting for a local slot (queued); “→ Draft” unstages an unlaunched ticket.
+  The launch loop starts ready tickets **highest priority first** (the same
+  `P{n}` field /board sorts on; ties go oldest-first) — set it from the
+  ticket's Edit dialog, shown as a `P{n}` badge on the card;
 - `In progress` = running or awaiting a human review (progress bar +
   Blocked tag);
 - `Done` = finished — the pipeline's output shows in the details sidebar;

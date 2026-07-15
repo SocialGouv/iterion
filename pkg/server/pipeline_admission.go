@@ -95,12 +95,7 @@ func (s *Server) admitReadyPipelines() {
 		}
 		ready = append(ready, iss)
 	}
-	sort.SliceStable(ready, func(i, j int) bool {
-		if ready[i].Priority != ready[j].Priority {
-			return ready[i].Priority > ready[j].Priority
-		}
-		return ready[i].CreatedAt.Before(ready[j].CreatedAt)
-	})
+	sortReadyTickets(ready)
 
 	for _, iss := range ready {
 		st := runs.PipelineConcurrency()
@@ -109,6 +104,20 @@ func (s *Server) admitReadyPipelines() {
 		}
 		s.launchReadyTicket(runs, board, iss)
 	}
+}
+
+// sortReadyTickets orders the launch candidates the admission loop submits:
+// highest Priority first (the operator's ranking dial, same field /board
+// sorts on), oldest CreatedAt as the tie-break so equal-priority tickets
+// launch first-come-first-served. This IS the "which ticket goes next from
+// Todo" policy — keep it aligned with the projection's card ordering.
+func sortReadyTickets(ready []*native.Issue) {
+	sort.SliceStable(ready, func(i, j int) bool {
+		if ready[i].Priority != ready[j].Priority {
+			return ready[i].Priority > ready[j].Priority
+		}
+		return ready[i].CreatedAt.Before(ready[j].CreatedAt)
+	})
 }
 
 // pipelineTicketLaunchable reports whether a ready ticket has no run that is

@@ -69,6 +69,14 @@ function MetaRow({ card }: { card: PipelineBoardCard }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-caption text-fg-subtle">
       <StatusChip status={card.status} />
+      {!!card.priority && card.priority > 0 && (
+        <Badge
+          variant="warning"
+          title={`Priority ${card.priority} — higher numbers launch first from Todo`}
+        >
+          P{card.priority}
+        </Badge>
+      )}
       {card.bot_id && <code title={`Bot ${card.bot_id}`}>{card.bot_id}</code>}
       {card.workflow_name && <span className="truncate">{card.workflow_name}</span>}
       {card.issue_id && <code title={`Issue ${card.issue_id}`}>#{card.issue_id}</code>}

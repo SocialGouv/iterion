@@ -248,6 +248,40 @@ describe("PipelineColumns", () => {
   });
 });
 
+describe("priority", () => {
+  it("shows the P badge on Draft / Todo / Failed cards (the launch-order dial)", () => {
+    const html = render(
+      makeBoard([
+        makeCard({ id: "d", column_id: "draft", kind: "task", issue_id: "iss-1", priority: 5 }),
+        makeCard({ id: "t", column_id: "todo", kind: "task", issue_id: "iss-2", priority: 3 }),
+        makeCard({
+          id: "f",
+          column_id: "failed",
+          kind: "run",
+          issue_id: "iss-3",
+          run_id: "r1",
+          status: "failed",
+          failed: true,
+          priority: 2,
+        }),
+      ]),
+    );
+    expect(html).toContain("P5");
+    expect(html).toContain("P3");
+    expect(html).toContain("P2");
+    expect(html).toContain("launch first from Todo");
+  });
+
+  it("hides the badge for unprioritized (0) cards", () => {
+    const html = render(
+      makeBoard([
+        makeCard({ id: "d", column_id: "todo", kind: "task", issue_id: "iss-1", priority: 0 }),
+      ]),
+    );
+    expect(html).not.toContain(">P0<");
+  });
+});
+
 describe("card details affordance", () => {
   it("renders a Details affordance and a pointer cursor when onOpenCard is given", () => {
     const html = renderToStaticMarkup(

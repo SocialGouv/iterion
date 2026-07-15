@@ -371,15 +371,29 @@ function StatusChip({ status }: { status?: string }) {
 
 // --- per-lane STATUS (the card's only body content) -------------------------
 
+// PriorityBadge mirrors /board's P{n} chip. On this board the number is not
+// just a sort key: the admission loop launches ready Todo tickets highest
+// priority first (ties oldest-first), so P drives WHICH pipeline goes next.
+function PriorityBadge({ priority }: { priority?: number }) {
+  if (!priority || priority <= 0) return null;
+  return (
+    <Badge
+      variant="warning"
+      title={`Priority ${priority} — higher numbers launch first from Todo`}
+    >
+      P{priority}
+    </Badge>
+  );
+}
+
 // Draft: why the ticket is here — failed (with the error) or being prepared.
 function DraftStatus({ card }: { card: PipelineBoardCardDTO }) {
   return (
     <div className="space-y-2">
-      {card.failed && (
-        <div className="flex flex-wrap items-center gap-1">
-          <Badge variant="danger">Failed</Badge>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-1">
+        <PriorityBadge priority={card.priority} />
+        {card.failed && <Badge variant="danger">Failed</Badge>}
+      </div>
       {card.failed && card.error && (
         <InlineBanner tone="danger" layout="inline">
           {card.error}
@@ -389,16 +403,18 @@ function DraftStatus({ card }: { card: PipelineBoardCardDTO }) {
   );
 }
 
-// Todo: queue position (waiting for a concurrency slot) or ready.
+// Todo: queue position (waiting for a concurrency slot) or ready — plus the
+// priority that decides its launch turn.
 function TodoStatus({ card }: { card: PipelineBoardCardDTO }) {
   const queuePosition = card.queue_position ?? 0;
   return (
     <div className="flex flex-wrap items-center gap-1">
+      <PriorityBadge priority={card.priority} />
       {queuePosition > 0 ? (
         <Badge variant="warning">Waiting · #{queuePosition}</Badge>
       ) : (
         <span className="text-micro text-fg-subtle">
-          Ready — starts when a slot frees
+          Ready — launches by priority when a slot frees
         </span>
       )}
     </div>
@@ -471,11 +487,13 @@ function DoneStatus({ card }: { card: PipelineBoardCardDTO }) {
 }
 
 // Failed: the terminal status + the failure REASON. Retry (→ Todo) and Edit
-// live in the footer for ticket-backed cards.
+// live in the footer for ticket-backed cards; the priority shows because a
+// retried ticket re-enters the Todo launch order with it.
 function FailedStatus({ card }: { card: PipelineBoardCardDTO }) {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-1">
+        <PriorityBadge priority={card.priority} />
         <StatusChip status={card.status} />
       </div>
       {card.error && (
