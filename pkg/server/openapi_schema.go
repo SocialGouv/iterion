@@ -78,7 +78,7 @@ func routeSchemas() map[string]routeOp {
 		"POST /api/admin/orgs/{id}/status":  {request: setOrgStatusReq{}, response: orgView{}},
 
 		// Global pipeline board — a single execution projection of every
-		// root pipeline (ADR-073). Additive to the native backlog (/board).
+		// root pipeline (ADR-074). Additive to the native backlog (/board).
 		"GET /api/v1/pipeline-board": {response: PipelineBoardResponse{}},
 		"POST /api/v1/pipeline-board/tasks": {
 			request:  pipelineBoardTaskRequest{},

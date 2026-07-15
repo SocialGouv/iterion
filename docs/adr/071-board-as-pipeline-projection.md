@@ -8,7 +8,7 @@ a replacement of it. The first concrete increment (a short-term slice on
 existing seams) ships alongside this ADR; the deeper inversion (a ticket that
 *is* a pipeline instance with a child/shards tree) stays an open tension.
 
-**Refined by [ADR-073](073-dedicated-pipeline-board-projection.md):** its
+**Refined by [ADR-074](074-dedicated-pipeline-board-projection.md):** its
 dedicated bot-bound surface and named interaction columns supersede D1–D2 here.
 
 ## Context

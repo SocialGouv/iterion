@@ -284,7 +284,7 @@ race the same tickets).
 Task ingestion reuses native issues in this slice. A task appears before launch
 only when its `Issue.Bot` names a bot; once a run exists, manual/API/scheduled
 runs associated with that bot also appear even if no native issue references
-them. See [ADR-073](adr/073-dedicated-pipeline-board-projection.md) for the
+them. See [ADR-074](adr/074-dedicated-pipeline-board-projection.md) for the
 boundary, trade-offs and follow-ups.
 
 ## Use cases beyond the dispatcher

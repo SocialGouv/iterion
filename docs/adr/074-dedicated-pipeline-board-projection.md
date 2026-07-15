@@ -1,4 +1,4 @@
-# ADR-073 — A dedicated pipeline board projection
+# ADR-074 — A dedicated pipeline board projection
 
 Status: **proposed** (2026-07-14, revised same day). Refines ADR-071 and
 implements the core product direction described in
