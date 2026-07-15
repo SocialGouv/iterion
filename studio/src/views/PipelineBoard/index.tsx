@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 
 import { getPipelineBoard, type PipelineBoardCard } from "@/api/pipelineBoards";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
@@ -106,7 +107,11 @@ export default function PipelineBoardView() {
               Every launched pipeline (and not-yet-started task) across all bots, bucketed
               into five fixed lanes. Running cards are placed by run state; stage a Backlog
               ticket with its “→ Todo” button (or edit it first), retry a Failed one, and
-              click any card for details.
+              click any card for details. This is an execution-centric alternative to the{" "}
+              <Link href="/board" className="text-accent-text hover:underline">
+                Board
+              </Link>{" "}
+              view — the two will likely converge into a single board eventually.
             </p>
           </div>
           <div className="flex items-center gap-2 text-caption text-fg-subtle">
