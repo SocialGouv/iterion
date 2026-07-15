@@ -9,6 +9,7 @@ import {
   ExternalLinkIcon,
   FileIcon,
   FileTextIcon,
+  GearIcon,
   ImageIcon,
   ReloadIcon,
   SpeakerLoudIcon,
@@ -20,6 +21,7 @@ import {
   artifactFileURL,
   listArtifactFiles,
   listRunFiles,
+  listTouchedFiles,
   type RunFile,
   type RunFilesMode,
 } from "@/api/runs";
@@ -28,7 +30,11 @@ import { usePreview, type PreviewState } from "@/components/Runs/usePreview";
 import { formatBytes, formatRelative } from "@/lib/format";
 
 import { producedKindLabel, type ProducedFileKind } from "./fileKind";
-import { aggregateProducedItems, type ProducedItem } from "./producedItems";
+import {
+  aggregateProducedItems,
+  type ProducedItem,
+  type RunProducedSource,
+} from "./producedItems";
 
 // Monaco diff, loaded on click only — keeps the pipelines route chunk slim.
 const FileDiffDialog = lazy(() => import("@/components/Runs/FileDiffDialog"));
@@ -75,9 +81,12 @@ interface Props {
 
 // ProducedElements lists everything a pipeline (root + sub-bots) has produced
 // so far — the files written into each run's artifact area (previewable/
-// downloadable) plus the source files it added/modified in its worktree
-// (linked to that run's console). It polls while the pipeline is live so new
-// outputs appear as they land.
+// downloadable) plus the files its NODES added/modified (linked to that
+// run's console). Three feeds per run: the artifact manifest, the git view
+// (mode=produced — combined live, branch-range after finalization), and the
+// event-derived touched list that scopes in-place runs to what the nodes
+// actually wrote and attributes every row to its writing node(s). It polls
+// while the pipeline is live so new outputs appear as they land.
 export function ProducedElements({ runIds, status }: Props) {
   const polling = !status || !TERMINAL.has(status);
   const effectiveRunIds = runIds.slice(0, MAX_TREE_RUNS);
@@ -87,7 +96,7 @@ export function ProducedElements({ runIds, status }: Props) {
   const fileQueries = useQueries({
     queries: effectiveRunIds.map((id) => ({
       queryKey: ["pipeline-produced-files", id],
-      queryFn: () => listRunFiles(id, { mode: "combined" as const }),
+      queryFn: () => listRunFiles(id, { mode: "produced" as const }),
       refetchInterval: polling ? POLL_INTERVAL_MS : (false as const),
       refetchIntervalInBackground: false,
       retry: false,
@@ -102,12 +111,26 @@ export function ProducedElements({ runIds, status }: Props) {
       retry: false,
     })),
   });
+  const touchedQueries = useQueries({
+    queries: effectiveRunIds.map((id) => ({
+      queryKey: ["pipeline-produced-touched", id],
+      queryFn: () => listTouchedFiles(id),
+      refetchInterval: polling ? POLL_INTERVAL_MS : (false as const),
+      refetchIntervalInBackground: false,
+      retry: false,
+    })),
+  });
 
-  const items = aggregateProducedItems(
-    effectiveRunIds,
-    fileQueries.map((q) => q.data?.files),
-    artifactQueries.map((q) => q.data),
-  );
+  const sources: RunProducedSource[] = effectiveRunIds.map((id, i) => ({
+    runId: id,
+    files: fileQueries[i]?.data?.files,
+    filesAvailable: fileQueries[i]?.data?.available,
+    workDir: fileQueries[i]?.data?.work_dir,
+    worktree: fileQueries[i]?.data?.worktree,
+    touched: touchedQueries[i]?.data?.files,
+    artifacts: artifactQueries[i]?.data,
+  }));
+  const items = aggregateProducedItems(sources);
 
   const { preview, openPreview, closePreview } = usePreview(effectiveRunIds[0] ?? null);
   // The run + media kind of the open preview — the download link must target
@@ -124,13 +147,23 @@ export function ProducedElements({ runIds, status }: Props) {
   const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
 
   const loading =
-    fileQueries.some((q) => q.isLoading) || artifactQueries.some((q) => q.isLoading);
+    fileQueries.some((q) => q.isLoading) ||
+    artifactQueries.some((q) => q.isLoading) ||
+    touchedQueries.some((q) => q.isLoading);
   const fetching =
-    fileQueries.some((q) => q.isFetching) || artifactQueries.some((q) => q.isFetching);
+    fileQueries.some((q) => q.isFetching) ||
+    artifactQueries.some((q) => q.isFetching) ||
+    touchedQueries.some((q) => q.isFetching);
   const building = fileQueries.some((q) => q.data?.reason === "building");
+  // A failed feed silently shrinks the list (retry is off), so surface it.
+  const partialData =
+    fileQueries.some((q) => q.isError) ||
+    artifactQueries.some((q) => q.isError) ||
+    touchedQueries.some((q) => q.isError);
   const refresh = () => {
     fileQueries.forEach((q) => void q.refetch());
     artifactQueries.forEach((q) => void q.refetch());
+    touchedQueries.forEach((q) => void q.refetch());
   };
 
   return (
@@ -160,6 +193,12 @@ export function ProducedElements({ runIds, status }: Props) {
         <p className="text-micro text-warning-fg">
           Showing outputs for the first {MAX_TREE_RUNS} of {runIds.length} runs in
           this pipeline; {truncatedRuns} more are not shown.
+        </p>
+      )}
+
+      {partialData && (
+        <p className="text-micro text-warning-fg">
+          Some run data failed to load — this list may be incomplete.
         </p>
       )}
 
@@ -275,6 +314,11 @@ function ProducedRow({
     ? item.path.slice(0, item.path.lastIndexOf("/"))
     : "";
   const consoleHref = `/runs/${encodeURIComponent(item.runId)}`;
+  // A touched-only row (no git counterpart: status undefined) has nothing
+  // the diff endpoint can render — an in-place already-committed file
+  // diffs to two identical panes, and an out-of-workdir absolute path is
+  // rejected outright (400 "path must be relative"). No Diff affordance.
+  const diffable = item.source === "change" && item.status !== undefined;
 
   return (
     <li className="flex items-center gap-2 rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1.5">
@@ -289,7 +333,7 @@ function ProducedRow({
           >
             {item.name}
           </button>
-        ) : (
+        ) : diffable ? (
           <button
             type="button"
             onClick={onDiff}
@@ -298,6 +342,13 @@ function ProducedRow({
           >
             {item.name}
           </button>
+        ) : (
+          <span
+            title={label}
+            className="block max-w-full truncate text-left text-xs font-medium text-fg-default"
+          >
+            {item.name}
+          </span>
         )}
         <div className="flex items-center gap-1.5 text-micro text-fg-subtle">
           {item.source === "artifact" ? (
@@ -316,7 +367,10 @@ function ProducedRow({
                   {dir}
                 </span>
               )}
-              {!item.binary && (
+              {/* +/- counts come from the git channel; a touched-only row
+                  (status undefined — e.g. an in-place run's already
+                  committed edit) has none to show. */}
+              {!item.binary && item.status !== undefined && (
                 <span className="tabular-nums">
                   <span className="text-success-fg">+{item.added ?? 0}</span>
                   <span className="text-fg-subtle"> </span>
@@ -324,6 +378,18 @@ function ProducedRow({
                 </span>
               )}
               {item.binary && <span>(binary)</span>}
+              {item.nodes && item.nodes.length > 0 && (
+                <span
+                  className="inline-flex min-w-0 items-center gap-0.5"
+                  title={`Written by node${item.nodes.length > 1 ? "s" : ""}: ${item.nodes.join(", ")}`}
+                >
+                  <GearIcon className="h-3 w-3 shrink-0" aria-hidden />
+                  <span className="truncate font-mono">
+                    {item.nodes.slice(0, 2).join(", ")}
+                    {item.nodes.length > 2 ? ` +${item.nodes.length - 2}` : ""}
+                  </span>
+                </span>
+              )}
             </>
           )}
           {multiRun && (
@@ -353,9 +419,11 @@ function ProducedRow({
         </div>
       ) : (
         <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="sm" onClick={onDiff}>
-            Diff
-          </Button>
+          {diffable && (
+            <Button variant="ghost" size="sm" onClick={onDiff}>
+              Diff
+            </Button>
+          )}
           <Link
             href={consoleHref}
             aria-label={`Open ${item.name} in the run console`}

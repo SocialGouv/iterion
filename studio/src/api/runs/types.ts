@@ -737,9 +737,13 @@ export interface RunFile {
 //   - "branch": BaseCommit..HEAD range (commits introduced by the run).
 //   - "combined": union of branch + uncommitted, each file tagged with a
 //     `lifecycle`. The studio's default while a run is in progress.
+//   - "produced": "best available full picture" — combined while the
+//     working directory exists, then persisted/historical branch-range
+//     fallback instead of worktree_gone. Used by the pipeline board's
+//     Produced-elements panel.
 // Empty string means "let the backend pick the default" (the live
 // uncommitted view when a worktree exists, branch otherwise).
-export type RunFilesMode = "uncommitted" | "branch" | "combined" | "";
+export type RunFilesMode = "uncommitted" | "branch" | "combined" | "produced" | "";
 
 // Mirror of server.runFilesResponse. `available` is the gate: when
 // false, `reason` is one of "no_workdir" | "not_git_repo" |
@@ -770,6 +774,31 @@ export interface RunFiles {
     | "worktree_gone"
     | "building"
     | string;
+}
+
+// TouchedFile is one file the run's LLM nodes wrote/edited, derived from
+// the persisted tool_started events (mirror of server.touchedFile). Paths
+// are workdir-relative when the write landed inside run.WorkDir (same
+// namespace as RunFile.path), absolute otherwise.
+export interface TouchedFile {
+  path: string;
+  // Workflow nodes that wrote this path, in first-write order.
+  node_ids: string[];
+  // Number of write/edit tool calls that targeted this path.
+  writes: number;
+  // Event seq of the most recent write.
+  last_seq: number;
+}
+
+// Mirror of server.runTouchedFilesResponse
+// (GET /api/runs/{id}/files/touched). Unlike the git-based RunFiles view,
+// this is derived purely from run events: it only ever lists what the
+// nodes actually wrote — never ambient workspace state — and knows
+// nothing about files created by Bash commands or direct tool nodes.
+export interface RunTouchedFiles {
+  work_dir?: string;
+  worktree?: boolean;
+  files: TouchedFile[];
 }
 
 // Mirror of pkg/git.DiffPayload. before/after are nil for added/deleted
