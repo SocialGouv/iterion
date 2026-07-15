@@ -11,14 +11,20 @@ import { NODE_COLORS } from "./constants";
 // parent's edges so the flow reads end-to-end:
 //   dispatch -> [frame: produce -> review -> wrap -> done] -> collect
 //
-// One level only: subbots nested inside a child document are NOT expanded —
-// they render as compact subbot nodes inside the frame (documentToGraph
-// already includes them in the node map). Expanding recursively would need
-// cycle detection and per-level document fetching for marginal value.
+// Expansion is RECURSIVE (a subbot inside a subbot nests a frame inside the
+// frame), bounded by MAX_SUBBOT_EXPANSION_DEPTH and a cycle guard on the
+// resolved source paths (a.bot -> b.bot -> a.bot stops at the revisit,
+// which stays a compact node with a cycle notice).
 
 /** Separator between a subbot node id and a child node id. DSL identifiers
- *  cannot contain ":" so `id.includes("::")` is a reliable external marker. */
+ *  cannot contain ":" so `id.includes("::")` is a reliable external marker.
+ *  Nested children chain the separator: `stage::step::work`. */
 export const SUBBOT_CHILD_SEP = "::";
+
+/** Levels of frames displayed. Deeper subbots stay compact (the runtime
+ *  allows depth 8, but 3 nested frames is already at the edge of legibility
+ *  — beyond that the operator opens the child file / child run). */
+export const MAX_SUBBOT_EXPANSION_DEPTH = 3;
 
 export function makeSubbotChildId(subbotId: string, childId: string): string {
   return `${subbotId}${SUBBOT_CHILD_SEP}${childId}`;
@@ -30,17 +36,25 @@ export function isSubbotChildId(id: string): boolean {
   return id.includes(SUBBOT_CHILD_SEP);
 }
 
-/** Splits a child node id back into { subbotId, childId }; null for other ids. */
+/** Splits a child node id into { subbotId, childId } on the FIRST separator
+ *  (subbotId = root-level frame). Null for plain ids. */
 export function parseSubbotChildId(id: string): { subbotId: string; childId: string } | null {
   const idx = id.indexOf(SUBBOT_CHILD_SEP);
   if (idx <= 0) return null;
   return { subbotId: id.slice(0, idx), childId: id.slice(idx + SUBBOT_CHILD_SEP.length) };
 }
 
-/** Resolved child document (or load failure) for one subbot declaration. */
-export interface SubbotChildDoc {
-  // Workspace-relative path the subbot's `source` resolved to.
-  path: string;
+/** Frame-local display name: the last segment of a (possibly nested)
+ *  expanded id — `stage::step::work` renders as `work` inside its frame. */
+export function subbotLocalName(id: string): string {
+  const idx = id.lastIndexOf(SUBBOT_CHILD_SEP);
+  return idx === -1 ? id : id.slice(idx + SUBBOT_CHILD_SEP.length);
+}
+
+/** One loaded (or failed) child document, keyed by its RESOLVED
+ *  workspace-relative path — the same file expanded from two subbots (or
+ *  two nesting levels) loads once. Loading = no entry in the map. */
+export interface SubbotDocEntry {
   doc?: IterDocument;
   error?: string;
 }
@@ -81,64 +95,144 @@ export function resolveSubbotSource(parentFilePath: string | null, source: strin
 }
 
 /** Topology fingerprint of the expansion state: which subbots have a loaded
- *  (or failed) child document, and each loaded child's own topology. Feeds
- *  the editor's relayout key so ELK re-runs when a child doc arrives. */
+ *  (or failed) child document, and each loaded child's own topology —
+ *  RECURSIVELY, so a nested child doc arriving re-fires the editor's ELK
+ *  relayout. Cycle-guarded like the expansion itself. */
 export function getSubbotExpansionKey(
   doc: IterDocument | null,
-  childDocs: Map<string, SubbotChildDoc>,
+  docPath: string | null,
+  docsByPath: Map<string, SubbotDocEntry>,
 ): string {
-  if (!doc || !doc.subbots || doc.subbots.length === 0) return "";
+  if (!doc) return "";
+  return expansionKeyRec(doc, docPath, docsByPath, new Set(docPath ? [docPath] : []), 0);
+}
+
+function expansionKeyRec(
+  doc: IterDocument,
+  docPath: string | null,
+  docsByPath: Map<string, SubbotDocEntry>,
+  ancestry: Set<string>,
+  depth: number,
+): string {
+  const subbots = doc.subbots ?? [];
+  if (subbots.length === 0) return "";
   const parts: string[] = [];
-  for (const sb of doc.subbots) {
-    const child = childDocs.get(sb.name);
-    if (!child) {
+  for (const sb of subbots) {
+    if (!sb.source) {
+      parts.push(`${sb.name}:nosource`);
+      continue;
+    }
+    const resolved = resolveSubbotSource(docPath, sb.source);
+    const child = docsByPath.get(resolved);
+    if (depth >= MAX_SUBBOT_EXPANSION_DEPTH || ancestry.has(resolved)) {
+      parts.push(`${sb.name}:capped`);
+    } else if (!child) {
       parts.push(`${sb.name}:pending`);
     } else if (child.error !== undefined || !child.doc) {
       parts.push(`${sb.name}:error`);
     } else {
       const wfName = child.doc.workflows?.[0]?.name;
-      parts.push(`${sb.name}:${child.path}:${getTopologyKey(child.doc, wfName)}`);
+      const nested = expansionKeyRec(
+        child.doc,
+        resolved,
+        docsByPath,
+        new Set([...ancestry, resolved]),
+        depth + 1,
+      );
+      parts.push(
+        `${sb.name}:${resolved}:${getTopologyKey(child.doc, wfName)}${nested ? `{${nested}}` : ""}`,
+      );
     }
   }
   return parts.join(";;");
 }
 
+export interface ExpandSubbotsOptions {
+  // ROOT-level subbot names to keep compact (e.g. members of a collapsed
+  // group — applyGroups must be able to hide them without stranding
+  // frame children on a dangling parentId).
+  skipRootSubbots?: Set<string>;
+}
+
 /** Expands every subbot node whose child document is loaded into a container
- *  frame holding the child graph. Pure: returns new node/edge arrays.
+ *  frame holding the child graph — recursively for nested subbots. Pure:
+ *  returns new node/edge arrays.
  *
- *  - Child ids are prefixed `${subbotId}::`; children get parentId +
- *    extent:"parent" (React Flow compound) and data.external = true.
+ *  - Child ids are prefixed `${subbotId}::` (chained across levels);
+ *    children get parentId + extent:"parent" (React Flow compound) and
+ *    data.external = true.
  *  - The child's virtual __start__ node and its entry edge are dropped.
  *  - Parent edges INTO the subbot retarget to the child's entry node;
  *    parent edges OUT re-source from the child's `done` node when present
- *    (else stay on the frame). Edge labels/conditions are preserved.
- *  - A subbot whose child failed to load stays compact with data.loadError.
+ *    (else stay on the frame). Both rewires apply independently (self-loops).
+ *  - A subbot whose child failed to load / cycles / exceeds the depth cap
+ *    stays compact (with data.loadError carrying the reason for failures).
  */
 export function expandSubbots(
   base: { nodes: Node<NodeData>[]; edges: FlowEdge[] },
   doc: IterDocument,
-  childDocs: Map<string, SubbotChildDoc>,
+  docPath: string | null,
+  docsByPath: Map<string, SubbotDocEntry>,
+  opts?: ExpandSubbotsOptions,
 ): { nodes: Node[]; edges: FlowEdge[] } {
   const subbots = doc.subbots ?? [];
-  if (subbots.length === 0) return base;
+  if (subbots.length === 0 || docsByPath.size === 0) return base;
+  return expandRec(
+    base,
+    doc,
+    docPath,
+    docsByPath,
+    new Set(docPath ? [docPath] : []),
+    0,
+    opts?.skipRootSubbots,
+  );
+}
 
-  const declByName = new Map(subbots.map((sb) => [sb.name, sb]));
+function expandRec(
+  base: { nodes: Node[]; edges: FlowEdge[] },
+  doc: IterDocument,
+  docPath: string | null,
+  docsByPath: Map<string, SubbotDocEntry>,
+  ancestry: Set<string>,
+  depth: number,
+  skipSubbots?: Set<string>,
+): { nodes: Node[]; edges: FlowEdge[] } {
+  const declByName = new Map((doc.subbots ?? []).map((sb) => [sb.name, sb]));
+  if (declByName.size === 0) return base;
 
   let nodes: Node[] = [...base.nodes];
   let edges: FlowEdge[] = [...base.edges];
 
   for (const [name, decl] of declByName) {
-    const child = childDocs.get(name);
+    if (skipSubbots?.has(name)) continue;
     const compactIdx = nodes.findIndex((n) => n.id === name);
     if (compactIdx === -1) continue; // subbot not on this workflow's canvas
+    if (!decl.source) continue; // nothing to load — compact node stays
 
+    const resolved = resolveSubbotSource(docPath, decl.source);
+
+    if (ancestry.has(resolved)) {
+      const compact = nodes[compactIdx]!;
+      nodes[compactIdx] = {
+        ...compact,
+        data: {
+          ...compact.data,
+          loadError: `cycle: ${resolved} is already expanded above`,
+          sourcePath: resolved,
+        },
+      };
+      continue;
+    }
+    if (depth >= MAX_SUBBOT_EXPANSION_DEPTH) continue; // compact, no badge
+
+    const child = docsByPath.get(resolved);
     if (!child || !child.doc) {
       if (child?.error !== undefined) {
         // Load failure: keep the compact node, annotate it for the badge.
         const compact = nodes[compactIdx]!;
         nodes[compactIdx] = {
           ...compact,
-          data: { ...compact.data, loadError: child.error, sourcePath: child.path },
+          data: { ...compact.data, loadError: child.error, sourcePath: resolved },
         };
       }
       continue; // pending or unresolvable — compact node stays
@@ -146,7 +240,17 @@ export function expandSubbots(
 
     const childDoc = child.doc;
     const childWorkflow = childDoc.workflows?.[0];
-    const childGraph = documentToGraph(childDoc, childWorkflow?.name);
+    // Recurse FIRST (on the child's own un-prefixed graph), then prefix
+    // the whole result — inner frames and their children pick up the
+    // outer prefix in one pass.
+    const childGraph = expandRec(
+      documentToGraph(childDoc, childWorkflow?.name) as { nodes: Node[]; edges: FlowEdge[] },
+      childDoc,
+      resolved,
+      docsByPath,
+      new Set([...ancestry, resolved]),
+      depth + 1,
+    );
     const entryId = childWorkflow?.entry;
 
     const childNodes = childGraph.nodes
@@ -154,9 +258,9 @@ export function expandSubbots(
       .map((n) => ({
         ...n,
         id: makeSubbotChildId(name, n.id),
-        parentId: name,
+        parentId: n.parentId ? makeSubbotChildId(name, n.parentId) : name,
         extent: "parent" as const,
-        ariaLabel: `${n.data.kind} node: ${n.data.label} (part of subbot ${name})`,
+        ariaLabel: `${(n.data as NodeData).kind} node: ${(n.data as NodeData).label} (part of subbot ${name})`,
         data: {
           ...n.data,
           external: true,
@@ -184,13 +288,16 @@ export function expandSubbots(
       position: compact.position,
       style: { width: FRAME_INITIAL_W, height: FRAME_INITIAL_H },
       ariaLabel: `subbot ${name}: child workflow from ${decl.source ?? ""}`,
+      // An inner frame (recursion) keeps the compact node's compound
+      // parentage — re-parented by the outer level's prefix pass.
+      ...(compact.parentId && { parentId: compact.parentId, extent: "parent" as const }),
       data: {
         label: name,
         kind: "subbot",
         color: NODE_COLORS.subbot,
         decl,
         source: decl.source ?? "",
-        sourcePath: child.path,
+        sourcePath: resolved,
         isolated: decl.isolated ?? false,
         childWorkflowName: childWorkflow?.name ?? "",
       },

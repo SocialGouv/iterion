@@ -161,6 +161,82 @@ describe("expandWireSubbots", () => {
     ).toBe(true);
   });
 
+  it("expands NESTED subbots recursively (frames within frames)", () => {
+    // Mirrors examples/nested-subbots-demo: main -> stage(subbot) whose
+    // workflow fans out over step(subbot).
+    const rootWf: WireWorkflow = {
+      name: "nested_subbots_demo",
+      entry: "prep",
+      nodes: [
+        { id: "prep", kind: "tool" },
+        { id: "stage", kind: "subbot", source: "stage.bot" },
+        { id: "wrap", kind: "compute" },
+        { id: "done", kind: "done" },
+      ],
+      edges: [
+        { from: "prep", to: "stage" },
+        { from: "stage", to: "wrap" },
+        { from: "wrap", to: "done" },
+      ],
+    };
+    const stageWf: WireWorkflow = {
+      name: "stage",
+      entry: "split",
+      nodes: [
+        { id: "split", kind: "tool" },
+        { id: "dispatch", kind: "router" },
+        { id: "step", kind: "subbot", source: "step.bot", isolated: true },
+        { id: "gather", kind: "compute" },
+        { id: "done", kind: "done" },
+      ],
+      edges: [
+        { from: "split", to: "dispatch" },
+        { from: "dispatch", to: "step" },
+        { from: "step", to: "gather" },
+        { from: "gather", to: "done" },
+      ],
+    };
+    const stepWf: WireWorkflow = {
+      name: "step",
+      entry: "work",
+      nodes: [
+        { id: "work", kind: "tool" },
+        { id: "check", kind: "human" },
+        { id: "out", kind: "compute" },
+        { id: "done", kind: "done" },
+      ],
+      edges: [
+        { from: "work", to: "check" },
+        { from: "check", to: "out", condition: "approved" },
+        { from: "out", to: "done" },
+      ],
+    };
+    const { wf, frames } = expandWireSubbots(
+      rootWf,
+      new Map([
+        ["stage", stageWf],
+        // Nested key = the EXPANDED id of stage's step node.
+        ["stage::step", stepWf],
+      ]),
+    );
+    // Two frames, inner one parented into the outer.
+    expect(frames.map((f) => ({ id: f.id, parent: f.parentSubbot }))).toEqual([
+      { id: "stage", parent: undefined },
+      { id: "stage::step", parent: "stage" },
+    ]);
+    // Grandchild nodes carry the chained ids + immediate frame parent.
+    const work = wf.nodes.find((n) => n.id === "stage::step::work")!;
+    expect(work.parentSubbot).toBe("stage::step");
+    // Both subbot nodes are gone (replaced by frames).
+    expect(wf.nodes.some((n) => n.id === "stage" || n.id === "stage::step")).toBe(false);
+    // Edges rewired at BOTH levels: dispatch -> step's entry, step's
+    // done -> gather, prep -> stage's entry, stage's done -> wrap.
+    expect(wf.edges.some((e) => e.from === "stage::dispatch" && e.to === "stage::step::work")).toBe(true);
+    expect(wf.edges.some((e) => e.from === "stage::step::done" && e.to === "stage::gather")).toBe(true);
+    expect(wf.edges.some((e) => e.from === "prep" && e.to === "stage::split")).toBe(true);
+    expect(wf.edges.some((e) => e.from === "stage::done" && e.to === "wrap")).toBe(true);
+  });
+
   it("expands only the subbot nodes whose child workflow is known", () => {
     const wf = parentWf({
       nodes: [

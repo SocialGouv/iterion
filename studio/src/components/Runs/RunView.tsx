@@ -277,11 +277,36 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
     () => groupChildrenByNode(childRuns, parentWf),
     [childRuns, parentWf],
   );
-  // Child workflow shape per subbot node + polled child executions, so
-  // the canvas can render each subbot's constituent pipeline in place,
-  // with per-frame tabs picking the displayed child (lib/subbotRunGraph).
-  const { childWorkflowsByNode, childExecutionsByRun } =
-    useInlineSubbotData(childrenByNode);
+  // Per-frame active tab picks (frameId -> child run id). Owned here so
+  // the recursive data hook can follow the SELECTED chain into nested
+  // subbots (a frame's selection decides whose children load next).
+  const [subRunPicks, setSubRunPicks] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    setSubRunPicks(new Map());
+  }, [runId]);
+  const handleSelectSubRunChild = useCallback(
+    (frameId: string, childRunId: string) => {
+      setSubRunPicks((prev) => {
+        if (prev.get(frameId) === childRunId) return prev;
+        const next = new Map(prev);
+        next.set(frameId, childRunId);
+        return next;
+      });
+    },
+    [],
+  );
+  // Child workflow shape per (possibly nested) subbot frame + polled
+  // executions of each frame's selected child, so the canvas renders
+  // every subbot's constituent pipeline in place — frames within frames
+  // for nested subbots (lib/subbotRunGraph).
+  const {
+    subRunsByNode,
+    childWorkflowsByNode,
+    childExecutionsByRun,
+    selectedChildByFrame,
+  } = useInlineSubbotData(childrenByNode, subRunPicks);
 
   const liveExecutions = useMemo(
     () => Array.from(executionsById.values()),
@@ -463,9 +488,11 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
                   runtimeOverrideByNode={runtimeOverrideByNode}
                   followLive={followLiveNode}
                   onToggleFollowLive={handleToggleFollowLive}
-                  subRunsByNode={childrenByNode}
+                  subRunsByNode={subRunsByNode}
                   childWorkflowsByNode={childWorkflowsByNode}
                   childExecutionsByRun={childExecutionsByRun}
+                  selectedChildByFrame={selectedChildByFrame}
+                  onSelectChild={handleSelectSubRunChild}
                 />
               </div>
             </Panel>

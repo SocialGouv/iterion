@@ -13,7 +13,7 @@ import type { ExecutionState, RunSummary, WireNode, WireWorkflow } from "@/api/r
 import { autoLayout } from "@/lib/autoLayout";
 import type { DelegateOutputMeta } from "@/lib/delegateMeta";
 import { FLOW_CONTROLS_STYLE } from "@/lib/flowTheme";
-import { isSubbotChildId, parseSubbotChildId } from "@/lib/subbotGraph";
+import { isSubbotChildId, subbotLocalName } from "@/lib/subbotGraph";
 import {
   expandWireSubbots,
   mergeChildExecutions,
@@ -159,6 +159,8 @@ function buildFanoutFrames(
 
 const ARROW = { type: MarkerType.ArrowClosed, width: 18, height: 18 } as const;
 
+const EMPTY_SELECTION = new Map<string, string>();
+
 // buildSubRunsData shapes the per-node sub-run payload IRNode renders
 // as a status chip row on COMPACT subbot cards (pre-expansion).
 // undefined (not an empty object) when the node spawned no children
@@ -217,11 +219,15 @@ interface Props {
   // the child workflow per subbot node id (fetched from the first child
   // run — all children of one node share the source) ...
   childWorkflowsByNode?: Map<string, WireWorkflow>;
-  // ... and the live executions of each child run, keyed by child run
-  // id. The frame displays ONE child at a time — its header tabs pick
-  // which (state owned here, per frame). NOT scrub-aware: while
-  // scrubbing the parent's history the inline child state stays live.
+  // ... and the live executions of each frame's SELECTED child run,
+  // keyed by child run id. NOT scrub-aware: while scrubbing the
+  // parent's history the inline child state stays live.
   childExecutionsByRun?: Map<string, ExecutionState[]>;
+  // Per-frame active tab (effective, defaults applied) + the tab-click
+  // callback — owned by RunView, whose data hook follows the selected
+  // chain into NESTED subbots (frames within frames).
+  selectedChildByFrame?: Map<string, string>;
+  onSelectChild?: (frameId: string, childRunId: string) => void;
 }
 
 export default function RunCanvasIR({
@@ -237,6 +243,8 @@ export default function RunCanvasIR({
   subRunsByNode,
   childWorkflowsByNode,
   childExecutionsByRun,
+  selectedChildByFrame,
+  onSelectChild,
 }: Props) {
   const { wf, error } = useWorkflowLoad(runId);
   const [nodes, setNodes] = useState<FlowNode[]>([]);
@@ -298,38 +306,15 @@ export default function RunCanvasIR({
   }, [wf, childWorkflowsByNode]);
   const viewWf = expanded?.wf ?? null;
 
-  // Per-frame active tab: which child run's state the frame displays.
-  // Owned here (canvas-local UI state) — clicking a tab must swap the
-  // frame content, never navigate away from the parent run.
-  const [childByFrame, setChildByFrame] = useState<Map<string, string>>(
-    () => new Map(),
+  // Stable fallbacks so the memo/ref plumbing below never branches on
+  // undefined props (secondary mounts pass none of the sub-run inputs).
+  const effectiveSelection = selectedChildByFrame ?? EMPTY_SELECTION;
+  const handleSelectChild = useCallback(
+    (frameId: string, childRunId: string) => {
+      onSelectChild?.(frameId, childRunId);
+    },
+    [onSelectChild],
   );
-  const handleSelectChild = useCallback((frameId: string, childRunId: string) => {
-    setChildByFrame((prev) => {
-      if (prev.get(frameId) === childRunId) return prev;
-      const next = new Map(prev);
-      next.set(frameId, childRunId);
-      return next;
-    });
-  }, []);
-  // Effective selection: the user's pick while that child still exists,
-  // else the first child (children arrive created_at asc — stable).
-  const selectedChildByFrame = useMemo(() => {
-    const m = new Map<string, string>();
-    if (!expanded || !subRunsByNode) return m;
-    for (const f of expanded.frames) {
-      const children = subRunsByNode.get(f.id) ?? [];
-      if (children.length === 0) continue;
-      const picked = childByFrame.get(f.id);
-      m.set(
-        f.id,
-        picked && children.some((c) => c.id === picked)
-          ? picked
-          : children[0]!.id,
-      );
-    }
-    return m;
-  }, [expanded, subRunsByNode, childByFrame]);
 
   // Parent executions + the SELECTED child run's executions projected
   // onto each frame's child node ids (the active tab's pipeline state).
@@ -339,7 +324,7 @@ export default function RunCanvasIR({
       expanded.frames.length === 0 ||
       !subRunsByNode?.size ||
       !childExecutionsByRun?.size ||
-      selectedChildByFrame.size === 0
+      effectiveSelection.size === 0
     ) {
       return executions;
     }
@@ -348,10 +333,10 @@ export default function RunCanvasIR({
       ...mergeChildExecutions(
         subRunsByNode,
         childExecutionsByRun,
-        selectedChildByFrame,
+        effectiveSelection,
       ),
     ];
-  }, [executions, expanded, subRunsByNode, childExecutionsByRun, selectedChildByFrame]);
+  }, [executions, expanded, subRunsByNode, childExecutionsByRun, effectiveSelection]);
 
   // Group executions by IR node id once; both the layout and the
   // visual-patch effects below reuse this.
@@ -378,21 +363,21 @@ export default function RunCanvasIR({
   const fanout = useMemo(() => computeFanout(allExecutions), [allExecutions]);
   // Keep the .then() refs in sync with the latest derived/incoming
   // values.
-  const selectedChildByFrameRef = useRef(selectedChildByFrame);
+  const selectedChildByFrameRef = useRef(effectiveSelection);
   useEffect(() => {
     execsByNodeRef.current = execsByNode;
     iterationByNodeRef.current = iterationByNode;
     runtimeOverrideByNodeRef.current = runtimeOverrideByNode;
     selectedNodeIdRef.current = selectedNodeId;
     subRunsByNodeRef.current = subRunsByNode;
-    selectedChildByFrameRef.current = selectedChildByFrame;
+    selectedChildByFrameRef.current = effectiveSelection;
   }, [
     execsByNode,
     iterationByNode,
     runtimeOverrideByNode,
     selectedNodeId,
     subRunsByNode,
-    selectedChildByFrame,
+    effectiveSelection,
   ]);
 
   const handleSelectIteration = useCallback(
@@ -428,6 +413,8 @@ export default function RunCanvasIR({
     // Compound frames for expanded subbots — must precede their
     // children in the node array (React Flow parent-order rule);
     // autoLayout treats type "subbotFrame" as an ELK compound.
+    // frames arrive in traversal order (outer before inner), so nested
+    // frames' parents always precede them in the array.
     const frameNodes: FlowNode[] = expanded.frames.map((f) => ({
       id: f.id,
       type: "subbotFrame",
@@ -435,15 +422,21 @@ export default function RunCanvasIR({
       style: { width: SUBBOT_FRAME_INITIAL_W, height: SUBBOT_FRAME_INITIAL_H },
       draggable: false,
       selectable: false,
+      // A NESTED frame (subbot inside a subbot) nests inside its
+      // enclosing frame's compound.
+      ...(f.parentSubbot && {
+        parentId: f.parentSubbot,
+        extent: "parent" as const,
+      }),
       data: {
-        label: f.id,
+        label: subbotLocalName(f.id),
         source: f.source,
         isolated: f.isolated,
         headerHeight: SUBBOT_RUN_FRAME_HEADER,
         subRuns: buildFrameSubRuns(
           f.id,
           subRunsByNode,
-          selectedChildByFrame,
+          effectiveSelection,
           handleSelectChild,
         ),
       },
@@ -469,8 +462,8 @@ export default function RunCanvasIR({
         data: {
           id: n.id,
           // Child nodes display their frame-local name — the frame
-          // header already names the subbot.
-          label: n.parentSubbot ? parseSubbotChildId(n.id)?.childId : undefined,
+          // header already names the subbot (chain-aware for nesting).
+          label: n.parentSubbot ? subbotLocalName(n.id) : undefined,
           kind: n.kind,
           executions: execs,
           selectedIteration,
@@ -627,7 +620,7 @@ export default function RunCanvasIR({
               subRuns: buildFrameSubRuns(
                 n.id,
                 subRunsByNode,
-                selectedChildByFrame,
+                effectiveSelection,
                 handleSelectChild,
               ),
             },
@@ -678,7 +671,7 @@ export default function RunCanvasIR({
     runtimeOverrideByNode,
     effortCapsByPair,
     subRunsByNode,
-    selectedChildByFrame,
+    effectiveSelection,
     handleSelectChild,
   ]);
 

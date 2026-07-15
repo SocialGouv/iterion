@@ -11,7 +11,8 @@ import {
   makeSubbotChildId,
   parseSubbotChildId,
   resolveSubbotSource,
-  type SubbotChildDoc,
+  subbotLocalName,
+  type SubbotDocEntry,
 } from "./subbotGraph";
 
 function doc(partial: Partial<IterDocument>): IterDocument {
@@ -83,18 +84,25 @@ function childDoc(): IterDocument {
   });
 }
 
-function loadedChild(overrides?: Partial<SubbotChildDoc>): Map<string, SubbotChildDoc> {
-  return new Map([
-    ["produce_episode", { path: "examples/pipeline-board-demo/episode.bot", doc: childDoc(), ...overrides }],
-  ]);
+// The parent file "lives" at examples/pipeline-board-demo/main.bot, so
+// the subbot source "episode.bot" resolves next to it.
+const PARENT_PATH = "examples/pipeline-board-demo/main.bot";
+const CHILD_PATH = "examples/pipeline-board-demo/episode.bot";
+
+function loadedChild(overrides?: Partial<SubbotDocEntry>): Map<string, SubbotDocEntry> {
+  return new Map([[CHILD_PATH, { doc: childDoc(), ...overrides }]]);
 }
 
-function expand(childDocs: Map<string, SubbotChildDoc>, parent = parentDoc()) {
+function expand(
+  docsByPath: Map<string, SubbotDocEntry>,
+  parent = parentDoc(),
+  parentPath: string | null = PARENT_PATH,
+) {
   const base = documentToGraph(parent, parent.workflows[0]!.name) as {
     nodes: Node<NodeData>[];
     edges: FlowEdge[];
   };
-  return expandSubbots(base, parent, childDocs);
+  return expandSubbots(base, parent, parentPath, docsByPath);
 }
 
 describe("id helpers", () => {
@@ -108,6 +116,12 @@ describe("id helpers", () => {
   it("does not flag plain node ids", () => {
     expect(isSubbotChildId("produce_episode")).toBe(false);
     expect(parseSubbotChildId("dispatch")).toBeNull();
+  });
+
+  it("derives the frame-local name from a (possibly nested) id", () => {
+    expect(subbotLocalName("stage::step::work")).toBe("work");
+    expect(subbotLocalName("stage::split")).toBe("split");
+    expect(subbotLocalName("plain")).toBe("plain");
   });
 });
 
@@ -202,7 +216,7 @@ describe("expandSubbots", () => {
       { from: "produce", to: "review" },
       { from: "review", to: "fail" },
     ];
-    const { edges } = expand(new Map([["produce_episode", { path: "p/episode.bot", doc: child }]]));
+    const { edges } = expand(new Map([[CHILD_PATH, { doc: child }]]));
     const outEdge = edges.find((e) => e.target === "collect")!;
     expect(outEdge.source).toBe("produce_episode");
   });
@@ -263,7 +277,7 @@ describe("expandSubbots", () => {
 
   it("keeps the compact node with loadError when the child failed to load", () => {
     const { nodes, edges } = expand(
-      new Map([["produce_episode", { path: "p/episode.bot", error: "404 not found" }]]),
+      new Map([[CHILD_PATH, { error: "404 not found" }]]),
     );
     const compact = nodes.find((n) => n.id === "produce_episode")!;
     expect(compact.type).toBe("workflowNode");
@@ -280,18 +294,87 @@ describe("expandSubbots", () => {
     expect(compact.data.kind).toBe("subbot");
   });
 
-  it("expands one level only: a subbot inside the child renders compact", () => {
+  it("keeps a NESTED subbot compact while its own doc is not loaded", () => {
     const child = childDoc();
     child.subbots = [{ name: "inner", source: "inner.bot" }];
     child.workflows[0]!.edges = [
       { from: "produce", to: "inner" },
       { from: "inner", to: "done" },
     ];
-    const { nodes } = expand(new Map([["produce_episode", { path: "p/episode.bot", doc: child }]]));
+    const { nodes } = expand(new Map([[CHILD_PATH, { doc: child }]]));
     const inner = nodes.find((n) => n.id === "produce_episode::inner")!;
     expect(inner.type).toBe("workflowNode"); // compact, not a nested frame
     expect(inner.data.kind).toBe("subbot");
     expect(inner.data.external).toBe(true);
+  });
+
+  it("expands a NESTED subbot into a frame within the frame once its doc loads", () => {
+    const child = childDoc();
+    child.subbots = [{ name: "inner", source: "inner.bot" }];
+    child.workflows[0]!.edges = [
+      { from: "produce", to: "inner" },
+      { from: "inner", to: "done" },
+    ];
+    const innerDoc = doc({
+      tools: [{ name: "work", command: "", output: "o" }],
+      workflows: [
+        { name: "inner_wf", entry: "work", edges: [{ from: "work", to: "done" }] } as WorkflowDecl,
+      ],
+    });
+    const { nodes, edges } = expand(
+      new Map([
+        [CHILD_PATH, { doc: child }],
+        // inner.bot resolves relative to episode.bot's directory
+        ["examples/pipeline-board-demo/inner.bot", { doc: innerDoc }],
+      ]),
+    );
+    // Inner frame nested inside the outer frame's compound.
+    const innerFrame = nodes.find((n) => n.id === "produce_episode::inner")!;
+    expect(innerFrame.type).toBe("subbotFrame");
+    expect(innerFrame.parentId).toBe("produce_episode");
+    // Grandchild node chains the ids and parents into the inner frame.
+    const grandchild = nodes.find((n) => n.id === "produce_episode::inner::work")!;
+    expect(grandchild.parentId).toBe("produce_episode::inner");
+    expect(grandchild.data.external).toBe(true);
+    // Edges rewired across BOTH levels: produce -> inner's entry, inner's
+    // done -> the child's own done.
+    expect(
+      edges.some(
+        (e) =>
+          e.source === "produce_episode::produce" &&
+          e.target === "produce_episode::inner::work",
+      ),
+    ).toBe(true);
+    expect(
+      edges.some(
+        (e) =>
+          e.source === "produce_episode::inner::done" &&
+          e.target === "produce_episode::done",
+      ),
+    ).toBe(true);
+    // Frame precedes its children (React Flow parent-order rule).
+    const idx = (id: string) => nodes.findIndex((n) => n.id === id);
+    expect(idx("produce_episode")).toBeLessThan(idx("produce_episode::inner"));
+    expect(idx("produce_episode::inner")).toBeLessThan(idx("produce_episode::inner::work"));
+  });
+
+  it("stops at a cycle: a child referencing an ancestor stays compact with a notice", () => {
+    // main -> episode.bot -> main.bot (cycle back to the root file)
+    const child = childDoc();
+    child.subbots = [{ name: "again", source: "main.bot" }];
+    child.workflows[0]!.edges = [
+      { from: "produce", to: "again" },
+      { from: "again", to: "done" },
+    ];
+    const { nodes } = expand(
+      new Map([
+        [CHILD_PATH, { doc: child }],
+        [PARENT_PATH, { doc: parentDoc() }],
+      ]),
+    );
+    const cyclic = nodes.find((n) => n.id === "produce_episode::again")!;
+    expect(cyclic.type).toBe("workflowNode");
+    expect(String(cyclic.data.loadError)).toContain("cycle");
   });
 
   it("expands multiple subbot nodes independently", () => {
@@ -313,9 +396,9 @@ describe("expandSubbots", () => {
         { name: "publish", entry: "upload", edges: [{ from: "upload", to: "done" }] } as WorkflowDecl,
       ],
     });
-    const childDocs = new Map<string, SubbotChildDoc>([
-      ["produce_episode", { path: "p/episode.bot", doc: childDoc() }],
-      ["publish_episode", { path: "p/publish.bot", doc: publishChild }],
+    const childDocs = new Map<string, SubbotDocEntry>([
+      [CHILD_PATH, { doc: childDoc() }],
+      ["examples/pipeline-board-demo/publish.bot", { doc: publishChild }],
     ]);
     const { nodes, edges } = expand(childDocs, parent);
     expect(nodes.find((n) => n.id === "produce_episode")!.type).toBe("subbotFrame");
@@ -335,7 +418,7 @@ describe("expandSubbots", () => {
       workflows: [{ name: "w", entry: "t", edges: [{ from: "t", to: "done" }] } as WorkflowDecl],
     });
     const base = documentToGraph(plain, "w") as { nodes: Node<NodeData>[]; edges: FlowEdge[] };
-    const result = expandSubbots(base, plain, new Map());
+    const result = expandSubbots(base, plain, "w.bot", new Map());
     expect(result).toBe(base);
   });
 });
@@ -368,25 +451,52 @@ describe("autoLayout of an expanded subbot graph", () => {
 describe("getSubbotExpansionKey", () => {
   it("changes when a child doc finishes loading", () => {
     const parent = parentDoc();
-    const pending = getSubbotExpansionKey(parent, new Map());
-    const loaded = getSubbotExpansionKey(parent, loadedChild());
+    const pending = getSubbotExpansionKey(parent, PARENT_PATH, new Map());
+    const loaded = getSubbotExpansionKey(parent, PARENT_PATH, loadedChild());
     expect(pending).not.toBe(loaded);
   });
 
   it("changes when the child topology changes", () => {
     const parent = parentDoc();
-    const a = getSubbotExpansionKey(parent, loadedChild());
+    const a = getSubbotExpansionKey(parent, PARENT_PATH, loadedChild());
     const modified = childDoc();
     modified.workflows[0]!.edges = [{ from: "produce", to: "done" }];
     const b = getSubbotExpansionKey(
       parent,
-      new Map([["produce_episode", { path: "examples/pipeline-board-demo/episode.bot", doc: modified }]]),
+      PARENT_PATH,
+      new Map([[CHILD_PATH, { doc: modified }]]),
     );
     expect(a).not.toBe(b);
   });
 
+  it("changes when a NESTED child doc arrives (recursion)", () => {
+    const parent = parentDoc();
+    const child = childDoc();
+    child.subbots = [{ name: "inner", source: "inner.bot" }];
+    const withoutInner = getSubbotExpansionKey(
+      parent,
+      PARENT_PATH,
+      new Map([[CHILD_PATH, { doc: child }]]),
+    );
+    const innerDoc = doc({
+      tools: [{ name: "work", command: "", output: "o" }],
+      workflows: [
+        { name: "inner_wf", entry: "work", edges: [{ from: "work", to: "done" }] } as WorkflowDecl,
+      ],
+    });
+    const withInner = getSubbotExpansionKey(
+      parent,
+      PARENT_PATH,
+      new Map([
+        [CHILD_PATH, { doc: child }],
+        ["examples/pipeline-board-demo/inner.bot", { doc: innerDoc }],
+      ]),
+    );
+    expect(withoutInner).not.toBe(withInner);
+  });
+
   it("is empty for documents without subbots", () => {
-    expect(getSubbotExpansionKey(doc({}), new Map())).toBe("");
-    expect(getSubbotExpansionKey(null, new Map())).toBe("");
+    expect(getSubbotExpansionKey(doc({}), "w.bot", new Map())).toBe("");
+    expect(getSubbotExpansionKey(null, "w.bot", new Map())).toBe("");
   });
 });

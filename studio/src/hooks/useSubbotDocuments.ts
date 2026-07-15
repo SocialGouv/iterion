@@ -1,46 +1,74 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQueries, type UseQueryResult } from "@tanstack/react-query";
 import type { IterDocument } from "@/api/types";
 import { openFile } from "@/api/client";
-import { resolveSubbotSource, type SubbotChildDoc } from "@/lib/subbotGraph";
+import {
+  MAX_SUBBOT_EXPANSION_DEPTH,
+  resolveSubbotSource,
+  type SubbotDocEntry,
+} from "@/lib/subbotGraph";
 
-// Loads the child .bot document of every subbot declaration in the open
-// file, keyed by subbot name, for expandSubbots. Each distinct resolved
-// path is fetched once (react-query dedupes by key); staleTime keeps the
-// graph steady while still picking up child-file edits within ~15s.
+// Loads the child .bot document of every subbot declaration reachable
+// from the open file — RECURSIVELY: once a child doc lands, its own
+// subbots' sources are discovered and fetched too (BFS over resolved
+// paths, bounded by the display depth cap + a visited set, so cycles
+// terminate). Keyed by resolved path for expandSubbots; the same file
+// referenced from two subbots (or two nesting levels) loads once.
 const CHILD_DOC_STALE_MS = 15_000;
 
-const EMPTY_MAP = new Map<string, SubbotChildDoc>();
+const EMPTY_MAP = new Map<string, SubbotDocEntry>();
 
 type OpenFileResult = Awaited<ReturnType<typeof openFile>>;
+
+// discoverPaths walks the subbot graph breadth-first from the root
+// document, following into whatever child docs have already loaded.
+// Deterministic + bounded: each level only adds unseen resolved paths,
+// and the walk stops at the display depth cap.
+function discoverPaths(
+  document: IterDocument | null,
+  filePath: string | null,
+  loaded: Map<string, SubbotDocEntry>,
+): string[] {
+  const seen = new Set<string>();
+  const wanted: string[] = [];
+  let frontier: Array<{ doc: IterDocument | null; path: string | null }> = [
+    { doc: document, path: filePath },
+  ];
+  for (
+    let depth = 0;
+    depth < MAX_SUBBOT_EXPANSION_DEPTH && frontier.length > 0;
+    depth++
+  ) {
+    const next: typeof frontier = [];
+    for (const { doc, path } of frontier) {
+      if (!doc) continue;
+      for (const sb of doc.subbots ?? []) {
+        if (!sb.source) continue;
+        const resolved = resolveSubbotSource(path, sb.source);
+        if (resolved === filePath || seen.has(resolved)) continue; // cycle/dup
+        seen.add(resolved);
+        wanted.push(resolved);
+        next.push({ doc: loaded.get(resolved)?.doc ?? null, path: resolved });
+      }
+    }
+    frontier = next;
+  }
+  return wanted.sort();
+}
 
 export function useSubbotDocuments(
   document: IterDocument | null,
   filePath: string | null,
-): Map<string, SubbotChildDoc> {
-  // name -> resolved workspace-relative path (subbots without a source are
-  // skipped: nothing to load, the compact node just stays).
-  const pathByName = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const sb of document?.subbots ?? []) {
-      if (!sb.source) continue;
-      m.set(sb.name, resolveSubbotSource(filePath, sb.source));
-    }
-    return m;
-  }, [document?.subbots, filePath]);
+): Map<string, SubbotDocEntry> {
+  // The path set grows as child docs land (dependent-query fixed point):
+  // paths -> queries -> results -> more paths. State + effect keep the
+  // hook order fixed while the set converges (≤ depth-cap iterations;
+  // settled queries never refetch, so there is no loop).
+  const [distinctPaths, setDistinctPaths] = useState<string[]>([]);
 
-  const distinctPaths = useMemo(
-    () => Array.from(new Set(pathByName.values())).sort(),
-    [pathByName],
-  );
-
-  // Stable combine (react-query only memoizes the combined value when the
-  // combine fn itself is referentially stable across renders) — identity of
-  // the resulting Map changes only when a child query result changes, so the
-  // canvas layout memo doesn't churn on unrelated renders.
   const combine = useCallback(
     (results: UseQueryResult<OpenFileResult, Error>[]) => {
-      const m = new Map<string, { doc?: IterDocument; error?: string }>();
+      const m = new Map<string, SubbotDocEntry>();
       results.forEach((r, i) => {
         const path = distinctPaths[i]!;
         if (r.data) m.set(path, { doc: r.data.document });
@@ -62,13 +90,17 @@ export function useSubbotDocuments(
     combine,
   });
 
+  useEffect(() => {
+    const wanted = discoverPaths(document, filePath, byPath);
+    setDistinctPaths((prev) =>
+      prev.length === wanted.length && prev.every((p, i) => p === wanted[i])
+        ? prev
+        : wanted,
+    );
+  }, [document, filePath, byPath]);
+
   return useMemo(() => {
-    if (pathByName.size === 0) return EMPTY_MAP;
-    const out = new Map<string, SubbotChildDoc>();
-    for (const [name, path] of pathByName) {
-      const res = byPath.get(path);
-      out.set(name, { path, doc: res?.doc, error: res?.error });
-    }
-    return out;
-  }, [pathByName, byPath]);
+    if (distinctPaths.length === 0) return EMPTY_MAP;
+    return byPath;
+  }, [distinctPaths, byPath]);
 }

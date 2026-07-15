@@ -265,6 +265,7 @@ dispatcher routes on it), never the persona.
 | Evoly | `evolve` |
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
+| Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
 | Revi | `review-pr` |
@@ -557,6 +558,21 @@ without re-architecting what already works.
   greenfield (no existing partial implementation to preserve).
 - **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
+
+### `nested-subbots-demo` — Nested Subbots Demo
+
+Zero-LLM demo of NESTED subbots (a subbot inside a subbot): main runs
+stage.bot as a child, which fans out two ISOLATED step.bot grandchildren
+in parallel, each pausing on its own human check. Approving both checks
+unparks the whole chain (step → stage → main). Tool / compute / human /
+subbot only — no API keys, runs in seconds.
+
+- **Use when**:
+  Use to demo or smoke-test the studio's inline subbot display across
+  nesting levels (frames within frames, per-frame child tabs) and the
+  park-on-child-human-gate chain through two levels. Not a production
+  workflow.
+- **Path**: `examples/nested-subbots-demo/main.bot`
 
 ### `pipeline-board-demo` — Pipeline Board Demo
 

@@ -1,0 +1,40 @@
+## Deepest bot of the nested-subbots demo: does one unit of tool work,
+## then pauses on a HUMAN check — parking its parent (stage.bot), which
+## parks the root run, until the operator approves from the studio.
+vars:
+  step: string = "step"
+
+schema work_out:
+  step: string
+  done_work: bool
+
+schema check_out:
+  approved: bool
+  notes: string
+
+schema step_out:
+  step: string
+  ok: bool
+
+tool work:
+  command: `EP={{vars.step}}
+mkdir -p "$ITERION_ARTIFACT_FILES_DIR"
+printf 'work unit %s\n' "$EP" > "$ITERION_ARTIFACT_FILES_DIR/work-$EP.txt"
+printf '{"step":"%s","done_work":true}' "$EP"`
+  output: work_out
+
+human check:
+  output: check_out
+
+compute out:
+  output: step_out
+  expr:
+    step: "outputs.work.step"
+    ok: "outputs.check.approved"
+
+workflow step:
+  entry: work
+  work  -> check
+  check -> out when approved
+  check -> fail when not approved
+  out   -> done

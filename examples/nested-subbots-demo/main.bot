@@ -1,0 +1,44 @@
+## Nested-subbots demo — exercises the studio's inline subbot display
+## across TWO nesting levels with ZERO LLM calls (tool / compute / human
+## / subbot only):
+##
+##   prep ─> stage(subbot stage.bot) ─> wrap ─> done
+##                └─ split ─> dispatch(fan_out_each ×2) ─> step(subbot
+##                   step.bot, isolated) ─> gather(wait_all) ─> done
+##                        └─ work ─> check(HUMAN) ─> out ─> done
+##
+## What to watch:
+##   - the editor shows the whole flow: stage.bot's pipeline framed
+##     inside main's, and step.bot's pipeline framed inside stage's;
+##   - during a run, each frame's header tabs pick which child run the
+##     frame displays — the two parallel step runs pause on their HUMAN
+##     check, parking stage, which parks main;
+##   - answer both checks (Approve) and the whole chain completes.
+schema prep_out:
+  ready: bool
+
+schema stage_out:
+  produced: int
+
+schema final_out:
+  final_answer: string
+
+tool prep:
+  command: `printf '{"ready":true}'`
+  output: prep_out
+
+subbot stage:
+  source: "stage.bot"
+  output: stage_out
+
+compute wrap:
+  output: final_out
+  publish: final_answer
+  expr:
+    final_answer: "'nested demo complete — both steps approved'"
+
+workflow nested_subbots_demo:
+  entry: prep
+  prep  -> stage
+  stage -> wrap
+  wrap  -> done

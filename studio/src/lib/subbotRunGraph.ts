@@ -24,11 +24,15 @@ import { SUBBOT_CHILD_SEP, makeSubbotChildId } from "./subbotGraph";
 export type ExpandedWireNode = WireNode & { parentSubbot?: string };
 
 export interface InlineSubbotFrame {
-  // Subbot node id — doubles as the frame node id.
+  // Expanded subbot node id — doubles as the frame node id. Nested
+  // frames chain the separator: `stage::step`.
   id: string;
   source: string;
   isolated: boolean;
   childWorkflowName: string;
+  // Enclosing frame id for a NESTED frame (a subbot inside a subbot);
+  // undefined for a top-level frame.
+  parentSubbot?: string;
 }
 
 // WireWorkflow-shaped view: expanded subbot nodes are REPLACED by
@@ -43,9 +47,13 @@ export interface ExpandedWire {
   frames: InlineSubbotFrame[];
 }
 
-// expandWireSubbots expands every subbot node present in childWfByNode.
+// expandWireSubbots expands every subbot node present in childWfByNode
+// — RECURSIVELY: childWfByNode is keyed by EXPANDED node id (a nested
+// subbot's key is its chained id, e.g. "stage::step"), so a worklist
+// pass expands frames within frames until no queued node matches.
 // Pure; returns the input wf untouched (frames: []) when nothing
-// expands.
+// expands. Termination: every expansion consumes one distinct map key
+// (expanded ids are unique per position in the tree).
 export function expandWireSubbots(
   wf: WireWorkflow,
   childWfByNode: Map<string, WireWorkflow>,
@@ -61,7 +69,9 @@ export function expandWireSubbots(
   const nodes: ExpandedWireNode[] = [];
   let edges = [...wf.edges];
 
-  for (const n of wf.nodes) {
+  const queue: ExpandedWireNode[] = [...wf.nodes];
+  while (queue.length > 0) {
+    const n = queue.shift()!;
     const childWf = n.kind === "subbot" ? childWfByNode.get(n.id) : undefined;
     if (!childWf) {
       nodes.push(n);
@@ -73,18 +83,21 @@ export function expandWireSubbots(
       source: n.source ?? "",
       isolated: n.isolated ?? false,
       childWorkflowName: childWf.name,
+      parentSubbot: n.parentSubbot,
     });
 
     const childIds = new Set(childWf.nodes.map((cn) => cn.id));
+    // Queue (not push) the prefixed children so a nested subbot among
+    // them can itself expand on a later worklist iteration.
     for (const cn of childWf.nodes) {
-      nodes.push({
+      queue.push({
         ...cn,
         id: makeSubbotChildId(n.id, cn.id),
         parentSubbot: n.id,
       });
     }
 
-    // Rewire the parent edges end-to-end. Retarget and re-source
+    // Rewire the enclosing edges end-to-end. Retarget and re-source
     // independently (no early return — a self-loop needs both).
     const hasEntry = childIds.has(childWf.entry);
     const hasDone = childIds.has("done");

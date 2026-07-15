@@ -1,0 +1,45 @@
+## Middle bot of the nested-subbots demo: fans out over two steps, each
+## running step.bot as a NESTED subbot (a subbot inside a subbot), then
+## gathers. Tool/compute only at this level — the human gate lives one
+## level deeper, in step.bot.
+schema split_out:
+  steps: json
+
+schema step_out:
+  step: string
+  ok: bool
+
+schema stage_out:
+  produced: int
+
+tool split:
+  command: `printf '{"steps":[{"id":"alpha"},{"id":"beta"}]}'`
+  output: split_out
+
+router dispatch:
+  mode: fan_out_each
+  over: "{{outputs.split.steps}}"
+  as: st
+
+## `isolated:` makes the parallel fan-out of the nested children legal —
+## each grandchild run confines its writes to its own run store.
+subbot step:
+  source: "step.bot"
+  with { step: "{{outputs.dispatch.st.id}}" }
+  output: step_out
+  isolated: true
+
+compute gather:
+  await: wait_all
+  output: stage_out
+  expr:
+    produced: "2"
+
+workflow stage:
+  entry: split
+  budget:
+    max_parallel_branches: 2
+  split    -> dispatch
+  dispatch -> step
+  step     -> gather
+  gather   -> done
