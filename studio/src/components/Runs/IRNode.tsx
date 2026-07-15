@@ -4,7 +4,7 @@ import { Handle, Position } from "@xyflow/react";
 
 import type { ExecutionState, RunSummary } from "@/api/runs";
 import type { NodeKind } from "@/api/types";
-import { firstOpenChild } from "@/lib/subRuns";
+import { statusDotClass } from "@/lib/subRuns";
 import { Popover } from "@/components/ui";
 import { ContextUsageBar } from "@/components/ui/ContextUsageBar";
 import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
@@ -14,7 +14,6 @@ import { NodeIcon } from "@/components/icons/NodeIcon";
 import { softColor } from "@/lib/constants";
 
 import { statusClasses, type UnifiedStatus } from "./runStatusClasses";
-import { statusDotClass } from "./SubRunTabs";
 
 // Maximum pips to show inline before condensing into a "+N" overflow
 // affordance. Tuned to match the 200px node width — beyond ~6 the strip
@@ -96,16 +95,20 @@ interface IRNodeData extends Record<string, unknown> {
   // node runs + whether the child executes in an isolated workspace.
   // Present only for kind === "subbot".
   subbot?: { source?: string; isolated?: boolean };
-  // Child runs this subbot node spawned + the open callback wired by
-  // RunView (switches the flow tab to the child's canvas). Absent until
-  // the first child run is observed.
-  subRuns?: { children: RunSummary[]; onOpen?: (childRunId: string) => void };
+  // Child runs this subbot node spawned — a display-only status-dot row
+  // on the COMPACT card (once the child workflow loads, the node
+  // expands into a frame whose tabs take over). Absent until the first
+  // child run is observed.
+  subRuns?: { children: RunSummary[] };
+  // Display label override: inline subbot child nodes show their
+  // frame-local name instead of the `${subbotId}::${childId}` id.
+  label?: string;
 }
 
 type IRNodeType = Node<IRNodeData, "irnode">;
 
 export default function IRNode({ data }: NodeProps<IRNodeType>) {
-  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta, replication, subbot, subRuns } =
+  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta, replication, subbot, subRuns, label: labelOverride } =
     data;
   // Multi-instance badge: count/total when split, ×N when on the common
   // per-item path. Distinguishes "mark_ip ran 38×" (×38) from "code_stub
@@ -169,7 +172,7 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
       <div className="flex items-center gap-1.5 font-medium truncate">
         <NodeIcon kind={kind as NodeKind} size={14} className="shrink-0" />
         <span className="truncate" title={id}>
-          {id}
+          {labelOverride ?? id}
         </span>
         {isEntry && (
           <span
@@ -276,7 +279,7 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
       )}
 
       {subRuns && subRuns.children.length > 0 && (
-        <SubRunChip children_={subRuns.children} onOpen={subRuns.onOpen} />
+        <SubRunChip children_={subRuns.children} />
       )}
 
       <Handle type="source" position={Position.Bottom} className="!bg-fg-subtle" />
@@ -284,30 +287,17 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
   );
 }
 
-// SubRunChip is the compact "N sub-runs" affordance on a subbot card:
-// one status dot per child (capped to fit the 200px width budget) +
-// count label. Clicking it opens the first still-active child's canvas
-// tab (else the first child). stopPropagation so the click doesn't
-// double as a node select.
-function SubRunChip({
-  children_,
-  onOpen,
-}: {
-  children_: RunSummary[];
-  onOpen?: (childRunId: string) => void;
-}) {
+// SubRunChip is the compact "N sub-runs" status row on a COMPACT subbot
+// card: one status dot per child (capped to fit the 200px width budget)
+// + count label. Display-only — the transient pre-expansion state; once
+// the child workflow loads the node becomes a frame with its own tabs.
+function SubRunChip({ children_ }: { children_: RunSummary[] }) {
   const shown = children_.slice(0, SUBRUN_DOTS_MAX);
   const label = `${children_.length} sub-run${children_.length === 1 ? "" : "s"}`;
   return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        const target = firstOpenChild(children_);
-        if (target && onOpen) onOpen(target.id);
-      }}
-      className="mt-1.5 flex items-center gap-1 text-[9px] font-mono rounded border border-border-default bg-surface-1 px-1.5 h-[16px] text-fg-muted hover:bg-surface-2 hover:text-fg-default transition-colors max-w-full"
-      title={`${label} — click to watch`}
+    <div
+      className="mt-1.5 flex items-center gap-1 text-[9px] font-mono rounded border border-border-default bg-surface-1 px-1.5 h-[16px] text-fg-muted max-w-full"
+      title={label}
     >
       {shown.map((c) => (
         <span
@@ -317,7 +307,7 @@ function SubRunChip({
         />
       ))}
       <span className="truncate">{label}</span>
-    </button>
+    </div>
   );
 }
 

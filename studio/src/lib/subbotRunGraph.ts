@@ -1,11 +1,13 @@
 // Pure helpers for INLINE subbot expansion on the RUN canvas: once a
 // subbot node has spawned child runs, the parent run's canvas replaces
 // the compact subbot card with a frame holding the child workflow's own
-// nodes (the pipeline that constitutes the subbot), each carrying the
-// LIVE execution state of every child run — one pip per child, like a
-// fan-out's multi-instance display. The editor-side twin (static, from
-// the child .bot document) is lib/subbotGraph.ts; this one works on the
-// WireWorkflow / ExecutionState shapes the run console lives on.
+// nodes (the pipeline that constitutes the subbot). The frame header
+// carries one TAB per child run; the nodes inside show the live
+// execution state of the SELECTED child only — switching tabs swaps
+// the frame's content without ever leaving the parent run's canvas.
+// The editor-side twin (static, from the child .bot document) is
+// lib/subbotGraph.ts; this one works on the WireWorkflow /
+// ExecutionState shapes the run console lives on.
 //
 // Expansion is per-node and data-driven: a subbot node expands only
 // when its child workflow is known (fetched from the first child run's
@@ -108,53 +110,38 @@ export function expandWireSubbots(
   return { wf: { ...wf, nodes, edges }, frames };
 }
 
-// Pip-order spacing: child i's sequence numbers are lifted into their
-// own band so pips sort child-by-child (per-run seqs all start near 0
-// and would interleave meaninglessly otherwise).
-const CHILD_SEQ_BAND = 1_000_000;
-
-// mergeChildExecutions projects each child run's execution states onto
-// the expanded node ids so the run canvas renders them like any other
-// execution:
+// mergeChildExecutions projects the SELECTED child run's execution
+// states onto each frame's expanded node ids so the run canvas renders
+// them like any other execution:
 //   - ir_node_id   -> `${subbotNodeId}::${childNodeId}` (frame-local)
-//   - execution_id -> `${childRunId}::${execId}` (unique across children;
-//                     childRunIdOfExecution reads it back for pip clicks)
+//   - execution_id -> `${childRunId}::${execId}` (unique when two
+//                     frames' children share node names)
 //   - branch_id    -> `subrun::${childRunId}` (opts OUT of the fan-out
 //                     region regex `^branch_...` — child-internal branch
 //                     ids must not leak into the PARENT's fanout frames)
-// Only nodes in expandedNodeIds contribute (a child run whose subbot
-// node is not expanded keeps its executions off the parent canvas).
+// One child per frame: selectedChildByNode names the child run whose
+// pipeline state the frame currently displays (the active tab).
 export function mergeChildExecutions(
   subRunsByNode: Map<string, RunSummary[]>,
   childExecutionsByRun: Map<string, ExecutionState[]>,
-  expandedNodeIds: Set<string>,
+  selectedChildByNode: Map<string, string>,
 ): ExecutionState[] {
   const out: ExecutionState[] = [];
   for (const [nodeId, children] of subRunsByNode) {
-    if (!expandedNodeIds.has(nodeId)) continue;
-    children.forEach((child, ci) => {
-      const execs = childExecutionsByRun.get(child.id);
-      if (!execs) return;
-      for (const ex of execs) {
-        out.push({
-          ...ex,
-          ir_node_id: makeSubbotChildId(nodeId, ex.ir_node_id),
-          execution_id: `${child.id}${SUBBOT_CHILD_SEP}${ex.execution_id}`,
-          branch_id: `subrun${SUBBOT_CHILD_SEP}${child.id}`,
-          first_seq: ci * CHILD_SEQ_BAND + ex.first_seq,
-          last_seq: ci * CHILD_SEQ_BAND + ex.last_seq,
-        });
-      }
-    });
+    const selectedId = selectedChildByNode.get(nodeId);
+    if (!selectedId) continue;
+    const child = children.find((c) => c.id === selectedId);
+    if (!child) continue;
+    const execs = childExecutionsByRun.get(child.id);
+    if (!execs) continue;
+    for (const ex of execs) {
+      out.push({
+        ...ex,
+        ir_node_id: makeSubbotChildId(nodeId, ex.ir_node_id),
+        execution_id: `${child.id}${SUBBOT_CHILD_SEP}${ex.execution_id}`,
+        branch_id: `subrun${SUBBOT_CHILD_SEP}${child.id}`,
+      });
+    }
   }
   return out;
-}
-
-// childRunIdOfExecution recovers the child run id a merged execution
-// came from (see mergeChildExecutions' execution_id scheme). Null for
-// the parent run's own executions.
-export function childRunIdOfExecution(executionId: string): string | null {
-  const idx = executionId.indexOf(SUBBOT_CHILD_SEP);
-  if (idx <= 0) return null;
-  return executionId.slice(0, idx);
 }

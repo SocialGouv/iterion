@@ -1,9 +1,9 @@
 // Pure helpers for the run console's sub-run surface: the child runs a
 // parent run's subbot nodes spawn (one child run per subbot execution;
-// fan_out_each × subbot = N parallel children). RunView builds the
-// "Main + one tab per child" strip and the per-node chip rows from
-// these; SubRunCanvas uses subbotContinuation for its linkage banner.
-// All pure data — no React, no fetching — so they unit-test in node env.
+// fan_out_each × subbot = N parallel children). The subbot frame's tab
+// strip (SubbotRunFrame) and the compact card's chip row build on
+// these. All pure data — no React, no fetching — so they unit-test in
+// node env.
 
 import type { RunStatus, RunSummary, WireWorkflow } from "@/api/runs";
 
@@ -112,6 +112,24 @@ export function childStatusTone(status: RunStatus): ChildStatusTone {
     default:
       return { variant: "neutral", pulse: false };
   }
+}
+
+// Solid-fill dot classes per ChildStatusTone.variant. Full-strength
+// status colors (not the -soft tints) — at 6px a tint is invisible.
+const DOT_CLASS: Record<ChildStatusTone["variant"], string> = {
+  info: "bg-info",
+  warning: "bg-warning",
+  success: "bg-success",
+  danger: "bg-danger",
+  neutral: "bg-fg-subtle",
+};
+
+// statusDotClass returns the classes for a small sub-run status dot —
+// shared by the subbot frame's tab strip and IRNode's chip row so the
+// surfaces stay color-identical.
+export function statusDotClass(status: RunStatus): string {
+  const tone = childStatusTone(status);
+  return `${DOT_CLASS[tone.variant]}${tone.pulse ? " animate-pulse" : ""}`;
 }
 
 // isSettledRunStatus is true for statuses that won't change without an

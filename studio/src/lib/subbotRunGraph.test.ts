@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ExecutionState, RunSummary, WireWorkflow } from "@/api/runs";
-import {
-  childRunIdOfExecution,
-  expandWireSubbots,
-  mergeChildExecutions,
-} from "./subbotRunGraph";
+import { expandWireSubbots, mergeChildExecutions } from "./subbotRunGraph";
 
 // Mirrors examples/pipeline-board-demo: dispatch fans out over the
 // (single) subbot node produce_episode, collect joins.
@@ -187,38 +183,53 @@ describe("mergeChildExecutions", () => {
     ["c1", [exec({ first_seq: 2, last_seq: 3 })]],
     ["c2", [exec({ status: "paused_waiting_human", first_seq: 5, last_seq: 9 })]],
   ]);
-  const expanded = new Set(["produce_episode"]);
 
-  it("projects child executions onto the expanded node ids", () => {
-    const merged = mergeChildExecutions(byNode, execsByRun, expanded);
-    expect(merged).toHaveLength(2);
+  it("projects ONLY the selected child's executions onto the frame's node ids", () => {
+    const merged = mergeChildExecutions(
+      byNode,
+      execsByRun,
+      new Map([["produce_episode", "c2"]]),
+    );
+    expect(merged).toHaveLength(1);
     expect(merged[0]!.ir_node_id).toBe("produce_episode::produce");
-    expect(merged[0]!.execution_id).toBe("c1::exec:main:produce:0");
-    expect(merged[1]!.status).toBe("paused_waiting_human");
+    expect(merged[0]!.execution_id).toBe("c2::exec:main:produce:0");
+    expect(merged[0]!.status).toBe("paused_waiting_human");
+  });
+
+  it("switches content when the selected child changes", () => {
+    const forC1 = mergeChildExecutions(
+      byNode,
+      execsByRun,
+      new Map([["produce_episode", "c1"]]),
+    );
+    expect(forC1[0]!.execution_id).toBe("c1::exec:main:produce:0");
+    expect(forC1[0]!.status).toBe("running");
   });
 
   it("neutralizes branch ids so child internals never join the parent's fan-out regions", () => {
-    const merged = mergeChildExecutions(byNode, execsByRun, expanded);
+    const merged = mergeChildExecutions(
+      byNode,
+      execsByRun,
+      new Map([["produce_episode", "c1"]]),
+    );
     expect(merged.every((ex) => ex.branch_id.startsWith("subrun::"))).toBe(true);
   });
 
-  it("bands sequence numbers per child so pips sort child-by-child", () => {
-    const merged = mergeChildExecutions(byNode, execsByRun, expanded);
-    expect(merged[0]!.first_seq).toBe(2); // child 0: band 0
-    expect(merged[1]!.first_seq).toBe(1_000_005); // child 1: band 1
-  });
-
-  it("skips nodes that are not expanded and children without executions", () => {
-    expect(mergeChildExecutions(byNode, execsByRun, new Set())).toEqual([]);
+  it("skips frames without a selection, unknown selections, and children without executions", () => {
+    expect(mergeChildExecutions(byNode, execsByRun, new Map())).toEqual([]);
     expect(
-      mergeChildExecutions(byNode, new Map([["c1", []]]), expanded),
+      mergeChildExecutions(
+        byNode,
+        execsByRun,
+        new Map([["produce_episode", "ghost"]]),
+      ),
     ).toEqual([]);
-  });
-});
-
-describe("childRunIdOfExecution", () => {
-  it("recovers the child run id from a merged execution id", () => {
-    expect(childRunIdOfExecution("c1::exec:main:produce:0")).toBe("c1");
-    expect(childRunIdOfExecution("exec:main:produce:0")).toBeNull();
+    expect(
+      mergeChildExecutions(
+        byNode,
+        new Map(),
+        new Map([["produce_episode", "c1"]]),
+      ),
+    ).toEqual([]);
   });
 });

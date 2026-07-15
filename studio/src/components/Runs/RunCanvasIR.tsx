@@ -13,10 +13,8 @@ import type { ExecutionState, RunSummary, WireNode, WireWorkflow } from "@/api/r
 import { autoLayout } from "@/lib/autoLayout";
 import type { DelegateOutputMeta } from "@/lib/delegateMeta";
 import { FLOW_CONTROLS_STYLE } from "@/lib/flowTheme";
-import { firstOpenChild } from "@/lib/subRuns";
 import { isSubbotChildId, parseSubbotChildId } from "@/lib/subbotGraph";
 import {
-  childRunIdOfExecution,
   expandWireSubbots,
   mergeChildExecutions,
   type ExpandedWire,
@@ -28,7 +26,7 @@ import { useThemeStore } from "@/store/theme";
 
 import IRNode, { iterationColor } from "./IRNode";
 import FanoutFrame from "./FanoutFrame";
-import SubbotRunFrame from "./SubbotRunFrame";
+import SubbotRunFrame, { SUBBOT_RUN_FRAME_HEADER } from "./SubbotRunFrame";
 import RunCanvasToolbar from "./RunCanvasToolbar";
 import { FilterChips, buildFilterChips } from "./runCanvasIR/FilterChips";
 import { StatusLegend } from "./runCanvasIR/StatusLegend";
@@ -162,17 +160,33 @@ function buildFanoutFrames(
 const ARROW = { type: MarkerType.ArrowClosed, width: 18, height: 18 } as const;
 
 // buildSubRunsData shapes the per-node sub-run payload IRNode renders
-// as a status chip row on subbot cards. undefined (not an empty
-// object) when the node spawned no children yet, so IRNode's presence
-// check stays a single truthy test.
+// as a status chip row on COMPACT subbot cards (pre-expansion).
+// undefined (not an empty object) when the node spawned no children
+// yet, so IRNode's presence check stays a single truthy test.
 function buildSubRunsData(
   nodeId: string,
   byNode: Map<string, RunSummary[]> | undefined,
-  onOpen: ((childRunId: string) => void) | undefined,
-): { children: RunSummary[]; onOpen?: (childRunId: string) => void } | undefined {
+): { children: RunSummary[] } | undefined {
   const children = byNode?.get(nodeId);
   if (!children || children.length === 0) return undefined;
-  return { children, onOpen };
+  return { children };
+}
+
+// buildFrameSubRuns shapes the frame header's tab-strip payload: the
+// children, the active tab, and the tab-click callback.
+function buildFrameSubRuns(
+  frameId: string,
+  byNode: Map<string, RunSummary[]> | undefined,
+  selectedByFrame: Map<string, string>,
+  onSelectChild: (frameId: string, childRunId: string) => void,
+): { children: RunSummary[]; selectedChildId: string | null; onSelectChild: typeof onSelectChild } | undefined {
+  const children = byNode?.get(frameId);
+  if (!children || children.length === 0) return undefined;
+  return {
+    children,
+    selectedChildId: selectedByFrame.get(frameId) ?? null,
+    onSelectChild,
+  };
 }
 
 interface Props {
@@ -196,22 +210,17 @@ interface Props {
   followLive: boolean;
   onToggleFollowLive: () => void;
   // Child runs spawned by this run's subbot nodes, grouped by the
-  // spawning IR node id (lib/subRuns.groupChildrenByNode). Injected
-  // into subbot node cards as a per-child status chip row. Optional —
-  // SubRunCanvas and other secondary mounts omit it.
+  // spawning IR node id (lib/subRuns.groupChildrenByNode). Drives the
+  // frame tab strip + the compact subbot card's status chip row.
   subRunsByNode?: Map<string, RunSummary[]>;
-  // Invoked when the user clicks a subbot card's sub-run chip; RunView
-  // switches the flow tab to that child.
-  onOpenChildRun?: (childRunId: string) => void;
-  // INLINE subbot expansion inputs (RunView provides both; secondary
-  // mounts like SubRunCanvas omit them and keep compact subbot cards):
+  // INLINE subbot expansion inputs (RunView provides both):
   // the child workflow per subbot node id (fetched from the first child
   // run — all children of one node share the source) ...
   childWorkflowsByNode?: Map<string, WireWorkflow>;
   // ... and the live executions of each child run, keyed by child run
-  // id. Projected onto the expanded child nodes (one pip per child).
-  // NOT scrub-aware: while scrubbing the parent's history the inline
-  // child pips stay live (the sub-run tabs are the focused view).
+  // id. The frame displays ONE child at a time — its header tabs pick
+  // which (state owned here, per frame). NOT scrub-aware: while
+  // scrubbing the parent's history the inline child state stays live.
   childExecutionsByRun?: Map<string, ExecutionState[]>;
 }
 
@@ -226,7 +235,6 @@ export default function RunCanvasIR({
   followLive,
   onToggleFollowLive,
   subRunsByNode,
-  onOpenChildRun,
   childWorkflowsByNode,
   childExecutionsByRun,
 }: Props) {
@@ -266,7 +274,6 @@ export default function RunCanvasIR({
   const runtimeOverrideByNodeRef = useRef(runtimeOverrideByNode);
   const selectedNodeIdRef = useRef(selectedNodeId);
   const subRunsByNodeRef = useRef(subRunsByNode);
-  const onOpenChildRunRef = useRef(onOpenChildRun);
   const reactFlow = useReactFlow();
   // Shared with the studio canvas so the user's TB/LR preference
   // persists across views; the toggle button in RunCanvasToolbar
@@ -291,23 +298,60 @@ export default function RunCanvasIR({
   }, [wf, childWorkflowsByNode]);
   const viewWf = expanded?.wf ?? null;
 
-  // Parent executions + the child runs' executions projected onto the
-  // expanded child node ids (one pip per child run per node).
+  // Per-frame active tab: which child run's state the frame displays.
+  // Owned here (canvas-local UI state) — clicking a tab must swap the
+  // frame content, never navigate away from the parent run.
+  const [childByFrame, setChildByFrame] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const handleSelectChild = useCallback((frameId: string, childRunId: string) => {
+    setChildByFrame((prev) => {
+      if (prev.get(frameId) === childRunId) return prev;
+      const next = new Map(prev);
+      next.set(frameId, childRunId);
+      return next;
+    });
+  }, []);
+  // Effective selection: the user's pick while that child still exists,
+  // else the first child (children arrive created_at asc — stable).
+  const selectedChildByFrame = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!expanded || !subRunsByNode) return m;
+    for (const f of expanded.frames) {
+      const children = subRunsByNode.get(f.id) ?? [];
+      if (children.length === 0) continue;
+      const picked = childByFrame.get(f.id);
+      m.set(
+        f.id,
+        picked && children.some((c) => c.id === picked)
+          ? picked
+          : children[0]!.id,
+      );
+    }
+    return m;
+  }, [expanded, subRunsByNode, childByFrame]);
+
+  // Parent executions + the SELECTED child run's executions projected
+  // onto each frame's child node ids (the active tab's pipeline state).
   const allExecutions = useMemo(() => {
     if (
       !expanded ||
       expanded.frames.length === 0 ||
       !subRunsByNode?.size ||
-      !childExecutionsByRun?.size
+      !childExecutionsByRun?.size ||
+      selectedChildByFrame.size === 0
     ) {
       return executions;
     }
-    const expandedIds = new Set(expanded.frames.map((f) => f.id));
     return [
       ...executions,
-      ...mergeChildExecutions(subRunsByNode, childExecutionsByRun, expandedIds),
+      ...mergeChildExecutions(
+        subRunsByNode,
+        childExecutionsByRun,
+        selectedChildByFrame,
+      ),
     ];
-  }, [executions, expanded, subRunsByNode, childExecutionsByRun]);
+  }, [executions, expanded, subRunsByNode, childExecutionsByRun, selectedChildByFrame]);
 
   // Group executions by IR node id once; both the layout and the
   // visual-patch effects below reuse this.
@@ -334,34 +378,29 @@ export default function RunCanvasIR({
   const fanout = useMemo(() => computeFanout(allExecutions), [allExecutions]);
   // Keep the .then() refs in sync with the latest derived/incoming
   // values.
+  const selectedChildByFrameRef = useRef(selectedChildByFrame);
   useEffect(() => {
     execsByNodeRef.current = execsByNode;
     iterationByNodeRef.current = iterationByNode;
     runtimeOverrideByNodeRef.current = runtimeOverrideByNode;
     selectedNodeIdRef.current = selectedNodeId;
     subRunsByNodeRef.current = subRunsByNode;
-    onOpenChildRunRef.current = onOpenChildRun;
+    selectedChildByFrameRef.current = selectedChildByFrame;
   }, [
     execsByNode,
     iterationByNode,
     runtimeOverrideByNode,
     selectedNodeId,
     subRunsByNode,
-    onOpenChildRun,
+    selectedChildByFrame,
   ]);
 
   const handleSelectIteration = useCallback(
     (nodeId: string, iteration: number) => {
-      // A pip on an inline subbot child node maps 1:1 to a child RUN —
-      // clicking it jumps to that child's sub-run tab instead of the
-      // (parent-scoped) detail panel, which has no data for child ids.
-      if (isSubbotChildId(nodeId)) {
-        const execs = execsByNodeRef.current.get(nodeId) ?? [];
-        const ex = execs[iteration];
-        const childId = ex ? childRunIdOfExecution(ex.execution_id) : null;
-        if (childId) onOpenChildRunRef.current?.(childId);
-        return;
-      }
+      // Inline subbot child nodes show ONE child run's state (the
+      // frame's active tab) — their pips are display-only; the detail
+      // panel is parent-scoped and has no data for child ids.
+      if (isSubbotChildId(nodeId)) return;
       onSelectIteration(nodeId, iteration);
       // Also select the node so the detail panel follows the picked
       // iteration without an extra click.
@@ -400,7 +439,13 @@ export default function RunCanvasIR({
         label: f.id,
         source: f.source,
         isolated: f.isolated,
-        subRuns: buildSubRunsData(f.id, subRunsByNode, onOpenChildRun),
+        headerHeight: SUBBOT_RUN_FRAME_HEADER,
+        subRuns: buildFrameSubRuns(
+          f.id,
+          subRunsByNode,
+          selectedChildByFrame,
+          handleSelectChild,
+        ),
       },
     }));
     const irNodes: FlowNode[] = wf.nodes.map((n) => {
@@ -423,6 +468,9 @@ export default function RunCanvasIR({
         }),
         data: {
           id: n.id,
+          // Child nodes display their frame-local name — the frame
+          // header already names the subbot.
+          label: n.parentSubbot ? parseSubbotChildId(n.id)?.childId : undefined,
           kind: n.kind,
           executions: execs,
           selectedIteration,
@@ -435,7 +483,7 @@ export default function RunCanvasIR({
             n.kind === "subbot"
               ? { source: n.source, isolated: n.isolated }
               : undefined,
-          subRuns: buildSubRunsData(n.id, subRunsByNode, onOpenChildRun),
+          subRuns: buildSubRunsData(n.id, subRunsByNode),
         },
       };
     });
@@ -491,10 +539,11 @@ export default function RunCanvasIR({
               ...fn,
               data: {
                 ...(fn.data as Record<string, unknown>),
-                subRuns: buildSubRunsData(
+                subRuns: buildFrameSubRuns(
                   fn.id,
                   subRunsByNodeRef.current,
-                  onOpenChildRunRef.current,
+                  selectedChildByFrameRef.current,
+                  handleSelectChild,
                 ),
               },
             };
@@ -523,11 +572,7 @@ export default function RunCanvasIR({
                 wireNode?.kind === "subbot"
                   ? { source: wireNode.source, isolated: wireNode.isolated }
                   : undefined,
-              subRuns: buildSubRunsData(
-                fn.id,
-                subRunsByNodeRef.current,
-                onOpenChildRunRef.current,
-              ),
+              subRuns: buildSubRunsData(fn.id, subRunsByNodeRef.current),
             },
           };
         });
@@ -571,14 +616,20 @@ export default function RunCanvasIR({
     if (!wf) return;
     setNodes((prev) =>
       prev.map((n) => {
-        // Frames only track their sub-run dots; everything else (incl.
-        // their ELK-set style width/height) must stay untouched.
+        // Frames only track their tab strip (children + active tab);
+        // everything else (incl. their ELK-set style width/height)
+        // must stay untouched.
         if (n.type === "subbotFrame") {
           return {
             ...n,
             data: {
               ...(n.data as Record<string, unknown>),
-              subRuns: buildSubRunsData(n.id, subRunsByNode, onOpenChildRun),
+              subRuns: buildFrameSubRuns(
+                n.id,
+                subRunsByNode,
+                selectedChildByFrame,
+                handleSelectChild,
+              ),
             },
           };
         }
@@ -609,7 +660,7 @@ export default function RunCanvasIR({
               wireNode?.kind === "subbot"
                 ? { source: wireNode.source, isolated: wireNode.isolated }
                 : undefined,
-            subRuns: buildSubRunsData(n.id, subRunsByNode, onOpenChildRun),
+            subRuns: buildSubRunsData(n.id, subRunsByNode),
           },
           style: dimmed ? { opacity: 0.25 } : undefined,
         };
@@ -627,7 +678,8 @@ export default function RunCanvasIR({
     runtimeOverrideByNode,
     effortCapsByPair,
     subRunsByNode,
-    onOpenChildRun,
+    selectedChildByFrame,
+    handleSelectChild,
   ]);
 
   // Centre on the selected node when selection changes + on layout
@@ -729,16 +781,10 @@ export default function RunCanvasIR({
         minZoom={0.05}
         maxZoom={4}
         onNodeClick={(_e, n) => {
-          // An inline subbot child node has no parent-scoped detail —
-          // clicking it drills into the sub-run tab of its (first
-          // still-open) child run instead of selecting.
-          if (isSubbotChildId(n.id)) {
-            const sub = parseSubbotChildId(n.id)?.subbotId;
-            const children = sub ? subRunsByNode?.get(sub) ?? [] : [];
-            const target = firstOpenChild(children);
-            if (target) onOpenChildRun?.(target.id);
-            return;
-          }
+          // Inline subbot child nodes are display surfaces for the
+          // frame's active tab — no parent-scoped selection/detail.
+          // Deep inspection goes through the frame's open-console link.
+          if (isSubbotChildId(n.id)) return;
           onSelectNode(n.id === selectedNodeId ? null : n.id);
         }}
         onPaneClick={() => onSelectNode(null)}

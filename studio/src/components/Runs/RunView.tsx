@@ -10,11 +10,7 @@ import { useUIStore } from "@/store/ui";
 import { useInlineSubbotData } from "@/hooks/useInlineSubbotData";
 import { useRunChildren } from "@/hooks/useRunChildren";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
-import {
-  groupChildrenByNode,
-  isSettledRunStatus,
-  subbotContinuation,
-} from "@/lib/subRuns";
+import { groupChildrenByNode, isSettledRunStatus } from "@/lib/subRuns";
 import { useLayoutPersistence } from "@/hooks/useLayoutPersistence";
 import { useRunToasts } from "@/hooks/useRunToasts";
 import { useRunKeyboard } from "@/hooks/useRunKeyboard";
@@ -40,8 +36,6 @@ import NodeDetailPanel from "./NodeDetailPanel";
 import QueuedBanner from "./QueuedBanner";
 import RunCanvasIR, { defaultIterationFor } from "./RunCanvasIR";
 import RunHeader from "./RunHeader";
-import SubRunCanvas from "./SubRunCanvas";
-import SubRunTabs, { MAIN_FLOW_TAB } from "./SubRunTabs";
 import { BottomTabPanel } from "./runView/BottomTabPanel";
 import { ExpandStrip, ResizeSeparator } from "./runView/PanelChrome";
 import { SideDock } from "./runView/SideDock";
@@ -260,12 +254,11 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
   const wsHandle = useRunWebSocket(runId);
   useRunToasts(events, snapshot?.last_seq);
 
-  // --- Sub-run (subbot child) flow tabs ---------------------------------
-  // Children of this run + the parent IR (for grouping children by their
-  // spawning subbot node and computing the child banner's continuation
-  // targets). The IR is immutable per run → long staleTime; RunCanvasIR
-  // keeps its own plain fetch (useWorkflowLoad), so this adds one
-  // request, not a second lifecycle.
+  // --- Inline subbot expansion feeds ------------------------------------
+  // Children of this run + the parent IR (for grouping children by
+  // their spawning subbot node). The IR is immutable per run → long
+  // staleTime; RunCanvasIR keeps its own plain fetch (useWorkflowLoad),
+  // so this adds one request, not a second lifecycle.
   const parentWfQuery = useQuery({
     queryKey: ["run-workflow", runId],
     queryFn: () => getRunWorkflow(runId!),
@@ -280,50 +273,13 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
       runStatusForPoll !== undefined && !isSettledRunStatus(runStatusForPoll),
   });
 
-  // Active flow tab: MAIN_FLOW_TAB or a child run id. visitedChildTabs
-  // tracks which child canvases have been activated at least once —
-  // those stay mounted (hidden) so switching back is instant and the
-  // child WS stays warm (same trick as RunsTabsView); never-visited
-  // children cost nothing.
-  const [flowTab, setFlowTab] = useState<string>(MAIN_FLOW_TAB);
-  const [visitedChildTabs, setVisitedChildTabs] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  useEffect(() => {
-    setFlowTab(MAIN_FLOW_TAB);
-    setVisitedChildTabs(new Set());
-  }, [runId]);
-  // Guard: if the active child tab vanished from the children list
-  // (store switch, deleted run), fall back to the main flow.
-  useEffect(() => {
-    if (flowTab === MAIN_FLOW_TAB) return;
-    if (!childRuns.some((c) => c.id === flowTab)) setFlowTab(MAIN_FLOW_TAB);
-  }, [flowTab, childRuns]);
-  const handleSelectFlowTab = useCallback((id: string) => {
-    if (id !== MAIN_FLOW_TAB) {
-      setVisitedChildTabs((prev) =>
-        prev.has(id) ? prev : new Set(prev).add(id),
-      );
-    }
-    setFlowTab(id);
-  }, []);
-
   const childrenByNode = useMemo(
     () => groupChildrenByNode(childRuns, parentWf),
     [childRuns, parentWf],
   );
-  // Reverse index for tab tooltips + each child canvas's linkage banner.
-  const nodeIdByChildId = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const [nodeId, list] of childrenByNode) {
-      if (!nodeId) continue; // unattributed bucket
-      for (const c of list) m.set(c.id, nodeId);
-    }
-    return m;
-  }, [childrenByNode]);
-  // Inline subbot expansion feeds: child workflow shape per subbot node
-  // + polled child executions, so the MAIN canvas can render each
-  // subbot's constituent pipeline in place (lib/subbotRunGraph).
+  // Child workflow shape per subbot node + polled child executions, so
+  // the canvas can render each subbot's constituent pipeline in place,
+  // with per-frame tabs picking the displayed child (lib/subbotRunGraph).
   const { childWorkflowsByNode, childExecutionsByRun } =
     useInlineSubbotData(childrenByNode);
 
@@ -496,76 +452,21 @@ export default function RunView({ runId: runIdProp }: RunViewProps = {}) {
               minSize={25}
               className="min-h-0"
             >
-              <div className="h-full w-full flex flex-col">
-                {childRuns.length > 0 && (
-                  <SubRunTabs
-                    mainLabel={snapshot.run.name || snapshot.run.workflow_name}
-                    childRuns={childRuns}
-                    nodeIdByChildId={nodeIdByChildId}
-                    active={flowTab}
-                    onSelect={handleSelectFlowTab}
-                  />
-                )}
-                <div className="flex-1 min-h-0 relative">
-                  {/* Main flow stays permanently mounted; the scrub
-                      saturate wrapper is main-only (child canvases have
-                      no scrubber). */}
-                  <div
-                    className={`absolute inset-0 ${
-                      flowTab === MAIN_FLOW_TAB ? "block" : "hidden"
-                    } ${scrubbing ? "saturate-50" : ""}`}
-                    aria-hidden={flowTab === MAIN_FLOW_TAB ? undefined : true}
-                  >
-                    <RunCanvasIR
-                      runId={runId}
-                      executions={displayedExecutions}
-                      selectedNodeId={wfSelectedNodeId}
-                      onSelectNode={handleSelectNode}
-                      iterationByNode={iterationByNode}
-                      onSelectIteration={handleSelectIteration}
-                      runtimeOverrideByNode={runtimeOverrideByNode}
-                      followLive={followLiveNode}
-                      onToggleFollowLive={handleToggleFollowLive}
-                      subRunsByNode={childrenByNode}
-                      onOpenChildRun={handleSelectFlowTab}
-                      childWorkflowsByNode={childWorkflowsByNode}
-                      childExecutionsByRun={childExecutionsByRun}
-                    />
-                  </div>
-                  {/* Child canvases mount on first activation, then stay
-                      mounted hidden (same trick as RunsTabsView) so the
-                      child WS stays warm and switching back is instant. */}
-                  {childRuns
-                    .filter((c) => visitedChildTabs.has(c.id))
-                    .map((c) => {
-                      const visible = flowTab === c.id;
-                      const spawnedBy = nodeIdByChildId.get(c.id) ?? "";
-                      return (
-                        <div
-                          key={c.id}
-                          className={`absolute inset-0 ${
-                            visible ? "block" : "hidden"
-                          }`}
-                          aria-hidden={visible ? undefined : true}
-                        >
-                          <SubRunCanvas
-                            runId={c.id}
-                            parentRunName={
-                              snapshot.run.name || snapshot.run.workflow_name
-                            }
-                            parentNodeId={spawnedBy}
-                            successors={
-                              spawnedBy
-                                ? subbotContinuation(parentWf, spawnedBy)
-                                    .successors
-                                : []
-                            }
-                            onBackToMain={() => setFlowTab(MAIN_FLOW_TAB)}
-                          />
-                        </div>
-                      );
-                    })}
-                </div>
+              <div className={scrubbing ? "h-full w-full saturate-50" : "h-full w-full"}>
+                <RunCanvasIR
+                  runId={runId}
+                  executions={displayedExecutions}
+                  selectedNodeId={wfSelectedNodeId}
+                  onSelectNode={handleSelectNode}
+                  iterationByNode={iterationByNode}
+                  onSelectIteration={handleSelectIteration}
+                  runtimeOverrideByNode={runtimeOverrideByNode}
+                  followLive={followLiveNode}
+                  onToggleFollowLive={handleToggleFollowLive}
+                  subRunsByNode={childrenByNode}
+                  childWorkflowsByNode={childWorkflowsByNode}
+                  childExecutionsByRun={childExecutionsByRun}
+                />
               </div>
             </Panel>
             {!detailCollapsed && (

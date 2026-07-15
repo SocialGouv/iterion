@@ -8,6 +8,7 @@ import {
   firstOpenChild,
   groupChildrenByNode,
   isSettledRunStatus,
+  statusDotClass,
   subbotContinuation,
   subbotNodeIds,
 } from "./subRuns";
@@ -223,6 +224,16 @@ describe("childStatusTone", () => {
       variant: "neutral",
       pulse: false,
     });
+  });
+});
+
+describe("statusDotClass", () => {
+  it("derives solid dot classes from the tone map (running pulses)", () => {
+    expect(statusDotClass("running")).toBe("bg-info animate-pulse");
+    expect(statusDotClass("paused_waiting_human")).toBe("bg-warning");
+    expect(statusDotClass("finished")).toBe("bg-success");
+    expect(statusDotClass("failed")).toBe("bg-danger");
+    expect(statusDotClass("cancelled")).toBe("bg-fg-subtle");
   });
 });
 

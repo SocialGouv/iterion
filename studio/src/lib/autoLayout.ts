@@ -71,7 +71,15 @@ export async function autoLayout(
     // Group / subbot-frame node with children — compound node
     const children = groupChildren.get(n.id);
     if ((isGroup || isSubbotFrame) && children && children.length > 0) {
-      const headerHeight = isSubbotFrame ? SUBBOT_HEADER_HEIGHT : GROUP_HEADER_HEIGHT;
+      // Frames can declare their real header band height via
+      // data.headerHeight (the run console's frame adds a tab row).
+      const dataHeader = (n.data as Record<string, unknown>)?.headerHeight;
+      const headerHeight =
+        typeof dataHeader === "number"
+          ? dataHeader
+          : isSubbotFrame
+          ? SUBBOT_HEADER_HEIGHT
+          : GROUP_HEADER_HEIGHT;
       return {
         id: n.id,
         layoutOptions: {
