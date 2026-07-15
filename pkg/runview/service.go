@@ -284,9 +284,13 @@ type RunSummary struct {
 	// endpoint can project a run's shard/child subtree without a per-run
 	// fetch. See store.Run.
 	ParentRunID string `json:"parent_run_id,omitempty"`
-	ShardIndex  int    `json:"shard_index,omitempty"`
-	ShardCount  int    `json:"shard_count,omitempty"`
-	ShardLabel  string `json:"shard_label,omitempty"`
+	// ParentNodeID is the IR node id of the subbot node in the parent
+	// workflow that spawned this child run; empty for root runs and
+	// non-subbot children. See store.Run.ParentNodeID.
+	ParentNodeID string `json:"parent_node_id,omitempty"`
+	ShardIndex   int    `json:"shard_index,omitempty"`
+	ShardCount   int    `json:"shard_count,omitempty"`
+	ShardLabel   string `json:"shard_label,omitempty"`
 }
 
 // ListFilter scopes a List request. Empty fields mean no filter.

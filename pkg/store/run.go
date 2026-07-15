@@ -131,7 +131,11 @@ type Run struct {
 	// (see docs/security-bots-distributed.md). Empty / zero for root
 	// runs. The studio surfaces parent/child relationships via these
 	// fields; aggregation is by polling children's terminal status.
-	ParentRunID  string `json:"parent_run_id,omitempty" bson:"parent_run_id,omitempty"`
+	ParentRunID string `json:"parent_run_id,omitempty" bson:"parent_run_id,omitempty"`
+	// ParentNodeID is the IR node id of the subbot node in the parent
+	// workflow that spawned this child run; empty for root runs and
+	// non-subbot children.
+	ParentNodeID string `json:"parent_node_id,omitempty" bson:"parent_node_id,omitempty"`
 	ShardIndex   int    `json:"shard_index,omitempty" bson:"shard_index,omitempty"`
 	ShardCount   int    `json:"shard_count,omitempty" bson:"shard_count,omitempty"`
 	ShardLabel   string `json:"shard_label,omitempty" bson:"shard_label,omitempty"`

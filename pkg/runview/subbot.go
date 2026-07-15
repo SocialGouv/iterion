@@ -90,6 +90,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{})
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
+			runtime.WithParentNodeID(req.NodeID),
 			// Recursive wiring so a child that itself declares subbot nodes can
 			// run them (grandchild sources resolve relative to the CHILD's dir);
 			// the ctx-carried depth keeps the recursion bounded.

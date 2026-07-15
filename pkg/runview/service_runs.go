@@ -210,6 +210,7 @@ func summarizeRun(r *store.Run, active bool) RunSummary {
 		RepoRoot:          r.RepoRoot,
 		ProjectPath:       r.ProjectPath,
 		ParentRunID:       r.ParentRunID,
+		ParentNodeID:      r.ParentNodeID,
 		ShardIndex:        r.ShardIndex,
 		ShardCount:        r.ShardCount,
 		ShardLabel:        r.ShardLabel,

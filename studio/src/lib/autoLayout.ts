@@ -3,6 +3,7 @@ import type { ElkNode } from "elkjs/lib/elk.bundled.js";
 import type { Node, Edge as FlowEdge } from "@xyflow/react";
 import { isAuxiliaryNodeId } from "./documentToGraph";
 import { isGroupNodeId } from "./groups";
+import { isSubbotChildId } from "./subbotGraph";
 
 const elk = new ELK();
 
@@ -10,6 +11,8 @@ import { NODE_WIDTH, NODE_HEIGHT, AUX_NODE_WIDTH, AUX_NODE_HEIGHT } from "./cons
 
 const GROUP_PADDING = 40;
 const GROUP_HEADER_HEIGHT = 32;
+// Subbot frames carry a taller header band (name + source + chips).
+const SUBBOT_HEADER_HEIGHT = 44;
 
 export async function autoLayout(
   nodes: Node[],
@@ -48,24 +51,32 @@ export async function autoLayout(
   function makeElkNode(n: Node): ElkNode {
     const isAux = isAuxiliaryNodeId(n.id);
     const isGroup = isGroupNodeId(n.id);
+    const isSubbotFrame = n.type === "subbotFrame";
     const kind = (n.data as Record<string, unknown>)?.kind as string | undefined;
     const layoutOptions: Record<string, string> = {};
 
-    if (n.id === "__start__" || kind === "start") {
-      layoutOptions["elk.layered.layering.layerConstraint"] = "FIRST";
-      layoutOptions["elk.layered.priority.direction"] = "10";
-    } else if (kind === "done" || kind === "fail") {
-      layoutOptions["elk.layered.layering.layerConstraint"] = "LAST";
+    // Terminal layer constraints only apply to the edited workflow's own
+    // nodes: a subbot child's done/fail must settle where its local edges
+    // put it (inside the frame), not be forced to the global last layer
+    // (INCLUDE_CHILDREN layers the whole hierarchy together).
+    if (!isSubbotChildId(n.id)) {
+      if (n.id === "__start__" || kind === "start") {
+        layoutOptions["elk.layered.layering.layerConstraint"] = "FIRST";
+        layoutOptions["elk.layered.priority.direction"] = "10";
+      } else if (kind === "done" || kind === "fail") {
+        layoutOptions["elk.layered.layering.layerConstraint"] = "LAST";
+      }
     }
 
-    // Group node with children — compound node
+    // Group / subbot-frame node with children — compound node
     const children = groupChildren.get(n.id);
-    if (isGroup && children && children.length > 0) {
+    if ((isGroup || isSubbotFrame) && children && children.length > 0) {
+      const headerHeight = isSubbotFrame ? SUBBOT_HEADER_HEIGHT : GROUP_HEADER_HEIGHT;
       return {
         id: n.id,
         layoutOptions: {
           ...baseLayoutOptions,
-          "elk.padding": `[top=${GROUP_HEADER_HEIGHT + GROUP_PADDING},left=${GROUP_PADDING},bottom=${GROUP_PADDING},right=${GROUP_PADDING}]`,
+          "elk.padding": `[top=${headerHeight + GROUP_PADDING},left=${GROUP_PADDING},bottom=${GROUP_PADDING},right=${GROUP_PADDING}]`,
           ...layoutOptions,
         },
         children: children.map(makeElkNode),

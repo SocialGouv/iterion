@@ -138,6 +138,12 @@ func TestServiceLaunch_SubbotChildHumanGate_ParkAndResume(t *testing.T) {
 	if child.FilePath == "" {
 		t.Fatal("child run has no persisted FilePath — the sidebar's resume (source=null) would 409")
 	}
+	// Contract C3: the child run doc records WHICH subbot node in the
+	// parent workflow spawned it, so the studio can anchor the child
+	// under the right canvas node.
+	if child.ParentNodeID != "run_child" {
+		t.Errorf("child ParentNodeID = %q, want %q", child.ParentNodeID, "run_child")
+	}
 	if _, err := svc.Resume(context.Background(), ResumeSpec{
 		RunID:    childID,
 		FilePath: child.FilePath,

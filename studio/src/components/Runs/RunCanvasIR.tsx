@@ -9,7 +9,7 @@ import {
   type Node as FlowNode,
 } from "@xyflow/react";
 
-import type { ExecutionState, WireNode } from "@/api/runs";
+import type { ExecutionState, RunSummary, WireNode } from "@/api/runs";
 import { autoLayout } from "@/lib/autoLayout";
 import type { DelegateOutputMeta } from "@/lib/delegateMeta";
 import { FLOW_CONTROLS_STYLE } from "@/lib/flowTheme";
@@ -140,6 +140,20 @@ function buildFanoutFrames(
 
 const ARROW = { type: MarkerType.ArrowClosed, width: 18, height: 18 } as const;
 
+// buildSubRunsData shapes the per-node sub-run payload IRNode renders
+// as a status chip row on subbot cards. undefined (not an empty
+// object) when the node spawned no children yet, so IRNode's presence
+// check stays a single truthy test.
+function buildSubRunsData(
+  nodeId: string,
+  byNode: Map<string, RunSummary[]> | undefined,
+  onOpen: ((childRunId: string) => void) | undefined,
+): { children: RunSummary[]; onOpen?: (childRunId: string) => void } | undefined {
+  const children = byNode?.get(nodeId);
+  if (!children || children.length === 0) return undefined;
+  return { children, onOpen };
+}
+
 interface Props {
   runId: string;
   executions: ExecutionState[];
@@ -160,6 +174,14 @@ interface Props {
   // toggle it without opening the (often-collapsed) detail panel.
   followLive: boolean;
   onToggleFollowLive: () => void;
+  // Child runs spawned by this run's subbot nodes, grouped by the
+  // spawning IR node id (lib/subRuns.groupChildrenByNode). Injected
+  // into subbot node cards as a per-child status chip row. Optional —
+  // SubRunCanvas and other secondary mounts omit it.
+  subRunsByNode?: Map<string, RunSummary[]>;
+  // Invoked when the user clicks a subbot card's sub-run chip; RunView
+  // switches the flow tab to that child.
+  onOpenChildRun?: (childRunId: string) => void;
 }
 
 export default function RunCanvasIR({
@@ -172,6 +194,8 @@ export default function RunCanvasIR({
   runtimeOverrideByNode,
   followLive,
   onToggleFollowLive,
+  subRunsByNode,
+  onOpenChildRun,
 }: Props) {
   const { wf, error } = useWorkflowLoad(runId);
   const [nodes, setNodes] = useState<FlowNode[]>([]);
@@ -208,6 +232,8 @@ export default function RunCanvasIR({
   const iterationByNodeRef = useRef(iterationByNode);
   const runtimeOverrideByNodeRef = useRef(runtimeOverrideByNode);
   const selectedNodeIdRef = useRef(selectedNodeId);
+  const subRunsByNodeRef = useRef(subRunsByNode);
+  const onOpenChildRunRef = useRef(onOpenChildRun);
   const reactFlow = useReactFlow();
   // Shared with the studio canvas so the user's TB/LR preference
   // persists across views; the toggle button in RunCanvasToolbar
@@ -248,7 +274,16 @@ export default function RunCanvasIR({
     iterationByNodeRef.current = iterationByNode;
     runtimeOverrideByNodeRef.current = runtimeOverrideByNode;
     selectedNodeIdRef.current = selectedNodeId;
-  }, [execsByNode, iterationByNode, runtimeOverrideByNode, selectedNodeId]);
+    subRunsByNodeRef.current = subRunsByNode;
+    onOpenChildRunRef.current = onOpenChildRun;
+  }, [
+    execsByNode,
+    iterationByNode,
+    runtimeOverrideByNode,
+    selectedNodeId,
+    subRunsByNode,
+    onOpenChildRun,
+  ]);
 
   const handleSelectIteration = useCallback(
     (nodeId: string, iteration: number) => {
@@ -296,6 +331,11 @@ export default function RunCanvasIR({
           onSelectIteration: handleSelectIteration,
           meta,
           replication: fanout.replicationByNode.get(n.id) ?? null,
+          subbot:
+            n.kind === "subbot"
+              ? { source: n.source, isolated: n.isolated }
+              : undefined,
+          subRuns: buildSubRunsData(n.id, subRunsByNode, onOpenChildRun),
         },
       };
     });
@@ -365,6 +405,15 @@ export default function RunCanvasIR({
               selected: fn.id === selectedNodeIdRef.current,
               meta,
               replication: fanout.replicationByNode.get(fn.id) ?? null,
+              subbot:
+                wireNode?.kind === "subbot"
+                  ? { source: wireNode.source, isolated: wireNode.isolated }
+                  : undefined,
+              subRuns: buildSubRunsData(
+                fn.id,
+                subRunsByNodeRef.current,
+                onOpenChildRunRef.current,
+              ),
             },
           };
         });
@@ -430,6 +479,11 @@ export default function RunCanvasIR({
             onSelectIteration: handleSelectIteration,
             meta,
             replication: fanout.replicationByNode.get(n.id) ?? null,
+            subbot:
+              wireNode?.kind === "subbot"
+                ? { source: wireNode.source, isolated: wireNode.isolated }
+                : undefined,
+            subRuns: buildSubRunsData(n.id, subRunsByNode, onOpenChildRun),
           },
           style: dimmed ? { opacity: 0.25 } : undefined,
         };
@@ -446,6 +500,8 @@ export default function RunCanvasIR({
     wireNodeById,
     runtimeOverrideByNode,
     effortCapsByPair,
+    subRunsByNode,
+    onOpenChildRun,
   ]);
 
   // Centre on the selected node when selection changes + on layout

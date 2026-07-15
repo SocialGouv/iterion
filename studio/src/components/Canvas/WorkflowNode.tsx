@@ -1,6 +1,6 @@
 import { Handle } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
-import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl, ComputeDecl } from "@/api/types";
+import type { NodeKind, AgentDecl, ToolNodeDecl, HumanDecl, RouterDecl, ComputeDecl, SubbotDecl } from "@/api/types";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { useGroupedDiagnostics } from "@/hooks/useGroupedDiagnostics";
 import { useSelectionStore } from "@/store/selection";
@@ -20,18 +20,25 @@ interface WorkflowNodeData extends Record<string, unknown> {
   kind: NodeKind;
   color: string;
   decl: unknown;
+  // Set on nodes belonging to an expanded subbot's child graph — rendered
+  // dimmed and read-only (the diagnostics/entry/loop badges belong to the
+  // PARENT document and never apply to them).
+  external?: boolean;
+  subbotSource?: string;
+  // Set on a compact subbot node whose child file failed to load.
+  loadError?: string;
 }
 
 type WorkflowNodeType = Node<WorkflowNodeData, "workflow">;
 
 export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeType>) {
-  const { label, kind, color, decl } = data;
+  const { label, kind, color, decl, external, subbotSource, loadError } = data;
   const activeWorkflow = useActiveWorkflow();
   const grouped = useGroupedDiagnostics();
   const setSelectedNode = useSelectionStore((s) => s.setSelectedNode);
-  const isEntry = activeWorkflow?.entry === label;
+  const isEntry = !external && activeWorkflow?.entry === label;
 
-  const nodeDiags = grouped.byNode.get(label) ?? [];
+  const nodeDiags = external ? [] : grouped.byNode.get(label) ?? [];
   const severity = dominantSeverity(nodeDiags);
   const hasError = severity === "error";
   const hasWarning = severity === "warning";
@@ -83,6 +90,12 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
   } else if (kind === "compute") {
     const d = decl as ComputeDecl | undefined;
     if (d?.expr?.length) subtitle = `${d.expr.length} expr`;
+  } else if (kind === "subbot") {
+    // Compact form only: shown while the child document is loading, failed
+    // to load, or the subbot sits in a collapsed group. Expanded subbots
+    // render as a subbotFrame container instead of this node.
+    const d = decl as SubbotDecl | undefined;
+    if (d?.source) subtitle = d.source;
   }
 
   const modelLabel = providerModel
@@ -116,9 +129,9 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
   }
 
   // Check if node participates in a loop
-  const hasLoop = activeWorkflow?.edges?.some(
+  const hasLoop = !external && (activeWorkflow?.edges?.some(
     (e) => e.loop && (e.from === label || e.to === label),
-  ) ?? false;
+  ) ?? false);
 
   const isTerminal = kind === "done" || kind === "fail";
   const isStart = kind === "start";
@@ -147,7 +160,11 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
         borderColor,
         background: softColor(color, 10),
         boxShadow: glow,
+        // Display-only child of an expanded subbot: dimmed + desaturated so
+        // it reads as "not part of the edited bot".
+        ...(external && { opacity: 0.75, filter: "saturate(0.7)" }),
       }}
+      title={external ? `Part of ${subbotSource || "a subbot"} — open the file to edit` : undefined}
     >
       {nodeDiags.length > 0 && (
         <div className="absolute -top-2 -right-2 z-[var(--z-canvas)]">
@@ -155,6 +172,18 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
             diagnostics={nodeDiags}
             onReveal={() => setSelectedNode(label)}
           />
+        </div>
+      )}
+      {loadError && (
+        // -left-2 (not -right-2): the top-right slot belongs to
+        // DiagnosticBadge, and a compact subbot can carry both.
+        <div
+          role="img"
+          aria-label={`Failed to load subbot source: ${loadError}`}
+          className="absolute -top-2 -left-2 z-[var(--z-canvas)] w-4 h-4 rounded-full bg-warning-soft text-warning-fg text-caption leading-4 border border-warning"
+          title={`Failed to load subbot source: ${loadError}`}
+        >
+          !
         </div>
       )}
       {!isStart && SIDES.map(s => (
@@ -227,7 +256,10 @@ export default function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeT
           {hasLoop && <span className="text-[9px] bg-warning-soft text-warning-fg px-1 rounded">{"\u{1F504}"} loop</span>}
         </div>
       )}
-      {!isTerminal && SIDES.map(s => (
+      {/* An expanded subbot's `done` node carries the parent's outgoing
+          edge (frame -> downstream), so external terminals DO need source
+          handles; user connections from them are rejected upstream. */}
+      {(!isTerminal || external) && SIDES.map(s => (
         <Handle key={`source-${s}`} id={`source-${s}`} type="source" position={POS_MAP[s]} className="!bg-surface-3 !w-1.5 !h-1.5 !opacity-0" />
       ))}
     </div>

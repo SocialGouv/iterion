@@ -5,6 +5,8 @@ import { useUIStore } from "@/store/ui";
 import { useGroupStore } from "@/store/groups";
 import { useActiveWorkflow } from "@/hooks/useActiveWorkflow";
 import { documentToGraph, getTopologyKey, generateLayerNodes, applyGroups } from "@/lib/documentToGraph";
+import { expandSubbots, getSubbotExpansionKey } from "@/lib/subbotGraph";
+import { useSubbotDocuments } from "@/hooks/useSubbotDocuments";
 import { parseGroups } from "@/lib/groups";
 import { generateNodeDetailGraph } from "@/lib/nodeDetailGraph";
 import { autoLayout } from "@/lib/autoLayout";
@@ -13,6 +15,7 @@ import { DEBOUNCE_EDGE_RECOMPUTE_MS } from "@/lib/constants";
 
 export function useCanvasLayout() {
   const document = useDocumentStore((s) => s.document);
+  const currentFilePath = useDocumentStore((s) => s.currentFilePath);
   const layoutDirection = useUIStore((s) => s.layoutDirection);
   const addToast = useUIStore((s) => s.addToast);
   // Rate-limit auto-layout failure toasts: the layout effect re-runs on
@@ -46,13 +49,32 @@ export function useCanvasLayout() {
     }
   }, [macroView, groups, collapseAll, expandAll]);
 
+  // Child .bot documents of subbot declarations — drives the inline
+  // child-workflow frames. No-op (empty map) when the doc has no subbots.
+  const subbotDocs = useSubbotDocuments(document, currentFilePath);
+
   // Compute graph from document — either main workflow or sub-node detail view
   const { nodes: graphNodes, edges: graphEdges } = useMemo(() => {
     if (!document) return { nodes: [], edges: [] };
     if (subNodeViewId && activeWorkflowName) {
       return generateNodeDetailGraph(document, subNodeViewId, activeWorkflowName);
     }
-    const base = documentToGraph(document, activeWorkflowName);
+    const compactGraph = documentToGraph(document, activeWorkflowName);
+    let base: { nodes: Node[]; edges: FlowEdge[] } = compactGraph;
+    if (subbotDocs.size > 0) {
+      // A subbot inside a COLLAPSED group must stay compact: applyGroups
+      // hides the group's member ids, and an expanded frame's children
+      // (prefixed ids) would survive with a dangling parentId. Filter those
+      // subbots out of the expansion so they collapse like any other node.
+      const inCollapsedGroup = new Set<string>();
+      for (const g of groups) {
+        if (collapsedGroups.has(g.name)) for (const nid of g.nodeIds) inCollapsedGroup.add(nid);
+      }
+      const expandable = inCollapsedGroup.size === 0
+        ? subbotDocs
+        : new Map([...subbotDocs].filter(([name]) => !inCollapsedGroup.has(name)));
+      base = expandSubbots(compactGraph, document, expandable);
+    }
     const layer = generateLayerNodes(document, activeLayers);
     const merged = {
       nodes: [...base.nodes, ...layer.nodes],
@@ -63,7 +85,7 @@ export function useCanvasLayout() {
       return applyGroups(merged.nodes, merged.edges, groups, collapsedGroups);
     }
     return merged;
-  }, [document, activeWorkflowName, activeLayers, subNodeViewId, groups, collapsedGroups]);
+  }, [document, activeWorkflowName, activeLayers, subNodeViewId, groups, collapsedGroups, subbotDocs]);
 
   // Manage node positions with local state (allows dragging)
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([]);
@@ -89,7 +111,11 @@ export function useCanvasLayout() {
     const layerKey = Array.from(activeLayers).sort().join(",");
     const subViewKey = subNodeViewId ?? "";
     const groupKey = groups.map((g) => `${g.name}:${g.nodeIds.join("+")}:${collapsedGroups.has(g.name) ? "c" : "e"}`).join(";");
-    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey + "|" + subViewKey + "|" + groupKey : "";
+    // Subbot expansion changes the topology (frame + child nodes + rewired
+    // edges) without touching the document — the key must reflect it, or
+    // ELK never re-runs when a child doc finishes loading.
+    const subbotKey = getSubbotExpansionKey(document, subbotDocs);
+    const topoKey = document ? getTopologyKey(document, activeWorkflowName) + "|" + layoutDirection + "|" + layerKey + "|" + subViewKey + "|" + groupKey + "|" + subbotKey : "";
     if (prevTopologyRef.current !== topoKey) {
       prevTopologyRef.current = topoKey;
       autoLayout(graphNodes, graphEdges, layoutDirection)
@@ -122,7 +148,7 @@ export function useCanvasLayout() {
           }
         });
     }
-  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers, subNodeViewId, groups, collapsedGroups, addToast]);
+  }, [document, graphNodes, graphEdges, activeWorkflowName, layoutDirection, activeLayers, subNodeViewId, groups, collapsedGroups, subbotDocs, addToast]);
 
   // Property-edit patch: when graphNodes content changes without
   // topology change (e.g., a form edit to model / reasoning_effort),

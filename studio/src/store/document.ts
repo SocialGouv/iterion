@@ -8,6 +8,7 @@ import type {
   HumanDecl,
   ToolNodeDecl,
   ComputeDecl,
+  SubbotDecl,
   WorkflowDecl,
   SchemaDecl,
   PromptDecl,
@@ -38,6 +39,7 @@ function normalize(doc: IterDocument): IterDocument {
     humans: doc.humans ?? [],
     tools: doc.tools ?? [],
     computes: doc.computes ?? [],
+    subbots: doc.subbots ?? [],
     workflows: (doc.workflows ?? []).map((w) => ({
       ...w,
       edges: w.edges ?? [],
@@ -89,6 +91,7 @@ interface DocumentState {
   updateHuman: (name: string, updates: Partial<HumanDecl>) => void;
   updateTool: (name: string, updates: Partial<ToolNodeDecl>) => void;
   updateCompute: (name: string, updates: Partial<ComputeDecl>) => void;
+  updateSubbot: (name: string, updates: Partial<SubbotDecl>) => void;
   updateWorkflow: (name: string, updates: Partial<WorkflowDecl>) => void;
 
   // Node add/remove
@@ -98,6 +101,7 @@ interface DocumentState {
   addHuman: (decl: HumanDecl) => void;
   addTool: (decl: ToolNodeDecl) => void;
   addCompute: (decl: ComputeDecl) => void;
+  addSubbot: (decl: SubbotDecl) => void;
   removeNode: (name: string) => void;
   renameNode: (oldName: string, newName: string) => void;
   duplicateNode: (name: string) => string | null;
@@ -280,6 +284,8 @@ export function createDocumentStore() {
     set((s) => (s.document ? { document: { ...s.document, tools: updateInArray(s.document.tools, name, updates) }, ...pushHistory(s) } : s)),
   updateCompute: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, computes: updateInArray(s.document.computes, name, updates) }, ...pushHistory(s) } : s)),
+  updateSubbot: (name, updates) =>
+    set((s) => (s.document ? { document: { ...s.document, subbots: updateInArray(s.document.subbots ?? [], name, updates) }, ...pushHistory(s) } : s)),
   updateWorkflow: (name, updates) =>
     set((s) => (s.document ? { document: { ...s.document, workflows: updateInArray(s.document.workflows, name, updates) }, ...pushHistory(s) } : s)),
 
@@ -296,6 +302,8 @@ export function createDocumentStore() {
     set((s) => (s.document ? { document: { ...s.document, tools: [...s.document.tools, decl] }, ...pushHistory(s) } : s)),
   addCompute: (decl) =>
     set((s) => (s.document ? { document: { ...s.document, computes: [...s.document.computes, decl] }, ...pushHistory(s) } : s)),
+  addSubbot: (decl) =>
+    set((s) => (s.document ? { document: { ...s.document, subbots: [...(s.document.subbots ?? []), decl] }, ...pushHistory(s) } : s)),
 
   // Node remove — removes declaration + cleans up all edges referencing it
   removeNode: (name) =>
@@ -311,6 +319,7 @@ export function createDocumentStore() {
           humans: doc.humans.filter((h) => h.name !== name),
           tools: doc.tools.filter((t) => t.name !== name),
           computes: doc.computes.filter((c) => c.name !== name),
+          subbots: (doc.subbots ?? []).filter((sb) => sb.name !== name),
           workflows: removeNodeEdges(doc, name),
           comments: removeNodeFromGroups(doc.comments, name),
         },
@@ -338,6 +347,7 @@ export function createDocumentStore() {
           humans: renameIn(doc.humans),
           tools: renameIn(doc.tools),
           computes: renameIn(doc.computes),
+          subbots: renameIn(doc.subbots ?? []),
           workflows: updateWorkflowsEdges(doc, oldName, newName),
           comments: renameNodeInGroups(doc.comments, oldName, newName),
         },
@@ -364,6 +374,7 @@ export function createDocumentStore() {
     const kindToArray: Record<string, keyof IterDocument> = {
       agent: "agents", judge: "judges", router: "routers",
       human: "humans", tool: "tools", compute: "computes",
+      subbot: "subbots",
     };
     const arrayKey = kindToArray[found.kind];
     if (!arrayKey) return null;
@@ -410,6 +421,7 @@ export function createDocumentStore() {
           humans: doc.humans.filter((h) => isReferenced(h.name)),
           tools: doc.tools.filter((t) => isReferenced(t.name)),
           computes: doc.computes.filter((c) => isReferenced(c.name)),
+          subbots: (doc.subbots ?? []).filter((sb) => isReferenced(sb.name)),
         },
         ...pushHistory(s),
       };

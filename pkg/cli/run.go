@@ -526,6 +526,7 @@ func subbotRunnerForCLI(parentPath, storeDir string, s store.RunStore, logger *i
 			runtime.WithWorkflowHash(hash),
 			runtime.WithFilePath(childPath),
 			runtime.WithParentRunID(req.ParentRunID),
+			runtime.WithParentNodeID(req.NodeID),
 			// Wire the child engine with its own recursive runner so a child
 			// .bot that itself declares subbot nodes can run them (sources
 			// resolve relative to the CHILD's dir). Without this, nested

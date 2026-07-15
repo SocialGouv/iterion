@@ -1,0 +1,137 @@
+// Pure helpers for the run console's sub-run surface: the child runs a
+// parent run's subbot nodes spawn (one child run per subbot execution;
+// fan_out_each × subbot = N parallel children). RunView builds the
+// "Main + one tab per child" strip and the per-node chip rows from
+// these; SubRunCanvas uses subbotContinuation for its linkage banner.
+// All pure data — no React, no fetching — so they unit-test in node env.
+
+import type { RunStatus, RunSummary, WireWorkflow } from "@/api/runs";
+
+// Bucket key for children that cannot be attributed to a specific
+// subbot node: parent_node_id absent (legacy children, router shards)
+// AND the parent workflow has zero or 2+ subbot nodes.
+export const UNATTRIBUTED_NODE = "";
+
+// subbotNodeIds lists the parent workflow's subbot-kind node ids, in
+// declaration order. Empty when the IR hasn't loaded yet.
+export function subbotNodeIds(wf: WireWorkflow | null): string[] {
+  if (!wf) return [];
+  return wf.nodes.filter((n) => n.kind === "subbot").map((n) => n.id);
+}
+
+// groupChildrenByNode buckets a run's children by the parent IR node
+// that spawned them (contract C3's parent_node_id). Children without
+// the field fall back to the single subbot node when the workflow has
+// exactly one (the unambiguous case), else to the UNATTRIBUTED_NODE
+// bucket. Shard children (shard_count set — the __scan-shards launch
+// path, provably not subbot children) never take the fallback.
+// Preserves the input order (children arrive created_at asc) inside
+// each bucket.
+export function groupChildrenByNode(
+  children: RunSummary[],
+  wf: WireWorkflow | null,
+): Map<string, RunSummary[]> {
+  const subbots = subbotNodeIds(wf);
+  const fallback =
+    subbots.length === 1 ? subbots[0] ?? UNATTRIBUTED_NODE : UNATTRIBUTED_NODE;
+  const byNode = new Map<string, RunSummary[]>();
+  for (const child of children) {
+    const key =
+      child.parent_node_id ||
+      (child.shard_count ? UNATTRIBUTED_NODE : fallback);
+    const list = byNode.get(key);
+    if (list) list.push(child);
+    else byNode.set(key, [child]);
+  }
+  return byNode;
+}
+
+// SubbotContinuation describes how a subbot node sits in the parent
+// graph: which nodes feed it (edges in) and which nodes its child-run
+// output feeds (edges out — conditional/loop edges included, since the
+// child's output can flow down any of them). Drives the child banner's
+// "output feeds → collect" linkage line.
+export interface SubbotContinuation {
+  entryFeeders: string[];
+  successors: string[];
+}
+
+export function subbotContinuation(
+  wf: WireWorkflow | null,
+  nodeId: string,
+): SubbotContinuation {
+  const entryFeeders: string[] = [];
+  const successors: string[] = [];
+  if (wf && nodeId) {
+    for (const e of wf.edges) {
+      if (e.to === nodeId && !entryFeeders.includes(e.from)) {
+        entryFeeders.push(e.from);
+      }
+      if (e.from === nodeId && !successors.includes(e.to)) {
+        successors.push(e.to);
+      }
+    }
+  }
+  return { entryFeeders, successors };
+}
+
+// childTabLabel derives the short tab label for a child run: the shard
+// label when the spawner stamped one (fan_out_each item id), else the
+// run's friendly name, else "<workflow> #<n>" from its list position.
+export function childTabLabel(child: RunSummary, index: number): string {
+  if (child.shard_label) return child.shard_label;
+  if (child.name) return child.name;
+  return `${child.workflow_name} #${index + 1}`;
+}
+
+// ChildStatusTone is the small palette bucket for sub-run status dots.
+// `variant` mirrors runStatusMeta.STATUS_VARIANT (badge conventions)
+// so dots and badges agree; `pulse` marks live work (running only).
+export interface ChildStatusTone {
+  variant: "info" | "warning" | "success" | "danger" | "neutral";
+  pulse: boolean;
+}
+
+export function childStatusTone(status: RunStatus): ChildStatusTone {
+  switch (status) {
+    case "running":
+      return { variant: "info", pulse: true };
+    case "paused_waiting_human":
+      return { variant: "warning", pulse: false };
+    // Operator pause is info (no action required) — same distinction
+    // runStatusMeta.STATUS_VARIANT draws.
+    case "paused_operator":
+      return { variant: "info", pulse: false };
+    case "finished":
+      return { variant: "success", pulse: false };
+    case "failed":
+    case "failed_resumable":
+      return { variant: "danger", pulse: false };
+    case "cancelled":
+    case "queued":
+    default:
+      return { variant: "neutral", pulse: false };
+  }
+}
+
+// isSettledRunStatus is true for statuses that won't change without an
+// operator action (terminal + failed_resumable). Drives the children
+// poll shutoff: once the parent AND every child are settled, nothing
+// new can appear.
+export function isSettledRunStatus(status: RunStatus): boolean {
+  return (
+    status === "finished" ||
+    status === "failed" ||
+    status === "failed_resumable" ||
+    status === "cancelled"
+  );
+}
+
+// firstOpenChild picks the child a subbot node's chip click should
+// open: the first still-unsettled child (the one worth watching), else
+// the first child. Null for an empty list.
+export function firstOpenChild(children: RunSummary[]): RunSummary | null {
+  return (
+    children.find((c) => !isSettledRunStatus(c.status)) ?? children[0] ?? null
+  );
+}

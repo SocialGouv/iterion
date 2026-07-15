@@ -8,6 +8,7 @@ const QUICK_ADD_TYPES: { kind: NodeKind; label: string }[] = [
   { kind: "router", label: "Router" },
   { kind: "human", label: "Human" },
   { kind: "tool", label: "Tool" },
+  { kind: "subbot", label: "Subbot" },
 ];
 
 interface Props {

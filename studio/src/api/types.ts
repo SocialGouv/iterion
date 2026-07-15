@@ -16,6 +16,7 @@ export interface IterDocument {
   humans: HumanDecl[];
   tools: ToolNodeDecl[];
   computes: ComputeDecl[];
+  subbots?: SubbotDecl[];
   workflows: WorkflowDecl[];
   comments: Comment[];
 }
@@ -458,6 +459,18 @@ export interface ComputeExpr {
   expr: string;
 }
 
+// SubbotDecl runs another .bot file as a separate child run. Mirrors
+// pkg/dsl/ast/jsonenc.go jsonSubbotDecl: all fields omitempty except name;
+// `with` reuses the {key,value} shape of edge data mappings.
+export interface SubbotDecl {
+  name: string;
+  source?: string;
+  with?: WithEntry[];
+  output?: string;
+  needs?: string[];
+  isolated?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Workflow
 // ---------------------------------------------------------------------------
@@ -543,8 +556,9 @@ export interface WithEntry {
 }
 
 // Node kind for the visual editor. Includes the deterministic
-// `compute` node and the synthetic terminals (`done`/`fail`/`start`)
-// used for canvas rendering only — they don't have AST declarations.
+// `compute` node, the `subbot` child-workflow node, and the synthetic
+// terminals (`done`/`fail`/`start`) used for canvas rendering only —
+// they don't have AST declarations.
 export type NodeKind =
   | "agent"
   | "judge"
@@ -552,6 +566,7 @@ export type NodeKind =
   | "human"
   | "tool"
   | "compute"
+  | "subbot"
   | "done"
   | "fail"
   | "start";

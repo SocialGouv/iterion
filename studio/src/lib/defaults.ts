@@ -7,6 +7,7 @@ import type {
   HumanDecl,
   ToolNodeDecl,
   ComputeDecl,
+  SubbotDecl,
   SchemaDecl,
   PromptDecl,
 } from "@/api/types";
@@ -71,6 +72,10 @@ export function defaultCompute(name: string): ComputeDecl {
   return { name, output: "", expr: [] };
 }
 
+export function defaultSubbot(name: string): SubbotDecl {
+  return { name, source: "" };
+}
+
 export function defaultSchema(name: string): SchemaDecl {
   return { name, fields: [] };
 }
@@ -98,7 +103,7 @@ export function findNodeDecl(
   doc: IterDocument,
   name: string,
 ):
-  | { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl }
+  | { kind: NodeKind; decl: AgentDecl | JudgeDecl | RouterDecl | HumanDecl | ToolNodeDecl | ComputeDecl | SubbotDecl }
   | null {
   const agent = doc.agents?.find((a) => a.name === name);
   if (agent) return { kind: "agent", decl: agent };
@@ -112,6 +117,8 @@ export function findNodeDecl(
   if (tool) return { kind: "tool", decl: tool };
   const compute = doc.computes?.find((c) => c.name === name);
   if (compute) return { kind: "compute", decl: compute };
+  const subbot = doc.subbots?.find((sb) => sb.name === name);
+  if (subbot) return { kind: "subbot", decl: subbot };
   return null;
 }
 
@@ -123,5 +130,6 @@ export function getAllNodeNames(doc: IterDocument): Set<string> {
   for (const h of doc.humans) names.add(h.name);
   for (const t of doc.tools) names.add(t.name);
   for (const c of doc.computes ?? []) names.add(c.name);
+  for (const sb of doc.subbots ?? []) names.add(sb.name);
   return names;
 }

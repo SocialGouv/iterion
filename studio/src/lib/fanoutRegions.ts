@@ -88,7 +88,16 @@ export function computeFanoutRegions(
 // the common (ungrouped) case is exact.
 export function buildFanoutFrames(layoutNodes: Node[], regions: FanoutRegion[]): Node[] {
   if (regions.length === 0) return [];
-  const pos = new Map(layoutNodes.map((n) => [n.id, n.position]));
+  const byId = new Map(layoutNodes.map((n) => [n.id, n]));
+  // Containers (e.g. an expanded subbot's frame) are much larger than a
+  // compact node — use their measured/ELK size so the fan-out frame wraps
+  // them instead of clipping at the fixed compact footprint.
+  const dims = (n: Node): { w: number; h: number } => {
+    const style = n.style as { width?: number | string; height?: number | string } | undefined;
+    const w = n.measured?.width ?? (typeof style?.width === "number" ? style.width : undefined);
+    const h = n.measured?.height ?? (typeof style?.height === "number" ? style.height : undefined);
+    return { w: Math.max(w ?? 0, NODE_W), h: Math.max(h ?? 0, NODE_H) };
+  };
   const frames: Node[] = [];
   for (const reg of regions) {
     let minX = Infinity,
@@ -96,12 +105,14 @@ export function buildFanoutFrames(layoutNodes: Node[], regions: FanoutRegion[]):
       maxX = -Infinity,
       maxY = -Infinity;
     for (const id of reg.nodeIds) {
-      const p = pos.get(id);
-      if (!p) continue;
+      const n = byId.get(id);
+      if (!n) continue;
+      const p = n.position;
+      const { w, h } = dims(n);
       minX = Math.min(minX, p.x);
       minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x + NODE_W);
-      maxY = Math.max(maxY, p.y + NODE_H);
+      maxX = Math.max(maxX, p.x + w);
+      maxY = Math.max(maxY, p.y + h);
     }
     if (!isFinite(minX)) continue;
     const w = maxX - minX + FRAME_PAD * 2;

@@ -3755,6 +3755,60 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        BackendUsage: {
+            backend: string;
+            model?: string;
+            node_count: number;
+        };
+        Checkpoint: {
+            artifact_versions: {
+                [key: string]: number;
+            };
+            /** Format: byte */
+            backend_conversation?: string;
+            backend_name?: string;
+            backend_pending_tool_use_id?: string;
+            backend_session_id?: string;
+            budget_cost_usd?: number;
+            budget_elapsed_ns?: number;
+            budget_iterations_used?: number;
+            budget_tokens_used?: number;
+            cost_usd_total?: number;
+            interaction_id: string;
+            interaction_questions?: {
+                [key: string]: unknown;
+            };
+            loop_counters: {
+                [key: string]: number;
+            };
+            loop_current_output?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            loop_previous_output?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            node_attempts?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            node_id: string;
+            outputs: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            round_robin_counters?: {
+                [key: string]: number;
+            };
+            vars: {
+                [key: string]: unknown;
+            };
+        };
         Comment: {
             author?: string;
             body: string;
@@ -3786,6 +3840,23 @@ export interface components {
             tenant_id: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        ExecutionState: {
+            branch_id: string;
+            current_event_seq: number;
+            error?: string;
+            execution_id: string;
+            /** Format: date-time */
+            finished_at?: string;
+            first_seq: number;
+            ir_node_id: string;
+            kind?: string;
+            last_artifact_version?: number;
+            last_seq: number;
+            loop_iteration: number;
+            /** Format: date-time */
+            started_at?: string;
+            status: string;
         };
         ExternalRef: {
             connection_id: string;
@@ -3921,11 +3992,124 @@ export interface components {
             private: boolean;
             web_url?: string;
         };
+        RunBudget: {
+            max_cost_usd?: number;
+            max_duration?: string;
+            max_iterations?: number;
+            max_parallel_branches?: number;
+            max_tokens?: number;
+        };
+        RunHeader: {
+            active_duration_ms: number;
+            auto_merge?: boolean;
+            backends_used?: components["schemas"]["BackendUsage"][];
+            budget?: components["schemas"]["RunBudget"];
+            bundle_display_name?: string;
+            bundle_name?: string;
+            checkpoint?: components["schemas"]["Checkpoint"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            current_run_start?: string;
+            error?: string;
+            file_path?: string;
+            final_branch?: string;
+            final_branch_error?: string;
+            final_commit?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            id: string;
+            inputs?: {
+                [key: string]: unknown;
+            };
+            loops?: {
+                [key: string]: components["schemas"]["RunLoopProgress"];
+            };
+            merge_status?: string;
+            merge_strategy?: string;
+            merged_commit?: string;
+            merged_into?: string;
+            model_overrides?: components["schemas"]["RunModelOverride"][];
+            name?: string;
+            parent_node_id?: string;
+            parent_run_id?: string;
+            permission_mode?: string;
+            queue_position?: number;
+            shard_count?: number;
+            shard_index?: number;
+            shard_label?: string;
+            source?: components["schemas"]["RunSource"];
+            status: string;
+            /** Format: date-time */
+            updated_at: string;
+            watched_issue_ids?: string[];
+            work_dir?: string;
+            workflow_hash?: string;
+            workflow_name: string;
+            worktree?: boolean;
+            worktree_available: boolean;
+        };
+        RunLoopProgress: {
+            current: number;
+            max?: number;
+        };
+        RunModelOverride: {
+            backend?: string;
+            model?: string;
+            provider?: string;
+            selector: string;
+        };
         RunRef: {
             /** Format: date-time */
             at: string;
             run_id: string;
             workdir?: string;
+        };
+        RunSnapshot: {
+            executions: components["schemas"]["ExecutionState"][];
+            last_seq: number;
+            run: components["schemas"]["RunHeader"];
+        };
+        RunSource: {
+            issue_id?: string;
+            issue_identifier?: string;
+            issue_title?: string;
+            kind?: string;
+        };
+        RunSummary: {
+            active: boolean;
+            auto_merge?: boolean;
+            bundle_display_name?: string;
+            bundle_name?: string;
+            /** Format: date-time */
+            created_at: string;
+            error?: string;
+            file_path?: string;
+            final_branch?: string;
+            final_branch_error?: string;
+            final_commit?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            id: string;
+            merge_status?: string;
+            merge_strategy?: string;
+            merged_commit?: string;
+            merged_into?: string;
+            name?: string;
+            parent_node_id?: string;
+            parent_run_id?: string;
+            project_path?: string;
+            queue_position?: number;
+            repo_root?: string;
+            shard_count?: number;
+            shard_index?: number;
+            shard_label?: string;
+            source_kind?: string;
+            status: string;
+            /** Format: date-time */
+            updated_at: string;
+            work_dir?: string;
+            workflow_name: string;
         };
         Token: {
             /** Format: date-time */
@@ -3942,6 +4126,36 @@ export interface components {
             team_id?: string;
             token_last4: string;
             user_id: string;
+        };
+        WireEdge: {
+            condition?: string;
+            expression?: string;
+            from: string;
+            loop?: string;
+            negated?: boolean;
+            to: string;
+        };
+        WireNode: {
+            backend?: string;
+            id: string;
+            isolated?: boolean;
+            kind: string;
+            model?: string;
+            output_schema?: components["schemas"]["WireSchemaField"][];
+            reasoning_effort?: string;
+            source?: string;
+        };
+        WireSchemaField: {
+            enum_values?: string[];
+            name: string;
+            type: string;
+        };
+        WireWorkflow: {
+            edges: components["schemas"]["WireEdge"][];
+            entry: string;
+            name: string;
+            nodes: components["schemas"]["WireNode"][];
+            stale_hash?: boolean;
         };
         authResponse: {
             access_token?: string;
@@ -6124,12 +6338,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        runs: components["schemas"]["RunSummary"][];
+                    };
+                };
             };
         };
     };
@@ -6216,12 +6434,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RunSnapshot"];
+                };
             };
         };
     };
@@ -6462,12 +6682,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        runs: components["schemas"]["RunSummary"][];
+                    };
+                };
             };
         };
     };
@@ -7169,12 +7393,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WireWorkflow"];
+                };
             };
         };
     };

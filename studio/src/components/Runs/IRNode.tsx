@@ -2,8 +2,9 @@ import { useState } from "react";
 import type { Node, NodeProps } from "@xyflow/react";
 import { Handle, Position } from "@xyflow/react";
 
-import type { ExecutionState } from "@/api/runs";
+import type { ExecutionState, RunSummary } from "@/api/runs";
 import type { NodeKind } from "@/api/types";
+import { firstOpenChild } from "@/lib/subRuns";
 import { Popover } from "@/components/ui";
 import { ContextUsageBar } from "@/components/ui/ContextUsageBar";
 import { EffortBar, isEffortLevel } from "@/components/ui/EffortBar";
@@ -13,11 +14,16 @@ import { NodeIcon } from "@/components/icons/NodeIcon";
 import { softColor } from "@/lib/constants";
 
 import { statusClasses, type UnifiedStatus } from "./runStatusClasses";
+import { statusDotClass } from "./SubRunTabs";
 
 // Maximum pips to show inline before condensing into a "+N" overflow
 // affordance. Tuned to match the 200px node width — beyond ~6 the strip
 // either wraps or the node grows taller.
 const INLINE_PIPS_MAX = 6;
+
+// Maximum per-child status dots on a subbot card's sub-run chip before
+// truncating — same 200px width budget as the pip strip.
+const SUBRUN_DOTS_MAX = 8;
 
 // Palette cycled through iteration indices so a loop body that fired
 // 5 times shows pip 0 cyan, pip 1 violet, pip 2 amber, etc. Independent
@@ -86,12 +92,20 @@ interface IRNodeData extends Record<string, unknown> {
   // (every item passes through, e.g. mark_ip/route); count < total → a
   // routed split (only a subset reached this node, e.g. a per-type stub).
   replication?: { count: number; total: number } | null;
+  // Subbot node identity (wire contract C2): the child .bot file this
+  // node runs + whether the child executes in an isolated workspace.
+  // Present only for kind === "subbot".
+  subbot?: { source?: string; isolated?: boolean };
+  // Child runs this subbot node spawned + the open callback wired by
+  // RunView (switches the flow tab to the child's canvas). Absent until
+  // the first child run is observed.
+  subRuns?: { children: RunSummary[]; onOpen?: (childRunId: string) => void };
 }
 
 type IRNodeType = Node<IRNodeData, "irnode">;
 
 export default function IRNode({ data }: NodeProps<IRNodeType>) {
-  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta, replication } =
+  const { id, kind, executions, selectedIteration, isEntry, selected, onSelectIteration, meta, replication, subbot, subRuns } =
     data;
   // Multi-instance badge: count/total when split, ×N when on the common
   // per-item path. Distinguishes "mark_ip ran 38×" (×38) from "code_stub
@@ -189,6 +203,24 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
         </span>
       </div>
 
+      {/* Subbot identity: which .bot file the node runs (mono, like a
+          command line) + an isolated-workspace mini-chip. */}
+      {kind === "subbot" && subbot?.source && (
+        <div className="mt-1 flex items-center gap-1 text-caption text-fg-subtle min-w-0">
+          <span className="font-mono truncate" title={subbot.source}>
+            {subbot.source}
+          </span>
+          {subbot.isolated && (
+            <span
+              className="px-1 rounded border border-border-default bg-surface-2 text-fg-muted text-[8px] uppercase shrink-0"
+              title="isolated: the child run executes in its own workspace"
+            >
+              isolated
+            </span>
+          )}
+        </div>
+      )}
+
       {hasMeta && (
         <>
           {modelLabel && (
@@ -243,8 +275,49 @@ export default function IRNode({ data }: NodeProps<IRNodeType>) {
         />
       )}
 
+      {subRuns && subRuns.children.length > 0 && (
+        <SubRunChip children_={subRuns.children} onOpen={subRuns.onOpen} />
+      )}
+
       <Handle type="source" position={Position.Bottom} className="!bg-fg-subtle" />
     </div>
+  );
+}
+
+// SubRunChip is the compact "N sub-runs" affordance on a subbot card:
+// one status dot per child (capped to fit the 200px width budget) +
+// count label. Clicking it opens the first still-active child's canvas
+// tab (else the first child). stopPropagation so the click doesn't
+// double as a node select.
+function SubRunChip({
+  children_,
+  onOpen,
+}: {
+  children_: RunSummary[];
+  onOpen?: (childRunId: string) => void;
+}) {
+  const shown = children_.slice(0, SUBRUN_DOTS_MAX);
+  const label = `${children_.length} sub-run${children_.length === 1 ? "" : "s"}`;
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        const target = firstOpenChild(children_);
+        if (target && onOpen) onOpen(target.id);
+      }}
+      className="mt-1.5 flex items-center gap-1 text-[9px] font-mono rounded border border-border-default bg-surface-1 px-1.5 h-[16px] text-fg-muted hover:bg-surface-2 hover:text-fg-default transition-colors max-w-full"
+      title={`${label} — click to watch`}
+    >
+      {shown.map((c) => (
+        <span
+          key={c.id}
+          className={`inline-block h-1.5 w-1.5 rounded-full shrink-0 ${statusDotClass(c.status)}`}
+          aria-hidden
+        />
+      ))}
+      <span className="truncate">{label}</span>
+    </button>
   );
 }
 
