@@ -87,7 +87,7 @@ func (s *Service) subbotRunnerFor(parentPath string, runLogger *iterlog.Logger) 
 			lastMu sync.Mutex
 			last   map[string]any
 		)
-		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{})
+		opts := s.engineOptions(runLogger, hash, childPath, "", finalizationOpts{}, launchExtras{})
 		opts = append(opts,
 			runtime.WithParentRunID(req.ParentRunID),
 			runtime.WithParentNodeID(req.NodeID),

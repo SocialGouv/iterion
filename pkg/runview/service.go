@@ -153,6 +153,38 @@ type LaunchSpec struct {
 	// secret id) for this run, overriding the org bot-secret binding. Set by
 	// webhook launches carrying per-webhook secret bindings. See docs/byok.md.
 	SecretOverrides map[string]string
+
+	// --- Dispatcher-convergence fields (ADR-046) ---
+	// These four carry the invariants the dispatcher's EngineRunner.Dispatch
+	// needs so it can route its execution step through this single launch
+	// authority without losing workspace / stall / cap / retry semantics. All
+	// are per-launch overrides; empty/nil inherits the service-level default.
+
+	// WorkDir overrides the service-level working directory for this launch
+	// (runtime.WithWorkDir). The dispatcher sets it to the per-issue isolated
+	// worktree so `${PROJECT_DIR}` in bot var defaults expands to that
+	// worktree, not the daemon's cwd. Empty inherits WithWorkDir.
+	WorkDir string
+	// ExtraObservers are per-launch event observers fired on EVERY store
+	// AppendEvent — not just the engine-level events runtime.WithEventObserver
+	// sees — matching the dispatcher's stall-heartbeat semantics (the
+	// high-frequency tool_started/tool_called events flow through the backend
+	// hook layer straight to the store, bypassing the engine callback). The
+	// dispatcher wires one that advances its last-event watermark for stall
+	// detection. Empty adds none. Applied via an event-forwarding store wrap
+	// (see observerStore) so the engine + executor both feed them.
+	ExtraObservers []func(store.Event)
+	// DailyCap, when non-nil, overrides the service-level per-(store, UTC-day)
+	// spend-cap guard for this launch (runtime.WithDailyCap). The dispatcher
+	// builds it from its SINGLETON SpendStore so every concurrent dispatched
+	// run writes the one ledger, serialising on a single mutex. Nil inherits
+	// the service's dailyCap.
+	DailyCap *runtime.DailyCapGuard
+	// SourceRef stamps who originated this run onto the run record
+	// (runtime.WithSource); the studio RunHeader links back to it. The
+	// dispatcher sets it to the kanban issue that triggered the dispatch. Nil
+	// leaves Source unset (CLI / studio / fork launches).
+	SourceRef *store.RunSource
 }
 
 // ModelOverrideEntry is one launch-time per-node/-group model+backend

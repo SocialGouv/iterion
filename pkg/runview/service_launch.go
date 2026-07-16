@@ -161,10 +161,15 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 
 	_, runLogger := s.prepareRunLog(runID)
 
+	// Wrap the store so LaunchSpec.ExtraObservers (ADR-046) fire on every
+	// AppendEvent — the executor's backend hooks write tool events straight
+	// to this store, so it must carry the observers too, not just the engine.
+	emitStore := wrapWithObservers(s.store, spec.ExtraObservers)
+
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow:       wf,
 		Vars:           spec.Vars,
-		Store:          s.store,
+		Store:          emitStore,
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -250,6 +255,8 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef},
+		emitStore,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -362,6 +369,8 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 		nil, r.Preset, nil,
 		r.ParentRunID,
 		nil,
+		launchExtras{},
+		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
 			// guard against a concurrent resume / state change).
@@ -413,8 +422,19 @@ func (s *Service) spawnRun(
 	modelOverrides []store.RunModelOverride,
 	parentRunID string,
 	precreateInputs map[string]any,
+	ex launchExtras,
+	emitStore store.RunStore,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
+	// emitStore is the store the engine + executor write events through.
+	// Defaults to s.store; a per-launch observerStore wrap (ADR-046
+	// ExtraObservers) rides here so the dispatcher's stall watermark sees
+	// every AppendEvent. Lifecycle (lock / create / register) stays on
+	// s.store — the wrapper only intercepts AppendEvent, forwarding to the
+	// same underlying store, so the two views never diverge.
+	if emitStore == nil {
+		emitStore = s.store
+	}
 	lock, err := s.store.LockRun(context.Background(), runID)
 	if err != nil {
 		s.dropRunLog(runID)
@@ -460,7 +480,7 @@ func (s *Service) spawnRun(
 		ctx, cancelTimeout = context.WithTimeout(ctx, timeout)
 	}
 
-	opts := s.engineOptions(runLogger, hash, filePath, runName, fin)
+	opts := s.engineOptions(runLogger, hash, filePath, runName, fin, ex)
 	// Subbot nodes need a host-supplied runner (the bare engine can't compile
 	// a child .bot — import cycle with runview). Wired on BOTH the launch and
 	// resume paths; without it, in-process studio runs of subbot-bearing bots
@@ -494,7 +514,7 @@ func (s *Service) spawnRun(
 	if pauseCh, perr := s.manager.PauseSignal(runID); perr == nil {
 		opts = append(opts, runtime.WithPauseSignal(pauseCh))
 	}
-	eng := runtime.New(wf, s.store, executor, opts...)
+	eng := runtime.New(wf, emitStore, executor, opts...)
 	// Publish the engine so the store's Event.ActiveMs stamping can read
 	// this run's monotonic active elapsed. Removed when the goroutine exits.
 	s.registerRunEngine(runID, eng)
@@ -598,13 +618,25 @@ type finalizationOpts struct {
 	autoMerge     bool
 }
 
+// launchExtras groups the per-launch overrides ADR-046 added to
+// LaunchSpec so the dispatcher's EngineRunner.Dispatch can converge on
+// runview.Service.Launch without losing its workspace / cap / source
+// semantics. Each field overrides the matching service-level default
+// (s.workDir / s.dailyCap) when set; the zero value inherits it. Resume
+// and subbot launches pass the zero value.
+type launchExtras struct {
+	workDir  string
+	dailyCap *runtime.DailyCapGuard
+	source   *store.RunSource
+}
+
 // engineOptions builds the standard option set for both Launch and
 // Resume: logger, recovery dispatch, broker observer, extra observers,
 // workflow hash, file path, run name, and worktree-finalization
 // targets. The logger is always per-run (built by prepareRunLog) so
 // every iterion log line is captured into the run's log buffer for
 // streaming to the studio.
-func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts) []runtime.EngineOption {
+func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts, ex launchExtras) []runtime.EngineOption {
 	if runLogger == nil {
 		runLogger = s.logger
 	}
@@ -614,14 +646,32 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		runtime.WithEventObserver(s.broker.Publish),
 		runtime.WithOnNodeFinished(s.stampWatchedFromOutput),
 	}
-	if s.workDir != "" {
-		opts = append(opts, runtime.WithWorkDir(s.workDir))
+	// Per-launch WorkDir (ADR-046) overrides the service default; the
+	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}
+	// resolves there, not the daemon's cwd.
+	workDir := s.workDir
+	if ex.workDir != "" {
+		workDir = ex.workDir
+	}
+	if workDir != "" {
+		opts = append(opts, runtime.WithWorkDir(workDir))
 	}
 	if s.boardMCPHandler != nil {
 		opts = append(opts, runtime.WithBoardMCP(s.boardMCPHandler))
 	}
-	if s.dailyCap != nil {
-		opts = append(opts, runtime.WithDailyCap(s.dailyCap))
+	// Per-launch DailyCap (ADR-046) overrides the service default so the
+	// dispatcher's singleton-SpendStore guard writes the one shared ledger.
+	dailyCap := s.dailyCap
+	if ex.dailyCap != nil {
+		dailyCap = ex.dailyCap
+	}
+	if dailyCap != nil {
+		opts = append(opts, runtime.WithDailyCap(dailyCap))
+	}
+	// Per-launch SourceRef (ADR-046) stamps the originating dispatcher issue
+	// onto the run record. Nil for CLI / studio / fork launches.
+	if ex.source != nil {
+		opts = append(opts, runtime.WithSource(ex.source))
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /
