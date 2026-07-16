@@ -153,6 +153,51 @@ type LaunchSpec struct {
 	// secret id) for this run, overriding the org bot-secret binding. Set by
 	// webhook launches carrying per-webhook secret bindings. See docs/byok.md.
 	SecretOverrides map[string]string
+
+	// --- Dispatcher-convergence fields (ADR-046) ---
+	// These four carry the invariants the dispatcher's EngineRunner.Dispatch
+	// needs so it can route its execution step through this single launch
+	// authority without losing workspace / stall / cap / retry semantics. All
+	// are per-launch overrides; empty/nil inherits the service-level default.
+
+	// WorkDir overrides the service-level working directory for this launch
+	// (runtime.WithWorkDir). The dispatcher sets it to the per-issue isolated
+	// worktree so `${PROJECT_DIR}` in bot var defaults expands to that
+	// worktree, not the daemon's cwd. Empty inherits WithWorkDir.
+	WorkDir string
+	// ExtraObservers are per-launch event observers fired on EVERY run
+	// event — both the engine-level events runtime.WithEventObserver sees
+	// AND the high-frequency tool_started/tool_called events the backend
+	// hook layer emits (which bypass the engine callback) — matching the
+	// dispatcher's stall-heartbeat semantics. The dispatcher wires one that
+	// advances its last-event watermark for stall detection. Empty adds
+	// none. Delivered through TWO disjoint seams — runtime.WithEventObserver
+	// for engine events + ExecutorSpec.EventObservers for backend-hook
+	// events — so no store wrapper is interposed (a wrapper would shadow the
+	// store's optional capabilities against the executor/sandbox type-probes;
+	// ADR-046).
+	ExtraObservers []func(store.Event)
+	// DailyCap, when non-nil, overrides the service-level per-(store, UTC-day)
+	// spend-cap guard for this launch (runtime.WithDailyCap). The dispatcher
+	// builds it from its SINGLETON SpendStore so every concurrent dispatched
+	// run writes the one ledger, serialising on a single mutex. Nil inherits
+	// the service's dailyCap.
+	DailyCap *runtime.DailyCapGuard
+	// SourceRef stamps who originated this run onto the run record
+	// (runtime.WithSource); the studio RunHeader links back to it. The
+	// dispatcher sets it to the kanban issue that triggered the dispatch. Nil
+	// leaves Source unset (CLI / studio / fork launches).
+	SourceRef *store.RunSource
+	// OnOutcome, when set, is invoked once with the run's terminal Go error
+	// (nil on success, runtime.ErrRunPaused/ErrRunPausedOperator on a pause,
+	// the failure error otherwise) just before the run goroutine closes
+	// LaunchResult.Done. It is the return-path completion of the four data
+	// fields above: a blocking caller (the dispatcher's EngineRunner routing
+	// through this launch authority) reads the SAME typed error the direct
+	// engine.Run would have returned, so its retry / park / sandbox-backoff
+	// logic stays byte-identical. Nil for fire-and-forget CLI / studio /
+	// webhook launches. Not honoured on the cloud-queue or detached paths.
+	OnOutcome func(error)
 }
 
 // ModelOverrideEntry is one launch-time per-node/-group model+backend
