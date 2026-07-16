@@ -35,12 +35,12 @@ func TestValidateIRBlobKey(t *testing.T) {
 
 func TestValidateIRBlobKeyRejectsTampered(t *testing.T) {
 	cases := []string{
-		"ir/../secret.json",       // traversal in the run component
-		"tools/run/output",        // wrong prefix
-		"ir/run.txt",              // wrong suffix
-		"ir/run/nested.json",      // extra path segment
-		"run.json",                // no prefix
-		"ir/.json",                // empty run id
+		"ir/../secret.json",  // traversal in the run component
+		"tools/run/output",   // wrong prefix
+		"ir/run.txt",         // wrong suffix
+		"ir/run/nested.json", // extra path segment
+		"run.json",           // no prefix
+		"ir/.json",           // empty run id
 	}
 	for _, c := range cases {
 		if _, err := validateIRBlobKey(c); err == nil {

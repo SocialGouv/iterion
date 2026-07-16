@@ -97,13 +97,13 @@ type TeamResolver interface {
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
 type Publisher struct {
-	nats           *natsq.Conn
-	publishRun     func(context.Context, *queue.RunMessage) error
-	cancelRun      func(string) error
+	nats       *natsq.Conn
+	publishRun func(context.Context, *queue.RunMessage) error
+	cancelRun  func(string) error
 	// maxPayload reports the NATS server-negotiated max message size so
 	// the offload path can size a RunMessage against it. Nil (the default
 	// in unit tests) disables IR offload — the message is published as-is.
-	maxPayload func() int64
+	maxPayload     func() int64
 	store          store.RunStore
 	runs           *mongo.Collection
 	logger         *iterlog.Logger
