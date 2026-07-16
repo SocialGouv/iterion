@@ -33,7 +33,27 @@ priorities form → roadmap → review form → emit → dispatch pickers).
   (A: verify+close the review wave with `comment_issue` traces — asks
   before the bulk, guardrail respected; B: decompose C1 vs dispatch
   whole) + 4 aligned quick_replies.
+- Turn 2 (operator picked decision A — verify the review lot): $1.28,
+  9 `get_issue` + 2 git checks, ZERO mutations. Per-ticket verdict
+  table with line-level evidence; caught 2 tickets parked in `review`
+  without the work done, and re-asked before the batch because the
+  action set had changed (re-bucketing was not in decision A) — the
+  bulk ritual held. **But 3 of 9 verdicts were right for the wrong
+  tree**: her shell ran cwd-relative in the run's working directory (a
+  worktree cut from the morning's origin/main) while the audited
+  workspace was live main — NATSBus (`d346b6ec7`), T-42 IRRef
+  (`cd333b3b3`) and LaunchSpec (`38799ea38`) had merged mid-session,
+  so her "not delivered / façade" calls on those three were stale.
+  The operator's own base-drift phenomenon, biting the AUDIT phase.
 - Findings / misses:
+  - **Anchor bug (fixed)**: verification commands must anchor at
+    `workspace_dir` (`git -C`, absolute paths), never the shell cwd —
+    the run can execute from a different tree. Skill fix `1b4c30fae`
+    (playbook + repo-survey; skills sit outside the resume hash and
+    re-mirror on resume, so the live session gets it next turn). The
+    matching one-line prompt hardening in main.bot is deferred until
+    the session closes — editing the source would invalidate the
+    run's resume hash and break the operator's next chat answer.
   - 3-audit Task fan-out not exercised live (adaptive skip — a fresh
     study would have duplicated the 2026-07-15 one; the doctrine's
     "skipping a stage is judgment" clause worked as intended). Still to
