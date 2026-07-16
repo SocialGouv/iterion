@@ -62,6 +62,12 @@ Spawn THREE parallel read-only sub-agents with the Task tool — one per
 axis. Keep your own context clean for the synthesis. Do not ask
 permission to spawn them; the fan-out is the method.
 
+**Await the audits within the SAME turn** (blocking task wait):
+background sub-agents do NOT survive the turn boundary — ending the
+turn with audits still in flight forfeits them. If you inherit a
+session where that happened, say so and relaunch the missing audits
+rather than stalling or inventing their conclusions.
+
 The three canonical axes:
 
 - **docs-adr** — docs/ADR follow-ons: accepted ADRs whose

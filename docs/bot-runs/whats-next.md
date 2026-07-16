@@ -88,6 +88,28 @@ priorities form → roadmap → review form → emit → dispatch pickers).
   ticket creation did). Board execution therefore awaits the
   operator's own click/message — plan bulk closes into the initial
   ask, or hand the operator the exact batch to send.
+- Fixture run (019f6b42, /tmp/iterion-probe-nexie, $0.79): a 6-file
+  virgin repo + 3-ticket board, launched cwd≠workspace ON PURPOSE.
+  She correctly did NOT fan out ("repo volontairement fin — je
+  calibre, pas de faux chantiers de prestige"), read the tree
+  directly, caught the planted obsolete ticket with anchored evidence
+  (`95896e1` @67b7c35), classified the ADR-blocked cleanup as
+  non-dispatchable, named the real blind spot (zero tests), and wrote
+  her memory brief under the CORRECT fixture key — the anchor fixes
+  hold. Scale-trigger validated in both directions.
+- Scale run (019f6b46, workspace=.works/claw-code-go, 2 turns ~$2.09):
+  **the mechanical fan-out validated** — 3 parallel read-only
+  sub-agents with fully conformant briefs (Area per canonical axis,
+  absolute Workspace, evidence-cited envelope) into which she
+  propagated the anchor rule herself ("never trust cwd"). Edge found:
+  she ended turn 1 with audits in flight and the sub-agents did not
+  survive the chat pause — turn 2 detected the loss, said so, and
+  relaunched the missing two while delivering the synthesis on the
+  solid base (full v3 shape: tension line, 8 chantiers now/next/later,
+  quick-wins routed per catalog — Doki/Testy/Adry/Fini —, argued
+  top-3, honest blind spots, 3 decision blocks, zero board writes
+  before arbitrage). Skill patched: await audits within the turn;
+  relaunch, never invent, on an inherited loss.
 - Findings / misses:
   - **Anchor bug (fixed)**: verification commands must anchor at
     `workspace_dir` (`git -C`, absolute paths), never the shell cwd —
