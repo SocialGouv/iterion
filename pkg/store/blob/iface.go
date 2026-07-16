@@ -122,6 +122,30 @@ type Client interface {
 	// DeleteRunFiles removes every blob under `runfiles/<runID>/` in a
 	// single sweep. Best-effort, mirroring DeleteRunAttachments.
 	DeleteRunFiles(ctx context.Context, runID string) error
+
+	// PutIRBlob stashes an out-of-band compiled IR under `ir/<runID>.json`
+	// (the queue IRRef fallback for workflows whose IR exceeds the NATS
+	// max_payload). Idempotent: re-PUTting the same run replaces the bytes.
+	PutIRBlob(ctx context.Context, runID string, body []byte) error
+
+	// GetIRBlob returns the IR bytes previously PUT for a run, addressed by
+	// the storage key carried on queue.IRRef.StorageKey. Returns
+	// ErrArtifactNotFound when the key is absent. The key is validated
+	// against the canonical `ir/<run_id>.json` shape so a tampered
+	// reference can never widen the key space.
+	GetIRBlob(ctx context.Context, storageKey string) ([]byte, error)
+
+	// DeleteRunIR removes the `ir/<runID>.json` blob. Best-effort, part of
+	// the per-run cleanup sweep alongside DeleteRun / DeleteRunToolBlobs.
+	// Idempotent: deleting a non-existent key returns nil.
+	DeleteRunIR(ctx context.Context, runID string) error
+}
+
+// IRBlobKey returns the canonical layout key for an out-of-band compiled
+// IR: `ir/<run_id>.json`. This is the value stamped on
+// queue.IRRef.StorageKey.
+func IRBlobKey(runID string) (string, error) {
+	return irBlobKey(runID)
 }
 
 // RunFileObject is the metadata the blob backend reports for one

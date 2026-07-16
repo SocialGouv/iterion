@@ -81,6 +81,33 @@ func toolBlobKey(runID, toolUseID, kind string) (string, error) {
 	return fmt.Sprintf("tools/%s/%s/%s", runID, toolUseID, kind), nil
 }
 
+// irBlobKey builds the canonical S3 key for an out-of-band compiled IR:
+// ir/<run_id>.json. One object per run (the IRRef fallback only ever
+// stashes a single IR per run), so there is no sub-path to sanitise
+// beyond the run id.
+func irBlobKey(runID string) (string, error) {
+	if err := store.SanitizePathComponent("run_id", runID); err != nil {
+		return "", fmt.Errorf("blob: invalid run_id: %w", err)
+	}
+	return fmt.Sprintf("ir/%s.json", runID), nil
+}
+
+// validateIRBlobKey re-derives the canonical IR key from a storage key
+// carried on the wire (queue.IRRef.StorageKey) and confirms they match,
+// so a tampered or malformed reference can never escape the ir/ prefix.
+// Returns the (identical) canonical key on success.
+func validateIRBlobKey(storageKey string) (string, error) {
+	runID := strings.TrimSuffix(strings.TrimPrefix(storageKey, "ir/"), ".json")
+	canonical, err := irBlobKey(runID)
+	if err != nil {
+		return "", err
+	}
+	if canonical != storageKey {
+		return "", fmt.Errorf("blob: invalid IR storage key %q (want ir/<run_id>.json)", storageKey)
+	}
+	return canonical, nil
+}
+
 // toolBlobRunPrefix is the S3 key prefix containing every tool blob for
 // a run. Trailing slash guards against matching `tools/<runID>-other/`.
 func toolBlobRunPrefix(runID string) (string, error) {
