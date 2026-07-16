@@ -122,6 +122,33 @@ tag` your build to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`).
 > "⚠ Coverage" banner. Schedule it for the LLM-review pass, but treat it
 > as incomplete until the implementation ticket lands.
 
+## Retention — pair recurring schedules with `iterion runs prune`
+
+Every scheduled run persists forever under `<store-dir>/runs/<run_id>/`;
+the store has no built-in retention. A weekly bot alone adds ~50 run
+directories a year, and a fleet of hourly/daily bots pushes that into
+the low thousands per month. Cap disk usage by running `iterion runs
+prune` on its own crontab line — the schedule manifest only runs bots,
+not arbitrary commands, so this one belongs **outside** the managed
+block:
+
+```
+# Weekly retention sweep — keep the last 100 runs and prune anything
+# finished/failed/cancelled that is older than 30 days.
+30 3 * * 1 /usr/local/bin/iterion runs prune --store-dir /path/to/workspace/.iterion --older-than 720h --keep-last 100 >> "$HOME"/.iterion/logs/runs-prune.log 2>&1
+```
+
+Flags mirror the semantics of the shipped statuses — see
+`iterion runs prune --help` for the full list. `--dry-run` is the safe
+way to preview what a candidate retention policy would delete before
+committing to it in the crontab. The command only removes
+`<store-dir>/runs/<id>/` directories; it never touches
+`<store-dir>/worktrees/` or anything else.
+
+`failed_resumable` runs are excluded by default (they are recoverable);
+opt in with `--status finished,failed,cancelled,failed_resumable` when
+you have accepted their loss.
+
 ## Notes & limits
 
 - **Cron expressions are passed through verbatim.** `iterion` only
