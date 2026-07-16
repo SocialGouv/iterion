@@ -97,9 +97,13 @@ type TeamResolver interface {
 
 // Publisher is a runview.LaunchPublisher backed by NATS + Mongo.
 type Publisher struct {
-	nats           *natsq.Conn
-	publishRun     func(context.Context, *queue.RunMessage) error
-	cancelRun      func(string) error
+	nats       *natsq.Conn
+	publishRun func(context.Context, *queue.RunMessage) error
+	cancelRun  func(string) error
+	// maxPayload reports the NATS server-negotiated max message size so
+	// the offload path can size a RunMessage against it. Nil (the default
+	// in unit tests) disables IR offload — the message is published as-is.
+	maxPayload     func() int64
 	store          store.RunStore
 	runs           *mongo.Collection
 	logger         *iterlog.Logger
@@ -188,6 +192,7 @@ func New(cfg Config) (*Publisher, error) {
 			return err
 		},
 		cancelRun:      cfg.NATS.CancelRun,
+		maxPayload:     cfg.NATS.MaxPayload,
 		store:          cfg.Store,
 		runs:           cfg.MongoColl,
 		logger:         cfg.Logger,
@@ -544,10 +549,10 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		return 0, fmt.Errorf("cloudpublisher: save run: %w", err)
 	}
 
-	// 2. Build the RunMessage. We marshal the AST inline; T-42 will
-	//    add the IRRef fallback for oversized workflows. The
-	//    runner side re-parses + re-compiles, so the wire payload
-	//    is the AST File, not the compiled IR.
+	// 2. Build the RunMessage. We marshal the AST inline; p.publish then
+	//    offloads it out-of-band via an IRRef (T-42) if it would exceed
+	//    the NATS max_payload. The runner side re-parses + re-compiles, so
+	//    the wire payload is the AST File, not the compiled IR.
 	body, err := marshalIRFromSpec(spec.FilePath, spec.Source)
 	if err != nil {
 		return 0, err
@@ -762,6 +767,9 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 }
 
 func (p *Publisher) publish(ctx context.Context, msg *queue.RunMessage) error {
+	if err := p.offloadOversizedIR(ctx, msg); err != nil {
+		return err
+	}
 	if p.publishRun != nil {
 		return p.publishRun(ctx, msg)
 	}
@@ -770,6 +778,78 @@ func (p *Publisher) publish(ctx context.Context, msg *queue.RunMessage) error {
 	}
 	_, err := p.nats.PublishRun(ctx, msg)
 	return err
+}
+
+// irEnvelopeReserve is the byte headroom kept for the RunMessage's
+// non-IR fields (ids, vars, trace, backend, …) when deciding whether the
+// inline IR still fits under max_payload. IRCompiled is embedded verbatim
+// (json.RawMessage), so the marshaled envelope is ~len(IRCompiled) plus
+// these fields; the reserve lets the common (small-IR) path skip the
+// precise marshal below.
+const irEnvelopeReserve = 64 * 1024
+
+// offloadOversizedIR swaps the inline compiled IR for a lightweight IRRef
+// when the marshaled RunMessage would exceed the NATS max_payload. It
+// stashes the IR in the store's out-of-band blob backend (S3, via the
+// IRBlobStore seam) keyed by run id and points the message at it. This is
+// the T-42 fallback that keeps a workflow whose compiled IR is larger than
+// the payload budget (default 1 MiB) dispatchable instead of hard-failing
+// at enqueue.
+//
+// No-op when: NATS is not wired (unit tests stub publishRun), the message
+// already carries an IRRef, there is no inline IR, or the IR comfortably
+// fits. Fails loudly — rather than silently truncating — when the IR is
+// oversized but the store cannot host an IR blob.
+func (p *Publisher) offloadOversizedIR(ctx context.Context, msg *queue.RunMessage) error {
+	if p.maxPayload == nil || msg.IRRef != nil || len(msg.IRCompiled) == 0 {
+		return nil
+	}
+	maxPayload := p.maxPayload()
+	if maxPayload <= 0 {
+		return nil
+	}
+	// Cheap gate: if the IR plus the envelope reserve is under the limit,
+	// it fits — skip the precise (re-)marshal on the hot path.
+	if int64(len(msg.IRCompiled))+irEnvelopeReserve <= maxPayload {
+		return nil
+	}
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("cloudpublisher: marshal RunMessage for run %s: %w", msg.RunID, err)
+	}
+	if int64(len(body)) <= maxPayload {
+		return nil
+	}
+
+	blobs := store.AsIRBlobStore(p.store)
+	if blobs == nil {
+		return fmt.Errorf("cloudpublisher: RunMessage for run %s is %d bytes (exceeds NATS max_payload %d) but the store cannot host an out-of-band IR blob (IRRef fallback unavailable)", msg.RunID, len(body), maxPayload)
+	}
+	backend, err := irBackendForName(blobs.IRBlobBackend())
+	if err != nil {
+		return err
+	}
+	key, err := blobs.PutIRBlob(ctx, msg.RunID, msg.IRCompiled)
+	if err != nil {
+		return fmt.Errorf("cloudpublisher: stash oversized IR for run %s: %w", msg.RunID, err)
+	}
+	msg.IRCompiled = nil
+	msg.IRRef = &queue.IRRef{StorageKey: key, Backend: backend}
+	p.logger.Info("cloudpublisher: run %s compiled IR (%d bytes) exceeds NATS max_payload %d — offloaded to %s:%s", msg.RunID, len(body), maxPayload, backend, key)
+	return nil
+}
+
+// irBackendForName maps an IRBlobStore backend name to the wire enum the
+// runner validates, rejecting anything the queue contract doesn't accept.
+func irBackendForName(name string) (queue.IRBackend, error) {
+	switch queue.IRBackend(name) {
+	case queue.IRBackendS3:
+		return queue.IRBackendS3, nil
+	case queue.IRBackendMongo:
+		return queue.IRBackendMongo, nil
+	default:
+		return "", fmt.Errorf("cloudpublisher: IR blob store reported unsupported backend %q (want s3|mongo)", name)
+	}
 }
 
 func (p *Publisher) cancel(runID string) error {

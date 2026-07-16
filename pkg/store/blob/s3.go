@@ -521,6 +521,67 @@ func (c *S3Client) GetToolBlobRange(ctx context.Context, runID, toolUseID, kind 
 	return data, total, eof, nil
 }
 
+// PutIRBlob uploads an out-of-band compiled IR under ir/<runID>.json.
+// Idempotent: re-PUTting the same run replaces the bytes.
+func (c *S3Client) PutIRBlob(ctx context.Context, runID string, body []byte) error {
+	key, err := irBlobKey(runID)
+	if err != nil {
+		return err
+	}
+	_, err = c.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(c.bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(body),
+		ContentType: aws.String("application/json"),
+	})
+	if err != nil {
+		return fmt.Errorf("blob: put IR blob %s: %w", key, err)
+	}
+	return nil
+}
+
+// GetIRBlob fetches the IR bytes for the given storage key (as carried on
+// queue.IRRef.StorageKey). The key is re-validated against the canonical
+// ir/<run_id>.json shape before use so a tampered reference on the wire
+// can never widen the key space. Returns ErrArtifactNotFound when absent.
+func (c *S3Client) GetIRBlob(ctx context.Context, storageKey string) ([]byte, error) {
+	key, err := validateIRBlobKey(storageKey)
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return nil, fmt.Errorf("%w: %s", ErrArtifactNotFound, key)
+		}
+		return nil, fmt.Errorf("blob: get IR blob %s: %w", key, err)
+	}
+	defer out.Body.Close()
+	body, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("blob: read IR blob %s: %w", key, err)
+	}
+	return body, nil
+}
+
+// DeleteRunIR removes the ir/<runID>.json blob. Idempotent, best-effort.
+func (c *S3Client) DeleteRunIR(ctx context.Context, runID string) error {
+	key, err := irBlobKey(runID)
+	if err != nil {
+		return err
+	}
+	if _, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		return fmt.Errorf("blob: delete IR blob %s: %w", key, err)
+	}
+	return nil
+}
+
 // DeleteRunToolBlobs sweeps every blob under tools/<runID>/. Mirrors
 // DeleteRunAttachments' batched, best-effort semantics.
 func (c *S3Client) DeleteRunToolBlobs(ctx context.Context, runID string) error {

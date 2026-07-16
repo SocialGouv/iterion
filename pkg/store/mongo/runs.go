@@ -89,6 +89,9 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	if err := s.blob.DeleteRunFiles(ctx, id); err != nil {
 		return fmt.Errorf("store/mongo: blob delete run files %s: %w", id, err)
 	}
+	if err := s.blob.DeleteRunIR(ctx, id); err != nil {
+		return fmt.Errorf("store/mongo: blob delete IR blob %s: %w", id, err)
+	}
 	// Also sweep the runner-local scratch dir if this store owns one (a
 	// runner-side store; server-side stores leave runFilesScratch empty
 	// so the join is harmless but the tree never exists).

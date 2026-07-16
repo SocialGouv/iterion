@@ -1014,7 +1014,7 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		defer cancel()
 	}
 
-	wf, err := loadWorkflow(msg)
+	wf, err := loadWorkflow(ctx, msg, store.AsIRBlobStore(r.cfg.Store))
 	if err != nil {
 		return err
 	}
@@ -2054,18 +2054,28 @@ func materializeOAuthCredentials(kind string, payload []byte) (dir string, fname
 	return dir, fname, nil
 }
 
-// loadWorkflow decodes the AST embedded in the message and compiles
-// it to IR. T-42 will add a fallback for IRRef when IRCompiled is
-// absent (oversized IR pulled from S3 or Mongo); the inline case
-// covers the vast majority of workflows.
-func loadWorkflow(msg *queue.RunMessage) (*ir.Workflow, error) {
-	if len(msg.IRCompiled) == 0 {
-		// IRRef fallback isn't wired yet — server should always
-		// inline the IR for now. Fail loudly so the operator can
-		// surface the "IR too large" mode they hit.
-		return nil, fmt.Errorf("runner: RunMessage.IRCompiled is empty (IRRef fallback not yet implemented)")
+// loadWorkflow decodes the AST for a run and compiles it to IR. The IR
+// travels inline on RunMessage.IRCompiled for the vast majority of
+// workflows; when it exceeds the NATS max_payload the publisher offloads
+// it out-of-band (T-42) and sends an IRRef instead, which the runner
+// fetches here via the store's IRBlobStore seam (blobs may be nil for a
+// store without the seam — then an IRRef is unrecoverable and fails loudly).
+func loadWorkflow(ctx context.Context, msg *queue.RunMessage, blobs store.IRBlobStore) (*ir.Workflow, error) {
+	raw := msg.IRCompiled
+	if len(raw) == 0 {
+		if msg.IRRef == nil || msg.IRRef.StorageKey == "" {
+			return nil, fmt.Errorf("runner: RunMessage for run %s carries neither IRCompiled nor IRRef", msg.RunID)
+		}
+		if blobs == nil {
+			return nil, fmt.Errorf("runner: run %s references out-of-band IR (%s:%s) but this store cannot fetch IR blobs", msg.RunID, msg.IRRef.Backend, msg.IRRef.StorageKey)
+		}
+		fetched, err := blobs.GetIRBlob(ctx, msg.IRRef.StorageKey)
+		if err != nil {
+			return nil, fmt.Errorf("runner: fetch out-of-band IR %s for run %s: %w", msg.IRRef.StorageKey, msg.RunID, err)
+		}
+		raw = fetched
 	}
-	file, err := ast.UnmarshalFile(msg.IRCompiled)
+	file, err := ast.UnmarshalFile(raw)
 	if err != nil {
 		return nil, fmt.Errorf("runner: decode IR: %w", err)
 	}

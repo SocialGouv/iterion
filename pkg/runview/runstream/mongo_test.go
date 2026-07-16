@@ -386,5 +386,12 @@ func (nopBlob) GetRunFile(context.Context, string, string) (io.ReadCloser, blob.
 	return nil, blob.RunFileObject{}, blob.ErrArtifactNotFound
 }
 func (nopBlob) DeleteRunFiles(context.Context, string) error { return nil }
+func (nopBlob) PutIRBlob(context.Context, string, []byte) error {
+	return nil
+}
+func (nopBlob) GetIRBlob(context.Context, string) ([]byte, error) {
+	return nil, blob.ErrArtifactNotFound
+}
+func (nopBlob) DeleteRunIR(context.Context, string) error { return nil }
 
 var _ blob.Client = nopBlob{}
