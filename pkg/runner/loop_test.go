@@ -146,20 +146,99 @@ func TestMaterializeOAuthCredentials_UnknownKindRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoadWorkflow_RejectsEmptyIR(t *testing.T) {
-	_, err := loadWorkflow(&queue.RunMessage{RunID: "r", WorkflowName: "wf"})
-	if err == nil || !strings.Contains(err.Error(), "IRCompiled is empty") {
-		t.Errorf("expected IRCompiled-empty err, got %v", err)
+	_, err := loadWorkflow(context.Background(), &queue.RunMessage{RunID: "r", WorkflowName: "wf"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "neither IRCompiled nor IRRef") {
+		t.Errorf("expected neither-IRCompiled-nor-IRRef err, got %v", err)
 	}
 }
 
 func TestLoadWorkflow_RejectsMalformedIR(t *testing.T) {
-	_, err := loadWorkflow(&queue.RunMessage{
+	_, err := loadWorkflow(context.Background(), &queue.RunMessage{
 		RunID:        "r",
 		WorkflowName: "wf",
 		IRCompiled:   []byte(`{not valid json`),
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "decode IR") {
 		t.Errorf("expected decode IR err, got %v", err)
+	}
+}
+
+// fakeIRBlobs is a store.IRBlobStore that serves preloaded IR bytes so the
+// runner's out-of-band fetch path (IRRef fallback, T-42) is exercisable
+// without S3/Mongo.
+type fakeIRBlobs struct {
+	blobs map[string][]byte
+	err   error
+}
+
+func (f *fakeIRBlobs) GetIRBlob(_ context.Context, key string) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	b, ok := f.blobs[key]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return b, nil
+}
+
+func (f *fakeIRBlobs) PutIRBlob(_ context.Context, runID string, body []byte) (string, error) {
+	key := "ir/" + runID + ".json"
+	if f.blobs == nil {
+		f.blobs = map[string][]byte{}
+	}
+	f.blobs[key] = body
+	return key, nil
+}
+
+func (f *fakeIRBlobs) IRBlobBackend() string { return "s3" }
+
+// TestLoadWorkflow_FetchesIRRef is the runner half of T-42: an oversized
+// workflow arrives with an empty IRCompiled and an IRRef, and the runner
+// hydrates it by fetching the blob back through the IRBlobStore seam.
+func TestLoadWorkflow_FetchesIRRef(t *testing.T) {
+	const src = "workflow main:\n  entry: a\n  a -> done\nagent a:\n  backend: \"claw\"\n  model: \"openai/gpt-5.4-mini\"\n  system: sys\nprompt sys:\n  hi\n"
+	pr := parser.Parse("main.bot", src)
+	body, err := ast.MarshalFile(pr.File)
+	if err != nil {
+		t.Fatalf("marshal AST: %v", err)
+	}
+	blobs := &fakeIRBlobs{blobs: map[string][]byte{"ir/run-big.json": body}}
+	msg := &queue.RunMessage{
+		RunID:        "run-big",
+		WorkflowName: "main",
+		IRRef:        &queue.IRRef{StorageKey: "ir/run-big.json", Backend: queue.IRBackendS3},
+	}
+	wf, err := loadWorkflow(context.Background(), msg, blobs)
+	if err != nil {
+		t.Fatalf("loadWorkflow: %v", err)
+	}
+	if wf == nil || wf.Name != "main" {
+		t.Fatalf("expected workflow main, got %+v", wf)
+	}
+}
+
+func TestLoadWorkflow_IRRefWithoutSeamFails(t *testing.T) {
+	msg := &queue.RunMessage{
+		RunID:        "run-big",
+		WorkflowName: "main",
+		IRRef:        &queue.IRRef{StorageKey: "ir/run-big.json", Backend: queue.IRBackendS3},
+	}
+	_, err := loadWorkflow(context.Background(), msg, nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot fetch IR blobs") {
+		t.Fatalf("expected cannot-fetch err, got %v", err)
+	}
+}
+
+func TestLoadWorkflow_IRRefFetchErrorPropagates(t *testing.T) {
+	msg := &queue.RunMessage{
+		RunID:        "run-big",
+		WorkflowName: "main",
+		IRRef:        &queue.IRRef{StorageKey: "ir/missing.json", Backend: queue.IRBackendS3},
+	}
+	_, err := loadWorkflow(context.Background(), msg, &fakeIRBlobs{})
+	if err == nil || !strings.Contains(err.Error(), "fetch out-of-band IR") {
+		t.Fatalf("expected fetch err, got %v", err)
 	}
 }
 
@@ -211,11 +290,11 @@ workflow main:
 
 	// Faithful mirror of the runner: hydrate the pre-compiled AST, then
 	// resolve the MCP catalog against the workspace (executeRun's sequence).
-	wf, err := loadWorkflow(&queue.RunMessage{
+	wf, err := loadWorkflow(context.Background(), &queue.RunMessage{
 		RunID:        "r",
 		WorkflowName: "main",
 		IRCompiled:   body,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("loadWorkflow: %v", err)
 	}
