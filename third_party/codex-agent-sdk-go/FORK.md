@@ -14,6 +14,15 @@ generation: no result message, no error — the caller only saw
 the bug; drop this fork and restore the upstream requirement once it is
 fixed there.
 
+Upstream tracking: issues
+[ethpandaops/codex-agent-sdk-go#22](https://github.com/ethpandaops/codex-agent-sdk-go/issues/22)
+(silent death on multi-MB lines) and
+[#23](https://github.com/ethpandaops/codex-agent-sdk-go/issues/23)
+(`local_image` rejected), fixed by PR
+[#24](https://github.com/ethpandaops/codex-agent-sdk-go/pull/24) — the same
+patches as this fork. Once #24 is merged and released: delete
+`third_party/`, drop the `replace`, bump the requirement.
+
 ## Local patches on top of v0.0.13
 
 1. `internal/subprocess/appserver.go` — scanner line cap raised 1 MB → 64 MB

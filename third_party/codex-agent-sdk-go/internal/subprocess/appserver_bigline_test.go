@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,6 +25,10 @@ const bigLineNotificationSize = 3 * 1024 * 1024
 // a small marker notification, and stays alive until stdin closes.
 func writeFakeAppServer(t *testing.T) string {
 	t.Helper()
+
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available; skipping fake app-server test")
+	}
 
 	script := fmt.Sprintf(`#!/usr/bin/env python3
 import json, sys
