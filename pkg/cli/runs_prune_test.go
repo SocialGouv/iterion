@@ -377,3 +377,39 @@ func TestRunPrune_JSONOutput(t *testing.T) {
 		t.Fatalf("dry-run must not delete; got remaining=%v", remaining)
 	}
 }
+
+// -----------------------------------------------------------------------
+// Unreadable run dirs (no loadable run.json) are surfaced, not fatal
+// -----------------------------------------------------------------------
+
+func TestRunPrune_UnreadableRunDirSurfacedNotFatal(t *testing.T) {
+	f := newPruneFixture(t)
+	f.seedRun(t, "old", store.RunStatusFinished, 40*24*time.Hour)
+	orphan := filepath.Join(f.dir, "runs", "orphan-no-runjson")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatalf("mkdir orphan: %v", err)
+	}
+
+	buf := &bytes.Buffer{}
+	p := &Printer{W: buf, Format: OutputHuman}
+	if err := RunPrune(PruneOptions{
+		StoreDir:  f.dir,
+		OlderThan: 30 * 24 * time.Hour,
+		Now:       func() time.Time { return f.now },
+	}, p); err != nil {
+		t.Fatalf("an unreadable run dir must not fail the sweep: %v", err)
+	}
+
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("orphan dir must be left untouched: %v", err)
+	}
+	remaining := listRunIDs(t, f.store)
+	for _, id := range remaining {
+		if id == "old" {
+			t.Fatalf("readable matching run must still be pruned; remaining=%v", remaining)
+		}
+	}
+	if !strings.Contains(buf.String(), "unreadable run dir") {
+		t.Fatalf("unreadable dirs must be surfaced in the output, got %q", buf.String())
+	}
+}
