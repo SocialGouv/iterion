@@ -216,6 +216,13 @@ func (c *Conn) JetStream() jetstream.JetStream { return c.js }
 // can layer a CAS lease on top of it without re-resolving the bucket.
 func (c *Conn) KV() jetstream.KeyValue { return c.kv }
 
+// MaxPayload returns the server-negotiated maximum message size (bytes)
+// this connection will accept, or 0 when unknown / not connected. The
+// cloud publisher reads it to decide when a RunMessage's compiled IR must
+// be offloaded out-of-band via the IRRef fallback (T-42) instead of being
+// inlined on the wire.
+func (c *Conn) MaxPayload() int64 { return c.nc.MaxPayload() }
+
 // EnsureSchema creates the JetStream streams + KV bucket idempotently.
 // Designed to run on every server / runner boot so the topology is
 // self-healing — if an operator deletes a stream by mistake the next
@@ -274,11 +281,13 @@ func (c *Conn) PublishRun(ctx context.Context, msg *queue.RunMessage) (*jetstrea
 	// NATS rejects messages larger than the server-negotiated
 	// max_payload (default 1 MiB). Catch the limit ourselves so the
 	// caller gets a clean, actionable error instead of an opaque
-	// runtime ErrMaxPayload after the IR has been built. The IRRef
-	// fallback for oversized workflows is tracked under T-42; until
-	// it lands, surface the gap explicitly.
+	// runtime ErrMaxPayload after the IR has been built. Oversized IR is
+	// meant to be offloaded out-of-band by the publisher (IRRef fallback,
+	// T-42) BEFORE reaching here; a message that still exceeds the limit
+	// at publish means the offload path was skipped (e.g. a store without
+	// the IRBlobStore seam), so surface it explicitly.
 	if maxPayload := c.nc.MaxPayload(); maxPayload > 0 && int64(len(body)) > maxPayload {
-		return nil, fmt.Errorf("queue/nats: RunMessage size %d exceeds NATS max_payload %d for run %s — IRRef fallback (T-42) not yet implemented", len(body), maxPayload, msg.RunID)
+		return nil, fmt.Errorf("queue/nats: RunMessage size %d exceeds NATS max_payload %d for run %s — compiled IR was not offloaded via the IRRef fallback (store lacks out-of-band IR blob support?)", len(body), maxPayload, msg.RunID)
 	}
 
 	headers := nats.Header{}
