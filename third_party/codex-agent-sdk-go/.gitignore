@@ -1,0 +1,51 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Environment variables
+.env
+.env.local
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+bin/
+user_input_callback
+
+# Examples
+hello.txt
+hello.go
+memories/
+cancellation_demo.txt
+/developer_instructions
+/extended_thinking
+graceful_shutdown_demo.txt
+/personality
+/service_tier
+/include_partial_messages

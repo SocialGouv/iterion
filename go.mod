@@ -2,6 +2,13 @@ module github.com/SocialGouv/iterion
 
 go 1.26.0
 
+// Local fork: raises the app-server/CLI stdout scanner cap (1 MB → 64 MB) and
+// surfaces scanner failures instead of dying silently. Codex image-generation
+// events inline the image as base64 in a single JSON-RPC line (several MB),
+// which made every image_generation_end kill the session with "no result".
+// Upstream (v0.0.13 and master) still has the bug; drop this once fixed.
+replace github.com/ethpandaops/codex-agent-sdk-go => ./third_party/codex-agent-sdk-go
+
 require (
 	github.com/ethpandaops/codex-agent-sdk-go v0.0.13
 	github.com/fsnotify/fsnotify v1.10.1
