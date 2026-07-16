@@ -10,16 +10,25 @@ const SecretFilesMountDir = "/run/iterion/secrets"
 
 var secretFileNameSanitizer = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
-// DefaultFileMountPath returns the stable in-sandbox file path for a
-// workflow secret mounted as a file. The path is deterministic so prompts
-// can reference it before the sandbox container is started.
-func DefaultFileMountPath(name string) string {
+// SanitizeFileName reduces a secret name to a safe basename for a secret
+// file (letters, digits, `_`, `.`, `-`). It is the shared rule behind
+// DefaultFileMountPath (sandbox mount) and the host-side materialisation
+// used by non-sandbox runs, so the same secret lands under the same
+// filename on either path.
+func SanitizeFileName(name string) string {
 	clean := secretFileNameSanitizer.ReplaceAllString(name, "_")
 	clean = strings.Trim(clean, "._-")
 	if clean == "" {
 		clean = "secret"
 	}
-	return SecretFilesMountDir + "/" + clean
+	return clean
+}
+
+// DefaultFileMountPath returns the stable in-sandbox file path for a
+// workflow secret mounted as a file. The path is deterministic so prompts
+// can reference it before the sandbox container is started.
+func DefaultFileMountPath(name string) string {
+	return SecretFilesMountDir + "/" + SanitizeFileName(name)
 }
 
 func ResolveFileMountPath(name, override string) string {
