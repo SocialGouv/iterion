@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -279,6 +281,150 @@ func TestFileSecretReferenceRendersPathAndRegistersValue(t *testing.T) {
 	hints := g.SecretFileHints()
 	if len(hints) != 1 || hints[0].Path != "/run/iterion/secrets/kubeconfig" || hints[0].Env != "KUBECONFIG" {
 		t.Fatalf("file hints not preserved: %+v", hints)
+	}
+}
+
+// TestMaterializeHostFiles_RewritesPathAndWritesValue guards the host
+// materialisation seam: on a non-sandbox run, MaterializeHostFiles writes
+// each file secret's plaintext to dir/<sanitized-name> (0600) and
+// rewrites ResolveSecretRef + SecretFileHints to the HOST path so
+// {{secrets.X.path}} resolves to a real file.
+func TestMaterializeHostFiles_RewritesPathAndWritesValue(t *testing.T) {
+	const payload = "webhook-content-abcdef"
+	g := newTestGuard(t, Secret{
+		Name:     "webhooks.json",
+		Value:    payload,
+		FilePath: "/run/iterion/secrets/webhooks.json",
+		Env:      "WEBHOOKS_FILE",
+	})
+	dir := t.TempDir()
+	cleanup, err := g.MaterializeHostFiles(dir)
+	if err != nil {
+		t.Fatalf("MaterializeHostFiles: %v", err)
+	}
+	if cleanup == nil {
+		t.Fatal("cleanup should not be nil")
+	}
+
+	wantPath := filepath.Join(dir, "webhooks.json")
+	if got := g.ResolveSecretRef("webhooks.json"); got != wantPath {
+		t.Errorf("ResolveSecretRef after materialise = %q, want %q", got, wantPath)
+	}
+	hints := g.SecretFileHints()
+	if len(hints) != 1 || hints[0].Path != wantPath {
+		t.Fatalf("hints not rewritten: %+v", hints)
+	}
+
+	info, err := os.Stat(wantPath)
+	if err != nil {
+		t.Fatalf("stat host secret file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("host secret file perms = %v, want 0600", perm)
+	}
+	b, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read host secret file: %v", err)
+	}
+	if string(b) != payload {
+		t.Errorf("host secret content = %q, want %q", string(b), payload)
+	}
+
+	cleanup()
+	if _, err := os.Stat(wantPath); !os.IsNotExist(err) {
+		t.Errorf("cleanup did not remove host secret file: %v", err)
+	}
+}
+
+// TestMaterializeHostFiles_SanitisesFilename verifies the host filename
+// follows the shared SanitizeFileName rule (non-safe chars → `_`), so a
+// secret named e.g. "cluster/kubeconfig" lands under a portable basename
+// regardless of the DSL name shape.
+func TestMaterializeHostFiles_SanitisesFilename(t *testing.T) {
+	g := newTestGuard(t, Secret{
+		Name:     "cluster/kubeconfig",
+		Value:    "content",
+		FilePath: "/run/iterion/secrets/cluster_kubeconfig",
+	})
+	dir := t.TempDir()
+	cleanup, err := g.MaterializeHostFiles(dir)
+	if err != nil {
+		t.Fatalf("MaterializeHostFiles: %v", err)
+	}
+	defer cleanup()
+	got := g.ResolveSecretRef("cluster/kubeconfig")
+	want := filepath.Join(dir, "cluster_kubeconfig")
+	if got != want {
+		t.Errorf("ResolveSecretRef = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("host secret file missing at %q: %v", want, err)
+	}
+}
+
+// TestMaterializeHostFiles_SkipsEmptyValue mirrors the sandbox skip for
+// an Optional file secret with no resolved value: no host file is
+// written, and the mount path stays at the pre-materialise value so the
+// tool sees the same "no such file" it would in a sandbox.
+func TestMaterializeHostFiles_SkipsEmptyValue(t *testing.T) {
+	g := newTestGuard(t, Secret{
+		Name:     "opt",
+		Value:    "",
+		FilePath: "/run/iterion/secrets/opt",
+	})
+	dir := t.TempDir()
+	cleanup, err := g.MaterializeHostFiles(dir)
+	if err != nil {
+		t.Fatalf("MaterializeHostFiles: %v", err)
+	}
+	defer cleanup()
+	if got := g.ResolveSecretRef("opt"); got != "/run/iterion/secrets/opt" {
+		t.Errorf("empty-value secret path should be unchanged, got %q", got)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("no file should be written for empty value, got %v", entries)
+	}
+}
+
+// TestMaterializeHostFiles_NoFileHints is a no-op safety: a guard with
+// only value secrets returns a nil-safe cleanup and no error.
+func TestMaterializeHostFiles_NoFileHints(t *testing.T) {
+	g := newTestGuard(t, Secret{Name: "token", Value: fakeKey})
+	cleanup, err := g.MaterializeHostFiles(t.TempDir())
+	if err != nil {
+		t.Fatalf("MaterializeHostFiles: %v", err)
+	}
+	if cleanup == nil {
+		t.Fatal("cleanup should not be nil even on no-op")
+	}
+	cleanup() // must not panic
+}
+
+// TestMaterializeHostFiles_NilGuard is the nil-guard no-op path.
+func TestMaterializeHostFiles_NilGuard(t *testing.T) {
+	var g *Guard
+	cleanup, err := g.MaterializeHostFiles("/tmp/does-not-matter")
+	if err != nil {
+		t.Fatalf("nil guard: %v", err)
+	}
+	if cleanup == nil {
+		t.Fatal("nil guard should still return a callable cleanup")
+	}
+	cleanup()
+}
+
+// TestMaterializeHostFiles_EmptyDirError refuses an empty target dir so
+// a caller that forgets to build the tempdir sees a loud failure instead
+// of silently writing to CWD.
+func TestMaterializeHostFiles_EmptyDirError(t *testing.T) {
+	g := newTestGuard(t, Secret{
+		Name:     "tok",
+		Value:    "v",
+		FilePath: "/run/iterion/secrets/tok",
+	})
+	if _, err := g.MaterializeHostFiles(""); err == nil {
+		t.Fatal("expected error on empty dir")
 	}
 }
 

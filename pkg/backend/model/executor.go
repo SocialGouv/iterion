@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SocialGouv/claw-code-go/pkg/api/hooks"
@@ -153,6 +154,19 @@ type ClawExecutor struct {
 	// under parallel subbot fan-out, which builds one executor per child and
 	// can march toward fs.inotify.max_user_instances.
 	extraClosers []io.Closer
+
+	// hostSecretOnce fires ensureHostSecretFiles exactly once per executor:
+	// on the first Execute call of a HOST (non-sandbox) run it materialises
+	// every `as: file` workflow secret to a per-run tempdir so
+	// {{secrets.X.path}} resolves to a real host file. Sandbox runs are a
+	// no-op (the sandbox driver bind-mounts the same files via
+	// [sandbox.Spec.SecretFiles]). hostSecretCleanup deletes the dir on
+	// Close(); hostSecretErr sticks after a first-call failure so every
+	// subsequent Execute surfaces the same error rather than silently
+	// proceeding with unresolved secret paths.
+	hostSecretOnce    sync.Once
+	hostSecretCleanup func()
+	hostSecretErr     error
 }
 
 // SetSandbox installs the live sandbox handle on the executor. The
@@ -534,7 +548,8 @@ func (e *ClawExecutor) MCPHealthCheck(ctx context.Context, servers []string) err
 }
 
 // Close releases resources held by the executor, including MCP server
-// connections. It should be called when the executor is no longer needed.
+// connections and the per-run host secret-file tempdir (host runs only —
+// sandbox runs never populate it).
 func (e *ClawExecutor) Close() error {
 	var errs []error
 	if e.mcpManager != nil {
@@ -543,7 +558,54 @@ func (e *ClawExecutor) Close() error {
 	for _, c := range e.extraClosers {
 		errs = append(errs, c.Close())
 	}
+	if e.hostSecretCleanup != nil {
+		e.hostSecretCleanup()
+	}
 	return errors.Join(errs...)
+}
+
+// ensureHostSecretFiles materialises `as: file` workflow secrets to a
+// per-run host tempdir on the first Execute call of a HOST (non-sandbox)
+// run. Sandbox runs are a no-op — the sandbox driver already bind-mounts
+// each file at its declared mount_path via [sandbox.Spec.SecretFiles], so
+// this path stays strictly gated on `e.sandbox == nil` to keep sandbox
+// behaviour byte-for-byte unchanged.
+//
+// Idempotent via sync.Once; the resulting rewrite of the guard's
+// filePathByName / fileHints happens strictly before any concurrent
+// Execute reads them, so ResolveSecretRef sees the host path.
+func (e *ClawExecutor) ensureHostSecretFiles() error {
+	if e.sandbox != nil {
+		return nil
+	}
+	if e.secretGuard == nil || len(e.secretGuard.SecretFileHints()) == 0 {
+		return nil
+	}
+	e.hostSecretOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "iterion-secrets-*")
+		if err != nil {
+			e.hostSecretErr = fmt.Errorf("model: create host secrets dir: %w", err)
+			return
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			_ = os.RemoveAll(dir)
+			e.hostSecretErr = fmt.Errorf("model: chmod host secrets dir: %w", err)
+			return
+		}
+		fileCleanup, err := e.secretGuard.MaterializeHostFiles(dir)
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			e.hostSecretErr = err
+			return
+		}
+		e.hostSecretCleanup = func() {
+			if fileCleanup != nil {
+				fileCleanup()
+			}
+			_ = os.RemoveAll(dir)
+		}
+	})
+	return e.hostSecretErr
 }
 
 // SetVars merges run-level workflow variables into the executor's
@@ -739,6 +801,15 @@ func (e *ClawExecutor) delegateHooksFor(nodeID string, backendName string, itera
 
 // Execute implements runtime.NodeExecutor.
 func (e *ClawExecutor) Execute(ctx context.Context, node ir.Node, input map[string]any) (map[string]any, error) {
+	// Host runs (no sandbox) materialise `as: file` workflow secrets to a
+	// tempdir on the first call so {{secrets.X.path}} resolves to a real
+	// host file for tool nodes AND for agent/judge prompts. Cheap
+	// sync.Once check after the first hit; a no-op when no file secrets
+	// are declared or when a sandbox owns the mounts.
+	if err := e.ensureHostSecretFiles(); err != nil {
+		return nil, err
+	}
+
 	// Promote the engine-supplied run ID into the richer
 	// runtimeContext that backends read for session-aware retries.
 	runID := RunIDFromContext(ctx)
