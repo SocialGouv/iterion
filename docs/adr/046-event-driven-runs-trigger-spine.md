@@ -166,11 +166,16 @@ each a per-launch override of the service-level default:
   (runtime.WithDailyCap), so every concurrent run writes the one ledger.
 - `SourceRef` — the originating kanban issue stamped onto the run record
   (runtime.WithSource).
-- `ExtraObservers` — event observers fired on **every store `AppendEvent`**,
-  not just engine-level events. Wired via an event-forwarding store wrap
-  (`observerStore`, the runview twin of the dispatcher's `heartbeatStore`)
-  so the dispatcher's stall watermark stays alive on long agent nodes whose
-  tool events flow straight to the store through the backend hook layer.
+- `ExtraObservers` — event observers fired on **every run event**, not just
+  engine-level ones. Delivered through **two disjoint observer seams**:
+  `runtime.WithEventObserver` for engine emits, and
+  `ExecutorSpec.EventObservers` (attached to the backend hooks' redacting
+  emitter) for the high-frequency tool events that flow straight to the store
+  through the backend hook layer. The two event sets are disjoint — the two
+  are the only `AppendEvent` chokepoints during a run — so each event reaches
+  the observer exactly once, keeping the dispatcher's stall watermark alive on
+  long agent nodes. **No store wrapper is interposed** (see the dated update
+  below).
 
 **A fifth field, `OnOutcome func(error)`** — the return-path completion of
 the four data fields. A blocking caller (the dispatcher routing through
@@ -222,8 +227,54 @@ Modified: `pkg/bundle/manifest.go` (`InvocationBoard`), `pkg/queue/nats/nats.go`
 (`ITERION_EVENTS`), `pkg/dispatcher/manager.go` (`Refresh` nudger),
 `pkg/server/{server,server_info}.go`, `pkg/cli/{studio,dispatch}.go`.
 
-Launch-path convergence (2026-07-16): `pkg/runview/observer_store.go` (new),
-`pkg/runview/service.go` + `pkg/runview/service_launch.go` (LaunchSpec
+Launch-path convergence (2026-07-16): `pkg/runview/service.go` +
+`pkg/runview/service_launch.go` (LaunchSpec
 `WorkDir`/`ExtraObservers`/`DailyCap`/`SourceRef`/`OnOutcome` + `launchExtras`
 wiring), `pkg/dispatcher/engine_runner.go` (`RunLauncher` /
 `ServiceRunLauncher` / `WithRunLauncher` / `dispatchViaService`).
+
+## Update 2026-07-16 — ExtraObservers via observer seams, not a store wrapper
+
+The first cut delivered `ExtraObservers` by wrapping the `store.RunStore`
+(an `observerStore`, mirroring the dispatcher's `heartbeatStore`) so every
+`AppendEvent` fanned out to the observers. That wrapper **shadowed the
+concrete `*FilesystemRunStore` against the executor's and sandbox's optional-
+capability type-probes**: `PlanWriter` (todo/plan snapshots),
+`RunFilesStore` (`EnsureRunFilesDir`/`ListRunFiles`/`OpenRunFile` — the
+run-files host/sandbox bind-mount parity), and `QueuedInboxVersioner` all
+resolved to `nil` on the dispatcher-via-service path (`ITERION_DISPATCH_VIA_SERVICE=1`)
+because Go interface embedding forwards only the base `RunStore` methods, not
+the optional interfaces satisfied concretely. The convergence route therefore
+*silently degraded* the very launch it claimed to reuse — a plain studio
+launch keeps those capabilities.
+
+**Decision.** Drop the store wrapper. The launch hands the executor + engine
+the **raw** `s.store`, and `ExtraObservers` ride two disjoint seams:
+
+- **engine events** → `runtime.WithEventObserver` (wired in `engineOptions`
+  from `launchExtras.observers`);
+- **backend-hook events** (the high-frequency tool stream) →
+  `ExecutorSpec.EventObservers`, threaded into `NewStoreEventHooks` and fired
+  by the `redactingEmitter` — already the single `AppendEvent` chokepoint for
+  hook events, where capability detection happens on the *original* emitter
+  before wrapping, so nothing is shadowed.
+
+A grep proof underpins completeness: during a run there are exactly two
+`AppendEvent` chokepoints — `runtime` `emitBranch` (fires `e.onEvent`) and the
+`redactingEmitter` (fires the executor observers) — so the union covers every
+event with no double-fire. `engine_runner_via_service_test.go` still proves the
+dispatcher-observable event **set** is byte-identical to the direct path, and
+`TestLaunchStore_KeepsOptionalCapabilities` +
+`TestLaunch_HonoursDispatcherConvergenceFields` (asserting the `artifact_files`
+area is created under an observed launch) pin the capability-preservation
+invariant.
+
+**Trade-off.** The two-seam delivery leans on the invariant that engine and
+hook emits are disjoint; a future third `AppendEvent` call site would need a
+matching seam. That is a cheaper, more honest cost than a wrapper that must
+hand-forward every present *and future* optional capability to avoid silent
+degradation — the failure mode a `RunStore` decorator structurally invites.
+Files: removed `pkg/runview/observer_store.go`; `pkg/backend/model/hooks.go`
+(`redactingEmitter.observers` + `NewStoreEventHooks` variadic),
+`pkg/runview/executor.go` (`ExecutorSpec.EventObservers`),
+`pkg/runview/service_launch.go` (raw store + `launchExtras.observers`).

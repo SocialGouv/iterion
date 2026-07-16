@@ -165,14 +165,17 @@ type LaunchSpec struct {
 	// worktree so `${PROJECT_DIR}` in bot var defaults expands to that
 	// worktree, not the daemon's cwd. Empty inherits WithWorkDir.
 	WorkDir string
-	// ExtraObservers are per-launch event observers fired on EVERY store
-	// AppendEvent — not just the engine-level events runtime.WithEventObserver
-	// sees — matching the dispatcher's stall-heartbeat semantics (the
-	// high-frequency tool_started/tool_called events flow through the backend
-	// hook layer straight to the store, bypassing the engine callback). The
-	// dispatcher wires one that advances its last-event watermark for stall
-	// detection. Empty adds none. Applied via an event-forwarding store wrap
-	// (see observerStore) so the engine + executor both feed them.
+	// ExtraObservers are per-launch event observers fired on EVERY run
+	// event — both the engine-level events runtime.WithEventObserver sees
+	// AND the high-frequency tool_started/tool_called events the backend
+	// hook layer emits (which bypass the engine callback) — matching the
+	// dispatcher's stall-heartbeat semantics. The dispatcher wires one that
+	// advances its last-event watermark for stall detection. Empty adds
+	// none. Delivered through TWO disjoint seams — runtime.WithEventObserver
+	// for engine events + ExecutorSpec.EventObservers for backend-hook
+	// events — so no store wrapper is interposed (a wrapper would shadow the
+	// store's optional capabilities against the executor/sandbox type-probes;
+	// ADR-046).
 	ExtraObservers []func(store.Event)
 	// DailyCap, when non-nil, overrides the service-level per-(store, UTC-day)
 	// spend-cap guard for this launch (runtime.WithDailyCap). The dispatcher

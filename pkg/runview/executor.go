@@ -66,6 +66,16 @@ type ExecutorSpec struct {
 	// the prometheus exporter's hooks here (cli does this); the HTTP
 	// service can pass nothing or a future broker-side hook chain.
 	ExtraHooks []model.EventHooks
+	// EventObservers (ADR-046) fire on every event the backend-hook
+	// layer persists — the stall-heartbeat seam for high-frequency tool
+	// events that bypass the runtime engine's WithEventObserver. The
+	// dispatcher-via-service path sets these so it can observe the same
+	// store-level event stream the direct path's heartbeatStore saw,
+	// WITHOUT wrapping the store (which would shadow its optional
+	// capabilities — PlanWriter / RunFilesStore / … — against the probes
+	// below). Engine-level events reach the same observers through
+	// runtime.WithEventObserver; the two event sets are disjoint.
+	EventObservers []func(store.Event)
 	// Inbox, when non-nil, wires the operator chatbox plumbing into
 	// the claw backend so queued messages are delivered between
 	// agent-loop iterations. Nil disables the inbox (CLI mode +
@@ -216,7 +226,7 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 	// secrets, then thread it through the event hooks so every sink is
 	// scrubbed before persistence.
 	guard := model.BuildSecretGuard(ctx, spec.Workflow, spec.Vars)
-	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard)
+	hooks := model.NewStoreEventHooks(ctx, spec.Store, spec.RunID, spec.Logger, guard, spec.EventObservers...)
 	for _, extra := range spec.ExtraHooks {
 		hooks = model.ChainHooks(hooks, extra)
 	}

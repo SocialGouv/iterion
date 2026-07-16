@@ -161,15 +161,19 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 
 	_, runLogger := s.prepareRunLog(runID)
 
-	// Wrap the store so LaunchSpec.ExtraObservers (ADR-046) fire on every
-	// AppendEvent — the executor's backend hooks write tool events straight
-	// to this store, so it must carry the observers too, not just the engine.
-	emitStore := wrapWithObservers(s.store, spec.ExtraObservers)
-
+	// LaunchSpec.ExtraObservers (ADR-046) reach the run through TWO
+	// disjoint seams — WITHOUT wrapping the store (a wrapper would shadow
+	// the concrete FilesystemRunStore's optional capabilities against the
+	// PlanWriter / RunFilesStore / … type-probes the executor + sandbox
+	// run). Backend-hook events (the high-frequency tool stream) fire the
+	// observers via ExecutorSpec.EventObservers; engine events fire them
+	// via runtime.WithEventObserver (wired in engineOptions from
+	// launchExtras.observers). The raw store keeps every capability.
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow:       wf,
 		Vars:           spec.Vars,
-		Store:          emitStore,
+		Store:          s.store,
+		EventObservers: spec.ExtraObservers,
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -255,8 +259,8 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome},
-		emitStore,
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers},
+		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -426,12 +430,10 @@ func (s *Service) spawnRun(
 	emitStore store.RunStore,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
-	// emitStore is the store the engine + executor write events through.
-	// Defaults to s.store; a per-launch observerStore wrap (ADR-046
-	// ExtraObservers) rides here so the dispatcher's stall watermark sees
-	// every AppendEvent. Lifecycle (lock / create / register) stays on
-	// s.store — the wrapper only intercepts AppendEvent, forwarding to the
-	// same underlying store, so the two views never diverge.
+	// emitStore is the store the engine writes events through. It is the
+	// raw s.store — ADR-046 ExtraObservers ride the WithEventObserver /
+	// ExecutorSpec.EventObservers seams (see startInProcess), not a store
+	// wrapper, so every optional store capability survives to the probes.
 	if emitStore == nil {
 		emitStore = s.store
 	}
@@ -639,6 +641,12 @@ type launchExtras struct {
 	// goroutine with the terminal body error before Done closes, so a
 	// blocking caller reads the same typed error engine.Run returned.
 	onOutcome func(error)
+	// observers mirrors LaunchSpec.ExtraObservers: fired on every
+	// engine-level event via runtime.WithEventObserver (the backend-hook
+	// half rides ExecutorSpec.EventObservers). Together they feed the
+	// dispatcher's stall heartbeat the full store-level event stream
+	// without wrapping the store.
+	observers []func(store.Event)
 }
 
 // engineOptions builds the standard option set for both Launch and
@@ -696,6 +704,14 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		opts = append(opts, runtime.WithEventObserver(s.alertManager.Observe))
 	}
 	for _, obs := range s.extraObservers {
+		opts = append(opts, runtime.WithEventObserver(obs))
+	}
+	// Per-launch ExtraObservers (ADR-046): the engine-level half of the
+	// dispatcher's stall-heartbeat seam. The backend-hook half is wired
+	// through ExecutorSpec.EventObservers; the two event sets are disjoint
+	// (engine emits fire e.onEvent, backend hooks fire the redacting
+	// emitter), so an event reaches each observer exactly once.
+	for _, obs := range ex.observers {
 		opts = append(opts, runtime.WithEventObserver(obs))
 	}
 	if hash != "" {

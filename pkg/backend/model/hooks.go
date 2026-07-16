@@ -28,16 +28,31 @@ import (
 // AttachmentWriter) are detected on the original emitter in
 // NewStoreEventHooks and redacted at their own call sites, so wrapping
 // must not mask their presence.
+//
+// observers (ADR-046) fire on every persisted event. This is the
+// backend-hook half of the dispatcher's stall-heartbeat seam: high-
+// frequency tool_started / tool_called events flow through this emitter,
+// NOT the runtime engine's WithEventObserver, so delivering the launch's
+// ExtraObservers here — instead of interposing a RunStore wrapper that
+// would shadow the store's optional capabilities against the type-probes
+// above — keeps the observers fed without degrading the store.
 type redactingEmitter struct {
-	inner EventEmitter
-	guard *secretguard.Guard
+	inner     EventEmitter
+	guard     *secretguard.Guard
+	observers []func(store.Event)
 }
 
 func (r redactingEmitter) AppendEvent(ctx context.Context, runID string, evt store.Event) (*store.Event, error) {
 	if r.guard != nil && evt.Data != nil {
 		evt.Data = r.guard.RedactMap(evt.Data)
 	}
-	return r.inner.AppendEvent(ctx, runID, evt)
+	persisted, err := r.inner.AppendEvent(ctx, runID, evt)
+	if err == nil && persisted != nil {
+		for _, obs := range r.observers {
+			obs(*persisted)
+		}
+	}
+	return persisted, err
 }
 
 // sha256Hex returns the hex-encoded SHA-256 of s, or "" when s is
@@ -789,7 +804,10 @@ func (h *storeHooks) onToolNodeResult(nodeID string, toolName string, input []by
 // ctx is captured by the returned hook closures: filesystem stores ignore
 // it but cloud (Mongo) stores honor cancellation/timeout. The hook lifetime
 // is bounded by the engine.Run call that constructed it.
-func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard) EventHooks {
+// observers (ADR-046) fire on every persisted event emitted through the
+// backend-hook layer — the dispatcher's stall-heartbeat seam for the
+// high-frequency tool events that bypass the engine's WithEventObserver.
+func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string, logger *iterlog.Logger, guard *secretguard.Guard, observers ...func(store.Event)) EventHooks {
 	// Capability detection must happen on the ORIGINAL emitter — the
 	// redacting wrapper below only implements AppendEvent.
 	attachmentSink, _ := emitter.(AttachmentWriter)
@@ -797,7 +815,7 @@ func NewStoreEventHooks(ctx context.Context, emitter EventEmitter, runID string,
 	turnSink, _ := emitter.(TurnWriter)
 	planSink, _ := emitter.(PlanWriter)
 	// All event payloads go through the redacting wrapper (Layer 0).
-	emitter = redactingEmitter{inner: emitter, guard: guard}
+	emitter = redactingEmitter{inner: emitter, guard: guard, observers: observers}
 	h := &storeHooks{
 		ctx:     ctx,
 		emitter: emitter,
