@@ -1,10 +1,67 @@
 # Nexie — `whats-next` run bilans
 
-Conversational co-CTO (v2: ONE agent in a chat loop — board intelligence,
-ticket curation against code reality, dispatch). See
-[bots/whats-next/](../../bots/whats-next/). Bilans before 2026-07-07 cover
-the v1 form state machine (survey → priorities form → roadmap → review form
-→ emit → dispatch pickers).
+Conversational co-CTO (v3: ONE agent in a chat loop — board intelligence,
+ticket curation against code reality, dispatch, and the roadmap-study
+cycle per ADR-075). See [bots/whats-next/](../../bots/whats-next/).
+Bilans before 2026-07-07 cover the v1 form state machine (survey →
+priorities form → roadmap → review form → emit → dispatch pickers).
+
+## 2026-07-16 — v3 first study turn: adaptive pivot instead of re-study (run 019f69c8)
+
+- Status: **validated (turn 1, high value)** — the fan-out path stayed
+  unexercised by the bot's own (correct) judgment; session handed to the
+  operator at the arbitrage pause.
+- Versions: bot whats-next 0.3.0 · iterion worktree `a75e4fa5e` (v3 branch).
+- Method: CLI `iterion run` from the v3 worktree, `--store-dir` the main
+  workspace store (operator-studio visible), `--var workspace_dir=<main
+  repo>`, seed « Quels sont les prochains chantiers ? ». claude_code +
+  opus-4-8, effort ultracode, budget 45m/$15/80 steps.
+- Result: turn 1 in 4m20 / $1.43 / 11 tool calls, then
+  `paused_waiting_human` (standby). `dispatched_ids: []` — nothing
+  promoted before arbitrage, as contracted.
+- Value: instead of mechanically re-running the 3-audit fan-out, Nexie
+  **found yesterday's epic** (`epic:chantiers-2026h2`, 8 chantiers, ~67
+  tickets), mapped C1–C8 with per-chantier counts, and answered with the
+  STATE, not a list: review wave 1 parked (~7 done-but-unmerged tickets),
+  factory OFF (0 ready, no dispatcher process — she checked), wave 2
+  (10 `feature-dev` tickets, now×5/next×5) undispatched. Recommendation
+  ordered (drain review first, then top-3 tier-now), plus real
+  **pushback**: the tier-now tickets are chantier-sized, not
+  feature-sized, and lack the `## Context/## Done criteria/## Verify`
+  frame — dispatching them as-is to one feature-dev run is a façade
+  risk; she proposes decomposition. Ends on two sharp decision blocks
+  (A: verify+close the review wave with `comment_issue` traces — asks
+  before the bulk, guardrail respected; B: decompose C1 vs dispatch
+  whole) + 4 aligned quick_replies.
+- Findings / misses:
+  - 3-audit Task fan-out not exercised live (adaptive skip — a fresh
+    study would have duplicated the 2026-07-15 one; the doctrine's
+    "skipping a stage is judgment" clause worked as intended). Still to
+    be exercised on a repo/board without a prior study.
+  - Workspace memory: only the legacy root-level
+    `memory/CONTEXT_BRIEF.md` exists; the v3 recipe targets
+    `memory/whats-next/` (absent) so Nexie correctly skipped — but the
+    legacy brief is invisible to v3. Follow-up: migrate the brief or
+    teach the recipe the legacy fallback.
+  - Only the playbook skill was Skill-loaded; behavior still matched
+    roadmap-synthesis/operator-arbitrage/factory-ops (the prompt +
+    playbook summaries carried enough). Watch whether deeper turns load
+    the domain skills when they act (board execution, bilan).
+- Engine hardening surfaced by this run:
+  - **Bundle skills mirror died on `.gitkeep`** (`fix(runtime)`
+    `a75e4fa5e`): a non-`.md` placeholder in `bots/*/skills/` made the
+    directory form and the flat alias collide on the same path — every
+    fresh-workspace run of whats-next AND secured-renovacy crashed at
+    startup since the flat-alias mirroring landed. Mirror now skips
+    non-markdown entries (regression test added).
+  - Zombie `iterion server` found listening on :7799 against a deleted
+    worktree store (leftover from a 2026-07-11 session) — flagged, not
+    killed; Nexie herself spotted it during her operational-state check
+    and reasoned about the store mismatch.
+- Lessons for next run: exercise the full fan-out on a study-less
+  fixture (the ticket's e2e criterion); answer decisions A/B in the
+  studio chat to validate board execution + bilan stages on the real
+  lot; consider the legacy-brief fallback before the next session.
 
 ## 2026-07-08 — first cloud-prod session + skills-format engine fix (run 019f412x)
 
