@@ -45,6 +45,30 @@ priorities form → roadmap → review form → emit → dispatch pickers).
   (`cd333b3b3`) and LaunchSpec (`38799ea38`) had merged mid-session,
   so her "not delivered / façade" calls on those three were stale.
   The operator's own base-drift phenomenon, biting the AUDIT phase.
+- Turn 3 (operator-delegate correction: "your base was stale — re-verify
+  anchored, cite the HEAD"): $1.04, the correction loop closed clean.
+  Re-verified on `main @ 9d74c1e7d` with the HEAD cited, self-diagnosed
+  the wrong-tree first pass, found all 3 flips on her own — and
+  out-verified the reviewer on NATSBus (impl merged `d346b6ec7` but
+  `NewNATSBus(` wired nowhere → residual C2 wiring, matching the
+  15/07 session note). Re-proposed the corrected batch (4 proven
+  closes + 2 rebuckets + 3 operator calls), still zero mutations.
+  **Both skill fixes hot-loaded mid-session via the resume re-mirror**:
+  the anchor discipline (this turn's method) and the
+  quick_replies-as-buttons rule (chips now carry complete decision
+  answers — "Applique le lot complet (4 close + 3 close+followup +
+  2 backlog)" etc.).
+- Operator UX feedback (jo): a two-choice arbitrage turn read as
+  "answer in free text" — expected radio + submit. Bot-side mitigation
+  = the chips fix (`eb07d1f22`); structural fix filed as framed board
+  ticket `native:7849f5f9` (studio renders grouped decision blocks as
+  a form). ask_user stays single-question by contract.
+- Consent boundary (harness): the operator-delegate session could
+  steer verification but NOT confirm the bulk close/rebucket — the
+  auto-mode classifier requires the operator to NAME the batch for
+  mass-modifying pre-existing tracker items (same lesson as the
+  2026-07-15 GitHub closes). Board execution therefore awaits the
+  operator's own click/message.
 - Findings / misses:
   - **Anchor bug (fixed)**: verification commands must anchor at
     `workspace_dir` (`git -C`, absolute paths), never the shell cwd —
