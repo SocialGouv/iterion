@@ -147,6 +147,30 @@ priorities form → roadmap → review form → emit → dispatch pickers).
   fixture (the ticket's e2e criterion); answer decisions A/B in the
   studio chat to validate board execution + bilan stages on the real
   lot; consider the legacy-brief fallback before the next session.
+- Post-merge threads (same day, after #214 landed @9cc03584b):
+  - **Claw roadmap exploited** (study run 019f6b46, +1 arbitrage turn
+    $1.25): answered with her own recos (reliability axis, C1-only
+    ready lot), the 2 relaunched audits' delta integrated (binary
+    quick-win self-invalidated — already gitignored; C3 re-scoped on
+    `internal/auth` 5 src/0 test; NEW C9 release/distribution — single
+    tag ~110 commits behind). Durable output committed in the claw
+    repo: `docs/ROADMAP-2026H2.md` (9 tiered chantiers + 4 framed
+    ticket bodies). Note: the full deliverable (7241 chars) rode the
+    MID-TURN narration (chat bubble) while the turn's `reply` was a
+    recap claiming "livré dans le fil" — accurate but envelope-fragile;
+    watch whether operators miss narration-borne content.
+  - **Wave-2 decomposition** (fresh session 019f6b71, 2 turns ~$5.96 —
+    CONTEXT_BRIEF continuity picked decision B up without re-brief):
+    re-audited terminal-state semantics on fresh main via a 3-agent
+    fan-out (4 contradicting terminal predicates, `runtime.ErrorCode`
+    never persisted), sliced C1 into 3 framed feature-dev tickets with
+    CASCADING BLOCKERS (f26342ab now/8 → d9ac6af9 next/7 → 9f550afa
+    later/6), recreated the regen-catalog quick-win as e2950020
+    (closed 8ca25d98 superseded, traced — no body-edit tool exists),
+    converted both chantier-sized parents to `horizon:theme` tracking
+    cards (bot cleared). Zero promotions — the factory stays
+    operator-owned. Total v3 dogfood: 4 runs, 11 turns, ~$17.5; zero
+    anchoring drift across three distinct workspaces after the fixes.
 
 ## 2026-07-08 — first cloud-prod session + skills-format engine fix (run 019f412x)
 
