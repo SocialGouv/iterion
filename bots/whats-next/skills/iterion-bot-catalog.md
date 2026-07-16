@@ -624,7 +624,7 @@ python3 (stdlib only) on the execution host.
   synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
   → webhook scenario one-for-one. Not for one-shot research questions
   (use a plain research bot) and it never edits code.
-- **Vars**: `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `model` (string), `post_to_board` (bool), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `post_to_board` (bool), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Capabilities**: board.create, board.read
 - **Path**: `bots/feed-watch/main.bot`
 
