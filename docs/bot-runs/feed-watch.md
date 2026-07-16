@@ -4,6 +4,76 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-07-16 — Full production rollout: 2 Huginn scenarios, 9 categories, 6 live posts, schedules wired
+
+- Status: **validated (production)** — the reference self-host veille is live on a
+  real Mattermost channel and cron-scheduled.
+- Versions: bot 1.0.0 · iterion `59b8f73a1` (post #213/#215/#217).
+- Method: workspace `~/lab/fabrique/veille/`, config-driven. Collect zero-LLM on
+  host python3; digest via claude_code (auto-detected, CLI default model), host
+  (non-sandbox) runs, `--store-dir` = operator studio store. Webhook secret
+  fetched by-reference from the live Huginn dev DB (rails runner → the single
+  `mattermost_webhook_url_dev` credential → `iterion secret set webhooks`).
+- Result:
+  - **Scenario 1 (Veille Technique)** — 5 categories (cyber, ia, tsjs, gopyrust,
+    java) all posted to `#huginn-dev`. Cyber validated by the operator ("stylé!");
+    ia/tsjs/gopyrust/java posted in one run-complet (207/134/113/43 items each).
+  - **Scenario 2 (Veille Design UX/UI)** — imported from Huginn scenario 12 (24
+    agents) as 4 categories (design-sp, ux-metier, design-systems, a11y). Collect
+    populated all four (85/168/53/67 items); a11y digest posted as the design
+    validation (67 items cleared).
+  - **Schedules installed** — 10 veille cron entries via `iterion schedule`
+    (collect 2×/day; tech digests Mon 08:00; design digests Wed 08:00 — Huginn
+    cadences), on `~/.local/bin/iterion` (see "installed binary" below).
+- Value: **Huginn veille replaced by a single ~600-line bot + a JSON config**,
+  qualitatively above the Huginn baseline — same-story grouping across sources,
+  `web_fetch` of the lead articles (not just RSS titles), CERT-FR avis linked,
+  semantic dedup against prior digests, explicit overflow reporting. Adding a
+  category or a whole new veille is a config edit, no bot change.
+- Findings / misses:
+  - **WebsiteAgent HTML scrapes not ported** — the design scenario had 3
+    non-RSS sources. `nldesignsystem.nl` was recovered via its `/blog/rss.xml`;
+    `design.numerique.gouv.fr/articles` and `zeroheight.com/blog` (Next.js SPA)
+    have no feed and are unported (noted inline in the config). feed-watch collect
+    is RSS/Atom/RDF-only; HTML scraping is a future collect-source (the Firecrawl
+    plugin already exists engine-side).
+  - **Transient `Bash Exit code 1/2` inside claude_code synthesis** — the
+    synthesize agent pokes at its input (grep/python one-liners on
+    `post_to_board`/`items_count`) that occasionally exit non-zero; it recovers
+    and every digest still posted. Worth a follow-up: tighten the synthesize
+    system prompt / input schema so the agent doesn't shell out to inspect its
+    own structured input.
+- Engine hardening surfaced by this rollout:
+  - **`iterion runs prune`** (#213) — the local store had no retention; recurring
+    schedules made unbounded growth real. Terminal-status prune, worktree-safe.
+  - **prune survives unreadable run dirs** (#215) — found smoke-testing prune on
+    the real 244-run operator store (a partial/crashed run dir sank the sweep).
+  - **`as: file` secrets on host runs** (#217, the big one) — file secrets only
+    materialized inside a sandbox (`/run/iterion/secrets/` bind-mount). On a host
+    run — exactly what `iterion schedule`/cron does — `{{secrets.X.path}}` pointed
+    at a dangling container path, so the deterministic `notify` step 404'd every
+    time. The executor now materializes file secrets to a per-run host tempdir
+    (0700/0600, `sync.Once`, gated on `e.sandbox == nil`, cleaned on Close).
+    Without this, NO secret-bearing bot could run under cron.
+  - **`model: "{{vars.x}}"` literal-passthrough on claude_code** — resolved on
+    claw but reaches the CLI verbatim on the delegation path (board native:73bfb3b4);
+    worked around with the env form `${FEED_WATCH_MODEL:-}`.
+  - **`worktree: auto` is the engine default** — fatal for a state-bearing bot;
+    feed-watch declares `worktree: none` (authoring lesson for any stateful bot).
+  - Design fix: only a **delivered** digest consumes the queue
+    (`notify -> commit_state when posted`) — a dry-run must not eat the queue.
+- Installed binary: the schedules run `~/.local/bin/iterion` (a fresh static
+  build), deliberately NOT `/usr/bin/iterion` (v0.31.0, root-owned, months stale —
+  refreshing it needs sudo, an operator step). Using `~/.local/bin` sidestepped
+  the sudo gate; the ephemeral worktree binary would have been wrong to freeze
+  into cron lines.
+- Lessons for next run: the transient synthesize-Bash noise is the one rough
+  edge to smooth; consider a Firecrawl-backed collect source to close the
+  HTML-scrape gap; the veille currently posts dev+prod both to `#huginn-dev`
+  (dev webhook) — the Huginn prod scenario fans out to `#veille-huginn-*` +
+  `mattermost2_*`, portable by adding those webhook names to the `webhooks`
+  secret and the config sinks when cutting over.
+
 ## 2026-07-16 — Huginn veille port: first full cycle (runs 019f699d / 019f699d-d407 / 019f69a1)
 
 - Status: **validated** (collect ×2 + digest dry-run end-to-end on the real
