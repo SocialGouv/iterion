@@ -318,7 +318,7 @@ github.com/ethpandaops/agent-sdk-observability/histograms
 github.com/ethpandaops/agent-sdk-observability/promexporter
 github.com/ethpandaops/agent-sdk-observability/semconv/genaiconv
 github.com/ethpandaops/agent-sdk-observability/tracer
-# github.com/ethpandaops/codex-agent-sdk-go v0.0.13
+# github.com/ethpandaops/codex-agent-sdk-go v0.0.13 => ./third_party/codex-agent-sdk-go
 ## explicit; go 1.26.0
 github.com/ethpandaops/codex-agent-sdk-go
 github.com/ethpandaops/codex-agent-sdk-go/internal/cli
@@ -1031,3 +1031,4 @@ modernc.org/memory
 # modernc.org/sqlite v1.48.0
 ## explicit; go 1.25.0
 modernc.org/sqlite/lib
+# github.com/ethpandaops/codex-agent-sdk-go => ./third_party/codex-agent-sdk-go

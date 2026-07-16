@@ -259,6 +259,15 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 		totalDuration += time.Since(startTime)
 
 		if queryErr != nil {
+			// A transport error surfaced after the result (e.g. a read
+			// failure during shutdown) concerns the teardown, not the
+			// work: the completed turn wins.
+			if resultMsg != nil {
+				b.Logger.Warn("[%s#%d/codex] ignoring transport error received after result: %v", task.NodeID, task.Iteration, queryErr)
+
+				return resultMsg, totalDuration, lastThreadID, nil
+			}
+
 			return nil, totalDuration, lastThreadID, fmt.Errorf("delegate: codex failed: %w", queryErr)
 		}
 
@@ -302,17 +311,6 @@ func (b *CodexBackend) runQueryWithRetry(ctx context.Context, task Task, prompt 
 	return nil, totalDuration, lastThreadID, fmt.Errorf("delegate: codex: no result after %d attempts", maxCodexRetries)
 }
 
-// codexLocalImageBlock mirrors the current app-server turn/start input shape.
-// codex-agent-sdk-go v0.0.13 rewrites its public LocalImageInput block to the
-// obsolete local_image variant while marshaling, so keep the compatibility
-// shim at our adapter boundary until the dependency is upgraded.
-type codexLocalImageBlock struct {
-	Type string `json:"type"`
-	Path string `json:"path"`
-}
-
-func (b *codexLocalImageBlock) BlockType() string { return b.Type }
-
 func codexQueryContent(prompt string, images []string) codexsdk.UserMessageContent {
 	if len(images) == 0 {
 		return codexsdk.Text(prompt)
@@ -321,10 +319,9 @@ func codexQueryContent(prompt string, images []string) codexsdk.UserMessageConte
 	blocks := make([]codexsdk.ContentBlock, 0, len(images)+1)
 	blocks = append(blocks, codexsdk.TextInput(prompt))
 	for _, path := range images {
-		blocks = append(blocks, &codexLocalImageBlock{
-			Type: codexsdk.BlockTypeLocalImage,
-			Path: path,
-		})
+		// The forked SDK marshals this to the localImage discriminator
+		// required by the live app-server (see the go.mod replace).
+		blocks = append(blocks, codexsdk.LocalImageInput(path))
 	}
 
 	return codexsdk.Blocks(blocks...)
