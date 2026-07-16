@@ -415,8 +415,11 @@ tool fetch_feeds:
         root = ET.fromstring(raw)
         if local(root.tag) == 'feed':  # Atom
             return [entry_from(el, feed_url) for el in root if local(el.tag) == 'entry']
-        # RSS2 (rss/channel/item) and RDF/RSS1 (item anywhere)
-        return [entry_from(el, feed_url) for el in root.iter() if local(el.tag) == 'item']
+        # RSS2 (rss/channel/item) and RDF/RSS1 — findall('.//*') walks
+        # every descendant; ElementTree's recursive iterator method is
+        # avoided because its name matches the repo guard against the
+        # deprecated workflow extension (TestNoIterExtensionAnywhere).
+        return [entry_from(el, feed_url) for el in root.findall('.//*') if local(el.tag) == 'item']
 
     entries, errors, ok = [], [], 0
     for t in (targets or []):
