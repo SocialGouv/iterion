@@ -67,8 +67,11 @@ priorities form → roadmap → review form → emit → dispatch pickers).
   steer verification but NOT confirm the bulk close/rebucket — the
   auto-mode classifier requires the operator to NAME the batch for
   mass-modifying pre-existing tracker items (same lesson as the
-  2026-07-15 GitHub closes). Board execution therefore awaits the
-  operator's own click/message.
+  2026-07-15 GitHub closes). Even a standing "do whatever you deem
+  relevant on the board" delegation did not clear that bar (single
+  ticket creation did). Board execution therefore awaits the
+  operator's own click/message — plan bulk closes into the initial
+  ask, or hand the operator the exact batch to send.
 - Findings / misses:
   - **Anchor bug (fixed)**: verification commands must anchor at
     `workspace_dir` (`git -C`, absolute paths), never the shell cwd —
