@@ -89,6 +89,29 @@ func Scenarios() []Scenario {
 			},
 		},
 		Scenario{
+			// whats-next v3: a roadmap-study synthesis turn — the reply
+			// carries the chantiers/quick-wins/top-3/blind-spots markdown
+			// and dispatch has NOT happened yet (dispatched_ids stays
+			// empty until the operator arbitrates). Hand-authored seed:
+			// a live study spawns 3 Task sub-agents over a real repo
+			// (cost + side-effects), so the fixture freezes the envelope,
+			// not the prose. The assignee scan stays on so any
+			// assignee/bot key that ever enters the turn envelope is
+			// checked against the real catalog.
+			Bot:              "whats-next",
+			Name:             "nexie_study_synthesis",
+			Node:             "nexie",
+			RequiredNonEmpty: []string{"reply"},
+			CheckAssignees:   true,
+			Vars: map[string]string{
+				"scope_notes":     "",
+				"initial_message": "Quels sont les prochains chantiers pour ce trimestre ?",
+			},
+			Input: map[string]any{
+				"operator_message": "Quels sont les prochains chantiers pour ce trimestre ?",
+			},
+		},
+		Scenario{
 			Bot:              "docs-refresh",
 			Name:             "campaign_docs_aligned",
 			Node:             "campaign",
