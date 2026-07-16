@@ -257,6 +257,7 @@ dispatcher routes on it), never the persona.
 |---|---|
 | Adry | `adr-cartograph` |
 | ReArchi | `adr-rechallenge` |
+| Appy | `app-dev` |
 | Bmady | `bmady` |
 | Billy | `branch-improve-loop` |
 | Vetty | `dep-update-guard` |
@@ -327,6 +328,36 @@ keep / change / addendum.
 - **Triggers**: adr, architecture-decision, re-challenge, revisit-decision, design-review
 - **Vars**: `adr_dir` (string), `adr_path` (string, required), `issue_id` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/adr-rechallenge/main.bot`
+
+### `app-dev` — Appy
+
+Autonomous end-to-end APPLICATION development from a prompt —
+greenfield. Creates a NEW app in any stack (Next.js, Django, Rust
+CLI, Go service, …): official non-interactive scaffold, walking
+skeleton (builds + runs + smoke test), then one verified semantic
+commit per slice until the brief is fully shipped. Two modes:
+`interview` converges a precise SPEC.md through a conversational
+loop BEFORE development starts (recommended for vague briefs);
+`autonomous` goes straight to a free first draft. A deterministic
+build/test gate + adversarial self-review re-check every pass, and
+an opt-in draft-review gate lets the operator ship, request changes
+(feedback loops back into the campaign), or hold. Re-running against
+the generated app EVOLVES it (brownfield detection) instead of
+re-scaffolding. Opt-in MR tail pushes the series and opens the
+merge/pull request.
+
+- **Use when**:
+  Use to create a NEW application from a natural-language brief —
+  point it at an EMPTY directory (the bot `git init`s and commits its
+  own scaffold). Prefer feature-dev when a codebase already exists and
+  the ask is one feature inside it; prefer app-dev when the deliverable
+  IS the application. Pass mode=interview for a spec-first conversation
+  when the brief is under-specified; keep the default mode=autonomous
+  for a fast free first draft the operator reframes at the draft-review
+  gate. A re-run against the generated app evolves it.
+- **Triggers**: new-app, greenfield, scaffold, bootstrap, app-from-prompt
+- **Vars**: `app_prompt` (string), `baseline` (string), `draft_review` (bool), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
+- **Path**: `bots/app-dev/main.bot`
 
 ### `bmady` — Bmady
 

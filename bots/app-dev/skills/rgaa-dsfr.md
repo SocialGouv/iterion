@@ -66,4 +66,4 @@ skills `rgaa-criteria-*`) — ne pas bloquer le run.
 - Ne pas imposer le DSFR à un repo qui ne l'utilise pas : c'est une référence
   d'accessibilité, pas une migration de design system.
 
-<!-- TODO(skill-dup): this RGAA skill is also shipped in bots/whole-improve-loop/skills/rgaa-dsfr.md and bots/app-dev/skills/rgaa-dsfr.md — iterion has no skill-sharing primitive yet, keep the copies in sync. -->
+<!-- TODO(skill-dup): this RGAA skill is also shipped in bots/rgaa-audit/skills/rgaa-dsfr.md and bots/whole-improve-loop/skills/rgaa-dsfr.md — iterion has no skill-sharing primitive yet, keep the copies in sync. -->

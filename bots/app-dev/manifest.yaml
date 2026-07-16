@@ -1,0 +1,86 @@
+name: app-dev
+display_name: Appy
+icon: 🏗️
+version: 0.1.0
+## 0.1.0 — initial release. ONE bot, two operator modes on the ADR-058
+## v2 campaign shape: `interview` (a Nexie-style conversational loop
+## converges + commits SPEC.md before development) and `autonomous`
+## (free first draft straight from the prompt). Greenfield-capable:
+## runs in an empty non-git directory (worktree:auto degrades to
+## in-place; the bot `git init`s and commits from slice 0), scaffolds
+## with the stack's official non-interactive scaffolder, wires the
+## walking skeleton, then ships slice by slice behind feature-dev's
+## deterministic verify gate + adversarial in-loop review. A
+## draft-review human gate (ship / request_changes / hold_for_later)
+## is the designed "reframe after the first draft" point.
+description: |
+  Autonomous end-to-end APPLICATION development from a prompt —
+  greenfield. Creates a NEW app in any stack (Next.js, Django, Rust
+  CLI, Go service, …): official non-interactive scaffold, walking
+  skeleton (builds + runs + smoke test), then one verified semantic
+  commit per slice until the brief is fully shipped. Two modes:
+  `interview` converges a precise SPEC.md through a conversational
+  loop BEFORE development starts (recommended for vague briefs);
+  `autonomous` goes straight to a free first draft. A deterministic
+  build/test gate + adversarial self-review re-check every pass, and
+  an opt-in draft-review gate lets the operator ship, request changes
+  (feedback loops back into the campaign), or hold. Re-running against
+  the generated app EVOLVES it (brownfield detection) instead of
+  re-scaffolding. Opt-in MR tail pushes the series and opens the
+  merge/pull request.
+when_to_use: |
+  Use to create a NEW application from a natural-language brief —
+  point it at an EMPTY directory (the bot `git init`s and commits its
+  own scaffold). Prefer feature-dev when a codebase already exists and
+  the ask is one feature inside it; prefer app-dev when the deliverable
+  IS the application. Pass mode=interview for a spec-first conversation
+  when the brief is under-specified; keep the default mode=autonomous
+  for a fast free first draft the operator reframes at the draft-review
+  gate. A re-run against the generated app evolves it.
+author: SocialGouv (devthejo) — app-dev/main.bot
+schema_version: 1
+
+triggers:
+  - new-app
+  - greenfield
+  - scaffold
+  - bootstrap
+  - app-from-prompt
+
+dispatch_vars:
+  app_prompt: |-
+    {{issue.title}}
+
+    {{issue.body}}
+  ## Dispatcher/board/webhook runs are HEADLESS — no operator is waiting
+  ## to answer interview questions or man the draft-review gate. Force
+  ## the non-blocking modes for these paths; CLI/studio launches keep
+  ## the DSL defaults (autonomous + draft_review on).
+  mode: "autonomous"
+  draft_review: "false"
+  ## Board-dispatched runs open a merge/pull request at the end and post
+  ## the URL back onto the source issue (requires the workspace to have
+  ## a forge remote — a bare local greenfield fixture won't).
+  open_mr: "true"
+  source_issue_ref: "{{issue.id}}"
+
+## Forge access for the MR/PR push + creation + the issue back-link.
+## The auto-provisioner requests these scopes and binds the connection
+## token under `forge_token` (cross-ref main.bot `secrets: { forge_token }`).
+forge:
+  ## issue_labeled: labeling an issue (e.g. "build-app") launches Appy to
+  ## build the described app and open a PR back-linked to the issue.
+  ## pull_request_comment: the on-demand `/appy <brief>` slash command.
+  events: [issue_labeled, pull_request_comment]
+  token_scopes:
+    pull_requests: write     # open the MR/PR
+    repository: write        # push the branch
+    issues: write            # post the MR URL back onto the source issue
+  secret: forge_token
+
+invocations:
+  - kind: command
+    mode: board
+    args_var: app_prompt
+    command: { name: appy, aliases: [app-dev], scope: any, min_replier_role: maintainer, opens_mr: true }
+  - kind: board
