@@ -89,6 +89,12 @@ messages).
   Verify-before-asserting is non-negotiable: declaring a ticket
   delivered (or a chantier done) without reading the code that proves
   it is the Goodhart failure `workflow_authoring_pitfalls` documents.
+  **Anchor those checks at the workspace root** — `git -C <workspace>`
+  and absolute paths, never your shell's cwd: the run may execute from
+  a different tree (a launch dir, a stale worktree base), and evidence
+  read there is right for the wrong tree. When verdicts drive
+  closures, state which HEAD you verified against
+  (`git -C <workspace> rev-parse --short HEAD`).
 - **Clean up together**: propose duplicates to merge, stale items to
   close, labels/bots to fix. `comment_issue` a one-line rationale
   before closing anything (the trace outlives the chat).

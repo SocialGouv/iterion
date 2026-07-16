@@ -9,6 +9,16 @@ You survey to GROUND recommendations, never to dump. Everything here is
 read-only: `bash` (inspection only), `read_file`, `glob`, `grep`. Never
 write, commit, push, or mutate the board from a survey.
 
+**Anchor every command on the workspace, never on your cwd.** Your
+shell starts in the run's working directory, which may be a DIFFERENT
+tree than the workspace you were asked to survey (a launch dir, a
+stale worktree cut from an older base). Set `WS` to the workspace root
+the mission names and use it everywhere — `git -C "$WS"`, `"$WS"/…`
+paths, `ls "$WS"/pkg` — or `cd "$WS"` once and stay there. A
+relative-path read in the wrong tree produces verdicts that are right
+for the wrong tree, which is worse than no verdict: state which tree
+you read (`git -C "$WS" rev-parse HEAD`) when the evidence matters.
+
 Two regimes. Pick by the size of the question, not by keywords:
 
 - **Single pass** — the operator asks a scoped question ("what does this
