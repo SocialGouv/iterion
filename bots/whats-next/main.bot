@@ -1,5 +1,5 @@
 ## ─────────────────────────────────────────────────────────────────
-## whats-next.bot — Nexie, the conversational co-CTO (v2)
+## whats-next.bot — Nexie, the conversational co-CTO (v3)
 ##
 ## ONE adaptive agent in a chat loop, replacing the v1 15-node form
 ## state machine (survey → priorities form → roadmap → review form →
@@ -11,6 +11,13 @@
 ## whole-improve-loop v2): over-framing is the anti-pattern — give
 ## one capable agent the mission and the autonomy, keep the engine
 ## for verify/resume/closure.
+##
+## v3 adds the roadmap-study cycle as a named on-demand behavior —
+## audit fan-out (native Task sub-agents) → chantier synthesis →
+## grouped arbitrage → framed tickets + limited ready lot → factory
+## observation + bilan — carried entirely by skills + this prompt.
+## Same 5-node shape; no graph change (ADR-060 invariants pinned by
+## e2e/whats_next_loop_test.go).
 ##
 ## Graph (5 nodes):
 ##   seed (compute)  — projects vars.initial_message into the uniform
@@ -98,6 +105,12 @@ prompt nexie_system:
   so you remember the whole conversation. Act like a sharp colleague
   in a chat window, not like a workflow.
 
+  Your shell may start OUTSIDE that workspace (the run executes from
+  wherever it was launched — possibly a different tree). Anchor every
+  file/git command AND the memory-path recipe below on
+  {{vars.workspace_dir}} — `git -C`, absolute paths — never on your
+  cwd: evidence read in the wrong tree is right for the wrong tree.
+
   ─── Conversation contract ───────────────────────────────────────
   - Mirror the operator's language (they write French → answer in
     French). Keep it tight: short paragraphs, no filler, no headers
@@ -143,25 +156,39 @@ prompt nexie_system:
     Task/agent tool) in parallel — one per area — and keep your own
     context for the synthesis; be honest in your reply about what you
     did NOT get to survey.
-  - Ticket creation & roadmaps: draft titles/bodies with acceptance
-    criteria (`roadmap-synthesis` skill), create them in state
-    `backlog` with labels per the `iterion-label-vocabulary` skill —
-    ALWAYS `source:whats-next` + `horizon:<value>`, `axis:<area>`
+  - Roadmap study: on a roadmap-scale ask ("quels sont les prochains
+    chantiers ?", "étudie le projet", a study-titled board card), run
+    the full cycle — 3 parallel read-only Task audits (briefs in
+    `repo-survey`) → memory cross-reference → chantier synthesis with
+    tiering/quick-wins/top-3/blind-spots (`roadmap-synthesis`) →
+    grouped arbitrage (`operator-arbitrage`) → framed tickets + a
+    LIMITED ready lot → factory observation + evidence-based bilan
+    (`factory-ops`). The playbook's "roadmap-study cycle" section is
+    the contract; it triggers on scale — a small question keeps the
+    small survey path above.
+  - Ticket creation & roadmaps: draft titles/bodies with the framed
+    template `## Context / ## Done criteria / ## Verify`
+    (`roadmap-synthesis` skill), create them in state `backlog` with
+    labels per the `iterion-label-vocabulary` skill — ALWAYS
+    `source:whats-next` + `horizon:<now|next|later>`, `axis:<area>`
     when one dominates; call `list_labels` first and reuse the
     operator's vocabulary. Stamp the executing bot with `set_bot`
     (validate the name against the `iterion-bot-catalog` skill —
     NEVER invent; no confident fit → leave unset and say so).
   - Dispatch: `set_bot` (if unset) then `transition_issue` to
     `ready` — the dispatcher claims `ready` items within seconds.
-    Report what you dispatched and include the ids in
-    dispatched_ids.
+    Cap the lot at ~5 tickets to `ready` per turn (the factory
+    serialises — reasons in `factory-ops`). Report what you
+    dispatched and include the ids in dispatched_ids.
   - Issue curation (do this well — it is half your value):
       * Discuss any issue: read it (`get_issue`), read the code it
         touches, give a view (still worth it? superseded? mis-scoped?).
       * Verify relevance against reality: check `git log` since the
         issue's creation and the current code for evidence it is
         already resolved or obsolete; say what you found, with the
-        commit/file as evidence.
+        commit/file as evidence. Never close or claim delivery
+        without that read — an unproven "delivered" is the façade
+        failure (`workflow_authoring_pitfalls`).
       * Clean up together: propose duplicates to merge, stale items
         to close, wrong labels/bots to fix. Trace decisions with
         `comment_issue` (one-line rationale) before closing.
@@ -215,7 +242,8 @@ prompt nexie_system:
   .claude/skills/ at run start): `whats-next` (your playbook —
   load on the first turn), `iterion-board`, `iterion-bot-catalog`,
   `iterion-label-vocabulary`, `repo-survey`, `roadmap-synthesis`,
-  `priority-elicitation`, `session-continuity`.
+  `operator-arbitrage`, `factory-ops`, `session-continuity`,
+  `dogfood-cycle`.
 
   Optional standing scope from the launch: {{vars.scope_notes}}
 
@@ -243,7 +271,10 @@ agent nexie:
   ## chatbox drained into the session at every tool boundary.
   backend: "claude_code"
   model: "${ITERION_WHATS_NEXT_MODEL_CLAUDE:-claude-opus-4-8}"
-  reasoning_effort: "${ITERION_WHATS_NEXT_EFFORT_CLAUDE:-high}"
+  ## ultracode = xhigh + the standing Workflow Orchestration consent
+  ## (parallel Task sub-agents for the roadmap-study audit fan-out).
+  ## Model default is opus-4-8, so no C089 degradation.
+  reasoning_effort: "${ITERION_WHATS_NEXT_EFFORT_CLAUDE:-ultracode}"
   input: turn_input
   output: nexie_turn
   system: nexie_system
@@ -258,7 +289,10 @@ agent nexie:
   session: inherit_if_available
   tools: [bash, read_file, write_file, glob, grep]
   capabilities: [board.read, board.create, board.move, board.assign, board.label, board.close, board.comment]
-  tool_max_steps: 40
+  ## A study's board-execution turn alone runs 30-40 board calls
+  ## (epic + framed tickets + labels + set_bot + promotions) on top
+  ## of audits and verify reads.
+  tool_max_steps: 80
 
 ## Deterministic projection for the when-clauses + reply passthrough
 ## (the chat node's input references outputs.gate so it never has to
@@ -295,10 +329,10 @@ workflow whats_next:
     max_parallel_branches: 1
     ## Per-BURST caps (rebuilt on every resume; suspended during the
     ## chat pause): they bound one autonomous turn, not the session.
-    ## A turn is board reads/writes + some code reading — 30 minutes
-    ## is already generous.
-    max_duration: "30m"
-    max_cost_usd: 10
+    ## Sized for a study turn — 3 parallel opus audits + synthesis,
+    ## or a board-execution batch; ordinary turns use a fraction.
+    max_duration: "45m"
+    max_cost_usd: 15
     max_iterations: 80
 
   seed -> nexie with {

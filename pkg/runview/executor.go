@@ -380,15 +380,8 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 			// fan-out (one executor per child).
 			opts = append(opts, model.WithExtraClosers(ns))
 			boardCfg := &tool.BoardConfig{
-				Store: ns,
-				Capabilities: []string{
-					boardops.CapBoardRead,
-					boardops.CapBoardCreate,
-					boardops.CapBoardMove,
-					boardops.CapBoardAssign,
-					boardops.CapBoardLabel,
-					boardops.CapBoardClose,
-				},
+				Store:        ns,
+				Capabilities: boardops.AllCapabilities(),
 			}
 			if err := tool.RegisterClawBoardTools(toolReg, boardCfg); err != nil {
 				spec.Logger.Warn("runview: RegisterClawBoardTools: %v", err)

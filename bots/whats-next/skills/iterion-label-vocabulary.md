@@ -18,7 +18,7 @@ Use `namespace:value` (colon-prefixed). Single-word tags exist but are rare.
 | Namespace | Allowed values | Meaning |
 |---|---|---|
 | `source:` | bot name, import path, or `manual` | Where the issue came from. Prefer the bot identity (`source:whats-next`, `source:sec-audit-source`, `source:sec-audit-deps`, `source:docs-refresh`). For one-off operator imports, `source:manual` plus a date suffix only when chronology genuinely matters. |
-| `horizon:` | `next-action`, `short-term`, `long-term`, `theme` | Time horizon. `theme` for strategic items the operator never expects to dispatch directly. |
+| `horizon:` | `now`, `next`, `later`, `theme` | Tier from the roadmap-study tiering (see `roadmap-synthesis`): `now` = start this week, `next` = this month, `later` = this quarter. `theme` for strategic items never dispatched directly. Legacy spellings still live on old cards — `next-action`/`short-term`/`long-term` and bare `now`/`next`/`later` — treat them as equivalent when filtering, and do NOT mass-relabel without an explicit operator ask. |
 | `epic:` | short kebab-case name | Long-running effort grouping multiple issues. Example: `epic:battle-tested`, `epic:cloud-readiness`. ONE epic label per issue is enough — multi-epic items dilute the signal. |
 | `sprint:` | integer | Sprint window the issue is committed to. Example: `sprint:1`. Combine with `epic:` to scope. |
 | `axis:` | area name from the repo | Subject area. Prefer names that match a top-level directory or `pkg/<x>/` package: `axis:runtime`, `axis:studio`, `axis:dispatcher`, `axis:dsl`, `axis:backend`, `axis:cloud`, `axis:sandbox`. For cross-cutting: `axis:testing`, `axis:observability`, `axis:reliability`, `axis:security`, `axis:docs`, `axis:bot`, `axis:performance`. |
@@ -48,7 +48,7 @@ Use it to:
 
 3. **Detect drift early**. If you see two near-identical labels (`epic:cloud` and `epic:cloud-readiness`), surface the question in `rationale` rather than picking one silently.
 
-## The minimum label set per emit_action issue
+## The minimum label set per created issue
 
 Three is the comfortable baseline; four is reasonable when an epic + sprint is in play. More than five labels per issue dilutes filtering.
 

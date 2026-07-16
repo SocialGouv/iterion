@@ -49,6 +49,36 @@ func TestMirrorBundleSkills_CopiesIntoClaudeSkills(t *testing.T) {
 	}
 }
 
+func TestMirrorBundleSkills_SkipsNonMarkdownFiles(t *testing.T) {
+	workDir := t.TempDir()
+	skillsSrc := filepath.Join(t.TempDir(), "skills")
+	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A placeholder like bots/*/skills/.gitkeep must be skipped: its stem
+	// keeps the full basename, so the directory form and the flat alias
+	// would collide on the SAME path ("is a directory" on fresh mirror).
+	if err := os.WriteFile(filepath.Join(skillsSrc, ".gitkeep"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsSrc, "real.md"), []byte("# real\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &bundle.Bundle{SkillsDir: skillsSrc}
+	if err := mirrorBundleSkills(workDir, b, nil); err != nil {
+		t.Fatalf("mirror with a non-md placeholder must succeed: %v", err)
+	}
+
+	dest := filepath.Join(workDir, ".claude", "skills")
+	if _, err := os.Stat(filepath.Join(dest, ".gitkeep")); !os.IsNotExist(err) {
+		t.Errorf(".gitkeep must not be mirrored (stat err = %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "real", "SKILL.md")); err != nil {
+		t.Errorf("real/SKILL.md missing: %v", err)
+	}
+}
+
 func TestMirrorBundleSkills_WorkspaceWinsOnCollision(t *testing.T) {
 	workDir := t.TempDir()
 	dest := filepath.Join(workDir, ".claude", "skills")

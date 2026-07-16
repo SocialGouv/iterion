@@ -938,6 +938,11 @@ operator talks, Nexie analyses the board and the repo, recommends
 (recommendation-first, never raw dumps), creates/curates/dispatches
 tickets, verifies whether issues are still relevant against the
 code and git history, and keeps a cross-session CONTEXT_BRIEF.
+On roadmap-scale asks she leads the full study cycle end-to-end:
+parallel audit fan-out → chantiers with now/next/later tiering +
+quick-wins + blind spots → grouped operator arbitrage → framed
+tickets (context / done-criteria / verify) with a limited ready
+lot → factory observation + evidence-based bilan.
 Every turn ends at a budget-free chat pause — the session stays
 reachable for days; only an explicit "close" ends it. Direct action
 on targeted instructions; dry-run + confirmation before bulk or
@@ -947,7 +952,10 @@ destructive board changes.
   Use to decide and drive what happens next on a repo: discuss the
   board, get a recommendation (quick wins, priorities), create or
   clean up tickets, and dispatch work to the right bot — all in one
-  ongoing conversation. The orchestrator / entry point, not a worker
+  ongoing conversation. Also the entry point for a full roadmap
+  study: ask "quels sont les prochains chantiers ?" (or dispatch a
+  study-titled card) and Nexie runs the audit→synthesis→arbitrage→
+  board→bilan cycle. The orchestrator / entry point, not a worker
   bot.
 - **Vars**: `initial_message` (string), `scope_notes` (string), `workspace_dir` (string)
 - **Path**: `bots/whats-next/main.bot`

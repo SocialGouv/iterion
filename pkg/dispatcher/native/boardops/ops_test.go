@@ -31,6 +31,29 @@ func TestNewCapabilities(t *testing.T) {
 	}
 }
 
+func TestAllCapabilities_CoversEveryDeclaredCap(t *testing.T) {
+	got := AllCapabilities()
+	want := []string{
+		CapBoardRead, CapBoardCreate, CapBoardMove, CapBoardAssign,
+		CapBoardLabel, CapBoardClose, CapBoardComment,
+	}
+	gotSet := map[string]bool{}
+	for _, c := range got {
+		if gotSet[c] {
+			t.Errorf("duplicate capability %q", c)
+		}
+		gotSet[c] = true
+	}
+	for _, c := range want {
+		if !gotSet[c] {
+			t.Errorf("AllCapabilities missing %q — a board tool's capability is not covered", c)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("AllCapabilities returned %d caps, want %d: %v", len(got), len(want), got)
+	}
+}
+
 func TestToolsFor_FiltersByCap(t *testing.T) {
 	got := ToolsFor(NewCapabilities("board.create,board.read"))
 	names := make([]string, 0, len(got))
