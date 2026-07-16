@@ -266,6 +266,7 @@ dispatcher routes on it), never the persona.
 | Evoly | `evolve` |
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
+| Vigie | `feed-watch` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
@@ -589,6 +590,43 @@ without re-architecting what already works.
   greenfield (no existing partial implementation to preserve).
 - **Vars**: `baseline` (string), `gap_spec` (string, required), `max_passes` (int), `scope_notes` (string), `scratch_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feature-gap-fill/main.bot`
+
+### `feed-watch` — Vigie
+
+Universal feed-watch + digest bot (Huginn-style veille pipeline as a
+single bot). Two run modes over one file-backed state in the target
+workspace, selected with --var mode=:
+
+collect (zero-LLM — runs with no LLM credential): polls every
+configured RSS/Atom/RDF feed with a stdlib parser, dedups against a
+per-category seen-items FIFO (ids + urls, cross-source), and queues
+the fresh items in pending.jsonl.
+
+digest (one LLM step): snapshots a category's queue (empty queue →
+done at zero cost), then an editorial agent groups same-story items,
+web_fetches the top articles to ground the takeaways, semantically
+dedups against the previously sent digests, ranks by importance and
+writes ONE chat-ready markdown message; a deterministic tool POSTs it
+to the configured Mattermost/Slack incoming webhooks and clears
+exactly the digested items from the queue.
+
+Everything workspace-specific (categories, feeds, editorial guidance
+and language, webhook sinks, cadences) lives in the target repo's
+config file (default feed-watch.json) + the `webhooks` secret — no
+feed, prompt language or channel is baked into the bot. Requires
+python3 (stdlib only) on the execution host.
+
+- **Use when**:
+  Use to run a recurring technology/news watch over RSS/Atom feeds with
+  LLM-synthesized digests delivered to chat (Mattermost/Slack incoming
+  webhooks): schedule `mode=collect` runs to poll feeds cheaply
+  (zero-LLM), and per-category `mode=digest` runs (daily/weekly) to
+  synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
+  → webhook scenario one-for-one. Not for one-shot research questions
+  (use a plain research bot) and it never edits code.
+- **Vars**: `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `model` (string), `post_to_board` (bool), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Capabilities**: board.create, board.read
+- **Path**: `bots/feed-watch/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
 
