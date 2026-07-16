@@ -59,6 +59,10 @@ type PruneResult struct {
 	Pruned       []PrunedRun `json:"pruned"`
 	PrunedCount  int         `json:"pruned_count"`
 	SkippedCount int         `json:"skipped_count"`
+	// Unreadable lists run dirs whose run.json could not be loaded
+	// (partial delete, crash before the first write). They are never
+	// deleted — the operator inspects or removes them by hand.
+	Unreadable []string `json:"unreadable,omitempty"`
 }
 
 // pruneAgeField is the constant advertised on --json output and in the
@@ -116,11 +120,17 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 		ts  time.Time
 	}
 	scanned := 0
+	var unreadable []string
 	candidates := make([]candidate, 0, len(ids))
 	for _, id := range ids {
 		r, err := s.LoadRun(ctx, id)
 		if err != nil {
-			return fmt.Errorf("load run %s: %w", id, err)
+			// A run dir without a loadable run.json (partial delete,
+			// crash before the first write) must not sink the whole
+			// retention sweep. Surface it loudly and move on — and
+			// never delete what could not be read.
+			unreadable = append(unreadable, id)
+			continue
 		}
 		scanned++
 		if _, ok := statuses[r.Status]; !ok {
@@ -183,6 +193,7 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 		Pruned:       pruned,
 		PrunedCount:  len(pruned),
 		SkippedCount: scanned - len(pruned),
+		Unreadable:   unreadable,
 	}
 	return renderPruneResult(p, result)
 }
@@ -308,6 +319,16 @@ func renderPruneResult(p *Printer, r PruneResult) error {
 	verb := "would prune"
 	if !r.DryRun {
 		verb = "pruned"
+	}
+
+	if len(r.Unreadable) > 0 {
+		sample := r.Unreadable
+		if len(sample) > 5 {
+			sample = sample[:5]
+		}
+		p.Line("WARNING: %d unreadable run dir(s) (no loadable run.json) left untouched — inspect or remove by hand: %s%s",
+			len(r.Unreadable), strings.Join(sample, ", "),
+			map[bool]string{true: ", …", false: ""}[len(r.Unreadable) > 5])
 	}
 
 	if r.PrunedCount == 0 {
