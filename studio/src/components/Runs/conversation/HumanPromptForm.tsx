@@ -107,17 +107,24 @@ export default function HumanPromptForm({
     const approve = fields.find(
       (f) => f.type === "bool" && f.name === "approved",
     );
-    const visible = approve
-      ? fields.filter((f) => f.name !== approve.name)
+    const action = approve
+      ? undefined
+      : fields.find(
+          (f) =>
+            f.name === "action" && (f.enum_values?.length ?? 0) >= 2,
+        );
+    const verdict = approve ?? action;
+    const visible = verdict
+      ? fields.filter((f) => f.name !== verdict.name)
       : fields;
     if (visible.length === 0) return null;
-    // Approve/Reject buttons live OUTSIDE the wizard at this layout
-    // level. Paginating the remaining questions would force the
-    // operator to step through a wizard to reach the approve action;
-    // collapsing them onto one page keeps every input (feedback +
-    // any per-item selector like whats-next's `selected_titles`)
-    // visible alongside the verdict buttons.
-    const mode = approve ? "flat" : undefined;
+    // Verdict buttons (Approve/Reject, or one button per `action` enum
+    // value) live OUTSIDE the wizard at this layout level. Paginating
+    // the remaining questions would force the operator to step through
+    // a wizard to reach the verdict; collapsing them onto one page
+    // keeps every input (feedback + any per-item selector like
+    // whats-next's `selected_titles`) visible alongside the buttons.
+    const mode = verdict ? "flat" : undefined;
     return formSpecFromSchema(visible, questions, {
       submitLabel: "Submit & Resume",
       mode,
@@ -185,12 +192,23 @@ export default function HumanPromptForm({
   const approveField = fields?.find(
     (f) => f.type === "bool" && f.name === "approved",
   );
-  const visibleFields = approveField
-    ? (fields ?? []).filter((f) => f.name !== approveField.name)
+  // A string enum named `action` is the schema convention for a
+  // multi-way gate verdict (bmady's approve/expand/revise menus,
+  // app-dev's ship/request_changes/hold_for_later). Render one
+  // one-click submit button per value — same affordance the bool
+  // `approved` convention gets — instead of radio + separate submit.
+  const actionField = approveField
+    ? undefined
+    : fields?.find(
+        (f) => f.name === "action" && (f.enum_values?.length ?? 0) >= 2,
+      );
+  const verdictField = approveField ?? actionField;
+  const visibleFields = verdictField
+    ? (fields ?? []).filter((f) => f.name !== verdictField.name)
     : fields ?? [];
 
-  const submitWithApproved = (approved: boolean) => {
-    if (!fields) return;
+  const submitWithVerdict = (value: boolean | string) => {
+    if (!fields || !verdictField) return;
     const { answers, errors } = coerceFormAnswerToSchema(
       visibleFields,
       latestAnswer,
@@ -199,7 +217,7 @@ export default function HumanPromptForm({
       setError("Fix invalid fields: " + Object.keys(errors).join(", "));
       return;
     }
-    void submit({ ...answers, [approveField!.name]: approved });
+    void submit({ ...answers, [verdictField.name]: value });
   };
 
   const submitFromWizard = (formAnswer: FormAnswer) => {
@@ -236,7 +254,7 @@ export default function HumanPromptForm({
     void submit({ [stringField.name]: `[QA:${action}]` });
   };
 
-  const showQuickActions = !approveField && quickActions.length > 0;
+  const showQuickActions = !verdictField && quickActions.length > 0;
 
   return (
     <div className="space-y-2">
@@ -265,11 +283,11 @@ export default function HumanPromptForm({
             <WizardForm
               spec={formSpec}
               busy={busy}
-              hideSubmit={!!approveField}
+              hideSubmit={!!verdictField}
               onAnswerChange={setLatestAnswer}
               onSubmit={(answer) => {
                 setLatestAnswer(answer);
-                if (!approveField) submitFromWizard(answer);
+                if (!verdictField) submitFromWizard(answer);
               }}
             />
           )}
@@ -284,7 +302,7 @@ export default function HumanPromptForm({
                 variant="primary"
                 size="sm"
                 disabled={busy}
-                onClick={() => submitWithApproved(true)}
+                onClick={() => submitWithVerdict(true)}
               >
                 {busy ? "…" : "Approve"}
               </Button>
@@ -292,10 +310,25 @@ export default function HumanPromptForm({
                 variant="danger"
                 size="sm"
                 disabled={busy}
-                onClick={() => submitWithApproved(false)}
+                onClick={() => submitWithVerdict(false)}
               >
                 {busy ? "…" : "Reject"}
               </Button>
+            </div>
+          )}
+          {actionField && (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border-subtle">
+              {(actionField.enum_values ?? []).map((value, i) => (
+                <Button
+                  key={value}
+                  variant={i === 0 ? "primary" : "secondary"}
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => submitWithVerdict(value)}
+                >
+                  {busy ? "…" : humanizeActionValue(value)}
+                </Button>
+              ))}
             </div>
           )}
           {showQuickActions && (
@@ -319,6 +352,13 @@ export default function HumanPromptForm({
       )}
     </div>
   );
+}
+
+// humanizeActionValue turns an `action` enum token into a button label:
+// "request_changes" → "Request changes".
+function humanizeActionValue(value: string): string {
+  const words = value.replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : value;
 }
 
 function labelFor(qa: "skip" | "idk" | "later"): string {

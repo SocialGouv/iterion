@@ -611,15 +611,8 @@ schema verify_result:
   log_tail: string
 
 ## verify_probe output — deterministic "is a usable verify.sh already prepared?"
-## so verify_build (an LLM agent) is only paid when the script is
-## missing/invalid or on the first pass. fresh=true reuses it.
-## verify_probe input — the continuation-loop iteration, mapped on the
-## campaign→verify_probe edge. Loop refs ({{loop.*}}) do NOT resolve inside a
-## tool command (only input/vars/run do), so the iteration is passed in as node
-## input via the edge data-mapping. Pass 1 = iteration 0 (always regenerate).
-schema verify_probe_input:
-  iteration: int
-
+## so verify_build (an LLM agent) is only paid when the script is missing,
+## invalid, or stale against the tree's build manifests. fresh=true reuses it.
 schema verify_probe_state:
   fresh: bool
   reason: string
@@ -765,26 +758,40 @@ agent campaign:
   capabilities: [board.read, board.create]
 
 ## verify_probe — DETERMINISTIC pre-check: is a usable verify.sh already in the
-## scratch dir from an earlier pass of THIS run? verify_build is an LLM agent;
-## once pass 1 has authored verify.sh, re-authoring it every pass is pure
-## waste. fresh=true when verify.sh exists, is non-empty, and passes `sh -n` —
-## AND this is not the first pass (iteration>0), so pass 1 of every run always
-## (re)generates verify.sh for the CURRENT tree (essential here: pass 1 may
-## predate the scaffold, so the script MUST be rewritten once a real build
-## system exists). python3 for safe JSON; read-only, idempotent.
+## scratch dir? verify_build is an LLM agent; re-authoring the script on every
+## pass is pure waste. Staleness is decided by a BUILD-MANIFEST FINGERPRINT
+## (sha256 over the workspace's root-level manifests/lockfiles/build files):
+## fresh=true when verify.sh exists, is non-empty, passes `sh -n`, AND the
+## fingerprint matches the one stamped when the script was last (re)authored.
+## This replaces the sibling bots' first-pass-always-regen rule (iteration<=0),
+## which app-dev's draft_loop re-entries would trip on EVERY operator reframe
+## (continuation_loop stays 0 on that path — observed live, ~$0.22/round).
+## The fingerprint keeps the rule's intent exactly: greenfield pass 1 has no
+## script (regenerate); the scaffold landing changes the manifests
+## (regenerate — the echo-stub gets replaced by the real toolchain); a reframe
+## that only edits app code reuses; a stale cross-run script only survives if
+## the tree's build system is truly unchanged, which is when reuse is correct.
+## python3 for safe JSON; writes only the fingerprint sidecar in scratch.
 tool verify_probe:
-  command: `SCRATCH={{vars.scratch_dir}} ITER="{{input.iteration}}" python3 -c "
-import os, subprocess, json
+  command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
+import os, subprocess, json, hashlib
+ws = os.environ.get('WS', '.')
 scratch = os.environ.get('SCRATCH', '.')
 script = os.path.join(scratch, 'verify.sh')
-try:
-    iteration = int(os.environ.get('ITER', '0') or '0')
-except ValueError:
-    iteration = 0
+fpfile = os.path.join(scratch, 'verify.fingerprint')
+manifests = ['package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'go.mod', 'go.sum', 'Cargo.toml', 'Cargo.lock', 'pyproject.toml', 'poetry.lock', 'requirements.txt', 'Pipfile.lock', 'Gemfile', 'Gemfile.lock', 'composer.json', 'composer.lock', 'mix.exs', 'Makefile', 'makefile', 'Taskfile.yml', 'Taskfile.yaml', 'justfile', 'Justfile', 'devbox.json', 'flake.nix', 'Dockerfile']
+h = hashlib.sha256()
+for name in manifests:
+    p = os.path.join(ws, name)
+    if os.path.isfile(p):
+        h.update(name.encode('utf-8'))
+        try:
+            h.update(open(p, 'rb').read())
+        except OSError:
+            h.update(b'unreadable')
+fp = h.hexdigest()
 fresh = False
-if iteration <= 0:
-    reason = 'first pass of this run: (re)generate verify.sh for the current tree'
-elif not os.path.isfile(script):
+if not os.path.isfile(script):
     reason = 'no verify.sh in the scratch dir yet'
 elif os.path.getsize(script) == 0:
     reason = 'verify.sh is empty'
@@ -793,11 +800,24 @@ else:
     if chk.returncode != 0:
         reason = 'verify.sh failed the sh -n syntax check: ' + (chk.stdout or '')[-300:]
     else:
-        fresh = True
-        reason = 'verify.sh present and valid; reuse it (skip verify_build)'
+        prev = ''
+        try:
+            prev = open(fpfile, encoding='utf-8').read().strip()
+        except OSError:
+            pass
+        if prev != fp:
+            reason = 'build manifests changed since verify.sh was authored (fingerprint mismatch); regenerate it for the current toolchain'
+        else:
+            fresh = True
+            reason = 'verify.sh valid and build manifests unchanged; reuse it (skip verify_build)'
+try:
+    os.makedirs(scratch, exist_ok=True)
+    with open(fpfile, 'w', encoding='utf-8') as f:
+        f.write(fp)
+except OSError:
+    pass
 print(json.dumps({'fresh': fresh, 'reason': reason}))
 "`
-  input: verify_probe_input
   output: verify_probe_state
 
 ## verify_build — adaptive, stack-agnostic gate authoring (writes
@@ -1081,13 +1101,13 @@ workflow app_dev:
     _session_fingerprint: "{{outputs.interviewer._session_fingerprint}}"
   } as interview_loop("{{vars.max_interview_turns}}")
 
-  ## ── Campaign pass + deterministic gate (feature-dev v2 verbatim) ─
-  campaign -> verify_probe with {
-    iteration: "{{loop.continuation_loop.iteration}}"
-  }
+  ## ── Campaign pass + deterministic gate (feature-dev v2 shape) ────
+  campaign -> verify_probe
   ## verify_probe reuses an already-valid verify.sh (skipping the LLM
-  ## verify_build) on passes 2+; the first pass of every run regenerates it
-  ## for the current tree. Both outgoing edges test the bool `fresh`.
+  ## verify_build) whenever the workspace's build manifests are unchanged
+  ## since the script was authored; any manifest change (the scaffold
+  ## landing, a new dependency) regenerates it. Both outgoing edges test
+  ## the bool `fresh`.
   verify_probe -> verify_run when fresh
   verify_probe -> verify_build when not fresh
   verify_build -> verify_run

@@ -58,10 +58,14 @@ Newest first. Template: see [README.md](README.md).
   - Interview convergence is efficient but trusting: a terse operator
     answer ("on y va") converges immediately — fine for an expert,
     worth watching with less-specified briefs.
-  - `verify_probe` correctly forced verify.sh regeneration on the
-    request_changes pass (iteration semantics reset per resume burst) —
-    costs one extra verify_build (~$0.22) per reframe round; acceptable,
-    could be optimized later.
+  - `verify_probe` forced verify.sh regeneration on every
+    request_changes round (draft_loop re-entry keeps
+    continuation_loop=0 → the iteration<=0 rule fired, ~$0.22/round).
+    **Fixed same day**: app-dev's probe now decides staleness by a
+    build-manifest fingerprint (sha256 of root manifests/lockfiles) —
+    reuse while the toolchain is unchanged, regenerate the moment the
+    scaffold or a dependency lands. Sibling bots keep the iteration
+    rule (their single loop makes it correct).
   - Store layout note: run artifacts now live under `artifact_files/` +
     `turns/` (not `artifacts/<node>/<v>.json` as older docs say) —
     session-id checks must read `events.jsonl`.
@@ -74,5 +78,8 @@ Newest first. Template: see [README.md](README.md).
   matrix cost <$10 total; (2) for the studio-first UX test, launch via
   CLI against the workspace store and answer gates in the studio until
   the branch is merged (the main studio only discovers bots on its own
-  tree); (3) consider a `draft_review` quick-reply preset ("ship") in
-  the studio form to reduce gate friction.
+  tree); (3) gate friction: **addressed same day** — the studio's
+  HumanPromptForm now renders one-click verdict buttons for `action`
+  enum gates (Ship / Request changes / Hold for later), the same
+  affordance the bool `approved` convention already had; bmady's menu
+  gates benefit too.
