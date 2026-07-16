@@ -154,9 +154,13 @@ type RunHeader struct {
 	// fan-out. All empty for a top-level (non-sharded) run. The studio
 	// projects these to render a run's shard/child subtree.
 	ParentRunID string `json:"parent_run_id,omitempty"`
-	ShardIndex  int    `json:"shard_index,omitempty"`
-	ShardCount  int    `json:"shard_count,omitempty"`
-	ShardLabel  string `json:"shard_label,omitempty"`
+	// ParentNodeID is the IR node id of the subbot node in the parent
+	// workflow that spawned this child run; empty for root runs and
+	// non-subbot children. See store.Run.ParentNodeID.
+	ParentNodeID string `json:"parent_node_id,omitempty"`
+	ShardIndex   int    `json:"shard_index,omitempty"`
+	ShardCount   int    `json:"shard_count,omitempty"`
+	ShardLabel   string `json:"shard_label,omitempty"`
 	// WatchedIssueIDs is the server-authoritative set of native-kanban
 	// issue IDs this run subscribed to (MVP3b). The studio's whats-next
 	// WatchPanel reads it as the primary watch-list source, falling back
@@ -1039,6 +1043,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		AutoMerge:         r.AutoMerge,
 		Source:            r.Source,
 		ParentRunID:       r.ParentRunID,
+		ParentNodeID:      r.ParentNodeID,
 		ShardIndex:        r.ShardIndex,
 		ShardCount:        r.ShardCount,
 		ShardLabel:        r.ShardLabel,

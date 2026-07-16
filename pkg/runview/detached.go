@@ -269,8 +269,15 @@ func (s *Service) launchDetached(parent context.Context, runID string, spec Laun
 	for k, v := range spec.Vars {
 		inputs[k] = v
 	}
-	if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, inputs); err != nil {
+	created, err := s.store.CreateRun(context.Background(), runID, wf.Name, inputs)
+	if err != nil {
 		return nil, fmt.Errorf("runview: create run: %w", err)
+	}
+	if spec.ParentRunID != "" {
+		created.ParentRunID = spec.ParentRunID
+		if err := s.store.SaveRun(context.Background(), created); err != nil {
+			return nil, fmt.Errorf("runview: save parent run: %w", err)
+		}
 	}
 
 	// LaunchSpec.Backend is honored only by the in-process spawnRun

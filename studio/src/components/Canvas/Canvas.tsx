@@ -28,8 +28,10 @@ import AuxiliaryNode from "./AuxiliaryNode";
 import ReferenceEdge from "./ReferenceEdge";
 import DetailSubNode from "./DetailSubNode";
 import GroupNode from "./GroupNode";
+import SubbotFrameNode from "./SubbotFrameNode";
 import FanoutFrame from "@/components/Runs/FanoutFrame";
 import { computeFanoutRegions, buildFanoutFrames } from "@/lib/fanoutRegions";
+import { isSubbotChildId } from "@/lib/subbotGraph";
 import NodeContextMenu from "./NodeContextMenu";
 
 import BreadcrumbBar from "./BreadcrumbBar";
@@ -43,11 +45,11 @@ import { useCanvasHandlers } from "./useCanvasHandlers";
 import CommandPalette, { type CommandAction } from "@/components/shared/CommandPalette";
 import { useLocation } from "wouter";
 
-const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode, fanoutFrame: FanoutFrame };
+const nodeTypes = { workflowNode: WorkflowNode, auxiliaryNode: AuxiliaryNode, detailSubNode: DetailSubNode, groupNode: GroupNode, subbotFrame: SubbotFrameNode, fanoutFrame: FanoutFrame };
 const edgeTypes = { conditionalEdge: ConditionalEdge, referenceEdge: ReferenceEdge };
 
 function isEditableNode(id: string): boolean {
-  return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id) && !isGroupNodeId(id);
+  return id !== "__start__" && id !== "done" && id !== "fail" && !isAuxiliaryNodeId(id) && !isGroupNodeId(id) && !isSubbotChildId(id);
 }
 
 interface CanvasProps {
@@ -407,7 +409,8 @@ export default function Canvas({ active = true }: CanvasProps) {
         document.judges.length === 0 &&
         document.routers.length === 0 &&
         document.humans.length === 0 &&
-        document.tools.length === 0 && <CanvasEmpty />}
+        document.tools.length === 0 &&
+        (document.subbots ?? []).length === 0 && <CanvasEmpty />}
 
       {/* Context menu */}
       {contextMenu && (
@@ -417,7 +420,7 @@ export default function Canvas({ active = true }: CanvasProps) {
           nodeId={contextMenu.nodeId}
           isTerminal={contextMenu.nodeId === "done" || contextMenu.nodeId === "fail" || contextMenu.nodeId === "__start__"}
           isEntry={activeWorkflow?.entry === contextMenu.nodeId}
-          selectedNodeIds={getNodes().filter((n) => n.selected).map((n) => n.id)}
+          selectedNodeIds={getNodes().filter((n) => n.selected && isEditableNode(n.id)).map((n) => n.id)}
           belongsToGroup={nodeToGroup.get(contextMenu.nodeId) ?? null}
           onSetEntry={() => {
             if (activeWorkflow) updateWorkflow(activeWorkflow.name, { entry: contextMenu.nodeId });
@@ -622,6 +625,13 @@ function buildPaletteActions(deps: {
       title: "Board",
       keywords: ["kanban", "issues"],
       run: () => deps.navigate("/board"),
+    },
+    {
+      id: "nav.pipelines",
+      group: "Navigate",
+      title: "Pipelines",
+      keywords: ["pipeline boards", "human input", "bots"],
+      run: () => deps.navigate("/pipelines"),
     },
     {
       id: "nav.dispatcher",

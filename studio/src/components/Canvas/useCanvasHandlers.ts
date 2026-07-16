@@ -36,6 +36,7 @@ import {
 } from "@/lib/nodeDetailGraph";
 import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { isGroupNodeId } from "@/lib/groups";
+import { isSubbotChildId } from "@/lib/subbotGraph";
 
 import type { useCanvasConnections } from "@/hooks/useCanvasConnections";
 import type { useCanvasLayout } from "@/hooks/useCanvasLayout";
@@ -50,7 +51,8 @@ function isEditableNode(id: string): boolean {
     id !== "done" &&
     id !== "fail" &&
     !isAuxiliaryNodeId(id) &&
-    !isGroupNodeId(id)
+    !isGroupNodeId(id) &&
+    !isSubbotChildId(id)
   );
 }
 
@@ -206,6 +208,9 @@ export function useCanvasHandlers(deps: UseCanvasHandlersDeps): CanvasHandlers {
         }
         return;
       }
+      // Subbot nodes have no sub-node detail view (their "detail" is the
+      // child file, opened via the frame's open button / Inspector).
+      if ((node.data as { kind?: string })?.kind === "subbot") return;
       if (isEditableNode(node.id) && !isDetailNodeId(node.id)) {
         // Navigate into sub-node detail view
         pushSubNodeView(node.id);
@@ -252,7 +257,8 @@ export function useCanvasHandlers(deps: UseCanvasHandlersDeps): CanvasHandlers {
   const onNodeContextMenu = useCallback(
     (event: ReactMouseEvent, node: Node) => {
       event.preventDefault();
-      if (isAuxiliaryNodeId(node.id) || isDetailNodeId(node.id)) return;
+      // Subbot child nodes belong to another file — no edit context menu.
+      if (isAuxiliaryNodeId(node.id) || isDetailNodeId(node.id) || isSubbotChildId(node.id)) return;
       setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
     },
     [setContextMenu],

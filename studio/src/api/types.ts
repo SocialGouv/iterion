@@ -16,6 +16,7 @@ export interface IterDocument {
   humans: HumanDecl[];
   tools: ToolNodeDecl[];
   computes: ComputeDecl[];
+  subbots?: SubbotDecl[];
   workflows: WorkflowDecl[];
   comments: Comment[];
 }
@@ -167,6 +168,21 @@ export interface ServerInfo {
   // fetches the curated widget spec when true; otherwise it shows the
   // deterministic task-list board alone and never polls.
   session_board_enabled?: boolean;
+  // pipeline_concurrency reports the local pipeline-concurrency gate (the
+  // global pipeline board's TODO/in-flight admission). Mirrors the board's
+  // own `concurrency` block; present so surfaces outside the board (nav,
+  // status pills) can read the cap without polling the board.
+  pipeline_concurrency?: PipelineConcurrencyInfo;
+}
+
+// PipelineConcurrencyInfo mirrors runview.PipelineConcurrencyStatus. When
+// `enabled` is false the other fields are zero and the pipeline TODO lane
+// only holds not-yet-launched native tasks.
+export interface PipelineConcurrencyInfo {
+  enabled: boolean;
+  max: number;
+  active: number;
+  waiting: number;
 }
 
 // CostCapStatus mirrors runtime.CapStatus (GET /api/v1/limits/cost).
@@ -443,6 +459,18 @@ export interface ComputeExpr {
   expr: string;
 }
 
+// SubbotDecl runs another .bot file as a separate child run. Mirrors
+// pkg/dsl/ast/jsonenc.go jsonSubbotDecl: all fields omitempty except name;
+// `with` reuses the {key,value} shape of edge data mappings.
+export interface SubbotDecl {
+  name: string;
+  source?: string;
+  with?: WithEntry[];
+  output?: string;
+  needs?: string[];
+  isolated?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Workflow
 // ---------------------------------------------------------------------------
@@ -528,8 +556,9 @@ export interface WithEntry {
 }
 
 // Node kind for the visual editor. Includes the deterministic
-// `compute` node and the synthetic terminals (`done`/`fail`/`start`)
-// used for canvas rendering only — they don't have AST declarations.
+// `compute` node, the `subbot` child-workflow node, and the synthetic
+// terminals (`done`/`fail`/`start`) used for canvas rendering only —
+// they don't have AST declarations.
 export type NodeKind =
   | "agent"
   | "judge"
@@ -537,6 +566,7 @@ export type NodeKind =
   | "human"
   | "tool"
   | "compute"
+  | "subbot"
   | "done"
   | "fail"
   | "start";

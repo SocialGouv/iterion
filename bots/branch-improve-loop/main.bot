@@ -464,7 +464,9 @@ prompt post_feedback_system:
   - 2–5 bullets of what you actually found / changed, grounded in the review
     summary. Do NOT invent issues; if the summary says clean, say clean.
   - If you pushed commits, note they are on this branch for the author to review.
-  - Sign off as an automated iterion review so the author knows it's a bot.
+  - Sign off with YOUR persona name so the author knows who reviewed and that
+    it is a bot — e.g. "— Billy · automated iterion review". Use the persona
+    you were given above, not a generic label.
 
   Do NOT re-review, re-run tests, or push code here — that already happened. This
   node ONLY posts the comment. Return {posted, note}.
@@ -852,13 +854,6 @@ if not branch:
     print(json.dumps({'pushed': False, 'reason': 'no push_branch declared'})); raise SystemExit(0)
 def run(*a, **kw):
     return subprocess.run(list(a), capture_output=True, text=True, timeout=kw.get('timeout', 120))
-r = run('git', 'fetch', 'origin', branch)
-if r.returncode != 0:
-    print(json.dumps({'pushed': False, 'reason': 'fetch origin/' + branch + ' failed: ' + (r.stderr or r.stdout).strip()[-160:]})); raise SystemExit(0)
-r = run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD')
-ahead = int((r.stdout or '0').strip() or '0') if r.returncode == 0 else -1
-if ahead == 0:
-    print(json.dumps({'pushed': False, 'reason': 'nothing to push: HEAD not ahead of origin/' + branch})); raise SystemExit(0)
 tok = ''
 p = '/run/iterion/secrets/forge_token'
 try:
@@ -877,14 +872,45 @@ m = re.match(r'https://(?:[^@/]+@)?([^/]+)/(.+?)(?:\\.git)?$', (r.stdout or '').
 if not m:
     print(json.dumps({'pushed': False, 'reason': 'origin is not an https remote'})); raise SystemExit(0)
 host, path = m.group(1), m.group(2)
-last = ''
-for user in ('x-access-token', 'oauth2'):
-    url = 'https://' + user + ':' + tok + '@' + host + '/' + path + '.git'
-    r = run('git', 'push', url, 'HEAD:refs/heads/' + branch, timeout=180)
-    if r.returncode == 0:
-        print(json.dumps({'pushed': True, 'reason': 'pushed ' + str(ahead) + ' commit(s) HEAD->' + branch + ' as ' + user})); raise SystemExit(0)
-    last = (r.stderr or r.stdout).strip().replace(tok, '***')[-200:]
-print(json.dumps({'pushed': False, 'reason': 'push failed: ' + last}))
+urls = [(u, 'https://' + u + ':' + tok + '@' + host + '/' + path + '.git') for u in ('x-access-token', 'oauth2')]
+def redact(s):
+    return (s or '').strip().replace(tok, '***')[-200:]
+last, rebased = '', False
+# Bounded fetch -> (rebase if remote advanced) -> push loop. A non-fast-forward
+# rejection is the EXPECTED case when the PR author (or another bot) pushed to
+# the branch while this review ran: re-fetch, replay OUR commits onto the fresh
+# remote head, and retry. Only a genuine rebase CONFLICT (the advance touched
+# the same lines we fixed) falls back to a flag — that needs a human.
+for attempt in range(3):
+    r = run('git', 'fetch', 'origin', branch)
+    if r.returncode != 0:
+        print(json.dumps({'pushed': False, 'reason': 'fetch origin/' + branch + ' failed (branch may be merged or deleted -> the fixes need a NEW PR onto the base): ' + redact(r.stderr or r.stdout)})); raise SystemExit(0)
+    ahead = run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD')
+    n = int((ahead.stdout or '0').strip() or '0') if ahead.returncode == 0 else -1
+    if n == 0:
+        print(json.dumps({'pushed': False, 'reason': 'nothing to push: HEAD not ahead of origin/' + branch})); raise SystemExit(0)
+    behind = run('git', 'rev-list', '--count', 'HEAD..FETCH_HEAD')
+    b = int((behind.stdout or '0').strip() or '0') if behind.returncode == 0 else 0
+    if b > 0:
+        mb = run('git', 'merge-base', 'FETCH_HEAD', 'HEAD')
+        base = (mb.stdout or '').strip()
+        rb = run('git', '-c', 'rebase.autoStash=true', 'rebase', '--onto', 'FETCH_HEAD', base, 'HEAD')
+        if rb.returncode != 0:
+            run('git', 'rebase', '--abort')
+            print(json.dumps({'pushed': False, 'reason': 'remote branch advanced by ' + str(b) + ' commit(s) that CONFLICT with these fixes (auto-rebase failed) -> needs a manual reconcile: ' + redact(rb.stderr or rb.stdout)})); raise SystemExit(0)
+        rebased = True
+        n = int((run('git', 'rev-list', '--count', 'FETCH_HEAD..HEAD').stdout or '0').strip() or '0')
+    nonff = False
+    for user, url in urls:
+        r = run('git', 'push', url, 'HEAD:refs/heads/' + branch, timeout=180)
+        if r.returncode == 0:
+            print(json.dumps({'pushed': True, 'reason': 'pushed ' + str(n) + ' commit(s) HEAD->' + branch + ' as ' + user + (' (rebased onto advanced remote)' if rebased else '')})); raise SystemExit(0)
+        last = redact(r.stderr or r.stdout)
+        if 'non-fast-forward' in last or 'fetch first' in last or 'rejected' in last or 'stale info' in last:
+            nonff = True; break
+    if not nonff:
+        print(json.dumps({'pushed': False, 'reason': 'push failed: ' + last})); raise SystemExit(0)
+print(json.dumps({'pushed': False, 'reason': 'push failed after 3 rebase-retries (remote kept advancing): ' + last}))
 "`
   output: push_state
 

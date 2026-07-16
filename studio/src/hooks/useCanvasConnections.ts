@@ -7,6 +7,7 @@ import { findNodeDecl } from "@/lib/defaults";
 import { assignFieldToNode, addToolToNode } from "@/lib/docMutations";
 import { TOAST_DURATION_CONNECTION_ERROR_MS } from "@/lib/constants";
 import { parseDetailId } from "@/lib/nodeDetailGraph";
+import { isSubbotChildId } from "@/lib/subbotGraph";
 import type { IterDocument } from "@/api/types";
 
 interface QuickAddState {
@@ -102,6 +103,8 @@ export function useCanvasConnections() {
       if (connection.source === connection.target) return "Cannot connect a node to itself";
       if (connection.source === "done" || connection.source === "fail") return "Cannot connect from a terminal node";
       if (connection.source === "__start__" || connection.target === "__start__") return "Cannot connect to the start node";
+      if (isSubbotChildId(connection.source) || isSubbotChildId(connection.target))
+        return "Subbot nodes are read-only — open the child file to edit";
       if (activeWorkflow) {
         const dup = activeWorkflow.edges.some(
           (e) => e.from === connection.source && e.to === connection.target,
@@ -176,6 +179,9 @@ export function useCanvasConnections() {
       pendingConnectSourceRef.current = null;
 
       if (!source || !document || !activeWorkflow) return;
+      // Never quick-add from a subbot child node — edges from another
+      // bot's nodes cannot be written into this document.
+      if (isSubbotChildId(source)) return;
 
       // Read fresh state to avoid stale closure after addEdge in onConnect
       const freshDoc = docStore.getState().document;

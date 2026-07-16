@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
+	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/sessionboard"
 )
 
@@ -85,6 +86,10 @@ type serverInfoResponse struct {
 	// Skills library management view (/api/local/skills). No sealing is
 	// involved, so unlike SecretsEnabled it gates on mode alone.
 	SkillsEnabled bool `json:"skills_enabled"`
+	// PipelineConcurrency reports the local pipeline-concurrency gate
+	// (max/active/waiting) so the pipeline board can render the cap + how
+	// many pipelines wait for a slot. Enabled=false when no cap is set.
+	PipelineConcurrency runview.PipelineConcurrencyStatus `json:"pipeline_concurrency"`
 }
 
 type serverLimitsBlock struct {
@@ -143,6 +148,9 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {
 		resp.CostCapEnabled = true
+	}
+	if runsSvc != nil {
+		resp.PipelineConcurrency = runsSvc.PipelineConcurrency()
 	}
 	if mode == "local" {
 		resp.WorkDir = s.cfg.WorkDir

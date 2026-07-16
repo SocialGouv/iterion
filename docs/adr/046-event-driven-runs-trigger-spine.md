@@ -119,11 +119,11 @@ effect choice (promote-card vs direct launch)":
 
 - **Launch-path convergence** — DONE for the direct path: `serviceLauncher`
   (`pkg/server/trigger_launcher.go`) wraps `runview.Service.Launch`, resolving
-  the bot via `botregistry.ResolveBotPath`. STAGED: routing `RunRun` and the
-  dispatcher's `EngineRunner.Dispatch` *execution step* through it too, which
-  needs four per-launch `LaunchSpec` additions (`WorkDir`, `ExtraObservers`,
-  `DailyCap`, `SourceRef`) to preserve the dispatcher's workspace/stall/cap/
-  retry invariants.
+  the bot via `botregistry.ResolveBotPath`. DONE for the dispatcher's
+  *execution step* behind a default-off flag — see the 2026-07-16 update
+  below. STAGED: routing `RunRun`, and flipping the dispatcher flag on by
+  default (the production cutover, which reconciles the pipeline-concurrency
+  gate / broker fan-out the full Service layers on).
 - **Run-completion chaining** — DONE: `runview.Service.emitRunCompletion`
   publishes `run.finished`/`run.failed`/`run.cancelled` onto the shared bus
   (wired via `SetEventPublisher(coord.Bus())`); a direct-mode subscription
@@ -150,6 +150,74 @@ effect choice (promote-card vs direct launch)":
 - **Studio Automations view** + cloud team-scoped REST + a file-backed local
   subscription store (the memory store is rebuilt from manifests each start).
 
+## Update 2026-07-16 — Launch-path convergence primitive (LaunchSpec fields + RunLauncher seam)
+
+The dispatcher's `EngineRunner.Dispatch` can now route its fresh-dispatch
+execution step through `runview.Service.Launch` — the single launch
+authority — instead of building a private engine. Shipped behind a
+default-off flag; the direct-engine path is unchanged unless opted in.
+
+**The four per-launch `LaunchSpec` additions** (`pkg/runview/service.go`),
+each a per-launch override of the service-level default:
+
+- `WorkDir` — the per-issue worktree, so `${PROJECT_DIR}` resolves there
+  (runtime.WithWorkDir), not the daemon cwd.
+- `DailyCap` — the dispatcher's singleton-SpendStore cost guard
+  (runtime.WithDailyCap), so every concurrent run writes the one ledger.
+- `SourceRef` — the originating kanban issue stamped onto the run record
+  (runtime.WithSource).
+- `ExtraObservers` — event observers fired on **every run event**, not just
+  engine-level ones. Delivered through **two disjoint observer seams**:
+  `runtime.WithEventObserver` for engine emits, and
+  `ExecutorSpec.EventObservers` (attached to the backend hooks' redacting
+  emitter) for the high-frequency tool events that flow straight to the store
+  through the backend hook layer. The two event sets are disjoint — the two
+  are the only `AppendEvent` chokepoints during a run — so each event reaches
+  the observer exactly once, keeping the dispatcher's stall watermark alive on
+  long agent nodes. **No store wrapper is interposed** (see the dated update
+  below).
+
+**A fifth field, `OnOutcome func(error)`** — the return-path completion of
+the four data fields. A blocking caller (the dispatcher routing through
+Launch) needs the run's terminal **Go error**, not just its persisted
+status: `scheduleRetry` text-matches the error for sandbox-setup backoff
+(`isSandboxSetupError`) and doomed-resume detection (`isResumeSourceChanged`),
+so a status-reconstructed error would silently change the retry cadence.
+`OnOutcome` fires once in the run goroutine with `bodyErr` just before
+`LaunchResult.Done` closes (the channel-close is the happens-before edge),
+so the caller reads the exact error `engine.Run` returned. Fire-and-forget
+launches (CLI / studio / webhook) leave it nil.
+
+**The seam** (`pkg/dispatcher/engine_runner.go`): a `RunLauncher` interface
+(`LaunchAndWait(ctx, LaunchSpec) error`) with a `ServiceRunLauncher` adapter
+over `*runview.Service`, wired via `NewEngineRunner`'s new `WithRunLauncher`
+option and gated on `ITERION_DISPATCH_VIA_SERVICE`. `dispatchViaService`
+translates the DispatchSpec invariants into the LaunchSpec fields and blocks
+on the launcher.
+
+### Decisions / trade-offs
+
+- **Interface seam, not a hard dependency.** `EngineRunner` calls the
+  `RunLauncher` interface; the concrete `runview.Service` binding is injected
+  by the wiring layer. Keeps the routing testable in isolation and the
+  default path allocation-free.
+- **Resume and bundle dispatches stay on the direct engine path.** Resume
+  reuses the checkpoint + worktree the runner already owns, and a `.botz`
+  runner shares one opened bundle handle across dispatches — neither maps
+  cleanly onto a stateless `Service.Launch` yet. The gate excludes both, so
+  the convergence covers exactly the fresh plain-`.bot` dispatch.
+- **Default-off flag over a hard cutover.** The full `Service` layers a
+  pipeline-concurrency gate, broker fan-out, supervisors, a session board
+  and a completion notifier onto every launch. For the dispatcher-observable
+  invariants (stall / caps / retry / source) the two paths are proven
+  byte-identical by a diff-run test
+  (`engine_runner_via_service_test.go`), but the extra machinery is why the
+  production cutover (flag-on by default, Service wired into the daemon
+  Manager) is deliberately staged rather than shipped here.
+- **`map[string]any` → `map[string]string` var stringification.** `LaunchSpec.Vars`
+  is stringly-typed; dispatcher bot-args are strings in practice, and a
+  non-string value is rendered with `%v` so it still reaches the bot.
+
 ## Key files
 
 New: `pkg/trigger/{event,subscription,store,memstore,mongostore,evaluator,
@@ -158,3 +226,55 @@ launcher,board_source}.go`, `pkg/eventbus/{bus,inproc}.go`,
 Modified: `pkg/bundle/manifest.go` (`InvocationBoard`), `pkg/queue/nats/nats.go`
 (`ITERION_EVENTS`), `pkg/dispatcher/manager.go` (`Refresh` nudger),
 `pkg/server/{server,server_info}.go`, `pkg/cli/{studio,dispatch}.go`.
+
+Launch-path convergence (2026-07-16): `pkg/runview/service.go` +
+`pkg/runview/service_launch.go` (LaunchSpec
+`WorkDir`/`ExtraObservers`/`DailyCap`/`SourceRef`/`OnOutcome` + `launchExtras`
+wiring), `pkg/dispatcher/engine_runner.go` (`RunLauncher` /
+`ServiceRunLauncher` / `WithRunLauncher` / `dispatchViaService`).
+
+## Update 2026-07-16 — ExtraObservers via observer seams, not a store wrapper
+
+The first cut delivered `ExtraObservers` by wrapping the `store.RunStore`
+(an `observerStore`, mirroring the dispatcher's `heartbeatStore`) so every
+`AppendEvent` fanned out to the observers. That wrapper **shadowed the
+concrete `*FilesystemRunStore` against the executor's and sandbox's optional-
+capability type-probes**: `PlanWriter` (todo/plan snapshots),
+`RunFilesStore` (`EnsureRunFilesDir`/`ListRunFiles`/`OpenRunFile` — the
+run-files host/sandbox bind-mount parity), and `QueuedInboxVersioner` all
+resolved to `nil` on the dispatcher-via-service path (`ITERION_DISPATCH_VIA_SERVICE=1`)
+because Go interface embedding forwards only the base `RunStore` methods, not
+the optional interfaces satisfied concretely. The convergence route therefore
+*silently degraded* the very launch it claimed to reuse — a plain studio
+launch keeps those capabilities.
+
+**Decision.** Drop the store wrapper. The launch hands the executor + engine
+the **raw** `s.store`, and `ExtraObservers` ride two disjoint seams:
+
+- **engine events** → `runtime.WithEventObserver` (wired in `engineOptions`
+  from `launchExtras.observers`);
+- **backend-hook events** (the high-frequency tool stream) →
+  `ExecutorSpec.EventObservers`, threaded into `NewStoreEventHooks` and fired
+  by the `redactingEmitter` — already the single `AppendEvent` chokepoint for
+  hook events, where capability detection happens on the *original* emitter
+  before wrapping, so nothing is shadowed.
+
+A grep proof underpins completeness: during a run there are exactly two
+`AppendEvent` chokepoints — `runtime` `emitBranch` (fires `e.onEvent`) and the
+`redactingEmitter` (fires the executor observers) — so the union covers every
+event with no double-fire. `engine_runner_via_service_test.go` still proves the
+dispatcher-observable event **set** is byte-identical to the direct path, and
+`TestLaunchStore_KeepsOptionalCapabilities` +
+`TestLaunch_HonoursDispatcherConvergenceFields` (asserting the `artifact_files`
+area is created under an observed launch) pin the capability-preservation
+invariant.
+
+**Trade-off.** The two-seam delivery leans on the invariant that engine and
+hook emits are disjoint; a future third `AppendEvent` call site would need a
+matching seam. That is a cheaper, more honest cost than a wrapper that must
+hand-forward every present *and future* optional capability to avoid silent
+degradation — the failure mode a `RunStore` decorator structurally invites.
+Files: removed `pkg/runview/observer_store.go`; `pkg/backend/model/hooks.go`
+(`redactingEmitter.observers` + `NewStoreEventHooks` variadic),
+`pkg/runview/executor.go` (`ExecutorSpec.EventObservers`),
+`pkg/runview/service_launch.go` (raw store + `launchExtras.observers`).

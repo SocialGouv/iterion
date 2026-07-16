@@ -32,16 +32,24 @@ const maxRunFileEditBytes = 4 << 20
 //     each tagged with a `lifecycle` ("committed" | "uncommitted") so the
 //     studio can render a subtle committed-vs-in-flight distinction. This
 //     is the studio's default while a run is in progress.
+//   - modeProduced: "the best available full picture", lifecycle-agnostic.
+//     Resolves to combined while the worktree is live, then falls back to
+//     the persisted git-metadata snapshot and finally the historical
+//     BaseCommit..FinalCommit diff — instead of dead-ending on
+//     worktree_gone the way a strict combined request does. Used by the
+//     pipeline board's Produced-elements panel, which must keep showing a
+//     finished run's files after the engine gc'd its worktree.
 //
-// Once the worktree is gc'd, only modeBranch is meaningful: the
-// uncommitted and combined views return available=false with
-// reason="worktree_gone".
+// Once the worktree is gc'd, only modeBranch and modeProduced are
+// meaningful: the uncommitted and combined views return available=false
+// with reason="worktree_gone".
 type fileMode string
 
 const (
 	modeUncommitted fileMode = "uncommitted"
 	modeBranch      fileMode = "branch"
 	modeCombined    fileMode = "combined"
+	modeProduced    fileMode = "produced"
 )
 
 // Lifecycle tags annotate combined-mode entries (see combinedFiles). They
@@ -61,6 +69,8 @@ func parseFileMode(raw string) fileMode {
 		return modeBranch
 	case modeCombined:
 		return modeCombined
+	case modeProduced:
+		return modeProduced
 	default:
 		return ""
 	}
@@ -144,6 +154,11 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 		if effective == "" {
 			effective = modeUncommitted
 		}
+		// While the working directory exists, `produced` IS the combined
+		// view; the gone-worktree fallbacks below are what set it apart.
+		if effective == modeProduced {
+			effective = modeCombined
+		}
 		// `branch` mode without a baseline is unrenderable — the worktree
 		// exists but we have no anchor for the range. Surface that as
 		// no_baseline so the UI can prompt for a different mode, instead
@@ -217,6 +232,14 @@ func (s *Server) handleListRunFiles(w http.ResponseWriter, r *http.Request) {
 	// Finalized-run path: derive the file list from BaseCommit..FinalCommit
 	// inside the main repo. Requires both refs and a repo root.
 	if files, ok := s.historicalFiles(run); ok {
+		// A `produced` request tags the historical rows committed so the
+		// studio's per-row diff targets the branch range (the worktree —
+		// and with it any uncommitted view — is gone).
+		if requested == modeProduced {
+			for i := range files {
+				files[i].Lifecycle = lifecycleCommitted
+			}
+		}
 		s.writeJSONFor(w, r, runFilesResponse{
 			WorkDir:   run.WorkDir,
 			Worktree:  run.Worktree,
@@ -262,9 +285,10 @@ func unavailableReason(run *store.Run, terminalReason string) string {
 // handled the response. This is the cloud fallback for a run whose worktree
 // is gone: the runner recorded the branch-range diff (files vs base) into
 // the store. The snapshot represents the committed branch view, so for a
-// `combined` request the entries are tagged lifecycle=committed (there is
-// no uncommitted set to merge). A snapshot with zero files is a valid
-// "no changes" answer (Available=true), not an empty-state error.
+// `combined` (or `produced`) request the entries are tagged
+// lifecycle=committed (there is no uncommitted set to merge). A snapshot
+// with zero files is a valid "no changes" answer (Available=true), not an
+// empty-state error.
 func (s *Server) servePersistedFiles(w http.ResponseWriter, r *http.Request, run *store.Run, requested fileMode) bool {
 	gs := store.AsRunGitMetaStore(s.runs.RunStore())
 	if gs == nil {
@@ -283,7 +307,7 @@ func (s *Server) servePersistedFiles(w http.ResponseWriter, r *http.Request, run
 		files = []gitlib.FileStatus{}
 	}
 	effective := modeBranch
-	if requested == modeCombined {
+	if requested == modeCombined || requested == modeProduced {
 		effective = modeCombined
 		tagged := make([]gitlib.FileStatus, len(files))
 		for i, f := range files {

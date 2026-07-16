@@ -105,6 +105,12 @@ export interface RunSummary {
   // top-level (non-sharded) run. Lets the run list / children endpoint
   // project a run's shard/child subtree client-side.
   parent_run_id?: string;
+  // IR node id of the subbot node in the parent workflow that spawned
+  // this child run (contract C3). Absent for shard children spawned by
+  // fan-out routers, plain forks, and legacy runs — the UI falls back
+  // to attributing such children to the parent's single subbot node
+  // when unambiguous (see lib/subRuns.groupChildrenByNode).
+  parent_node_id?: string;
   shard_index?: number;
   shard_count?: number;
   shard_label?: string;
@@ -306,6 +312,9 @@ export interface RunHeader {
   // queue message). All absent for a top-level (non-sharded) run. The
   // tree/shard-grid UI that renders these is a separate follow-up.
   parent_run_id?: string;
+  // IR node id of the parent's subbot node that spawned this child run
+  // (contract C3). See the RunSummary field of the same name.
+  parent_node_id?: string;
   shard_index?: number;
   shard_count?: number;
   shard_label?: string;
@@ -479,6 +488,11 @@ export interface WireNode {
   backend?: string;
   reasoning_effort?: string;
   output_schema?: WireSchemaField[];
+  // Subbot-only (contract C2): the child .bot file this node runs, and
+  // whether the child executes in an isolated workspace. Both absent
+  // for every other node kind.
+  source?: string;
+  isolated?: boolean;
 }
 
 export interface WireSchemaField {
@@ -723,9 +737,13 @@ export interface RunFile {
 //   - "branch": BaseCommit..HEAD range (commits introduced by the run).
 //   - "combined": union of branch + uncommitted, each file tagged with a
 //     `lifecycle`. The studio's default while a run is in progress.
+//   - "produced": "best available full picture" — combined while the
+//     working directory exists, then persisted/historical branch-range
+//     fallback instead of worktree_gone. Used by the pipeline board's
+//     Produced-elements panel.
 // Empty string means "let the backend pick the default" (the live
 // uncommitted view when a worktree exists, branch otherwise).
-export type RunFilesMode = "uncommitted" | "branch" | "combined" | "";
+export type RunFilesMode = "uncommitted" | "branch" | "combined" | "produced" | "";
 
 // Mirror of server.runFilesResponse. `available` is the gate: when
 // false, `reason` is one of "no_workdir" | "not_git_repo" |
@@ -756,6 +774,31 @@ export interface RunFiles {
     | "worktree_gone"
     | "building"
     | string;
+}
+
+// TouchedFile is one file the run's LLM nodes wrote/edited, derived from
+// the persisted tool_started events (mirror of server.touchedFile). Paths
+// are workdir-relative when the write landed inside run.WorkDir (same
+// namespace as RunFile.path), absolute otherwise.
+export interface TouchedFile {
+  path: string;
+  // Workflow nodes that wrote this path, in first-write order.
+  node_ids: string[];
+  // Number of write/edit tool calls that targeted this path.
+  writes: number;
+  // Event seq of the most recent write.
+  last_seq: number;
+}
+
+// Mirror of server.runTouchedFilesResponse
+// (GET /api/runs/{id}/files/touched). Unlike the git-based RunFiles view,
+// this is derived purely from run events: it only ever lists what the
+// nodes actually wrote — never ambient workspace state — and knows
+// nothing about files created by Bash commands or direct tool nodes.
+export interface RunTouchedFiles {
+  work_dir?: string;
+  worktree?: boolean;
+  files: TouchedFile[];
 }
 
 // Mirror of pkg/git.DiffPayload. before/after are nil for added/deleted

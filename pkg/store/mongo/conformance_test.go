@@ -298,3 +298,29 @@ func (b *inMemoryBlob) DeleteRunFiles(_ context.Context, runID string) error {
 	}
 	return nil
 }
+
+func (b *inMemoryBlob) PutIRBlob(_ context.Context, runID string, body []byte) error {
+	key, err := blob.IRBlobKey(runID)
+	if err != nil {
+		return err
+	}
+	b.data[key] = append([]byte{}, body...)
+	return nil
+}
+
+func (b *inMemoryBlob) GetIRBlob(_ context.Context, storageKey string) ([]byte, error) {
+	body, ok := b.data[storageKey]
+	if !ok {
+		return nil, blob.ErrArtifactNotFound
+	}
+	return append([]byte{}, body...), nil
+}
+
+func (b *inMemoryBlob) DeleteRunIR(_ context.Context, runID string) error {
+	key, err := blob.IRBlobKey(runID)
+	if err != nil {
+		return err
+	}
+	delete(b.data, key)
+	return nil
+}

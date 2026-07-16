@@ -87,6 +87,16 @@ func TestFork_HappyPath(t *testing.T) {
 	if child.ForkedFrom != parentID {
 		t.Errorf("child.ForkedFrom = %q, want %q", child.ForkedFrom, parentID)
 	}
+	if child.ParentRunID != parentID {
+		t.Errorf("child.ParentRunID = %q, want %q", child.ParentRunID, parentID)
+	}
+	children, err := svc.ListChildren(context.Background(), parentID)
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].ID != child.ID {
+		t.Fatalf("ListChildren(%q) = %+v, want child %q", parentID, children, child.ID)
+	}
 	if child.SourceHash != "hash-abc" {
 		t.Errorf("child.SourceHash = %q, want hash-abc", child.SourceHash)
 	}

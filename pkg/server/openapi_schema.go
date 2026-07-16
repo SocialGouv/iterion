@@ -5,8 +5,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/runview"
 )
 
 // This file turns the v1 route inventory (openapi.go) into a typed spec: a
@@ -75,6 +77,38 @@ func routeSchemas() map[string]routeOp {
 		"DELETE /api/admin/orgs/{id}":       {response: orgView{}},
 		"POST /api/admin/orgs/{id}/restore": {response: orgView{}},
 		"POST /api/admin/orgs/{id}/status":  {request: setOrgStatusReq{}, response: orgView{}},
+
+		// Run console — the studio's run list / snapshot / child-subtree /
+		// IR-overlay reads. Typed so the generated client sees the subbot
+		// projection (WireNode.source/isolated, parent_node_id — C2/C3).
+		"GET /api/runs": {
+			response: struct {
+				Runs []runview.RunSummary `json:"runs"`
+			}{},
+		},
+		"GET /api/runs/{id}": {response: runview.RunSnapshot{}},
+		"GET /api/runs/{id}/children": {
+			response: struct {
+				Runs []runview.RunSummary `json:"runs"`
+			}{},
+		},
+		"GET /api/runs/{id}/workflow": {response: runview.WireWorkflow{}},
+
+		// Global pipeline board — a single execution projection of every
+		// root pipeline (ADR-074). Additive to the native backlog (/board).
+		"GET /api/v1/pipeline-board": {response: PipelineBoardResponse{}},
+		"POST /api/v1/pipeline-board/tasks": {
+			request:  pipelineBoardTaskRequest{},
+			response: native.Issue{},
+		},
+		"POST /api/v1/pipeline-board/tasks/{id}/ready": {
+			request:  pipelineBoardReadyRequest{},
+			response: native.Issue{},
+		},
+		"PATCH /api/v1/pipeline-board/tasks/{id}": {
+			request:  pipelineBoardUpdateRequest{},
+			response: native.Issue{},
+		},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {

@@ -63,10 +63,17 @@ type ClawExecutor struct {
 	// referenced by the workflow that RESOLVED in the library at run start
 	// (set by SetSkillHints from the runtime mirror). Per-node, the executor
 	// renders the "## Skills" section for the subset this node references.
-	skillHints     map[string]string
-	botID          string // stable bot/workflow id used for bot-scoped memory
-	storeDir       string // dispatcher store root (empty = backend default)
-	lifecycleHooks *hooks.Runner
+	skillHints map[string]string
+	botID      string // stable bot/workflow id used for bot-scoped memory
+	storeDir   string // dispatcher store root (empty = backend default)
+	// artifactFilesDir is the run's tool-output scratch area
+	// (runs/<id>/artifact_files), exported to HOST tool-node subprocesses as
+	// ITERION_ARTIFACT_FILES_DIR. Sandboxed runs already get the variable from
+	// the container env (pkg/runtime/sandbox.go bind-mounts the same dir);
+	// without this the variable only existed in-sandbox, so a bot writing its
+	// outputs there worked sandboxed but broke on a plain local run.
+	artifactFilesDir string
+	lifecycleHooks   *hooks.Runner
 
 	// Command-output compression (the rewriter plugin chain). wfCompress is
 	// the workflow-level `compress:` DSL value; compressOverride is the
@@ -287,6 +294,13 @@ func WithBotID(botID string) ClawExecutorOption {
 // WithStoreDir sets the dispatcher store root forwarded to capability-gated
 // backend tools (currently the board MCP server). Backends translate this to
 // the ITERION_STORE_DIR env var on spawned MCP children.
+// WithArtifactFilesDir sets the run's artifact_files scratch dir, exported to
+// host tool-node subprocesses as ITERION_ARTIFACT_FILES_DIR (sandboxed runs
+// receive it from the container env instead).
+func WithArtifactFilesDir(dir string) ClawExecutorOption {
+	return func(e *ClawExecutor) { e.artifactFilesDir = dir }
+}
+
 func WithStoreDir(dir string) ClawExecutorOption {
 	return func(e *ClawExecutor) { e.storeDir = dir }
 }

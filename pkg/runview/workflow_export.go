@@ -30,7 +30,9 @@ type WireWorkflow struct {
 // WireNode is the minimal node projection used by the run-console canvas.
 // Model/backend/reasoning_effort are populated for LLM-driving nodes
 // (Agent, Judge, Router-LLM); OutputFields is populated for HumanNode so
-// the run console can render a typed answer form on pause.
+// the run console can render a typed answer form on pause; Source/Isolated
+// are populated for subbot nodes — the child .bot path relative to the
+// parent file, and whether the child is workspace-isolated (parallel-safe).
 type WireNode struct {
 	ID              string            `json:"id"`
 	Kind            string            `json:"kind"`
@@ -38,6 +40,8 @@ type WireNode struct {
 	Backend         string            `json:"backend,omitempty"`
 	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
 	OutputFields    []WireSchemaField `json:"output_schema,omitempty"`
+	Source          string            `json:"source,omitempty"`
+	Isolated        bool              `json:"isolated,omitempty"`
 }
 
 // WireSchemaField projects an ir.SchemaField as JSON. Type uses the
@@ -249,6 +253,9 @@ func projectNode(id string, n ir.Node, wf *ir.Workflow) WireNode {
 		}
 	case *ir.HumanNode:
 		out.OutputFields = projectSchemaFields(v.OutputSchema, wf)
+	case *ir.SubbotNode:
+		out.Source = v.Source
+		out.Isolated = v.Isolated
 	}
 	return out
 }

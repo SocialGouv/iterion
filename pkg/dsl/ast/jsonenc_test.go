@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ast"
+	"github.com/SocialGouv/iterion/pkg/dsl/parser"
+	"github.com/SocialGouv/iterion/pkg/dsl/unparse"
 )
 
 // buildTestFile creates a comprehensive ast.File with at least one of each node type.
@@ -640,5 +642,99 @@ func TestCapabilitiesRoundtrip(t *testing.T) {
 	if !reflect.DeepEqual(restored.Workflows[0].Capabilities, original.Workflows[0].Capabilities) {
 		t.Errorf("workflow capabilities lost: got %v, want %v",
 			restored.Workflows[0].Capabilities, original.Workflows[0].Capabilities)
+	}
+}
+
+// TestSubbotRoundtrip covers the subbot declaration on the editor-document
+// wire (contract C1): every field must survive MarshalFile → UnmarshalFile,
+// or the studio save path silently deletes subbots from the .bot file.
+func TestSubbotRoundtrip(t *testing.T) {
+	original := &ast.File{
+		Subbots: []*ast.SubbotDecl{
+			{
+				Name:   "produce_episode",
+				Source: "episode.bot",
+				With: []*ast.WithEntry{
+					{Key: "episode", Value: "{{outputs.dispatch.ep.id}}"},
+					{Key: "tone", Value: "dry"},
+				},
+				Output:   "episode_out",
+				Needs:    []string{"worktree_slot"},
+				Isolated: true,
+			},
+		},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !reflect.DeepEqual(original, restored) {
+		t.Errorf("roundtrip mismatch:\noriginal=%#v\nrestored=%#v", original, restored)
+	}
+	// Sanity: emitted JSON carries the contract keys.
+	for _, key := range []string{`"subbots"`, `"produce_episode"`, `"episode.bot"`, `"isolated"`, `"needs"`, `"episode_out"`} {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("emitted JSON missing %s:\n%s", key, data)
+		}
+	}
+}
+
+// TestSubbotStudioSavePath proves the full studio save path
+// (parse → MarshalFile → UnmarshalFile → unparse) preserves subbot
+// declarations end to end.
+func TestSubbotStudioSavePath(t *testing.T) {
+	src := `subbot produce_episode:
+  source: "episode.bot"
+  with {
+    episode: "{{outputs.dispatch.ep.id}}",
+    tone: "dry",
+  }
+  output: episode_out
+  needs: [worktree_slot]
+  isolated: true
+
+workflow w:
+  entry: produce_episode
+
+  produce_episode -> done
+`
+	res := parser.Parse("test.bot", src)
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", res.Diagnostics)
+	}
+	data, err := ast.MarshalFile(res.File)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	out := unparse.Unparse(restored)
+	res2 := parser.Parse("test.bot", out)
+	if len(res2.Diagnostics) != 0 {
+		t.Fatalf("reparse diagnostics: %+v\nsource:\n%s", res2.Diagnostics, out)
+	}
+	if len(res2.File.Subbots) != 1 {
+		t.Fatalf("subbot lost on save path, unparsed source:\n%s", out)
+	}
+	got, want := res2.File.Subbots[0], res.File.Subbots[0]
+	if got.Name != want.Name || got.Source != want.Source ||
+		got.Output != want.Output || got.Isolated != want.Isolated ||
+		!reflect.DeepEqual(got.Needs, want.Needs) {
+		t.Errorf("subbot fields diverged:\ngot=%#v\nwant=%#v", got, want)
+	}
+	if len(got.With) != len(want.With) {
+		t.Fatalf("with entries diverged: got %d, want %d\n%s", len(got.With), len(want.With), out)
+	}
+	for i := range want.With {
+		if got.With[i].Key != want.With[i].Key || got.With[i].Value != want.With[i].Value {
+			t.Errorf("with[%d] diverged: got %q=%q, want %q=%q",
+				i, got.With[i].Key, got.With[i].Value, want.With[i].Key, want.With[i].Value)
+		}
 	}
 }

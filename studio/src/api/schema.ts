@@ -2007,6 +2007,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/files/touched": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/runs/{id}/files/touched */
+        get: operations["getRunsByIdFilesTouched"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/fork": {
         parameters: {
             query?: never;
@@ -3312,6 +3331,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipeline-board": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/pipeline-board */
+        get: operations["getV1PipelineBoard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks */
+        post: operations["postV1PipelineBoardTasks"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/v1/pipeline-board/tasks/{id} */
+        patch: operations["patchV1PipelineBoardTasksById"];
+        trace?: never;
+    };
+    "/api/v1/pipeline-board/tasks/{id}/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/pipeline-board/tasks/{id}/ready */
+        post: operations["postV1PipelineBoardTasksByIdReady"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plugins": {
         parameters: {
             query?: never;
@@ -3683,6 +3774,67 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        BackendUsage: {
+            backend: string;
+            model?: string;
+            node_count: number;
+        };
+        Checkpoint: {
+            artifact_versions: {
+                [key: string]: number;
+            };
+            /** Format: byte */
+            backend_conversation?: string;
+            backend_name?: string;
+            backend_pending_tool_use_id?: string;
+            backend_session_id?: string;
+            budget_cost_usd?: number;
+            budget_elapsed_ns?: number;
+            budget_iterations_used?: number;
+            budget_tokens_used?: number;
+            cost_usd_total?: number;
+            interaction_id: string;
+            interaction_questions?: {
+                [key: string]: unknown;
+            };
+            loop_counters: {
+                [key: string]: number;
+            };
+            loop_current_output?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            loop_previous_output?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            node_attempts?: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
+            node_id: string;
+            outputs: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
+            round_robin_counters?: {
+                [key: string]: number;
+            };
+            vars: {
+                [key: string]: unknown;
+            };
+        };
+        Comment: {
+            author?: string;
+            body: string;
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+        };
         Connection: {
             /** Format: date-time */
             access_token_expires_at?: string;
@@ -3708,6 +3860,31 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        ExecutionState: {
+            branch_id: string;
+            current_event_seq: number;
+            error?: string;
+            execution_id: string;
+            /** Format: date-time */
+            finished_at?: string;
+            first_seq: number;
+            ir_node_id: string;
+            kind?: string;
+            last_artifact_version?: number;
+            last_seq: number;
+            loop_iteration: number;
+            /** Format: date-time */
+            started_at?: string;
+            status: string;
+        };
+        ExternalRef: {
+            connection_id: string;
+            number: number;
+            provider: string;
+            repo: string;
+            state?: string;
+            url?: string;
+        };
         ForgeOAuthApp: {
             app_manage_url?: string;
             app_slug?: string;
@@ -3727,6 +3904,105 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        Issue: {
+            assignee?: string;
+            awaiting_input?: boolean;
+            blockers?: string[];
+            body?: string;
+            bot?: string;
+            bot_args?: {
+                [key: string]: string;
+            };
+            claim?: string;
+            comments?: components["schemas"]["Comment"][];
+            /** Format: date-time */
+            created_at: string;
+            external?: components["schemas"]["ExternalRef"];
+            fields?: {
+                [key: string]: unknown;
+            };
+            id: string;
+            labels?: string[];
+            last_run_id?: string;
+            last_workdir?: string;
+            priority?: number;
+            runs?: components["schemas"]["RunRef"][];
+            state: string;
+            title: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        PipelineBoardAttempt: {
+            /** Format: date-time */
+            at?: string;
+            run_id: string;
+            status?: string;
+        };
+        PipelineBoardCard: {
+            attempts?: components["schemas"]["PipelineBoardAttempt"][];
+            body?: string;
+            bot_id?: string;
+            column_id: string;
+            /** Format: date-time */
+            created_at: string;
+            descendant_count?: number;
+            entry_input?: {
+                [key: string]: unknown;
+            };
+            error?: string;
+            executed_nodes: number;
+            failed?: boolean;
+            id: string;
+            issue_id?: string;
+            issue_state?: string;
+            kind: string;
+            labels?: string[];
+            output?: string;
+            pending_reviews?: components["schemas"]["PipelineBoardPendingReview"][];
+            priority?: number;
+            queue_position?: number;
+            ready?: boolean;
+            run_id?: string;
+            status?: string;
+            title: string;
+            total_nodes: number;
+            tree_executed_nodes: number;
+            tree_run_ids?: string[];
+            tree_total_nodes: number;
+            /** Format: date-time */
+            updated_at: string;
+            workflow_name?: string;
+        };
+        PipelineBoardColumn: {
+            id: string;
+            kind: string;
+            title: string;
+        };
+        PipelineBoardPendingReview: {
+            bot_id?: string;
+            depth: number;
+            interaction_id?: string;
+            node_id?: string;
+            questions?: {
+                [key: string]: unknown;
+            };
+            run_id: string;
+            workflow_name?: string;
+        };
+        PipelineBoardResponse: {
+            cards: components["schemas"]["PipelineBoardCard"][];
+            columns: components["schemas"]["PipelineBoardColumn"][];
+            concurrency: components["schemas"]["PipelineConcurrencyStatus"];
+            /** Format: date-time */
+            generated_at: string;
+            topology_error?: string;
+        };
+        PipelineConcurrencyStatus: {
+            active: number;
+            enabled: boolean;
+            max: number;
+            waiting: number;
+        };
         RepoSummary: {
             can_admin: boolean;
             default_branch?: string;
@@ -3734,6 +4010,125 @@ export interface components {
             full_name: string;
             private: boolean;
             web_url?: string;
+        };
+        RunBudget: {
+            max_cost_usd?: number;
+            max_duration?: string;
+            max_iterations?: number;
+            max_parallel_branches?: number;
+            max_tokens?: number;
+        };
+        RunHeader: {
+            active_duration_ms: number;
+            auto_merge?: boolean;
+            backends_used?: components["schemas"]["BackendUsage"][];
+            budget?: components["schemas"]["RunBudget"];
+            bundle_display_name?: string;
+            bundle_name?: string;
+            checkpoint?: components["schemas"]["Checkpoint"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            current_run_start?: string;
+            error?: string;
+            file_path?: string;
+            final_branch?: string;
+            final_branch_error?: string;
+            final_commit?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            id: string;
+            inputs?: {
+                [key: string]: unknown;
+            };
+            loops?: {
+                [key: string]: components["schemas"]["RunLoopProgress"];
+            };
+            merge_status?: string;
+            merge_strategy?: string;
+            merged_commit?: string;
+            merged_into?: string;
+            model_overrides?: components["schemas"]["RunModelOverride"][];
+            name?: string;
+            parent_node_id?: string;
+            parent_run_id?: string;
+            permission_mode?: string;
+            queue_position?: number;
+            shard_count?: number;
+            shard_index?: number;
+            shard_label?: string;
+            source?: components["schemas"]["RunSource"];
+            status: string;
+            /** Format: date-time */
+            updated_at: string;
+            watched_issue_ids?: string[];
+            work_dir?: string;
+            workflow_hash?: string;
+            workflow_name: string;
+            worktree?: boolean;
+            worktree_available: boolean;
+        };
+        RunLoopProgress: {
+            current: number;
+            max?: number;
+        };
+        RunModelOverride: {
+            backend?: string;
+            model?: string;
+            provider?: string;
+            selector: string;
+        };
+        RunRef: {
+            /** Format: date-time */
+            at: string;
+            run_id: string;
+            workdir?: string;
+        };
+        RunSnapshot: {
+            executions: components["schemas"]["ExecutionState"][];
+            last_seq: number;
+            run: components["schemas"]["RunHeader"];
+        };
+        RunSource: {
+            issue_id?: string;
+            issue_identifier?: string;
+            issue_title?: string;
+            kind?: string;
+        };
+        RunSummary: {
+            active: boolean;
+            auto_merge?: boolean;
+            bundle_display_name?: string;
+            bundle_name?: string;
+            /** Format: date-time */
+            created_at: string;
+            error?: string;
+            file_path?: string;
+            final_branch?: string;
+            final_branch_error?: string;
+            final_commit?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            id: string;
+            merge_status?: string;
+            merge_strategy?: string;
+            merged_commit?: string;
+            merged_into?: string;
+            name?: string;
+            parent_node_id?: string;
+            parent_run_id?: string;
+            project_path?: string;
+            queue_position?: number;
+            repo_root?: string;
+            shard_count?: number;
+            shard_index?: number;
+            shard_label?: string;
+            source_kind?: string;
+            status: string;
+            /** Format: date-time */
+            updated_at: string;
+            work_dir?: string;
+            workflow_name: string;
         };
         Token: {
             /** Format: date-time */
@@ -3750,6 +4145,36 @@ export interface components {
             team_id?: string;
             token_last4: string;
             user_id: string;
+        };
+        WireEdge: {
+            condition?: string;
+            expression?: string;
+            from: string;
+            loop?: string;
+            negated?: boolean;
+            to: string;
+        };
+        WireNode: {
+            backend?: string;
+            id: string;
+            isolated?: boolean;
+            kind: string;
+            model?: string;
+            output_schema?: components["schemas"]["WireSchemaField"][];
+            reasoning_effort?: string;
+            source?: string;
+        };
+        WireSchemaField: {
+            enum_values?: string[];
+            name: string;
+            type: string;
+        };
+        WireWorkflow: {
+            edges: components["schemas"]["WireEdge"][];
+            entry: string;
+            name: string;
+            nodes: components["schemas"]["WireNode"][];
+            stale_hash?: boolean;
         };
         authResponse: {
             access_token?: string;
@@ -3826,6 +4251,30 @@ export interface components {
             slug: string;
             status: string;
             suspend_reason?: string;
+        };
+        pipelineBoardReadyRequest: {
+            ready: boolean;
+        };
+        pipelineBoardTaskRequest: {
+            body?: string;
+            bot: string;
+            bot_args?: {
+                [key: string]: string;
+            };
+            labels?: string[];
+            priority?: number;
+            start?: boolean;
+            title: string;
+        };
+        pipelineBoardUpdateRequest: {
+            body?: string;
+            bot?: string;
+            bot_args?: {
+                [key: string]: string;
+            };
+            labels?: string[];
+            priority?: number;
+            title?: string;
         };
         setOrgStatusReq: {
             reason?: string;
@@ -5908,12 +6357,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        runs: components["schemas"]["RunSummary"][];
+                    };
+                };
             };
         };
     };
@@ -6000,12 +6453,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["RunSnapshot"];
+                };
             };
         };
     };
@@ -6246,12 +6701,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        runs: components["schemas"]["RunSummary"][];
+                    };
+                };
             };
         };
     };
@@ -6418,6 +6877,26 @@ export interface operations {
         };
     };
     getRunsByIdFilesDiff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getRunsByIdFilesTouched: {
         parameters: {
             query?: never;
             header?: never;
@@ -6953,12 +7432,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Response */
-            default: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WireWorkflow"];
+                };
             };
         };
     };
@@ -8245,6 +8726,102 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getV1PipelineBoard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineBoardResponse"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardTasks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+        };
+    };
+    patchV1PipelineBoardTasksById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+        };
+    };
+    postV1PipelineBoardTasksByIdReady: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["pipelineBoardReadyRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
             };
         };
     };

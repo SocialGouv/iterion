@@ -118,6 +118,34 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		return s.launchDetached(parent, runID, spec)
 	}
 
+	// Local pipeline-concurrency gate. Only ROOT launches (no parent)
+	// count against the cap; a child belongs to a root that already holds
+	// a slot, so children always start immediately. nil queue = unlimited
+	// (existing behaviour). Over the limit, the launch is parked as a
+	// queued doc (surfaced on the board's TODO lane) and started later by
+	// the scheduler when a slot frees.
+	if spec.ParentRunID == "" && s.pipelineQueue != nil {
+		admitted, pos := s.pipelineQueue.admitOrEnqueue(runID, spec)
+		if !admitted {
+			return s.enqueuePipeline(parent, runID, spec, pos)
+		}
+		res, startErr := s.startInProcess(parent, runID, spec, true)
+		if startErr != nil {
+			// Release the reserved slot so a failed start can't wedge the queue.
+			s.pipelineQueue.slotFreed(runID)
+		}
+		return res, startErr
+	}
+	return s.startInProcess(parent, runID, spec, true)
+}
+
+// startInProcess compiles + builds + spawns a run in this process. It is
+// the shared body of an immediate Launch and the scheduler's start of a
+// previously-queued root. precreate controls doc creation: true mints a
+// fresh running doc (the normal launch path); false starts against an
+// existing queued doc (the engine's runResolveDoc transitions it
+// queued→running), used when the concurrency gate deferred the launch.
+func (s *Service) startInProcess(parent context.Context, runID string, spec LaunchSpec, precreate bool) (*LaunchResult, error) {
 	wf, hash, err := compileForLaunch(spec.FilePath, spec.Source)
 	if err != nil {
 		return nil, err
@@ -133,10 +161,19 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 
 	_, runLogger := s.prepareRunLog(runID)
 
+	// LaunchSpec.ExtraObservers (ADR-046) reach the run through TWO
+	// disjoint seams — WITHOUT wrapping the store (a wrapper would shadow
+	// the concrete FilesystemRunStore's optional capabilities against the
+	// PlanWriter / RunFilesStore / … type-probes the executor + sandbox
+	// run). Backend-hook events (the high-frequency tool stream) fire the
+	// observers via ExecutorSpec.EventObservers; engine events fire them
+	// via runtime.WithEventObserver (wired in engineOptions from
+	// launchExtras.observers). The raw store keeps every capability.
 	executor, err := BuildExecutor(ExecutorSpec{
 		Workflow:       wf,
 		Vars:           spec.Vars,
 		Store:          s.store,
+		EventObservers: spec.ExtraObservers,
 		RunID:          runID,
 		Logger:         runLogger,
 		StoreDir:       s.storeDir,
@@ -212,9 +249,18 @@ func (s *Service) Launch(parent context.Context, spec LaunchSpec) (*LaunchResult
 		answerNode: spec.CallbackAnswerNode,
 	}
 
+	precreateInputs := inputs
+	if !precreate {
+		// The queued doc already exists; let the engine claim it
+		// (queued→running via runResolveDoc) instead of re-creating.
+		precreateInputs = nil
+	}
 	return s.spawnRun(parent, runID, wf, hash, spec.FilePath, runName, fin, cb, executor, runLogger, spec.Timeout, false,
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
-		inputs,
+		spec.ParentRunID,
+		precreateInputs,
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome, observers: spec.ExtraObservers},
+		s.store,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
 		})
@@ -325,6 +371,9 @@ func (s *Service) Resume(parent context.Context, spec ResumeSpec) (*LaunchResult
 	// resume" we'd plumb a ResumeSpec field here.
 	return s.spawnRun(parent, spec.RunID, wf, hash, spec.FilePath, runName, finalizationOpts{}, callbackOpts{}, executor, runLogger, spec.Timeout, spec.Force,
 		nil, r.Preset, nil,
+		r.ParentRunID,
+		nil,
+		launchExtras{},
 		nil,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			// Re-validate under the lock acquired by spawnRun (TOCTOU
@@ -375,9 +424,19 @@ func (s *Service) spawnRun(
 	promote runtime.AttachmentPromoteFunc,
 	preset string,
 	modelOverrides []store.RunModelOverride,
+	parentRunID string,
 	precreateInputs map[string]any,
+	ex launchExtras,
+	emitStore store.RunStore,
 	body func(ctx context.Context, eng *runtime.Engine) error,
 ) (*LaunchResult, error) {
+	// emitStore is the store the engine writes events through. It is the
+	// raw s.store — ADR-046 ExtraObservers ride the WithEventObserver /
+	// ExecutorSpec.EventObservers seams (see startInProcess), not a store
+	// wrapper, so every optional store capability survives to the probes.
+	if emitStore == nil {
+		emitStore = s.store
+	}
 	lock, err := s.store.LockRun(context.Background(), runID)
 	if err != nil {
 		s.dropRunLog(runID)
@@ -397,11 +456,24 @@ func (s *Service) spawnRun(
 	// being scheduled. The engine's runResolveDoc sees the running doc and
 	// claims it instead of re-creating.
 	if precreateInputs != nil {
-		if _, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs); err != nil {
+		created, err := s.store.CreateRun(context.Background(), runID, wf.Name, precreateInputs)
+		if err != nil {
 			s.manager.Deregister(runID)
 			_ = lock.Unlock()
 			s.dropRunLog(runID)
 			return nil, fmt.Errorf("runview: create run: %w", err)
+		}
+		// ParentRunID is part of the launch identity, so persist it before
+		// returning just like the run document itself. The engine option below
+		// remains the authoritative path for direct/non-precreated runs.
+		if parentRunID != "" {
+			created.ParentRunID = parentRunID
+			if err := s.store.SaveRun(context.Background(), created); err != nil {
+				s.manager.Deregister(runID)
+				_ = lock.Unlock()
+				s.dropRunLog(runID)
+				return nil, fmt.Errorf("runview: save parent run: %w", err)
+			}
 		}
 	}
 
@@ -410,7 +482,12 @@ func (s *Service) spawnRun(
 		ctx, cancelTimeout = context.WithTimeout(ctx, timeout)
 	}
 
-	opts := s.engineOptions(runLogger, hash, filePath, runName, fin)
+	opts := s.engineOptions(runLogger, hash, filePath, runName, fin, ex)
+	// Subbot nodes need a host-supplied runner (the bare engine can't compile
+	// a child .bot — import cycle with runview). Wired on BOTH the launch and
+	// resume paths; without it, in-process studio runs of subbot-bearing bots
+	// died with "no SubbotRunner is wired" (only the CLI paths were covered).
+	opts = append(opts, runtime.WithSubbotRunner(s.subbotRunnerFor(filePath, runLogger)))
 	if force {
 		opts = append(opts, runtime.WithForceResume(true))
 	}
@@ -419,6 +496,9 @@ func (s *Service) spawnRun(
 	}
 	if preset != "" {
 		opts = append(opts, runtime.WithPreset(preset))
+	}
+	if parentRunID != "" {
+		opts = append(opts, runtime.WithParentRunID(parentRunID))
 	}
 	// Persist launch-time model/backend overrides on the run record
 	// (display-only) so the studio Overview shows what it launched with.
@@ -436,7 +516,7 @@ func (s *Service) spawnRun(
 	if pauseCh, perr := s.manager.PauseSignal(runID); perr == nil {
 		opts = append(opts, runtime.WithPauseSignal(pauseCh))
 	}
-	eng := runtime.New(wf, s.store, executor, opts...)
+	eng := runtime.New(wf, emitStore, executor, opts...)
 	// Publish the engine so the store's Event.ActiveMs stamping can read
 	// this run's monotonic active elapsed. Removed when the goroutine exits.
 	s.registerRunEngine(runID, eng)
@@ -458,6 +538,12 @@ func (s *Service) spawnRun(
 				s.broker.CloseRun(runID)
 			}
 		}()
+		// Release this root's pipeline-concurrency slot AFTER Deregister
+		// (defers run LIFO, so this line must come BEFORE the Deregister
+		// defer), so the run is fully deregistered before the scheduler
+		// admits the next waiter. A no-op for run IDs that never held a
+		// slot (children, resumes, or when the cap is disabled).
+		defer s.pipelineQueue.slotFreed(runID)
 		defer s.manager.Deregister(runID)
 		defer func() { _ = lock.Unlock() }()
 		if cancelTimeout != nil {
@@ -479,6 +565,13 @@ func (s *Service) spawnRun(
 		bodyErr := body(ctx, eng)
 		paused = errors.Is(bodyErr, runtime.ErrRunPaused) || errors.Is(bodyErr, runtime.ErrRunPausedOperator)
 		s.logRunOutcome(runID, bodyErr)
+		// Hand the terminal error to a blocking caller (ADR-046: the
+		// dispatcher's EngineRunner routing through Launch) BEFORE Done
+		// closes, so it returns the same typed error the direct engine.Run
+		// would have. No-op for fire-and-forget launches.
+		if ex.onOutcome != nil {
+			ex.onOutcome(bodyErr)
+		}
 		// Fire the run-completion webhook (no-op unless the run carries a
 		// callback URL). Uses a fresh, tenant-unfiltered ctx: the run ctx
 		// may be cancelled at this point, and the runID is already known.
@@ -534,13 +627,35 @@ type finalizationOpts struct {
 	autoMerge     bool
 }
 
+// launchExtras groups the per-launch overrides ADR-046 added to
+// LaunchSpec so the dispatcher's EngineRunner.Dispatch can converge on
+// runview.Service.Launch without losing its workspace / cap / source
+// semantics. Each field overrides the matching service-level default
+// (s.workDir / s.dailyCap) when set; the zero value inherits it. Resume
+// and subbot launches pass the zero value.
+type launchExtras struct {
+	workDir  string
+	dailyCap *runtime.DailyCapGuard
+	source   *store.RunSource
+	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
+	// goroutine with the terminal body error before Done closes, so a
+	// blocking caller reads the same typed error engine.Run returned.
+	onOutcome func(error)
+	// observers mirrors LaunchSpec.ExtraObservers: fired on every
+	// engine-level event via runtime.WithEventObserver (the backend-hook
+	// half rides ExecutorSpec.EventObservers). Together they feed the
+	// dispatcher's stall heartbeat the full store-level event stream
+	// without wrapping the store.
+	observers []func(store.Event)
+}
+
 // engineOptions builds the standard option set for both Launch and
 // Resume: logger, recovery dispatch, broker observer, extra observers,
 // workflow hash, file path, run name, and worktree-finalization
 // targets. The logger is always per-run (built by prepareRunLog) so
 // every iterion log line is captured into the run's log buffer for
 // streaming to the studio.
-func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts) []runtime.EngineOption {
+func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runName string, fin finalizationOpts, ex launchExtras) []runtime.EngineOption {
 	if runLogger == nil {
 		runLogger = s.logger
 	}
@@ -550,14 +665,32 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		runtime.WithEventObserver(s.broker.Publish),
 		runtime.WithOnNodeFinished(s.stampWatchedFromOutput),
 	}
-	if s.workDir != "" {
-		opts = append(opts, runtime.WithWorkDir(s.workDir))
+	// Per-launch WorkDir (ADR-046) overrides the service default; the
+	// dispatcher points it at the per-issue worktree so ${PROJECT_DIR}
+	// resolves there, not the daemon's cwd.
+	workDir := s.workDir
+	if ex.workDir != "" {
+		workDir = ex.workDir
+	}
+	if workDir != "" {
+		opts = append(opts, runtime.WithWorkDir(workDir))
 	}
 	if s.boardMCPHandler != nil {
 		opts = append(opts, runtime.WithBoardMCP(s.boardMCPHandler))
 	}
-	if s.dailyCap != nil {
-		opts = append(opts, runtime.WithDailyCap(s.dailyCap))
+	// Per-launch DailyCap (ADR-046) overrides the service default so the
+	// dispatcher's singleton-SpendStore guard writes the one shared ledger.
+	dailyCap := s.dailyCap
+	if ex.dailyCap != nil {
+		dailyCap = ex.dailyCap
+	}
+	if dailyCap != nil {
+		opts = append(opts, runtime.WithDailyCap(dailyCap))
+	}
+	// Per-launch SourceRef (ADR-046) stamps the originating dispatcher issue
+	// onto the run record. Nil for CLI / studio / fork launches.
+	if ex.source != nil {
+		opts = append(opts, runtime.WithSource(ex.source))
 	}
 	// Run-health alerting. In-process runs feed the broker directly (not
 	// the events.jsonl file tailer, which only runs for detached /
@@ -571,6 +704,14 @@ func (s *Service) engineOptions(runLogger *iterlog.Logger, hash, filePath, runNa
 		opts = append(opts, runtime.WithEventObserver(s.alertManager.Observe))
 	}
 	for _, obs := range s.extraObservers {
+		opts = append(opts, runtime.WithEventObserver(obs))
+	}
+	// Per-launch ExtraObservers (ADR-046): the engine-level half of the
+	// dispatcher's stall-heartbeat seam. The backend-hook half is wired
+	// through ExecutorSpec.EventObservers; the two event sets are disjoint
+	// (engine emits fire e.onEvent, backend hooks fire the redacting
+	// emitter), so an event reaches each observer exactly once.
+	for _, obs := range ex.observers {
 		opts = append(opts, runtime.WithEventObserver(obs))
 	}
 	if hash != "" {

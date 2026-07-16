@@ -19,6 +19,7 @@ import {
   CubeIcon,
   LockClosedIcon,
   MixIcon,
+  CardStackIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
@@ -41,6 +42,7 @@ export type Section =
   | "runs"
   | "bots"
   | "board"
+  | "pipelines"
   | "dispatcher"
   | "triggers"
   | "marketplace"
@@ -84,6 +86,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   insights: "runs",
   bots: "bots",
   board: "board",
+  pipelines: "pipelines",
   dispatcher: "dispatcher",
   triggers: "triggers",
   marketplace: "marketplace",
@@ -139,6 +142,7 @@ export default function NavLinks({ collapsed }: Props) {
   const operate: LinkDef[] = [];
   if (info?.native_tracker_enabled) {
     operate.push({ section: "board", href: "/board", label: "Board", icon: ViewGridIcon });
+    operate.push({ section: "pipelines", href: "/pipelines", label: "Pipelines", icon: CardStackIcon });
   }
   if (info?.dispatcher_enabled) {
     operate.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });

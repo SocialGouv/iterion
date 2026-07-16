@@ -153,6 +153,51 @@ type LaunchSpec struct {
 	// secret id) for this run, overriding the org bot-secret binding. Set by
 	// webhook launches carrying per-webhook secret bindings. See docs/byok.md.
 	SecretOverrides map[string]string
+
+	// --- Dispatcher-convergence fields (ADR-046) ---
+	// These four carry the invariants the dispatcher's EngineRunner.Dispatch
+	// needs so it can route its execution step through this single launch
+	// authority without losing workspace / stall / cap / retry semantics. All
+	// are per-launch overrides; empty/nil inherits the service-level default.
+
+	// WorkDir overrides the service-level working directory for this launch
+	// (runtime.WithWorkDir). The dispatcher sets it to the per-issue isolated
+	// worktree so `${PROJECT_DIR}` in bot var defaults expands to that
+	// worktree, not the daemon's cwd. Empty inherits WithWorkDir.
+	WorkDir string
+	// ExtraObservers are per-launch event observers fired on EVERY run
+	// event — both the engine-level events runtime.WithEventObserver sees
+	// AND the high-frequency tool_started/tool_called events the backend
+	// hook layer emits (which bypass the engine callback) — matching the
+	// dispatcher's stall-heartbeat semantics. The dispatcher wires one that
+	// advances its last-event watermark for stall detection. Empty adds
+	// none. Delivered through TWO disjoint seams — runtime.WithEventObserver
+	// for engine events + ExecutorSpec.EventObservers for backend-hook
+	// events — so no store wrapper is interposed (a wrapper would shadow the
+	// store's optional capabilities against the executor/sandbox type-probes;
+	// ADR-046).
+	ExtraObservers []func(store.Event)
+	// DailyCap, when non-nil, overrides the service-level per-(store, UTC-day)
+	// spend-cap guard for this launch (runtime.WithDailyCap). The dispatcher
+	// builds it from its SINGLETON SpendStore so every concurrent dispatched
+	// run writes the one ledger, serialising on a single mutex. Nil inherits
+	// the service's dailyCap.
+	DailyCap *runtime.DailyCapGuard
+	// SourceRef stamps who originated this run onto the run record
+	// (runtime.WithSource); the studio RunHeader links back to it. The
+	// dispatcher sets it to the kanban issue that triggered the dispatch. Nil
+	// leaves Source unset (CLI / studio / fork launches).
+	SourceRef *store.RunSource
+	// OnOutcome, when set, is invoked once with the run's terminal Go error
+	// (nil on success, runtime.ErrRunPaused/ErrRunPausedOperator on a pause,
+	// the failure error otherwise) just before the run goroutine closes
+	// LaunchResult.Done. It is the return-path completion of the four data
+	// fields above: a blocking caller (the dispatcher's EngineRunner routing
+	// through this launch authority) reads the SAME typed error the direct
+	// engine.Run would have returned, so its retry / park / sandbox-backoff
+	// logic stays byte-identical. Nil for fire-and-forget CLI / studio /
+	// webhook launches. Not honoured on the cloud-queue or detached paths.
+	OnOutcome func(error)
 }
 
 // ModelOverrideEntry is one launch-time per-node/-group model+backend
@@ -284,9 +329,13 @@ type RunSummary struct {
 	// endpoint can project a run's shard/child subtree without a per-run
 	// fetch. See store.Run.
 	ParentRunID string `json:"parent_run_id,omitempty"`
-	ShardIndex  int    `json:"shard_index,omitempty"`
-	ShardCount  int    `json:"shard_count,omitempty"`
-	ShardLabel  string `json:"shard_label,omitempty"`
+	// ParentNodeID is the IR node id of the subbot node in the parent
+	// workflow that spawned this child run; empty for root runs and
+	// non-subbot children. See store.Run.ParentNodeID.
+	ParentNodeID string `json:"parent_node_id,omitempty"`
+	ShardIndex   int    `json:"shard_index,omitempty"`
+	ShardCount   int    `json:"shard_count,omitempty"`
+	ShardLabel   string `json:"shard_label,omitempty"`
 }
 
 // ListFilter scopes a List request. Empty fields mean no filter.
@@ -457,6 +506,21 @@ type Service struct {
 	// + the wired SpendStore. nil when the cap is disabled (no limit, or
 	// a store that can't persist a ledger — e.g. cloud Mongo).
 	dailyCap *runtime.DailyCapGuard
+
+	// maxConcurrentPipelines caps how many ROOT pipelines run at once on
+	// this machine (the cross-run limit `max_parallel_branches` never
+	// provided). 0 disables the cap. Set via WithMaxConcurrentPipelines
+	// (CLI flag) or the ITERION_MAX_CONCURRENT_PIPELINES env.
+	maxConcurrentPipelines int
+	// pipelineQueue is the local admission gate + FIFO built from
+	// maxConcurrentPipelines. nil = unlimited (in-process launches start
+	// eagerly, exactly as before). Only the in-process (non-publisher,
+	// non-detached) local path honours it.
+	pipelineQueue *pipelineQueue
+	// pipelineStop ends the pipeline scheduler goroutine (see
+	// startPipelineScheduler). Closed by Drain/Stop via pipelineStopOnce.
+	pipelineStop     chan struct{}
+	pipelineStopOnce sync.Once
 }
 
 // ServiceOption configures a Service at construction time.
@@ -522,6 +586,20 @@ func (s *Service) AlertManager() *alert.Manager { return s.alertManager }
 // service stays in local-mode (in-process engine).
 func WithLaunchPublisher(p LaunchPublisher) ServiceOption {
 	return func(s *Service) { s.publisher = p }
+}
+
+// WithMaxConcurrentPipelines caps how many ROOT pipelines run at once on
+// this machine. Over-limit launches wait in a FIFO (surfaced on the
+// pipeline board's TODO lane) and start when a slot frees. 0 (or
+// negative) disables the cap — every launch starts eagerly, as before.
+// The CLI wires it from --max-concurrent-pipelines; a non-positive value
+// leaves the ITERION_MAX_CONCURRENT_PIPELINES env default to apply.
+func WithMaxConcurrentPipelines(n int) ServiceOption {
+	return func(s *Service) {
+		if n > 0 {
+			s.maxConcurrentPipelines = n
+		}
+	}
 }
 
 // WithLocalSecrets wires the local (non-cloud) sealed secret store + its
@@ -641,6 +719,18 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		runtime.DailyCapConfig{MaxCostPerDayUSD: s.maxCostPerDayUSD},
 	)
 
+	// Build the local pipeline-concurrency gate from the
+	// ITERION_MAX_CONCURRENT_PIPELINES env default when no explicit cap was
+	// wired. nil (unlimited) when the resolved value is non-positive. Only
+	// in-process (local) mode has a gate: the cloud publisher path bypasses
+	// Launch's in-process branch entirely, so a queue there would be inert.
+	if s.maxConcurrentPipelines <= 0 {
+		s.maxConcurrentPipelines = envMaxConcurrentPipelines()
+	}
+	if s.publisher == nil {
+		s.pipelineQueue = newPipelineQueue(s.maxConcurrentPipelines)
+	}
+
 	if s.alertSettings != nil {
 		s.alertManager = s.buildAlertManager(*s.alertSettings)
 		s.alertManager.Start(context.Background())
@@ -668,6 +758,12 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 	s.reconcileSandboxContainers()
 	s.reconcileSandboxK8sResources()
 	s.startPeriodicReconcile()
+	// Recover any pipelines left waiting in the queue by a previous
+	// process lifetime (persisted as queued docs), then start the
+	// scheduler that admits them as slots free. No-op when the cap is
+	// disabled (pipelineQueue == nil).
+	s.rebuildPipelineQueue()
+	s.startPipelineScheduler()
 	return s, nil
 }
 
@@ -750,6 +846,31 @@ func envDailyCostCap() float64 {
 		return 0
 	}
 	return f
+}
+
+// envMaxConcurrentPipelines parses ITERION_MAX_CONCURRENT_PIPELINES as a
+// positive integer cap on concurrent root pipelines, returning 0
+// (disabled) when unset or unparseable.
+func envMaxConcurrentPipelines() int {
+	v := os.Getenv("ITERION_MAX_CONCURRENT_PIPELINES")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// PipelineConcurrency returns the current state of the local pipeline
+// concurrency gate (limit, active, waiting) for server_info. A disabled
+// cap reports Enabled=false.
+func (s *Service) PipelineConcurrency() PipelineConcurrencyStatus {
+	if s == nil {
+		return PipelineConcurrencyStatus{}
+	}
+	return s.pipelineQueue.status()
 }
 
 // inboxBinder returns the runtime's operator-chatbox plumbing

@@ -37,6 +37,9 @@ func TestCompileSubbot(t *testing.T) {
 	if n.Source != "child.bot" || n.OutputSchema != "verdict" {
 		t.Fatalf("source/output = %q/%q", n.Source, n.OutputSchema)
 	}
+	if got := NodeOutputSchema(n); got != "verdict" {
+		t.Fatalf("NodeOutputSchema = %q, want verdict", got)
+	}
 	if len(n.With) != 1 || n.With[0].Key != "issue" {
 		t.Fatalf("with mappings = %v", n.With)
 	}

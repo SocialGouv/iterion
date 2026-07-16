@@ -3,6 +3,7 @@ import { useDocumentStore } from "@/store/document";
 import { useSelectionStore } from "@/store/selection";
 import { isAuxiliaryNodeId } from "@/lib/documentToGraph";
 import { isGroupNodeId } from "@/lib/groups";
+import { isSubbotChildId } from "@/lib/subbotGraph";
 import { makeEdgeId } from "@/lib/documentToGraph";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { Button } from "@/components/ui";
@@ -19,7 +20,8 @@ function isEditableNodeId(id: string): boolean {
     id !== "done" &&
     id !== "fail" &&
     !isAuxiliaryNodeId(id) &&
-    !isGroupNodeId(id)
+    !isGroupNodeId(id) &&
+    !isSubbotChildId(id)
   );
 }
 

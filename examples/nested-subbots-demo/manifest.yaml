@@ -1,0 +1,18 @@
+name: nested-subbots-demo
+display_name: Nested Subbots Demo
+icon: 🪆
+version: 0.1.0
+description: |
+  Zero-LLM demo of NESTED subbots (a subbot inside a subbot): main runs
+  stage.bot as a child, which fans out two ISOLATED step.bot grandchildren
+  in parallel, each pausing on its own human check. Approving both checks
+  unparks the whole chain (step → stage → main). Tool / compute / human /
+  subbot only — no API keys, runs in seconds.
+when_to_use: |
+  Use to demo or smoke-test the studio's inline subbot display across
+  nesting levels (frames within frames, per-frame child tabs) and the
+  park-on-child-human-gate chain through two levels. Not a production
+  workflow.
+author: iterion — examples/nested-subbots-demo
+schema_version: 1
+enabled: true

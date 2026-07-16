@@ -161,6 +161,20 @@ func WithFilePath(path string) EngineOption {
 	return func(e *Engine) { e.filePath = path }
 }
 
+// WithParentRunID records the immediate parent of a nested run. Empty values
+// are ignored so pickup/resume paths that do not re-supply the option preserve
+// any lineage already stored on the run document.
+func WithParentRunID(parentRunID string) EngineOption {
+	return func(e *Engine) { e.parentRunID = parentRunID }
+}
+
+// WithParentNodeID records the IR node id of the subbot node in the parent
+// workflow that spawned this child run. Empty values are ignored, mirroring
+// WithParentRunID.
+func WithParentNodeID(parentNodeID string) EngineOption {
+	return func(e *Engine) { e.parentNodeID = parentNodeID }
+}
+
 // WithRunName records a deterministic, human-friendly label on the
 // run metadata at creation. Display-only — the canonical identifier
 // remains the run ID. Optional — empty string is ignored.

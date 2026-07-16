@@ -30,6 +30,7 @@ export function getTopologyKey(doc: IterDocument, activeWorkflowName?: string): 
     (doc.humans ?? []).length,
     (doc.tools ?? []).length,
     (doc.computes ?? []).length,
+    (doc.subbots ?? []).length,
   ].join(",");
   const targetWorkflows = activeWorkflowName
     ? (doc.workflows ?? []).filter(w => w.name === activeWorkflowName)
@@ -52,6 +53,9 @@ export function documentToGraph(doc: IterDocument, activeWorkflowName?: string):
   for (const h of doc.humans ?? []) nodeMap.set(h.name, { kind: "human", decl: h });
   for (const t of doc.tools ?? []) nodeMap.set(t.name, { kind: "tool", decl: t });
   for (const c of doc.computes ?? []) nodeMap.set(c.name, { kind: "compute", decl: c });
+  // Subbots render as compact nodes here; expandSubbots (lib/subbotGraph.ts)
+  // replaces them with a container frame once the child document is loaded.
+  for (const sb of doc.subbots ?? []) nodeMap.set(sb.name, { kind: "subbot", decl: sb });
 
   // Resolve target workflows early so we can check edge references
   const targetWorkflows = activeWorkflowName
@@ -326,6 +330,8 @@ export function generateLayerNodes(
   for (const h of doc.humans ?? []) allDecls.push({ name: h.name, input: (h as HumanDecl).input, output: (h as HumanDecl).output, instructions: (h as HumanDecl).instructions });
   for (const t of doc.tools ?? []) allDecls.push({ name: t.name, input: (t as ToolNodeDecl).input, output: (t as ToolNodeDecl).output });
   for (const c of doc.computes ?? []) allDecls.push({ name: c.name, input: (c as ComputeDecl).input, output: (c as ComputeDecl).output });
+  // Subbots only declare an output schema (the child run's validated result).
+  for (const sb of doc.subbots ?? []) allDecls.push({ name: sb.name, output: sb.output });
 
   // --- Schemas layer ---
   if (activeLayers.has("schemas")) {

@@ -541,6 +541,11 @@ func (e *ClawExecutor) toolNodeScriptCommand(ctx context.Context, interpreter, s
 		return e.sandbox.Command(ctx, []string{interpreter, scriptBasename}, sandbox.ExecOpts{})
 	}
 	cmd := exec.CommandContext(ctx, interpreter, scriptBasename)
+	// Host path only: sandboxed commands already see the variable from the
+	// container env (the same dir is bind-mounted there).
+	if e.artifactFilesDir != "" {
+		cmd.Env = append(os.Environ(), "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+	}
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
 	}
@@ -581,8 +586,13 @@ func (e *ClawExecutor) toolNodeCommand(ctx context.Context, resolved string, env
 		return e.sandbox.Command(ctx, []string{"bash", "-c", resolved}, sandbox.ExecOpts{Env: env})
 	}
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
-	if len(env) > 0 {
+	if len(env) > 0 || e.artifactFilesDir != "" {
 		cmd.Env = os.Environ()
+		// Host path only: sandboxed commands already see the variable from
+		// the container env (the same dir is bind-mounted there).
+		if e.artifactFilesDir != "" {
+			cmd.Env = append(cmd.Env, "ITERION_ARTIFACT_FILES_DIR="+e.artifactFilesDir)
+		}
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}

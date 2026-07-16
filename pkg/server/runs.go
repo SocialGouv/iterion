@@ -66,6 +66,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files", s.handleListArtifactFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/artifact-files/{path...}", s.handleGetArtifactFile)
 	s.mux.HandleFunc("GET /api/runs/{id}/files", s.handleListRunFiles)
+	s.mux.HandleFunc("GET /api/runs/{id}/files/touched", s.handleListRunTouchedFiles)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/diff", s.handleGetRunFileDiff)
 	s.mux.HandleFunc("GET /api/runs/{id}/files/content", s.handleGetRunFileContent)
 	s.mux.HandleFunc("PUT /api/runs/{id}/files/content", s.handleSaveRunFileContent)
@@ -227,6 +228,12 @@ func (b *launchBudgetSpec) toOverrides() *ir.BudgetOverrides {
 type launchRunResponse struct {
 	RunID  string `json:"run_id"`
 	Status string `json:"status"`
+	// QueuePosition is the 1-based place in the local pipeline-concurrency
+	// queue when the launch was deferred (the machine was at its
+	// max-concurrent-pipelines cap). 0 when the run started immediately.
+	// The studio uses it to tell the operator "queued at position N"
+	// instead of a misleading "running".
+	QueuePosition int `json:"queue_position,omitempty"`
 }
 
 type resumeRunRequest struct {
@@ -409,8 +416,17 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	span.SetAttributes(attribute.String("iterion.run_id", res.RunID))
+	// A deferred launch (over the local concurrency cap) reports the queued
+	// status + position so the studio doesn't claim "running" for a
+	// pipeline still waiting for a slot. QueuePosition is 0 for the normal
+	// immediate-start path (and always 0 in cloud mode, which uses the
+	// NATS queue, not this local gate).
+	status := store.RunStatusRunning
+	if res.QueuePosition > 0 {
+		status = store.RunStatusQueued
+	}
 	w.WriteHeader(http.StatusAccepted)
-	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(store.RunStatusRunning)})
+	s.writeJSONFor(w, r, launchRunResponse{RunID: res.RunID, Status: string(status), QueuePosition: res.QueuePosition})
 }
 
 // resolveCrossStore inspects the `?store=` query parameter and, when
@@ -876,6 +892,36 @@ func artifactFileContentType(path string) string {
 		return "image/png"
 	case ".svg":
 		return "image/svg+xml"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".pdf":
+		return "application/pdf"
+	// Audio/video produced by media pipelines — without these the studio's
+	// inline players get application/octet-stream and refuse to render.
+	case ".wav":
+		return "audio/wav"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".ogg", ".oga":
+		return "audio/ogg"
+	case ".flac":
+		return "audio/flac"
+	case ".m4a":
+		return "audio/mp4"
+	case ".opus":
+		return "audio/opus"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".mov":
+		return "video/quicktime"
+	case ".mkv":
+		return "video/x-matroska"
 	default:
 		return "application/octet-stream"
 	}

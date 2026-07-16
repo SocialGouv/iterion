@@ -225,6 +225,68 @@ fields](dispatcher.md) for the current handoff.
 The SPA's Board view (`/board` in the studio) consumes exactly these
 endpoints — it's a thin React shell on top of the REST surface.
 
+## Pipeline board (the second board)
+
+The Studio also exposes a single global `/pipelines` board. This is a
+different product surface — a **control center** for watching and unblocking
+many pipelines at once — not a saved filter and not a replacement for `/board`:
+
+- `/board` remains the editable, shared dispatcher backlog;
+- `/board` remains the editable, shared dispatcher backlog;
+- `/pipelines` is one global projection of every **root** pipeline, across all
+  bots;
+- it has five fixed lanes — `Backlog`, `Todo`, `In progress`, `Done`, `Failed`;
+- each card is one root pipeline; its descendant runs are **folded into the
+  root card** (aggregate node progress + a list of pending human reviews), not
+  shown as separate cards;
+- a tree blocked on `paused_waiting_human` shows a **Blocked — human review**
+  tag on the card; the structured answer form lives in the card's details
+  sidebar (click the card) and resumes the exact paused run — when several
+  reviews are pending across the tree the sidebar steps through them one at a
+  time.
+
+Lane semantics — the board is **task-centric**:
+- `Backlog` = tickets being prepared;
+- `Todo` = tickets you staged with the card's **“→ Todo”** button, plus runs
+  waiting for a local slot (queued); “→ Backlog” unstages an unlaunched ticket.
+  The launch loop starts ready tickets **highest priority first** (the same
+  `P{n}` field /board sorts on; ties go oldest-first) — set it from the
+  ticket's Edit dialog, shown as a `P{n}` badge on the card;
+- `In progress` = running or awaiting a human review (progress bar +
+  Blocked tag);
+- `Done` = finished — the pipeline's output shows in the details sidebar;
+- `Failed` = the run failed / was cancelled, with the **error shown as the
+  reason**; ticket-backed cards offer **Retry** (back to Todo) and Edit.
+
+Ticket movement is **button-driven** — there is no drag & drop. The studio's
+launch loop starts ready tickets when a concurrency slot frees (no
+`iterion dispatch` needed). Run cards (In progress / Done / Failed without a
+ticket) are positioned by run state and cannot be moved.
+
+The aggregate read API is intentionally server-side, so the browser does not
+perform an N+1 traversal over issues, checkpoints and child runs:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/pipeline-board` | GET | Global projection: 5 fixed lanes + one folded card per root pipeline (progress, pending reviews, output, concurrency) |
+| `/api/v1/pipeline-board/tasks` | POST | Create a ticket; `bot` required **in the body**; `{start:true}` creates it ready (Todo), else Backlog |
+| `/api/v1/pipeline-board/tasks/{id}/ready` | POST | `{ready}` flips a ticket ready↔backlog — the backend of the “→ Todo” / “→ Backlog” / Retry buttons |
+
+**Local concurrency cap.** `iterion studio` caps concurrent **root** pipelines
+at `--max-concurrent-pipelines` (default 3; also
+`ITERION_MAX_CONCURRENT_PIPELINES`). Ready tickets and direct launches beyond
+the cap wait until a slot frees; a paused-for-review pipeline frees its slot so
+reviews never starve the queue. `0` disables the cap. Local (in-process) only;
+cloud admission stays on the NATS queue + org/team gates. The launch loop
+stands down while an operator-started dispatcher is running (it would otherwise
+race the same tickets).
+
+Task ingestion reuses native issues in this slice. A task appears before launch
+only when its `Issue.Bot` names a bot; once a run exists, manual/API/scheduled
+runs associated with that bot also appear even if no native issue references
+them. See [ADR-074](adr/074-dedicated-pipeline-board-projection.md) for the
+boundary, trade-offs and follow-ups.
+
 ## Use cases beyond the dispatcher
 
 Even without `iterion dispatch` running, the native tracker is useful
