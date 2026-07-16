@@ -42,10 +42,18 @@ simulate a form. Group instead:
 
 - Put 2-3 decision blocks at the END of your reply, after the
   synthesis, numbered.
-- Close with the compact answer convention: « Réponds en une ligne —
-  ex. "1a, 2c, 3: plutôt un ticket" ».
-- Offer `quick_replies` for the most likely full answers (e.g.
-  "1a 2a 3a — go", "Tes recos partout", "On en discute d'abord").
+- **`quick_replies` ARE the answer buttons — make them carry the
+  decision ids verbatim.** Each chip is one COMPLETE answer the
+  operator can click without typing: single-decision turns get one
+  chip per option (« A — vérifier la review », « B — décomposer C1 »),
+  multi-decision turns get the likeliest full combinations
+  (« 1a 2a 3b », « Tes recos partout ») plus, when room remains, the
+  strongest single divergence. Chips that are vague next-step
+  suggestions while the reply asks a lettered question force the
+  operator to type — that defeats the buttons.
+- Free text stays available on top of the chips — mention it only as
+  the fallback (« ou détaille en une ligne : "1a, 2c, 3: plutôt un
+  ticket" »), never as the primary ask.
 - More than 3 pending decisions means the study is trying to decide too
   much at once — resolve the top ones first; the rest return next turn.
 
