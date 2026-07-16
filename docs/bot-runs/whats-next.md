@@ -58,6 +58,22 @@ priorities form → roadmap → review form → emit → dispatch pickers).
   quick_replies-as-buttons rule (chips now carry complete decision
   answers — "Applique le lot complet (4 close + 3 close+followup +
   2 backlog)" etc.).
+- Turn 4 (operator named the batch): $0.93, 21 board mutations —
+  **all ground-truth verified on the store**: 7 tickets → `done`, each
+  with one `comment_issue` trace citing commit + `main @ 9d74c1e7d`;
+  2 mis-parked tickets → `backlog` with a why-comment; 2 follow-ups
+  created (SSRF cloud-e2e C4, NewNATSBus wiring C2) with the full
+  `## Context/## Done criteria/## Verify` frame and vocabulary labels,
+  bot left unassigned as instructed. The review lane is drained. She
+  also wrote the wrong-tree lesson into her CONTEXT_BRIEF unprompted.
+  Board-execution stage: VALIDATED. Session total: 4 turns, ~$4.67.
+- One more cwd slip, mechanical this time: the CONTEXT_BRIEF was
+  written under the memory key derived from her turn-1 `ws=$(cwd)`
+  choice (the worktree — a temporary tree) instead of the prompt's
+  resolved `workspace_dir`; the turn-4 write reused the turn-1
+  derivation from conversational memory. Relocated by hand to the
+  workspace key; the anchor discipline (already shipped) covers the
+  class going forward.
 - Operator UX feedback (jo): a two-choice arbitrage turn read as
   "answer in free text" — expected radio + submit. Bot-side mitigation
   = the chips fix (`eb07d1f22`); structural fix filed as framed board
