@@ -255,7 +255,7 @@ func (s *Service) startInProcess(parent context.Context, runID string, spec Laun
 		spec.AttachmentPromote, spec.Preset, toRunModelOverrides(spec.ModelOverrides),
 		spec.ParentRunID,
 		precreateInputs,
-		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef},
+		launchExtras{workDir: spec.WorkDir, dailyCap: spec.DailyCap, source: spec.SourceRef, onOutcome: spec.OnOutcome},
 		emitStore,
 		func(ctx context.Context, eng *runtime.Engine) error {
 			return eng.Run(ctx, runID, inputs)
@@ -563,6 +563,13 @@ func (s *Service) spawnRun(
 		bodyErr := body(ctx, eng)
 		paused = errors.Is(bodyErr, runtime.ErrRunPaused) || errors.Is(bodyErr, runtime.ErrRunPausedOperator)
 		s.logRunOutcome(runID, bodyErr)
+		// Hand the terminal error to a blocking caller (ADR-046: the
+		// dispatcher's EngineRunner routing through Launch) BEFORE Done
+		// closes, so it returns the same typed error the direct engine.Run
+		// would have. No-op for fire-and-forget launches.
+		if ex.onOutcome != nil {
+			ex.onOutcome(bodyErr)
+		}
 		// Fire the run-completion webhook (no-op unless the run carries a
 		// callback URL). Uses a fresh, tenant-unfiltered ctx: the run ctx
 		// may be cancelled at this point, and the runID is already known.
@@ -628,6 +635,10 @@ type launchExtras struct {
 	workDir  string
 	dailyCap *runtime.DailyCapGuard
 	source   *store.RunSource
+	// onOutcome mirrors LaunchSpec.OnOutcome: fired once in the run
+	// goroutine with the terminal body error before Done closes, so a
+	// blocking caller reads the same typed error engine.Run returned.
+	onOutcome func(error)
 }
 
 // engineOptions builds the standard option set for both Launch and

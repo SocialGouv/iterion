@@ -185,6 +185,16 @@ type LaunchSpec struct {
 	// dispatcher sets it to the kanban issue that triggered the dispatch. Nil
 	// leaves Source unset (CLI / studio / fork launches).
 	SourceRef *store.RunSource
+	// OnOutcome, when set, is invoked once with the run's terminal Go error
+	// (nil on success, runtime.ErrRunPaused/ErrRunPausedOperator on a pause,
+	// the failure error otherwise) just before the run goroutine closes
+	// LaunchResult.Done. It is the return-path completion of the four data
+	// fields above: a blocking caller (the dispatcher's EngineRunner routing
+	// through this launch authority) reads the SAME typed error the direct
+	// engine.Run would have returned, so its retry / park / sandbox-backoff
+	// logic stays byte-identical. Nil for fire-and-forget CLI / studio /
+	// webhook launches. Not honoured on the cloud-queue or detached paths.
+	OnOutcome func(error)
 }
 
 // ModelOverrideEntry is one launch-time per-node/-group model+backend

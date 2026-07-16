@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
@@ -18,6 +21,42 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
+
+// RunLauncher is the ADR-046 single-launch-authority seam. Given a
+// runview.LaunchSpec it launches the run and blocks until it reaches a
+// terminal status, returning the run's terminal Go error (nil=finished,
+// runtime.ErrRunPaused/ErrRunPausedOperator on a pause, the failure error
+// otherwise). When an EngineRunner is built WithRunLauncher AND
+// ITERION_DISPATCH_VIA_SERVICE is set, a fresh (non-resume, non-bundle)
+// Dispatch routes through it instead of building a private engine — so the
+// dispatcher, the trigger spine, the CLI and the studio all converge on
+// runview.Service.Launch as the one launch path.
+type RunLauncher interface {
+	LaunchAndWait(ctx context.Context, spec runview.LaunchSpec) error
+}
+
+// ServiceRunLauncher adapts a *runview.Service to RunLauncher. The Service
+// MUST be constructed against the SAME store dir the dispatcher writes to,
+// so the run records it creates are the ones the dispatcher's resume /
+// stall / cost-cap checks read back. It captures the run's terminal error
+// via LaunchSpec.OnOutcome and returns it once LaunchResult.Done closes, so
+// the caller sees the same typed error the direct engine.Run would have.
+type ServiceRunLauncher struct{ Svc *runview.Service }
+
+// LaunchAndWait implements RunLauncher.
+func (l ServiceRunLauncher) LaunchAndWait(ctx context.Context, spec runview.LaunchSpec) error {
+	var outcome error
+	spec.OnOutcome = func(err error) { outcome = err }
+	res, err := l.Svc.Launch(ctx, spec)
+	if err != nil {
+		return err
+	}
+	// Done closes after OnOutcome fires (both in the run goroutine, the
+	// close a defer that runs on return); the channel close is the
+	// happens-before edge that publishes `outcome` to this goroutine.
+	<-res.Done
+	return outcome
+}
 
 // EngineRunner is the production Runner: each Dispatch compiles a
 // fresh executor for the requested RunID and drives the iterion
@@ -41,12 +80,25 @@ type EngineRunner struct {
 	// secret-declaring bot doesn't pay a keychain round-trip per run. The
 	// per-run store is rebuilt in Dispatch to pick up secret edits.
 	sealer secrets.Sealer
+	// launcher, when non-nil, is the ADR-046 convergence seam: a fresh
+	// (non-resume, plain-.bot) Dispatch routes through it — gated on the
+	// ITERION_DISPATCH_VIA_SERVICE env — instead of building a private
+	// engine. nil keeps today's direct-engine path (the default).
+	launcher RunLauncher
+}
+
+// EngineRunnerOption configures an EngineRunner at construction time.
+type EngineRunnerOption func(*EngineRunner)
+
+// WithRunLauncher wires the ADR-046 launch-authority seam. See RunLauncher.
+func WithRunLauncher(l RunLauncher) EngineRunnerOption {
+	return func(r *EngineRunner) { r.launcher = l }
 }
 
 // NewEngineRunner pre-compiles the workflow at workflowPath. The
 // resulting EngineRunner can dispatch concurrently across many issues
 // using the same compiled IR.
-func NewEngineRunner(workflowPath string, logger *iterlog.Logger) (*EngineRunner, error) {
+func NewEngineRunner(workflowPath string, logger *iterlog.Logger, opts ...EngineRunnerOption) (*EngineRunner, error) {
 	if workflowPath == "" {
 		return nil, fmt.Errorf("engine runner: workflow path required")
 	}
@@ -61,6 +113,9 @@ func NewEngineRunner(workflowPath string, logger *iterlog.Logger) (*EngineRunner
 		// Lazy: no keychain/keyfile access until the first Seal/Open during a
 		// run that actually materialises a secret.
 		sealer: secrets.NewLazyLocalSealer(store.GlobalIterionDataDir(), warn),
+	}
+	for _, opt := range opts {
+		opt(r)
 	}
 
 	kind, err := bundle.Detect(workflowPath)
@@ -155,6 +210,13 @@ func (r *EngineRunner) Close() error {
 func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 	if spec.StoreDir == "" {
 		return fmt.Errorf("engine runner: spec.StoreDir is required")
+	}
+	// ADR-046 convergence: route a fresh, plain-.bot dispatch through the
+	// single launch authority (runview.Service.Launch) when wired + enabled.
+	// Resume dispatches and bundle-backed runners stay on the direct path —
+	// the checkpoint/worktree reuse and the shared bundle handle live there.
+	if r.launcher != nil && r.bundle == nil && spec.ResumeFromRunID == "" && dispatchViaServiceEnabled() {
+		return r.dispatchViaService(ctx, spec)
 	}
 	baseStore, err := store.New(spec.StoreDir, store.WithLogger(r.logger))
 	if err != nil {
@@ -319,4 +381,71 @@ func (r *EngineRunner) Dispatch(ctx context.Context, spec DispatchSpec) error {
 		}())
 	}
 	return eng.Run(ctx, spec.RunID, spec.Vars)
+}
+
+// dispatchViaService (ADR-046) runs a fresh dispatch through the shared
+// launch authority instead of a private engine. It translates the
+// DispatchSpec's four dispatcher invariants into the matching LaunchSpec
+// fields — WorkspacePath→WorkDir, DailyCap→DailyCap, Issue→SourceRef,
+// OnEvent→ExtraObservers (fired on EVERY store AppendEvent, matching the
+// heartbeatStore the direct path installs) — and blocks on the launcher,
+// returning the run's terminal error so the dispatcher's park/retry/stall
+// logic is byte-identical.
+func (r *EngineRunner) dispatchViaService(ctx context.Context, spec DispatchSpec) error {
+	ls := runview.LaunchSpec{
+		FilePath: r.workflowPath,
+		RunID:    spec.RunID,
+		Vars:     stringifyVars(spec.Vars),
+		WorkDir:  spec.WorkspacePath,
+		DailyCap: spec.DailyCap,
+	}
+	if spec.Issue != nil && spec.Issue.ID != "" {
+		ls.SourceRef = &store.RunSource{
+			Kind:            store.RunSourceKindDispatcher,
+			IssueID:         spec.Issue.ID,
+			IssueIdentifier: spec.Issue.Identifier,
+			IssueTitle:      spec.Issue.Title,
+		}
+	}
+	if spec.OnEvent != nil {
+		onEvent := spec.OnEvent
+		ls.ExtraObservers = []func(store.Event){
+			func(evt store.Event) { onEvent(string(evt.Type)) },
+		}
+	}
+	r.logger.Info("dispatch: routing run %s through the shared launch authority (ADR-046)", spec.RunID)
+	return r.launcher.LaunchAndWait(ctx, ls)
+}
+
+// stringifyVars flattens the dispatcher's map[string]any bot-args into the
+// LaunchSpec's map[string]string. Dispatcher vars are string bot-args in
+// practice; a non-string value is rendered with %v so it still reaches the
+// bot rather than being dropped.
+func stringifyVars(in map[string]any) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if s, ok := v.(string); ok {
+			out[k] = s
+			continue
+		}
+		out[k] = fmt.Sprintf("%v", v)
+	}
+	return out
+}
+
+// dispatchViaServiceEnabled reports whether the ADR-046 convergence route
+// is switched on. Default OFF — the direct-engine path is unchanged unless
+// an operator opts in with ITERION_DISPATCH_VIA_SERVICE=1 (or true/on/yes).
+func dispatchViaServiceEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ITERION_DISPATCH_VIA_SERVICE"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	if b, err := strconv.ParseBool(os.Getenv("ITERION_DISPATCH_VIA_SERVICE")); err == nil {
+		return b
+	}
+	return false
 }
