@@ -441,6 +441,9 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 	restoreLoopSnapshots(rs, cp)
 	restoreBudgetAccounting(rs, cp)
+	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
+	// on the run record, so a bumped ceiling survives the resume.
+	e.applySteeringState(rs, r)
 
 	// Push the freshly-resolved vars into the executor so substitutions
 	// in tool commands and prompt templates see the same map the engine
@@ -616,6 +619,9 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 			}
 		}
 	}
+	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
+	// on the run record, so a bumped ceiling survives the resume.
+	e.applySteeringState(rs, r)
 	rs.isWorktree = r.Worktree
 	// When cp is nil, rs keeps the empty maps from newRunState — same
 	// state shape as a fresh launch, only the run_id is preserved so

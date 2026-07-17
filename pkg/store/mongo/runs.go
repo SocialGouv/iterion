@@ -363,6 +363,27 @@ func (s *Store) CountActiveRunsByTenant(ctx context.Context, tenantID string) (i
 // UpdateRunStatus mutates only the status / error / timestamps and
 // bumps the CAS counter. Resume paths clear the FinishedAt sentinel
 // (plan parity with FilesystemRunStore.UpdateRunStatus).
+// PatchRunSteering persists the live-steering state (loop grants +
+// absolute budget raises) with a partial $set, tenant-scoped. Partial:
+// nil inputs leave the stored field untouched.
+func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides map[string]int, budgetRaises *store.RunBudgetRaises) error {
+	set := bson.M{"updated_at": time.Now().UTC()}
+	if loopOverrides != nil {
+		set["loop_overrides"] = loopOverrides
+	}
+	if budgetRaises != nil {
+		set["budget_raises"] = budgetRaises
+	}
+	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), bson.M{"$set": set})
+	if err != nil {
+		return fmt.Errorf("store/mongo: patch run steering: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return store.ErrRunNotFound
+	}
+	return nil
+}
+
 func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.RunStatus, runErr string) error {
 	now := time.Now().UTC()
 	set := bson.M{

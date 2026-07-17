@@ -589,6 +589,27 @@ func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, sta
 	return s.applyStatusTransition(r, status, runErr)
 }
 
+// PatchRunSteering persists the live-steering state on run.json.
+// Partial: a nil loopOverrides / nil budgetRaises leaves the stored
+// field untouched, so the two commands patch independently.
+func (s *FilesystemRunStore) PatchRunSteering(_ context.Context, id string, loopOverrides map[string]int, budgetRaises *RunBudgetRaises) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	if loopOverrides != nil {
+		r.LoopOverrides = loopOverrides
+	}
+	if budgetRaises != nil {
+		r.BudgetRaises = budgetRaises
+	}
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
+}
+
 // UpdateRunStatusIf is a compare-and-set on the status field: the
 // write only lands when the current status is in expectedFrom. Used
 // by callers that need to avoid racing with a concurrent transition

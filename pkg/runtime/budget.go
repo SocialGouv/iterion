@@ -36,8 +36,13 @@ type SharedBudget struct {
 	iterationsUsed int
 	startedAt      time.Time
 
-	// Warning tracking — each dimension warns at most once.
+	// Warning tracking — each dimension warns at most once (re-armed
+	// per axis by RaiseCaps so a raised ceiling gets fresh warnings).
 	warningsEmitted map[string]bool
+
+	// everRaised records that at least one live raise_budget landed —
+	// the trigger for persisting the (absolute) caps on the run record.
+	everRaised bool
 }
 
 const (
@@ -78,6 +83,77 @@ func newSharedBudget(b *ir.Budget, logger *iterlog.Logger) *SharedBudget {
 		startedAt:       time.Now(),
 		warningsEmitted: make(map[string]bool),
 	}
+}
+
+// RaiseCaps raises any of the four caps to the supplied ABSOLUTE values
+// (live steering, raise_budget). Raise-only: a value lower than or equal
+// to the current cap — or zero — is ignored, so a stale/duplicate command
+// can never SHRINK a running budget. Each raised axis re-arms its
+// warning so the operator gets a fresh 80% tick against the new ceiling.
+// Returns the effective caps after clamping and whether anything
+// changed. Nil-safe (no-op, raised=false): the caller maps a nil budget
+// to its "no budget declared" error before ever calling this.
+func (b *SharedBudget) RaiseCaps(o ir.BudgetOverrides) (effective ir.BudgetOverrides, raised bool) {
+	if b == nil {
+		return ir.BudgetOverrides{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// An axis at 0 means UNLIMITED: "raising" it to a number would in
+	// fact constrain the run, so each clause requires a currently-set
+	// (> 0) limit before applying a strictly-greater value.
+	if b.maxCostUSD > 0 && o.MaxCostUSD > b.maxCostUSD {
+		b.maxCostUSD = o.MaxCostUSD
+		delete(b.warningsEmitted, "cost_usd")
+		raised = true
+	}
+	if b.maxTokens > 0 && o.MaxTokens > b.maxTokens {
+		b.maxTokens = o.MaxTokens
+		delete(b.warningsEmitted, "tokens")
+		raised = true
+	}
+	if b.maxIterations > 0 && o.MaxIterations > b.maxIterations {
+		b.maxIterations = o.MaxIterations
+		delete(b.warningsEmitted, "iterations")
+		raised = true
+	}
+	if b.maxDuration > 0 && o.MaxDuration != "" {
+		if d, err := time.ParseDuration(ir.ExpandEnvWithDefault(o.MaxDuration)); err == nil && d > b.maxDuration {
+			b.maxDuration = d
+			delete(b.warningsEmitted, "duration")
+			raised = true
+		}
+	}
+	if raised {
+		b.everRaised = true
+	}
+	return b.capsLocked(), raised
+}
+
+// Raises returns the current ABSOLUTE caps and whether any live raise
+// ever landed on this budget — the persistence trigger. Nil-safe.
+func (b *SharedBudget) Raises() (ir.BudgetOverrides, bool) {
+	if b == nil {
+		return ir.BudgetOverrides{}, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.capsLocked(), b.everRaised
+}
+
+// capsLocked snapshots the limit fields as BudgetOverrides. Caller
+// holds b.mu.
+func (b *SharedBudget) capsLocked() ir.BudgetOverrides {
+	caps := ir.BudgetOverrides{
+		MaxCostUSD:    b.maxCostUSD,
+		MaxTokens:     b.maxTokens,
+		MaxIterations: b.maxIterations,
+	}
+	if b.maxDuration > 0 {
+		caps.MaxDuration = b.maxDuration.String()
+	}
+	return caps
 }
 
 // Snapshot returns the budget's consumed amounts and elapsed active time so

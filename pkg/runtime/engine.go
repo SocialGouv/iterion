@@ -108,6 +108,7 @@ type Engine struct {
 	attachmentPromote        AttachmentPromoteFunc    // optional: invoked after CreateRun to materialise attachments
 	bundle                   *bundle.Bundle           // optional: bundle backing this run; nil for plain .bot runs
 	pauseSignal              <-chan struct{}          // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
+	overrideCh               <-chan *OverrideMsg      // optional: live-steering commands drained at the same safe boundary (see override.go); nil disables steering
 	dailyCap                 *DailyCapGuard           // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
 	callbackURL              string                   // optional: run-completion webhook target persisted on the run; set via WithCallback
 	callbackToken            string                   // optional: opaque correlation token echoed in the completion payload; set via WithCallback
@@ -223,6 +224,11 @@ type runState struct {
 	outputs      map[string]map[string]any
 	artifacts    map[string]map[string]any // publish name → output
 	loopCounters map[string]int
+	// loopOverrides holds the live-steering iteration grants (bump_loop):
+	// loop name → extra iterations added to the loop's resolved max.
+	// Written only by the execution-loop goroutine (applyOverride) and
+	// re-seeded at resume from Run.LoopOverrides. nil until first bump.
+	loopOverrides map[string]int
 	// loopPreviousOutput holds the snapshot of the source node output from
 	// the PREVIOUS traversal of a given loop's edge — i.e., one iteration
 	// behind the current one. Workflows reference it as

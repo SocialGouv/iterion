@@ -56,6 +56,16 @@ const (
 	EventRunPaused            EventType = "run_paused"
 	EventHumanAnswersRecorded EventType = "human_answers_recorded"
 	EventRunResumed           EventType = "run_resumed"
+	// EventRunSteered marks a live-steering intervention on a RUNNING
+	// run (bump_loop / raise_budget), emitted by the engine goroutine
+	// atomically with the in-memory mutation so the timeline and any
+	// reconnecting WS subscriber see exactly what was applied. Data:
+	//   - command: "bump_loop" | "raise_budget"
+	//   - target: loop name (bump_loop) or "" (raise_budget)
+	//   - delta: extra iterations granted (bump_loop)
+	//   - applied / effective: post-apply values (per-command shape)
+	//   - operator: issuing principal when known ("" for local CLI)
+	EventRunSteered EventType = "run_steered"
 	// EventRunAutoResumed marks a bounded run-level auto-resume (the
 	// `--auto-resume N` / ITERION_AUTO_RESUME loop). Distinct from
 	// EventRunResumed (operator-initiated) so the timeline shows the

@@ -117,6 +117,17 @@ type RunBudget struct {
 	MaxParallelBranches int     `json:"max_parallel_branches,omitempty" bson:"max_parallel_branches,omitempty"`
 }
 
+// RunBudgetRaises is the live-steering (raise_budget) counterpart of
+// RunBudget: the ABSOLUTE caps granted mid-run, persisted so resume
+// re-applies them (raise-only) over the workflow's declared budget.
+// Zero fields were never raised.
+type RunBudgetRaises struct {
+	MaxCostUSD    float64 `json:"max_cost_usd,omitempty" bson:"max_cost_usd,omitempty"`
+	MaxTokens     int     `json:"max_tokens,omitempty" bson:"max_tokens,omitempty"`
+	MaxIterations int     `json:"max_iterations,omitempty" bson:"max_iterations,omitempty"`
+	MaxDuration   string  `json:"max_duration,omitempty" bson:"max_duration,omitempty"`
+}
+
 type Run struct {
 	FormatVersion int    `json:"format_version" bson:"format_version"`
 	ID            string `json:"id" bson:"_id"`
@@ -165,6 +176,20 @@ type Run struct {
 	// budget meters with a denominator. Nil when the workflow declares
 	// no budget: block and no overrides applied. See RunBudget.
 	Budget *RunBudget `json:"budget,omitempty" bson:"budget,omitempty"`
+	// LoopOverrides is the accumulated per-loop iteration grant applied
+	// by live steering (bump_loop): loop name → extra iterations on top
+	// of the loop's declared/expr-resolved max. AUTHORITATIVE for
+	// enforcement across resume (the engine re-seeds from it); written
+	// by the engine goroutine via PatchRunSteering. Empty for runs
+	// never bumped.
+	LoopOverrides map[string]int `json:"loop_overrides,omitempty" bson:"loop_overrides,omitempty"`
+	// BudgetRaises captures the ABSOLUTE budget caps applied by live
+	// steering (raise_budget) — not deltas, so a resume on another
+	// machine re-applies the exact ceilings. AUTHORITATIVE for
+	// enforcement across resume (re-applied before the budget is
+	// rebuilt); raise-only vs the workflow's declared budget. Nil for
+	// runs never raised.
+	BudgetRaises *RunBudgetRaises `json:"budget_raises,omitempty" bson:"budget_raises,omitempty"`
 	// BundleHash is the SHA-256 of the logical content (sorted
 	// (relative-path, file-bytes) sequence) of the `.botz` archive
 	// backing this run. Format-independent, so it is stable whether the

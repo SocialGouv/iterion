@@ -67,6 +67,13 @@ type RunStore interface {
 	// scheduleID is empty.
 	ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error)
 
+	// PatchRunSteering persists the live-steering state (accumulated
+	// loop grants + absolute budget raises) on the run record so a
+	// resume re-applies them. nil map / nil raises leave the stored
+	// field untouched (partial patch). Written by the engine goroutine
+	// right after applying an override in memory.
+	PatchRunSteering(ctx context.Context, runID string, loopOverrides map[string]int, budgetRaises *RunBudgetRaises) error
+
 	// Watch subscriptions (MVP3b) — the set of native-kanban issue IDs
 	// this run is subscribed to. Concurrency-safe read-modify-write of
 	// Run.WatchedIssueIDs (parallel branches' onNodeFinished hooks and

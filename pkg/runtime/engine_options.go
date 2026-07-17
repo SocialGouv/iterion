@@ -331,6 +331,17 @@ func WithPauseSignal(ch <-chan struct{}) EngineOption {
 	return func(e *Engine) { e.pauseSignal = ch }
 }
 
+// WithOverrideChannel wires the live-steering command channel
+// (bump_loop / raise_budget — see override.go). The engine drains it at
+// the top of every execution-loop iteration, on the loop goroutine
+// itself, so overrides never race the single-writer run state. Senders
+// use OverrideMsg.Await to bound their wait: a run busy inside a long
+// node acks at the next boundary, exactly like operator pause. nil
+// disables steering (the default).
+func WithOverrideChannel(ch <-chan *OverrideMsg) EngineOption {
+	return func(e *Engine) { e.overrideCh = ch }
+}
+
 // WithDailyCap wires a per-(store, UTC-day) LLM spend cap into the
 // engine. Before each node executes, the engine checks the shared daily
 // ledger; if the cap is over (and not overridden for the day) it pauses

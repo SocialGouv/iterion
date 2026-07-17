@@ -367,7 +367,19 @@ func outputSignature(output map[string]any) string {
 	return fmt.Sprintf("%v", output)
 }
 
+// resolveLoopMax returns the loop's effective iteration ceiling: the
+// declared/expr/fuel base plus any live-steering grant (bump_loop). The
+// grant applies for the remainder of the run; a loop re-entry still
+// resets its COUNTER, so the raised ceiling governs each entry.
 func (e *Engine) resolveLoopMax(loop *ir.Loop, rs *runState) int {
+	base := e.resolveLoopMaxBase(loop, rs)
+	if extra := rs.loopOverrides[loop.Name]; extra > 0 {
+		return base + extra
+	}
+	return base
+}
+
+func (e *Engine) resolveLoopMaxBase(loop *ir.Loop, rs *runState) int {
 	// Unbounded loops have no user iteration cap; the effective ceiling is the
 	// fuel: the clause's per-loop fuel, else the workflow's max_iterations, else
 	// a hard default (so there is never a silent infinity even if validation was
