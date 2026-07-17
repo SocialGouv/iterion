@@ -43,6 +43,22 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		// runs: checkpoint preserved, no pending interaction, restart
 		// from the node about to execute when the pause fired.
 		return e.resumeFromFailure(ctx, r)
+	case store.RunStatusQueued:
+		// Cloud resume: the publisher flips the run to queued BEFORE the
+		// message reaches a runner (queue-depth visibility + cooperative-
+		// cancel bypass — SubmitResume), so the resumable status that was
+		// validated server-side is gone by the time this engine loads the
+		// run. Route by evidence instead: a pending interaction id means a
+		// human pause; a bare checkpoint means a failure/cancel resume. A
+		// queued run with no checkpoint is an unclaimed LAUNCH — resuming
+		// it is a caller bug, so the strict error below stands.
+		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
+			return e.resumeFromPause(ctx, r, answers)
+		}
+		if r.Checkpoint != nil {
+			return e.resumeFromFailure(ctx, r)
+		}
+		return fmt.Errorf("runtime: cannot resume queued run %q: no checkpoint (not yet executed — it will start on claim)", runID)
 	default:
 		return fmt.Errorf("runtime: cannot resume run %q with status %q", runID, r.Status)
 	}
@@ -148,7 +164,11 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 
 	// Atomically claim the run (compare-and-set) so a second concurrent
 	// resume can't spawn a duplicate execution racing on run.json.
-	if err := e.claimForResume(ctx, runID, store.RunStatusPausedWaitingHuman); err != nil {
+	// RunStatusQueued is a legitimate from-state on the cloud path: the
+	// publisher flips the run to queued before the runner claims the
+	// resume message (Resume's queued case routed here on the pending
+	// interaction evidence). The CAS still serializes concurrent claims.
+	if err := e.claimForResume(ctx, runID, store.RunStatusPausedWaitingHuman, store.RunStatusQueued); err != nil {
 		return err
 	}
 
@@ -455,8 +475,11 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 	// — so two engines never execute the same run and race on run.json.
 	// That race is what left a live run mislabeled `failed_resumable`
 	// (the failing execution's write clobbered the running one's).
+	// RunStatusQueued: cloud resumes arrive with the publisher's queued
+	// flip already applied (see Resume's queued case — routed here only
+	// when a checkpoint exists). The CAS still rejects double claims.
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "",
-		[]store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator})
+		[]store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued})
 	if claimErr != nil {
 		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
 	}
