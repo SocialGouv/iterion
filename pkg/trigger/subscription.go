@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 // Matcher is the declarative filter on an Event. It is the union of the four
@@ -106,6 +107,16 @@ type Subscription struct {
 	Cron            string            `json:"cron,omitempty" bson:"cron,omitempty"`
 	KeyOverrides    map[string]string `json:"key_overrides,omitempty" bson:"key_overrides,omitempty"`
 	SecretOverrides map[string]string `json:"secret_overrides,omitempty" bson:"secret_overrides,omitempty"`
+	// Overlap policy + pre-launch guard for schedule-kind subscriptions
+	// (pkg/schedgate). Overlap "" normalizes to "skip": a cron tick
+	// whose previous run is still live is skipped and audited instead
+	// of piling up. Guard is an optional `sh -lc` gate: exit 0 fires
+	// (stdout → vars[GuardVar]), non-zero skips the tick.
+	Overlap       string `json:"overlap,omitempty" bson:"overlap,omitempty"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty" bson:"max_concurrent,omitempty"`
+	Guard         string `json:"guard,omitempty" bson:"guard,omitempty"`
+	GuardTimeout  string `json:"guard_timeout,omitempty" bson:"guard_timeout,omitempty"`
+	GuardVar      string `json:"guard_var,omitempty" bson:"guard_var,omitempty"`
 	// Origin records where this subscription came from so dedup and cleanup
 	// are possible: "forge:<repo_integration_id>" (orchestrator-generated,
 	// deleted by Origin on deprovision), "operator" (studio), "schedule.yaml"
@@ -115,6 +126,18 @@ type Subscription struct {
 	CreatedBy string    `json:"created_by,omitempty" bson:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+}
+
+// Policy projects the subscription's schedgate fields into a
+// normalized overlap/guard policy.
+func (s Subscription) Policy() schedgate.Policy {
+	return schedgate.Normalize(schedgate.Policy{
+		Overlap:       s.Overlap,
+		MaxConcurrent: s.MaxConcurrent,
+		Guard:         s.Guard,
+		GuardTimeout:  s.GuardTimeout,
+		GuardVar:      s.GuardVar,
+	})
 }
 
 // EffectiveMode returns the subscription's execution mode, defaulting an empty

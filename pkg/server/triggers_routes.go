@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -242,6 +243,24 @@ type triggerSubscriptionReq struct {
 	ArgsVar    string            `json:"args_var,omitempty"`
 	Cron       string            `json:"cron,omitempty"`
 	Enabled    *bool             `json:"enabled,omitempty"`
+	// Overlap policy + guard for schedule-kind subscriptions
+	// (pkg/schedgate; validated on create/update).
+	Overlap       string `json:"overlap,omitempty"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty"`
+	Guard         string `json:"guard,omitempty"`
+	GuardTimeout  string `json:"guard_timeout,omitempty"`
+	GuardVar      string `json:"guard_var,omitempty"`
+}
+
+// validatePolicy rejects incoherent schedgate fields with a 400-worthy error.
+func (r triggerSubscriptionReq) validatePolicy() error {
+	return schedgate.Validate(schedgate.Policy{
+		Overlap:       r.Overlap,
+		MaxConcurrent: r.MaxConcurrent,
+		Guard:         r.Guard,
+		GuardTimeout:  r.GuardTimeout,
+		GuardVar:      r.GuardVar,
+	})
 }
 
 func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +311,10 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("bot_id is required"))
 		return
 	}
+	if err := req.validatePolicy(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	now := time.Now().UTC()
 	sub := applyTriggerReq(trigger.Subscription{
 		ID:        uuid.NewString(),
@@ -319,6 +342,10 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	var req triggerSubscriptionReq
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := req.validatePolicy(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
 	}
 	cur = applyTriggerReq(cur, req)
@@ -357,6 +384,11 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	base.Vars = req.Vars
 	base.ArgsVar = req.ArgsVar
 	base.Cron = req.Cron
+	base.Overlap = req.Overlap
+	base.MaxConcurrent = req.MaxConcurrent
+	base.Guard = req.Guard
+	base.GuardTimeout = req.GuardTimeout
+	base.GuardVar = req.GuardVar
 	if req.Enabled != nil {
 		base.Enabled = *req.Enabled
 	}

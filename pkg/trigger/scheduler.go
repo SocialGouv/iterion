@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // Scheduler is the in-process timer source for schedule-kind subscriptions:
@@ -29,12 +32,25 @@ type Scheduler struct {
 	logger   *iterlog.Logger
 	interval time.Duration
 	now      func() time.Time
+	gate     *ScheduleGate
 
 	mu       sync.Mutex
 	nextFire map[string]time.Time // sub.ID -> next due instant (in-memory)
 
 	stop chan struct{}
 	done chan struct{}
+}
+
+// ScheduleGate bundles the overlap/guard dependencies (pkg/schedgate)
+// the scheduler consults before firing a due subscription. Lister
+// counts the schedule's live runs (nil disables the overlap check);
+// Audit receives one TickRecord per decision (nil disables auditing).
+// GuardDir is the working directory guards run in (the workspace the
+// server was started from when empty).
+type ScheduleGate struct {
+	Lister   schedgate.ScheduleRunLister
+	Audit    func(schedgate.TickRecord)
+	GuardDir string
 }
 
 // SchedulerOption configures a Scheduler.
@@ -48,6 +64,12 @@ func WithSchedulerLogger(l *iterlog.Logger) SchedulerOption {
 // WithSchedulerClock injects a clock for tests.
 func WithSchedulerClock(fn func() time.Time) SchedulerOption {
 	return func(s *Scheduler) { s.now = fn }
+}
+
+// WithSchedulerGate wires the overlap/guard gate (nil-safe: a nil gate
+// keeps the pre-gate fire-always behavior).
+func WithSchedulerGate(g *ScheduleGate) SchedulerOption {
+	return func(s *Scheduler) { s.gate = g }
 }
 
 // NewScheduler builds a scheduler over a subscription store + launcher.
@@ -157,6 +179,50 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 	for k, v := range sub.Vars {
 		vars[k] = v
 	}
+
+	// Overlap + guard gate (pkg/schedgate). A skipped tick is a normal,
+	// audited outcome — the cron slot simply passes.
+	policy := sub.Policy()
+	if s.gate != nil && s.gate.Lister != nil {
+		live := schedgate.LiveRunsForSchedule(ctx, s.gate.Lister, sub.ID, s.logger)
+		if decision, blocking := schedgate.EvaluateOverlap(live, policy); decision == schedgate.DecisionSkipOverlap {
+			rec := s.tickRecord(sub, schedgate.TickSkippedOverlap)
+			rec.BlockingRunID = blocking
+			rec.Reason = fmt.Sprintf("blocked by live run %s (%d live, overlap=%s)", blocking, len(live), policy.Overlap)
+			s.audit(rec)
+			s.warn("scheduler: %s (%s) skipped — %s", sub.ID, sub.BotID, rec.Reason)
+			return
+		}
+	}
+	if policy.Guard != "" {
+		res := schedgate.RunGuard(ctx, schedgate.GuardSpec{
+			Command: policy.Guard,
+			Dir:     s.guardDir(),
+			Env: []string{
+				"ITERION_SCHEDULE=" + sub.ID,
+				"ITERION_SCHEDULE_BOT=" + sub.BotID,
+			},
+			Timeout: policy.GuardTimeoutDuration(),
+		})
+		switch res.Kind {
+		case schedgate.GuardBlocked:
+			rec := s.tickRecord(sub, schedgate.TickGuardBlocked)
+			rec.Reason = fmt.Sprintf("guard exited %d — nothing to do", res.ExitCode)
+			rec.ApplyGuard(res)
+			s.audit(rec)
+			return
+		case schedgate.GuardError:
+			rec := s.tickRecord(sub, schedgate.TickGuardError)
+			rec.Reason = "guard failed to execute"
+			rec.ApplyGuard(res)
+			s.audit(rec)
+			s.warn("scheduler: %s (%s) guard error: %v", sub.ID, sub.BotID, res.Err)
+			return
+		default:
+			vars[policy.GuardVar] = res.Stdout
+		}
+	}
+
 	plan := LaunchPlan{
 		BotID:           sub.BotID,
 		TenantID:        sub.TenantID,
@@ -174,10 +240,45 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 			Subject:    Subject{Type: "schedule", ID: sub.ID},
 			OccurredAt: s.now(),
 		},
+		// Typed provenance: the overlap gate counts this schedule's live
+		// runs through source.schedule_id on the launched run.
+		SourceRef: &store.RunSource{
+			Kind:         store.RunSourceKindSchedule,
+			ScheduleID:   sub.ID,
+			ScheduleName: sub.BotID,
+		},
 	}
-	if _, err := s.launcher.Launch(ctx, plan); err != nil {
+	runID, err := s.launcher.Launch(ctx, plan)
+	rec := s.tickRecord(sub, schedgate.TickFired)
+	rec.RunID = runID
+	if err != nil {
+		rec.Error = err.Error()
 		s.warn("scheduler: launch %s (%s): %v", sub.ID, sub.BotID, err)
 	}
+	s.audit(rec)
+}
+
+// tickRecord stamps the invariant trigger-surface audit fields.
+func (s *Scheduler) tickRecord(sub Subscription, decision schedgate.TickDecision) schedgate.TickRecord {
+	rec := schedgate.NewTickRecord(schedgate.SurfaceTrigger, sub.ID, s.now(), decision)
+	rec.ScheduleName = sub.BotID
+	rec.BotID = sub.BotID
+	rec.TenantID = sub.TenantID
+	rec.Cron = sub.Cron
+	return rec
+}
+
+func (s *Scheduler) audit(rec schedgate.TickRecord) {
+	if s.gate != nil && s.gate.Audit != nil {
+		s.gate.Audit(rec)
+	}
+}
+
+func (s *Scheduler) guardDir() string {
+	if s.gate != nil {
+		return s.gate.GuardDir
+	}
+	return ""
 }
 
 func (s *Scheduler) warn(format string, args ...any) {

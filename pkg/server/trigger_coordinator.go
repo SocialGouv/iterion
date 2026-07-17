@@ -3,7 +3,9 @@ package server
 import (
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
+	"github.com/SocialGouv/iterion/pkg/internal/jsonl"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -30,7 +32,7 @@ type TriggerCoordinator struct {
 // the dispatcher poll remains the backstop. nudger (the dispatcher Manager)
 // and launcher (direct-mode runs) may be nil; a nil nudger just means a
 // promoted card waits for the next poll instead of being dispatched now.
-func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, logger *iterlog.Logger) *TriggerCoordinator {
+func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, nudger trigger.Nudger, launcher trigger.Launcher, gate *trigger.ScheduleGate, logger *iterlog.Logger) *TriggerCoordinator {
 	if ns == nil || subs == nil {
 		return nil
 	}
@@ -58,10 +60,35 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 	// useful when a launcher is wired (something to launch); scoped to the
 	// local tenant "" so it's a no-op in cloud mode (cloudsched owns that).
 	if launcher != nil {
-		tc.scheduler = trigger.NewScheduler(subs, launcher, trigger.WithSchedulerLogger(logger))
+		tc.scheduler = trigger.NewScheduler(subs, launcher,
+			trigger.WithSchedulerLogger(logger),
+			trigger.WithSchedulerGate(gate),
+		)
 		tc.scheduler.Start()
 	}
 	return tc
+}
+
+// scheduleGate wires the trigger scheduler's overlap/guard gate onto
+// the server's run store and the local tick-audit JSONL (the same file
+// `iterion schedule audit` reads). Audit appends are best-effort: a
+// failed append is logged, never turns a tick decision into a failure.
+func (s *Server) scheduleGate() *trigger.ScheduleGate {
+	if s.cfg.Store == nil {
+		return nil
+	}
+	gate := &trigger.ScheduleGate{Lister: s.cfg.Store, GuardDir: s.cfg.WorkDir}
+	auditPath, err := schedgate.DefaultLocalAuditPath()
+	if err != nil {
+		s.logger.Warn("server: trigger tick audit disabled: %v", err)
+		return gate
+	}
+	gate.Audit = func(rec schedgate.TickRecord) {
+		if aerr := jsonl.AppendJSON(auditPath, rec); aerr != nil {
+			s.logger.Warn("server: tick audit append failed (%s): %v", auditPath, aerr)
+		}
+	}
+	return gate
 }
 
 // Bus returns the coordinator's event bus so other producers (the run

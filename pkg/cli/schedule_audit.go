@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/internal/jsonl"
@@ -20,8 +19,10 @@ import (
 
 // tickAuditPath places the audit log alongside the cron output logs
 // (same directory renderCronBlock points the per-schedule logs at).
+// The path shape lives in schedgate so the in-process trigger
+// scheduler writes to the same file.
 func tickAuditPath(manifestPath string) string {
-	return filepath.Join(filepath.Dir(manifestPath), "logs", "tick-audit.jsonl")
+	return schedgate.LocalAuditPathFor(manifestPath)
 }
 
 // newHostCronTickRecord stamps the invariant host-cron fields.

@@ -45,6 +45,7 @@ func (l *serviceLauncher) Launch(ctx context.Context, plan trigger.LaunchPlan) (
 		ProjectPath:     plan.Repo,
 		KeyOverrides:    plan.KeyOverrides,
 		SecretOverrides: plan.SecretOverrides,
+		SourceRef:       plan.SourceRef,
 	})
 	if err != nil {
 		return "", err

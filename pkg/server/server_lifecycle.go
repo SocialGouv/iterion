@@ -75,7 +75,7 @@ func (s *Server) ListenAndServe() error {
 		if s.runs != nil {
 			launcher = newServiceLauncher(s.runs, s.effectivePaths(), s.logger)
 		}
-		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.logger)
+		s.triggerCoord = StartTriggerCoordinator(s.cfg.NativeTrackerStore, s.cfg.TriggerStore, nudger, launcher, s.scheduleGate(), s.logger)
 		// Wire the run-completion source onto the same bus so a finished /
 		// failed run can fire downstream trigger subscriptions.
 		if s.triggerCoord != nil && s.runs != nil {
