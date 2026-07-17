@@ -1,9 +1,12 @@
+import { useState } from "react";
+
 import { Meter } from "@/components/ui";
 import { useRunBudgetCaps } from "@/hooks/useRunBudgetCaps";
 import { useRunCheckpointBudget } from "@/hooks/useRunCheckpointBudget";
 import type { RunMetrics } from "@/hooks/useRunMetrics";
 import { formatCost, formatMs, formatTokens } from "@/lib/format";
 import type { RunHeader } from "@/api/runs";
+import { isRunSteerable, RaiseBudgetDialog } from "../../runSteering";
 
 import { Section } from "../InfoPrimitives";
 
@@ -22,8 +25,11 @@ interface BudgetSectionProps {
 export function BudgetSection({ run, metrics }: BudgetSectionProps) {
   const caps = useRunBudgetCaps(run);
   const cp = useRunCheckpointBudget(run);
+  const [raiseOpen, setRaiseOpen] = useState(false);
 
   if (!caps.hasAny) return null;
+
+  const steerable = isRunSteerable(run.status);
 
   const cost = cp?.costUsd ?? metrics.costUsd;
   const tokens = cp?.tokensUsed ?? metrics.totalTokens;
@@ -83,12 +89,39 @@ export function BudgetSection({ run, metrics }: BudgetSectionProps) {
   ].filter((r) => r.show);
 
   return (
-    <Section title="Budget">
+    <Section
+      title="Budget"
+      headerRight={
+        steerable ? (
+          <button
+            type="button"
+            className="text-xs text-accent hover:underline"
+            onClick={() => setRaiseOpen(true)}
+            title="Raise the run's budget caps live (raise-only; survives resume)"
+          >
+            Raise caps…
+          </button>
+        ) : undefined
+      }
+    >
       <div className="space-y-2 pt-0.5">
         {rows.map((r) => (
           <div key={r.key}>{r.node}</div>
         ))}
       </div>
+      {steerable && (
+        <RaiseBudgetDialog
+          open={raiseOpen}
+          onOpenChange={setRaiseOpen}
+          runId={run.id}
+          current={{
+            maxCostUsd: caps.maxCostUsd,
+            maxTokens: caps.maxTokens,
+            maxIterations: caps.maxIterations,
+            maxDuration: run.budget?.max_duration ?? null,
+          }}
+        />
+      )}
     </Section>
   );
 }

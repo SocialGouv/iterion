@@ -1,6 +1,9 @@
-import { Meter, Stat } from "@/components/ui";
+import { useState } from "react";
+
+import { IconButton, Meter, Stat } from "@/components/ui";
 import type { RunMetrics } from "@/hooks/useRunMetrics";
 import type { RunHeader } from "@/api/runs";
+import { BumpLoopDialog, isRunSteerable } from "../../runSteering";
 
 import { Section } from "../InfoPrimitives";
 
@@ -20,9 +23,11 @@ export function ProgressSection({
   metrics,
   onJumpToFailed,
 }: ProgressSectionProps) {
+  const [bumpLoopName, setBumpLoopName] = useState<string | null>(null);
   const loops = run.loops
     ? Object.entries(run.loops).sort(([a], [b]) => a.localeCompare(b))
     : [];
+  const steerable = isRunSteerable(run.status);
   const hasCounts =
     metrics.nodeCount > 0 ||
     metrics.branchCountActive > 0 ||
@@ -74,19 +79,42 @@ export function ProgressSection({
       {loops.length > 0 && (
         <div className="space-y-1.5 pt-1.5">
           {loops.map(([name, p]) => (
-            <Meter
-              key={name}
-              label={`⟳ ${name}`}
-              value={p.current}
-              max={p.max || undefined}
-              fixedTone="live"
-              formatValue={(v) => String(Math.round(v))}
-              hint={`Named loop "${name}" — iteration ${p.current}${
-                p.max ? ` of ${p.max}` : " (unbounded)"
-              }.`}
-            />
+            <div key={name} className="flex items-end gap-1">
+              <div className="min-w-0 flex-1">
+                <Meter
+                  label={`⟳ ${name}`}
+                  value={p.current}
+                  max={p.max || undefined}
+                  fixedTone="live"
+                  formatValue={(v) => String(Math.round(v))}
+                  hint={`Named loop "${name}" — iteration ${p.current}${
+                    p.max ? ` of ${p.max}` : " (unbounded)"
+                  }.`}
+                />
+              </div>
+              {steerable && (p.max ?? 0) > 0 && (
+                <IconButton
+                  size="sm"
+                  label={`Grant extra iterations to loop ${name}`}
+                  onClick={() => setBumpLoopName(name)}
+                >
+                  +
+                </IconButton>
+              )}
+            </div>
           ))}
         </div>
+      )}
+      {bumpLoopName != null && (
+        <BumpLoopDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setBumpLoopName(null);
+          }}
+          runId={run.id}
+          loopName={bumpLoopName}
+          currentMax={run.loops?.[bumpLoopName]?.max || undefined}
+        />
       )}
     </Section>
   );
