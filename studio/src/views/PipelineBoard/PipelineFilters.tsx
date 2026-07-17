@@ -1,5 +1,6 @@
 import { LabelFilter } from "@/components/shared/LabelFilterPopover";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
@@ -7,7 +8,10 @@ import { pipelineFiltersActive, type PipelineFilterState } from "./filters";
 
 // PipelineFilters is the /pipelines counterpart of the /board filter bar:
 // text search, bot select, label multi-select, a filtered/total counter and
-// a reset — same look, same semantics (labels AND, exact bot).
+// a reset — same look, same semantics (labels AND, exact bot). When
+// `repoScope` is set (cloud + a chosen active repo) a companion "Include
+// unscoped" checkbox mirrors /board's BoardFilters affordance, letting the
+// operator surface cards that carry no repo identity alongside the scoped set.
 export function PipelineFilters({
   filters,
   allBots,
@@ -16,6 +20,9 @@ export function PipelineFilters({
   filtered,
   onChange,
   onReset,
+  repoScope,
+  includeUnscoped,
+  onIncludeUnscopedChange,
 }: {
   filters: PipelineFilterState;
   allBots: string[];
@@ -24,6 +31,9 @@ export function PipelineFilters({
   filtered: number;
   onChange: (next: PipelineFilterState) => void;
   onReset: () => void;
+  repoScope?: string | null;
+  includeUnscoped?: boolean;
+  onIncludeUnscopedChange?: (v: boolean) => void;
 }) {
   const active = pipelineFiltersActive(filters);
 
@@ -67,6 +77,18 @@ export function PipelineFilters({
           selected={filters.labels}
           onToggle={toggleLabel}
           onClear={() => onChange({ ...filters, labels: new Set() })}
+        />
+      )}
+      {repoScope && onIncludeUnscopedChange && (
+        <Checkbox
+          checked={!!includeUnscoped}
+          onChange={(e) => onIncludeUnscopedChange(e.target.checked)}
+          label={
+            !includeUnscoped && total > filtered
+              ? `Include unscoped (${total - filtered} hidden)`
+              : "Include unscoped"
+          }
+          help={`When on, cards with no repository also show alongside cards linked to ${repoScope}.`}
         />
       )}
       <span className="ml-auto text-fg-muted">

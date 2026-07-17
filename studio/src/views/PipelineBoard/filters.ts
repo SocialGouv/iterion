@@ -50,17 +50,34 @@ export function collectFilterOptions(cards: PipelineBoardCard[]): {
   };
 }
 
+// cardMatchesRepo returns true when the card's forge identity resolves to the
+// scoped repo full name. Task-backed cards carry the operator's connected
+// `owner/repo`; run-only cards fall back to `project_path` which may be
+// host-prefixed, so accept a "/<repo_full_name>" suffix as an alias.
+export function cardMatchesRepo(
+  card: PipelineBoardCard,
+  repoFullName: string,
+): boolean {
+  const key = card.external?.repo;
+  if (!key || !repoFullName) return false;
+  return key === repoFullName || key.endsWith("/" + repoFullName);
+}
+
 // filterPipelineCards applies the active filters. Search matches the card's
 // title, body, workflow name, run id, and issue id (case-insensitive);
 // selected labels must ALL be present; bot is an exact match on the card's
 // bot identity (bot_id, falling back to workflow_name — see cardBotIdentity).
+// When `repoScope` is set the card must match it via cardMatchesRepo, unless
+// `includeUnscoped` allows repo-less cards through as well.
 export function filterPipelineCards(
   cards: PipelineBoardCard[],
   f: PipelineFilterState,
+  repoScope: string | null = null,
+  includeUnscoped = false,
 ): PipelineBoardCard[] {
   const q = f.query.trim().toLowerCase();
   const bot = f.bot.trim();
-  if (!q && !bot && f.labels.size === 0) return cards;
+  if (!q && !bot && f.labels.size === 0 && !repoScope) return cards;
   return cards.filter((card) => {
     if (q) {
       const hay = [
@@ -79,6 +96,14 @@ export function filterPipelineCards(
       const have = new Set(card.labels ?? []);
       for (const l of f.labels) {
         if (!have.has(l)) return false;
+      }
+    }
+    if (repoScope) {
+      const hasRepo = !!card.external?.repo;
+      if (!hasRepo) {
+        if (!includeUnscoped) return false;
+      } else if (!cardMatchesRepo(card, repoScope)) {
+        return false;
       }
     }
     return true;

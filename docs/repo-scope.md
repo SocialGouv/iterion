@@ -35,11 +35,15 @@ with its connection: `connection_id`, `provider`, `repo_full_name`,
 
 | Surface | Behaviour when a repo is active |
 |---|---|
+| Home | Get-started progression + Repositories panel; the Runs panel follows the scope |
 | Runs | list filtered by `project_path` (chips stay usable as a local override; the sidebar re-anchors on scope change) |
 | Board | cards filtered on `external.repo`; "Include unlinked" toggle; new cards pre-linked to the active repo (IssueModal Repository picker; forge-synced cards read-only) |
-| Automations | `listTriggers({repo})` |
-| Launch | the "Target repository" section pre-selects the active repo (bots declaring a manifest `repo:` block) |
+| Pipelines | cards filtered on `card.external.repo` (issue linkage, or the run's `project_path` for direct launches); "Include unscoped" toggle; AddTaskDialog links new tasks via the same Repository picker |
+| What's next | the session launches against the active repo (`repo_url`+`connection_id` → runner clone), the session key includes the repo (switching repos switches conversations), and the header warns on a scope mismatch |
+| Automations | `listTriggers({repo})`; NewTriggerDialog pre-fills the active repo |
+| Launch | the "Target repository" section pre-selects the active repo (bots declaring a manifest `repo:` block); a bot's home page states the target up-front |
 | Integrations | the active repo's card is the landing focus |
+| ⌘K palette | per-repo switch entries + "Connect a repository…" |
 
 ## Bot repo requirement (manifest `repo:`)
 

@@ -5,7 +5,7 @@
 // server state only — moves are explicit button-driven ready-state writes.
 
 import { apiRequest } from "./client";
-import type { NativeIssue } from "./native";
+import type { ExternalLinkInput, NativeIssue } from "./native";
 
 const BASE = "/api/v1/pipeline-board";
 
@@ -84,6 +84,12 @@ export interface PipelineBoardCard {
   // DONE lane — the pipeline's output (final_answer, else latest artifact).
   output?: string;
 
+  // Forge/repo identity: task-backed cards get the issue's linkage
+  // (provider + connection_id + repo_full_name); run-only cards fall back to
+  // `{repo: <project_path>}` with empty provider/connection_id — treat `repo`
+  // as the identity key for filtering in either case.
+  external?: ExternalLinkInput;
+
   attempts?: PipelineBoardAttempt[];
   created_at: string;
   updated_at: string;
@@ -117,6 +123,9 @@ export interface CreatePipelineTaskInput {
   priority?: number;
   bot_args?: Record<string, string>;
   start?: boolean;
+  // Optional repo-first scoping: link the new task to a connected forge repo
+  // at creation. Mirrors NativeIssueCreate.external.
+  external?: ExternalLinkInput;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -159,6 +168,29 @@ function normalizeAttempts(value: unknown): PipelineBoardAttempt[] | undefined {
       ...(text(source.at) ? { at: text(source.at) } : {}),
     };
   });
+}
+
+// normalizeExternal tolerates the two shapes the server emits: a task-backed
+// card's full `{provider, connection_id, repo, ...}` link, and a run-only
+// fallback that carries only `repo` (project_path; provider/connection_id
+// empty strings on the wire). Anything missing `repo` is treated as absent.
+function normalizeExternal(value: unknown): ExternalLinkInput | undefined {
+  const source = record(value);
+  if (!source) return undefined;
+  const repo = text(source.repo);
+  if (!repo) return undefined;
+  const out: ExternalLinkInput = {
+    provider: text(source.provider) ?? "",
+    connection_id: text(source.connection_id) ?? "",
+    repo,
+  };
+  const number = numberValue(source.number);
+  if (number !== undefined) out.number = number;
+  const url = text(source.url);
+  if (url) out.url = url;
+  const state = text(source.state);
+  if (state) out.state = state;
+  return out;
 }
 
 function normalizePendingReviews(
@@ -208,6 +240,7 @@ export function normalizePipelineBoardCard(
   const entryInput = record(source.entry_input) ?? undefined;
   const attempts = normalizeAttempts(source.attempts);
   const reviews = normalizePendingReviews(source.pending_reviews);
+  const external = normalizeExternal(source.external);
   return {
     id,
     kind: text(source.kind) ?? (runID ? "run" : "task"),
@@ -247,6 +280,7 @@ export function normalizePipelineBoardCard(
       : {}),
     ...(reviews !== undefined ? { pending_reviews: reviews } : {}),
     ...(text(source.output) ? { output: text(source.output) } : {}),
+    ...(external ? { external } : {}),
     ...(attempts !== undefined ? { attempts } : {}),
     created_at: text(source.created_at) ?? "",
     updated_at: text(source.updated_at) ?? "",
@@ -322,6 +356,9 @@ export interface PipelineTaskPatch {
   priority?: number;
   bot?: string;
   bot_args?: Record<string, string>;
+  // Re-links the task's forge repo (absent = unchanged). Mirrors
+  // NativeIssuePatch.external.
+  external?: ExternalLinkInput;
 }
 
 // updatePipelineTask edits a Backlog (or ready-but-unlaunched) ticket before it

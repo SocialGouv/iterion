@@ -106,6 +106,9 @@ type PipelineBoardCard struct {
 	IssueState string   `json:"issue_state,omitempty"`
 	Labels     []string `json:"labels,omitempty"`
 	Priority   int      `json:"priority,omitempty"`
+	// External is the backing issue's forge linkage — the card's repo
+	// identity, powering the repo-first scope on /pipelines.
+	External *native.ExternalRef `json:"external,omitempty"`
 
 	// Run identity (empty for a not-yet-launched task card).
 	RunID        string          `json:"run_id,omitempty"`
@@ -172,6 +175,10 @@ type pipelineBoardTaskRequest struct {
 	Priority int               `json:"priority,omitempty"`
 	BotArgs  map[string]string `json:"bot_args,omitempty"`
 	Start    bool              `json:"start,omitempty"`
+	// External links the task to a forge repo (same shape as the native
+	// board's create) so pipeline tasks participate in the repo-first
+	// scope like every other card.
+	External *native.ExternalRef `json:"external,omitempty"`
 }
 
 func (s *Server) registerPipelineBoardRoutes() {
@@ -342,6 +349,7 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		Priority: req.Priority,
 		Bot:      entry.Name,
 		BotArgs:  cloneStringMap(req.BotArgs),
+		External: req.External,
 	})
 	if err != nil {
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: create: %v", err)
@@ -396,12 +404,13 @@ func cloneStringMap(in map[string]string) map[string]string {
 // (a Backlog ticket, or a failed one before retry). Only non-nil fields are
 // applied; the studio form sends the full state it wants to persist.
 type pipelineBoardUpdateRequest struct {
-	Title    *string            `json:"title,omitempty"`
-	Body     *string            `json:"body,omitempty"`
-	Labels   *[]string          `json:"labels,omitempty"`
-	Priority *int               `json:"priority,omitempty"`
-	Bot      *string            `json:"bot,omitempty"`
-	BotArgs  *map[string]string `json:"bot_args,omitempty"`
+	Title    *string             `json:"title,omitempty"`
+	Body     *string             `json:"body,omitempty"`
+	Labels   *[]string           `json:"labels,omitempty"`
+	Priority *int                `json:"priority,omitempty"`
+	Bot      *string             `json:"bot,omitempty"`
+	BotArgs  *map[string]string  `json:"bot_args,omitempty"`
+	External *native.ExternalRef `json:"external,omitempty"`
 }
 
 // handlePipelineBoardTaskUpdate edits a ticket's fields (title, input,
@@ -436,6 +445,7 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 		Labels:   req.Labels,
 		Priority: req.Priority,
 		BotArgs:  req.BotArgs,
+		External: req.External,
 	}
 	if req.Title != nil {
 		title := strings.TrimSpace(*req.Title)
@@ -872,6 +882,7 @@ func (b *pipelineProjectionBuilder) addTaskCard(issue *native.Issue) {
 		Ready:      ready,
 		Labels:     append([]string(nil), issue.Labels...),
 		Priority:   issue.Priority,
+		External:   issue.External,
 		BotID:      issue.Bot,
 		EntryInput: stringMapToAny(issue.BotArgs),
 		CreatedAt:  issue.CreatedAt,
@@ -943,10 +954,17 @@ func (b *pipelineProjectionBuilder) addRootCard(root *store.Run, issue *native.I
 		card.Body = issue.Body
 		card.Labels = append([]string(nil), issue.Labels...)
 		card.Priority = issue.Priority
+		card.External = issue.External
 		card.Attempts = b.attemptsForIssue(issue, root)
 		if card.EntryInput == nil {
 			card.EntryInput = stringMapToAny(issue.BotArgs)
 		}
+	}
+	// A run-only card (no backing issue) still has a repo identity when
+	// the run targeted one — surface it so the repo scope covers direct
+	// launches too.
+	if card.External == nil && root.ProjectPath != "" {
+		card.External = &native.ExternalRef{Repo: root.ProjectPath}
 	}
 	b.cards = append(b.cards, card)
 }

@@ -15,6 +15,7 @@ import { useAuth } from "@/auth/AuthContext";
 import BotMetadataForm from "@/components/Panels/BotMetadataForm";
 import TestRunPane from "@/components/Runs/TestRunPane";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { STATUS_VARIANT, labelForStatus } from "@/components/Runs/runStatusMeta";
 import { literalToString } from "@/components/Runs/launchView/utils";
 import {
@@ -314,6 +315,8 @@ function ActionsRow({
   const pipelineBoardsEnabled = useServerInfoStore(
     (state) => !!state.info?.native_tracker_enabled,
   );
+  const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  const { activeRepo, enabled: repoScopeEnabled } = useActiveRepo();
 
   const noPathTitle =
     "The server couldn't relativise this bot's path to the workspace — launch it from its own directory instead.";
@@ -329,54 +332,79 @@ function ActionsRow({
     setLocation(`/editor?file=${encodeURIComponent(launchFile)}`);
   };
 
+  // Cloud repo-context row: surfaces the manifest `repo:` requirement against
+  // the sidebar's active repo, so the operator knows before clicking Launch
+  // whether the target is set (or that the bot needs one).
+  const repoReq = entry.repo && entry.repo.mode !== "none" ? entry.repo : null;
+  const showRepoContext = isCloud && repoScopeEnabled && !!repoReq;
+  const needsRepo = repoReq?.mode === "required" && !activeRepo;
+
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={onLaunch}
-        disabled={!launchFile}
-        title={launchFile ? `Configure and launch ${entry.name}` : noPathTitle}
-      >
-        Launch
-      </Button>
-      <Button
-        variant="secondary"
-        size="sm"
-        onClick={onEdit}
-        disabled={!launchFile}
-        title={launchFile ? "Open the workflow in the editor" : noPathTitle}
-      >
-        Open in editor
-      </Button>
-      {pipelineBoardsEnabled && (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={onLaunch}
+          disabled={!launchFile}
+          title={launchFile ? `Configure and launch ${entry.name}` : noPathTitle}
+        >
+          Launch
+        </Button>
         <Button
           variant="secondary"
           size="sm"
-          onClick={() => setLocation("/pipelines")}
-          title="Open the global pipeline board"
+          onClick={onEdit}
+          disabled={!launchFile}
+          title={launchFile ? "Open the workflow in the editor" : noPathTitle}
         >
-          Pipeline board
+          Open in editor
         </Button>
+        {pipelineBoardsEnabled && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setLocation("/pipelines")}
+            title="Open the global pipeline board"
+          >
+            Pipeline board
+          </Button>
+        )}
+        {/* Test opens the embedded TestRunPane (contained run: commits land
+            on a storage branch only) instead of navigating away. */}
+        <Button
+          variant={testOpen ? "primary" : "secondary"}
+          size="sm"
+          onClick={onToggleTest}
+          disabled={!launchFile}
+          aria-expanded={testOpen}
+          title={
+            launchFile
+              ? testOpen
+                ? "Close the test pane"
+                : "Open an embedded test pane (contained run — commits stay on a storage branch, no merge)"
+              : noPathTitle
+          }
+        >
+          {testOpen ? "Close test" : "Test"}
+        </Button>
+      </div>
+      {showRepoContext && (
+        needsRepo ? (
+          <p className="text-caption text-warning-fg">
+            Needs a target repository —{" "}
+            <Link href="/integrations/connect" className="text-accent-text hover:underline">
+              connect one
+            </Link>
+            .
+          </p>
+        ) : activeRepo ? (
+          <p className="text-caption text-fg-subtle">
+            Runs on{" "}
+            <span className="font-mono text-fg-muted">{activeRepo.repo_full_name}</span>
+          </p>
+        ) : null
       )}
-      {/* Test opens the embedded TestRunPane (contained run: commits land
-          on a storage branch only) instead of navigating away. */}
-      <Button
-        variant={testOpen ? "primary" : "secondary"}
-        size="sm"
-        onClick={onToggleTest}
-        disabled={!launchFile}
-        aria-expanded={testOpen}
-        title={
-          launchFile
-            ? testOpen
-              ? "Close the test pane"
-              : "Open an embedded test pane (contained run — commits stay on a storage branch, no merge)"
-            : noPathTitle
-        }
-      >
-        {testOpen ? "Close test" : "Test"}
-      </Button>
     </div>
   );
 }
@@ -418,6 +446,7 @@ function describeBoardInvocation(inv: Invocation): string {
 
 function AutomationsCard({ entry }: { entry: BotEntryWithSchema }) {
   const addToast = useUIStore((s) => s.addToast);
+  const { activeRepo } = useActiveRepo();
   const [subs, setSubs] = useState<TriggerSubscription[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
@@ -539,6 +568,7 @@ function AutomationsCard({ entry }: { entry: BotEntryWithSchema }) {
         open={adding}
         onOpenChange={setAdding}
         defaultBotId={entry.name}
+        defaultRepo={activeRepo?.repo_full_name}
         onCreated={() => {
           setAdding(false);
           void reload();

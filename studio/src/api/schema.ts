@@ -189,6 +189,25 @@ export interface paths {
         patch: operations["patchAdminUsersById"];
         trace?: never;
     };
+    "/api/admin/users/{id}/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/admin/users/{id}/reset-password */
+        post: operations["postAdminUsersByIdResetPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/desktop/exchange": {
         parameters: {
             query?: never;
@@ -4010,6 +4029,7 @@ export interface components {
             };
             error?: string;
             executed_nodes: number;
+            external?: components["schemas"]["ExternalRef"];
             failed?: boolean;
             id: string;
             issue_id?: string;
@@ -4112,6 +4132,7 @@ export interface components {
             parent_node_id?: string;
             parent_run_id?: string;
             permission_mode?: string;
+            project_path?: string;
             queue_position?: number;
             shard_count?: number;
             shard_index?: number;
@@ -4355,6 +4376,7 @@ export interface components {
             bot_args?: {
                 [key: string]: string;
             };
+            external?: components["schemas"]["ExternalRef"];
             labels?: string[];
             priority?: number;
             start?: boolean;
@@ -4366,6 +4388,7 @@ export interface components {
             bot_args?: {
                 [key: string]: string;
             };
+            external?: components["schemas"]["ExternalRef"];
             labels?: string[];
             priority?: number;
             title?: string;
@@ -4657,6 +4680,26 @@ export interface operations {
         };
     };
     patchAdminUsersById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postAdminUsersByIdResetPassword: {
         parameters: {
             query?: never;
             header?: never;

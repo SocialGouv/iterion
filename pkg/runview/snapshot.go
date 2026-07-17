@@ -102,6 +102,10 @@ type RunHeader struct {
 	// Empty for runs created before this field was persisted; the studio
 	// hides the modified-files panel in that case.
 	WorkDir string `json:"work_dir,omitempty"`
+	// ProjectPath is the stable forge slug ("group/project") the run
+	// targets — the cloud run's repo identity (WorkDir is a runner-pod
+	// path there). Empty for local and repo-less runs.
+	ProjectPath string `json:"project_path,omitempty"`
 	// Worktree is true when WorkDir was created by `worktree: auto`.
 	Worktree bool `json:"worktree,omitempty"`
 	// WorktreeAvailable is true when WorkDir still exists on THIS server's
@@ -1031,6 +1035,7 @@ func headerFromRun(r *store.Run) RunHeader {
 		Error:             r.Error,
 		Checkpoint:        r.Checkpoint,
 		WorkDir:           r.WorkDir,
+		ProjectPath:       r.ProjectPath,
 		Worktree:          r.Worktree,
 		WorktreeAvailable: worktreeAvailable(r.WorkDir),
 		FinalCommit:       r.FinalCommit,

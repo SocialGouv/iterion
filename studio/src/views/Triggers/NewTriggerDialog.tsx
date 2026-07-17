@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Dialog } from "@/components/ui/Dialog";
 import { Button } from "@/components/ui/Button";
+import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { FieldLabel } from "@/components/ui/FieldLabel";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 import {
@@ -48,21 +50,39 @@ interface Props {
   /** Pre-fills the Bot field when opened from a bot-scoped surface (the
    *  bot home's "Add trigger…"). Omitted = current behaviour (empty). */
   defaultBotId?: string;
+  /** Pre-fills the Repo field with an explicit owner/repo slug. When
+   *  omitted the dialog falls back to the sidebar's active repo in cloud
+   *  mode. Free text stays accepted for repos not yet connected. */
+  defaultRepo?: string;
 }
 
-export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaultBotId }: Props) {
+export default function NewTriggerDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  defaultBotId,
+  defaultRepo,
+}: Props) {
   const [type, setType] = useState<TriggerType>("board");
   const [botId, setBotId] = useState(defaultBotId ?? "");
+  // Repo picker is fed by the connected-repos list the sidebar switcher
+  // uses; free text stays accepted for repos not yet connected on the
+  // team. Fallback prefill: caller's defaultRepo, else the active repo.
+  const { activeRepo, repos: connectedRepos, enabled: repoScopeEnabled } = useActiveRepo();
+  const initialRepo = defaultRepo ?? (repoScopeEnabled ? activeRepo?.repo_full_name ?? "" : "");
+  const [repo, setRepo] = useState(initialRepo);
 
-  // Re-seed the bot field each time the dialog opens so a stale edit
-  // from a previous open doesn't leak into a bot-scoped dialog.
+  // Re-seed the bot + repo fields each time the dialog opens so a stale
+  // edit from a previous open doesn't leak into a scoped dialog.
   // Adjust-state-during-render (not an effect) per the React guidance.
   const [wasOpen, setWasOpen] = useState(open);
   if (open !== wasOpen) {
     setWasOpen(open);
-    if (open && defaultBotId) setBotId(defaultBotId);
+    if (open) {
+      if (defaultBotId) setBotId(defaultBotId);
+      setRepo(initialRepo);
+    }
   }
-  const [repo, setRepo] = useState("");
   const [cron, setCron] = useState("0 2 * * *");
   const [kinds, setKinds] = useState("");
   const [states, setStates] = useState("ready");
@@ -72,6 +92,16 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
   const action = useAsyncAction();
 
   const meta = TYPE_META[type];
+
+  const repoOptions = useMemo<ComboboxOption[]>(
+    () =>
+      connectedRepos.map((r) => ({
+        value: r.repo_full_name,
+        label: r.repo_full_name,
+        description: r.provider,
+      })),
+    [connectedRepos],
+  );
 
   async function submit() {
     if (!botId.trim()) {
@@ -123,7 +153,14 @@ export default function NewTriggerDialog({ open, onOpenChange, onCreated, defaul
           </div>
           <div>
             <FieldLabel>Repo (optional)</FieldLabel>
-            <Input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" />
+            <Combobox
+              value={repo}
+              options={repoOptions}
+              placeholder="owner/repo"
+              emptyLabel="Any repository"
+              onChange={(v) => setRepo(v)}
+              freeSolo
+            />
           </div>
         </div>
 

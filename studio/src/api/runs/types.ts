@@ -256,6 +256,10 @@ export interface RunHeader {
   // pre-feature runs; the modified-files panel keys off this to decide
   // whether to render at all.
   work_dir?: string;
+  // Stable forge slug ("group/project") the run targets — the cloud
+  // run's repo identity (work_dir is a runner-pod path there). Empty
+  // for local and repo-less runs.
+  project_path?: string;
   worktree?: boolean;
   // True when work_dir still exists on the server's filesystem — i.e. the
   // inline file editor + live diff surfaces can be served without a 409.

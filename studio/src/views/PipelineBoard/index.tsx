@@ -5,6 +5,7 @@ import { Link } from "wouter";
 import { getPipelineBoard, type PipelineBoardCard } from "@/api/pipelineBoards";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button, EmptyState, InlineBanner, Spinner } from "@/components/ui";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 
@@ -30,6 +31,20 @@ export default function PipelineBoardView() {
   const [selected, setSelected] = useState<PipelineBoardCard | null>(null);
   // Client-side filters (search / bot / labels), mirroring /board's bar.
   const [filters, setFilters] = useState(emptyPipelineFilters);
+  // Repo-first scoping: default the visible cards to the sidebar's active
+  // repo (cloud only, non-overview); the "Include unscoped" toggle lets
+  // repo-less cards through alongside. In overview / local mode the filter
+  // is inactive — every card renders as before.
+  const {
+    activeRepo,
+    overview,
+    enabled: repoScopeEnabled,
+  } = useActiveRepo();
+  const repoScope =
+    repoScopeEnabled && !overview && activeRepo
+      ? activeRepo.repo_full_name
+      : null;
+  const [includeUnscoped, setIncludeUnscoped] = useState(false);
 
   const query = useQuery({
     queryKey: ["pipeline-board"],
@@ -95,7 +110,12 @@ export default function PipelineBoardView() {
   const detailStale = selected !== null && liveSelected === null;
 
   const filterOptions = collectFilterOptions(board.cards);
-  const filteredCards = filterPipelineCards(board.cards, filters);
+  const filteredCards = filterPipelineCards(
+    board.cards,
+    filters,
+    repoScope,
+    includeUnscoped,
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -153,6 +173,9 @@ export default function PipelineBoardView() {
           filtered={filteredCards.length}
           onChange={setFilters}
           onReset={() => setFilters(emptyPipelineFilters())}
+          repoScope={repoScope}
+          includeUnscoped={includeUnscoped}
+          onIncludeUnscopedChange={setIncludeUnscoped}
         />
       )}
 

@@ -23,6 +23,8 @@ import {
   type RunStatus,
   type RunSummary,
 } from "@/api/runs";
+import { forgeTeamRepoKey } from "@/api/forgeConnections";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useRunWebSocket } from "@/hooks/useRunWebSocket";
 import type { FirstClassBot } from "@/lib/whats-next/firstClassBots";
 import type { WhatsNextMessage } from "@/lib/whats-next/messages";
@@ -67,6 +69,19 @@ export interface UseWhatsNextSession {
   // in this mount (e.g. after auto-attach), in which case the bot's
   // var defaults apply.
   lastVars: Record<string, string> | null;
+  // Startup discovery failure (couldn't list runs to find a live
+  // session). Surfaced so the launcher can warn: launching blind may
+  // start a second parallel session. Null when discovery succeeded.
+  discoveryError: string | null;
+  // Re-run the startup discovery after a failure.
+  retryDiscovery: () => void;
+  // The attached session's repo identity (run.project_path), for the
+  // header's repo pill + scope-mismatch banner. Null when unknown or
+  // repo-less.
+  sessionRepo: string | null;
+  // The repo the NEXT launch will operate on (cloud: the sidebar's
+  // active repo). Null = board-only launch (no repo connected / overview).
+  launchRepo: string | null;
   // Imperative actions.
   launch: (vars: Record<string, string>) => Promise<void>;
   submitHumanAnswer: (
@@ -119,7 +134,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // and our reads of useRunStore here pick up the same updates.
   useRunWebSocket(runId);
 
-  // Auto-attach: on mount, if we remembered a runId for this bot+project,
+  // Auto-attach: on mount, if we remembered a runId for this bot+scope,
   // try to fetch its snapshot and (if it's still live) attach. Otherwise
   // forget the stale id.
   //
@@ -131,10 +146,29 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // flight can navigate back and resume without having to dig the
   // run id out of /runs.
   const projectId = useServerInfoStore((s) => s.info?.current_project_id ?? null);
+  // Repo-first scope (cloud): the launch targets the sidebar's active
+  // repo, the session key includes it, and discovery filters by it —
+  // so switching repos switches conversations instead of silently
+  // resurfacing a session bound to another repo. Inert outside cloud.
+  const {
+    activeRepo,
+    overview,
+    enabled: repoScopeEnabled,
+    teamID,
+  } = useActiveRepo();
+  const scopeKey = repoScopeEnabled
+    ? `${teamID ?? "_team"}:${activeRepo ? forgeTeamRepoKey(activeRepo) : "all"}`
+    : projectId;
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  // Bumping the nonce re-arms the discovery effect (retry after a
+  // listRuns failure).
+  const [discoveryNonce, setDiscoveryNonce] = useState(0);
   const attachAttemptedRef = useRef(false);
   useEffect(() => {
     if (attachAttemptedRef.current) return;
     if (!bot.id) return;
+    // In cloud, wait for the repo scope to resolve before discovering —
+    // the scope key participates in both storage and filtering.
     attachAttemptedRef.current = true;
     const controller = new AbortController();
     let cancelled = false;
@@ -163,11 +197,11 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
       }
       // Remember now so subsequent mounts (within the same origin)
       // skip the discovery query and re-attach via localStorage.
-      rememberSessionRunId(bot.id, projectId, runIdToAttach);
+      rememberSessionRunId(bot.id, scopeKey, runIdToAttach);
       setRunId(runIdToAttach);
     };
 
-    const remembered = recallSessionRunId(bot.id, projectId);
+    const remembered = recallSessionRunId(bot.id, scopeKey);
     setStatus("launching");
     // Discovery decides between three signals, in order:
     //   1. A live (non-terminal) run for this bot — even if localStorage
@@ -184,6 +218,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
       try {
         const live = await findLiveRunForBot();
         if (cancelled) return;
+        setDiscoveryError(null);
         if (live) {
           await attachTo(live);
           return;
@@ -202,7 +237,7 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
             // Remembered run no longer exists (rotated, store wiped).
             // Drop the memory; we have no live run either, so fall
             // through to idle.
-            forgetSessionRunId(bot.id, projectId);
+            forgetSessionRunId(bot.id, scopeKey);
           }
         }
         setStatus("idle");
@@ -213,26 +248,31 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         ) {
           return;
         }
-        if (typeof console !== "undefined") {
-          console.warn("[whats-next] startup discovery failed", err);
-        }
+        // A failed discovery must be VISIBLE: a live session may exist
+        // that we couldn't see, and launching blind doubles the spend.
+        // The launcher renders this with a Retry.
+        setDiscoveryError(toMessage(err));
         setStatus("idle");
       }
     })();
 
     // findLiveRunForBot returns the id of the most recent non-terminal
     // run for this bot's workflow, or null when nothing live exists.
-    // Mirrors the workflow-name probe formerly inline in
-    // discoverAndAttach (kept here as a helper so both the live-first
-    // discovery and the legacy fallback share the same logic).
+    // In cloud with an active repo, the probe is repo-scoped (server
+    // matches project_path) so a live session on ANOTHER repo doesn't
+    // hijack this scope's launcher.
     async function findLiveRunForBot(): Promise<string | null> {
+      const repoFilter =
+        repoScopeEnabled && !overview && activeRepo
+          ? activeRepo.repo_full_name
+          : undefined;
       const candidates = [bot.id.replace(/-/g, "_"), bot.id];
       const seen = new Set<string>();
       const matches: RunSummary[] = [];
       for (const workflow of candidates) {
         if (seen.has(workflow)) continue;
         seen.add(workflow);
-        const runs = await listRuns({ workflow, limit: 10 });
+        const runs = await listRuns({ workflow, limit: 10, repo: repoFilter });
         matches.push(...runs);
       }
       const active = matches.find(
@@ -256,7 +296,15 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
       // when a paused run is sitting on disk waiting to be resumed.
       attachAttemptedRef.current = false;
     };
-  }, [bot.id, projectId]);
+    // scopeKey folds in (team, active repo) — a repo switch re-runs the
+    // discovery for the new scope; discoveryNonce is the manual retry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bot.id, scopeKey, discoveryNonce]);
+
+  const retryDiscovery = useCallback(() => {
+    setDiscoveryError(null);
+    setDiscoveryNonce((n) => n + 1);
+  }, []);
 
   // Reset to "idle" state when runId becomes null (Étape 5 lets the
   // user start fresh after a session-closed message via newSession()).
@@ -463,8 +511,18 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
           // pod FS by id, so Nexie launches without uploading bytes.
           bot_id: bot.id,
           vars,
+          // Cloud repo scope: the runner clones the sidebar's active
+          // repo so workspace_dir resolves to real code (and board
+          // writes carry the repo tag). Without it Nexie only sees the
+          // board — the launcher says so before launch.
+          ...(repoScopeEnabled && activeRepo?.clone_url
+            ? {
+                repo_url: activeRepo.clone_url,
+                connection_id: activeRepo.connection_id,
+              }
+            : {}),
         });
-        rememberSessionRunId(bot.id, projectId, res.run_id);
+        rememberSessionRunId(bot.id, scopeKey, res.run_id);
         // Pin the store's runId early so loadEventHistoryIfMissing's
         // `state.runId !== runId` guard doesn't drop the fetched batch
         // after its await — same trick the auto-attach branch uses.
@@ -498,7 +556,9 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     [
       bot.workflowPath,
       bot.id,
-      projectId,
+      scopeKey,
+      repoScopeEnabled,
+      activeRepo,
       reset,
       applySnapshot,
       loadEventHistoryIfMissing,
@@ -511,14 +571,14 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
   // again (continuity by default keeps the previous run visible across
   // app restarts).
   const newSession = useCallback(() => {
-    forgetSessionRunId(bot.id, projectId);
+    forgetSessionRunId(bot.id, scopeKey);
     runStore.getState().reset();
     setRunId(null);
     setBusyMessageId(null);
     setErrorMessage(null);
     // setStatus("idle") happens automatically via the runId-null effect
     // (line that watches runId for null → resets to idle).
-  }, [bot.id, projectId]);
+  }, [bot.id, scopeKey]);
 
   const submitHumanAnswer = useCallback(
     async (messageId: string, answers: Record<string, unknown>) => {
@@ -576,6 +636,10 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
         }
         setErrorMessage(toMessage(e));
         setStatus("active");
+        // Rethrow so an awaiting composer keeps the operator's typed
+        // reply (AgentChatboxInline only clears the draft when onSend
+        // resolves).
+        throw e;
       } finally {
         setBusyMessageId(null);
       }
@@ -633,6 +697,13 @@ export function useWhatsNextSession(bot: FirstClassBot): UseWhatsNextSession {
     runStatus,
     errorMessage,
     lastVars: lastVarsRef.current,
+    discoveryError,
+    retryDiscovery,
+    sessionRepo: snapshot?.run.project_path ?? null,
+    launchRepo:
+      repoScopeEnabled && activeRepo?.clone_url
+        ? activeRepo.repo_full_name
+        : null,
     launch,
     submitHumanAnswer,
     newSession,

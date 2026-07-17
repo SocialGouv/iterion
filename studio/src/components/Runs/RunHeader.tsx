@@ -365,6 +365,15 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               </span>
             </Tooltip>
           )}
+          {/* Cloud identity: the target repo slug, not the runner-pod
+              path (which is neither actionable nor informative here). */}
+          {cloud && run.project_path && (
+            <Tooltip content={`Target repository: ${run.project_path}`}>
+              <span className="inline-flex items-center gap-1 font-mono truncate max-w-[20rem]">
+                <span className="truncate">{run.project_path}</span>
+              </span>
+            </Tooltip>
+          )}
           <Tooltip content={new Date(run.created_at).toLocaleString()}>
             <span className="inline-flex items-center gap-1">
               <ClockIcon className="w-3 h-3" />

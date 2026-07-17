@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDownIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 
 import type { BotEntryWithSchema } from "@/api/bots";
+import { forgeTeamRepoKey } from "@/api/forgeConnections";
 import type { VarField } from "@/api/types";
 import {
   createPipelineTask,
@@ -22,10 +23,12 @@ import {
   TagInput,
   Textarea,
 } from "@/components/ui";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { isVarMissing, isVarRequired, RequiredPill } from "@/lib/varValidation";
 import { useBotsStore } from "@/store/bots";
 import { BotPicker } from "@/views/Board/BotPicker";
+import { RepositoryField } from "@/views/Board/issueModal/RepositoryField";
 
 interface Props {
   open: boolean;
@@ -134,6 +137,43 @@ function AddTaskDialogContent({
   const [advancedOpen, setAdvancedOpen] = useState(isEdit);
   const action = useAsyncAction();
 
+  // Repo-first scoping: the picker is fed by the same connected-repos list
+  // the /board IssueModal uses (cloud-only, gated on `enabled`). Pre-fill on
+  // create from the sidebar's active repo (overview mode = no default); on
+  // edit, keep whatever the card already has (matched on connection_id +
+  // repo when both are set, else on repo alone — the run-only fallback).
+  const {
+    activeRepo,
+    overview,
+    repos: connectedRepos,
+    enabled: repoScopeEnabled,
+  } = useActiveRepo();
+  const initialRepoKey = useMemo(() => {
+    const ex = editTask?.external;
+    if (ex?.connection_id && ex.repo) {
+      return `${ex.connection_id}::${ex.repo}`;
+    }
+    if (ex?.repo) {
+      // Run-only fallback (project_path): match by repo suffix against the
+      // connected list so the picker shows the operator's actual repo when
+      // it lines up, otherwise leaves the field empty ("No repository").
+      const hit = connectedRepos.find(
+        (r) => ex.repo === r.repo_full_name || ex.repo.endsWith("/" + r.repo_full_name),
+      );
+      if (hit) return forgeTeamRepoKey(hit);
+      return "";
+    }
+    if (!isEdit && repoScopeEnabled && !overview && activeRepo) {
+      return forgeTeamRepoKey(activeRepo);
+    }
+    return "";
+  }, [editTask, isEdit, repoScopeEnabled, overview, activeRepo, connectedRepos]);
+  const [repoKey, setRepoKey] = useState(initialRepoKey);
+  // Re-seed on identity change (edit target swap, active-repo hydration).
+  useEffect(() => {
+    setRepoKey(initialRepoKey);
+  }, [initialRepoKey]);
+
   // Shared bot catalog store — fetched once across all consumers. The board
   // is global, so the operator picks which bot runs this task here.
   const bots = useBotsStore((s) => s.bots);
@@ -173,6 +213,40 @@ function AddTaskDialogContent({
     [fields, botArgs],
   );
 
+  // The repo picker is only offered in cloud mode with at least one connected
+  // repo (or a pre-existing forge-linked external so we don't hide the
+  // linkage on an edit). Outside cloud mode: no repo affordance.
+  const hasRepoAffordance =
+    repoScopeEnabled &&
+    (connectedRepos.length > 0 || !!editTask?.external);
+  // Resolves the picker selection back to the external payload the server
+  // accepts: connected repo wins (full provider/connection_id/repo_full_name);
+  // else surface the pre-existing edit link untouched (the run-only fallback,
+  // or a repo whose connection was since removed).
+  const resolveExternalForSubmit = () => {
+    if (!hasRepoAffordance) return undefined;
+    if (!repoKey) return undefined;
+    const picked = connectedRepos.find((r) => forgeTeamRepoKey(r) === repoKey);
+    if (picked) {
+      return {
+        provider: picked.provider,
+        connection_id: picked.connection_id,
+        repo: picked.repo_full_name,
+      };
+    }
+    if (
+      editTask?.external &&
+      repoKey === `${editTask.external.connection_id}::${editTask.external.repo}`
+    ) {
+      return {
+        provider: editTask.external.provider,
+        connection_id: editTask.external.connection_id,
+        repo: editTask.external.repo,
+      };
+    }
+    return undefined;
+  };
+
   // The title auto-derives from the primary inputs so the operator only has
   // to pick the input principal; they can still override it under Advanced.
   const derivedTitle = useMemo(() => {
@@ -200,6 +274,7 @@ function AddTaskDialogContent({
       );
       return;
     }
+    const external = resolveExternalForSubmit();
     if (isEdit && editTask?.issue_id) {
       const patch: PipelineTaskPatch = {
         bot: botName.trim(),
@@ -208,6 +283,7 @@ function AddTaskDialogContent({
         labels,
         priority,
         bot_args: botArgs,
+        ...(external ? { external } : {}),
       };
       const result = await action.run(() =>
         updatePipelineTask(editTask.issue_id as string, patch),
@@ -225,6 +301,7 @@ function AddTaskDialogContent({
       ...(priority !== 0 ? { priority } : {}),
       ...(Object.keys(botArgs).length > 0 ? { bot_args: botArgs } : {}),
       ...(start && botEnabled ? { start: true } : {}),
+      ...(external ? { external } : {}),
     };
     const result = await action.run(() => createPipelineTask(input));
     if (result === undefined) return;
@@ -302,6 +379,15 @@ function AddTaskDialogContent({
             <BotPicker value={botName} bots={bots} onChange={setBotName} />
           )}
         </div>
+
+        {hasRepoAffordance && (
+          <RepositoryField
+            repos={connectedRepos}
+            value={repoKey}
+            onChange={setRepoKey}
+            legacyLinkedLabel={editTask?.external?.repo ?? null}
+          />
+        )}
 
         {/* Primary input(s): the one thing the operator actually chooses. */}
         {selectedBot && !hasSchemaError && primaryFields.length > 0 && (
