@@ -94,9 +94,6 @@ vars:
   ## state_dir NOT gitignored and push credentials on the workspace.
   state_commit: bool = false
 
-  ## digest: also create a board card per CRITICAL item (board.create).
-  post_to_board: bool = false
-
   ## The synthesis model rides FEED_WATCH_MODEL (empty = the resolved
   ## backend's own default) — a `model: "{{vars.x}}"` template is NOT
   ## resolved on the delegation path and reaches the CLI literally.
@@ -130,7 +127,7 @@ prompt synthesize_system:
     category: audience, language, tone, what matters, what to skip.
     FOLLOW IT, and write the digest in the language it is written in.
   - input.recent_topics — the digests already sent (previous runs).
-  - input.digest_title / items_count / overflow_count / post_to_board.
+  - input.digest_title / items_count / overflow_count.
 
   PROCEDURE:
   1. Read every item. Group items covering the SAME story from several
@@ -151,11 +148,6 @@ prompt synthesize_system:
   5. Keep message_markdown under ~10000 characters. If
      input.overflow_count > 0, state that N older queued items were
      dropped unprocessed.
-  6. If input.post_to_board is true, ALSO create one board card per
-     CRITICAL item (e.g. actively exploited vulnerability, urgent
-     action needed) via the board tools — title prefixed with the
-     category — and report the count in board_cards_created. If it is
-     false, do not touch the board.
 
   RULES:
   - Every entry must correspond to input items. NEVER invent an item,
@@ -250,7 +242,6 @@ schema synthesize_input:
   overflow_count: int
   recent_topics: string
   editorial: string
-  post_to_board: bool
 
 schema synthesize_output:
   headline: string
@@ -258,7 +249,6 @@ schema synthesize_output:
   message_markdown: string
   items_included: int
   items_skipped_duplicates: string[]
-  board_cards_created: int
   summary: string
 
 schema notify_input:
@@ -597,8 +587,10 @@ tool load_pending:
 ## Editorial synthesis — the ONE LLM step. No backend/model pinned: the
 ## engine auto-detects from the host credentials (claw gets web_fetch/
 ## web_search natively; claude_code brings its own web tools and
-## ignores the lowercase list). Board capabilities are prompt-gated by
-## input.post_to_board.
+## ignores the lowercase list). No board capabilities: the digest's sink
+## is the chat webhook, and declaring board.* would require the
+## iterion_board MCP server to be active on every run (it is not on a
+## cloud runner), failing the node at setup even when unused.
 agent synthesize:
   model: "${FEED_WATCH_MODEL:-}"
   reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
@@ -609,7 +601,6 @@ agent synthesize:
   tools: [web_fetch, web_search]
   tool_max_steps: 30
   session: fresh
-  capabilities: [board.create, board.read]
 
 ## Deterministic delivery (no LLM at the last step — a provider
 ## rate-limit cannot sink a finished digest). Posts to every configured
@@ -810,8 +801,7 @@ workflow feed_watch:
     items_count: "{{outputs.load_pending.items_count}}",
     overflow_count: "{{outputs.load_pending.overflow_count}}",
     recent_topics: "{{outputs.load_pending.recent_topics}}",
-    editorial: "{{outputs.load_pending.editorial}}",
-    post_to_board: "{{vars.post_to_board}}"
+    editorial: "{{outputs.load_pending.editorial}}"
   }
 
   synthesize -> notify with {
