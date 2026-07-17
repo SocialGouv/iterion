@@ -1,7 +1,7 @@
 name: feed-watch
 display_name: Vigie
 icon: 🔭
-version: 1.0.0
+version: 1.1.0
 description: |
   Universal feed-watch + digest bot (Huginn-style veille pipeline as a
   single bot). Two run modes over one file-backed state in the target
@@ -25,6 +25,14 @@ description: |
   config file (default feed-watch.json) + the `webhooks` secret — no
   feed, prompt language or channel is baked into the bot. Requires
   python3 (stdlib only) on the execution host.
+
+  Hardened against untrusted config: the editorial guidance feeds the LLM
+  behind a permission gate (WebFetch-only, so an injected prompt can't
+  reach a shell or the mounted secrets), a deterministic link firewall
+  rejects any digest URL not drawn from the collected items, and feed
+  fetching refuses private/loopback/metadata addresses and non-http(s)
+  schemes by default (opt into internal feeds with
+  --var allow_private_feeds=true on a trusted deployment).
 when_to_use: |
   Use to run a recurring technology/news watch over RSS/Atom feeds with
   LLM-synthesized digests delivered to chat (Mattermost/Slack incoming

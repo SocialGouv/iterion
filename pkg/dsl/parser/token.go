@@ -99,6 +99,7 @@ const (
 	TokenInteractionModel
 	TokenAwait
 	TokenWhen
+	TokenElse
 	TokenNot
 	TokenAs
 	TokenWith
@@ -273,6 +274,7 @@ var tokenNames = map[TokenType]string{
 	TokenInteractionModel:   "interaction_model",
 	TokenAwait:              "await",
 	TokenWhen:               "when",
+	TokenElse:               "else",
 	TokenNot:                "not",
 	TokenAs:                 "as",
 	TokenWith:               "with",
@@ -413,6 +415,7 @@ var keywords = map[string]TokenType{
 	"interaction_model":     TokenInteractionModel,
 	"await":                 TokenAwait,
 	"when":                  TokenWhen,
+	"else":                  TokenElse,
 	"not":                   TokenNot,
 	"as":                    TokenAs,
 	"with":                  TokenWith,

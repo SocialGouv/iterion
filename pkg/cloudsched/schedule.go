@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 // ScheduledBot is one cron-scheduled bot run. When RepoURL is set the cloud
@@ -28,6 +30,15 @@ type ScheduledBot struct {
 	RepoURL           string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
 	RepoRef           string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
 	Disabled          bool              `bson:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Overlap policy + pre-launch guard (pkg/schedgate). Overlap ""
+	// normalizes to "skip": a slot whose previous run is still live is
+	// consumed without launching (audited), instead of piling up runs.
+	Overlap       string `bson:"overlap,omitempty" json:"overlap,omitempty"`
+	MaxConcurrent int    `bson:"max_concurrent,omitempty" json:"max_concurrent,omitempty"`
+	Guard         string `bson:"guard,omitempty" json:"guard,omitempty"`
+	GuardTimeout  string `bson:"guard_timeout,omitempty" json:"guard_timeout,omitempty"`
+	GuardVar      string `bson:"guard_var,omitempty" json:"guard_var,omitempty"`
 
 	// NextFireAt is the next UTC instant this schedule is due. The ticker
 	// CAS-advances it the moment it claims a tick, so a second replica racing
@@ -72,13 +83,18 @@ type Store interface {
 // expression when set (already validated by ValidateCron); the store
 // recomputes NextFireAt through NextFire(cron, now).
 type SchedulePatch struct {
-	Cron       *string
-	NextFireAt *time.Time
-	Vars       *map[string]string
-	RepoURL    *string
-	RepoRef    *string
-	Disabled   *bool
-	UpdatedAt  time.Time
+	Cron          *string
+	NextFireAt    *time.Time
+	Vars          *map[string]string
+	RepoURL       *string
+	RepoRef       *string
+	Disabled      *bool
+	Overlap       *string
+	MaxConcurrent *int
+	Guard         *string
+	GuardTimeout  *string
+	GuardVar      *string
+	UpdatedAt     time.Time
 }
 
 // ErrNotFound is returned by Get/Delete for an unknown id.
@@ -124,7 +140,34 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	if patch.Disabled != nil {
 		sb.Disabled = *patch.Disabled
 	}
+	if patch.Overlap != nil {
+		sb.Overlap = *patch.Overlap
+	}
+	if patch.MaxConcurrent != nil {
+		sb.MaxConcurrent = *patch.MaxConcurrent
+	}
+	if patch.Guard != nil {
+		sb.Guard = *patch.Guard
+	}
+	if patch.GuardTimeout != nil {
+		sb.GuardTimeout = *patch.GuardTimeout
+	}
+	if patch.GuardVar != nil {
+		sb.GuardVar = *patch.GuardVar
+	}
 	if !patch.UpdatedAt.IsZero() {
 		sb.UpdatedAt = patch.UpdatedAt
 	}
+}
+
+// Policy projects the schedule's schedgate fields into a normalized
+// overlap/guard policy.
+func (sb ScheduledBot) Policy() schedgate.Policy {
+	return schedgate.Normalize(schedgate.Policy{
+		Overlap:       sb.Overlap,
+		MaxConcurrent: sb.MaxConcurrent,
+		Guard:         sb.Guard,
+		GuardTimeout:  sb.GuardTimeout,
+		GuardVar:      sb.GuardVar,
+	})
 }

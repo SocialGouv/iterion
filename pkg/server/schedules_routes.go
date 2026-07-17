@@ -10,6 +10,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 // registerScheduleRoutes wires the team-scoped CRUD REST API for cloud
@@ -31,6 +32,12 @@ type createScheduleReq struct {
 	RepoURL  string            `json:"repo_url,omitempty"`
 	RepoRef  string            `json:"repo_ref,omitempty"`
 	Disabled bool              `json:"disabled,omitempty"`
+	// Overlap policy + guard (pkg/schedgate; validated on create).
+	Overlap       string `json:"overlap,omitempty"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty"`
+	Guard         string `json:"guard,omitempty"`
+	GuardTimeout  string `json:"guard_timeout,omitempty"`
+	GuardVar      string `json:"guard_var,omitempty"`
 }
 
 type updateScheduleReq struct {
@@ -39,6 +46,13 @@ type updateScheduleReq struct {
 	RepoURL  *string            `json:"repo_url,omitempty"`
 	RepoRef  *string            `json:"repo_ref,omitempty"`
 	Disabled *bool              `json:"disabled,omitempty"`
+	// Overlap policy + guard (pkg/schedgate; the merged result is
+	// validated against the row's current values on update).
+	Overlap       *string `json:"overlap,omitempty"`
+	MaxConcurrent *int    `json:"max_concurrent,omitempty"`
+	Guard         *string `json:"guard,omitempty"`
+	GuardTimeout  *string `json:"guard_timeout,omitempty"`
+	GuardVar      *string `json:"guard_var,omitempty"`
 }
 
 // scheduleNow returns the UTC instant used for CreatedAt / UpdatedAt and to
@@ -93,6 +107,16 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
+	if err := schedgate.Validate(schedgate.Policy{
+		Overlap:       req.Overlap,
+		MaxConcurrent: req.MaxConcurrent,
+		Guard:         req.Guard,
+		GuardTimeout:  req.GuardTimeout,
+		GuardVar:      req.GuardVar,
+	}); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	now := s.scheduleNow()
 	next, err := cloudsched.NextFire(cronExpr, now)
 	if err != nil {
@@ -100,18 +124,23 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sb := cloudsched.ScheduledBot{
-		ID:         uuid.NewString(),
-		TenantID:   teamID,
-		BotID:      botID,
-		Cron:       cronExpr,
-		Vars:       req.Vars,
-		RepoURL:    strings.TrimSpace(req.RepoURL),
-		RepoRef:    strings.TrimSpace(req.RepoRef),
-		Disabled:   req.Disabled,
-		NextFireAt: next,
-		CreatedBy:  id.UserID,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:            uuid.NewString(),
+		TenantID:      teamID,
+		BotID:         botID,
+		Cron:          cronExpr,
+		Vars:          req.Vars,
+		RepoURL:       strings.TrimSpace(req.RepoURL),
+		RepoRef:       strings.TrimSpace(req.RepoRef),
+		Disabled:      req.Disabled,
+		Overlap:       req.Overlap,
+		MaxConcurrent: req.MaxConcurrent,
+		Guard:         req.Guard,
+		GuardTimeout:  req.GuardTimeout,
+		GuardVar:      req.GuardVar,
+		NextFireAt:    next,
+		CreatedBy:     id.UserID,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if err := s.cfg.ScheduledBots.Create(r.Context(), sb); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
@@ -144,15 +173,49 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scheduleID := r.PathValue("sid")
-	if _, ok := s.scheduleForTeam(w, r, teamID, scheduleID); !ok {
+	cur, ok := s.scheduleForTeam(w, r, teamID, scheduleID)
+	if !ok {
 		return
 	}
 	var req updateScheduleReq
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// Validate the MERGED policy (current row + patch) so a partial
+	// update can't leave an incoherent combination behind.
+	merged := schedgate.Policy{
+		Overlap:       cur.Overlap,
+		MaxConcurrent: cur.MaxConcurrent,
+		Guard:         cur.Guard,
+		GuardTimeout:  cur.GuardTimeout,
+		GuardVar:      cur.GuardVar,
+	}
+	if req.Overlap != nil {
+		merged.Overlap = *req.Overlap
+	}
+	if req.MaxConcurrent != nil {
+		merged.MaxConcurrent = *req.MaxConcurrent
+	}
+	if req.Guard != nil {
+		merged.Guard = *req.Guard
+	}
+	if req.GuardTimeout != nil {
+		merged.GuardTimeout = *req.GuardTimeout
+	}
+	if req.GuardVar != nil {
+		merged.GuardVar = *req.GuardVar
+	}
+	if err := schedgate.Validate(merged); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
 	now := s.scheduleNow()
 	patch := cloudsched.SchedulePatch{UpdatedAt: now}
+	patch.Overlap = req.Overlap
+	patch.MaxConcurrent = req.MaxConcurrent
+	patch.Guard = req.Guard
+	patch.GuardTimeout = req.GuardTimeout
+	patch.GuardVar = req.GuardVar
 	if req.Cron != nil {
 		cronExpr := strings.TrimSpace(*req.Cron)
 		if err := cloudsched.ValidateCron(cronExpr); err != nil {

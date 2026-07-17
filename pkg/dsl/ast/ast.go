@@ -823,11 +823,18 @@ type SandboxNetworkBlock struct {
 // Edges
 // ---------------------------------------------------------------------------
 
-// Edge represents a directed transition: `src -> dst [when ...] [as ...] [with {...}]`.
+// Edge represents a directed transition: `src -> dst [when ...|else] [as ...] [with {...}]`.
 type Edge struct {
-	From    string         // source node name
-	To      string         // target node name (can be "done" or "fail")
-	When    *WhenClause    // optional condition
+	From string      // source node name
+	To   string      // target node name (can be "done" or "fail")
+	When *WhenClause // optional condition
+	// IsElse marks the explicit fallback edge: it fires only when no
+	// sibling `when` edge from the same source matched. Semantically the
+	// role a bare unconditional edge already plays next to conditional
+	// siblings — `else` states the intent and is validated (exactly one
+	// per source, requires conditional siblings, mutually exclusive with
+	// both `when` on the same edge and a bare unconditional sibling).
+	IsElse  bool
 	Loop    *LoopClause    // optional loop tracking
 	Foreach *ForeachClause // optional sequential foreach iteration (mutually exclusive with Loop)
 	With    []*WithEntry   // optional data mappings

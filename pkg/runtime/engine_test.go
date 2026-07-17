@@ -1382,6 +1382,80 @@ func TestResumeFromFailed(t *testing.T) {
 	}
 }
 
+// Cloud-shaped resume: the cloud publisher flips the run to `queued`
+// BEFORE the runner claims the resume message (queue-depth visibility),
+// so by the time Engine.Resume loads the run its resumable status is
+// gone. The engine must route on the checkpoint evidence instead of
+// rejecting the status — this was live-broken (every cloud resume
+// parked on the DLQ with `cannot resume run ... with status "queued"`).
+func TestResumeFromFailed_QueuedByCloudPublisher(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "resume_queued_test",
+		Entry: "step_a",
+		Nodes: map[string]ir.Node{
+			"step_a": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "step_a"}},
+			"done":   &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges: []*ir.Edge{
+			{From: "step_a", To: "done"},
+		},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+
+	callCount := 0
+	exec := newStubExecutor()
+	exec.on("step_a", func(_ map[string]any) (map[string]any, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("transient failure")
+		}
+		return map[string]any{"result": "success"}, nil
+	})
+
+	s := tmpStore(t)
+	eng := New(wf, s, exec)
+
+	if err := eng.Run(context.Background(), "run-resume-queued", nil); err == nil {
+		t.Fatal("expected error from failed node")
+	}
+	// Simulate cloudpublisher.SubmitResume's pre-claim flip.
+	if err := s.UpdateRunStatus(context.Background(), "run-resume-queued", store.RunStatusQueued, ""); err != nil {
+		t.Fatalf("flip to queued: %v", err)
+	}
+
+	if err := eng.Resume(context.Background(), "run-resume-queued", nil); err != nil {
+		t.Fatalf("resume of publisher-queued run failed: %v", err)
+	}
+	r, _ := s.LoadRun(context.Background(), "run-resume-queued")
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("expected finished after queued resume, got %s", r.Status)
+	}
+}
+
+// A queued run with NO checkpoint is an unclaimed launch — resuming it
+// stays an error (it will start on claim; Resume would double-execute).
+func TestResume_QueuedWithoutCheckpointRejected(t *testing.T) {
+	s := tmpStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateRun(ctx, "run-queued-fresh", "wf", nil); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := s.UpdateRunStatus(ctx, "run-queued-fresh", store.RunStatusQueued, ""); err != nil {
+		t.Fatalf("flip to queued: %v", err)
+	}
+	eng := New(&ir.Workflow{Entry: "n1", Nodes: map[string]ir.Node{}}, s, newStubExecutor())
+	err := eng.Resume(ctx, "run-queued-fresh", nil)
+	if err == nil {
+		t.Fatal("expected resume of a checkpoint-less queued run to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not yet executed") {
+		t.Errorf("expected the unclaimed-launch rejection, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: force resume bypasses workflow hash check
 // ---------------------------------------------------------------------------

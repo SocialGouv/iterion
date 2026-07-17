@@ -4,6 +4,80 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-07-17 — Security hardening: prompt-injection gate + SSRF guard + link firewall (runs 019f7092 collect / 019f709e inject-digest)
+
+- Status: **validated (host)** — the five hardening mechanisms proven on real
+  runs. PR-A ships them decoupled from the config-share editor (the follow-on
+  that motivated them).
+- Versions: bot 1.1.0 · iterion worktree off `f3749f1da`.
+- Why: designing a scoped config-share editor (letting non-operators edit
+  `feeds[]` + `editorial`) surfaced that `editorial` is injected verbatim into
+  the synthesize agent's LLM system prompt, and under claude_code's always-on
+  bypassPermissions the node's `tools:` list is a no-op — the agent has full
+  native Bash/Read/Write. An injected editorial could `cat` the mounted
+  `webhooks`/`forge_token` secrets and exfiltrate them via the digest. A latent
+  hole the moment anyone but the operator can edit the config; partly valuable
+  today too (feeds are untrusted internet RSS → SSRF / indirect injection).
+- What shipped (all in `bots/feed-watch/`):
+  1. **Permission gate** — workflow `permission: deny` + `allow: [WebFetch(*),
+     TodoWrite]`. Rides the PreToolUse hook (runs even under bypass), hard-blocks
+     Bash/Read/Write on the one LLM node; `StructuredOutput` is exempt so the
+     node still returns its schema'd result; tool nodes are inert under the gate.
+  2. **Editorial fence** — `load_pending` wraps `editorial` in a per-run
+     `<<<UNTRUSTED_EDITORIAL {nonce}>>>` fence; the nonce lives only in the
+     (trusted) system prompt, so editorial text can't forge the close marker.
+  3. **verify_message** — a deterministic tool node between synthesize and
+     notify hard-fails the run if any digest hyperlink is not an item's url
+     (blocks injected phishing / tracking / exfil links). The prompt rule is
+     advisory; this gate is not.
+  4. **SSRF-safe fetch** — `fetch_feeds` refuses non-http(s) schemes (`file://`,
+     `ftp://`) and any host resolving to a private / loopback / link-local /
+     cloud-metadata address (DNS-rebind- and redirect-safe via a validating
+     `getaddrinfo` wrapper). New `allow_private_feeds` var (default false) opts a
+     trusted on-prem deployment into internal / loopback / file feeds.
+  5. **commit-path guard** — `_commit_push_state` refuses to commit any staged
+     path outside the state dir, so a state-commit can never persist a poisoned
+     `feed-watch.json` / `.github/**` / `*.bot`.
+- Result (proven on real runs):
+  - collect (019f7092): a feed list of {bleepingcomputer, `169.254.169.254`,
+    `127.0.0.1`, `file:///etc/passwd`, `ftp://…`} → bleepingcomputer fetched (15
+    items), the other four each refused per-feed with an explicit SSRF / scheme
+    error; the run finished (per-feed non-fatal, exactly as designed).
+  - inject-digest (019f709e): the editorial ORDERED the agent to `Bash`/`cat` a
+    planted secret and embed it in the digest. The gate DENIED the Bash call
+    ("Permission denied: the `Bash` tool is not authorized …"), the planted
+    `SECRET-MARKER` never appeared in ANY artifact, the fence wrapped the
+    editorial (nonce `503b6288…`), and the run finished. The adversarial
+    editorial degraded the digest (the agent balked) — the intended failure mode.
+  - clean-digest: a normal editorial produced a correct 2-item digest
+    (`items_included` 2, both item URLs, verify_message passed 2 links) with NO
+    Bash attempts — thanks to the in-context fix below.
+- Bot fix the gate forced (a strict improvement): synthesize had been reading its
+  queue from the state files via **Bash** — the `user:` prompt only passed
+  `digest_title`/`items_count`/`category`, so `items`/`editorial`/`recent_topics`
+  were never in-context (the source of the "transient Bash noise" flagged in the
+  2026-07-16 bilan). Denying Bash exposed it. Fix: `synthesize_user` now inlines
+  `{{input.items}}` / `{{input.editorial}}` / `{{input.recent_topics}}` /
+  `{{input.overflow_count}}`, so synthesize is hermetic — works under the gate,
+  works on claw, and the Bash noise is gone.
+- Findings / misses: node-scoped secret binding is NOT a DSL feature today
+  (`secrets:` is a top-level block only), so the mounted `webhooks`/`forge_token`
+  files are physically present during synthesize — but the permission gate makes
+  them unreadable (no Bash/Read/Write). A per-node `secrets:` binding is a
+  worthwhile ENGINE follow-up (defense-in-depth: don't even mount them on the LLM
+  node). Tighter WebFetch host-allowlisting (fetch only item-derived hosts) is a
+  PR-B concern — it matters once untrusted editors exist.
+- Tests: `e2e/feed_watch_test.go` gains `TestFeedWatch_VerifyMessageBlocksInjectedLinks`
+  (real script rejects an off-item link, passes an item-only digest) and
+  `TestFeedWatch_FetchRejectsSSRF` (metadata / loopback / file / ftp all refused);
+  the state-machine test polls with `allow_private=true` (its hermetic feeds are
+  `file://`). Universality + committed-catalog tests refreshed (v1.1.0).
+- Lessons for next run: any bot whose LLM node reads untrusted config MUST pass
+  the working set in-context and NEVER rely on the agent's ambient filesystem —
+  the permission gate is the boundary, and in-context delivery is what keeps the
+  node functional under it. This pattern is the prerequisite for the config-share
+  editor (PR-B).
+
 ## 2026-07-17 — Cloud rollout: native scheduler on prod, veille runs on ephemeral runners
 
 - Status: **validated (production cloud)** — the veille now runs on the

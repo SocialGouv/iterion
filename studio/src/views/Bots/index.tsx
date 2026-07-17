@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
-import type { BotEntryWithSchema } from "@/api/bots";
+import type { BotEntryWithSchema, ImportScriptResult } from "@/api/bots";
+import { importBotScript } from "@/api/bots";
 import {
   listTriggers,
   FeatureUnavailableError,
@@ -61,6 +62,12 @@ export default function BotsView() {
   const [uploadingBotz, setUploadingBotz] = useState(false);
   const botzFileRef = useRef<HTMLInputElement | null>(null);
   const [repoDialogOpen, setRepoDialogOpen] = useState(false);
+  const scriptFileRef = useRef<HTMLInputElement | null>(null);
+  // Picked workflow script awaiting preview/save (null = dialog closed).
+  const [scriptImport, setScriptImport] = useState<{
+    filename: string;
+    source: string;
+  } | null>(null);
 
   useEffect(() => {
     if (bots === null) void fetchBots();
@@ -134,6 +141,9 @@ export default function BotsView() {
               <DropdownMenuItem onSelect={() => setRepoDialogOpen(true)}>
                 From a git repository…
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => scriptFileRef.current?.click()}>
+                From a workflow script (.js)…
+              </DropdownMenuItem>
             </DropdownMenu>
             <Button variant="primary" size="sm" onClick={() => setLocation("/bots/new")}>
               New bot
@@ -163,6 +173,20 @@ export default function BotsView() {
         accept=".botz"
         className="hidden"
         onChange={(e) => void onUploadBotz(e)}
+      />
+      <input
+        ref={scriptFileRef}
+        type="file"
+        accept=".js,.mjs"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (!file) return;
+          void file.text().then((source) => {
+            setScriptImport({ filename: file.name, source });
+          });
+        }}
       />
 
       <div className="flex items-center gap-2">
@@ -245,6 +269,14 @@ export default function BotsView() {
         onOpenChange={setRepoDialogOpen}
         onImported={() => void refetch()}
       />
+      {scriptImport && (
+        <ScriptImportDialog
+          filename={scriptImport.filename}
+          source={scriptImport.source}
+          onClose={() => setScriptImport(null)}
+          onImported={() => void refetch()}
+        />
+      )}
     </div>
   );
 }
@@ -400,6 +432,140 @@ function RepoImportDialog({
             loading={importing}
           >
             {importing ? "Importing…" : "Install"}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+/** ScriptImportDialog previews a lossy .js → draft .bot conversion
+ *  (POST /api/v1/bots/import, dry-run first) and saves it into bots/ on
+ *  confirm. The IMPORT REPORT is surfaced up-front: this is a porting
+ *  accelerator, not a faithful translation, and the draft must be
+ *  reviewed before it is run. */
+function ScriptImportDialog({
+  filename,
+  source,
+  onClose,
+  onImported,
+}: {
+  filename: string;
+  source: string;
+  onClose: () => void;
+  onImported: () => void;
+}) {
+  const addToast = useUIStore((s) => s.addToast);
+  const [preview, setPreview] = useState<ImportScriptResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(null);
+    setError(null);
+    importBotScript({ source, filename, dry_run: true })
+      .then((res) => {
+        if (!cancelled) setPreview(res);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Import failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [source, filename]);
+
+  const onSave = async () => {
+    setSaving(true);
+    try {
+      const res = await importBotScript({ source, filename });
+      addToast(`Imported ${res.workflow_name} → ${res.path}`, "success");
+      onClose();
+      onImported();
+    } catch (e) {
+      addToast(e instanceof Error ? e.message : "Import failed", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reportBlock = (label: string, entries?: string[]) =>
+    entries && entries.length > 0 ? (
+      <div>
+        <div className="text-caption font-medium text-fg-muted">
+          {label} ({entries.length})
+        </div>
+        <ul className="ml-3 list-disc text-caption text-fg-subtle">
+          {entries.map((e, i) => (
+            <li key={i} className="font-mono">
+              {e}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+      title={`Import ${filename} as a draft bot`}
+      description="Lossy conversion — the script's JS is never run. Review every IMPORT marker before launching the draft."
+      widthClass="max-w-3xl"
+    >
+      <div className="space-y-3">
+        {error && (
+          <InlineBanner tone="danger" layout="inline">
+            {error}
+          </InlineBanner>
+        )}
+        {!error && !preview && (
+          <div className="flex items-center gap-2 text-xs text-fg-muted">
+            <Spinner /> Converting…
+          </div>
+        )}
+        {preview && (
+          <>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-fg-muted">workflow</span>
+              <span className="font-mono font-medium text-fg-default">
+                {preview.workflow_name}
+              </span>
+              {preview.needs_attention ? (
+                <Badge variant="warning">needs review</Badge>
+              ) : (
+                <Badge variant="success">clean import</Badge>
+              )}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {reportBlock("Mapped", preview.report.mapped)}
+              {reportBlock("Holes (vars to fill)", preview.report.holes)}
+              {reportBlock("Placeholders", preview.report.placeholders)}
+              {reportBlock("Dropped", preview.report.dropped)}
+            </div>
+            <div>
+              <div className="text-caption font-medium text-fg-muted">Draft preview</div>
+              <pre className="max-h-72 overflow-auto rounded border border-border-subtle bg-surface-0 p-2 text-caption leading-snug">
+                <code>{preview.bot_source}</code>
+              </pre>
+            </div>
+          </>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button variant="secondary" size="sm" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button
+            variant="success"
+            size="sm"
+            onClick={() => void onSave()}
+            disabled={saving || !preview}
+            loading={saving}
+          >
+            {saving ? "Saving…" : "Save draft to bots/"}
           </Button>
         </div>
       </div>

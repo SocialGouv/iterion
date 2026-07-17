@@ -57,6 +57,33 @@ func NumStatHEAD(dir string) ([]NumStat, error) {
 	return parseNumStatZ(out)
 }
 
+// DiffLOC sums the added/deleted line counts of the three-dot diff
+// targetRef...finalRef — i.e. what finalRef's history introduced since
+// its merge-base with targetRef. The merge-base anchor keeps the stat
+// stable when the target branch advances after the fork (a two-dot
+// diff would count unrelated upstream churn as the run's). ok=false
+// when either ref is unresolvable (deleted branch, GC'd commit) or the
+// merge-base is empty — the caller renders "—", never a guessed zero.
+// Binary files contribute no line counts (numstat reports them as "-").
+func DiffLOC(repoRoot, targetRef, finalRef string) (added, deleted int, ok bool) {
+	if repoRoot == "" || targetRef == "" || finalRef == "" {
+		return 0, 0, false
+	}
+	base := MergeBase(repoRoot, targetRef, finalRef)
+	if base == "" {
+		return 0, 0, false
+	}
+	stats, err := NumStatBetween(repoRoot, base, finalRef)
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, ns := range stats {
+		added += ns.Added
+		deleted += ns.Deleted
+	}
+	return added, deleted, true
+}
+
 // NumStatBetween mirrors StatusBetween: line counts for files that
 // changed between two commit-ishes inside repoRoot.
 func NumStatBetween(repoRoot, baseRef, finalRef string) ([]NumStat, error) {

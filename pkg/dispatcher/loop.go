@@ -25,6 +25,7 @@ import (
 // still queue. Paused means "no new work", not "stop everything".
 func (c *Dispatcher) tick(ctx context.Context) {
 	cfg := c.cfg.Load()
+	c.state.lastTickAt = time.Now().UTC()
 
 	c.reconcileStalled(ctx, cfg)
 	c.refreshRunningStates(ctx)

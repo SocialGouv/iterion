@@ -4,6 +4,10 @@
 // LaunchView owns the override state and feeds it to createRun().
 
 import type { BackendDetectReport } from "@/api/backends";
+import type {
+  PreviewEffectiveKnob,
+  PreviewEffectiveSettings,
+} from "@/api/runs";
 
 import { Select } from "@/components/ui/Select";
 
@@ -13,6 +17,10 @@ export interface RunSettingsSectionProps {
   permissionOverride: string;
   reviewModeOverride: string;
   backendReport: BackendDetectReport | null;
+  // effective is the server-resolved provenance BELOW run-override
+  // (workflow/env/default, from POST /api/runs/preview-cost). The
+  // caption layers the local override on top.
+  effective?: PreviewEffectiveSettings | null;
   onBackendChange: (value: string) => void;
   onCompressChange: (value: string) => void;
   onPermissionChange: (value: string) => void;
@@ -25,12 +33,32 @@ export interface RunSettingsSectionProps {
   showReviewMode: boolean;
 }
 
+// knobCaption renders "effective: X · from Y" — the override wins when
+// the operator set the select; else the server's workflow/env/default
+// resolution, plus a node-pinned warning when a run override wouldn't
+// reach every node.
+function knobCaption(override: string, knob: PreviewEffectiveKnob | undefined) {
+  if (!override && !knob) return null;
+  const effective = override || knob?.effective || "";
+  const source = override ? "run override" : (knob?.source ?? "");
+  return (
+    <div className="mt-1 text-caption text-fg-subtle">
+      effective: <code>{effective}</code>
+      {source ? <> · from {source}</> : null}
+      {knob?.node_pinned ? (
+        <> · some nodes pin their own (override won’t affect them)</>
+      ) : null}
+    </div>
+  );
+}
+
 export default function RunSettingsSection({
   backendOverride,
   compressOverride,
   permissionOverride,
   reviewModeOverride,
   backendReport,
+  effective,
   onBackendChange,
   onCompressChange,
   onPermissionChange,
@@ -71,6 +99,7 @@ export default function RunSettingsSection({
                 </option>
               ))}
             </Select>
+            {knobCaption(backendOverride, effective?.backend)}
             <div className="mt-1 text-caption text-fg-subtle">
               Overrides the workflow&apos;s default. Nodes that pin a specific{" "}
               <code>backend:</code> keep their pin.
@@ -92,6 +121,7 @@ export default function RunSettingsSection({
               <option value="ultra">ultra — densest output</option>
               <option value="off">off — disable for this run</option>
             </Select>
+            {knobCaption(compressOverride, effective?.compress)}
             <div className="mt-1 text-caption text-fg-subtle">
               Rewrites agent shell commands via the active rewriter plugin (
               <a
@@ -125,6 +155,7 @@ export default function RunSettingsSection({
               <option value="deny">deny — hard-block off-policy tool use (headless)</option>
               <option value="off">off — no gate (default)</option>
             </Select>
+            {knobCaption(permissionOverride, effective?.permission)}
             <div className="mt-1 text-caption text-fg-subtle">
               Anti-prompt-injection gate: tool calls outside the workflow&apos;s{" "}
               <code>allow:</code> list are paused for your approval (

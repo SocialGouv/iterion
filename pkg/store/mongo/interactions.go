@@ -26,6 +26,9 @@ type interactionDoc struct {
 // the initial pause writes the questions, and the resume path writes
 // the answers; both go through this single method.
 func (s *Store) WriteInteraction(ctx context.Context, i *store.Interaction) error {
+	if err := s.guardNotDeleted(ctx, i.RunID); err != nil {
+		return err
+	}
 	stampTenantOnInteraction(ctx, i)
 	doc := interactionDoc{
 		ID: interactionID{

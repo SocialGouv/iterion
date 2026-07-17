@@ -24,6 +24,7 @@ import { useServerInfoStore } from "@/store/serverInfo";
 
 import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
+import { RunShellPanel } from "./RunShellPanel";
 import BackendsUsedRow from "./runHeader/BackendsUsedRow";
 import BotChip from "./runHeader/BotChip";
 import ErrorHintRow from "./runHeader/ErrorHintRow";
@@ -54,6 +55,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   const { busy, error, run: runAction, setError } = useAsyncAction();
   const [resumeOpen, setResumeOpen] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
+  const [shellOpen, setShellOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [, setLocation] = useLocation();
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
@@ -143,6 +145,19 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   };
 
   const showFinalization = Boolean(run.final_commit);
+
+  // Post-mortem shell: local mode, run at rest, preserved worktree on
+  // disk (worktree_available mirrors the server-side gate, so the
+  // button and the endpoint's 409/410 stay in lockstep).
+  const runShellEnabled = useServerInfoStore(
+    (s) => Boolean(s.info?.run_shell_enabled),
+  );
+  const shellEligible =
+    runShellEnabled &&
+    run.status !== "running" &&
+    run.status !== "queued" &&
+    Boolean(run.work_dir) &&
+    run.worktree_available;
 
   const friendlyName = run.name || run.workflow_name;
   const startedRel = formatRelative(run.created_at);
@@ -407,6 +422,19 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
         <WSDisconnectBanner state={wsState} onReconnect={requestWsReconnect} />
       )}
       {showFinalization && <FinalizationRow run={run} />}
+      {shellEligible && (
+        <div className="shrink-0 px-4 py-1.5 bg-surface-2/40 border-b border-border-default flex items-center gap-2 text-micro">
+          <span className="text-fg-muted">worktree preserved</span>
+          <button
+            type="button"
+            className="text-accent hover:underline"
+            onClick={() => setShellOpen(true)}
+            title="Open an interactive shell in the run's preserved worktree (local mode)"
+          >
+            Open post-mortem shell
+          </button>
+        </div>
+      )}
       {run.forked_from && <ForkedFromRow run={run} />}
       <RunChildrenPanel run={run} />
       {run.source?.issue_id && <SourceTicketRow source={run.source} />}
@@ -427,6 +455,9 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
           open={forkOpen}
           onOpenChange={setForkOpen}
         />
+      )}
+      {shellEligible && (
+        <RunShellPanel open={shellOpen} onOpenChange={setShellOpen} runId={run.id} />
       )}
       {dialog}
     </>

@@ -75,6 +75,9 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("GET /api/runs/{id}/commits/{sha}/diff", s.handleGetRunCommitFileDiff)
 	s.mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancelRun)
 	s.mux.HandleFunc("POST /api/runs/{id}/pause", s.handlePauseRun)
+	s.mux.HandleFunc("POST /api/runs/{id}/bump-loop", s.handleBumpLoop)
+	s.mux.HandleFunc("POST /api/runs/{id}/raise-budget", s.handleRaiseBudget)
+	s.mux.HandleFunc("POST /api/runs/{id}/answer-human", s.handleAnswerHuman)
 	s.mux.HandleFunc("POST /api/runs/{id}/fork", s.handleForkRun)
 	s.mux.HandleFunc("GET /api/runs/{id}/skills", s.handleListRunSkills)
 	s.mux.HandleFunc("GET /api/runs/{id}/session-board", s.handleGetSessionBoard)
@@ -94,6 +97,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("POST /api/runs/{id}/rename", s.handleRenameRun)
 	s.mux.HandleFunc("DELETE /api/runs/{id}", s.handleDeleteRun)
 	s.mux.HandleFunc("GET /api/ws/runs/{id}", s.handleRunWebSocket)
+	s.mux.HandleFunc("GET /api/ws/runs/{id}/shell", s.handleRunShell)
 	s.mux.HandleFunc("GET /api/runs/{id}/preview", s.handlePreviewProxy)
 	s.mux.HandleFunc("GET /api/runs/{id}/browser/cdp", s.handleBrowserCDP)
 	s.mux.HandleFunc("POST /api/runs/{id}/browser/attach", s.handleBrowserAttach)
@@ -569,9 +573,17 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	}
 	snap, err := s.runs.SnapshotCtx(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, store.ErrRunDeleted) {
+			// 410, not 404: the run existed and was deliberately
+			// deleted — the studio shows "run deleted" instead of a
+			// stale-run banner and stops retrying.
+			s.httpErrorFor(w, r, http.StatusGone, "run was deleted")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
+	s.enrichRunLOC(r.Context(), &snap.Run)
 	s.writeJSONFor(w, r, snap)
 }
 

@@ -49,6 +49,10 @@ func (e *Engine) execLoop(ctx context.Context, rs *runState, startNodeID string)
 			default:
 			}
 		}
+		// Live-steering overrides (bump_loop / raise_budget) land at the
+		// same safe boundary: this goroutine is the single writer of
+		// loopCounters/loopOverrides, so applying here needs no locks.
+		e.drainOverrides(rs)
 
 		node, ok := e.workflow.Nodes[currentNodeID]
 		if !ok {

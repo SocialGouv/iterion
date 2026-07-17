@@ -829,6 +829,13 @@ type Edge struct {
 	Expression    *expr.AST
 	ExpressionSrc string // original source string preserved for unparse/debug
 
+	// IsElse marks the explicit fallback edge (`src -> dst else`): taken
+	// only when no conditional sibling matched. Runtime-wise it plays
+	// the same role as a bare unconditional edge among conditional
+	// siblings — the compiler validates the stricter contract (C015/
+	// C039/C040) and IsConditional stays false (else is guardless).
+	IsElse bool
+
 	// Loop reference (optional). LoopName references a Loop in Workflow.Loops.
 	LoopName string
 

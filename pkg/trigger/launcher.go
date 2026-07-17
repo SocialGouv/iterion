@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // LaunchPlan is the resolved intent the Evaluator hands to an effect: launch
@@ -26,6 +27,12 @@ type LaunchPlan struct {
 	RepoRef string
 	// Event is the originating event (provenance, run→source back-link).
 	Event Event
+	// SourceRef, when non-nil, stamps typed provenance on the launched
+	// run (runview.LaunchSpec.SourceRef → run.json source). The
+	// Scheduler populates it for schedule fires so the schedgate
+	// overlap gate can count this schedule's live runs; other paths
+	// leave it nil.
+	SourceRef *store.RunSource
 }
 
 // Launcher launches a run directly (ExecutionDirect). The production impl

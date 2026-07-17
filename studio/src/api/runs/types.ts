@@ -282,6 +282,11 @@ export interface RunHeader {
   merge_strategy?: MergeStrategy;
   merge_status?: MergeStatus;
   auto_merge?: boolean;
+  // Lines changed by the run's commits: three-dot numstat against the
+  // fork point, computed+cached server-side. Absent (not zero) when the
+  // refs are unresolvable — render "—", never a guessed 0.
+  loc_added?: number;
+  loc_deleted?: number;
   // Wall-clock the run actually consumed: sum of run_started/resumed
   // → paused/failed/cancelled/interrupted/finished windows. Excludes
   // pause and failed_resumable gaps. Reducer-derived from events.
@@ -671,6 +676,23 @@ export interface PreviewCostResponse {
   cost_max_usd: number;
   nodes: PreviewCostNode[];
   notes?: string[];
+  effective?: PreviewEffectiveSettings;
+}
+
+// PreviewEffectiveSettings reports each launch knob's resolution BELOW
+// the run-override level (workflow/env/default + node-pinned flag) so
+// the Launch dialog can caption its selects with why a knob is what it
+// is. The client layers its own override on top.
+export interface PreviewEffectiveKnob {
+  effective: string;
+  source: "workflow" | "env" | "default";
+  node_pinned?: boolean;
+}
+
+export interface PreviewEffectiveSettings {
+  compress: PreviewEffectiveKnob;
+  permission: PreviewEffectiveKnob;
+  backend: PreviewEffectiveKnob;
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's

@@ -75,6 +75,32 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
+// ResolveModeSourced picks the effective gate mode from the standard
+// precedence chain (run override > node > workflow > env > off) and
+// names the winning level ("run_override" | "node" | "workflow" |
+// "env" | "default") for the studio's settings-provenance caption.
+// The first NON-EMPTY level wins even when it fails to parse — the
+// error surfaces with the level that caused it, instead of silently
+// falling through to a lower level the operator didn't pick.
+func ResolveModeSourced(override, node, workflow, envDefault string) (Mode, string, error) {
+	levels := []struct {
+		value  string
+		source string
+	}{
+		{override, "run_override"},
+		{node, "node"},
+		{workflow, "workflow"},
+		{envDefault, "env"},
+	}
+	for _, l := range levels {
+		if strings.TrimSpace(l.value) != "" {
+			m, err := ParseMode(l.value)
+			return m, l.source, err
+		}
+	}
+	return ModeOff, "default", nil
+}
+
 // Decision is the outcome of evaluating a tool call against a Policy.
 type Decision int
 

@@ -90,6 +90,12 @@ type serverInfoResponse struct {
 	// Skills library management view (/api/local/skills). No sealing is
 	// involved, so unlike SecretsEnabled it gates on mode alone.
 	SkillsEnabled bool `json:"skills_enabled"`
+	// RunShellEnabled is true in local (non-cloud) mode: the SPA offers
+	// the post-mortem shell (GET /api/ws/runs/{id}/shell) on terminal
+	// runs whose preserved worktree still exists. Never in cloud —
+	// spawning an interactive host shell from a multi-tenant API is not
+	// a thing.
+	RunShellEnabled bool `json:"run_shell_enabled"`
 	// PipelineConcurrency reports the local pipeline-concurrency gate
 	// (max/active/waiting) so the pipeline board can render the cap + how
 	// many pipelines wait for a slot. Enabled=false when no cap is set.
@@ -149,6 +155,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 	s.stateMu.RUnlock()
 	resp.SecretsEnabled = s.cfg.Mode != "cloud" && localSecrets != nil && s.sealer != nil
 	resp.SkillsEnabled = s.cfg.Mode != "cloud"
+	resp.RunShellEnabled = s.cfg.Mode != "cloud"
 	// Surface whether the daily spend cap is active so the SPA knows to
 	// poll for live status. DailyCap() is nil when disabled.
 	if runsSvc != nil && runsSvc.DailyCap() != nil {

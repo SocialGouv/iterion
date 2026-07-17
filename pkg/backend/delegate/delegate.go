@@ -873,7 +873,23 @@ func (e *ErrAskUser) Error() string {
 type ErrRateLimited struct {
 	Provider string // "claude_code", "claw", "codex", etc.
 	Detail   string // raw upstream message for diagnostics
+	// Kind refines the condition: RateLimitKindUsageWindow marks a
+	// subscription/quota WINDOW exhaustion (the Anthropic forfait 5h /
+	// weekly cap — waiting is the only cure), RateLimitKindTransient a
+	// plain throttle worth retrying soon. Empty = unclassified
+	// (legacy), treated as transient.
+	Kind string
+	// ResetAt is the best-effort parsed reset instant from the upstream
+	// text ("resets 3pm", "reset at 2026-07-17 19:00"). Zero when not
+	// parseable — callers must not depend on it.
+	ResetAt time.Time
 }
+
+// ErrRateLimited.Kind values.
+const (
+	RateLimitKindUsageWindow = "usage_window"
+	RateLimitKindTransient   = "transient"
+)
 
 func (e *ErrRateLimited) Error() string {
 	if e.Provider != "" {

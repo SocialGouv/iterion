@@ -880,7 +880,7 @@ func truncatePreview(s string, maxLen int) string {
 // The intent matches the existing comment block on the Expression case:
 // "branches don't iterate, so loop/run namespaces have no meaning."
 func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]any) *ir.Edge {
-	var unconditional *ir.Edge
+	var unconditional, elseEdge *ir.Edge
 
 	for _, edge := range e.workflow.Edges {
 		if edge.From != fromNodeID {
@@ -905,7 +905,14 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]a
 			continue
 		}
 		if edge.Condition == "" {
-			if unconditional == nil {
+			// `else` edges and bare unconditional edges share the
+			// fallback role; the validator forbids coexistence, and the
+			// explicit form wins the tie-break defensively.
+			if edge.IsElse {
+				if elseEdge == nil {
+					elseEdge = edge
+				}
+			} else if unconditional == nil {
 				unconditional = edge
 			}
 			continue
@@ -928,6 +935,9 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]a
 		}
 	}
 
+	if elseEdge != nil {
+		return elseEdge
+	}
 	return unconditional
 }
 
@@ -938,7 +948,7 @@ func (e *Engine) evaluateEdges(fromNodeID, logPrefix string, output map[string]a
 // at most once per call (only if at least one outgoing edge uses an
 // expression).
 func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output map[string]any, rs *runState) *ir.Edge {
-	var unconditional *ir.Edge
+	var unconditional, elseEdge *ir.Edge
 	var exprCtx *expr.Context
 
 	for _, edge := range e.workflow.Edges {
@@ -1008,7 +1018,14 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 		}
 
 		if edge.Condition == "" {
-			if unconditional == nil {
+			// Same fallback tie-break as evaluateEdges: the explicit
+			// `else` form wins over a bare unconditional (validator
+			// forbids coexistence; this is defence in depth).
+			if edge.IsElse {
+				if elseEdge == nil {
+					elseEdge = edge
+				}
+			} else if unconditional == nil {
 				unconditional = edge
 			}
 			continue
@@ -1031,6 +1048,9 @@ func (e *Engine) evaluateEdgesWithLoopsRS(fromNodeID, logPrefix string, output m
 		}
 	}
 
+	if elseEdge != nil {
+		return elseEdge
+	}
 	return unconditional
 }
 

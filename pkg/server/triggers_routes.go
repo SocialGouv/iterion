@@ -11,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
 
@@ -27,6 +28,19 @@ func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTrigger)))
 	s.mux.Handle("POST /api/v1/triggers/emit", s.requireAuth(http.HandlerFunc(s.handleEmitTrigger)))
 	s.mux.Handle("POST /api/v1/bots/{name}/triggers/from-invocation", s.requireAuth(http.HandlerFunc(s.handleTriggerFromInvocation)))
+	s.mux.Handle("GET /api/v1/triggers/health", s.requireAuth(http.HandlerFunc(s.handleTriggersHealth)))
+}
+
+// handleTriggersHealth exposes the schedule-scheduler's liveness
+// snapshot so a wedged loop is observable (frozen last_tick_at)
+// instead of silently never firing. The dispatcher's twin lives on
+// /api/dispatcher/snapshot (last_tick_at field).
+func (s *Server) handleTriggersHealth(w http.ResponseWriter, r *http.Request) {
+	st := s.triggerCoord.SchedulerStatus()
+	dispatcher.WriteJSON(w, http.StatusOK, map[string]any{
+		"scheduler_running": s.triggerCoord.SchedulerRunning(),
+		"scheduler":         st,
+	})
 }
 
 // triggerFromInvocationReq selects one of the bot's manifest-declared
@@ -242,6 +256,24 @@ type triggerSubscriptionReq struct {
 	ArgsVar    string            `json:"args_var,omitempty"`
 	Cron       string            `json:"cron,omitempty"`
 	Enabled    *bool             `json:"enabled,omitempty"`
+	// Overlap policy + guard for schedule-kind subscriptions
+	// (pkg/schedgate; validated on create/update).
+	Overlap       string `json:"overlap,omitempty"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty"`
+	Guard         string `json:"guard,omitempty"`
+	GuardTimeout  string `json:"guard_timeout,omitempty"`
+	GuardVar      string `json:"guard_var,omitempty"`
+}
+
+// validatePolicy rejects incoherent schedgate fields with a 400-worthy error.
+func (r triggerSubscriptionReq) validatePolicy() error {
+	return schedgate.Validate(schedgate.Policy{
+		Overlap:       r.Overlap,
+		MaxConcurrent: r.MaxConcurrent,
+		Guard:         r.Guard,
+		GuardTimeout:  r.GuardTimeout,
+		GuardVar:      r.GuardVar,
+	})
 }
 
 func (s *Server) handleListTriggers(w http.ResponseWriter, r *http.Request) {
@@ -292,6 +324,10 @@ func (s *Server) handleCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		dispatcher.WriteErr(w, http.StatusBadRequest, errors.New("bot_id is required"))
 		return
 	}
+	if err := req.validatePolicy(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
+		return
+	}
 	now := time.Now().UTC()
 	sub := applyTriggerReq(trigger.Subscription{
 		ID:        uuid.NewString(),
@@ -319,6 +355,10 @@ func (s *Server) handleUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	var req triggerSubscriptionReq
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := req.validatePolicy(); err != nil {
+		dispatcher.WriteErr(w, http.StatusBadRequest, err)
 		return
 	}
 	cur = applyTriggerReq(cur, req)
@@ -357,6 +397,11 @@ func applyTriggerReq(base trigger.Subscription, req triggerSubscriptionReq) trig
 	base.Vars = req.Vars
 	base.ArgsVar = req.ArgsVar
 	base.Cron = req.Cron
+	base.Overlap = req.Overlap
+	base.MaxConcurrent = req.MaxConcurrent
+	base.Guard = req.Guard
+	base.GuardTimeout = req.GuardTimeout
+	base.GuardVar = req.GuardVar
 	if req.Enabled != nil {
 		base.Enabled = *req.Enabled
 	}

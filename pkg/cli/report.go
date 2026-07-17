@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	gitlib "github.com/SocialGouv/iterion/pkg/git"
 	"github.com/SocialGouv/iterion/pkg/store"
 )
 
@@ -93,6 +94,11 @@ type report struct {
 	Metrics       reportMetrics    `json:"metrics"`
 	Steps         []reportStep     `json:"steps"`
 	Artifacts     []reportArtifact `json:"artifacts"`
+	// LocAdded / LocDeleted: three-dot numstat of the run's commits
+	// against the fork point. Nil when the refs are unresolvable —
+	// rendered as absent, never a guessed zero.
+	LocAdded   *int `json:"loc_added,omitempty"`
+	LocDeleted *int `json:"loc_deleted,omitempty"`
 }
 
 type reportMetrics struct {
@@ -142,6 +148,18 @@ func buildReport(r *store.Run, events []*store.Event, s store.RunStore) *report 
 	if r.FinishedAt != nil {
 		rpt.FinishedAt = r.FinishedAt
 		rpt.Duration = FormatDuration(r.FinishedAt.Sub(r.CreatedAt))
+	}
+
+	// LOC changed by the run's commits (worktree runs with a recorded
+	// FinalCommit only). Same three-dot semantics as the studio header.
+	if r.FinalCommit != "" && r.RepoRoot != "" {
+		target := r.MergedInto
+		if target == "" || target == "none" {
+			target = r.BaseCommit
+		}
+		if added, deleted, ok := gitlib.DiffLOC(r.RepoRoot, target, r.FinalCommit); ok {
+			rpt.LocAdded, rpt.LocDeleted = &added, &deleted
+		}
 	}
 
 	rb := &reportBuilder{rpt: rpt, nodeSet: make(map[string]bool)}
@@ -469,6 +487,9 @@ func renderMarkdown(rpt *report) string {
 	sb.WriteString(fmt.Sprintf("| Total Tokens | %d |\n", rpt.Metrics.TotalTokens))
 	if rpt.Metrics.TotalCostUSD > 0 {
 		sb.WriteString(fmt.Sprintf("| Total Cost | $%.4f |\n", rpt.Metrics.TotalCostUSD))
+	}
+	if rpt.LocAdded != nil && rpt.LocDeleted != nil {
+		sb.WriteString(fmt.Sprintf("| Lines Changed | +%d / −%d |\n", *rpt.LocAdded, *rpt.LocDeleted))
 	}
 	sb.WriteString(fmt.Sprintf("| Model Calls | %d |\n", rpt.Metrics.ModelCalls))
 	sb.WriteString(fmt.Sprintf("| Node Executions | %d |\n", rpt.Metrics.NodeCount))

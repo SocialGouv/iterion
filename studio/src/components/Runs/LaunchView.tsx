@@ -5,8 +5,8 @@ import { useLocation, useSearch } from "wouter";
 import { useBotsStore } from "@/store/bots";
 import * as filesApi from "@/api/client";
 import { createForgeRepo } from "@/api/forgeConnections";
-import { createRun, getServerInfo, uploadAttachment } from "@/api/runs";
-import type { MergeStrategy } from "@/api/runs";
+import { createRun, getServerInfo, previewRunCost, uploadAttachment } from "@/api/runs";
+import type { MergeStrategy, PreviewEffectiveSettings } from "@/api/runs";
 import type { AttachmentField, IterDocument, ServerInfo } from "@/api/types";
 
 import { Button } from "@/components/ui/Button";
@@ -114,6 +114,9 @@ export default function LaunchView() {
   // controls without having to click — they're meaningful options,
   // not "advanced" in the obscure sense.
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // The single Advanced disclosure grouping backend/model/budget/worktree
+  // tuning — collapsed on first launch so the page reads target + inputs.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Backend override for this run. "" = let the resolver pick (the
   // current behaviour, mirrored in Settings → Backends).
   // Sending an explicit name overrides the workflow's `default_backend:`
@@ -125,6 +128,11 @@ export default function LaunchView() {
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
+  // Server-resolved knob provenance below run-override (workflow/env/
+  // default), captioning the Run-settings selects. Best-effort — a
+  // parse failure just hides the captions.
+  const [effectiveSettings, setEffectiveSettings] =
+    useState<PreviewEffectiveSettings | null>(null);
   // Mono/dual review-topology override ("" = auto: resolve from the
   // providers detected at launch). Only sent when explicitly mono/dual;
   // ignored by bots that don't declare a `review_mode` var.
@@ -172,6 +180,26 @@ export default function LaunchView() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    // Knob provenance for the Run-settings captions. Best-effort: any
+    // failure just leaves the captions hidden.
+    if (!filePath) {
+      setEffectiveSettings(null);
+      return;
+    }
+    let cancelled = false;
+    previewRunCost({ file_path: filePath })
+      .then((res) => {
+        if (!cancelled) setEffectiveSettings(res.effective ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setEffectiveSettings(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath]);
 
   useEffect(() => {
     if (!filePath) {
@@ -677,6 +705,26 @@ export default function LaunchView() {
           <div className="text-xs text-fg-subtle">Loading workflow…</div>
         ) : (
           <>
+            {/* The target repository is the launch's primary decision for
+                repo-declaring bots — it leads, mirroring the wizard's
+                one-decision-first ordering. */}
+            {showRepoTarget && repoRequirement && repoTargetState && (
+              <div id="repo-target-section">
+                <RepoTargetSection
+                  repo={repoRequirement}
+                  activeRepo={activeRepo}
+                  repos={teamRepos}
+                  teamID={teamID}
+                  state={repoTargetState}
+                  onChange={(patch) =>
+                    setRepoTargetState((prev) => (prev ? { ...prev, ...patch } : prev))
+                  }
+                  createError={repoTargetCreateError}
+                  submitting={submitting}
+                  filePath={filePath}
+                />
+              </div>
+            )}
             <AttachmentsSection
               fields={attachmentFields}
               attachments={attachments}
@@ -707,68 +755,74 @@ export default function LaunchView() {
               }
               onSubmit={onSubmit}
             />
-            <RunSettingsSection
-              backendOverride={backendOverride}
-              compressOverride={compressOverride}
-              permissionOverride={permissionOverride}
-              reviewModeOverride={reviewModeOverride}
-              backendReport={backendReport}
-              onBackendChange={setBackendOverride}
-              onCompressChange={setCompressOverride}
-              onPermissionChange={setPermissionOverride}
-              onReviewModeChange={setReviewModeOverride}
-              showReviewMode={fields.some((f) => f.name === "review_mode")}
-            />
-            <ModelOverridesSection
-              nodes={llmNodes}
-              overrides={modelOverrides}
-              backendReport={backendReport}
-              onChange={(name, patch) =>
-                setModelOverrides((prev) => ({
-                  ...prev,
-                  [name]: { ...prev[name], ...patch },
-                }))
-              }
-            />
-            <BudgetSection
-              show={showBudget}
-              values={budgetFields}
-              onToggle={() => setShowBudget((v) => !v)}
-              onChange={(patch) =>
-                setBudgetFields((prev) => ({ ...prev, ...patch }))
-              }
-            />
-            {showRepoTarget && repoRequirement && repoTargetState && (
-              <div id="repo-target-section">
-                <RepoTargetSection
-                  repo={repoRequirement}
-                  activeRepo={activeRepo}
-                  repos={teamRepos}
-                  teamID={teamID}
-                  state={repoTargetState}
-                  onChange={(patch) =>
-                    setRepoTargetState((prev) => (prev ? { ...prev, ...patch } : prev))
-                  }
-                  createError={repoTargetCreateError}
-                  submitting={submitting}
-                  filePath={filePath}
-                />
-              </div>
-            )}
-            <WorktreeFinalizationSection
-              showAdvanced={showAdvanced}
-              worktreeOn={worktreeOn}
-              mergeInto={mergeInto}
-              branchName={branchName}
-              mergeStrategy={mergeStrategy}
-              autoMerge={autoMerge}
-              onToggle={() => setShowAdvanced((v) => !v)}
-              onMergeIntoChange={setMergeInto}
-              onBranchNameChange={setBranchName}
-              onMergeStrategyChange={setMergeStrategy}
-              onAutoMergeChange={setAutoMerge}
-              cloud={cloud}
-            />
+            {/* Everything below is tuning, not launch-blocking: one
+                disclosure keeps the first-launch page to target + inputs
+                (the wizard bar), while power users open it for backend,
+                per-node models, budget caps and worktree finalization. */}
+            <div className="mt-4 border-t border-border-subtle pt-2">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((v) => !v)}
+                aria-expanded={advancedOpen}
+                className="flex w-full items-center gap-1.5 py-1 text-xs font-medium text-fg-muted hover:text-fg-default"
+              >
+                <span aria-hidden>{advancedOpen ? "▾" : "▸"}</span>
+                Advanced
+                <span className="font-normal text-fg-subtle">
+                  backend · per-node models · budget · worktree
+                </span>
+              </button>
+              {advancedOpen && (
+                <>
+                  <RunSettingsSection
+                    backendOverride={backendOverride}
+                    compressOverride={compressOverride}
+                    permissionOverride={permissionOverride}
+                    reviewModeOverride={reviewModeOverride}
+                    backendReport={backendReport}
+                    effective={effectiveSettings}
+                    onBackendChange={setBackendOverride}
+                    onCompressChange={setCompressOverride}
+                    onPermissionChange={setPermissionOverride}
+                    onReviewModeChange={setReviewModeOverride}
+                    showReviewMode={fields.some((f) => f.name === "review_mode")}
+                  />
+                  <ModelOverridesSection
+                    nodes={llmNodes}
+                    overrides={modelOverrides}
+                    backendReport={backendReport}
+                    onChange={(name, patch) =>
+                      setModelOverrides((prev) => ({
+                        ...prev,
+                        [name]: { ...prev[name], ...patch },
+                      }))
+                    }
+                  />
+                  <BudgetSection
+                    show={showBudget}
+                    values={budgetFields}
+                    onToggle={() => setShowBudget((v) => !v)}
+                    onChange={(patch) =>
+                      setBudgetFields((prev) => ({ ...prev, ...patch }))
+                    }
+                  />
+                  <WorktreeFinalizationSection
+                    showAdvanced={showAdvanced}
+                    worktreeOn={worktreeOn}
+                    mergeInto={mergeInto}
+                    branchName={branchName}
+                    mergeStrategy={mergeStrategy}
+                    autoMerge={autoMerge}
+                    onToggle={() => setShowAdvanced((v) => !v)}
+                    onMergeIntoChange={setMergeInto}
+                    onBranchNameChange={setBranchName}
+                    onMergeStrategyChange={setMergeStrategy}
+                    onAutoMergeChange={setAutoMerge}
+                    cloud={cloud}
+                  />
+                </>
+              )}
+            </div>
 
             <LaunchBar
               docReady={!!doc}

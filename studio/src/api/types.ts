@@ -160,6 +160,10 @@ export interface ServerInfo {
   // entry conditionally. Cloud mode uses the auth-gated team/personal secrets
   // UI instead (this flag stays false there).
   secrets_enabled?: boolean;
+  // run_shell_enabled is true in local (non-cloud) mode: the run view
+  // offers the post-mortem shell (GET /api/ws/runs/{id}/shell) on
+  // terminal runs whose preserved worktree still exists.
+  run_shell_enabled?: boolean;
   // skills_enabled is true in local (non-cloud) mode: the SPA surfaces the
   // Skills library management view + nav entry. No sealing, so it gates on
   // mode alone.

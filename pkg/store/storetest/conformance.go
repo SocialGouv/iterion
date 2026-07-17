@@ -62,6 +62,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
+	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -495,6 +496,52 @@ func testDeleteRun(t *testing.T, s store.RunStore) {
 	if err := s.DeleteRun(ctx, "run_del"); err != nil {
 		t.Errorf("second DeleteRun should be a no-op, got: %v", err)
 	}
+
+	// Durable tombstone: every late writer gets the TYPED refusal and
+	// resurrects nothing. This is the contract that makes DeleteRun
+	// final — before it, AppendEvent's MkdirAll (fs) and SaveRun's
+	// upsert (Mongo) silently rebuilt deleted runs.
+	if _, err := s.AppendEvent(ctx, "run_del", store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("AppendEvent after delete: err = %v, want ErrRunDeleted", err)
+	}
+	if err := s.SaveRun(ctx, &store.Run{ID: "run_del", WorkflowName: "zombie", Status: store.RunStatusRunning}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("SaveRun after delete: err = %v, want ErrRunDeleted", err)
+	}
+	if _, err := s.CreateRun(ctx, "run_del", "zombie", nil); !errors.Is(err, store.ErrRunDeleted) {
+		// Mongo CreateRun may not exist as a distinct guard (SaveRun
+		// covers the upsert path); only enforce when the impl surfaced
+		// a typed error at all.
+		if err == nil {
+			t.Errorf("CreateRun after delete resurrected the run")
+		}
+	}
+	if err := s.AppendQueuedMessage(ctx, "run_del", store.QueuedUserMessage{ID: "late-msg", Text: "late"}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("AppendQueuedMessage after delete: err = %v, want ErrRunDeleted", err)
+	}
+	// LoadRun reports the deliberate deletion distinctly from absence.
+	if _, err := s.LoadRun(ctx, "run_del"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("LoadRun after delete: err = %v, want ErrRunDeleted", err)
+	}
+	// And the run STILL doesn't reappear anywhere.
+	ids, err = s.ListRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsStr(ids, "run_del") {
+		t.Errorf("late writers resurrected run_del in ListRuns: %v", ids)
+	}
+
+	// The tombstone is reaped past the retention horizon — and only then.
+	if n, err := s.PruneDeletionMarkers(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Errorf("PruneDeletionMarkers(too old cutoff) = (%d, %v), want (0, nil)", n, err)
+	}
+	if n, err := s.PruneDeletionMarkers(ctx, time.Now().Add(time.Hour)); err != nil || n != 1 {
+		t.Errorf("PruneDeletionMarkers(future cutoff) = (%d, %v), want (1, nil)", n, err)
+	}
+	// Post-reap, the id is a plain 404 again (history fully released).
+	if _, err := s.LoadRun(ctx, "run_del"); !errors.Is(err, store.ErrRunNotFound) {
+		t.Errorf("LoadRun after tombstone reap: err = %v, want ErrRunNotFound", err)
+	}
 }
 
 func containsStr(xs []string, want string) bool {
@@ -664,6 +711,71 @@ func testReverseTreeQueries(t *testing.T, s store.RunStore) {
 			t.Errorf("shard_0 ParentNodeID = %q, want %q", child.ParentNodeID, "sb_node")
 		}
 	})
+}
+
+// testScheduleReverseQuery exercises ListRunsBySchedule (the
+// schedule←run reverse edge counted by the pkg/schedgate overlap
+// gate): exactly the matching ids, created_at ascending, empty for
+// unknown/empty schedule ids, and ScheduleID/ScheduleName round-trip
+// on RunSource.
+func testScheduleReverseQuery(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	saveScheduled := func(id, scheduleID string, createdAt time.Time) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		if scheduleID != "" {
+			r.Source = &store.RunSource{
+				Kind:         store.RunSourceKindSchedule,
+				ScheduleID:   scheduleID,
+				ScheduleName: scheduleID + "-label",
+			}
+		}
+		r.CreatedAt = createdAt
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+
+	base := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
+	// Saved out of chronological order to assert the query re-sorts.
+	saveScheduled("sched_b", "weekly-audit", base.Add(2*time.Minute))
+	saveScheduled("sched_a", "weekly-audit", base.Add(1*time.Minute))
+	saveScheduled("sched_other", "nightly-docs", base.Add(3*time.Minute))
+	saveScheduled("manual", "", base.Add(4*time.Minute))
+
+	got, err := s.ListRunsBySchedule(ctx, "weekly-audit")
+	if err != nil {
+		t.Fatalf("ListRunsBySchedule: %v", err)
+	}
+	if want := []string{"sched_a", "sched_b"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListRunsBySchedule(weekly-audit) = %v, want %v", got, want)
+	}
+
+	for _, q := range []string{"absent-schedule", ""} {
+		got, err = s.ListRunsBySchedule(ctx, q)
+		if err != nil {
+			t.Fatalf("ListRunsBySchedule(%q): %v", q, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("ListRunsBySchedule(%q) = %v, want empty", q, got)
+		}
+	}
+
+	r, err := s.LoadRun(ctx, "sched_a")
+	if err != nil {
+		t.Fatalf("LoadRun sched_a: %v", err)
+	}
+	if r.Source == nil || r.Source.Kind != store.RunSourceKindSchedule ||
+		r.Source.ScheduleID != "weekly-audit" || r.Source.ScheduleName != "weekly-audit-label" {
+		t.Errorf("RunSource round-trip mismatch: %+v", r.Source)
+	}
 }
 
 // sameOrderedSlice reports whether got and want are element-wise equal

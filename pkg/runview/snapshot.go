@@ -128,6 +128,14 @@ type RunHeader struct {
 	MergeStrategy    store.MergeStrategy `json:"merge_strategy,omitempty"`
 	MergeStatus      store.MergeStatus   `json:"merge_status,omitempty"`
 	AutoMerge        bool                `json:"auto_merge,omitempty"`
+	// LocAdded / LocDeleted aggregate the three-dot numstat of the
+	// run's commits against its fork point (merge-base of the merge
+	// target and FinalCommit), computed server-side with a cache.
+	// POINTERS on purpose: nil renders "—" (refs unresolvable — branch
+	// deleted, commit GC'd), a zero literal renders "0" (diff resolved
+	// and empty). Absent for runs without a FinalCommit.
+	LocAdded   *int `json:"loc_added,omitempty"`
+	LocDeleted *int `json:"loc_deleted,omitempty"`
 	// ActiveDurationMs is the wall-clock the run actually consumed —
 	// the sum of run_started/resumed → paused/failed/cancelled/
 	// interrupted/finished windows derived from events. Excludes time

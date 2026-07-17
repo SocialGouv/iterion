@@ -94,6 +94,10 @@ Rule lists are **additive**: the workflow `allow:`/`ask:`/`deny:` lists
 plus any `--permission-allow`/`--permission-ask`/`--permission-deny`
 run-level rules.
 
+The studio Launch dialog captions the permission select with the
+resolved mode and the level it came from ("effective: ask · from
+workflow") — see [settings-precedence.md](settings-precedence.md).
+
 ## CLI
 
 ```bash

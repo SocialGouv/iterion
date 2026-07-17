@@ -391,6 +391,12 @@ func (s *FilesystemRunStore) CreateRun(_ context.Context, id, workflowName strin
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}
+	// A deleted run id is never reusable: run ids are time-prefixed so
+	// honest collisions are impraticable, and re-creating one is
+	// exactly the resurrection the tombstone exists to block.
+	if err := s.guardNotDeleted(id); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	r := &Run{
 		FormatVersion:  RunFormatVersion,
@@ -451,6 +457,9 @@ func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName
 // finalize path concurrent with an engine status update, would
 // otherwise read-modify-write through each other and lose fields.
 func (s *FilesystemRunStore) SaveRun(_ context.Context, r *Run) error {
+	if err := s.guardNotDeleted(r.ID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeRun(r)
@@ -471,6 +480,12 @@ func (s *FilesystemRunStore) loadRunRaw(id string) (*Run, error) {
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// A tombstoned run has no run.json but DOES carry the
+			// deletion marker — surface the deliberate deletion (410)
+			// distinctly from genuine absence (404).
+			if s.runDeleted(id) {
+				return nil, fmt.Errorf("store: load run %s: %w", id, ErrRunDeleted)
+			}
 			// Wrap the shared sentinel (alongside the underlying
 			// os.ErrNotExist the ReadFile error already carries) so callers
 			// can distinguish genuine absence from a transient read failure
@@ -564,16 +579,96 @@ func (s *FilesystemRunStore) LoadRun(_ context.Context, id string) (*Run, error)
 // DeleteRun permanently removes a run's entire directory (run.json,
 // events.jsonl, artifacts, interactions, attachments — everything under
 // runs/<id>/). Idempotent: a missing run dir is not an error.
+// deletionMarkerName is the durable tombstone DeleteRun leaves behind:
+// a single file inside the (otherwise emptied) run directory. Every
+// writer checks it before creating anything, so a late writer cannot
+// resurrect a deleted run by re-creating its tree — the historical
+// failure mode of a bare RemoveAll (AppendEvent's MkdirAll would
+// happily rebuild the directory). Reaped by `iterion runs prune`.
+// Deliberately NOT the dispatcher's in-memory `tombstones` map — that
+// is a live slot-holder, this is a durable deletion marker.
+const deletionMarkerName = ".deleted"
+
+// runDeleted reports whether the run carries the deletion marker.
+func (s *FilesystemRunStore) runDeleted(id string) bool {
+	_, err := os.Stat(filepath.Join(s.root, "runs", id, deletionMarkerName))
+	return err == nil
+}
+
+// guardNotDeleted is the shared write-path check: a typed refusal for
+// tombstoned runs, before any directory or file would be (re)created.
+func (s *FilesystemRunStore) guardNotDeleted(id string) error {
+	if s.runDeleted(id) {
+		return fmt.Errorf("store: run %s: %w", id, ErrRunDeleted)
+	}
+	return nil
+}
+
 func (s *FilesystemRunStore) DeleteRun(_ context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("store: DeleteRun requires a run id")
 	}
+	if err := sanitizePathComponent("run ID", id); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.RemoveAll(filepath.Join(s.root, "runs", id)); err != nil {
+	dir := filepath.Join(s.root, "runs", id)
+	// Write the tombstone FIRST (MkdirAll is idempotent if the dir was
+	// already gone), so a concurrent writer that passes its guard just
+	// before our sweep still finds the marker on its next write.
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("store: delete run %s: %w", id, err)
 	}
+	marker := filepath.Join(dir, deletionMarkerName)
+	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), filePerm); err != nil {
+		return fmt.Errorf("store: write deletion marker for %s: %w", id, err)
+	}
+	// Remove everything EXCEPT the marker.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("store: delete run %s: %w", id, err)
+	}
+	for _, e := range entries {
+		if e.Name() == deletionMarkerName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return fmt.Errorf("store: delete run %s content %s: %w", id, e.Name(), err)
+		}
+	}
 	return nil
+}
+
+// PruneDeletionMarkers removes tombstone directories whose marker is
+// older than cutoff. The marker's mtime is its creation instant.
+func (s *FilesystemRunStore) PruneDeletionMarkers(_ context.Context, cutoff time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runsDir := filepath.Join(s.root, "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("store: prune deletion markers: %w", err)
+	}
+	reaped := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		marker := filepath.Join(runsDir, e.Name(), deletionMarkerName)
+		info, err := os.Stat(marker)
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(runsDir, e.Name())); err != nil {
+			return reaped, fmt.Errorf("store: reap tombstone %s: %w", e.Name(), err)
+		}
+		reaped++
+	}
+	return reaped, nil
 }
 
 // UpdateRunStatus updates the status (and optional error) of a run.
@@ -587,6 +682,27 @@ func (s *FilesystemRunStore) UpdateRunStatus(ctx context.Context, id string, sta
 		return err
 	}
 	return s.applyStatusTransition(r, status, runErr)
+}
+
+// PatchRunSteering persists the live-steering state on run.json.
+// Partial: a nil loopOverrides / nil budgetRaises leaves the stored
+// field untouched, so the two commands patch independently.
+func (s *FilesystemRunStore) PatchRunSteering(_ context.Context, id string, loopOverrides map[string]int, budgetRaises *RunBudgetRaises) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, err := s.loadRunRaw(id)
+	if err != nil {
+		return err
+	}
+	if loopOverrides != nil {
+		r.LoopOverrides = loopOverrides
+	}
+	if budgetRaises != nil {
+		r.BudgetRaises = budgetRaises
+	}
+	r.UpdatedAt = time.Now().UTC()
+	return s.writeRun(r)
 }
 
 // UpdateRunStatusIf is a compare-and-set on the status field: the
@@ -736,9 +852,15 @@ func (s *FilesystemRunStore) ListRuns(_ context.Context) ([]string, error) {
 	}
 	var ids []string
 	for _, e := range entries {
-		if e.IsDir() {
-			ids = append(ids, e.Name())
+		if !e.IsDir() {
+			continue
 		}
+		// Tombstoned runs (deletion marker, no data) are not listed —
+		// they'd surface as phantom rows failing every LoadRun.
+		if s.runDeleted(e.Name()) {
+			continue
+		}
+		ids = append(ids, e.Name())
 	}
 	sort.Strings(ids)
 	return ids, nil
@@ -756,6 +878,19 @@ func (s *FilesystemRunStore) ListRunsBySourceIssue(ctx context.Context, issueID 
 	}
 	return s.filterRunsSorted(ctx, func(r *Run) bool {
 		return r.Source != nil && r.Source.IssueID == issueID
+	})
+}
+
+// ListRunsBySchedule returns the ids of runs whose Source.ScheduleID
+// equals scheduleID (the schedule←run reverse edge used by the
+// pkg/schedgate overlap gate), sorted by created_at ascending. Same
+// scan-and-filter strategy as ListRunsBySourceIssue.
+func (s *FilesystemRunStore) ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error) {
+	if scheduleID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.Source != nil && r.Source.ScheduleID == scheduleID
 	})
 }
 
@@ -817,6 +952,11 @@ func (s *FilesystemRunStore) filterRunsSorted(ctx context.Context, pred func(*Ru
 // a successful write to avoid gaps in the event stream.
 func (s *FilesystemRunStore) AppendEvent(_ context.Context, runID string, evt Event) (*Event, error) {
 	if err := sanitizePathComponent("run ID", runID); err != nil {
+		return nil, err
+	}
+	// Tombstone guard BEFORE the MkdirAll below: without it a late
+	// writer's first append silently rebuilt the deleted run's tree.
+	if err := s.guardNotDeleted(runID); err != nil {
 		return nil, err
 	}
 	evt.RunID = runID
@@ -1276,6 +1416,9 @@ func (s *FilesystemRunStore) WriteInteraction(_ context.Context, i *Interaction)
 		return err
 	}
 	if err := sanitizePathComponent("interaction ID", i.ID); err != nil {
+		return err
+	}
+	if err := s.guardNotDeleted(i.RunID); err != nil {
 		return err
 	}
 	dir := filepath.Join(s.root, "runs", i.RunID, "interactions")

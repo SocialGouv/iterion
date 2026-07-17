@@ -63,6 +63,9 @@ type PruneResult struct {
 	// (partial delete, crash before the first write). They are never
 	// deleted — the operator inspects or removes them by hand.
 	Unreadable []string `json:"unreadable,omitempty"`
+	// TombstonesReaped counts the deletion markers older than the
+	// retention horizon that this sweep removed for good.
+	TombstonesReaped int `json:"tombstones_reaped,omitempty"`
 }
 
 // pruneAgeField is the constant advertised on --json output and in the
@@ -182,18 +185,32 @@ func RunPrune(opts PruneOptions, p *Printer) error {
 		pruned = append(pruned, row)
 	}
 
+	// Reap deletion tombstones past the same retention horizon: the
+	// marker must outlive any plausible late writer (it IS the
+	// resurrection guard), not live forever. Fresh markers — including
+	// the ones this very sweep just wrote — stay.
+	tombstonesReaped := 0
+	if !opts.DryRun && opts.OlderThan > 0 {
+		if n, err := s.PruneDeletionMarkers(ctx, now().Add(-opts.OlderThan)); err != nil {
+			return fmt.Errorf("prune deletion markers: %w", err)
+		} else {
+			tombstonesReaped = n
+		}
+	}
+
 	result := PruneResult{
-		StoreDir:     storeDir,
-		AgeField:     pruneAgeField,
-		OlderThan:    opts.OlderThan.String(),
-		KeepLast:     opts.KeepLast,
-		Statuses:     sortedStatusNames(statuses),
-		DryRun:       opts.DryRun,
-		Scanned:      scanned,
-		Pruned:       pruned,
-		PrunedCount:  len(pruned),
-		SkippedCount: scanned - len(pruned),
-		Unreadable:   unreadable,
+		StoreDir:         storeDir,
+		AgeField:         pruneAgeField,
+		OlderThan:        opts.OlderThan.String(),
+		KeepLast:         opts.KeepLast,
+		Statuses:         sortedStatusNames(statuses),
+		DryRun:           opts.DryRun,
+		Scanned:          scanned,
+		Pruned:           pruned,
+		PrunedCount:      len(pruned),
+		SkippedCount:     scanned - len(pruned),
+		Unreadable:       unreadable,
+		TombstonesReaped: tombstonesReaped,
 	}
 	return renderPruneResult(p, result)
 }

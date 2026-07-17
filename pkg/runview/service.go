@@ -432,6 +432,11 @@ type Service struct {
 	// spawnRun, removed when the run goroutine exits. Same lifecycle as
 	// runLogs, so it shares runLogsMu.
 	runEngines map[string]*runtime.Engine
+	// runSteer holds the send side of each live run's override channel
+	// (live steering: bump_loop / raise_budget). Registered/removed
+	// together with runEngines under runLogsMu; the engine holds the
+	// receive side and drains it at its safe boundary.
+	runSteer map[string]chan *runtime.OverrideMsg
 
 	// draining is set by Drain at the start of graceful shutdown.
 	// Once true, Launch and Resume early-return runtime.ErrServerDraining
@@ -657,6 +662,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		recoveryDispatch: recovery.Dispatch(recovery.DefaultRecipes()),
 		runLogs:          make(map[string]*RunLogBuffer),
 		runEngines:       make(map[string]*runtime.Engine),
+		runSteer:         make(map[string]chan *runtime.OverrideMsg),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -809,13 +815,34 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		return r.WorkflowName, true
 	}
 
-	return alert.NewManager(
+	opts := []alert.Option{
 		alert.WithSinks(sinks...),
 		alert.WithRunLookup(runLookup),
 		alert.WithBaseURL(set.BaseURL),
 		alert.WithStallTimeout(set.StallTimeout),
 		alert.WithLogger(s.logger),
-	)
+	}
+	// Persisted twin: append every alert as a durable run_health event
+	// so the stall episode survives a WS reconnect and shows in the
+	// timeline. Loop-free by construction — Observe ignores
+	// EventRunHealth — and best-effort: an append failure is logged,
+	// never blocks alerting.
+	if s.store != nil {
+		opts = append(opts, alert.WithStoreSink(func(a alert.Alert) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := s.store.AppendEvent(ctx, a.RunID, store.Event{
+				Type:      store.EventRunHealth,
+				RunID:     a.RunID,
+				NodeID:    a.NodeID,
+				Timestamp: a.Timestamp,
+				Data:      a.AsEventData(),
+			}); err != nil && s.logger != nil {
+				s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+			}
+		}))
+	}
+	return alert.NewManager(opts...)
 }
 
 // Broker exposes the event broker for transports that need to
