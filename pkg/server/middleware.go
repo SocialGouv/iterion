@@ -205,6 +205,11 @@ func isPublicPath(path string) bool {
 	if strings.HasPrefix(path, "/api/webhooks/") {
 		return true
 	}
+	// Config-share editor: self-authenticated by configShareAuth (a per-share
+	// Bearer iws_ token), not the operator JWT — bypass the JWT gate.
+	if strings.HasPrefix(path, "/api/config-share/") {
+		return true
+	}
 	if strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/static/") {
 		return true
 	}

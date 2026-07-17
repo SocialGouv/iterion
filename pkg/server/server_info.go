@@ -62,6 +62,10 @@ type serverInfoResponse struct {
 	// (Config.TriggerStore). The SPA conditionally exposes the Triggers /
 	// Automations view that manages board (and future) subscriptions.
 	TriggersEnabled bool `json:"triggers_enabled"`
+	// ConfigSharesEnabled is true when the scoped config-share editor is wired
+	// (store + generic-secret stack + auth). The SPA exposes the operator
+	// "Share config" surface when set.
+	ConfigSharesEnabled bool `json:"config_shares_enabled"`
 	// ForgeGitHubAppConfigured is true when this server has a GitHub App
 	// configured (ITERION_FORGE_GITHUB_APP_*). The forge connect form only
 	// offers the "Install GitHub App" mode when true — otherwise selecting it
@@ -131,6 +135,7 @@ func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
 		EmailEnabled:             s.authSvc != nil && s.authSvc.EmailEnabled(),
 		MarketplaceEnabled:       s.marketplace != nil,
 		TriggersEnabled:          s.cfg.TriggerStore != nil,
+		ConfigSharesEnabled:      s.configShares != nil && s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil,
 		ForgeGitHubAppConfigured: s.forgeGitHubApp.Configured(),
 		SessionBoardEnabled:      sessionboard.Enabled(),
 		PluginsEnabled:           true,

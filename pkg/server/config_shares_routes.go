@@ -1,0 +1,217 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/configshare"
+)
+
+const defaultShareTTLDays = 14
+
+// registerConfigShareAdminRoutes wires the operator (JWT) CRUD for config-share
+// grants — team-scoped, canManageTeam-gated, audited. A real user identity
+// (Kind == user) is required; the RBAC gates reject a synthetic principal.
+func (s *Server) registerConfigShareAdminRoutes() {
+	s.mux.Handle("GET /api/teams/{id}/config-shares", s.requireAuth(http.HandlerFunc(s.handleListConfigShares)))
+	s.mux.Handle("POST /api/teams/{id}/config-shares", s.requireAuth(http.HandlerFunc(s.handleCreateConfigShare)))
+	s.mux.Handle("POST /api/teams/{id}/config-shares/{sid}/rotate", s.requireAuth(http.HandlerFunc(s.handleRotateConfigShare)))
+	s.mux.Handle("DELETE /api/teams/{id}/config-shares/{sid}", s.requireAuth(http.HandlerFunc(s.handleDeleteConfigShare)))
+	s.mux.Handle("GET /api/teams/{id}/config-shares/{sid}/deliveries", s.requireAuth(http.HandlerFunc(s.handleConfigShareDeliveries)))
+}
+
+type createConfigShareReq struct {
+	BotID        string   `json:"bot_id"`
+	Label        string   `json:"label"`
+	RepoURL      string   `json:"repo_url"`
+	RepoRef      string   `json:"repo_ref"`
+	ConfigPath   string   `json:"config_path"`
+	Category     string   `json:"category"`
+	SchemaRef    string   `json:"schema_ref"`
+	AllowedPaths []string `json:"allowed_paths"`
+	VisiblePaths []string `json:"visible_paths"`
+	ReadOnly     bool     `json:"read_only"`
+	ExpiresDays  int      `json:"expires_days"`
+}
+
+// shareView is the operator-facing projection — never the token hash.
+func (s *Server) shareView(sh *configshare.Share) map[string]any {
+	return map[string]any{
+		"id": sh.ID, "bot_id": sh.BotID, "label": sh.Label, "repo_url": sh.RepoURL,
+		"repo_ref": sh.RepoRef, "config_path": sh.ConfigPath, "category": sh.Category,
+		"schema_ref": sh.SchemaRef, "allowed_paths": sh.AllowedPaths, "visible_paths": sh.VisiblePaths,
+		"read_only": sh.ReadOnly, "enabled": sh.Enabled, "token_last4": sh.TokenLast4,
+		"fingerprint": sh.Fingerprint, "created_at": sh.CreatedAt, "expires_at": sh.ExpiresAt,
+		"revoked_at": sh.RevokedAt, "last_used_at": sh.LastUsedAt,
+	}
+}
+
+func (s *Server) shareURL(id, token string) string {
+	if s.authSvc == nil {
+		return ""
+	}
+	base := s.authSvc.PublicURL()
+	if base == "" {
+		return ""
+	}
+	return base + "/config/" + id + "#" + token
+}
+
+func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	var req createConfigShareReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.BotID == "" {
+		httpError(w, http.StatusBadRequest, "bot_id required")
+		return
+	}
+	if _, err := configshare.RepoSlug(req.RepoURL); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	if err := configshare.ValidateRepoRef(req.RepoRef); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	if err := configshare.ValidateConfigPath(req.ConfigPath); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	visible := req.VisiblePaths
+	if len(visible) == 0 {
+		visible = req.AllowedPaths
+	}
+	if err := configshare.ValidatePaths(req.AllowedPaths, visible); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	plaintext, hash, last4, fp, err := configshare.MintToken()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "mint failed")
+		return
+	}
+	ttl := req.ExpiresDays
+	if ttl <= 0 {
+		ttl = defaultShareTTLDays
+	}
+	now := time.Now().UTC()
+	sh := &configshare.Share{
+		ID: uuid.NewString(), TenantID: teamID, BotID: req.BotID, Label: req.Label,
+		RepoURL: req.RepoURL, RepoRef: req.RepoRef, ConfigPath: req.ConfigPath,
+		Category: req.Category, SchemaRef: req.SchemaRef,
+		AllowedPaths: req.AllowedPaths, VisiblePaths: visible, ReadOnly: req.ReadOnly,
+		TokenHash: hash, TokenLast4: last4, Fingerprint: fp,
+		Enabled: true, CreatedBy: id.UserID, CreatedAt: now, ExpiresAt: now.AddDate(0, 0, ttl),
+	}
+	if err := s.configShares.Create(r.Context(), sh); err != nil {
+		httpError(w, http.StatusInternalServerError, "create failed")
+		return
+	}
+	s.auditTenant(r, teamID, "config_share.created", "config_share", sh.ID, map[string]any{"bot_id": sh.BotID, "repo": sh.RepoURL})
+	view := s.shareView(sh)
+	view["token"] = plaintext // shown ONCE
+	view["url"] = s.shareURL(sh.ID, plaintext)
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, view)
+}
+
+func (s *Server) handleListConfigShares(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canViewTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "not a member")
+		return
+	}
+	rows, err := s.configShares.ListByTenant(r.Context(), teamID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	views := make([]map[string]any, 0, len(rows))
+	for _, sh := range rows {
+		views = append(views, s.shareView(sh))
+	}
+	writeJSON(w, map[string]any{"shares": views})
+}
+
+func (s *Server) loadTeamShare(w http.ResponseWriter, r *http.Request, manage bool) (*configshare.Share, bool) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	authorized := s.canViewTeam(r.Context(), id, teamID)
+	if manage {
+		authorized = s.canManageTeam(r.Context(), id, teamID)
+	}
+	if !authorized {
+		httpError(w, http.StatusForbidden, "forbidden")
+		return nil, false
+	}
+	sh, err := s.configShares.GetByID(r.Context(), r.PathValue("sid"))
+	if err != nil || sh == nil || sh.TenantID != teamID {
+		httpError(w, http.StatusNotFound, "not found")
+		return nil, false
+	}
+	return sh, true
+}
+
+func (s *Server) handleRotateConfigShare(w http.ResponseWriter, r *http.Request) {
+	sh, ok := s.loadTeamShare(w, r, true)
+	if !ok {
+		return
+	}
+	plaintext, hash, last4, fp, err := configshare.MintToken()
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "mint failed")
+		return
+	}
+	sh.TokenHash, sh.TokenLast4, sh.Fingerprint = hash, last4, fp
+	if err := s.configShares.Update(r.Context(), sh); err != nil {
+		httpError(w, http.StatusInternalServerError, "rotate failed")
+		return
+	}
+	s.auditTenant(r, sh.TenantID, "config_share.rotated", "config_share", sh.ID, nil)
+	view := s.shareView(sh)
+	view["token"] = plaintext
+	view["url"] = s.shareURL(sh.ID, plaintext)
+	writeJSON(w, view)
+}
+
+func (s *Server) handleDeleteConfigShare(w http.ResponseWriter, r *http.Request) {
+	sh, ok := s.loadTeamShare(w, r, true)
+	if !ok {
+		return
+	}
+	if err := s.configShares.Delete(r.Context(), sh.ID); err != nil {
+		httpError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	s.auditTenant(r, sh.TenantID, "config_share.deleted", "config_share", sh.ID, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleConfigShareDeliveries(w http.ResponseWriter, r *http.Request) {
+	sh, ok := s.loadTeamShare(w, r, false)
+	if !ok {
+		return
+	}
+	rows, err := s.configShares.ListDeliveries(r.Context(), sh.ID, 200)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []*configshare.Delivery{}
+	}
+	writeJSON(w, map[string]any{"deliveries": rows})
+}

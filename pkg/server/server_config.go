@@ -15,6 +15,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/metrics"
 	"github.com/SocialGouv/iterion/pkg/cloud/orgsweep"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/dispatcher"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
@@ -119,6 +120,12 @@ type Config struct {
 	// /api/teams/:id/api-keys + /api/me/api-keys and the cloud
 	// publisher resolves keys at launch time.
 	ApiKeys secrets.ApiKeyStore
+
+	// ConfigShares backs the scoped self-service config-share editor. When
+	// nil, the server defaults to an in-memory store (local/desktop); cloud
+	// wires a persistent (Mongo) store. The routes additionally require
+	// GenericSecrets + Sealer (to resolve the repo's forge_token).
+	ConfigShares configshare.Store
 
 	// GenericSecrets stores workflow/user secrets addressable by name
 	// from the DSL `secrets:` block. Plaintexts are sealed at rest and

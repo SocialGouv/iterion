@@ -89,6 +89,51 @@ func (svc *Service) ApplyEdit(ctx context.Context, fc forge.FileClient, sh *Shar
 	return res.SHA, changed, nil
 }
 
+// ValidatePaths checks that a share's allowed/visible entries are literal
+// dotted JSON paths — no globs, no malformed or forbidden segment — and that
+// every writable path is also readable. Enforced at mint so an operator can't
+// grant an unbounded or dangerous scope.
+func ValidatePaths(allowed, visible []string) error {
+	check := func(list []string, kind string) error {
+		for _, p := range list {
+			if p == "" {
+				return fmt.Errorf("%s path is empty", kind)
+			}
+			if strings.ContainsAny(p, "*") {
+				return fmt.Errorf("%s path %q must not contain a glob", kind, p)
+			}
+			for _, seg := range strings.Split(p, ".") {
+				if seg == "" || strings.Contains(seg, "/") {
+					return fmt.Errorf("%s path %q is malformed", kind, p)
+				}
+				if forbiddenKeys[seg] || hardForbiddenSegments[seg] {
+					return fmt.Errorf("%s path %q hits a forbidden field", kind, p)
+				}
+			}
+		}
+		return nil
+	}
+	if len(allowed) == 0 {
+		return fmt.Errorf("at least one editable (allowed) path is required")
+	}
+	if err := check(allowed, "allowed"); err != nil {
+		return err
+	}
+	if err := check(visible, "visible"); err != nil {
+		return err
+	}
+	vis := make(map[string]bool, len(visible))
+	for _, p := range visible {
+		vis[p] = true
+	}
+	for _, p := range allowed {
+		if !vis[p] {
+			return fmt.Errorf("allowed path %q must also be a visible path", p)
+		}
+	}
+	return nil
+}
+
 func parseConfig(b []byte) (map[string]any, error) {
 	var full map[string]any
 	if err := json.Unmarshal(b, &full); err != nil {

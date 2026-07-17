@@ -96,11 +96,11 @@ func TestValidateLeaf_Feeds(t *testing.T) {
 		t.Fatalf("valid feeds rejected: %v", err)
 	}
 	bad := map[string][]any{
-		"scheme":    {"file:///etc/passwd"},
-		"userinfo":  {"https://user:pw@ok.example/rss"},
+		"scheme":     {"file:///etc/passwd"},
+		"userinfo":   {"https://user:pw@ok.example/rss"},
 		"ip-literal": {"https://169.254.169.254/rss"},
 		"not-string": {123},
-		"duplicate": {"https://x.example/a", "https://x.example/a"},
+		"duplicate":  {"https://x.example/a", "https://x.example/a"},
 	}
 	for name, v := range bad {
 		if err := ValidateLeaf("categories.a11y.feeds", v); err == nil {

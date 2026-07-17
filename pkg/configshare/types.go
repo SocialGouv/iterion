@@ -24,15 +24,15 @@ import (
 // ConfigPath, AllowedPaths — is pinned here at mint time and never taken from
 // a request body, so a token holder can't retarget the file, branch or fields.
 type Share struct {
-	ID          string    `json:"id" bson:"_id"`
-	TenantID    string    `json:"tenant_id" bson:"tenant_id"`
-	BotID       string    `json:"bot_id" bson:"bot_id"`
-	Label       string    `json:"label" bson:"label"`
-	RepoURL     string    `json:"repo_url" bson:"repo_url"`
-	RepoRef     string    `json:"repo_ref" bson:"repo_ref"`
-	ConfigPath  string    `json:"config_path" bson:"config_path"`
-	Category    string    `json:"category,omitempty" bson:"category,omitempty"`
-	SchemaRef   string    `json:"schema_ref,omitempty" bson:"schema_ref,omitempty"`
+	ID         string `json:"id" bson:"_id"`
+	TenantID   string `json:"tenant_id" bson:"tenant_id"`
+	BotID      string `json:"bot_id" bson:"bot_id"`
+	Label      string `json:"label" bson:"label"`
+	RepoURL    string `json:"repo_url" bson:"repo_url"`
+	RepoRef    string `json:"repo_ref" bson:"repo_ref"`
+	ConfigPath string `json:"config_path" bson:"config_path"`
+	Category   string `json:"category,omitempty" bson:"category,omitempty"`
+	SchemaRef  string `json:"schema_ref,omitempty" bson:"schema_ref,omitempty"`
 	// AllowedPaths are literal dotted JSON paths the editor may WRITE (e.g.
 	// "categories.a11y.feeds"). No globs — every entry is a full leaf path.
 	AllowedPaths []string `json:"allowed_paths" bson:"allowed_paths"`

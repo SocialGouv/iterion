@@ -19,6 +19,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth/wsticket"
 	"github.com/SocialGouv/iterion/pkg/backend/detect"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
+	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/knowledge"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
@@ -92,6 +93,11 @@ type Server struct {
 	pats              pat.Store
 	queue             *natsq.Conn
 	botBindings       secrets.BotSecretBindingStore
+	configShares      configshare.Store
+	configShareSvc    *configshare.Service
+	// configShareFC overrides forge-client resolution in tests (nil in prod →
+	// shareFileClient resolves the team forge_token + builds a GitHub client).
+	configShareFC func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
 	forgeOrchestrator *forge.Orchestrator
@@ -302,6 +308,14 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 	if ls, ok := cfg.GenericSecrets.(*secrets.LayeredGenericSecretStore); ok {
 		s.localSecrets = ls
 	}
+	// Config-share editor store: default to in-memory (local/desktop) when
+	// cloud didn't wire a persistent one, so the scoped-editor works out of
+	// the box; the Service is stateless over it.
+	s.configShares = cfg.ConfigShares
+	if s.configShares == nil {
+		s.configShares = configshare.NewMemoryStore()
+	}
+	s.configShareSvc = configshare.NewService(s.configShares)
 	if cfg.NativeTrackerStore != nil {
 		// Valkey-backed token registry when a distributed backend is wired,
 		// else the in-memory one (replaced transparently — same interface).
