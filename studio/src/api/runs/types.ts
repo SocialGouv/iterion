@@ -676,6 +676,23 @@ export interface PreviewCostResponse {
   cost_max_usd: number;
   nodes: PreviewCostNode[];
   notes?: string[];
+  effective?: PreviewEffectiveSettings;
+}
+
+// PreviewEffectiveSettings reports each launch knob's resolution BELOW
+// the run-override level (workflow/env/default + node-pinned flag) so
+// the Launch dialog can caption its selects with why a knob is what it
+// is. The client layers its own override on top.
+export interface PreviewEffectiveKnob {
+  effective: string;
+  source: "workflow" | "env" | "default";
+  node_pinned?: boolean;
+}
+
+export interface PreviewEffectiveSettings {
+  compress: PreviewEffectiveKnob;
+  permission: PreviewEffectiveKnob;
+  backend: PreviewEffectiveKnob;
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's

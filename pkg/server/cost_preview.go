@@ -37,6 +37,29 @@ type previewCostResponse struct {
 	CostMaxUSD float64           `json:"cost_max_usd"`
 	Nodes      []previewCostNode `json:"nodes"`
 	Notes      []string          `json:"notes,omitempty"`
+	// Effective reports the workflow's resolved knobs BELOW the
+	// run-override level (node/workflow/env/default) so the Launch
+	// dialog can caption each select with why the knob is what it is.
+	// The client layers its own override on top (it owns the selects,
+	// so "run_override" never appears here).
+	Effective *previewEffectiveSettings `json:"effective,omitempty"`
+}
+
+// previewEffectiveKnob is one knob's provenance below run-override.
+type previewEffectiveKnob struct {
+	// Effective value at this resolution ("auto" when nothing decides).
+	Effective string `json:"effective"`
+	// Source: "workflow" | "env" | "default".
+	Source string `json:"source"`
+	// NodePinned is true when at least one node sets its OWN value —
+	// a run override will not affect those nodes.
+	NodePinned bool `json:"node_pinned,omitempty"`
+}
+
+type previewEffectiveSettings struct {
+	Compress   previewEffectiveKnob `json:"compress"`
+	Permission previewEffectiveKnob `json:"permission"`
+	Backend    previewEffectiveKnob `json:"backend"`
 }
 
 // Token envelopes are intentionally generous — the goal is to flag
@@ -114,7 +137,7 @@ func (s *Server) handlePreviewCost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := previewCostResponse{}
+	resp := previewCostResponse{Effective: buildEffectiveSettings(cr.Workflow)}
 	hasPricing := false
 	for _, node := range cr.Workflow.Nodes {
 		var model, effort string

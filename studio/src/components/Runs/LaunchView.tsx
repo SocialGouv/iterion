@@ -5,8 +5,8 @@ import { useLocation, useSearch } from "wouter";
 import { useBotsStore } from "@/store/bots";
 import * as filesApi from "@/api/client";
 import { createForgeRepo } from "@/api/forgeConnections";
-import { createRun, getServerInfo, uploadAttachment } from "@/api/runs";
-import type { MergeStrategy } from "@/api/runs";
+import { createRun, getServerInfo, previewRunCost, uploadAttachment } from "@/api/runs";
+import type { MergeStrategy, PreviewEffectiveSettings } from "@/api/runs";
 import type { AttachmentField, IterDocument, ServerInfo } from "@/api/types";
 
 import { Button } from "@/components/ui/Button";
@@ -128,6 +128,11 @@ export default function LaunchView() {
   // tool-permission gate mode override ("" inherits the workflow/node
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
+  // Server-resolved knob provenance below run-override (workflow/env/
+  // default), captioning the Run-settings selects. Best-effort — a
+  // parse failure just hides the captions.
+  const [effectiveSettings, setEffectiveSettings] =
+    useState<PreviewEffectiveSettings | null>(null);
   // Mono/dual review-topology override ("" = auto: resolve from the
   // providers detected at launch). Only sent when explicitly mono/dual;
   // ignored by bots that don't declare a `review_mode` var.
@@ -175,6 +180,26 @@ export default function LaunchView() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    // Knob provenance for the Run-settings captions. Best-effort: any
+    // failure just leaves the captions hidden.
+    if (!filePath) {
+      setEffectiveSettings(null);
+      return;
+    }
+    let cancelled = false;
+    previewRunCost({ file_path: filePath })
+      .then((res) => {
+        if (!cancelled) setEffectiveSettings(res.effective ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setEffectiveSettings(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [filePath]);
 
   useEffect(() => {
     if (!filePath) {
@@ -755,6 +780,7 @@ export default function LaunchView() {
                     permissionOverride={permissionOverride}
                     reviewModeOverride={reviewModeOverride}
                     backendReport={backendReport}
+                    effective={effectiveSettings}
                     onBackendChange={setBackendOverride}
                     onCompressChange={setCompressOverride}
                     onPermissionChange={setPermissionOverride}
