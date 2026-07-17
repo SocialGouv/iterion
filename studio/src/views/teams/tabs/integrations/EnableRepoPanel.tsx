@@ -4,9 +4,11 @@ import { useEffect, useState } from "react";
 import type { BotEntryWithSchema } from "@/api/bots";
 import {
   type ForgeConnection,
+  type ForgeConnectionHealth,
   type ForgeEnablePreview,
   type ForgeRepo,
   enableForgeRepoBots,
+  getForgeConnectionHealth,
   listForgeRepos,
   previewForgeEnable,
 } from "@/api/forgeConnections";
@@ -36,7 +38,11 @@ export function EnableRepoPanel({
   conn: ForgeConnection;
   repoBots: BotEntryWithSchema[];
   preselectBot?: string;
-  onDone: () => void;
+  /** Called once the server accepts the enable request. The optional
+   *  argument surfaces the repo that was just enabled so callers (e.g.
+   *  the connect wizard) can jump straight to it — legacy callers may
+   *  ignore it (backward-compatible with the old no-arg signature). */
+  onDone: (enabled?: { repo: string; connectionID: string }) => void;
   onCancel: () => void;
   onError: (m: string) => void;
 }) {
@@ -68,6 +74,26 @@ export function EnableRepoPanel({
     void loadRepos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // GitHub App installations only expose the repos the operator granted
+  // on GitHub — an empty search here used to dead-end with no
+  // explanation. The health probe surfaces the installation's live
+  // scope + the GitHub settings URL where it can be widened.
+  const [health, setHealth] = useState<ForgeConnectionHealth | null>(null);
+  useEffect(() => {
+    if (conn.kind !== "github_app") return;
+    let cancelled = false;
+    void getForgeConnectionHealth(teamID, conn.id)
+      .then((h) => {
+        if (!cancelled) setHealth(h);
+      })
+      .catch(() => {
+        if (!cancelled) setHealth(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [teamID, conn.id, conn.kind]);
 
   // Fetch the authoritative preview (native events the hook will subscribe
   // to + identity + any scope/forge-block conflicts) whenever the selection
@@ -110,7 +136,7 @@ export function EnableRepoPanel({
         }
       }
       await enableForgeRepoBots(teamID, conn.id, repo, selectedBots, crons);
-      onDone();
+      onDone({ repo, connectionID: conn.id });
     } catch (e) {
       onError(errorMessage(e));
     } finally {
@@ -144,6 +170,36 @@ export function EnableRepoPanel({
           {loadingRepos ? "…" : "Search"}
         </Button>
       </div>
+
+      {conn.kind === "github_app" && health && (
+        <div
+          className={`rounded border px-2.5 py-2 text-xs ${
+            !loadingRepos && repos.length === 0
+              ? "border-warning/40 bg-warning-soft text-warning-fg"
+              : "border-border-subtle bg-surface-1 text-fg-muted"
+          }`}
+        >
+          The GitHub App installation
+          {health.installation_account ? ` on ${health.installation_account}` : ""} covers{" "}
+          {health.installation_repos?.length ?? 0} repositor
+          {(health.installation_repos?.length ?? 0) === 1 ? "y" : "ies"}. A repo missing
+          here must first be granted to the installation on GitHub.
+          {health.manage_install_url && (
+            <>
+              {" "}
+              <a
+                href={health.manage_install_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent-text underline"
+              >
+                Add repositories on GitHub ↗
+              </a>{" "}
+              then hit Search again.
+            </>
+          )}
+        </div>
+      )}
 
       <div>
         <label htmlFor="forge-repo-pick" className="sr-only">

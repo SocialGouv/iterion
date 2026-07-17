@@ -70,6 +70,41 @@ export async function listTeamForgeRepos(teamID: string): Promise<ForgeTeamRepo[
   return r.repos ?? [];
 }
 
+// ForgeConnectionHealth is the connection's actionable live state — for a
+// GitHub App it carries the installation's real repo scope and the GitHub
+// settings URL where the scope/permissions can be widened.
+export type ForgeConnectionHealth = components["schemas"]["forgeConnectionHealth"];
+
+export async function getForgeConnectionHealth(
+  teamID: string,
+  connID: string,
+): Promise<ForgeConnectionHealth> {
+  return (await apiGet("/api/teams/{id}/forge/connections/{conn_id}/health", {
+    params: { id: teamID, conn_id: connID },
+  })) as ForgeConnectionHealth;
+}
+
+// createForgeRepo creates a NEW repository on a connected forge (the
+// "new app → new repo" journey). Creation only — iterion never updates
+// or deletes forge repositories.
+export async function createForgeRepo(
+  teamID: string,
+  input: {
+    connection_id: string;
+    owner?: string;
+    name: string;
+    description?: string;
+    private?: boolean;
+    default_branch?: string;
+    init_readme?: boolean;
+  },
+): Promise<{ repo: ForgeRepo; clone_url: string }> {
+  return (await apiPost("/api/teams/{id}/forge/repos", {
+    params: { id: teamID },
+    body: input,
+  })) as { repo: ForgeRepo; clone_url: string };
+}
+
 /** Counts returned by a manual issue-sync run (POST …/sync). */
 export interface ForgeSyncResult {
   synced: number;
@@ -320,7 +355,14 @@ export async function startGitHubManifest(
   teamID: string,
   // github_org creates the App UNDER that org (installable org-wide); blank =
   // the caller's personal account (then only installable there).
-  input: { forge_base_url?: string; next?: string; github_org?: string },
+  // allow_repo_creation requests administration:write on the App so iterion
+  // can CREATE repositories (opt-in, surfaced as a visible checkbox).
+  input: {
+    forge_base_url?: string;
+    next?: string;
+    github_org?: string;
+    allow_repo_creation?: boolean;
+  },
 ): Promise<GitHubManifestStart> {
   // Body type-checked against the spec's forgeOAuthAppReq (provider is
   // required there; this endpoint is GitHub-only, so state it explicitly).

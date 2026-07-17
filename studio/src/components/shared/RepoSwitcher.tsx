@@ -53,7 +53,7 @@ export default function RepoSwitcher({ collapsed = false }: { collapsed?: boolea
 
   if (!enabled) return null;
 
-  const connectHref = "/integrations?tab=forges&connect=1";
+  const connectHref = "/integrations/connect";
   const goConnect = () => {
     setOpen(false);
     navigate(connectHref);
