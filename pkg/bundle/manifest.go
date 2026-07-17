@@ -139,6 +139,46 @@ type Manifest struct {
 	// declares only a legacy forge: block is treated as having the
 	// synthetic set from SyntheticInvocations.
 	Invocations []Invocation `yaml:"invocations,omitempty"`
+
+	// Repo declares this bot's RUNTIME repository need: whether a run
+	// should target a git repository, and whether the launch surface may
+	// offer to CREATE a new one on a connected forge (Appy's "new app,
+	// new repo" journey). Advisory launch-surface metadata like
+	// DispatchVars — the runtime only consumes the resolved
+	// repo_url/repo_ref on the launch spec. It expresses a NEED ("point
+	// me at a repo"), never a target-repo assumption: catalog bots stay
+	// repo-agnostic.
+	Repo *RepoRequirement `yaml:"repo,omitempty"`
+}
+
+// Valid RepoRequirement.Mode values.
+const (
+	RepoModeRequired = "required"
+	RepoModeOptional = "optional"
+	RepoModeNone     = "none"
+)
+
+// RepoRequirement is a bot's declared repository need, rendered by the
+// launch surfaces as a "Target repository" section (active repo
+// preselected → other connected repo → create new → none).
+type RepoRequirement struct {
+	// Mode is "required" (launch soft-blocks without a target repo),
+	// "optional" (section offered, skippable), or "none" (explicit
+	// repo-independence — same as omitting the block; kept so a bot can
+	// document the choice).
+	Mode string `yaml:"mode"`
+	// AllowCreate offers "create a new repository" (forge RepoCreator)
+	// next to "attach an existing one".
+	AllowCreate bool `yaml:"allow_create,omitempty"`
+	// Purpose is a one-line operator-facing explanation of what the bot
+	// does with the repo, shown under the section title.
+	Purpose string `yaml:"purpose,omitempty"`
+	// DefaultBranch seeds a created repo's default branch name (empty =
+	// the forge's default).
+	DefaultBranch string `yaml:"default_branch,omitempty"`
+	// Visibility seeds a created repo's visibility: "private" (the
+	// default) or "public".
+	Visibility string `yaml:"visibility,omitempty"`
 }
 
 // Normalized forge event vocabulary used in a manifest `forge.events`
@@ -580,7 +620,29 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if err := validateInvocations(m.Invocations); err != nil {
 		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
 	}
+	if err := validateRepoRequirement(m.Repo); err != nil {
+		return nil, fmt.Errorf("bundle: manifest %s: %w", srcLabel, err)
+	}
 	return &m, nil
+}
+
+// validateRepoRequirement rejects unknown mode/visibility values at parse
+// time so a typo fails fast (same bar as forge: and invocations:).
+func validateRepoRequirement(r *RepoRequirement) error {
+	if r == nil {
+		return nil
+	}
+	switch r.Mode {
+	case RepoModeRequired, RepoModeOptional, RepoModeNone:
+	default:
+		return fmt.Errorf("repo: unknown mode %q (known: %s, %s, %s)", r.Mode, RepoModeRequired, RepoModeOptional, RepoModeNone)
+	}
+	switch r.Visibility {
+	case "", "private", "public":
+	default:
+		return fmt.Errorf("repo: unknown visibility %q (known: private, public)", r.Visibility)
+	}
+	return nil
 }
 
 // validateForgeRequirements rejects an unknown event name or a malformed

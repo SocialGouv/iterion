@@ -60,6 +60,12 @@ type Entry struct {
 	// a bot will provision before any run exists.
 	Forge *bundle.ForgeRequirements `json:"forge,omitempty" yaml:"forge,omitempty"`
 
+	// Repo mirrors the manifest repo: block (the bot's runtime
+	// repository need). The Launch surfaces render it as the "Target
+	// repository" section — required soft-blocks, optional offers,
+	// allow_create adds "create a new repository" on a connected forge.
+	Repo *bundle.RepoRequirement `json:"repo,omitempty" yaml:"repo,omitempty"`
+
 	// Invocations is the typed routing contract from the manifest
 	// (manifest.yaml invocations:) — how this bot can be triggered (forge
 	// event, /slash-command, schedule, board) and the execution mode each
@@ -375,6 +381,7 @@ func parseBundle(dir string) (*Entry, error) {
 		Capabilities:    m.Capabilities,
 		DispatchVars:    m.DispatchVars,
 		Forge:           m.Forge,
+		Repo:            m.Repo,
 		Invocations:     bundle.EffectiveInvocations(m),
 		WhenToUse:       strings.TrimSpace(m.WhenToUse),
 		Author:          m.Author,
