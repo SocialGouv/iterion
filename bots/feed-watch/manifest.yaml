@@ -36,8 +36,6 @@ when_to_use: |
 author: SocialGouv (devthejo) — bots/feed-watch/main.bot
 schema_version: 1
 
-capabilities: [board.create, board.read]
-
 invocations:
   ## Poll all categories' feeds into the pending queues (zero-LLM).
   - kind: schedule

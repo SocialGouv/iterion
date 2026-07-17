@@ -1,6 +1,6 @@
 ---
 name: synthesis-scoring
-description: Editorial rubric for the feed-watch digest agent — how to group, rank, semantically dedup and write a chat digest that respects the category's editorial brief; when an item is CRITICAL enough for a board card.
+description: Editorial rubric for the feed-watch digest agent — how to group, rank, semantically dedup and write a chat digest that respects the category's editorial brief.
 ---
 
 # Digest synthesis rubric
@@ -57,13 +57,3 @@ Order by impact for the audience described in the editorial brief:
 - The message is the digest — no meta ("here is your digest"), no
   self-reference, no invented items or facts. Every entry maps to
   input items.
-
-## 6. Board escalation (only when input.post_to_board is true)
-
-CRITICAL = the operator should act today: actively exploited
-vulnerability in a stack the audience plausibly runs, urgent
-regulatory/CERT alert, credible supply-chain compromise. Create ONE
-card per such item via `board.create` — title `[<category>] <item
-title>`, body = takeaway + link — and count them in
-`board_cards_created`. Major-but-not-actionable news is NOT critical.
-When `post_to_board` is false, never touch the board.

@@ -116,7 +116,6 @@ retention: `iterion runs prune` (see docs/scheduling.md).
 | `state_dir` | `.feed-watch` | workspace-relative state root |
 | `dry_run` | `false` | digest: print payloads, deliver nothing |
 | `state_commit` | `false` | commit+push state after each mutation |
-| `post_to_board` | `false` | digest: board card per CRITICAL item |
 | `FEED_WATCH_MODEL` (env) | `""` | synthesis model spec (`""` = the resolved backend's default; per-run: `iterion run --model …`) |
 | `max_items_per_feed` | `30` | freshest-N cap per feed at collect |
 | `max_digest_items` | `150` | newest-N cap per digest (overflow is dropped WITH a count in the message) |
