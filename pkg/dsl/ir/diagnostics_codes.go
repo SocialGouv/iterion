@@ -11,6 +11,7 @@ const (
 	DiagMissingFallback          DiagCode = "C012" // conditional edges with no default fallback
 	DiagConditionNotBool         DiagCode = "C013" // when field is not boolean in output schema
 	DiagConditionFieldNotFound   DiagCode = "C014" // when field not found in source output schema
+	DiagElseWithoutConditional   DiagCode = "C015" // else edge with no conditional (when) sibling
 	DiagUnreachableNode          DiagCode = "C016" // node unreachable from entry
 	DiagHistoryRefNotInLoop      DiagCode = "C017" // outputs.<node>.history but node not in a loop
 	DiagUndeclaredCycle          DiagCode = "C019" // cycle without a declared loop (infinite loop risk)
@@ -39,6 +40,8 @@ const (
 	DiagRefNodeNotReachable      DiagCode = "C036" // outputs ref to node not reachable before consumer
 	DiagNodeMaxTokensVsBudget    DiagCode = "C037" // node-level max_tokens exceeds workflow.budget.max_tokens
 	DiagUnsupportedMCPAuth       DiagCode = "C038" // MCP server Auth.Type not supported (only "oauth2" is wired)
+	DiagMultipleElseEdges        DiagCode = "C123" // more than one else edge from the same source
+	DiagElseWithUnconditional    DiagCode = "C124" // else edge alongside a bare unconditional sibling
 	DiagInvalidCompaction        DiagCode = "C043" // compaction.threshold or compaction.preserve_recent out of range
 	DiagMemoryNotSupported       DiagCode = "C047" // memory: enabled on a backend that does not consume it (only claw does today)
 	DiagMemoryMissingScope       DiagCode = "C048" // memory: enabled without a scope: name

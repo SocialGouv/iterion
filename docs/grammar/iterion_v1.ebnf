@@ -331,7 +331,15 @@ compaction_prop = "threshold"        ":" NUMBER_LIT NEWLINE
 
 (* ---- Edges (dans workflow) ---- *)
 
-edge = IDENT "->" IDENT [ when_clause ] [ loop_clause ] [ with_block ] NEWLINE ;
+edge = IDENT "->" IDENT [ when_clause | else_clause ] [ loop_clause ] [ with_block ] NEWLINE ;
+
+else_clause = "else" ;
+(* Explicit fallback: fires only when no sibling `when` edge from the
+   same source matched. Runtime-equivalent to a bare unconditional edge
+   among conditional siblings, but validated: exactly one per source
+   (C039), requires at least one conditional sibling (C015), and is
+   mutually exclusive with a bare unconditional sibling (C040) as well
+   as with `when` on the same edge (parser E031). *)
 
 when_clause = "when" ( [ "not" ] IDENT | STRING_LIT ) ;
 (* Two forms:

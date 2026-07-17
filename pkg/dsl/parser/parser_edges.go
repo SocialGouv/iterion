@@ -54,12 +54,14 @@ func (p *parser) parseEdge() *ast.Edge {
 		Span: ast.Span{Start: p.pos(fromT)},
 	}
 
-	// Optional clauses: when, as, with (in any order before newline).
-	// Reject duplicates — `... when foo when not bar` used to accept
-	// the line with the second clause silently overwriting the first.
-	// Track each by token kind so the error message points the operator
-	// at the right culprit.
-	var sawWhen, sawAs, sawWith bool
+	// Optional clauses: when|else, as, with (in any order before
+	// newline). Reject duplicates — `... when foo when not bar` used to
+	// accept the line with the second clause silently overwriting the
+	// first. Track each by token kind so the error message points the
+	// operator at the right culprit. `else` and `when` are mutually
+	// exclusive: else IS the "no sibling when matched" clause, so a
+	// guard on top of it is a contradiction.
+	var sawWhen, sawElse, sawAs, sawWith bool
 	for {
 		t := p.peek()
 		switch t.Type {
@@ -67,11 +69,24 @@ func (p *parser) parseEdge() *ast.Edge {
 			if sawWhen {
 				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'when' clause on edge")
 			}
+			if sawElse {
+				p.addError(DiagElseWithWhen, t, "edge cannot carry both 'else' and 'when'")
+			}
 			parsed := p.parseWhenClause()
 			if !sawWhen {
 				edge.When = parsed
 			}
 			sawWhen = true
+		case TokenElse:
+			if sawElse {
+				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'else' clause on edge")
+			}
+			if sawWhen {
+				p.addError(DiagElseWithWhen, t, "edge cannot carry both 'when' and 'else'")
+			}
+			p.next() // consume "else"
+			edge.IsElse = true
+			sawElse = true
 		case TokenAs:
 			if sawAs {
 				p.addError(DiagDuplicateEdgeClause, t, "duplicate 'as' clause on edge")

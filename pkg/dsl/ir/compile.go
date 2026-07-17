@@ -1355,8 +1355,9 @@ func (c *compiler) compileEdges(astEdges []*ast.Edge) ([]*Edge, map[string]*Loop
 		}
 
 		e := &Edge{
-			From: ae.From,
-			To:   ae.To,
+			From:   ae.From,
+			To:     ae.To,
+			IsElse: ae.IsElse,
 		}
 
 		// Condition: either a simple field name (legacy) or a parsed expression.

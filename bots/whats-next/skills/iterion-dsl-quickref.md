@@ -172,6 +172,7 @@ src -> dst                                        # unconditional
 src -> dst when approved                          # bool field on src.output
 src -> dst when not approved
 src -> dst when "!approved && length(blockers) > 0"   # expression
+src -> dst else                                   # explicit fallback: fires only when no sibling `when` matched
 src -> dst as loop_name(10)                       # bounded loop (literal cap)
 src -> dst as loop_name("{{outputs.x.cap}}")      # bounded loop (data-driven cap)
 src -> dst as loop_name(unbounded)                # unbounded: runs until a when-exit; fuel from budget.max_iterations

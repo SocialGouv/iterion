@@ -626,11 +626,12 @@ type jsonBudgetBlock struct {
 }
 
 type jsonEdge struct {
-	From string           `json:"from,omitempty"`
-	To   string           `json:"to,omitempty"`
-	When *jsonWhenClause  `json:"when,omitempty"`
-	Loop *jsonLoopClause  `json:"loop,omitempty"`
-	With []*jsonWithEntry `json:"with,omitempty"`
+	From   string           `json:"from,omitempty"`
+	To     string           `json:"to,omitempty"`
+	When   *jsonWhenClause  `json:"when,omitempty"`
+	IsElse bool             `json:"is_else,omitempty"`
+	Loop   *jsonLoopClause  `json:"loop,omitempty"`
+	With   []*jsonWithEntry `json:"with,omitempty"`
 }
 
 type jsonWhenClause struct {
@@ -1188,8 +1189,9 @@ func workflowToJSON(w *WorkflowDecl) *jsonWorkflowDecl {
 
 func edgeToJSON(e *Edge) *jsonEdge {
 	je := &jsonEdge{
-		From: e.From,
-		To:   e.To,
+		From:   e.From,
+		To:     e.To,
+		IsElse: e.IsElse,
 	}
 	if e.When != nil {
 		je.When = &jsonWhenClause{
@@ -1759,8 +1761,9 @@ func workflowFromJSON(jw *jsonWorkflowDecl) (*WorkflowDecl, error) {
 
 func edgeFromJSON(je *jsonEdge) (*Edge, error) {
 	e := &Edge{
-		From: je.From,
-		To:   je.To,
+		From:   je.From,
+		To:     je.To,
+		IsElse: je.IsElse,
 	}
 	if je.When != nil {
 		// Reject ambiguous shapes where both Condition and Expr are

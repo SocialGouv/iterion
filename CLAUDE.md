@@ -185,6 +185,7 @@ Other top-level directories: `studio/` (React/Vite frontend), `examples/` (.bot 
 src -> dst                              # default edge
 src -> dst when <field>                 # conditional (boolean field from src output)
 src -> dst when not <field>             # negated condition
+src -> dst else                         # explicit fallback (fires only when no sibling `when` matched)
 src -> dst as loop_name(5)              # bounded loop (max 5 iterations)
 src -> dst with {field: "{{ref}}"}      # data mapping
 ```

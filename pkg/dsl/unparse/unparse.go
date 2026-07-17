@@ -1225,6 +1225,9 @@ func writeResources(b *strings.Builder, res *ast.ResourcesBlock) {
 
 func writeEdge(b *strings.Builder, e *ast.Edge) {
 	fmt.Fprintf(b, "  %s -> %s", e.From, e.To)
+	if e.IsElse {
+		b.WriteString(" else")
+	}
 	if e.When != nil {
 		if e.When.Expr != "" {
 			fmt.Fprintf(b, " when %q", e.When.Expr)

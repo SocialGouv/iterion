@@ -85,6 +85,7 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 		unconditional []*Edge
 		loopBearing   []*Edge
 		conditional   []*Edge
+		elseEdges     []*Edge
 	}
 	groups := make(map[string]*edgeGroup)
 	for _, e := range w.Edges {
@@ -101,6 +102,11 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 			// default fall-through edges — they don't count toward the
 			// "one default edge" rule.
 			g.loopBearing = append(g.loopBearing, e)
+		case e.IsElse:
+			// Explicit fallback sugar: same runtime role as a bare
+			// unconditional next to conditional siblings, but validated
+			// with its own stricter contract (C015/C039/C040 below).
+			g.elseEdges = append(g.elseEdges, e)
 		default:
 			g.unconditional = append(g.unconditional, e)
 		}
@@ -130,14 +136,42 @@ func (c *compiler) validateEdgeRouting(w *Workflow) {
 				nodeID, len(g.unconditional), targets)
 		}
 
+		// C039: at most one `else` per source — two fallbacks firing on
+		// the same miss would be the C010 ambiguity under a new name.
+		if len(g.elseEdges) > 1 {
+			targets := make([]string, len(g.elseEdges))
+			for i, e := range g.elseEdges {
+				targets[i] = e.To
+			}
+			c.errorf(DiagMultipleElseEdges,
+				"node %q has %d `else` edges (targets: %v); only one else fallback is allowed",
+				nodeID, len(g.elseEdges), targets)
+		}
+		// C040: `else` REPLACES the bare unconditional fallback — having
+		// both is two competing defaults, pick one form.
+		if len(g.elseEdges) > 0 && len(g.unconditional) > 0 {
+			c.errorf(DiagElseWithUnconditional,
+				"node %q has both an `else` edge (-> %s) and an unconditional edge (-> %s); `else` IS the fallback — remove one",
+				nodeID, g.elseEdges[0].To, g.unconditional[0].To)
+		}
+		// C015: a stray `else` with no conditional sibling can never
+		// mean anything — it would just be an unconditional edge wearing
+		// a misleading keyword.
+		if len(g.elseEdges) > 0 && len(g.conditional) == 0 {
+			c.errorf(DiagElseWithoutConditional,
+				"node %q has an `else` edge (-> %s) but no conditional (`when`) sibling; use a plain edge",
+				nodeID, g.elseEdges[0].To)
+		}
+
 		// Only validate conditions for nodes that have conditional edges.
 		if len(g.conditional) == 0 {
 			continue
 		}
 
-		// C012: conditional edges but no fallback. A loop-bearing edge counts
-		// as a fallback for this purpose.
-		if len(g.unconditional) == 0 && len(g.loopBearing) == 0 {
+		// C012: conditional edges but no fallback. A loop-bearing edge
+		// counts as a fallback for this purpose, and so does an `else`
+		// edge (it is the explicit fallback form).
+		if len(g.unconditional) == 0 && len(g.loopBearing) == 0 && len(g.elseEdges) == 0 {
 			if !isExhaustive(g.conditional) {
 				c.errorf(DiagMissingFallback,
 					"node %q has conditional edges but no default (unconditional) fallback edge",
