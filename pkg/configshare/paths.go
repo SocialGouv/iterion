@@ -35,6 +35,19 @@ func collectPatchLeaves(patch map[string]any, allowed map[string]bool) ([]patchL
 			path := append(append([]string{}, prefix...), k)
 			dotted := strings.Join(path, ".")
 			if allowed[dotted] {
+				// A leaf grant writes a scalar or array value — never an object
+				// subtree. Rejecting object values is what makes
+				// hardForbiddenSegments a true backstop: an over-broad grant
+				// (e.g. allowed=["categories.a11y"]) can't be handed an object
+				// carrying `sinks` that the key-walk above never traverses.
+				if _, isObj := v.(map[string]any); isObj {
+					return fmt.Errorf("field %q must be a value, not an object", dotted)
+				}
+				// And scan the value (an array may hold objects) for any
+				// forbidden key at any depth.
+				if err := rejectForbiddenIn(v); err != nil {
+					return err
+				}
 				out = append(out, patchLeaf{path: path, value: v})
 				continue
 			}
@@ -55,6 +68,31 @@ func collectPatchLeaves(patch map[string]any, allowed map[string]bool) ([]patchL
 		return nil, fmt.Errorf("patch has no editable field")
 	}
 	return out, nil
+}
+
+// rejectForbiddenIn recursively scans a value for a forbidden or hard-forbidden
+// key, so a forbidden field (sinks / prototype-pollution) can't ride inside the
+// value of an over-broad allowed leaf grant — the backstop hardForbiddenSegments
+// promises, closed even when the key is never traversed as a patch key.
+func rejectForbiddenIn(v any) error {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, vv := range t {
+			if forbiddenKeys[k] || hardForbiddenSegments[k] {
+				return fmt.Errorf("illegal key %q in value", k)
+			}
+			if err := rejectForbiddenIn(vv); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, vv := range t {
+			if err := rejectForbiddenIn(vv); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func deepCopyValue(v any) any {

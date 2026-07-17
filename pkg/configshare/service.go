@@ -56,7 +56,10 @@ func (svc *Service) ApplyEdit(ctx context.Context, fc forge.FileClient, sh *Shar
 	if err != nil {
 		return "", nil, err
 	}
-	if expectSHA != "" && expectSHA != fr.SHA {
+	// A stale (or missing) expectSHA is a conflict — the caller must read, diff
+	// and re-submit against the current SHA. Empty is treated as stale (the
+	// handler also rejects an empty sha), so an omitted sha can't blind-write.
+	if expectSHA != fr.SHA {
 		return "", nil, forge.ErrFileConflict
 	}
 	full, err := parseConfig(fr.Content)
@@ -65,12 +68,12 @@ func (svc *Service) ApplyEdit(ctx context.Context, fc forge.FileClient, sh *Shar
 	}
 	merged, changed, err := ApplyPatch(full, patch, sh.AllowedPaths)
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("%w: %v", ErrValidation, err)
 	}
 	for _, p := range changed {
 		if v, ok := getPath(merged, strings.Split(p, ".")); ok {
 			if err := ValidateLeaf(p, v); err != nil {
-				return "", nil, err
+				return "", nil, fmt.Errorf("%w: %v", ErrValidation, err)
 			}
 		}
 	}
@@ -131,6 +134,17 @@ func ValidatePaths(allowed, visible []string) error {
 			return fmt.Errorf("allowed path %q must also be a visible path", p)
 		}
 	}
+	// Reject a grant that is a strict prefix of another (a subtree that swallows
+	// a leaf). Belt to the runtime object-value rejection in collectPatchLeaves,
+	// keeping grants leaf-shaped so per-field validation always runs.
+	all := append(append([]string{}, allowed...), visible...)
+	for _, a := range allowed {
+		for _, b := range all {
+			if a != b && strings.HasPrefix(b, a+".") {
+				return fmt.Errorf("allowed path %q is a prefix of %q; grants must be leaves", a, b)
+			}
+		}
+	}
 	return nil
 }
 
@@ -158,8 +172,10 @@ func RepoSlug(repoURL string) (string, error) {
 		return "", fmt.Errorf("configshare: repo url %q is not owner/name", repoURL)
 	}
 	owner, name := segs[len(segs)-2], segs[len(segs)-1]
-	if !repoNameRe.MatchString(owner) || !repoNameRe.MatchString(name) {
-		return "", fmt.Errorf("configshare: repo url %q has an illegal owner/name", repoURL)
+	for _, s := range []string{owner, name} {
+		if !repoNameRe.MatchString(s) || s == "." || s == ".." || strings.Contains(s, "..") {
+			return "", fmt.Errorf("configshare: repo url %q has an illegal owner/name", repoURL)
+		}
 	}
 	return owner + "/" + name, nil
 }

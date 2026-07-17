@@ -37,11 +37,26 @@ func bearerConfigShareToken(r *http.Request) string {
 // auth layer refuses every operator RBAC gate). Every failure — unknown id,
 // bad token, disabled, revoked, expired — collapses to a UNIFORM 401 so the id
 // space and lifecycle aren't probeable.
+// configShareRateBucket bounds a single share's / IP's request rate. A UI
+// editing session needs a handful of requests; this stops a leaked token from
+// hammering the forge (each PATCH is 2–3 GitHub calls + a commit) and bounds
+// id-guessing. Applied per-IP (before the DB lookup) and per-share.
+var configShareRateBucket = authBucketCfg{rate: 1, burst: 30}
+
 func (s *Server) configShareAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		fail := func() { httpError(w, http.StatusUnauthorized, "invalid_share") }
+
+		// Per-IP guard BEFORE any store lookup — bounds id-guessing + flooding
+		// cheaply (a miss costs only this check, not a DB round-trip).
+		if s.authLimiter != nil {
+			if ok, _ := s.authLimiter.allow("csip:"+s.clientIP(r), configShareRateBucket); !ok {
+				httpError(w, http.StatusTooManyRequests, "rate limited")
+				return
+			}
+		}
 
 		id := r.PathValue("id")
 		token := bearerConfigShareToken(r)
@@ -53,6 +68,14 @@ func (s *Server) configShareAuth(next http.Handler) http.Handler {
 		if err != nil || sh == nil || !configshare.VerifyToken(token, sh.TokenHash) || !sh.Active(time.Now().UTC()) {
 			fail()
 			return
+		}
+		// Per-share guard once the token is proven — bounds a leaked token's
+		// commit spam / forge-rate burn.
+		if s.authLimiter != nil {
+			if ok, _ := s.authLimiter.allow("cs:"+sh.ID, configShareRateBucket); !ok {
+				httpError(w, http.StatusTooManyRequests, "rate limited")
+				return
+			}
 		}
 
 		actor := "share:" + sh.ID

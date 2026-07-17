@@ -144,6 +144,15 @@ func TestConfigShare_EndToEnd(t *testing.T) {
 		t.Fatalf("off-list PATCH wrote to forge (puts=%d)", fc.puts)
 	}
 
+	// ---- PATCH with an empty sha → 400, no blind write ----
+	fc.puts = 0
+	if c := patch(`{"patch":{"categories":{"a11y":{"editorial":"x"}}},"sha":""}`).Code; c != http.StatusBadRequest {
+		t.Fatalf("empty-sha PATCH = %d, want 400", c)
+	}
+	if fc.puts != 0 {
+		t.Fatalf("empty-sha PATCH wrote to forge (puts=%d)", fc.puts)
+	}
+
 	// ---- a delivery audit row landed for the successful write ----
 	// (best-effort/detached; the memory store records synchronously enough)
 	rows, _ := s.configShares.ListDeliveries(ctx, shareID, 10)

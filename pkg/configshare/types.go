@@ -98,3 +98,7 @@ type Store interface {
 
 // ErrNotFound is returned by a Store when no share (or delivery) matches.
 var ErrNotFound = errors.New("configshare: not found")
+
+// ErrValidation wraps a patch/field rejection (off-list path, bad value) so the
+// caller can map it to a 400 while a forge/transport failure surfaces as a 502.
+var ErrValidation = errors.New("configshare: invalid edit")

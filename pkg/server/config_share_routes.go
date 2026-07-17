@@ -93,6 +93,12 @@ func (s *Server) handleConfigSharePatch(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "patch has no editable field")
 		return
 	}
+	// The sha the editor read is mandatory — an omitted sha must not blind-write
+	// over a concurrent change (e.g. the bot's own state commit to the file).
+	if req.SHA == "" {
+		httpError(w, http.StatusBadRequest, "sha required")
+		return
+	}
 	fc, err := s.resolveShareFC(r.Context(), sh)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "config source unavailable")
@@ -110,11 +116,16 @@ func (s *Server) handleConfigSharePatch(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		httpError(w, http.StatusConflict, "conflict")
-	case err != nil:
-		// Uniform: never echo the offending path/reason to the client (logged
-		// server-side in the delivery row for the operator's audit).
+	case errors.Is(err, configshare.ErrValidation):
+		// A field/patch rejection — 400. Never echo the offending path to the
+		// client (recorded server-side in the delivery row for the audit).
 		s.recordShareDelivery(r, sh, http.StatusBadRequest, req.SHA, "", nil, err.Error())
 		httpError(w, http.StatusBadRequest, "field not editable")
+	case err != nil:
+		// A forge / transport failure (GitHub down, token invalid) — not the
+		// visitor's fault, so 502 rather than a misleading "field not editable".
+		s.recordShareDelivery(r, sh, http.StatusBadGateway, req.SHA, "", nil, err.Error())
+		httpError(w, http.StatusBadGateway, "config write failed")
 	default:
 		s.recordShareDelivery(r, sh, http.StatusOK, req.SHA, newSHA, changed, "")
 		writeJSON(w, map[string]any{"sha": newSHA, "changed": changed})

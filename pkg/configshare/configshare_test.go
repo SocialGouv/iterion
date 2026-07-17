@@ -90,6 +90,38 @@ func TestApplyPatch_RejectsOffList(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_RejectsSubtreeGrant(t *testing.T) {
+	full := mustParse(t, sampleConfig)
+	// An over-broad subtree grant (not a leaf) must not let an object value
+	// smuggle a forbidden field (sinks) past the key-walk.
+	subtree := []string{"categories.a11y"}
+	if _, _, err := ApplyPatch(full, mustParse(t, `{"categories":{"a11y":{"sinks":[{"webhook":"evil"}]}}}`), subtree); err == nil {
+		t.Fatal("subtree grant carrying sinks must be rejected")
+	}
+	// Even a benign object at a subtree grant is rejected — a leaf value must be
+	// a scalar/array so per-field validation always runs.
+	if _, _, err := ApplyPatch(full, mustParse(t, `{"categories":{"a11y":{"editorial":"x"}}}`), subtree); err == nil {
+		t.Fatal("object-valued leaf grant must be rejected")
+	}
+}
+
+func TestValidatePaths(t *testing.T) {
+	if err := ValidatePaths(allowed, visible); err != nil {
+		t.Fatalf("clean leaf grants rejected: %v", err)
+	}
+	bad := [][2][]string{
+		{{"categories.a11y", "categories.a11y.feeds"}, {"categories.a11y", "categories.a11y.feeds"}}, // prefix overlap
+		{{"categories.a11y.sinks"}, {"categories.a11y.sinks"}},                                       // forbidden segment
+		{{"categories.a11y.feeds"}, {"categories.a11y.editorial"}},                                   // allowed ⊄ visible
+		{{}, {}}, // empty
+	}
+	for i, c := range bad {
+		if err := ValidatePaths(c[0], c[1]); err == nil {
+			t.Fatalf("ValidatePaths case %d must be rejected", i)
+		}
+	}
+}
+
 func TestValidateLeaf_Feeds(t *testing.T) {
 	ok := []any{"https://ok.example/rss", "http://also.example/feed"}
 	if err := ValidateLeaf("categories.a11y.feeds", ok); err != nil {
@@ -146,6 +178,11 @@ func TestRepoSlugAndPathGuards(t *testing.T) {
 	}
 	if _, err := RepoSlug("https://github.com/nope"); err == nil {
 		t.Fatal("one-segment repo url must error")
+	}
+	for _, bad := range []string{"https://github.com/../x", "https://github.com/o/..", "https://github.com/o/a..b"} {
+		if _, err := RepoSlug(bad); err == nil {
+			t.Fatalf("RepoSlug(%q) must error", bad)
+		}
 	}
 	if err := ValidateConfigPath("feed-watch.json"); err != nil {
 		t.Fatalf("clean path rejected: %v", err)
@@ -216,6 +253,18 @@ func TestService_ApplyEdit(t *testing.T) {
 		mustParse(t, `{"categories":{"a11y":{"editorial":"z"}}}`),
 		"sha-STALE", "m", "b", "b@x.invalid"); err != forge.ErrFileConflict {
 		t.Fatalf("stale expectSHA err = %v, want ErrFileConflict", err)
+	}
+
+	// Empty expectSHA is treated as a conflict — an omitted sha must not
+	// blind-write over a concurrent change.
+	fc2b := &fakeFC{content: []byte(sampleConfig), sha: "sha-1"}
+	if _, _, err := svc.ApplyEdit(ctx, fc2b, sh,
+		mustParse(t, `{"categories":{"a11y":{"editorial":"z"}}}`),
+		"", "m", "b", "b@x.invalid"); err != forge.ErrFileConflict {
+		t.Fatalf("empty expectSHA err = %v, want ErrFileConflict", err)
+	}
+	if fc2b.putCalls != 0 {
+		t.Fatalf("empty expectSHA must not write (puts=%d)", fc2b.putCalls)
 	}
 
 	// Off-list patch → validation error, NO write attempted.
