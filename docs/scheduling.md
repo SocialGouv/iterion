@@ -42,6 +42,11 @@ schedules:
       label_source: sec-audit-self
     description: Weekly SAST self-audit  # optional; emitted as a crontab comment
     disabled: false                      # keep in the manifest, leave out of the crontab
+    overlap: skip                        # optional: skip (default) | allow — see "Overlap policy"
+    max_concurrent: 0                    # optional, with overlap: allow — cap on live runs (0 = unlimited)
+    guard: ""                            # optional pre-launch sh -lc gate — see "Guard command"
+    guard_timeout: "30s"                 # optional guard subprocess timeout
+    guard_var: guard_output              # optional var name receiving the guard stdout
 ```
 
 ## Commands
@@ -51,7 +56,8 @@ schedules:
 | `iterion schedule add <name> --cron … --bot … [--workdir …] [--var k=v]… [--store-dir …] [--sandbox …] [--timeout …] [--description …] [--disabled]` | Add or update an entry (upsert by name). |
 | `iterion schedule list [--json]` | List manifest entries. |
 | `iterion schedule remove <name>` | Delete an entry from the manifest. |
-| `iterion schedule run <name> [--dry-run]` | Execute one entry now — what cron invokes. `--dry-run` prints the resolved `iterion run` command without executing. |
+| `iterion schedule run <name> [--dry-run]` | Execute one entry now — what cron invokes. Applies the overlap policy and the guard before launching. `--dry-run` prints the resolved `iterion run` command without executing. |
+| `iterion schedule audit [--name X] [--surface host-cron\|trigger\|cloud] [--since 24h] [--tail 50] [--json]` | Show the tick-decision history: every fired / skipped / guard outcome with its reason — the deterministic answer to "why didn't my scheduled bot fire last night?". |
 | `iterion schedule install [--print] [--tz UTC]` | Sync the manifest into the host crontab. `--print` renders the block to stdout without touching the crontab (works even where `crontab` is absent). |
 | `iterion schedule uninstall` | Remove the iterion-managed block from the host crontab (manifest left intact). |
 
@@ -121,6 +127,69 @@ tag` your build to `ghcr.io/socialgouv/iterion-sandbox-sec:edge`).
 > scanner layer is still a scaffold and a run self-labels with a
 > "⚠ Coverage" banner. Schedule it for the LLM-review pass, but treat it
 > as incomplete until the implementation ticket lands.
+
+## Overlap policy — skip is the default (behavior change)
+
+Since the schedgate integration, `iterion schedule run` **does not fire
+while a previous run of the same schedule is still live** (any
+non-terminal status: `running`, `queued`, `paused_*`). Before, every
+tick launched unconditionally — a nightly bot that overran its window
+silently piled up concurrent runs on the same repo. Skip-by-default
+fixes that latent bug; the trade-off is deliberate and loud:
+
+- Every decision is recorded in the **tick audit**
+  (`<manifest-dir>/logs/tick-audit.jsonl`, read with
+  `iterion schedule audit`). A skipped tick writes `skipped_overlap`
+  with the `blocking_run_id`, so you find out *which* run held the slot
+  instead of wondering why nothing ran.
+- A **stale run stuck in `running`** (crashed host) blocks its schedule
+  until it is reconciled or cancelled. iterion does not guess a
+  staleness cutoff: the audit names the run — inspect it, then
+  `iterion resume` or cancel it. The studio/server's orphan
+  reconciliation flips flock-releasable orphans automatically.
+- Opt out per entry with `overlap: allow` (unbounded) or
+  `overlap: allow` + `max_concurrent: N` (fire while fewer than N runs
+  of this schedule are live, counting the one about to start).
+- **After upgrading**, watch `iterion schedule audit --since 48h` once:
+  a schedule that used to rely on implicit overlap shows up as
+  `skipped_overlap` there.
+
+Overlap counting keys on run provenance: schedule-launched runs are
+stamped `source.kind: schedule` + `source.schedule_id` in `run.json`,
+which also makes them attributable in the studio and queryable via the
+store.
+
+## Guard command — fire only when there is work
+
+`guard:` is an optional `sh -lc` snippet executed **before** any
+launch, in the entry's `workdir`, with `ITERION_SCHEDULE` /
+`ITERION_SCHEDULE_BOT` in the environment and a hard `guard_timeout`
+(default 30s) on its own context:
+
+- **exit 0** → the run fires, and the guard's **stdout becomes the
+  run's `vars[guard_var]`** (default `guard_output`) — a cheap way to
+  hand the run "the work found" (an issue list, a diff summary).
+- **exit non-zero** → the tick is skipped (`guard_blocked` in the
+  audit, exit code + stderr tail captured).
+- **guard breaks** (spawn failure, timeout) → `guard_error` in the
+  audit — deliberately distinct from `guard_blocked`, so "the guard
+  said no" never masks "the guard is broken".
+
+Example — only run the fixer when ready-labeled issues exist, and pass
+them in:
+
+```yaml
+- name: fix-ready-issues
+  cron: "*/30 * * * *"
+  bot: bots/feature-dev/main.bot
+  workdir: /home/jo/proj
+  guard: 'out=$(gh issue list --label ready-for-agent --json number,title); [ "$out" != "[]" ] && printf %s "$out"'
+  guard_var: issues_json
+```
+
+Idempotence stays with the workflow (mutate the state you poll — e.g.
+the bot relabels the issue), exactly like the dispatcher's tracker
+loop: the guard is a gate + input source, not a dedup engine.
 
 ## Retention — pair recurring schedules with `iterion runs prune`
 

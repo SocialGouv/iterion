@@ -13,6 +13,9 @@ import (
 	"time"
 
 	yaml "go.yaml.in/yaml/v2"
+
+	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -48,6 +51,29 @@ type ScheduleEntry struct {
 	Vars        map[string]string `yaml:"vars,omitempty"`
 	Description string            `yaml:"description,omitempty"`
 	Disabled    bool              `yaml:"disabled,omitempty"`
+
+	// Overlap policy + pre-launch guard (pkg/schedgate). Overlap
+	// defaults to "skip": a tick whose previous run is still live is
+	// skipped (and audited) instead of piling up concurrent runs.
+	// Guard is an optional `sh -lc` snippet run before any launch —
+	// exit 0 fires the run with its stdout in vars[guard_var],
+	// non-zero skips the tick. See docs/scheduling.md#overlap-policy.
+	Overlap       string `yaml:"overlap,omitempty"`
+	MaxConcurrent int    `yaml:"max_concurrent,omitempty"`
+	Guard         string `yaml:"guard,omitempty"`
+	GuardTimeout  string `yaml:"guard_timeout,omitempty"`
+	GuardVar      string `yaml:"guard_var,omitempty"`
+}
+
+// policy projects the entry's schedgate fields into a normalized Policy.
+func (e ScheduleEntry) policy() schedgate.Policy {
+	return schedgate.Normalize(schedgate.Policy{
+		Overlap:       e.Overlap,
+		MaxConcurrent: e.MaxConcurrent,
+		Guard:         e.Guard,
+		GuardTimeout:  e.GuardTimeout,
+		GuardVar:      e.GuardVar,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +178,15 @@ func validateScheduleEntry(e ScheduleEntry) error {
 			return fmt.Errorf("invalid timeout %q: %w", e.Timeout, err)
 		}
 	}
+	if err := schedgate.Validate(schedgate.Policy{
+		Overlap:       e.Overlap,
+		MaxConcurrent: e.MaxConcurrent,
+		Guard:         e.Guard,
+		GuardTimeout:  e.GuardTimeout,
+		GuardVar:      e.GuardVar,
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -177,16 +212,21 @@ type ScheduleCommonOptions struct {
 
 type ScheduleAddOptions struct {
 	ScheduleCommonOptions
-	Name        string
-	Cron        string
-	Bot         string
-	Workdir     string
-	StoreDir    string
-	Sandbox     string
-	Timeout     string
-	VarFlags    []string
-	Description string
-	Disabled    bool
+	Name          string
+	Cron          string
+	Bot           string
+	Workdir       string
+	StoreDir      string
+	Sandbox       string
+	Timeout       string
+	VarFlags      []string
+	Description   string
+	Disabled      bool
+	Overlap       string
+	MaxConcurrent int
+	Guard         string
+	GuardTimeout  string
+	GuardVar      string
 }
 
 type ScheduleRefOptions struct {
@@ -227,16 +267,21 @@ func RunScheduleAdd(p *Printer, opts ScheduleAddOptions) error {
 		return err
 	}
 	entry := ScheduleEntry{
-		Name:        opts.Name,
-		Cron:        opts.Cron,
-		Bot:         opts.Bot,
-		Workdir:     workdir,
-		StoreDir:    opts.StoreDir,
-		Sandbox:     opts.Sandbox,
-		Timeout:     opts.Timeout,
-		Vars:        vars,
-		Description: opts.Description,
-		Disabled:    opts.Disabled,
+		Name:          opts.Name,
+		Cron:          opts.Cron,
+		Bot:           opts.Bot,
+		Workdir:       workdir,
+		StoreDir:      opts.StoreDir,
+		Sandbox:       opts.Sandbox,
+		Timeout:       opts.Timeout,
+		Vars:          vars,
+		Description:   opts.Description,
+		Disabled:      opts.Disabled,
+		Overlap:       opts.Overlap,
+		MaxConcurrent: opts.MaxConcurrent,
+		Guard:         opts.Guard,
+		GuardTimeout:  opts.GuardTimeout,
+		GuardVar:      opts.GuardVar,
 	}
 	if err := validateScheduleEntry(entry); err != nil {
 		return err
@@ -327,6 +372,11 @@ func RunScheduleRemove(p *Printer, opts ScheduleRefOptions) error {
 // run — invoked by cron (or by hand) to execute one schedule
 // ---------------------------------------------------------------------------
 
+// runRunFn is a seam so schedule tests can capture the RunOptions the
+// gate hands to the engine without executing a real run (same pattern
+// as the crontab reader/writer seams below).
+var runRunFn = RunRun
+
 func RunScheduleRun(ctx context.Context, p *Printer, opts ScheduleRunOptions) error {
 	path, err := resolveScheduleManifestPath(opts.ManifestPath)
 	if err != nil {
@@ -388,8 +438,85 @@ func RunScheduleRun(ctx context.Context, p *Printer, opts ScheduleRunOptions) er
 			defer func() { _ = os.Chdir(prev) }()
 		}
 	}
+
+	// Overlap + guard gate (pkg/schedgate). Skips exit 0: a skipped tick
+	// is a normal outcome recorded in the tick audit, not a cron error
+	// (non-zero would mailspam the operator every blocked tick).
+	policy := e.policy()
+	auditPath := tickAuditPath(path)
+
+	storeDir := store.ResolveStoreDir(filepath.Dir(e.Bot), e.StoreDir)
+	s, err := store.New(storeDir)
+	if err != nil {
+		return fmt.Errorf("schedule %q: open store %s for overlap check: %w", e.Name, storeDir, err)
+	}
+	live := schedgate.LiveRunsForSchedule(ctx, s, e.Name, nil)
+	if decision, blocking := schedgate.EvaluateOverlap(live, policy); decision == schedgate.DecisionSkipOverlap {
+		rec := newHostCronTickRecord(*e, schedgate.TickSkippedOverlap)
+		rec.BlockingRunID = blocking
+		rec.Reason = fmt.Sprintf("blocked by live run %s (%d live, overlap=%s)", blocking, len(live), policy.Overlap)
+		writeTickAudit(p, auditPath, rec)
+		p.Line("⏭ schedule %q skipped — %s (cancel it or set overlap: allow; see `iterion schedule audit --name %s`)", e.Name, rec.Reason, e.Name)
+		return nil
+	}
+
+	if policy.Guard != "" {
+		res := schedgate.RunGuard(ctx, schedgate.GuardSpec{
+			Command: policy.Guard,
+			Dir:     e.Workdir,
+			Env: []string{
+				"ITERION_SCHEDULE=" + e.Name,
+				"ITERION_SCHEDULE_BOT=" + e.Bot,
+			},
+			Timeout: policy.GuardTimeoutDuration(),
+		})
+		switch res.Kind {
+		case schedgate.GuardBlocked:
+			rec := newHostCronTickRecord(*e, schedgate.TickGuardBlocked)
+			rec.Reason = fmt.Sprintf("guard exited %d — nothing to do", res.ExitCode)
+			rec.ApplyGuard(res)
+			writeTickAudit(p, auditPath, rec)
+			p.Line("⏭ schedule %q skipped — guard exited %d", e.Name, res.ExitCode)
+			return nil
+		case schedgate.GuardError:
+			rec := newHostCronTickRecord(*e, schedgate.TickGuardError)
+			rec.Reason = "guard failed to execute"
+			rec.ApplyGuard(res)
+			writeTickAudit(p, auditPath, rec)
+			p.Line("⏭ schedule %q skipped — guard error: %v", e.Name, res.Err)
+			return nil
+		default: // GuardOK — stdout becomes the run's guard var.
+			if runOpts.Vars == nil {
+				runOpts.Vars = map[string]string{}
+			}
+			runOpts.Vars[policy.GuardVar] = res.Stdout
+		}
+	}
+
+	// Pre-mint the run ID so the fired audit row correlates with the run
+	// even when RunRun fails downstream, and stamp the schedule
+	// provenance the overlap check queries on the next tick.
+	runID, err := store.GenerateRunID()
+	if err != nil {
+		return fmt.Errorf("schedule %q: generate run id: %w", e.Name, err)
+	}
+	runOpts.RunID = runID
+	runOpts.Source = &store.RunSource{
+		Kind:         store.RunSourceKindSchedule,
+		ScheduleID:   e.Name,
+		ScheduleName: e.Name,
+	}
+
 	p.Line("▶ schedule %q: iterion run %s", e.Name, e.Bot)
-	return RunRun(ctx, runOpts, p)
+	runErr := runRunFn(ctx, runOpts, p)
+
+	rec := newHostCronTickRecord(*e, schedgate.TickFired)
+	rec.RunID = runID
+	if runErr != nil {
+		rec.Error = runErr.Error()
+	}
+	writeTickAudit(p, auditPath, rec)
+	return runErr
 }
 
 // dryRunArgs renders the non-default run flags for the dry-run preview.
