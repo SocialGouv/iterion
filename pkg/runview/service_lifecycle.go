@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -309,8 +310,19 @@ func (s *Service) startPeriodicReconcile() {
 				if s.draining.Load() {
 					return
 				}
-				s.reconcileOrphans()
-				s.reconcileSandboxK8sResources()
+				// Contain a reconcile panic: one bad run.json / driver
+				// edge case must not silently kill orphan detection for
+				// the rest of the process lifetime (the sweep IS the
+				// safety net — a dead net is worse than a noisy one).
+				func() {
+					defer func() {
+						if r := recover(); r != nil && s.logger != nil {
+							s.logger.Error("runview: PANIC in periodic reconcile: %v\n%s", r, debug.Stack())
+						}
+					}()
+					s.reconcileOrphans()
+					s.reconcileSandboxK8sResources()
+				}()
 			}
 		}
 	}()

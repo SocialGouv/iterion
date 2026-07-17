@@ -91,6 +91,21 @@ func (s *Server) scheduleGate() *trigger.ScheduleGate {
 	return gate
 }
 
+// SchedulerStatus reports the schedule-scheduler's liveness snapshot.
+// Nil-safe (zero value when the coordinator or scheduler is absent).
+func (t *TriggerCoordinator) SchedulerStatus() trigger.SchedulerStatus {
+	if t == nil {
+		return trigger.SchedulerStatus{}
+	}
+	return t.scheduler.Status()
+}
+
+// SchedulerRunning reports whether a schedule scheduler is wired at
+// all (false in dispatch-only mode where launcher is nil). Nil-safe.
+func (t *TriggerCoordinator) SchedulerRunning() bool {
+	return t != nil && t.scheduler != nil
+}
+
 // Bus returns the coordinator's event bus so other producers (the run
 // service's run-completion source) publish onto the same bus the evaluator
 // consumes. The concrete type is InProcBus for local/self-host and NATSBus in

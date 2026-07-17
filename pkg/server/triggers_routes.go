@@ -28,6 +28,19 @@ func (s *Server) registerTriggerRoutes() {
 	s.mux.Handle("DELETE /api/v1/triggers/{id}", s.requireAuth(http.HandlerFunc(s.handleDeleteTrigger)))
 	s.mux.Handle("POST /api/v1/triggers/emit", s.requireAuth(http.HandlerFunc(s.handleEmitTrigger)))
 	s.mux.Handle("POST /api/v1/bots/{name}/triggers/from-invocation", s.requireAuth(http.HandlerFunc(s.handleTriggerFromInvocation)))
+	s.mux.Handle("GET /api/v1/triggers/health", s.requireAuth(http.HandlerFunc(s.handleTriggersHealth)))
+}
+
+// handleTriggersHealth exposes the schedule-scheduler's liveness
+// snapshot so a wedged loop is observable (frozen last_tick_at)
+// instead of silently never firing. The dispatcher's twin lives on
+// /api/dispatcher/snapshot (last_tick_at field).
+func (s *Server) handleTriggersHealth(w http.ResponseWriter, r *http.Request) {
+	st := s.triggerCoord.SchedulerStatus()
+	dispatcher.WriteJSON(w, http.StatusOK, map[string]any{
+		"scheduler_running": s.triggerCoord.SchedulerRunning(),
+		"scheduler":         st,
+	})
 }
 
 // triggerFromInvocationReq selects one of the bot's manifest-declared

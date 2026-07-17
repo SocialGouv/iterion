@@ -513,6 +513,7 @@ func (c *Dispatcher) buildSnapshot() Snapshot {
 		Name:               cfg.Name,
 		Tracker:            c.tracker.Name(),
 		GeneratedAt:        time.Now().UTC(),
+		LastTickAt:         c.state.lastTickAt,
 		PollingIntervalS:   cfg.PollingInterval().Seconds(),
 		StallTimeoutS:      cfg.StallTimeout().Seconds(),
 		Paused:             c.paused.Load(),

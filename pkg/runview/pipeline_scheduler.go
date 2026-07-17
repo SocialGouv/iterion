@@ -3,6 +3,7 @@ package runview
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"time"
 
@@ -66,7 +67,17 @@ func (s *Service) startPipelineScheduler() {
 				return
 			}
 			for _, it := range s.pipelineQueue.dequeueReady() {
-				s.startQueuedRun(it)
+				// Contain a per-item launch panic so one poisoned queue
+				// entry cannot kill the scheduler and strand every
+				// waiting pipeline behind it.
+				func() {
+					defer func() {
+						if r := recover(); r != nil && s.logger != nil {
+							s.logger.Error("runview: PANIC starting queued pipeline %s: %v\n%s", it.runID, r, debug.Stack())
+						}
+					}()
+					s.startQueuedRun(it)
+				}()
 			}
 		}
 	}()

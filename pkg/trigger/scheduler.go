@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -36,9 +37,45 @@ type Scheduler struct {
 
 	mu       sync.Mutex
 	nextFire map[string]time.Time // sub.ID -> next due instant (in-memory)
+	// lastTickAt / lastSubsSeen back Status(): the observable proof the
+	// scheduler loop is alive (a dead loop shows a frozen tick instant
+	// instead of going silent).
+	lastTickAt   time.Time
+	lastSubsSeen int
 
 	stop chan struct{}
 	done chan struct{}
+}
+
+// SchedulerStatus is the read-only health snapshot behind
+// /api/v1/triggers/health.
+type SchedulerStatus struct {
+	// LastTickAt is when tick() last ran (zero before the first tick).
+	LastTickAt time.Time `json:"last_tick_at"`
+	// Subscriptions is the schedule-kind subscription count seen on the
+	// last tick.
+	Subscriptions int `json:"subscriptions"`
+	// Armed is how many subscriptions currently hold a next-fire slot.
+	Armed int `json:"armed"`
+	// IntervalSeconds is the tick cadence, so a reader can judge
+	// staleness ("last tick 3 intervals ago = dead").
+	IntervalSeconds float64 `json:"interval_seconds"`
+}
+
+// Status reports the scheduler's liveness snapshot. Safe on nil (zero
+// value) so callers don't have to gate on wiring.
+func (s *Scheduler) Status() SchedulerStatus {
+	if s == nil {
+		return SchedulerStatus{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SchedulerStatus{
+		LastTickAt:      s.lastTickAt,
+		Subscriptions:   s.lastSubsSeen,
+		Armed:           len(s.nextFire),
+		IntervalSeconds: s.interval.Seconds(),
+	}
 }
 
 // ScheduleGate bundles the overlap/guard dependencies (pkg/schedgate)
@@ -136,11 +173,13 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		s.warn("scheduler: list subscriptions: %v", err)
 		return
 	}
+	scheduleSubs := 0
 	seen := map[string]bool{}
 	for _, sub := range subs {
 		if sub.Invocation != bundle.InvocationKindSchedule || !sub.Enabled || sub.Cron == "" {
 			continue
 		}
+		scheduleSubs++
 		sched, perr := cron.ParseStandard(sub.Cron)
 		if perr != nil {
 			s.warn("scheduler: bad cron %q on %s: %v", sub.Cron, sub.ID, perr)
@@ -162,8 +201,12 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		s.nextFire[sub.ID] = sched.Next(now)
 		s.mu.Unlock()
 
-		s.fire(ctx, sub)
+		s.fireIsolated(ctx, sub)
 	}
+	s.mu.Lock()
+	s.lastTickAt = now
+	s.lastSubsSeen = scheduleSubs
+	s.mu.Unlock()
 	// GC next-fire entries for removed/disabled subscriptions.
 	s.mu.Lock()
 	for id := range s.nextFire {
@@ -172,6 +215,20 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+// fireIsolated contains a panic from one subscription's fire (a bad
+// guard closure, a launcher bug) so one poisoned entry cannot kill the
+// whole scheduler loop — the next tick still serves every other
+// subscription. The panic is logged with its stack, never swallowed
+// silently.
+func (s *Scheduler) fireIsolated(ctx context.Context, sub Subscription) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.warn("scheduler: PANIC firing %s (%s): %v\n%s", sub.ID, sub.BotID, r, debug.Stack())
+		}
+	}()
+	s.fire(ctx, sub)
 }
 
 func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
