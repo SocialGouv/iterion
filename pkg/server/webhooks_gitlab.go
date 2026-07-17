@@ -775,6 +775,13 @@ func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) r
 		Vars:     sb.Vars,
 		RepoURL:  sb.RepoURL,
 		RepoRef:  sb.RepoRef,
+		// Typed provenance: the schedgate overlap gate counts this
+		// schedule's live runs through source.schedule_id.
+		SourceRef: &store.RunSource{
+			Kind:         store.RunSourceKindSchedule,
+			ScheduleID:   sb.ID,
+			ScheduleName: sb.BotID,
+		},
 	}
 }
 

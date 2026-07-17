@@ -211,6 +211,8 @@ func (s *Server) ListenAndServe() error {
 				Store:  s.cfg.ScheduledBots,
 				Launch: s.launchScheduledBot,
 				Logger: s.logger,
+				Gate:   s.cloudScheduleGate,
+				Audit:  s.cloudScheduleAudit,
 			}).Run(ctx)
 		}()
 	}
