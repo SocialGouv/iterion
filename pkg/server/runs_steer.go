@@ -233,6 +233,8 @@ func (s *Server) writeSteerError(w http.ResponseWriter, r *http.Request, err err
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%s", unknownLoop.Error())
 	case errors.Is(err, runtime.ErrInvalidOverride):
 		s.httpErrorFor(w, r, http.StatusBadRequest, "%s", err.Error())
+	case errors.Is(err, store.ErrRunDeleted):
+		s.httpErrorFor(w, r, http.StatusGone, "run was deleted")
 	case errors.Is(err, store.ErrRunNotFound):
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found")
 	case errors.As(err, &terminal):

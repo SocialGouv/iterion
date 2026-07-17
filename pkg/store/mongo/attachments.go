@@ -26,6 +26,9 @@ func (s *Store) WriteAttachment(ctx context.Context, runID string, rec store.Att
 	if rec.Name == "" {
 		return errors.New("store/mongo: attachment name required")
 	}
+	if err := s.guardNotDeleted(ctx, runID); err != nil {
+		return err
+	}
 	filename := rec.OriginalFilename
 	if filename == "" {
 		filename = rec.Name

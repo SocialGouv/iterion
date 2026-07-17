@@ -572,6 +572,13 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	}
 	snap, err := s.runs.SnapshotCtx(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, store.ErrRunDeleted) {
+			// 410, not 404: the run existed and was deliberately
+			// deleted — the studio shows "run deleted" instead of a
+			// stale-run banner and stops retrying.
+			s.httpErrorFor(w, r, http.StatusGone, "run was deleted")
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}

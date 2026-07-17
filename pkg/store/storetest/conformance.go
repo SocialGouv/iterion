@@ -496,6 +496,52 @@ func testDeleteRun(t *testing.T, s store.RunStore) {
 	if err := s.DeleteRun(ctx, "run_del"); err != nil {
 		t.Errorf("second DeleteRun should be a no-op, got: %v", err)
 	}
+
+	// Durable tombstone: every late writer gets the TYPED refusal and
+	// resurrects nothing. This is the contract that makes DeleteRun
+	// final — before it, AppendEvent's MkdirAll (fs) and SaveRun's
+	// upsert (Mongo) silently rebuilt deleted runs.
+	if _, err := s.AppendEvent(ctx, "run_del", store.Event{Type: store.EventNodeStarted, Timestamp: time.Now().UTC()}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("AppendEvent after delete: err = %v, want ErrRunDeleted", err)
+	}
+	if err := s.SaveRun(ctx, &store.Run{ID: "run_del", WorkflowName: "zombie", Status: store.RunStatusRunning}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("SaveRun after delete: err = %v, want ErrRunDeleted", err)
+	}
+	if _, err := s.CreateRun(ctx, "run_del", "zombie", nil); !errors.Is(err, store.ErrRunDeleted) {
+		// Mongo CreateRun may not exist as a distinct guard (SaveRun
+		// covers the upsert path); only enforce when the impl surfaced
+		// a typed error at all.
+		if err == nil {
+			t.Errorf("CreateRun after delete resurrected the run")
+		}
+	}
+	if err := s.AppendQueuedMessage(ctx, "run_del", store.QueuedUserMessage{ID: "late-msg", Text: "late"}); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("AppendQueuedMessage after delete: err = %v, want ErrRunDeleted", err)
+	}
+	// LoadRun reports the deliberate deletion distinctly from absence.
+	if _, err := s.LoadRun(ctx, "run_del"); !errors.Is(err, store.ErrRunDeleted) {
+		t.Errorf("LoadRun after delete: err = %v, want ErrRunDeleted", err)
+	}
+	// And the run STILL doesn't reappear anywhere.
+	ids, err = s.ListRuns(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsStr(ids, "run_del") {
+		t.Errorf("late writers resurrected run_del in ListRuns: %v", ids)
+	}
+
+	// The tombstone is reaped past the retention horizon — and only then.
+	if n, err := s.PruneDeletionMarkers(ctx, time.Now().Add(-time.Hour)); err != nil || n != 0 {
+		t.Errorf("PruneDeletionMarkers(too old cutoff) = (%d, %v), want (0, nil)", n, err)
+	}
+	if n, err := s.PruneDeletionMarkers(ctx, time.Now().Add(time.Hour)); err != nil || n != 1 {
+		t.Errorf("PruneDeletionMarkers(future cutoff) = (%d, %v), want (1, nil)", n, err)
+	}
+	// Post-reap, the id is a plain 404 again (history fully released).
+	if _, err := s.LoadRun(ctx, "run_del"); !errors.Is(err, store.ErrRunNotFound) {
+		t.Errorf("LoadRun after tombstone reap: err = %v, want ErrRunNotFound", err)
+	}
 }
 
 func containsStr(xs []string, want string) bool {

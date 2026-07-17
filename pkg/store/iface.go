@@ -74,6 +74,13 @@ type RunStore interface {
 	// right after applying an override in memory.
 	PatchRunSteering(ctx context.Context, runID string, loopOverrides map[string]int, budgetRaises *RunBudgetRaises) error
 
+	// PruneDeletionMarkers reaps the durable tombstones DeleteRun
+	// leaves behind (the resurrection guard) once they are older than
+	// cutoff — the marker must outlive any plausible late writer, not
+	// live forever. Returns how many were reaped. `iterion runs prune`
+	// is the designated caller.
+	PruneDeletionMarkers(ctx context.Context, cutoff time.Time) (int, error)
+
 	// Watch subscriptions (MVP3b) — the set of native-kanban issue IDs
 	// this run is subscribed to. Concurrency-safe read-modify-write of
 	// Run.WatchedIssueIDs (parallel branches' onNodeFinished hooks and

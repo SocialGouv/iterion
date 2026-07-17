@@ -57,6 +57,9 @@ func (s *Store) LoadRun(ctx context.Context, id string) (*store.Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	if r.DeletedAt != nil {
+		return nil, fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
+	}
 	if r.SchemaVersion > SchemaVersion {
 		return nil, fmt.Errorf("store/mongo: run %s schema version %d unknown, upgrade required", id, r.SchemaVersion)
 	}
@@ -120,20 +123,78 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 			return fmt.Errorf("store/mongo: delete %s for run %s: %w", c.name, id, err)
 		}
 	}
-	if _, err := s.runs.DeleteOne(ctx, withTenantFilter(ctx, bson.M{"_id": id})); err != nil {
-		return fmt.Errorf("store/mongo: delete run %s: %w", id, err)
+	// Durable tombstone (the Mongo twin of the filesystem .deleted
+	// marker): strip the run document down to a skeleton stamped
+	// deleted_at instead of removing it, so a late writer's
+	// upsert/update matches the tombstone and gets ErrRunDeleted
+	// instead of silently resurrecting the run. Reaped by runs prune.
+	now := time.Now().UTC()
+	tomb := bson.M{"$set": bson.M{"deleted_at": now, "status": "deleted", "updated_at": now},
+		"$unset": bson.M{"checkpoint": "", "inputs": "", "launch_env": "", "model_overrides": "",
+			"budget": "", "loop_overrides": "", "budget_raises": "", "attachments": ""}}
+	if _, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), tomb); err != nil {
+		return fmt.Errorf("store/mongo: tombstone run %s: %w", id, err)
 	}
 	return nil
+}
+
+// PruneDeletionMarkers reaps tombstone skeleton docs older than cutoff.
+func (s *Store) PruneDeletionMarkers(ctx context.Context, cutoff time.Time) (int, error) {
+	res, err := s.runs.DeleteMany(ctx, withTenantFilter(ctx, bson.M{
+		"deleted_at": bson.M{"$exists": true, "$lt": cutoff},
+	}))
+	if err != nil {
+		return 0, fmt.Errorf("store/mongo: prune deletion markers: %w", err)
+	}
+	return int(res.DeletedCount), nil
+}
+
+// runDeleted reports whether the run document carries the deletion
+// tombstone. Used by the append-shaped writers (events, messages,
+// interactions, attachments) whose inserts have no run-doc filter to
+// piggyback the predicate on.
+func (s *Store) runDeleted(ctx context.Context, id string) bool {
+	var doc struct {
+		DeletedAt *time.Time `bson:"deleted_at"`
+	}
+	err := s.runs.FindOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}),
+		options.FindOne().SetProjection(bson.M{"deleted_at": 1})).Decode(&doc)
+	return err == nil && doc.DeletedAt != nil
+}
+
+// guardNotDeleted is the shared typed refusal for tombstoned runs.
+func (s *Store) guardNotDeleted(ctx context.Context, id string) error {
+	if s.runDeleted(ctx, id) {
+		return fmt.Errorf("store/mongo: run %s: %w", id, store.ErrRunDeleted)
+	}
+	return nil
+}
+
+// notDeleted adds the tombstone-exclusion predicate to a runs-collection
+// filter, so UpdateOne-shaped writers can never land on a skeleton doc.
+func notDeleted(filter bson.M) bson.M {
+	filter["deleted_at"] = bson.M{"$exists": false}
+	return filter
 }
 
 // SaveRun replaces the run document atomically. Tenant-scoped
 // callers can only overwrite documents belonging to their tenant.
 func (s *Store) SaveRun(ctx context.Context, r *store.Run) error {
+	if err := s.guardNotDeleted(ctx, r.ID); err != nil {
+		return err
+	}
 	r.UpdatedAt = time.Now().UTC()
 	r.SchemaVersion = SchemaVersion
 	stampTenant(ctx, r)
-	_, err := s.runs.ReplaceOne(ctx, withTenantFilter(ctx, bson.M{"_id": r.ID}), r, options.Replace().SetUpsert(true))
+	// The notDeleted predicate closes the guard's TOCTOU window: a
+	// DeleteRun racing between the check above and this write leaves a
+	// tombstoned doc the filter no longer matches, and the upsert then
+	// trips the duplicate-_id error instead of resurrecting the run.
+	_, err := s.runs.ReplaceOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": r.ID})), r, options.Replace().SetUpsert(true))
 	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("store/mongo: run %s: %w", r.ID, store.ErrRunDeleted)
+		}
 		return fmt.Errorf("store/mongo: replace run %s: %w", r.ID, err)
 	}
 	return nil
@@ -214,7 +275,7 @@ func (s *Store) watchedIssues(ctx context.Context, runID string) ([]string, erro
 func (s *Store) ListRuns(ctx context.Context) ([]string, error) {
 	cur, err := s.runs.Find(
 		ctx,
-		withTenantFilter(ctx, bson.M{}),
+		notDeleted(withTenantFilter(ctx, bson.M{})),
 		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
 	)
 	if err != nil {
@@ -278,7 +339,7 @@ func (s *Store) ListChildRuns(ctx context.Context, parentRunID string) ([]string
 func (s *Store) listRunIDsBy(ctx context.Context, filter bson.M, what string) ([]string, error) {
 	cur, err := s.runs.Find(
 		ctx,
-		withTenantFilter(ctx, filter),
+		notDeleted(withTenantFilter(ctx, filter)),
 		options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "created_at", Value: 1}}),
 	)
 	if err != nil {
@@ -374,7 +435,7 @@ func (s *Store) PatchRunSteering(ctx context.Context, id string, loopOverrides m
 	if budgetRaises != nil {
 		set["budget_raises"] = budgetRaises
 	}
-	res, err := s.runs.UpdateOne(ctx, withTenantFilter(ctx, bson.M{"_id": id}), bson.M{"$set": set})
+	res, err := s.runs.UpdateOne(ctx, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), bson.M{"$set": set})
 	if err != nil {
 		return fmt.Errorf("store/mongo: patch run steering: %w", err)
 	}
@@ -411,7 +472,7 @@ func (s *Store) UpdateRunStatus(ctx context.Context, id string, status store.Run
 	if len(unset) > 0 {
 		update["$unset"] = unset
 	}
-	return mongoutil.UpdateOneChecked(ctx, s.runs, withTenantFilter(ctx, bson.M{"_id": id}), update,
+	return mongoutil.UpdateOneChecked(ctx, s.runs, notDeleted(withTenantFilter(ctx, bson.M{"_id": id})), update,
 		fmt.Errorf("store/mongo: run %s not found", id), fmt.Sprintf("store/mongo: update status %s", id))
 }
 

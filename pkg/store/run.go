@@ -19,6 +19,14 @@ import (
 // wraps os.ErrNotExist, so errors.Is(err, os.ErrNotExist) also holds there.
 var ErrRunNotFound = errors.New("store: run not found")
 
+// ErrRunDeleted marks a run that was DELIBERATELY deleted (DeleteRun
+// left a durable tombstone). Distinct from ErrRunNotFound so late
+// writers — a detached engine goroutine, a stale runner, a replayed
+// message — get a hard, typed refusal instead of silently resurrecting
+// the run by re-creating its directory / upserting its document. The
+// HTTP layer maps it to 410 Gone.
+var ErrRunDeleted = errors.New("store: run was deleted")
+
 // ---------------------------------------------------------------------------
 // RunStatus — lifecycle state of a run
 // ---------------------------------------------------------------------------
@@ -190,6 +198,13 @@ type Run struct {
 	// rebuilt); raise-only vs the workflow's declared budget. Nil for
 	// runs never raised.
 	BudgetRaises *RunBudgetRaises `json:"budget_raises,omitempty" bson:"budget_raises,omitempty"`
+	// DeletedAt is the Mongo-side durable tombstone (the filesystem
+	// twin is the .deleted marker file): DeleteRun strips the run's
+	// data and leaves a skeleton doc carrying this stamp, so a late
+	// writer's upsert/update matches the tombstone and is refused
+	// (ErrRunDeleted) instead of resurrecting the run. Reaped by
+	// `iterion runs prune`.
+	DeletedAt *time.Time `json:"deleted_at,omitempty" bson:"deleted_at,omitempty"`
 	// BundleHash is the SHA-256 of the logical content (sorted
 	// (relative-path, file-bytes) sequence) of the `.botz` archive
 	// backing this run. Format-independent, so it is stable whether the

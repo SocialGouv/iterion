@@ -86,6 +86,9 @@ func (s *FilesystemRunStore) AppendQueuedMessage(ctx context.Context, runID stri
 	if err := NormalizeQueuedForAppend(&msg, runID); err != nil {
 		return err
 	}
+	if err := s.guardNotDeleted(runID); err != nil {
+		return err
+	}
 	path, err := s.userMessagesPath(runID)
 	if err != nil {
 		return err
