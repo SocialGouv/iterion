@@ -90,4 +90,38 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "off",
     },
   },
+  {
+    // Anti-cookie-leak boundary for the shell-less config-share editor.
+    // Views under src/views/ConfigShare/** MUST NOT import the shared API
+    // client — see the doc-comment at the top of src/api/configShare.ts.
+    // Their fetches go through src/api/configShare.ts, which pins
+    // credentials: "omit" and never reads or writes the operator's cookie.
+    files: ["src/views/ConfigShare/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@/api/client",
+              message:
+                "The config-share editor is shell-less and self-authenticating; use @/api/configShare (credentials: 'omit', Bearer token) instead of the shared cookie-carrying client.",
+            },
+          ],
+          patterns: [
+            {
+              group: [
+                "**/api/client",
+                "**/api/client.ts",
+                "@/api/configShareAdmin",
+                "**/configShareAdmin",
+              ],
+              message:
+                "The config-share editor must not reach the operator-authed API surface; use @/api/configShare only.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

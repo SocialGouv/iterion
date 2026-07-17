@@ -47,6 +47,7 @@ import NewTriggerDialog from "@/views/Triggers/NewTriggerDialog";
 import TriggerList from "@/views/Triggers/TriggerList";
 
 import { botLaunchFile } from "../botPaths";
+import { ConfigSharesCard } from "./ConfigSharesCard";
 
 /**
  * BotHomeView — /bots/:name — one bot's home page: identity + activation,
@@ -145,6 +146,7 @@ function BotHome({ entry }: { entry: BotEntryWithSchema }) {
       )}
       <RecentRunsCard botName={entry.name} />
       {serverInfo?.mode === "cloud" && <SecretBindingsCard botName={entry.name} />}
+      {serverInfo?.config_shares_enabled && <ConfigSharesCard entry={entry} />}
     </>
   );
 
