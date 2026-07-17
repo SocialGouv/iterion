@@ -23,19 +23,23 @@ var readOnlyTools = map[string]bool{
 }
 
 // isMutatingNode returns true if the node may modify the workspace.
-// Tool nodes are always mutating. Agent/judge nodes are mutating when
-// full_access is set, when they have at least one tool that is not in the
-// read-only set, or when the effective backend is a CLI delegate and its tool
-// list is omitted (CLI delegates treat an empty list as unrestricted native
-// tools). The engine asks the production executor for the effective backend so
-// launch overrides, environment defaults, and auto-detection are included.
-// Subbot nodes run a child .bot that may do anything (including mutate the
-// shared worktree), so they are conservatively treated as mutating — this
+// Tool nodes are always mutating in this general classifier. Agent/judge nodes
+// are mutating when full_access is set, when they have at least one tool that is
+// not in the read-only set, or when the effective backend is a CLI delegate and
+// its tool list is omitted (CLI delegates treat an empty list as unrestricted
+// native tools). The engine asks the production executor for the effective
+// backend so launch overrides, environment defaults, and auto-detection are
+// included. Subbot nodes run a child .bot that may do anything (including mutate
+// the shared worktree), so they are conservatively treated as mutating — this
 // keeps validateWorkspaceSafety from admitting two subbot branches that would
 // race the same workspace. A subbot may opt out with `isolated:` (it asserts
-// the child confines writes to its own run store / worktree), just as an
-// agent/judge node opts out with Readonly=true; neither is then considered
-// mutating.
+// the child confines writes to its own run store / worktree) and an agent/judge
+// node with Readonly=true; both are context-independent, so they are honoured
+// everywhere. A tool's `parallel_safe:` opt-out is NOT honoured here: it only
+// applies to a fan_out_each template (see isMutatingNodeCtx), because only there
+// is a single node replayed over distinct items with disjoint, item-keyed
+// writes — in a static fan_out_all / llm-router the branches are different nodes
+// with no such guarantee.
 func isMutatingNode(node ir.Node) bool {
 	return isMutatingNodeWithBackend(node, "", nil)
 }
@@ -48,9 +52,23 @@ type effectiveBackendResolver interface {
 }
 
 func isMutatingNodeWithBackend(node ir.Node, defaultBackend string, resolver effectiveBackendResolver) bool {
+	return isMutatingNodeCtx(node, defaultBackend, resolver, false)
+}
+
+// isMutatingNodeCtx classifies a node for workspace-safety. fanOutEachTemplate is
+// true only when walking a fan_out_each template branch; there a tool marked
+// `parallel_safe:` is treated as non-mutating (the author asserts its concurrent
+// replays write only to disjoint, item-keyed targets — mirror of a subbot's
+// `isolated:` / an agent-judge `readonly:`, but scoped to the fan_out_each
+// replay, the only place a single template node is fanned out over items). In
+// every other context (fanOutEachTemplate=false) a tool is conservatively
+// mutating even with the flag: static fan_out_all / llm-router branches are
+// DISTINCT nodes with no item-key disjointness guarantee. Subbot Isolated and
+// agent/judge Readonly are context-independent and honoured in both.
+func isMutatingNodeCtx(node ir.Node, defaultBackend string, resolver effectiveBackendResolver, fanOutEachTemplate bool) bool {
 	switch n := node.(type) {
 	case *ir.ToolNode:
-		return true
+		return !(fanOutEachTemplate && n.ParallelSafe)
 	case *ir.SubbotNode:
 		// A subbot marked `isolated:` asserts the child confines its writes to
 		// its own run store / worktree and never touches the parent's shared
@@ -130,7 +148,13 @@ func unrestrictedCLIBackendCanWrite(
 // fan-out (the node where all branches reconverge), not the first
 // intermediate join. We pass that in explicitly. Terminal nodes (done/fail)
 // also stop the walk because the branch ends there.
-func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string) bool {
+//
+// fanOutEachTemplate is true only when the branch is a fan_out_each template
+// (one node replayed over items); it relaxes a `parallel_safe:` tool to
+// non-mutating along the walk. A branch that also contains any OTHER mutating
+// node (a non-parallel_safe tool, a full_access agent, a non-isolated subbot)
+// is still reported as mutating.
+func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string, fanOutEachTemplate bool) bool {
 	visited := map[string]bool{}
 	queue := []string{startNodeID}
 	for len(queue) > 0 {
@@ -156,7 +180,7 @@ func (e *Engine) branchContainsMutation(startNodeID, globalConvergence string) b
 			continue
 		}
 		resolver, _ := e.executor.(effectiveBackendResolver)
-		if isMutatingNodeWithBackend(node, e.workflow.DefaultBackend, resolver) {
+		if isMutatingNodeCtx(node, e.workflow.DefaultBackend, resolver, fanOutEachTemplate) {
 			return true
 		}
 		for _, edge := range e.workflow.Edges {
@@ -179,7 +203,10 @@ func (e *Engine) validateWorkspaceSafety(routerNodeID string, fanEdges []*ir.Edg
 	mutatingCount := 0
 	var mutatingBranches []string
 	for _, edge := range fanEdges {
-		if e.branchContainsMutation(edge.To, globalConvergence) {
+		// Static fan_out_all / llm-router: branches are DISTINCT nodes, so a
+		// tool's `parallel_safe:` (item-keyed disjoint replays) does not apply —
+		// pass fanOutEachTemplate=false.
+		if e.branchContainsMutation(edge.To, globalConvergence, false) {
 			mutatingCount++
 			mutatingBranches = append(mutatingBranches, edge.To)
 		}
@@ -203,7 +230,10 @@ func (e *Engine) validateFanOutEachWorkspaceSafety(routerNodeID string, tmplEdge
 	if itemCount <= 1 || maxParallel <= 1 || tmplEdge == nil {
 		return nil
 	}
-	if !e.branchContainsMutation(tmplEdge.To, convergence) {
+	// Fan_out_each template: a single node replayed over items, so a
+	// `parallel_safe:` tool along the template is exempt (item-keyed disjoint
+	// writes). Any other mutating node still trips the guard.
+	if !e.branchContainsMutation(tmplEdge.To, convergence, true) {
 		return nil
 	}
 	return &RuntimeError{

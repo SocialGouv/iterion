@@ -1187,6 +1187,7 @@ func (c *compiler) compileTools() {
 			PostcondRefs:  postcondRefs,
 			Policy:        policy,
 			Recovery:      recovery,
+			ParallelSafe:  t.ParallelSafe,
 		}
 	}
 }

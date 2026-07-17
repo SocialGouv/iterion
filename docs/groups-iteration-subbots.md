@@ -172,6 +172,49 @@ run_ticket -> collect
 > the safe path. A false `isolated:` assertion re-opens exactly the parallel
 > shared-workspace race the guard exists to prevent.
 
+### `parallel_safe:` — the same opt-out for a `tool` node
+
+A `tool` node is conservatively **mutating** too (it runs a command that may
+write anything), so the *same* guard refuses to fan a tool template out
+concurrently. When each replay writes only to a **disjoint, item-keyed target**
+— e.g. one keyframe per `scene_id` under `runs/<run>/keyframes/candidates/<scene_id>/`
+— the replays never race, and `parallel_safe: true` opts the tool out of the
+guard on a `fan_out_each`:
+
+```
+router keyframes_dispatch:
+  mode: fan_out_each
+  over: "{{outputs.prepare.keyframes}}"
+  as: keyframe
+  key: scene_id
+
+tool generate_keyframe_scene:
+  command: "render --scene {{outputs.keyframes_dispatch.keyframe.scene_id}}"
+  parallel_safe: true   # each replay writes only to its own scene-keyed path
+
+keyframes_dispatch -> generate_keyframe_scene
+generate_keyframe_scene -> verify   # wait_all
+```
+
+Unlike `isolated:` (own run store/worktree) the tool still writes to the shared
+workspace — it just **partitions** those writes by the fan-out item. Unlike
+`readonly:` it is not read-only.
+
+`parallel_safe:` is **scoped to `fan_out_each`** — the one place a single
+template node is replayed over distinct items, so the item-keyed disjointness
+holds by construction. It has no effect on a static `fan_out_all` or an
+`llm-router` multi-select, where the parallel branches are *different* nodes with
+no shared item key: there a tool stays conservatively mutating (use
+`max_parallel_branches: 1`, or give each branch its own output path and keep them
+under the one-mutating-branch limit). A `parallel_safe` tool followed by any
+*other* mutating node in the same template branch is still guarded.
+
+> **Contract — use `parallel_safe:` ONLY when replays write disjointly.** If two
+> replays can touch the same path (a shared aggregate file, a fixed output name),
+> leave it serialized (`max_parallel_branches: 1`). A false `parallel_safe:`
+> assertion re-opens a last-writer-wins race — the same failure mode the guard
+> exists to prevent.
+
 Parallel child runs are **data-race safe**: they share the parent's `RunStore`,
 whose per-run artifacts/events/checkpoints are isolated by `run_id` and guarded
 by a store-wide lock, and each child gets its own engine + (if `worktree: auto`)

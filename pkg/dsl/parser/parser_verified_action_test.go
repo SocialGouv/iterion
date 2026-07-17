@@ -41,6 +41,30 @@ func TestParseVerifiedActionQuad(t *testing.T) {
 	}
 }
 
+// parallel_safe is an opt-in bool on tool nodes that lets a mutating tool fan
+// out in parallel (its concurrent replays write to disjoint targets).
+func TestParseToolParallelSafe(t *testing.T) {
+	src := `tool render_scene:
+  command: "render --scene {{outputs.dispatch.item.id}}"
+  parallel_safe: true
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+	if len(res.File.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(res.File.Tools))
+	}
+	if !res.File.Tools[0].ParallelSafe {
+		t.Fatal("expected ParallelSafe = true")
+	}
+
+	// Absent the property, it defaults to false (safe, serialized-only fan-out).
+	res2 := parser.Parse("test.bot", "tool plain:\n  command: \"echo ok\"\n")
+	assertNoDiags(t, res2)
+	if res2.File.Tools[0].ParallelSafe {
+		t.Fatal("plain tool must default ParallelSafe = false")
+	}
+}
+
 // A tool node with no quad fields still parses (backward compatible).
 func TestParseToolNodeNoQuad(t *testing.T) {
 	src := `tool plain:
