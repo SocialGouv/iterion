@@ -1016,6 +1016,16 @@ func workspaceIsGitRepo(dir string) bool {
 	return gitlib.FindMainRepoRoot(dir) != ""
 }
 
+// workspaceHasCommits reports whether the repo containing dir has a
+// resolvable HEAD. A freshly created (empty) repository — exactly what
+// the create-repo launch journey clones — has an unborn HEAD, and
+// `git worktree add … HEAD` cannot anchor on it.
+func workspaceHasCommits(dir string) bool {
+	cmd, cancel := gitCmd("-C", dir, "rev-parse", "--verify", "-q", "HEAD")
+	defer cancel()
+	return cmd.Run() == nil
+}
+
 // findGitRoot walks up parent directories from `dir` until it finds a `.git`
 // entry, then resolves linked-worktree pointer files back to the main repo
 // so a per-run worktree set up on top of an outer worktree (e.g. the
