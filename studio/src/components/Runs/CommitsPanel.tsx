@@ -23,6 +23,7 @@ import {
 import { formatRelative } from "@/lib/format";
 
 import { ErrorNotice } from "@/components/shared/ErrorNotice";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import CommitDetailDialog from "./CommitDetailDialog";
 import MergeConflictView from "./MergeConflictView";
@@ -199,6 +200,7 @@ function MergeFooter({
   defaultSquashMessage,
   onMergeComplete,
 }: MergeFooterProps) {
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   // Terminal-with-commits states the deferred merge action applies to.
   // Cancelled runs are included alongside finished because RecoverFinalize
   // populates FinalCommit / FinalBranch for them too (pkg/runtime/worktree.go),
@@ -426,8 +428,12 @@ function MergeFooter({
         {submitting ? "Merging…" : buttonLabel}
       </Button>
       <div className="text-caption text-fg-subtle">
-        Target: currently-checked-out branch. The merge fails fast if the
-        working tree is dirty or the storage branch is not fast-forwardable.
+        Target:{" "}
+        {cloud
+          ? "the target repository's default branch checked out in the runner."
+          : "currently-checked-out branch."}{" "}
+        The merge fails fast if the working tree is dirty or the storage
+        branch is not fast-forwardable.
       </div>
     </div>
   );

@@ -41,6 +41,7 @@ export default function Plugins() {
   const { user } = useAuth();
   const authRequired = useServerInfoStore((s) => s.info?.auth_required);
   const marketplaceEnabled = useServerInfoStore((s) => s.info?.marketplace_enabled);
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog } = useConfirm();
   const [, navigate] = useLocation();
@@ -144,9 +145,10 @@ export default function Plugins() {
         title="Plugins"
         description={
           <>
-            Extend iterion with rewriters, MCP servers, skills, commands, agents
-            and hooks. Builtins ship with the binary; install more from a git URL
-            or local path.
+            Plugins extend what every bot run can do — compress command output
+            (rewriters), reach external tools (MCP servers), or ship extra
+            skills, commands, agents and hooks. Builtins ship with the binary;
+            install more from a git URL or local path.
           </>
         }
         actions={
@@ -165,6 +167,13 @@ export default function Plugins() {
       />
 
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-3 overflow-y-auto p-6">
+        {cloud && (
+          <InlineBanner tone="info" layout="inline">
+            Plugins are shared across this server — enabling or disabling one
+            affects every workspace on the instance
+            {canManage ? "." : ", so only administrators can change them."}
+          </InlineBanner>
+        )}
         {error && (
           <InlineBanner tone="danger" title="Plugin error" layout="inline">
             {error}
@@ -228,6 +237,7 @@ export default function Plugins() {
                 key={p.name}
                 plugin={p}
                 busy={busy === p.name}
+                canManage={canManage}
                 onEnable={() => void toggle(p)}
                 onOpen={() => setSelected(p.name)}
               />

@@ -65,10 +65,19 @@ interface LinkDef {
   icon: typeof HomeIcon;
 }
 
-const BASE_LINKS: LinkDef[] = [
+const BASE_LINKS_LOCAL: LinkDef[] = [
   { section: "home", href: "/", label: "Home", icon: HomeIcon },
   { section: "whatsNext", href: "/whats-next", label: "What's Next", icon: PaperPlaneIcon },
   { section: "editor", href: "/editor", label: "Editor", icon: Pencil2Icon },
+  { section: "runs", href: "/runs", label: "Runs", icon: ListBulletIcon },
+  { section: "bots", href: "/bots", label: "Bots", icon: CubeIcon },
+];
+
+// Editor authoring depends on a local file system (Save has no cloud path);
+// drop it from the cloud shell so the nav only advertises reachable surfaces.
+const BASE_LINKS_CLOUD: LinkDef[] = [
+  { section: "home", href: "/", label: "Home", icon: HomeIcon },
+  { section: "whatsNext", href: "/whats-next", label: "What's Next", icon: PaperPlaneIcon },
   { section: "runs", href: "/runs", label: "Runs", icon: ListBulletIcon },
   { section: "bots", href: "/bots", label: "Bots", icon: CubeIcon },
 ];
@@ -179,8 +188,9 @@ export default function NavLinks({ collapsed }: Props) {
     manage.push({ section: "admin", href: "/admin/orgs", label: "Admin", icon: GearIcon });
   }
 
+  const baseLinks = info?.mode === "cloud" ? BASE_LINKS_CLOUD : BASE_LINKS_LOCAL;
   const groups: { label?: string; links: LinkDef[] }[] = [
-    { links: BASE_LINKS },
+    { links: baseLinks },
     { label: "Operate", links: operate },
     { label: "Extend", links: extend },
     { label: "Manage", links: manage },

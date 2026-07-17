@@ -6,6 +6,7 @@
 import { useLocation } from "wouter";
 
 import { Button, Skeleton } from "@/components/ui";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 // RunViewLoadError renders when the initial REST snapshot fetch fails
 // past the retry budget. Replaces the indefinite skeleton so the user
@@ -30,6 +31,7 @@ export function RunViewLoadError({
   onRetry: () => void;
 }) {
   const [, setLocation] = useLocation();
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   const isNotFound = status === 404;
   return (
     <div className="h-full w-full flex flex-col items-center justify-center gap-4 p-8">
@@ -39,20 +41,39 @@ export function RunViewLoadError({
         </h2>
         <p className="text-xs text-fg-muted font-mono break-all">{runId}</p>
         {isNotFound ? (
-          <>
-            <p className="text-xs text-fg-muted">
-              Open the project this run belongs to, or pick a different run from the
-              list.
-            </p>
-            <details className="text-caption text-fg-subtle">
-              <summary className="cursor-pointer">Why might this happen?</summary>
-              <p className="mt-1 text-left">
-                The run may live in a different iterion store — for example, the
-                global <code>~/.iterion/runs/</code> slot served by another daemon,
-                or a per-project store this studio instance hasn&apos;t opened.
+          cloud ? (
+            <>
+              <p className="text-xs text-fg-muted">
+                You may not have access to this run, or it has been deleted.
+                Try switching team / org via the sidebar, or pick a different
+                run from the list.
               </p>
-            </details>
-          </>
+              <details className="text-caption text-fg-subtle">
+                <summary className="cursor-pointer">Why might this happen?</summary>
+                <p className="mt-1 text-left">
+                  Runs are scoped to a (org, team) context. A shared link opened
+                  under the wrong team returns 404 even when the run exists on
+                  another team you belong to. The run may also have been deleted
+                  by the operator who owned it.
+                </p>
+              </details>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-fg-muted">
+                Open the project this run belongs to, or pick a different run from the
+                list.
+              </p>
+              <details className="text-caption text-fg-subtle">
+                <summary className="cursor-pointer">Why might this happen?</summary>
+                <p className="mt-1 text-left">
+                  The run may live in a different iterion store — for example, the
+                  global <code>~/.iterion/runs/</code> slot served by another daemon,
+                  or a per-project store this studio instance hasn&apos;t opened.
+                </p>
+              </details>
+            </>
+          )
         ) : (
           <p className="text-xs text-fg-muted">{message}</p>
         )}

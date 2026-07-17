@@ -4,6 +4,7 @@ import { useLocation, useSearch } from "wouter";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import DispatcherControlBar from "@/components/shared/DispatcherControlBar";
 import { Button } from "@/components/ui/Button";
+import { DropdownMenu, DropdownMenuItem } from "@/components/ui/DropdownMenu";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { cancelIssue } from "@/api/dispatcher";
@@ -404,33 +405,29 @@ export default function BoardView() {
     left: <span className="text-xs font-medium text-fg-default">Board</span>,
     right: board ? (
       <>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => setLocation("/board/labels")}
-          title="Manage the board's label vocabulary"
+        {/* Schema/maintenance actions collapse behind one menu so the
+            header reads: one primary (create) + one secondary (manage). */}
+        <DropdownMenu
+          trigger={
+            <Button variant="secondary" size="sm">
+              Manage
+            </Button>
+          }
+          align="end"
         >
-          Labels
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => setLocation("/board/fields")}
-          title="Manage the board's custom-field schema"
-        >
-          Fields
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={columns.openAddColumn}
-          title="Add a new column (board state)"
-        >
-          + Add column
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => void refresh()}>
-          Refresh
-        </Button>
+          <DropdownMenuItem onSelect={() => setLocation("/board/labels")}>
+            Labels…
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setLocation("/board/fields")}>
+            Fields…
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={columns.openAddColumn}>
+            Add column…
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void refresh()}>
+            Refresh
+          </DropdownMenuItem>
+        </DropdownMenu>
         <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
           + New issue
         </Button>
@@ -442,7 +439,7 @@ export default function BoardView() {
     return <BoardSkeleton />;
   }
   if (!board) {
-    return <EmptyBoard kind="missing" />;
+    return <EmptyBoard kind="missing" error={error} onRetry={() => void refresh()} />;
   }
 
   // Build the active column dialog at statement level so the discriminated
@@ -656,6 +653,12 @@ export default function BoardView() {
       >
         {swimlanes ? (
           <div className="flex flex-col gap-4 min-w-fit">
+            {/* Column mutations are ambiguous when the same state repeats
+                across lanes, so the per-column menus are flat-view only —
+                say so instead of looking broken. */}
+            <div className="text-fg-subtle text-micro px-1">
+              Column editing is available with Group: none.
+            </div>
             {swimlanes.length === 0 && (
               <div className="text-fg-muted text-xs p-4">
                 No issues to group by this dimension.

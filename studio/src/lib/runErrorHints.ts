@@ -14,9 +14,7 @@ export function parseErrorCode(err: string): string {
 export function runErrorHint(code: string, run: RunHeaderType): string | null {
   switch (code) {
     case "BUDGET_EXCEEDED":
-      return `Raise the workflow's \`budget:\` block (max_cost_usd, max_tokens, max_iterations, or max_duration), then \`iterion resume --run-id ${run.id}${
-        run.file_path ? ` --file ${run.file_path}` : ""
-      } --force\` to continue past the original budget.`;
+      return "Open Resume, expand Budget overrides to raise max_cost_usd / max_tokens / max_duration / max_iterations past the exhausted cap, then click Resume — the run continues from the failing node.";
     case "RATE_LIMITED":
       return "Wait a few minutes for the provider rate limit to clear, then resume — the engine retries from the failed node.";
     case "LOOP_EXHAUSTED":
@@ -30,9 +28,9 @@ export function runErrorHint(code: string, run: RunHeaderType): string | null {
     case "TOOL_FAILED_PERMANENT":
       return "Inspect the failing tool call in the Tools tab, fix the input or the tool itself, then resume.";
     case "SCHEMA_VALIDATION":
-      return "Tighten the agent's prompt or relax the schema, then `iterion resume --force` (the workflow source has changed).";
+      return "The workflow source changed since launch. Open Resume, tick Force (skip hash check), then click Resume — or fix the agent's prompt / relax the schema first.";
     case "RESUME_INVALID":
-      return "Add `--force` to the resume command to override the hash check — the workflow source changed since launch.";
+      return "The workflow source changed since launch. Open Resume, tick Force (skip hash check), then click Resume.";
     case "NETWORK_TRANSIENT":
       return "Resume to retry the LLM API call — a transient network blip interrupted the request.";
     default:

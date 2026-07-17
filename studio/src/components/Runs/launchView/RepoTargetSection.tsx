@@ -15,6 +15,7 @@
 // connection_id into createRun() as repo_url / connection_id.
 
 import { useEffect, useMemo } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 
 import type { RepoRequirement } from "@/api/bots";
@@ -25,6 +26,8 @@ import {
   type ForgeTeamRepo,
 } from "@/api/forgeConnections";
 
+import { Button } from "@/components/ui/Button";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Radio } from "@/components/ui/Radio";
@@ -58,6 +61,10 @@ export interface RepoTargetSectionProps {
    *  network); shown inline in the create sub-form. */
   createError: string | null;
   submitting: boolean;
+  /** The launch form's ?file= path — round-tripped through the connect
+   *  wizard's returnTo so the operator lands back on this exact launch
+   *  screen once a forge is wired. */
+  filePath: string;
 }
 
 /** Derive an initial RepoTargetState from the bot's requirement + the
@@ -143,7 +150,9 @@ export default function RepoTargetSection({
   onChange,
   createError,
   submitting,
+  filePath,
 }: RepoTargetSectionProps) {
+  const [, setLocation] = useLocation();
   // Connections list: fetched whenever create mode is open — a freshly
   // added connection has no provisioned repo yet, so deriving options
   // from `repos` alone would hide it (seen live: a new PAT connection
@@ -390,10 +399,34 @@ export default function RepoTargetSection({
           </div>
         )}
         {noOptions && (
-          <p className="text-caption text-fg-subtle">
-            No connected repository yet. Connect a forge from the Integrations
-            panel first{repo.mode === "required" ? " (this bot needs a target repo)" : ""}.
-          </p>
+          <EmptyState
+            title={
+              repo.mode === "required"
+                ? "This bot needs a target repository"
+                : "No connected repository yet"
+            }
+            message={
+              repo.mode === "required"
+                ? "Connect a forge (GitHub, GitLab, Forgejo) so the run has somewhere to clone into. Come back to this launch form when the wizard finishes."
+                : "Connect a forge to attach or create a repository. You can also skip and launch without a repo — this bot supports that."
+            }
+            action={
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  const back = filePath
+                    ? `/runs/new?file=${encodeURIComponent(filePath)}`
+                    : "/runs/new";
+                  setLocation(
+                    `/integrations/connect?returnTo=${encodeURIComponent(back)}`,
+                  );
+                }}
+              >
+                Connect a repository
+              </Button>
+            }
+          />
         )}
       </div>
     </section>

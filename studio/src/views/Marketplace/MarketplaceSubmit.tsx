@@ -32,6 +32,9 @@ interface Props {
   defaultScope?: MarketplaceScope;
   /** True when submissions land pending moderation (cloud). */
   moderated?: boolean;
+  /** Cloud mode: the repo-URL submit path works, but the local `.botz`
+   *  import pane is hidden — the server refuses bot uploads in cloud. */
+  cloud?: boolean;
 }
 
 /** MarketplaceSubmit is the inline form for adding a repository to the
@@ -45,6 +48,7 @@ export function MarketplaceSubmit({
   scopes,
   defaultScope,
   moderated,
+  cloud = false,
 }: Props) {
   const addToast = useUIStore((s) => s.addToast);
   const [expanded, setExpanded] = useState(false);
@@ -254,34 +258,38 @@ export function MarketplaceSubmit({
             </Button>
           </div>
 
-          <div className="flex items-center gap-3 pt-1">
-            <div className="h-px flex-1 bg-border-default" />
-            <span className="text-caption uppercase tracking-wide text-fg-subtle">or</span>
-            <div className="h-px flex-1 bg-border-default" />
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-caption text-fg-subtle">
-              Import a packaged <code className="text-fg-default">.botz</code> bundle
-              directly into this workspace's <code className="text-fg-default">.botz/</code>.
-            </p>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".botz"
-              className="hidden"
-              onChange={(e) => void handleFile(e)}
-            />
-            <Button
-              variant="secondary"
-              size="sm"
-              className="shrink-0"
-              onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              loading={uploading}
-            >
-              {uploading ? "Importing…" : "Import .botz file"}
-            </Button>
-          </div>
+          {!cloud && (
+            <>
+              <div className="flex items-center gap-3 pt-1">
+                <div className="h-px flex-1 bg-border-default" />
+                <span className="text-caption uppercase tracking-wide text-fg-subtle">or</span>
+                <div className="h-px flex-1 bg-border-default" />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-caption text-fg-subtle">
+                  Import a packaged <code className="text-fg-default">.botz</code> bundle
+                  directly into this workspace's <code className="text-fg-default">.botz/</code>.
+                </p>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".botz"
+                  className="hidden"
+                  onChange={(e) => void handleFile(e)}
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={uploading}
+                  loading={uploading}
+                >
+                  {uploading ? "Importing…" : "Import .botz file"}
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </section>

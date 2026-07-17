@@ -6,14 +6,22 @@
 export default function WorktreeTargetSummary({
   branchName,
   mergeInto,
+  cloud = false,
 }: {
   branchName: string;
   mergeInto: string;
+  /** Cloud runs FF into the target repo's default branch inside the
+   *  runner pod — there is no operator-side "current branch" to name. */
+  cloud?: boolean;
 }) {
   const branch = branchName || "iterion/run/<auto>";
   const skipMerge = mergeInto === "none";
   const target =
-    mergeInto && mergeInto !== "current" ? mergeInto : "current branch";
+    mergeInto && mergeInto !== "current"
+      ? mergeInto
+      : cloud
+        ? "target repo default branch"
+        : "current branch";
   return (
     <div className="text-micro text-fg-muted bg-surface-2 border border-border-default rounded px-2 py-1.5">
       <span className="text-fg-subtle">Commits → </span>

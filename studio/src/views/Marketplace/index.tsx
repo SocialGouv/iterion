@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 import { toastError } from "@/lib/errorHints";
 import { useAuth } from "@/auth/AuthContext";
@@ -109,10 +110,12 @@ export default function MarketplaceView() {
   // endpoints, so we skip them entirely rather than swallow 401s.
   const { status, isRestricted } = useAuth();
   const anonymous = status === "anonymous";
-  // A user with no workspace (anonymous OR the restricted submitter tier)
-  // can't install into a workspace — they get a `.botz` download instead.
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  // A user with no workspace (anonymous, the restricted submitter tier, OR
+  // any cloud tenant — the server 403s install in cloud mode) can't install
+  // into a workspace; they get the `.botz` download / CLI-copy path instead.
   // Restricted users ARE authenticated, so they still get the submit form.
-  const noWorkspace = anonymous || isRestricted;
+  const noWorkspace = anonymous || isRestricted || cloud;
   const [locationPath, navigate] = useLocation();
   const searchString = useSearch();
   // Kind/sort initialize from the URL so /marketplace?kind=plugin
@@ -433,7 +436,7 @@ export default function MarketplaceView() {
               Want to publish a bot? Sign in with GitHub to submit a repository —
               submissions are reviewed before they appear here.
             </span>
-            <Button variant="primary" size="sm" onClick={() => navigate("/")}>
+            <Button variant="primary" size="sm" onClick={() => navigate("/login")}>
               Sign in to propose a bot
             </Button>
           </section>
@@ -444,6 +447,7 @@ export default function MarketplaceView() {
             scopes={config?.scopes}
             defaultScope={config?.default_scope}
             moderated={config?.moderated}
+            cloud={cloud}
           />
         )}
 
@@ -565,6 +569,7 @@ export default function MarketplaceView() {
           onUninstall={() => void onUninstall(active)}
           onClose={() => setActiveSlug(null)}
           anonymous={noWorkspace}
+          cloud={cloud}
         />
       )}
     </div>

@@ -105,13 +105,13 @@ export default function PipelineBoardView() {
             <h1 className="text-display font-semibold text-fg-default">Pipeline board</h1>
             <p className="mt-0.5 max-w-3xl text-xs text-fg-muted">
               Every launched pipeline (and not-yet-started task) across all bots, bucketed
-              into five fixed lanes. Running cards are placed by run state; stage a Backlog
-              ticket with its “→ Todo” button (or edit it first), retry a Failed one, and
-              click any card for details. This is an execution-centric alternative to the{" "}
+              into five fixed lanes. Cards advance automatically as their runs progress —
+              there is no drag &amp; drop here, unlike the{" "}
               <Link href="/board" className="text-accent-text hover:underline">
                 Board
-              </Link>{" "}
-              view — the two will likely converge into a single board eventually.
+              </Link>
+              . Stage a Backlog ticket with its “→ Todo” button (or edit it first), retry a
+              Failed one, and click any card for details.
             </p>
           </div>
           <div className="flex items-center gap-2 text-caption text-fg-subtle">

@@ -272,32 +272,61 @@ export default function RunListView() {
   } else if (error) {
     body = <EmptyState message={<span className="text-danger">{error}</span>} />;
   } else if (runs.length === 0) {
-    body = (
-      <EmptyState
-        title="No runs yet"
-        message="Launch a workflow from the editor to populate this list."
-        caret
-        action={
-          <Button
-            variant="primary"
-            size="sm"
-            leadingIcon={<RocketIcon />}
-            onClick={() => setLocation("/editor")}
-          >
-            Open editor
-          </Button>
-        }
-        secondaryAction={
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setLocation("/")}
-          >
-            Home
-          </Button>
-        }
-      />
-    );
+    // Cloud operators launch from /bots or the pipeline board, not the
+    // editor. Desktop/local operators do open the editor as the primary
+    // launch surface, so keep those CTAs there.
+    body =
+      mode === "cloud" ? (
+        <EmptyState
+          title="No runs yet"
+          message="Pick a bot from the gallery to launch your first run."
+          caret
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              leadingIcon={<RocketIcon />}
+              onClick={() => setLocation("/bots")}
+            >
+              Browse bots
+            </Button>
+          }
+          secondaryAction={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setLocation("/")}
+            >
+              Home
+            </Button>
+          }
+        />
+      ) : (
+        <EmptyState
+          title="No runs yet"
+          message="Launch a workflow from the editor to populate this list."
+          caret
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              leadingIcon={<RocketIcon />}
+              onClick={() => setLocation("/editor")}
+            >
+              Open editor
+            </Button>
+          }
+          secondaryAction={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setLocation("/")}
+            >
+              Home
+            </Button>
+          }
+        />
+      );
   } else if (filteredRuns.length === 0) {
     body =
       status !== "" ? (

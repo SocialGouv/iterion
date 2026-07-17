@@ -30,6 +30,7 @@ import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { formatCost, formatMs } from "@/lib/format";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 const WINDOWS = [7, 14, 30, 90] as const;
 type Window = (typeof WINDOWS)[number];
@@ -46,6 +47,7 @@ function RunsAnalyticsViewInner() {
   const [sinceDays, setSinceDays] = useState<Window>(30);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const { busy: loading, error, run } = useAsyncAction();
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
   const refresh = useCallback(
     (window: Window) =>
@@ -108,6 +110,12 @@ function RunsAnalyticsViewInner() {
         </div>
       </header>
 
+      <p className="text-micro text-fg-muted">
+        Three views across your fleet: spend trend per day stacked by
+        workflow, per-workflow reliability with fail rate and duration
+        percentiles, and tail latency (P95) to spot bots that crawl.
+      </p>
+
       {error && (
         <div className="text-danger-fg text-micro" role="alert">
           {error}
@@ -122,19 +130,32 @@ function RunsAnalyticsViewInner() {
         </div>
       )}
 
-      {stats && stats.total_runs === 0 && (
-        <EmptyState
-          title="No runs in this window"
-          message={`No runs in the last ${stats.since_days} days. Launch one from /whats-next or the editor to populate this dashboard.`}
-          action={
-            <Link href="/whats-next">
-              <Button variant="primary" size="sm">
-                Open /whats-next
-              </Button>
-            </Link>
-          }
-        />
-      )}
+      {stats && stats.total_runs === 0 &&
+        (cloud ? (
+          <EmptyState
+            title="No runs in this window"
+            message={`No runs in the last ${stats.since_days} days. Pick a bot from the gallery to populate this dashboard.`}
+            action={
+              <Link href="/bots">
+                <Button variant="primary" size="sm">
+                  Browse bots
+                </Button>
+              </Link>
+            }
+          />
+        ) : (
+          <EmptyState
+            title="No runs in this window"
+            message={`No runs in the last ${stats.since_days} days. Launch one from /whats-next or the editor to populate this dashboard.`}
+            action={
+              <Link href="/whats-next">
+                <Button variant="primary" size="sm">
+                  Open /whats-next
+                </Button>
+              </Link>
+            }
+          />
+        ))}
 
       {stats && stats.total_runs > 0 && (
         <>

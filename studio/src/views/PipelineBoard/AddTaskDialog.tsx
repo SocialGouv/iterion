@@ -245,6 +245,25 @@ function AddTaskDialogContent({
       widthClass="max-w-2xl"
       footer={
         <>
+          {/* The launch-intent toggle lives in the footer, next to the
+              button whose label it flips — never below the scroll fold. */}
+          {!isEdit && (
+            <div className="mr-auto">
+              <Checkbox
+                checked={start}
+                onChange={(event) => setStart(event.target.checked)}
+                disabled={!botName || !botEnabled}
+                label="Ready to run"
+                help={
+                  !botName
+                    ? "Pick a pipeline first."
+                    : botEnabled
+                      ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Backlog until you stage it with its “→ Todo” button."
+                      : "This bot is disabled. The ticket stays in Backlog; enable the bot, then stage it with “→ Todo” to run."
+                }
+              />
+            </div>
+          )}
           <Button variant="secondary" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
@@ -401,23 +420,6 @@ function AddTaskDialogContent({
           )}
         </div>
 
-        {!isEdit && (
-          <div className="border-t border-border-default pt-4">
-            <Checkbox
-              checked={start}
-              onChange={(event) => setStart(event.target.checked)}
-              disabled={!botName || !botEnabled}
-              label="Ready to run"
-              help={
-                !botName
-                  ? "Pick a pipeline first."
-                  : botEnabled
-                    ? "Starts automatically when a concurrency slot frees. Otherwise the ticket waits in Backlog until you stage it with its “→ Todo” button."
-                    : "This bot is disabled. The ticket stays in Backlog; enable the bot, then stage it with “→ Todo” to run."
-              }
-            />
-          </div>
-        )}
       </div>
     </Dialog>
   );

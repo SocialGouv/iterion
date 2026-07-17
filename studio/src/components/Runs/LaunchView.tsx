@@ -18,6 +18,7 @@ import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useDocumentStore } from "@/store/document";
 import { useBackendDetectStore } from "@/store/backendDetect";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import { type AttachmentValue } from "./AttachmentFieldInput";
 import { defaultStringFor } from "@/components/shared/VarFieldInput";
@@ -141,6 +142,7 @@ export default function LaunchView() {
   // inherit the bot's DSL default. Folded into createRun.model_overrides.
   const [modelOverrides, setModelOverrides] = useState<Record<string, NodeOverride>>({});
   const backendReport = useBackendDetectStore((s) => s.report);
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
   // Target-repository section — cloud-only. When the bot's manifest declares
   // a `repo:` block (mode != "none"), the operator picks attach/create/skip
@@ -601,32 +603,59 @@ export default function LaunchView() {
 
   // Deep-link with nothing to launch (no ?file= and a pristine editor
   // buffer): never offer the implicit empty scaffold — route the user
-  // to a real workflow instead.
+  // to a real workflow instead. In cloud mode /bots is the launch
+  // surface (the raw editor is a power-user detour); local/desktop keeps
+  // the editor as its primary entry point.
   if (noSource) {
     return (
       <div className="h-full flex flex-col bg-surface-1 text-fg-default">
-        <EmptyState
-          title="No workflow to launch"
-          message="This page launches a specific workflow, but none is selected. Open a .bot file in the Editor, or pick a bot or recent workflow from Home, then launch from there."
-          action={
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => setLocation("/editor")}
-            >
-              Open the Editor
-            </Button>
-          }
-          secondaryAction={
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => setLocation("/")}
-            >
-              Browse workflows
-            </Button>
-          }
-        />
+        {cloud ? (
+          <EmptyState
+            title="No workflow to launch"
+            message="This page launches a specific workflow, but none is selected. Pick a bot from the gallery, then launch from its home."
+            action={
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => setLocation("/bots")}
+              >
+                Browse bots
+              </Button>
+            }
+            secondaryAction={
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setLocation("/")}
+              >
+                Home
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            title="No workflow to launch"
+            message="This page launches a specific workflow, but none is selected. Open a .bot file in the Editor, or pick a bot or recent workflow from Home, then launch from there."
+            action={
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => setLocation("/editor")}
+              >
+                Open the Editor
+              </Button>
+            }
+            secondaryAction={
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setLocation("/")}
+              >
+                Browse workflows
+              </Button>
+            }
+          />
+        )}
       </div>
     );
   }
@@ -688,6 +717,7 @@ export default function LaunchView() {
               onCompressChange={setCompressOverride}
               onPermissionChange={setPermissionOverride}
               onReviewModeChange={setReviewModeOverride}
+              showReviewMode={fields.some((f) => f.name === "review_mode")}
             />
             <ModelOverridesSection
               nodes={llmNodes}
@@ -721,6 +751,7 @@ export default function LaunchView() {
                   }
                   createError={repoTargetCreateError}
                   submitting={submitting}
+                  filePath={filePath}
                 />
               </div>
             )}
@@ -736,6 +767,7 @@ export default function LaunchView() {
               onBranchNameChange={setBranchName}
               onMergeStrategyChange={setMergeStrategy}
               onAutoMergeChange={setAutoMerge}
+              cloud={cloud}
             />
 
             <LaunchBar
@@ -758,19 +790,36 @@ export default function LaunchView() {
         open={showNoSandboxConfirm}
         title="Launch without sandbox?"
         message={
-          <>
-            <p>
-              This workflow doesn't declare a <code>sandbox:</code> block,
-              so its tools and shell commands will run directly on the
-              host. The bot can read, modify, or delete any file the
-              iterion process has access to.
-            </p>
-            <p>
-              Add <code>sandbox: auto</code> (devcontainer-aware) or an
-              inline block with an image in the workflow file to opt into
-              container isolation.
-            </p>
-          </>
+          cloud ? (
+            <>
+              <p>
+                This workflow doesn't declare a <code>sandbox:</code>{" "}
+                block, so its tools and shell commands run directly in
+                the ephemeral runner pod's filesystem — no container
+                isolation between the bot and the runner's mounted
+                credentials, workspace clone, or outbound network egress.
+              </p>
+              <p>
+                Add <code>sandbox: auto</code> (devcontainer-aware) or
+                an inline block with an image in the workflow file to
+                narrow the write scope and the tools the bot can reach.
+              </p>
+            </>
+          ) : (
+            <>
+              <p>
+                This workflow doesn't declare a <code>sandbox:</code>{" "}
+                block, so its tools and shell commands will run directly
+                on the host. The bot can read, modify, or delete any
+                file the iterion process has access to.
+              </p>
+              <p>
+                Add <code>sandbox: auto</code> (devcontainer-aware) or
+                an inline block with an image in the workflow file to
+                opt into container isolation.
+              </p>
+            </>
+          )
         }
         confirmLabel="Launch unsandboxed"
         confirmVariant="danger"

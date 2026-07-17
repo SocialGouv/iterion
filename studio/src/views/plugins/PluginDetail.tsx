@@ -94,15 +94,21 @@ export default function PluginDetail({
               Remove
             </Button>
           )}
-          <Button
-            variant={plugin.enabled ? "secondary" : "primary"}
-            size="sm"
-            loading={busy}
-            disabled={busy}
-            onClick={onToggle}
-          >
-            {plugin.enabled ? "Disable" : "Enable"}
-          </Button>
+          {canManage ? (
+            <Button
+              variant={plugin.enabled ? "secondary" : "primary"}
+              size="sm"
+              loading={busy}
+              disabled={busy}
+              onClick={onToggle}
+            >
+              {plugin.enabled ? "Disable" : "Enable"}
+            </Button>
+          ) : (
+            <span className="text-caption text-fg-subtle">
+              {plugin.enabled ? "Enabled" : "Disabled"} by admin
+            </span>
+          )}
         </>
       }
     >

@@ -17,6 +17,12 @@ export interface RunSettingsSectionProps {
   onCompressChange: (value: string) => void;
   onPermissionChange: (value: string) => void;
   onReviewModeChange: (value: string) => void;
+  /** True when the bot's parsed doc declares a `review_mode` var — the
+   *  hook the resolver's InjectIfDeclared inspects server-side. Bots
+   *  that don't declare one silently ignore an override, so we hide
+   *  the picker instead of offering a no-op. Permission stays visible
+   *  regardless: CLI `--permission` overrides apply to any workflow. */
+  showReviewMode: boolean;
 }
 
 export default function RunSettingsSection({
@@ -29,6 +35,7 @@ export default function RunSettingsSection({
   onCompressChange,
   onPermissionChange,
   onReviewModeChange,
+  showReviewMode,
 }: RunSettingsSectionProps) {
   return (
     <section className="mt-6 border-t border-border-default pt-4 mb-6">
@@ -126,26 +133,28 @@ export default function RunSettingsSection({
             </div>
           </div>
         </div>
-        <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
-          <div>
-            <div className="text-xs font-medium font-mono">review_mode</div>
-            <div className="text-caption text-fg-subtle">review topology</div>
-          </div>
-          <div>
-            <Select
-              value={reviewModeOverride}
-              onChange={(e) => onReviewModeChange(e.currentTarget.value)}
-            >
-              <option value="">auto — resolve from detected providers</option>
-              <option value="mono">mono — single-family review</option>
-              <option value="dual">dual — cross-family review</option>
-            </Select>
-            <div className="mt-1 text-caption text-fg-subtle">
-              Review topology for bots that declare <code>review_mode</code>.
-              Ignored by bots that don&apos;t.
+        {showReviewMode && (
+          <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
+            <div>
+              <div className="text-xs font-medium font-mono">review_mode</div>
+              <div className="text-caption text-fg-subtle">review topology</div>
+            </div>
+            <div>
+              <Select
+                value={reviewModeOverride}
+                onChange={(e) => onReviewModeChange(e.currentTarget.value)}
+              >
+                <option value="">auto — resolve from detected providers</option>
+                <option value="mono">mono — single-family review</option>
+                <option value="dual">dual — cross-family review</option>
+              </Select>
+              <div className="mt-1 text-caption text-fg-subtle">
+                Mono runs the review side against a single provider family;
+                dual splits reviewers across two families for cross-check.
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </section>
   );

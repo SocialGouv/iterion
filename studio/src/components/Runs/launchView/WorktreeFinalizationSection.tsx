@@ -9,6 +9,7 @@ import type { MergeStrategy } from "@/api/runs";
 
 import { Badge } from "@/components/ui/Badge";
 import { Checkbox } from "@/components/ui/Checkbox";
+import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
 import WorktreeTargetSummary from "./WorktreeTargetSummary";
@@ -25,6 +26,10 @@ export interface WorktreeFinalizationSectionProps {
   onBranchNameChange: (value: string) => void;
   onMergeStrategyChange: (value: MergeStrategy) => void;
   onAutoMergeChange: (value: boolean) => void;
+  /** True in cloud mode: the run happens in an ephemeral runner pod, so
+   *  "your current branch" copy is meaningless. The FF/branch semantics
+   *  target the cloned target repo's checked-out branch instead. */
+  cloud: boolean;
 }
 
 export default function WorktreeFinalizationSection({
@@ -39,6 +44,7 @@ export default function WorktreeFinalizationSection({
   onBranchNameChange,
   onMergeStrategyChange,
   onAutoMergeChange,
+  cloud,
 }: WorktreeFinalizationSectionProps) {
   return (
     <div className="mt-6 border-t border-border-default pt-4">
@@ -66,6 +72,7 @@ export default function WorktreeFinalizationSection({
             <WorktreeTargetSummary
               branchName={branchName}
               mergeInto={mergeInto}
+              cloud={cloud}
             />
           )}
           <div className="grid grid-cols-[160px_1fr] gap-3 items-start">
@@ -76,26 +83,29 @@ export default function WorktreeFinalizationSection({
               </div>
             </label>
             <div>
-              <input
+              <Input
                 id="launch-merge-into"
+                size="sm"
                 type="text"
-                className="w-full px-2 py-1 text-xs font-mono rounded bg-surface-2 border border-border-default focus:outline-none focus:ring-1 focus:ring-accent"
+                className="font-mono"
                 placeholder="current (default) | none | <branch-name>"
                 value={mergeInto}
                 onChange={(e) => onMergeIntoChange(e.target.value)}
               />
               <ul className="mt-1 space-y-0.5 text-caption text-fg-subtle list-disc list-inside">
                 <li>
-                  Empty / <code>current</code> — fast-forward your current
-                  branch.
+                  Empty / <code>current</code> — fast-forward{" "}
+                  {cloud
+                    ? "the target repository's default branch checked out in the runner."
+                    : "your current branch."}
                 </li>
                 <li>
                   <code>none</code> — keep commits on the storage branch
                   only.
                 </li>
                 <li>
-                  Named branch — honoured only if it matches your
-                  checked-out branch.
+                  Named branch — honoured only if it matches the{" "}
+                  {cloud ? "runner's" : "your"} checked-out branch.
                 </li>
               </ul>
             </div>
@@ -106,10 +116,11 @@ export default function WorktreeFinalizationSection({
               <div className="text-caption text-fg-subtle">Storage branch</div>
             </label>
             <div>
-              <input
+              <Input
                 id="launch-branch-name"
+                size="sm"
                 type="text"
-                className="w-full px-2 py-1 text-xs font-mono rounded bg-surface-2 border border-border-default focus:outline-none focus:ring-1 focus:ring-accent"
+                className="font-mono"
                 placeholder="iterion/run/<friendly> (default)"
                 value={branchName}
                 onChange={(e) => onBranchNameChange(e.target.value)}

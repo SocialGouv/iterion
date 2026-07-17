@@ -20,6 +20,7 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
 import { formatRelative } from "@/lib/format";
 import { useRunStore, type WsState } from "@/store/run";
+import { useServerInfoStore } from "@/store/serverInfo";
 
 import ForkDialog from "./ForkDialog";
 import ResumeDialog from "./ResumeDialog";
@@ -55,6 +56,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   const [forkOpen, setForkOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [, setLocation] = useLocation();
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
   // canCancel covers every state where a cancel actually does something
   // distinct from Resume:
@@ -355,7 +357,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               `/editor?file=${encodeURIComponent(p)}&from=${encodeURIComponent(run.id)}`,
             )
           } />
-          {run.work_dir && (
+          {run.work_dir && !cloud && (
             <Tooltip content={run.work_dir}>
               <span className="inline-flex items-center gap-1 font-mono truncate max-w-[20rem]">
                 <FolderGlyph />

@@ -27,6 +27,7 @@ import {
 import { errorMessage } from "@/lib/errorHints";
 import { botVisual } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 
 /**
@@ -43,6 +44,13 @@ export default function BotsView() {
   const fetchBots = useBotsStore((s) => s.fetch);
   const refetch = useBotsStore((s) => s.refetch);
   const addToast = useUIStore((s) => s.addToast);
+  // Cloud servers refuse bot upload/install/create (403) — the catalog
+  // there is git-managed. Swap the local import/builder affordances for
+  // the one entry point that works: the marketplace.
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+  const marketplaceEnabled = useServerInfoStore(
+    (s) => s.info?.marketplace_enabled === true,
+  );
 
   const [query, setQuery] = useState("");
   // Trigger counts per bot_id. null = not loaded (or the trigger store
@@ -100,24 +108,38 @@ export default function BotsView() {
     left: <span className="text-xs font-medium text-fg-default">Bots</span>,
     right: (
       <div className="flex items-center gap-2">
-        <DropdownMenu
-          trigger={
-            <Button variant="secondary" size="sm" disabled={uploadingBotz} loading={uploadingBotz}>
-              {uploadingBotz ? "Importing…" : "Import"}
+        {cloud ? (
+          marketplaceEnabled && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setLocation("/marketplace")}
+            >
+              Browse marketplace
             </Button>
-          }
-          align="end"
-        >
-          <DropdownMenuItem onSelect={() => botzFileRef.current?.click()}>
-            From a .botz file…
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setRepoDialogOpen(true)}>
-            From a git repository…
-          </DropdownMenuItem>
-        </DropdownMenu>
-        <Button variant="primary" size="sm" onClick={() => setLocation("/bots/new")}>
-          New bot
-        </Button>
+          )
+        ) : (
+          <>
+            <DropdownMenu
+              trigger={
+                <Button variant="secondary" size="sm" disabled={uploadingBotz} loading={uploadingBotz}>
+                  {uploadingBotz ? "Importing…" : "Import"}
+                </Button>
+              }
+              align="end"
+            >
+              <DropdownMenuItem onSelect={() => botzFileRef.current?.click()}>
+                From a .botz file…
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setRepoDialogOpen(true)}>
+                From a git repository…
+              </DropdownMenuItem>
+            </DropdownMenu>
+            <Button variant="primary" size="sm" onClick={() => setLocation("/bots/new")}>
+              New bot
+            </Button>
+          </>
+        )}
       </div>
     ),
   });
@@ -181,13 +203,27 @@ export default function BotsView() {
           message={
             query
               ? "Try a different name or description."
-              : "Create one with the builder, or import a bundle from a .botz file or a git repository."
+              : cloud
+                ? "This server's catalog is git-managed. Browse the marketplace to find bots to run."
+                : "Create one with the builder, or import a bundle from a .botz file or a git repository."
           }
           action={
             !query ? (
-              <Button variant="primary" size="sm" onClick={() => setLocation("/bots/new")}>
-                New bot
-              </Button>
+              cloud ? (
+                marketplaceEnabled ? (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setLocation("/marketplace")}
+                  >
+                    Browse marketplace
+                  </Button>
+                ) : undefined
+              ) : (
+                <Button variant="primary" size="sm" onClick={() => setLocation("/bots/new")}>
+                  New bot
+                </Button>
+              )
             ) : undefined
           }
         />

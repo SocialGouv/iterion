@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
@@ -7,6 +8,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Spinner } from "@/components/ui/Spinner";
 import { errorMessage } from "@/lib/errorHints";
+import { useServerInfoStore } from "@/store/serverInfo";
 import {
   listTriggers,
   FeatureUnavailableError,
@@ -20,6 +22,8 @@ export default function TriggersView() {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [, navigate] = useLocation();
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
   // Repo-first scope: the active repo narrows the list server-side
   // (ListByRepo also returns tenant-wide rows with no repo binding).
@@ -69,7 +73,18 @@ export default function TriggersView() {
       <div className="p-6">
         <EmptyState
           title="Automations not enabled"
-          message="This server has no trigger store wired. Launch a studio with the native tracker to manage event-driven triggers."
+          message={
+            cloud
+              ? "Event triggers aren't enabled on this server. Automations for cloud repos run via forge webhooks and scheduled bots — manage them from Integrations."
+              : "This server has no trigger store wired. Launch a studio with the native tracker to manage event-driven triggers."
+          }
+          action={
+            cloud ? (
+              <Button variant="primary" size="sm" onClick={() => navigate("/integrations")}>
+                Open Integrations
+              </Button>
+            ) : undefined
+          }
         />
       </div>
     );

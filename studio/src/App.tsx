@@ -49,6 +49,7 @@ const AcceptInvitation = lazy(() => import("@/views/auth/AcceptInvitation"));
 const Login = lazy(() => import("@/views/Login"));
 
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
+import FeatureUnavailable from "@/components/shared/FeatureUnavailable";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
 import ToastContainer from "@/components/shared/Toast";
 import MissingCLIBanner from "@/components/MissingCLIBanner";
@@ -257,9 +258,13 @@ function AuthedApp() {
       ),
     ];
     // Listen for the SPA-emitted open-switcher event from ProjectLabel
-    // (clicking the project chip in the toolbar / run header).
+    // (clicking the project chip in the toolbar / run header). Cloud has no
+    // project concept and never mounts ProjectSwitcher — no listener there so
+    // stray dispatches don't try to open an unmounted dialog.
     const onOpenSwitcher = () => setSwitcherOpen(true);
-    window.addEventListener("iterion:open-project-switcher", onOpenSwitcher);
+    if (serverInfo?.mode !== "cloud") {
+      window.addEventListener("iterion:open-project-switcher", onOpenSwitcher);
+    }
     // Sidebar Settings button (and any other SPA caller) dispatches this
     // to surface the dialog. The optional `tab` detail lets callers
     // land on a specific section (Appearance, Backends, …).
@@ -296,11 +301,15 @@ function AuthedApp() {
       window.removeEventListener("iterion:open-settings", onOpenSettings as EventListener);
       window.removeEventListener("message", onShellMenu);
     };
-  }, [pickAndAddProject, isDesktop]);
+  }, [pickAndAddProject, isDesktop, serverInfo?.mode]);
 
   useEffect(() => {
+    // Ctrl/Cmd+P opens the ProjectSwitcher — a folder concept that only
+    // exists in local/desktop. Skipping the shortcut in cloud avoids the
+    // silent no-op where the dialog isn't mounted.
+    const isCloud = serverInfo?.mode === "cloud";
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
+      if (!isCloud && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p") {
         e.preventDefault();
         setSwitcherOpen(true);
       }
@@ -312,7 +321,7 @@ function AuthedApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [serverInfo?.mode]);
 
   if (!ready) {
     return (
@@ -430,25 +439,55 @@ function AuthedApp() {
               </ErrorBoundary>
             </Route>
           )}
-          {serverInfo?.dispatcher_enabled && (
+          {serverInfo?.dispatcher_enabled ? (
             <Route path="/dispatcher">
               <ErrorBoundary area="Dispatcher view">
                 <DispatcherView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/dispatcher">
+              <FeatureUnavailable
+                title="Dispatcher"
+                description="Long-running dispatcher: polls an issue tracker and launches a workflow per eligible issue."
+                ctaLabel="Open Pipelines"
+                ctaHref="/pipelines"
+                ctaHint="The pipeline board tracks staged tasks and their in-flight runs on this server."
+              />
+            </Route>
           )}
-          {serverInfo?.triggers_enabled && (
+          {serverInfo?.triggers_enabled ? (
             <Route path="/triggers">
               <ErrorBoundary area="Automations view">
                 <TriggersView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/triggers">
+              <FeatureUnavailable
+                title="Automations"
+                description="Event-driven triggers fire a bot when something happens — a board card move, a run finishing, a cron tick, or a forge event."
+                ctaLabel="Open Integrations"
+                ctaHref="/integrations"
+                ctaHint="Automations on this server run via forge webhooks and scheduled bots — manage them from Integrations."
+              />
+            </Route>
           )}
-          {serverInfo?.marketplace_enabled && (
+          {serverInfo?.marketplace_enabled ? (
             <Route path="/marketplace">
               <ErrorBoundary area="Marketplace view">
                 <MarketplaceView />
               </ErrorBoundary>
+            </Route>
+          ) : (
+            <Route path="/marketplace">
+              <FeatureUnavailable
+                title="Marketplace"
+                description="Hosted registry of shareable bots and plugins."
+                ctaLabel="Open Bots"
+                ctaHref="/bots"
+                ctaHint="Browse the bots already discoverable in this workspace."
+              />
             </Route>
           )}
           <Route path="/editor">
@@ -477,10 +516,10 @@ function AuthedApp() {
           onTabChange={setSettingsTab}
           desktopFeatures={isDesktop}
         />
-        {/* ProjectSwitcher renders in both desktop and local-server modes.
-            Cloud mode (no work_dir) renders nothing useful; we still mount
-            it so the Ctrl+P shortcut and ProjectLabel chip have somewhere
-            to dispatch — the dialog just shows an empty list there. */}
+        {/* ProjectSwitcher renders in desktop and local-server modes only —
+            cloud has no work_dir concept and the Ctrl+P shortcut plus every
+            open-switcher dispatch are gated on non-cloud, so the dialog
+            never needs to mount there. */}
         {serverInfo?.mode !== "cloud" && (
           <ProjectSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
         )}

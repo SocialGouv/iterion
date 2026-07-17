@@ -13,7 +13,9 @@
 // Mirrors Labels.tsx's structure (busy/error footer, confirm-on-delete).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { Link, useLocation } from "wouter";
+
+import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 
 import {
   addField,
@@ -124,6 +126,18 @@ function FieldsViewInner() {
     },
     [fields, action, refresh],
   );
+
+  useHeaderSlot({
+    left: (
+      <span className="flex items-center gap-1.5 text-xs font-medium text-fg-default">
+        <Link href="/board" className="text-fg-muted hover:text-fg-default hover:underline">
+          Board
+        </Link>
+        <span className="text-fg-subtle">/</span>
+        <span>Fields</span>
+      </span>
+    ),
+  });
 
   return (
     <div className="h-full overflow-auto p-4 space-y-3 text-label">

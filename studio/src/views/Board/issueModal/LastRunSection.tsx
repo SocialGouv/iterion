@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/Badge";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { useRunChildren } from "@/hooks/useRunChildren";
 import { childLabel } from "@/components/Runs/runHeader/RunChildrenPanel";
+import { useServerInfoStore } from "@/store/serverInfo";
 import {
   STATUS_VARIANT,
   labelForStatus,
@@ -120,6 +121,7 @@ function AwaitingInput({ runID }: { runID: string }) {
 //
 // Renders nothing when neither runID nor workdir is set.
 function RunPanel({ runID, workdir }: { runID?: string; workdir?: string }) {
+  const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
   const [diffOpen, setDiffOpen] = useState(false);
   if (!runID && !workdir) return null;
   const runLabel = runID ? runID.slice(0, 12) : "";
@@ -156,7 +158,10 @@ function RunPanel({ runID, workdir }: { runID?: string; workdir?: string }) {
           onClose={() => setDiffOpen(false)}
         />
       )}
-      {workdir && (
+      {/* The workdir is a host filesystem path. In cloud it lives inside
+          the runner pod — copying it or opening it in VS Code is pure
+          misdirection, so the row is local/desktop-only. */}
+      {workdir && !cloud && (
         <div className="flex items-center gap-1.5 text-xs">
           <span className="text-fg-muted">Worktree:</span>
           <code

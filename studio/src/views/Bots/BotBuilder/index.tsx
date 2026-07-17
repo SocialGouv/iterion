@@ -177,12 +177,25 @@ export default function BotBuilderView() {
         <InlineBanner tone="info" title="Bot creation is a local-studio feature">
           Creating a bot scaffolds files into the workspace&apos;s <code>bots/</code> directory,
           which a cloud server has no filesystem for. Run <code>iterion studio</code> against your
-          repo locally to build a bot, then push it — or install one from the Marketplace.
+          repo locally to build a bot, then push it. On this server, the way to put bots to work
+          is to browse the catalog and marketplace, and enable them on a connected repository.
         </InlineBanner>
-        <div className="mt-3">
+        <div className="mt-3 flex items-center gap-2">
           <Link href="/bots">
             <Button variant="secondary" size="sm">
               Back to Bots
+            </Button>
+          </Link>
+          {serverInfo?.marketplace_enabled && (
+            <Link href="/marketplace">
+              <Button variant="secondary" size="sm">
+                Browse marketplace
+              </Button>
+            </Link>
+          )}
+          <Link href="/integrations/connect">
+            <Button variant="primary" size="sm">
+              Connect a repository
             </Button>
           </Link>
         </div>
