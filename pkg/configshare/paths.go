@@ -95,6 +95,35 @@ func rejectForbiddenIn(v any) error {
 	return nil
 }
 
+// pruneForbidden removes any prototype-pollution or hard-forbidden key
+// (`sinks`) at ANY depth of a value. It is the READ-side backstop symmetric to
+// rejectForbiddenIn on the write side: a broad or mis-configured VisiblePaths
+// entry (an ancestor path whose subtree carries `sinks`) must never project the
+// digest routing to a share editor. ValidatePaths rejects a visible path that
+// *is* a forbidden segment, but not one that is an *ancestor* of it — so the
+// projection prunes unconditionally, keeping `sinks` off-limits regardless of
+// the grant shape. Mutates in place (called on a fresh deep copy).
+func pruneForbidden(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k := range t {
+			if forbiddenKeys[k] || hardForbiddenSegments[k] {
+				delete(t, k)
+				continue
+			}
+			t[k] = pruneForbidden(t[k])
+		}
+		return t
+	case []any:
+		for i := range t {
+			t[i] = pruneForbidden(t[i])
+		}
+		return t
+	default:
+		return v
+	}
+}
+
 func deepCopyValue(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
@@ -157,8 +186,13 @@ func ProjectConfig(full map[string]any, visiblePaths []string) map[string]any {
 			continue
 		}
 		segs := strings.Split(p, ".")
+		// A visible path whose own last segment is forbidden is rejected at mint
+		// (ValidatePaths); guard it here too so ProjectConfig is safe standalone.
+		if last := segs[len(segs)-1]; forbiddenKeys[last] || hardForbiddenSegments[last] {
+			continue
+		}
 		if v, ok := getPath(full, segs); ok {
-			setPath(out, segs, deepCopyValue(v))
+			setPath(out, segs, pruneForbidden(deepCopyValue(v)))
 		}
 	}
 	return out

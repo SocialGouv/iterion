@@ -46,6 +46,41 @@ func TestProjectConfig_StripsEverythingElse(t *testing.T) {
 	}
 }
 
+func TestProjectConfig_PrunesForbiddenUnderBroadVisible(t *testing.T) {
+	// A broad VisiblePaths entry (an ancestor of the category, alongside a leaf
+	// grant) passes ValidatePaths — it rejects a visible path that *is* a
+	// forbidden segment, not one that is an ancestor of it. The projection must
+	// still strip `sinks` (the digest routing), else the share editor reads the
+	// webhook/channel it must never see.
+	vis := []string{"categories.a11y.feeds", "categories.a11y"}
+	al := []string{"categories.a11y.feeds"}
+	if err := ValidatePaths(al, vis); err != nil {
+		t.Fatalf("ancestor-visible grant unexpectedly rejected: %v", err)
+	}
+	proj := ProjectConfig(mustParse(t, sampleConfig), vis)
+	s := string(mustJSON(t, proj))
+	for _, no := range []string{"sinks", "prod", "#a"} {
+		if strings.Contains(s, no) {
+			t.Fatalf("projection LEAKED %q via broad visible path: %s", no, s)
+		}
+	}
+	// The legitimately-visible fields still project.
+	for _, want := range []string{"feeds", "editorial", "digest_title"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("projection dropped %q: %s", want, s)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+
 func TestApplyPatch_MergesAllowedLeavesOnly(t *testing.T) {
 	full := mustParse(t, sampleConfig)
 	patch := mustParse(t, `{"categories":{"a11y":{"editorial":"new"}}}`)
