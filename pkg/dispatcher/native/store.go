@@ -996,6 +996,7 @@ func (s *Store) Update(id string, p Patch) (updated *Issue, err error) {
 	if p.External != nil {
 		ext := *p.External
 		iss.External = &ext
+		changed = append(changed, "external")
 	}
 	if p.Bot != nil && *p.Bot != iss.Bot {
 		iss.Bot = *p.Bot
