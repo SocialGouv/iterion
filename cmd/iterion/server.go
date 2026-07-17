@@ -28,6 +28,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/cloud/tracing"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	iterconfig "github.com/SocialGouv/iterion/pkg/config"
+	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/boardmongo"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/forge"
@@ -400,6 +401,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
+		ConfigShares:           stores.configShares,
 		OrgUsage:               stores.orgUsage,
 		OrgDefaults:            orgLimitDefaultsFromEnv(),
 		Audit:                  stores.audit,
@@ -455,6 +457,7 @@ type cloudStores struct {
 	oauthPending     *secrets.MongoOAuthPendingStore
 	botBindings      *secrets.MongoBotSecretBindingStore
 	webhooks         *webhooks.MongoStores
+	configShares     *configshare.MongoStore
 	forgeConn        *forge.MongoConnectionStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	forgeOAuthApp    *forge.MongoOAuthAppStore
@@ -486,6 +489,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		oauthPending:     secrets.NewMongoOAuthPendingStore(st.DB()),
 		botBindings:      secrets.NewMongoBotSecretBindingStore(st.DB()),
 		webhooks:         webhooks.NewMongoStores(st.DB()),
+		configShares:     configshare.NewMongoStore(st.DB()),
 		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
@@ -531,6 +535,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"audit", func(c context.Context) error { return audit.EnsureSchema(c, st.DB()) }},
 		{"board", func(c context.Context) error { return boardmongo.EnsureSchema(c, st.DB()) }},
 		{"scheduled_bots", func(c context.Context) error { return cloudsched.EnsureSchema(c, st.DB()) }},
+		{"config_shares", func(c context.Context) error { return configshare.EnsureSchema(c, st.DB()) }},
 	}
 	if marketplaceEnabled {
 		schemas = append(schemas, schemaEnsurer{"marketplace", func(c context.Context) error { return marketplace.EnsureSchema(c, st.DB()) }})
