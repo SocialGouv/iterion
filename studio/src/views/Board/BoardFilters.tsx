@@ -168,7 +168,11 @@ export function BoardFilters({
         <Checkbox
           checked={includeUnlinked}
           onChange={(e) => onIncludeUnlinkedChange(e.target.checked)}
-          label="Include unlinked"
+          label={
+            !includeUnlinked && total > filtered
+              ? `Include unlinked (${total - filtered} hidden)`
+              : "Include unlinked"
+          }
           help={`When on, cards with no repository also show alongside cards linked to ${repoScope}.`}
         />
       )}

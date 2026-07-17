@@ -2,6 +2,38 @@
 
 Newest first. Template: see [README.md](README.md).
 
+## 2026-07-17 — create-repo launch journey on CLOUD prod (run 019f7013)
+- Status: validated
+- Versions: bot 0.1.0 (+ manifest `repo:` block) · iterion edda80793 (cloud prod, ephemeral runner)
+- Method: launched from the studio Launch form's NEW "Target repository →
+  Create a new repository" mode (connection = PAT `devthejo`, owner
+  SocialGouv, private) — the form created `SocialGouv/iterion-test-appy-e2e`
+  on GitHub, then launched with `repo_url`+`connection_id`; the runner
+  cloned the EMPTY repo (worktree:auto degraded in-place on the unborn
+  HEAD, as designed). Vars: autonomous, draft_review=false, open_mr=true,
+  max_passes=3; budget --max-cost-usd 8 --max-duration 35m. Prompt: a
+  two-file static site (index.html + README) to keep the run tiny.
+- Result: finished in 3m55s. Appy seeded main ("Initial commit", README),
+  built the app on `iterion/improve/2997044` and opened PR #1 ("Add tiny
+  static iterion e2e test site") with exactly the requested 2 files —
+  clean, self-contained index.html.
+- Value: proves the whole new journey — bot-declared repo need (`repo:
+  {mode: optional, allow_create}`) → launch-form create → forge
+  RepoCreator → empty-repo clone → build → publication.
+- Findings / misses: Appy chose seed-main-then-branch+PR instead of the
+  fresh-repo direct-push documented in forge-mr-create ("first push IS
+  the publication"). Arguably BETTER (reviewable PR even on a fresh
+  repo); consider aligning the skill's fresh-repo section with this
+  observed shape rather than forcing direct push.
+- Engine hardening (same campaign): RepoRequirement JSON wire-shape bug
+  (yaml-only tags → studio saw `Mode`/`AllowCreate`, hiding the
+  create/none options — fixed + wire-shape test); create-mode connection
+  picker hid credential-fresh connections (repos-derived only — fixed by
+  unioning listForgeConnections); `worktree: auto` hard-failed on
+  unborn-HEAD repos (fixed: in-place degrade + test).
+- Lessons for next run: keep budget caps on e2e tirs; a fresh PAT/App
+  connection needs no provisioned repo to be a create target.
+
 ## 2026-07-16 — triple maiden run: autonomous NextJS+DSFR, interview→CLI, brownfield headless (runs 019f69a7 / 019f69a8 / 019f69b3)
 
 - Status: validated (all three runs)

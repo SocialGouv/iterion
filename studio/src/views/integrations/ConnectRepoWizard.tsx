@@ -511,6 +511,10 @@ interface PatFallbackProps {
   oauthApps: ForgeOAuthApp[];
   onError: (m: string) => void;
   onConnected: (conn: ForgeConnection) => void;
+  // bare renders the OAuth/PAT blocks directly, without PatFallback's own
+  // disclosure — for callers (NonAppMethods) that already gate visibility
+  // behind their own "Other methods" toggle. One toggle, not two.
+  bare?: boolean;
 }
 
 // PatFallback keeps the PAT path always reachable (self-hosted forges,
@@ -525,8 +529,10 @@ function PatFallback({
   oauthApps,
   onError,
   onConnected,
+  bare = false,
 }: PatFallbackProps) {
   const [expanded, setExpanded] = useState(false);
+  const open = bare || expanded;
   const [busy, setBusy] = useState(false);
   const [pat, setPat] = useState("");
 
@@ -565,16 +571,18 @@ function PatFallback({
   };
 
   return (
-    <div className="border-t border-border-subtle pt-3">
-      <button
-        type="button"
-        className="text-caption text-fg-muted hover:text-fg-default"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
-      >
-        {expanded ? "Hide other methods" : "Other methods (OAuth, personal token)"}
-      </button>
-      {expanded && (
+    <div className={bare ? "" : "border-t border-border-subtle pt-3"}>
+      {!bare && (
+        <button
+          type="button"
+          className="text-caption text-fg-muted hover:text-fg-default"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "Hide other methods" : "Other methods (OAuth, personal token)"}
+        </button>
+      )}
+      {open && (
         <div className="mt-2 space-y-3 rounded border border-border-subtle bg-surface-1 p-3">
           {oauthAvailable && (
             <div>
@@ -1134,6 +1142,7 @@ function NonAppMethods({
             oauthApps={hideOAuth ? [] : oauthApps}
             onError={onError}
             onConnected={onPatConnected}
+            bare
           />
         </div>
       )}
