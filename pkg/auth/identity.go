@@ -21,10 +21,39 @@ type Identity struct {
 	TeamID       string
 	Role         identity.Role
 	IsSuperAdmin bool
+	// Kind distinguishes a real authenticated user from a synthetic,
+	// purpose-scoped principal minted by a self-authenticating surface
+	// (see IdentityKind). The zero value is a real user.
+	Kind IdentityKind
 	// JTI is the JWT ID; useful for audit logging and explicit
 	// revocation later (we don't revoke access tokens today; we
 	// rely on short TTL + refresh rotation).
 	JTI string
+}
+
+// IdentityKind distinguishes a real authenticated user (JWT or PAT — full
+// role in the active team) from a synthetic, purpose-scoped principal minted
+// by a self-authenticating surface: an inbound webhook, or a config-share
+// editor link. A synthetic identity carries a TeamID + Role so tenant-scoped
+// STORE reads still work, but it must NEVER pass the operator RBAC gates
+// (canViewTeam / canManageTeam / …) — those authorize humans acting on a
+// team's resources. The zero value ("") is a real user, so existing code
+// that builds an Identity without a Kind keeps full behaviour; only the two
+// synthetic authenticators set a non-empty Kind.
+type IdentityKind string
+
+const (
+	KindUser    IdentityKind = ""        // JWT or PAT — a real user (zero value)
+	KindWebhook IdentityKind = "webhook" // inbound-webhook launch trigger
+	KindShare   IdentityKind = "share"   // config-share editor link
+)
+
+// IsSynthetic reports whether this principal is a purpose-scoped,
+// self-authenticating identity (webhook/share) rather than a real user.
+// Operator RBAC gates deny synthetic identities by default; an endpoint that
+// intentionally serves one opts in explicitly.
+func (i Identity) IsSynthetic() bool {
+	return i.Kind == KindWebhook || i.Kind == KindShare
 }
 
 // HasRole reports whether the principal has at least the requested
