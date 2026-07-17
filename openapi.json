@@ -2482,6 +2482,66 @@
         ]
       }
     },
+    "/api/config-share/{id}/config": {
+      "get": {
+        "operationId": "getConfigShareByIdConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/config-share/{id}/config",
+        "tags": [
+          "config-share"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchConfigShareByIdConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/config-share/{id}/config",
+        "tags": [
+          "config-share"
+        ]
+      }
+    },
+    "/api/config-share/{id}/meta": {
+      "get": {
+        "operationId": "getConfigShareByIdMeta",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/config-share/{id}/meta",
+        "tags": [
+          "config-share"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/effort-capabilities": {
       "get": {
         "operationId": "getEffortCapabilities",
@@ -5412,6 +5472,138 @@
           }
         },
         "summary": "PATCH /api/teams/{id}/bots/{bot_id}/bindings/{binding_id}",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/config-shares": {
+      "get": {
+        "operationId": "getTeamsByIdConfigShares",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-shares",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdConfigShares",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/config-shares",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
+    "/api/teams/{id}/config-shares/{sid}": {
+      "delete": {
+        "operationId": "deleteTeamsByIdConfigSharesBySid",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "DELETE /api/teams/{id}/config-shares/{sid}",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/config-shares/{sid}/deliveries": {
+      "get": {
+        "operationId": "getTeamsByIdConfigSharesBySidDeliveries",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-shares/{sid}/deliveries",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/config-shares/{sid}/rotate": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdConfigSharesBySidRotate",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/teams/{id}/config-shares/{sid}/rotate",
         "tags": [
           "teams"
         ]
