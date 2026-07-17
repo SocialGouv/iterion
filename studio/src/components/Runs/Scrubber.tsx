@@ -150,10 +150,14 @@ export default function Scrubber({
       setPlaying(false);
     };
 
-    const tick = () => {
+    // `curOverride` threads the position along the timeout chain: the
+    // React state behind stateRef only syncs after a re-render, so the
+    // continuation right after onChange(target) would otherwise read a
+    // stale position and re-schedule (= double) every hop.
+    const tick = (curOverride?: number) => {
       if (cancelled) return;
       const { scrubSeq, max, timeline, mult, onChange } = stateRef.current;
-      const cur = scrubSeq ?? -1;
+      const cur = curOverride ?? scrubSeq ?? -1;
 
       if (mult === 0) {
         // Instant: legacy fixed seq stepping.
@@ -163,7 +167,7 @@ export default function Scrubber({
           return;
         }
         onChange(next);
-        timer = window.setTimeout(tick, INSTANT_TICK_MS);
+        timer = window.setTimeout(() => tick(next), INSTANT_TICK_MS);
         return;
       }
 
@@ -231,7 +235,7 @@ export default function Scrubber({
       timer = window.setTimeout(() => {
         if (cancelled) return;
         stateRef.current.onChange(target);
-        tick();
+        tick(target);
       }, delay);
     };
 
