@@ -69,6 +69,49 @@ type InstallationTokenOptions struct {
 	Permissions  map[string]string
 }
 
+// InstallationInfo returns the installation's account login and its
+// GitHub settings page URL (html_url — the only place where the
+// installation's repo scope and permission grants can be widened).
+// App-JWT-authenticated: GET /app/installations/{id}.
+func InstallationInfo(ctx context.Context, httpClient *http.Client, apiBase string, cfg AppConfig, installationID int64, now time.Time) (login, htmlURL string, err error) {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	jwt, err := signAppJWT(cfg.AppID, cfg.PrivateKeyPEM, now)
+	if err != nil {
+		return "", "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		apiBase+"/app/installations/"+strconv.FormatInt(installationID, 10), nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", "", forge.ErrUnauthorized
+	}
+	if resp.StatusCode/100 != 2 {
+		return "", "", statusErr("GET /app/installations/{id}", resp.StatusCode)
+	}
+	var out struct {
+		HTMLURL string `json:"html_url"`
+		Account struct {
+			Login string `json:"login"`
+		} `json:"account"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", err
+	}
+	return out.Account.Login, out.HTMLURL, nil
+}
+
 // MintInstallationToken trades the App JWT for a short-lived (≈1h)
 // installation access token. apiBase is the REST API base (APIBaseFor). opts
 // may be nil for an unconstrained (whole-installation) token, or narrow it to

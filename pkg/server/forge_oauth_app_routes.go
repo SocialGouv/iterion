@@ -43,6 +43,11 @@ type forgeOAuthAppReq struct {
 	// installed org-wide. Empty = the user's personal account (a private App is
 	// then installable only there — the cause of "only your personal account").
 	GitHubOrg string `json:"github_org,omitempty"`
+	// AllowRepoCreation (github-manifest): request administration:write on
+	// the App so iterion can CREATE repositories in the installed org
+	// (opt-in — the connect wizard surfaces it as a visible checkbox;
+	// absent keeps the least-privilege baseline).
+	AllowRepoCreation bool `json:"allow_repo_creation,omitempty"`
 }
 
 func (s *Server) handleListForgeOAuthApps(w http.ResponseWriter, r *http.Request) {
