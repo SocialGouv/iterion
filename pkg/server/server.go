@@ -97,7 +97,7 @@ type Server struct {
 	configShareSvc    *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
 	// shareFileClient resolves the team forge_token + builds a GitHub client).
-	configShareFC func(context.Context, *configshare.Share) (forge.FileClient, error)
+	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)
 	forgeConnections  forge.ConnectionStore
 	forgeIntegrations forge.RepoIntegrationStore
 	forgeOrchestrator *forge.Orchestrator
