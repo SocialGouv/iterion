@@ -44,6 +44,11 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
   if (isLocal || orgs.length === 0) return null;
 
   const orgLabel = activeOrg?.org_name ?? "Select organization";
+  // Every resource is team-scoped, so the active team is context the
+  // operator should always be able to see — even in the common
+  // single-team org where no switching is possible.
+  const activeTeamName =
+    teams.find((t) => t.team_id === activeTeamID)?.team_name ?? null;
   const canManageActiveOrg = !!user?.is_super_admin || hasOrgRole(activeOrgRole, "admin");
   const isSuper = user?.is_super_admin ?? false;
   const initials = orgInitials(orgLabel, user?.email?.[0]?.toUpperCase() ?? "?");
@@ -90,6 +95,11 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
               <span className="block truncate text-xs font-medium text-fg-default">
                 {orgLabel}
               </span>
+              {activeTeamName && activeTeamName !== orgLabel && (
+                <span className="block truncate text-caption text-fg-subtle">
+                  team: {activeTeamName}
+                </span>
+              )}
             </span>
             <CaretSortIcon className="h-4 w-4 shrink-0 text-fg-subtle" />
           </button>
@@ -160,13 +170,16 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
         </>
       )}
       <div className="my-1 border-t border-border-subtle" />
-      {activeOrg && canManageActiveOrg && (
+      {/* Every member can open the org page (Plan, Usage, Teams roster are
+          member-readable; the page hides mutating controls itself) — only
+          the label signals the admin's extra powers. */}
+      {activeOrg && (
         <PopoverClose asChild>
           <button
             onClick={closeAfter(() => navigate(`/orgs/${activeOrgID}`))}
             className="w-full text-left px-2 py-1.5 rounded hover:bg-surface-2"
           >
-            Organization settings
+            {canManageActiveOrg ? "Organization settings" : "Organization"}
           </button>
         </PopoverClose>
       )}
