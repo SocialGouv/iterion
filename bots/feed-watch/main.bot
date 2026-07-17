@@ -472,6 +472,28 @@ tool dedup_queue:
     state_commit = {{input.state_commit}}
     IDS_CAP, URLS_CAP = 5000, 2000
     os.chdir(ws)
+
+    def _commit_push_state(sdir, msg):
+        # Persist the state dir to git. On ephemeral cloud runners, concurrent
+        # feed-watch runs push to the same branch; each mutates a DISJOINT
+        # per-category subdir, so rebasing onto the remote head auto-merges. A
+        # losing push (non-fast-forward) left unhandled would drop this run's
+        # state — and for a digest, an uncleared queue re-posts next run. So
+        # push, and on rejection rebase + retry.
+        subprocess.run(['git', 'add', sdir], check=True)
+        if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
+            return False
+        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                            capture_output=True, text=True).stdout.strip() or 'HEAD'
+        for _ in range(5):
+            if subprocess.run(['git', 'push', 'origin', 'HEAD']).returncode == 0:
+                return True
+            if subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br]).returncode != 0:
+                subprocess.run(['git', 'rebase', '--abort'])
+                raise SystemExit('feed-watch: git rebase failed pushing state (conflict) -- aborting')
+        raise SystemExit('feed-watch: git push failed after 5 retries (non-fast-forward or network)')
+
     entries = []
     if entries_file and os.path.exists(entries_file):
         with open(entries_file, encoding='utf-8') as fh:
@@ -518,11 +540,7 @@ tool dedup_queue:
         totals[cat] = sum(1 for ln in open(ppath, encoding='utf-8') if ln.strip()) if os.path.exists(ppath) else 0
     committed = False
     if state_commit:
-        subprocess.run(['git', 'add', state_dir], check=True)
-        if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode != 0:
-            subprocess.run(['git', 'commit', '-m', 'chore(feed-watch): collect +' + str(new_total) + ' item(s)'], check=True)
-            subprocess.run(['git', 'push'], check=True)
-            committed = True
+        committed = _commit_push_state(state_dir, 'chore(feed-watch): collect +' + str(new_total) + ' item(s)')
     summary = 'collected ' + str(new_total) + ' new / ' + str(dup_total) + ' duplicate(s); pending: ' + json.dumps(totals)
     if fetch_errors:
         summary += ' -- ' + str(len(fetch_errors)) + ' feed(s) FAILED: ' + '; '.join((x.get('feed') or '?') for x in fetch_errors)[:600]
@@ -676,6 +694,25 @@ tool commit_state:
     ws = {{input.workspace}}
     state_dir = {{input.state_dir}}
     os.chdir(ws)
+
+    def _commit_push_state(sdir, msg):
+        # See dedup_queue for the rationale: concurrent cloud runs push to the
+        # same branch touching disjoint per-category subdirs; rebase + retry so
+        # a non-fast-forward push never drops this digest's cleared queue.
+        subprocess.run(['git', 'add', sdir], check=True)
+        if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0:
+            return False
+        subprocess.run(['git', 'commit', '-m', msg], check=True)
+        br = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                            capture_output=True, text=True).stdout.strip() or 'HEAD'
+        for _ in range(5):
+            if subprocess.run(['git', 'push', 'origin', 'HEAD']).returncode == 0:
+                return True
+            if subprocess.run(['git', 'pull', '--rebase', '--autostash', 'origin', br]).returncode != 0:
+                subprocess.run(['git', 'rebase', '--abort'])
+                raise SystemExit('feed-watch: git rebase failed pushing state (conflict) -- aborting')
+        raise SystemExit('feed-watch: git push failed after 5 retries (non-fast-forward or network)')
+
     cdir = os.path.join(state_dir, category)
     lock = open(os.path.join(state_dir, '.lock'), 'w')
     fcntl.flock(lock, fcntl.LOCK_EX)
@@ -714,11 +751,7 @@ tool commit_state:
         os.remove(os.path.join(ddir, f))
     committed = False
     if state_commit:
-        subprocess.run(['git', 'add', state_dir], check=True)
-        if subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode != 0:
-            subprocess.run(['git', 'commit', '-m', 'chore(feed-watch): digest ' + category + ' (' + str(cleared) + ' item(s))'], check=True)
-            subprocess.run(['git', 'push'], check=True)
-            committed = True
+        committed = _commit_push_state(state_dir, 'chore(feed-watch): digest ' + category + ' (' + str(cleared) + ' item(s))')
     print(json.dumps({'cleared': cleared, 'archived': True, 'committed': committed,
                       'summary': 'cleared ' + str(cleared) + ' digested item(s); ' + str(len(kept)) + ' left in queue; digest archived as ' + fname},
                      ensure_ascii=False))
