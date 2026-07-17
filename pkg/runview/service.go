@@ -815,13 +815,34 @@ func (s *Service) buildAlertManager(set AlertSettings) *alert.Manager {
 		return r.WorkflowName, true
 	}
 
-	return alert.NewManager(
+	opts := []alert.Option{
 		alert.WithSinks(sinks...),
 		alert.WithRunLookup(runLookup),
 		alert.WithBaseURL(set.BaseURL),
 		alert.WithStallTimeout(set.StallTimeout),
 		alert.WithLogger(s.logger),
-	)
+	}
+	// Persisted twin: append every alert as a durable run_health event
+	// so the stall episode survives a WS reconnect and shows in the
+	// timeline. Loop-free by construction — Observe ignores
+	// EventRunHealth — and best-effort: an append failure is logged,
+	// never blocks alerting.
+	if s.store != nil {
+		opts = append(opts, alert.WithStoreSink(func(a alert.Alert) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := s.store.AppendEvent(ctx, a.RunID, store.Event{
+				Type:      store.EventRunHealth,
+				RunID:     a.RunID,
+				NodeID:    a.NodeID,
+				Timestamp: a.Timestamp,
+				Data:      a.AsEventData(),
+			}); err != nil && s.logger != nil {
+				s.logger.Warn("alert: persist run_health for %s: %v", a.RunID, err)
+			}
+		}))
+	}
+	return alert.NewManager(opts...)
 }
 
 // Broker exposes the event broker for transports that need to

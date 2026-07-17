@@ -26,6 +26,10 @@ const (
 	// KindStall fires when a non-terminal run sees no activity for
 	// longer than the configured stall timeout.
 	KindStall Kind = "stall"
+	// KindStallRecovered fires once when a previously-stalled run shows
+	// activity again — the closing bracket of a stall episode, so the
+	// persisted timeline shows both edges.
+	KindStallRecovered Kind = "stall_recovered"
 	// KindBudgetWarning fires the first time a budget axis crosses the
 	// runtime warning threshold (80%).
 	KindBudgetWarning Kind = "budget_warning"
@@ -61,6 +65,8 @@ func (a Alert) Title() string {
 	switch a.Kind {
 	case KindStall:
 		return fmt.Sprintf("Run stalled: %s", name)
+	case KindStallRecovered:
+		return fmt.Sprintf("Run recovered: %s", name)
 	case KindBudgetWarning:
 		return fmt.Sprintf("Budget warning: %s", name)
 	case KindBudgetExceeded:

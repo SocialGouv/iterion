@@ -54,6 +54,12 @@ type Manager struct {
 	baseURL       string
 	runLookup     func(runID string) (name string, ok bool)
 	now           func() time.Time
+	// storeSink, when set, receives every fired alert so the host can
+	// persist a store-event twin (EventRunHealth) — the ephemeral
+	// broker sink is deliberately never persisted (feedback-loop
+	// guard), so without this a WS reconnect loses the stall episode.
+	// Loop safety is structural: Observe ignores EventRunHealth.
+	storeSink func(Alert)
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -90,6 +96,14 @@ func WithSinks(sinks ...Sink) Option {
 	return func(m *Manager) { m.sinks = append(m.sinks, sinks...) }
 }
 
+// WithStoreSink installs the persisted-twin callback: it receives every
+// fired alert (stall / recovered / budget / failed) so the host appends
+// a durable EventRunHealth to the run's event stream. Invoked from the
+// dispatch tail, off the manager lock, panic-contained.
+func WithStoreSink(fn func(Alert)) Option {
+	return func(m *Manager) { m.storeSink = fn }
+}
+
 // NewManager builds a Manager. Call Start to begin stall polling.
 func NewManager(opts ...Option) *Manager {
 	m := &Manager{
@@ -116,6 +130,14 @@ func (m *Manager) Observe(evt store.Event) {
 	if evt.RunID == "" {
 		return
 	}
+	// The persisted twin of our own alerts (run_health) must not count
+	// as run progress nor re-arm stall detection: replayed through the
+	// file tail it would reset the once-per-episode dedup and turn a
+	// single stall into an alert every poll window. Structural
+	// loop-freedom lives here.
+	if evt.Type == store.EventRunHealth {
+		return
+	}
 
 	m.mu.Lock()
 	rs := m.runStateLocked(evt.RunID)
@@ -128,10 +150,16 @@ func (m *Manager) Observe(evt store.Event) {
 		rs.lastProgressAt = ts
 	}
 	// Any event means the run is alive again — re-arm stall detection so
-	// a fresh stall episode can re-fire.
+	// a fresh stall episode can re-fire, and close the episode with a
+	// recovered alert so the timeline shows both edges.
+	wasStalled := rs.stallAlerted
 	rs.stallAlerted = false
 
 	var fired []Alert
+	if wasStalled {
+		fired = append(fired, m.alertLocked(KindStallRecovered, rs, evt.NodeID,
+			"activity resumed", "", 0, ts))
+	}
 	switch evt.Type {
 	case store.EventNodeStarted:
 		// A node is executing ⇒ the run is active again, not paused.
@@ -328,7 +356,25 @@ func (m *Manager) snapshotSinksLocked() []Sink {
 }
 
 func (m *Manager) dispatch(sinks []Sink, alerts []Alert) {
-	if len(sinks) == 0 || len(alerts) == 0 {
+	if len(alerts) == 0 {
+		return
+	}
+	// Persisted twin first: the store sink is host code (AppendEvent),
+	// panic-contained like the user sinks below.
+	if m.storeSink != nil {
+		for _, a := range alerts {
+			a := a
+			func() {
+				defer func() {
+					if r := recover(); r != nil && m.logger != nil {
+						m.logger.Error("alert: store sink panicked for %s run=%s: %v", a.Kind, a.RunID, r)
+					}
+				}()
+				m.storeSink(a)
+			}()
+		}
+	}
+	if len(sinks) == 0 {
 		return
 	}
 	for _, a := range alerts {

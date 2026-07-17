@@ -9,6 +9,7 @@ export const EVENT_BADGE: Record<string, string> = {
   run_paused: "bg-warning-soft text-warning-fg",
   run_resumed: "bg-info-soft text-info-fg",
   run_steered: "bg-info-soft text-info-fg",
+  run_health: "bg-warning-soft text-warning-fg",
   run_cancelled: "bg-surface-2 text-fg-muted",
   node_started: "bg-info-soft text-info-fg",
   node_finished: "bg-success-soft text-success-fg",
