@@ -282,6 +282,11 @@ export interface RunHeader {
   merge_strategy?: MergeStrategy;
   merge_status?: MergeStatus;
   auto_merge?: boolean;
+  // Lines changed by the run's commits: three-dot numstat against the
+  // fork point, computed+cached server-side. Absent (not zero) when the
+  // refs are unresolvable — render "—", never a guessed 0.
+  loc_added?: number;
+  loc_deleted?: number;
   // Wall-clock the run actually consumed: sum of run_started/resumed
   // → paused/failed/cancelled/interrupted/finished windows. Excludes
   // pause and failed_resumable gaps. Reducer-derived from events.

@@ -63,6 +63,9 @@ type Server struct {
 	// /api/v1/runs/stats (terminal runs only — see runs_stats_cache.go).
 	// Cleared on project switch. Non-nil after New.
 	statsCache *runStatsCache
+	// locCache memoizes the per-run three-dot LOC diff behind the run
+	// header (see runs_loc.go). Non-nil after New.
+	locCache *runLOCCache
 
 	authSvc        *auth.Service
 	authLimiter    authRateLimiterBackend
@@ -293,6 +296,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
 		browserSessions:   cfg.BrowserRegistry,
 		statsCache:        newRunStatsCache(),
+		locCache:          newRunLOCCache(),
 		marketplace:       cfg.Marketplace,
 		redis:             cfg.Redis,
 	}

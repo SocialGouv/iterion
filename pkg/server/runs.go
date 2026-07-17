@@ -575,6 +575,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		s.httpErrorFor(w, r, http.StatusNotFound, "run not found: %v", err)
 		return
 	}
+	s.enrichRunLOC(r.Context(), &snap.Run)
 	s.writeJSONFor(w, r, snap)
 }
 
