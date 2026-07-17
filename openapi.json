@@ -1377,10 +1377,93 @@
         },
         "type": "object"
       },
+      "forgeConnectionHealth": {
+        "properties": {
+          "account_login": {
+            "type": "string"
+          },
+          "app_slug": {
+            "type": "string"
+          },
+          "installation_account": {
+            "type": "string"
+          },
+          "installation_id": {
+            "type": "integer"
+          },
+          "installation_repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "live_error": {
+            "type": "string"
+          },
+          "manage_install_url": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provisioned_repo_count": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "provider",
+          "kind",
+          "provisioned_repo_count"
+        ],
+        "type": "object"
+      },
+      "forgeCreateRepoReq": {
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "default_branch": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "init_readme": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "private": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "connection_id",
+          "name"
+        ],
+        "type": "object"
+      },
       "forgeOAuthAppReq": {
         "properties": {
           "admin_token": {
             "type": "string"
+          },
+          "allow_repo_creation": {
+            "type": "boolean"
           },
           "client_id": {
             "type": "string"
@@ -1409,6 +1492,49 @@
         },
         "required": [
           "provider"
+        ],
+        "type": "object"
+      },
+      "forgeTeamRepo": {
+        "properties": {
+          "bot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "clone_url": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "connection_status": {
+            "type": "string"
+          },
+          "integration_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "repo_full_name": {
+            "type": "string"
+          },
+          "sync_issues_enabled": {
+            "type": "boolean"
+          },
+          "web_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "provider",
+          "repo_full_name",
+          "integration_id",
+          "bot_ids",
+          "sync_issues_enabled"
         ],
         "type": "object"
       },
@@ -5358,6 +5484,45 @@
         }
       ]
     },
+    "/api/teams/{id}/forge/connections/{conn_id}/health": {
+      "get": {
+        "operationId": "getTeamsByIdForgeConnectionsByConnIdHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/forgeConnectionHealth"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/connections/{conn_id}/health",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "conn_id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "/api/teams/{id}/forge/connections/{conn_id}/repos": {
       "get": {
         "operationId": "getTeamsByIdForgeConnectionsByConnIdRepos",
@@ -5657,6 +5822,89 @@
           }
         }
       ]
+    },
+    "/api/teams/{id}/forge/repos": {
+      "get": {
+        "operationId": "getTeamsByIdForgeRepos",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "repos": {
+                      "items": {
+                        "$ref": "#/components/schemas/forgeTeamRepo"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "repos"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "GET /api/teams/{id}/forge/repos",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "postTeamsByIdForgeRepos",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/forgeCreateRepoReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "clone_url": {
+                      "type": "string"
+                    },
+                    "repo": {
+                      "$ref": "#/components/schemas/RepoSummary"
+                    }
+                  },
+                  "required": [
+                    "repo",
+                    "clone_url"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "POST /api/teams/{id}/forge/repos",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/invitations": {
       "get": {
