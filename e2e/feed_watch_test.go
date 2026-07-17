@@ -184,6 +184,10 @@ func TestFeedWatch_ScriptsStateMachine(t *testing.T) {
 	fetchScript := feedWatchTool(t, wf, "fetch_feeds").Script
 	fetchInputs := map[string]any{
 		"targets": targets, "timeout_secs": 5, "max_per_feed": 10, "scratch_dir": scratch,
+		// The hermetic feeds are file:// URLs; the strict SSRF guard blocks
+		// them, so this test polls in trusted-local mode (production defaults
+		// to allow_private_feeds=false — see TestFeedWatch_FetchRejectsSSRF).
+		"allow_private": true,
 	}
 	out, stderr, err := runPy(t, ws, subScript(t, fetchScript, fetchInputs, ""))
 	if err != nil {
@@ -397,7 +401,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{
 				"has_items": true, "category": "demo", "items": []any{map[string]any{"id": "x"}},
 				"items_count": 1, "overflow_count": 0, "snapshot_ids": []any{"x"},
-				"recent_topics": "", "editorial": "e", "digest_title": "Demo",
+				"recent_topics": "", "editorial": "e", "editorial_nonce": "n", "digest_title": "Demo",
 				"sinks": []any{}, "_tokens": 1,
 			}, nil
 		})
@@ -432,7 +436,7 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 			return map[string]any{
 				"has_items": true, "category": "demo", "items": []any{map[string]any{"id": "x"}},
 				"items_count": 1, "overflow_count": 0, "snapshot_ids": []any{"x"},
-				"recent_topics": "", "editorial": "e", "digest_title": "Demo",
+				"recent_topics": "", "editorial": "e", "editorial_nonce": "n", "digest_title": "Demo",
 				"sinks": []any{map[string]any{"webhook": "w1"}}, "_tokens": 1,
 			}, nil
 		})
@@ -457,9 +461,88 @@ func TestFeedWatch_GraphRouting(t *testing.T) {
 		if r.Status != store.RunStatusFinished {
 			t.Fatalf("status = %s", r.Status)
 		}
-		want := []string{"plan", "load_pending", "synthesize", "notify", "commit_state"}
+		want := []string{"plan", "load_pending", "synthesize", "verify_message", "notify", "commit_state"}
 		if got := strings.Join(exec.calls, ","); got != strings.Join(want, ",") {
 			t.Fatalf("call order = %v, want %v", exec.calls, want)
 		}
 	})
+}
+
+// TestFeedWatch_VerifyMessageBlocksInjectedLinks drives the real
+// verify_message tool script: a digest whose every hyperlink is an input
+// item's url (bare-vs-www and a static reference domain included) passes
+// through unchanged, while a digest carrying an off-item link — the shape
+// an injected editorial produces to phish or exfiltrate — hard-fails the
+// run before delivery.
+func TestFeedWatch_VerifyMessageBlocksInjectedLinks(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "feed-watch/main.bot")
+	script := feedWatchTool(t, wf, "verify_message").Script
+	items := []any{
+		map[string]any{"url": "https://www.bleepingcomputer.com/news/x"},
+		map[string]any{"url": "https://thehackernews.com/y"},
+	}
+
+	good := "Headline\n**[A](https://bleepingcomputer.com/news/x)** — takeaway " +
+		"([also](https://thehackernews.com/y)) ([cve](https://cve.mitre.org/z))"
+	out, stderr, err := runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+		"message_markdown": good, "items": items,
+	}, ""))
+	if err != nil {
+		t.Fatalf("legit item-only digest rejected: %v\nstderr: %s", err, stderr)
+	}
+	if out["message_markdown"] != good {
+		t.Fatalf("verified digest not passed through unchanged: %v", out["message_markdown"])
+	}
+
+	bad := "**[A](https://bleepingcomputer.com/news/x)** — see " +
+		"[details](https://cert-fr-metrics.attacker.com/click?d=leak)"
+	_, stderr, err = runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+		"message_markdown": bad, "items": items,
+	}, ""))
+	if err == nil {
+		t.Fatal("digest with an off-item link must hard-fail")
+	}
+	if !strings.Contains(stderr, "REJECTED") || !strings.Contains(stderr, "attacker.com") {
+		t.Fatalf("rejection not explicit about the bad host: %s", stderr)
+	}
+}
+
+// TestFeedWatch_FetchRejectsSSRF drives the real fetch_feeds script with a
+// feed list of SSRF/LFI targets under the default strict posture
+// (allow_private=false): every one is refused (metadata IP, loopback,
+// file://, ftp://) and — since no feed survives — the node hard-fails
+// loudly rather than yielding an empty-but-green collect. No network is
+// touched: the addresses are rejected at resolution or scheme check.
+func TestFeedWatch_FetchRejectsSSRF(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH")
+	}
+	wf := compileFixture(t, "feed-watch/main.bot")
+	script := feedWatchTool(t, wf, "fetch_feeds").Script
+	targets := []any{map[string]any{"key": "x", "feeds": []any{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://127.0.0.1:9/rss",
+		"file:///etc/passwd",
+		"ftp://example.com/feed",
+	}}}
+	_, stderr, err := runPy(t, t.TempDir(), subScript(t, script, map[string]any{
+		"targets": targets, "timeout_secs": 5, "max_per_feed": 5,
+		"scratch_dir": t.TempDir(), "allow_private": false,
+	}, ""))
+	if err == nil {
+		t.Fatal("a feed list of only SSRF/LFI targets must fail (no feed survived)")
+	}
+	for _, want := range []string{
+		"SSRF-unsafe address 169.254.169.254",
+		"SSRF-unsafe address 127.0.0.1",
+		"scheme 'file'",
+		"scheme 'ftp'",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("SSRF failure missing %q in:\n%s", want, stderr)
+		}
+	}
 }
