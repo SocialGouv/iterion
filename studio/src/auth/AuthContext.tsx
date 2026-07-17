@@ -259,6 +259,14 @@ export function useAuth(): AuthCtx {
   return v;
 }
 
+// useMaybeAuth is the provider-optional variant for components whose
+// auth-derived content is decoration (cross-links, context captions)
+// rather than load-bearing — they can mount without an AuthProvider
+// (jsdom a11y harness, storybook-style isolation) and degrade to null.
+export function useMaybeAuth(): AuthCtx | null {
+  return useContext(Ctx);
+}
+
 // isLocalIdentity reports whether user is the synthetic local-mode
 // principal (auth disabled server-side, see localIdentity above).
 // Consumers use it to hide cloud-only account chrome in local mode —

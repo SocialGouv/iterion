@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
 
 import {
   FeatureUnavailableError,
@@ -32,6 +33,7 @@ interface Props {
 // affordances, and hands off the one-time token panel after a successful
 // create or rotate. The form and drawer live in ./webhooks/.
 export default function WebhooksTab({ teamID, canManage }: Props) {
+  const [, navigate] = useLocation();
   const [webhooks, setWebhooks] = useState<WebhookConfig[]>([]);
   const [unavailable, setUnavailable] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -147,6 +149,18 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
           <h3 className="font-medium">Inbound webhooks</h3>
           <p className="text-xs text-fg-subtle mt-0.5">
             Long-lived tokens an external forge can present to launch a bot.
+          </p>
+          <p className="text-caption text-fg-subtle mt-0.5">
+            Repository provisioning (webhook + token on the forge) is handled automatically for
+            each connected repo — see{" "}
+            <button
+              type="button"
+              className="text-accent-text hover:underline"
+              onClick={() => navigate("/integrations?tab=forges")}
+            >
+              Repositories
+            </button>
+            . Manage stand-alone tokens here.
           </p>
         </div>
         {canManage && (

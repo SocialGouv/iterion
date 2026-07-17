@@ -396,7 +396,7 @@ function OIDCFields({
       />
       <Checkbox
         label="Auto-link existing accounts whose email is at a verified domain"
-        help="When on, a user who already has an iterion account is linked automatically on first SSO login — but only for email domains you've verified below. Otherwise they connect it themselves from Settings → SSO connections."
+        help="When on, a user who already has an iterion account is linked automatically on first SSO login — but only for email domains you've verified below. Otherwise they connect it themselves from the avatar menu → Account settings → SSO connections."
         checked={draft.auto_link_on_email}
         onChange={(e) => setDraft((d) => ({ ...d, auto_link_on_email: e.target.checked }))}
       />

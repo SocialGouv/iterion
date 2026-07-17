@@ -5,10 +5,16 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import { useAuth } from "@/auth/AuthContext";
 import { type UserStatus, type UserView } from "@/api/auth";
-import { FeatureUnavailableError, listAdminUsers, updateAdminUser } from "@/api/admin";
+import {
+  FeatureUnavailableError,
+  listAdminUsers,
+  resetAdminUserPassword,
+  updateAdminUser,
+} from "@/api/admin";
 
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
@@ -37,7 +43,13 @@ export default function UsersAdminPage() {
   const [unavailable, setUnavailable] = useState(false);
   const [confirm, setConfirm] = useState<{
     user: UserView;
-    action: "disable" | "enable" | "grant" | "revoke" | "force_change";
+    action: "disable" | "enable" | "grant" | "revoke" | "force_change" | "reset_password";
+  } | null>(null);
+  // One-shot temp password issued by reset_password — shown until
+  // dismissed; the server never returns it again.
+  const [tempIssued, setTempIssued] = useState<{
+    email: string;
+    password: string;
   } | null>(null);
 
   useHeaderSlot({
@@ -122,6 +134,11 @@ export default function UsersAdminPage() {
         case "revoke":
           await updateAdminUser(target.id, { is_super_admin: false });
           break;
+        case "reset_password": {
+          const res = await resetAdminUserPassword(target.id);
+          setTempIssued({ email: target.email, password: res.temp_password });
+          break;
+        }
       }
       setConfirm(null);
       await refresh(offset);
@@ -145,6 +162,28 @@ export default function UsersAdminPage() {
         {err && (
           <InlineBanner tone="danger" layout="inline">
             {err}
+          </InlineBanner>
+        )}
+
+        {tempIssued && (
+          <InlineBanner
+            tone="warning"
+            layout="inline"
+            title={`Temporary password for ${tempIssued.email} — it appears once`}
+            dismissable
+            onDismiss={() => setTempIssued(null)}
+          >
+            <div className="flex items-center gap-2">
+              <code className="font-mono text-micro break-all">
+                {tempIssued.password}
+              </code>
+              <CopyButton value={tempIssued.password} label="Copy temp password" />
+            </div>
+            <p className="mt-1">
+              Hand it to the user out-of-band. Their next sign-in forces
+              them to choose a new password (the temporary one is the
+              &quot;current password&quot; of that step).
+            </p>
           </InlineBanner>
         )}
 
@@ -203,6 +242,13 @@ export default function UsersAdminPage() {
                       onClick={() => setConfirm({ user: u, action: "force_change" })}
                     >
                       Force password change
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setConfirm({ user: u, action: "reset_password" })}
+                    >
+                      Reset password
                     </Button>
                     {u.is_super_admin ? (
                       <Button
@@ -294,6 +340,8 @@ function confirmTitle(a?: string): string {
       return "Re-enable user?";
     case "force_change":
       return "Force password change?";
+    case "reset_password":
+      return "Reset password?";
     case "grant":
       return "Grant super-admin?";
     case "revoke":
@@ -320,7 +368,17 @@ function confirmMessage(
       return (
         <>
           Marks the account as <code>pending_password_change</code>. The next sign-in attempt
-          will be redirected to the forced-rotation flow.
+          is redirected to the forced-rotation flow — where the user must still enter their
+          CURRENT password. Use this to require a rotation, not to recover a lost password
+          (that&apos;s &quot;Reset password&quot;).
+        </>
+      );
+    case "reset_password":
+      return (
+        <>
+          Replaces the user&apos;s password with a one-shot temporary one (shown to you once)
+          and revokes every active session. Use this to recover a locked-out account; the
+          user picks a new password at their next sign-in.
         </>
       );
     case "grant":

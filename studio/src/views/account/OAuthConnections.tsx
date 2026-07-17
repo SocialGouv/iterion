@@ -44,8 +44,8 @@ const KINDS: Array<{
 ];
 
 // The ToS caveat shown for the ORG scope only: a Claude subscription is an
-// individual licence — an org-shared forfait is a dev/test convenience, not
-// a production-automation credential.
+// individual licence — an org-shared subscription (forfait) is a dev/test
+// convenience, not a production-automation credential.
 const ORG_TOS_WARNING =
   "For developing and testing bots only — not intended for fully automated production. A Claude subscription is an individual licence (Anthropic Consumer Terms); use API keys for production automation.";
 
@@ -178,11 +178,11 @@ export default function OAuthConnections({
       {dialog}
       <div>
         <h2 className="text-lg font-semibold">
-          {org ? "Org Claude subscription (forfait)" : "OAuth subscriptions (forfait)"}
+          {org ? "Org Claude subscription" : "Model subscriptions"}
         </h2>
         <p className="text-sm text-fg-muted mt-1">
           {org
-            ? "Connect a Claude subscription at the org level. It is used as a fallback for automated runs (webhooks, dispatcher, scheduler) whose trigger has no personal forfait — runs launched by a member with their own connection use that instead."
+            ? "Connect a Claude subscription (forfait) at the org level. It is used as a fallback for automated runs (webhooks, dispatcher, scheduler) whose trigger has no personal subscription — runs launched by a member with their own connection use that instead."
             : "Connect your personal Claude Pro/Max or ChatGPT subscription so iterion can run agents on your behalf via the official Claude Code / Codex CLIs. The blob is sealed at rest."}
         </p>
       </div>

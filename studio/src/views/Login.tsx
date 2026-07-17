@@ -24,7 +24,7 @@ function ssoErrorNotice(
     case "link_required":
       return {
         tone: "warning",
-        text: `An account already exists with this email. Sign in with your password below, then connect ${provider} from Settings → Account.`,
+        text: `An account already exists with this email. Sign in with your password below, then connect ${provider} from the avatar menu → Account settings.`,
       };
     case "restricted":
       return {
@@ -396,17 +396,18 @@ export function SignInCard() {
                   </Button>
                 </div>
               )}
-              {serverInfo?.email_enabled && (
-                <div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => navigate("/auth/forgot-password")}
-                  >
-                    Forgot your password?
-                  </Button>
-                </div>
-              )}
+              {/* Always reachable: when email is disabled the page
+                  explains the admin-assisted path instead of hiding
+                  the concept entirely. */}
+              <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => navigate("/auth/forgot-password")}
+                >
+                  Forgot your password?
+                </Button>
+              </div>
             </>
           ) : (
             <Button

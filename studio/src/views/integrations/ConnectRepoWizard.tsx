@@ -306,6 +306,8 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
             connectionID={connectedID}
             repo={q.get("repo") ?? ""}
             onGoToRepos={() => navigate("/integrations?tab=forges")}
+            onOpenBoard={() => navigate("/board")}
+            onLaunchBot={() => navigate("/bots")}
             onConnectAnother={restart}
           />
         )}
@@ -1253,6 +1255,8 @@ interface DoneStepProps {
   connectionID: string;
   repo: string;
   onGoToRepos: () => void;
+  onOpenBoard: () => void;
+  onLaunchBot: () => void;
   onConnectAnother: () => void;
 }
 
@@ -1260,6 +1264,8 @@ function DoneStep({
   connectionID,
   repo,
   onGoToRepos,
+  onOpenBoard,
+  onLaunchBot,
   onConnectAnother,
 }: DoneStepProps) {
   return (
@@ -1295,9 +1301,15 @@ function DoneStep({
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button variant="primary" onClick={onGoToRepos}>
           Go to Repositories
+        </Button>
+        <Button variant="secondary" onClick={onOpenBoard}>
+          Open the board
+        </Button>
+        <Button variant="secondary" onClick={onLaunchBot}>
+          Launch a bot
         </Button>
         <Button variant="ghost" onClick={onConnectAnother}>
           Connect another

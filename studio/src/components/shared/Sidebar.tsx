@@ -114,8 +114,8 @@ export default function Sidebar() {
             type="button"
             onClick={openSettings}
             className="inline-flex items-center justify-center h-7 w-7 rounded text-fg-subtle hover:text-fg-default hover:bg-surface-2 transition-colors"
-            title="Settings"
-            aria-label="Open settings"
+            title="Preferences"
+            aria-label="Open preferences"
           >
             <GearIcon className="w-4 h-4" />
           </button>
@@ -127,7 +127,7 @@ export default function Sidebar() {
             aria-label="Open settings"
           >
             <GearIcon className="w-4 h-4 shrink-0" />
-            <span>Settings</span>
+            <span>Preferences</span>
           </button>
         )}
       </div>

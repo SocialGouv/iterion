@@ -171,6 +171,7 @@ func (s *Server) registerAuthRoutes() {
 	// Super-admin only.
 	s.mux.Handle("GET /api/admin/users", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminListUsers)))
 	s.mux.Handle("PATCH /api/admin/users/{id}", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminUpdateUser)))
+	s.mux.Handle("POST /api/admin/users/{id}/reset-password", s.requireSuperAdmin(http.HandlerFunc(s.handleAdminResetUserPassword)))
 	s.registerAdminOrgRoutes()
 }
 
@@ -1505,6 +1506,49 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditPlatform(r, "", "user.updated", "user", u.ID, meta)
 	writeJSON(w, s.toUserView(u))
+}
+
+// handleAdminResetUserPassword mints a one-shot temporary password for
+// a locked-out account: the hash replaces the user's password, the
+// account flips to pending_password_change, and every live session is
+// revoked. The plaintext is returned ONCE to the super-admin, who hands
+// it to the user out-of-band; the first sign-in then goes through the
+// forced-rotation flow with the temp password as "current password".
+// This is the recovery path on deployments without outbound email.
+func (s *Server) handleAdminResetUserPassword(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	u, err := s.authStore().GetUser(r.Context(), id)
+	if err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	raw := make([]byte, 18)
+	if _, err := rand.Read(raw); err != nil {
+		httpError(w, http.StatusInternalServerError, "generate temp password: %s", err.Error())
+		return
+	}
+	temp := base64.RawURLEncoding.EncodeToString(raw)
+	hash, err := auth.HashPassword(temp)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "hash temp password: %s", err.Error())
+		return
+	}
+	u.PasswordHash = hash
+	u.Status = identity.UserStatusPendingPasswordChange
+	u.UpdatedAt = time.Now().UTC()
+	if err := s.authStore().UpdateUser(r.Context(), u); err != nil {
+		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
+		return
+	}
+	// The old credential (and whoever holds it) must lose access now,
+	// not at refresh-TTL expiry.
+	if err := s.authSvc.RevokeUserSessions(r.Context(), u.ID); err != nil && s.logger != nil {
+		s.logger.Warn("auth: revoke sessions on user %s password reset: %v", u.ID, err)
+	}
+	s.auditPlatform(r, "", "user.password_reset", "user", u.ID, nil)
+	writeJSON(w, struct {
+		TempPassword string `json:"temp_password"`
+	}{TempPassword: temp})
 }
 
 // ---- Authorization helpers ----

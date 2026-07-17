@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
@@ -30,6 +31,7 @@ interface Props {
 }
 
 export default function SecretsTab({ teamID, canManage }: Props) {
+  const [, navigate] = useLocation();
   const [teamSecrets, setTeamSecrets] = useState<GenericSecretView[]>([]);
   const [mySecrets, setMySecrets] = useState<GenericSecretView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,6 +103,18 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           {err}
         </InlineBanner>
       )}
+
+      <p className="text-caption text-fg-subtle -mb-2">
+        Values injected into bots via{" "}
+        <button
+          type="button"
+          className="text-accent-text hover:underline"
+          onClick={() => navigate("/integrations?tab=bindings")}
+        >
+          Bot bindings
+        </button>
+        .
+      </p>
 
       <section>
         <SecretsSectionHeader

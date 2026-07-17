@@ -2,7 +2,6 @@ import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
-import { CopyButton } from "@/components/ui/CopyButton";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
@@ -23,6 +22,8 @@ import {
 } from "@/api/byok";
 import ApiKeysPanel from "@/views/account/ApiKeys";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
+
 
 import AuditTab from "./tabs/AuditTab";
 import MemoryTab from "./tabs/MemoryTab";
@@ -130,7 +131,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState({ email: "", role: "member" });
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  // Session-issued invites, newest first — tokens appear once, so a new
+  // invite must not clobber a still-uncopied link.
+  const [issued, setIssued] = useState<Array<{ email: string; token: string }>>([]);
   const { confirm, dialog } = useConfirm();
 
   const reload = async () => {
@@ -155,7 +158,7 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     setErr(null);
     try {
       const r = await createInvitation(teamID, draft);
-      setIssuedToken(r.token);
+      setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
       setDraft({ email: "", role: "member" });
       void reload();
     } catch (e) {
@@ -272,27 +275,20 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
               Send invite
             </Button>
           </form>
-          {issuedToken && (
-            <div className="text-xs bg-surface-0 border border-border-subtle rounded p-3 font-mono break-all">
-              Invitation token (copy + email this — it appears once):
-              <br />
-              {issuedToken}
-              <div className="mt-2 flex gap-2 items-center font-sans">
-                <CopyButton
-                  value={issuedToken}
-                  label="Copy"
-                  copiedLabel="Copied"
-                />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setIssuedToken(null)}
-                >
-                  Done — hide
-                </Button>
-              </div>
-            </div>
-          )}
+          <p className="text-caption text-fg-subtle">
+            Invitees new to the organization get org membership automatically
+            when they accept.
+          </p>
+          {issued.map((inv) => (
+            <InviteLinkPanel
+              key={inv.token}
+              email={inv.email}
+              token={inv.token}
+              onDismiss={() =>
+                setIssued((list) => list.filter((x) => x.token !== inv.token))
+              }
+            />
+          ))}
         </section>
       )}
 

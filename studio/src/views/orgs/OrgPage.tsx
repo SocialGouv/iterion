@@ -4,7 +4,6 @@ import { useLocation, useParams, useSearch } from "wouter";
 
 import { hasOrgRole, useAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/Button";
-import { CopyButton } from "@/components/ui/CopyButton";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -13,6 +12,8 @@ import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { Tabs } from "@/components/ui/Tabs";
 import { useConfirm } from "@/hooks/useConfirm";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
+
 
 import {
   type OrgInvitationView,
@@ -125,12 +126,20 @@ export default function OrgPage() {
 }
 
 function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean }) {
+  const { orgs } = useAuth();
+  const orgTeams = useMemo(
+    () => orgs.find((o) => o.org_id === orgID)?.teams ?? [],
+    [orgs, orgID],
+  );
   const [members, setMembers] = useState<OrgMemberView[]>([]);
   const [invs, setInvs] = useState<OrgInvitationView[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [draft, setDraft] = useState({ email: "", role: "member" });
-  const [issuedToken, setIssuedToken] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ email: "", role: "member", team_id: "" });
+  // Every invite issued in this session, newest first — tokens appear
+  // once server-side, so a second invite must not clobber the first's
+  // still-uncopied link.
+  const [issued, setIssued] = useState<Array<{ email: string; token: string }>>([]);
   const { confirm, dialog } = useConfirm();
 
   const reload = async () => {
@@ -157,9 +166,13 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     setBusy(true);
     setErr(null);
     try {
-      const r = await createOrgInvitation(orgID, draft);
-      setIssuedToken(r.token);
-      setDraft({ email: "", role: "member" });
+      const r = await createOrgInvitation(orgID, {
+        email: draft.email,
+        role: draft.role,
+        team_id: draft.team_id || undefined,
+      });
+      setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
+      setDraft({ email: "", role: "member", team_id: draft.team_id });
       void reload();
     } catch (e) {
       setErr(errorMessage(e));
@@ -264,23 +277,41 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
                 ))}
               </Select>
             </div>
+            {orgTeams.length > 0 && (
+              <div>
+                <label htmlFor="org-invite-team" className="sr-only">
+                  Also add to team
+                </label>
+                <Select
+                  size="md"
+                  id="org-invite-team"
+                  value={draft.team_id}
+                  onChange={(e) => setDraft({ ...draft, team_id: e.target.value })}
+                  title="Also grant access to a team — otherwise the invitee joins the org with no team and needs a second invite"
+                >
+                  <option value="">No team (org only)</option>
+                  {orgTeams.map((t) => (
+                    <option key={t.team_id} value={t.team_id}>
+                      + team: {t.team_name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
             <Button variant="primary" type="submit" loading={busy}>
               Send invite
             </Button>
           </form>
-          {issuedToken && (
-            <div className="text-xs bg-surface-0 border border-border-subtle rounded p-3 font-mono break-all">
-              Invitation token (copy + email this — it appears once):
-              <br />
-              {issuedToken}
-              <div className="mt-2 flex gap-2 items-center font-sans">
-                <CopyButton value={issuedToken} label="Copy" copiedLabel="Copied" />
-                <Button variant="ghost" size="sm" onClick={() => setIssuedToken(null)}>
-                  Done — hide
-                </Button>
-              </div>
-            </div>
-          )}
+          {issued.map((inv) => (
+            <InviteLinkPanel
+              key={inv.token}
+              email={inv.email}
+              token={inv.token}
+              onDismiss={() =>
+                setIssued((list) => list.filter((x) => x.token !== inv.token))
+              }
+            />
+          ))}
         </section>
       )}
 

@@ -393,13 +393,13 @@ export default function Toolbar() {
           {backendProbed && !hasResolvedBackend && currentFilePath && (
             // Run is disabled for two reasons (no file / no credential) but
             // both share one tooltip. When the *credential* is the blocker,
-            // surface a clickable nudge straight to Settings → Backends —
+            // surface a clickable nudge straight to Preferences → Backends —
             // otherwise the only signal is a silently greyed-out button.
             <IconButton
               variant="warning"
               size="sm"
-              label="No LLM credential detected — open Settings → Backends"
-              tooltip="No LLM credential detected — click to open Settings → Backends"
+              label="No LLM credential detected — open Preferences → Backends"
+              tooltip="No LLM credential detected — click to open Preferences → Backends"
               onClick={() =>
                 window.dispatchEvent(
                   new CustomEvent("iterion:open-settings", {
@@ -431,7 +431,7 @@ export default function Toolbar() {
               !currentFilePath && !document
                 ? "Write or open a workflow first to launch a run"
                 : !hasResolvedBackend
-                ? "No LLM credentials detected — open Settings → Backends to configure."
+                ? "No LLM credentials detected — open Preferences → Backends to configure."
                 : currentFilePath
                 ? `Launch ${currentFilePath}`
                 : "Launch the unsaved workflow"

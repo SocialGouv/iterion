@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { useLocation } from "wouter";
 
 import { Button } from "@/components/ui/Button";
 import { BrandMark } from "@/components/ui/BrandMark";
@@ -20,6 +21,7 @@ const MarketplaceView = lazy(() => import("@/views/Marketplace"));
  */
 export default function RestrictedShell() {
   const { user, signOut } = useAuth();
+  const [, navigate] = useLocation();
   return (
     <div className="flex h-screen min-h-0 flex-col bg-surface-0 text-fg-default">
       <header className="flex items-center justify-between border-b border-border-subtle px-4 py-3 sm:px-6">
@@ -37,10 +39,23 @@ export default function RestrictedShell() {
       </header>
 
       <div className="border-b border-border-subtle px-4 py-3 sm:px-6">
-        <InlineBanner tone="info" layout="inline">
+        <InlineBanner
+          tone="info"
+          layout="inline"
+          action={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => navigate("/invitations/accept")}
+            >
+              I have an invitation
+            </Button>
+          }
+        >
           You're signed in, but not a member of any team yet. You can browse and
           submit bots to the marketplace below — ask an administrator to add you
-          to a team for full access.
+          to a team for full access. Received an invite link or token? Redeem it
+          here.
         </InlineBanner>
       </div>
 

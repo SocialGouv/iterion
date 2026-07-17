@@ -188,10 +188,11 @@ export default function IntegrationsTab({
       </div>
 
       <div>
-        <h3 className="font-medium mb-1">Connections</h3>
+        <h3 className="font-medium mb-1">Connected accounts</h3>
         <p className="text-xs text-fg-muted mb-3">
-          The forge accounts behind those repos. Connect once, then enable bots per repo —
-          iterion creates the webhook on the forge and wires the bot's token for you.
+          The forge accounts behind those repositories. Connect once, then enable bots per
+          repository — iterion creates the webhook on the forge and wires the bot's token
+          for you.
         </p>
         {connections.length === 0 ? (
           <EmptyState

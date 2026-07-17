@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import {
@@ -10,6 +11,7 @@ import {
   listTeamAudit,
 } from "@/api/audit";
 
+import { useMaybeAuth } from "@/auth/AuthContext";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
@@ -29,6 +31,23 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
   const id = orgID ?? teamID ?? "";
   const load = (q: AuditQuery) =>
     orgID ? listOrgAudit(orgID, q) : listTeamAudit(teamID ?? "", q);
+  const [, navigate] = useLocation();
+  // Cross-link the two audit surfaces. When rendering the team audit we
+  // resolve the containing org (the team is expected to live under the
+  // active org's tree — the studio only routes to /teams/:id while
+  // switched into its org); when rendering the org audit we point at the
+  // Teams tab as the entry to each team's own audit page.
+  // Provider-optional: the cross-link is decoration — the tab must
+  // still mount without an AuthProvider (jsdom a11y harness).
+  const auth = useMaybeAuth();
+  const orgs = auth?.orgs ?? [];
+  const activeOrg = auth?.activeOrg ?? null;
+  const containingOrgID = useMemo(() => {
+    if (!teamID) return "";
+    if (activeOrg?.teams.some((t) => t.team_id === teamID)) return activeOrg.org_id;
+    const owner = orgs.find((o) => o.teams.some((t) => t.team_id === teamID));
+    return owner?.org_id ?? "";
+  }, [orgs, activeOrg, teamID]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [filter, setFilter] = useState<AuditQuery>({});
   const [nextOffset, setNextOffset] = useState<number | null>(null);
@@ -92,6 +111,28 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
         <InlineBanner tone="danger" layout="inline">
           {err}
         </InlineBanner>
+      )}
+
+      {orgID ? (
+        <p className="text-caption text-fg-subtle">
+          Team-scope changes (webhooks, secrets, bindings) are audited on each team's page.
+        </p>
+      ) : containingOrgID ? (
+        <p className="text-caption text-fg-subtle">
+          Org-wide actions (SSO, teams, domains) appear in the{" "}
+          <button
+            type="button"
+            className="text-accent-text hover:underline"
+            onClick={() => navigate(`/orgs/${containingOrgID}?tab=audit`)}
+          >
+            organization audit log
+          </button>
+          .
+        </p>
+      ) : (
+        <p className="text-caption text-fg-subtle">
+          Org-wide actions (SSO, teams, domains) appear in the organization audit log.
+        </p>
       )}
 
       <form
