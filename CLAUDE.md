@@ -956,7 +956,7 @@ iterion diagram <file.bot> [--view]    # Generate Mermaid diagram (compact|detai
 iterion studio [--port] [--dir] [--bind] [--bots-path] [--no-browser-pane] [--max-concurrent-pipelines]  # Launch visual workflow editor (+ kanban /board, global /pipelines control-center board, /dispatcher dashboard, Browser pane, Launch modal, /bots gallery + per-bot home + guided builder at /bots/new). --max-concurrent-pipelines (default 3) caps concurrent root pipelines; excess wait in /pipelines Todo.
 iterion report --run-id <id> [--store-dir] [--output]  # Generate chronological run report
 iterion dispatch <config.yaml> [--port]  # Long-running dispatcher (tracker → workflow per issue)
-iterion schedule add|list|remove|run|install|uninstall  # Cron recurring bots via the host crontab — no daemon (see docs/scheduling.md)
+iterion schedule add|list|remove|run|install|uninstall|audit  # Cron recurring bots via the host crontab — no daemon; overlap policy + guard + tick audit (see docs/scheduling.md)
 iterion issue create|list|show|move|update|close|board  # Native kanban tracker
 iterion bots list [--paths <dir>] [--format json|markdown|skill]  # Discover .bot/.botz bundles (used by whats-next + dispatcher zero-config)
 iterion skill list|show|add|rm|import|export  # Local skill library (~/.iterion/skills + per-project); referenced by the DSL `skills:` field (see docs/skills-library.md)

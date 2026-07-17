@@ -1656,6 +1656,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{id}/answer-human": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/answer-human */
+        post: operations["postRunsByIdAnswerHuman"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{id}/artifact-files": {
         parameters: {
             query?: never;
@@ -1827,6 +1846,25 @@ export interface paths {
         get: operations["getRunsByIdBrowserCdp"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/bump-loop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/bump-loop */
+        post: operations["postRunsByIdBumpLoop"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2326,6 +2364,25 @@ export interface paths {
         get: operations["getRunsByIdQueueMessages"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{id}/raise-budget": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/runs/{id}/raise-budget */
+        post: operations["postRunsByIdRaiseBudget"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3681,6 +3738,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/triggers/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /api/v1/triggers/health */
+        get: operations["getV1TriggersHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/triggers/{id}": {
         parameters: {
             query?: never;
@@ -3823,6 +3897,25 @@ export interface paths {
         };
         /** GET /api/ws/runs/{id} */
         get: operations["getWsRunsById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ws/runs/{id}/shell": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/ws/runs/{id}/shell */
+        get: operations["getWsRunsByIdShell"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4120,6 +4213,8 @@ export interface components {
             inputs?: {
                 [key: string]: unknown;
             };
+            loc_added?: number;
+            loc_deleted?: number;
             loops?: {
                 [key: string]: components["schemas"]["RunLoopProgress"];
             };
@@ -4174,6 +4269,8 @@ export interface components {
             issue_identifier?: string;
             issue_title?: string;
             kind?: string;
+            schedule_id?: string;
+            schedule_name?: string;
         };
         RunSummary: {
             active: boolean;
@@ -6621,6 +6718,26 @@ export interface operations {
             };
         };
     };
+    postRunsByIdAnswerHuman: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getRunsByIdArtifactFiles: {
         parameters: {
             query?: never;
@@ -6788,6 +6905,26 @@ export interface operations {
         };
     };
     getRunsByIdBrowserCdp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdBumpLoop: {
         parameters: {
             query?: never;
             header?: never;
@@ -7355,6 +7492,26 @@ export interface operations {
         };
     };
     getRunsByIdQueueMessages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postRunsByIdRaiseBudget: {
         parameters: {
             query?: never;
             header?: never;
@@ -9305,6 +9462,24 @@ export interface operations {
             };
         };
     };
+    getV1TriggersHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getV1TriggersById: {
         parameters: {
             query?: never;
@@ -9482,6 +9657,26 @@ export interface operations {
         };
     };
     getWsRunsById: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getWsRunsByIdShell: {
         parameters: {
             query?: never;
             header?: never;
