@@ -616,6 +616,14 @@ config file (default feed-watch.json) + the `webhooks` secret — no
 feed, prompt language or channel is baked into the bot. Requires
 python3 (stdlib only) on the execution host.
 
+Hardened against untrusted config: the editorial guidance feeds the LLM
+behind a permission gate (WebFetch-only, so an injected prompt can't
+reach a shell or the mounted secrets), a deterministic link firewall
+rejects any digest URL not drawn from the collected items, and feed
+fetching refuses private/loopback/metadata addresses and non-http(s)
+schemes by default (opt into internal feeds with
+--var allow_private_feeds=true on a trusted deployment).
+
 - **Use when**:
   Use to run a recurring technology/news watch over RSS/Atom feeds with
   LLM-synthesized digests delivered to chat (Mattermost/Slack incoming
@@ -624,7 +632,7 @@ python3 (stdlib only) on the execution host.
   synthesize and deliver. Replaces a Huginn RSS → dedup → digest → LLM
   → webhook scenario one-for-one. Not for one-shot research questions
   (use a plain research bot) and it never edits code.
-- **Vars**: `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
+- **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
