@@ -335,3 +335,12 @@ export async function updatePipelineTask(
     body: JSON.stringify(patch),
   });
 }
+
+// pipelineBoardImageURL builds the URL serving one workdir-relative image for
+// the card sidebar's input thumbnails (e.g. a ticket's character-reference
+// list). Segment-encode so subdirectories survive — encodeURIComponent on the
+// whole path would clobber the "/" separators.
+export function pipelineBoardImageURL(relPath: string): string {
+  const segments = relPath.split("/").map(encodeURIComponent).join("/");
+  return `${BASE}/workspace-images/${segments}`;
+}

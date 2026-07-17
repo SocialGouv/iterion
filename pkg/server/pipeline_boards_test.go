@@ -766,3 +766,76 @@ func hasPipelineCard(cards []PipelineBoardCard, id string) bool {
 	}
 	return false
 }
+
+func TestPipelineBoardWorkspaceImageServesGuardsAndRefuses(t *testing.T) {
+	env := newPipelineBoardTestEnv(t)
+	refDir := filepath.Join(env.workDir, "assets", "characters", "histoire", "boudicca", "refs")
+	if err := os.MkdirAll(refDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("\x89PNG fake-bytes")
+	if err := os.WriteFile(filepath.Join(refDir, "master.png"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(env.workDir, "secret.txt"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nominal: a workdir-relative image is served with its content type.
+	resp, err := http.Get(env.http.URL + "/api/v1/pipeline-board/workspace-images/assets/characters/histoire/boudicca/refs/master.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := new(bytes.Buffer)
+	if _, err := body.ReadFrom(resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", resp.StatusCode, body.String())
+	}
+	if got := resp.Header.Get("Content-Type"); got != "image/png" {
+		t.Fatalf("content-type = %q, want image/png", got)
+	}
+	if !bytes.Equal(body.Bytes(), payload) {
+		t.Fatalf("body = %q, want the file bytes", body.Bytes())
+	}
+
+	// Image-only allowlist: a non-image workdir file is refused even though
+	// it exists — this endpoint must not become a generic file reader.
+	resp, err = http.Get(env.http.URL + "/api/v1/pipeline-board/workspace-images/secret.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-image status = %d, want 404", resp.StatusCode)
+	}
+
+	// Traversal out of the workdir is rejected by safePath. The raw path
+	// must bypass Go's client-side dot-segment cleaning to reach the server.
+	req, err := http.NewRequest(http.MethodGet, env.http.URL+"/api/v1/pipeline-board/workspace-images/escape.png", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.URL.Path = "/api/v1/pipeline-board/workspace-images/../../../etc/passwd.png"
+	req.URL.RawPath = "/api/v1/pipeline-board/workspace-images/..%2F..%2F..%2Fetc%2Fpasswd.png"
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("traversal returned 200, want an error status")
+	}
+
+	// Missing file: clean 404.
+	resp, err = http.Get(env.http.URL + "/api/v1/pipeline-board/workspace-images/assets/absent.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing file status = %d, want 404", resp.StatusCode)
+	}
+}

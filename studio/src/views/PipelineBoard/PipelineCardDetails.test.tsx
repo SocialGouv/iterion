@@ -192,3 +192,60 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain("no longer on the board");
   });
 });
+
+describe("InputsList image carousel", () => {
+  it("renders a JSON list of image paths as a carousel of workspace-image URLs", () => {
+    const html = render(
+      makeCard({
+        column_id: "backlog",
+        entry_input: {
+          character: "Boudicca",
+          character_refs:
+            '["assets/characters/histoire/boudicca/refs/master.png", "assets/characters/histoire/boudicca/refs/full_body.png"]',
+        },
+      }),
+    );
+    expect(html).toContain(
+      "/api/v1/pipeline-board/workspace-images/assets/characters/histoire/boudicca/refs/master.png",
+    );
+    // One image at a time, with a position counter and cycling controls.
+    expect(html).toContain("1/2");
+    expect(html).toContain("Next image");
+    expect(html).toContain("Previous image");
+    // Sibling non-image values keep the plain monospace rendering.
+    expect(html).toContain("Boudicca");
+  });
+
+  it("renders a single bare image path as an image without cycling controls", () => {
+    const html = render(
+      makeCard({
+        column_id: "backlog",
+        entry_input: { cover: "assets/cover art/../covers/final.png" },
+      }),
+    );
+    expect(html).not.toContain("workspace-images");
+    // Path with whitespace stays plain text; a clean single path renders.
+    const clean = render(
+      makeCard({
+        column_id: "backlog",
+        entry_input: { cover: "assets/covers/final.png" },
+      }),
+    );
+    expect(clean).toContain("/api/v1/pipeline-board/workspace-images/assets/covers/final.png");
+    expect(clean).not.toContain("Next image");
+  });
+
+  it("keeps sentences and mixed arrays as plain text", () => {
+    const html = render(
+      makeCard({
+        column_id: "backlog",
+        entry_input: {
+          notes: "voir le rendu final dans exports/preview.png",
+          mixed: '["assets/refs/master.png", "pas une image"]',
+        },
+      }),
+    );
+    expect(html).not.toContain("workspace-images");
+    expect(html).toContain("voir le rendu final");
+  });
+});
