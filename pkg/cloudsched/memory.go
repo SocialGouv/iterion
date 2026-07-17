@@ -52,6 +52,19 @@ func (s *MemoryStore) ListByIntegration(_ context.Context, tenantID, integration
 	return out, nil
 }
 
+func (s *MemoryStore) ListByTenant(_ context.Context, tenantID string) ([]ScheduledBot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []ScheduledBot
+	for _, sb := range s.m {
+		if sb.TenantID == tenantID {
+			out = append(out, sb)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (s *MemoryStore) ListDue(_ context.Context, now time.Time, limit int) ([]ScheduledBot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,6 +94,18 @@ func (s *MemoryStore) ClaimTick(_ context.Context, id string, expectedNext, newN
 	sb.UpdatedAt = firedAt
 	s.m[id] = sb
 	return true, nil
+}
+
+func (s *MemoryStore) Update(_ context.Context, id string, patch SchedulePatch) (ScheduledBot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sb, ok := s.m[id]
+	if !ok {
+		return ScheduledBot{}, ErrNotFound
+	}
+	applySchedulePatch(&sb, patch)
+	s.m[id] = sb
+	return sb, nil
 }
 
 func (s *MemoryStore) Delete(_ context.Context, id string) error {

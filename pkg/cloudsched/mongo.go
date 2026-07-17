@@ -66,6 +66,19 @@ func (s *MongoStore) ListByIntegration(ctx context.Context, tenantID, integratio
 	return out, nil
 }
 
+func (s *MongoStore) ListByTenant(ctx context.Context, tenantID string) ([]ScheduledBot, error) {
+	opt := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}})
+	cur, err := s.coll.Find(ctx, bson.M{"tenant_id": tenantID}, opt)
+	if err != nil {
+		return nil, fmt.Errorf("cloudsched: list by tenant: %w", err)
+	}
+	var out []ScheduledBot
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("cloudsched: decode: %w", err)
+	}
+	return out, nil
+}
+
 func (s *MongoStore) ListDue(ctx context.Context, now time.Time, limit int) ([]ScheduledBot, error) {
 	opt := options.Find().SetSort(bson.D{{Key: "next_fire_at", Value: 1}})
 	if limit > 0 {
@@ -97,6 +110,23 @@ func (s *MongoStore) ClaimTick(ctx context.Context, id string, expectedNext, new
 		return false, fmt.Errorf("cloudsched: claim tick: %w", err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// Update applies a partial mutation. Reads the current row, mutates it via
+// applySchedulePatch, and writes back via ReplaceOne — the atomicity that
+// matters here is exactly-once fire (ClaimTick's CAS), not multi-writer
+// serialisation on the mutable payload (Cron/Vars/…), so a full replace is
+// safe and matches the semantics operators expect from a REST PATCH.
+func (s *MongoStore) Update(ctx context.Context, id string, patch SchedulePatch) (ScheduledBot, error) {
+	sb, err := s.Get(ctx, id)
+	if err != nil {
+		return ScheduledBot{}, err
+	}
+	applySchedulePatch(&sb, patch)
+	if _, err := s.coll.ReplaceOne(ctx, bson.M{"_id": id}, sb); err != nil {
+		return ScheduledBot{}, fmt.Errorf("cloudsched: update: %w", err)
+	}
+	return sb, nil
 }
 
 func (s *MongoStore) Delete(ctx context.Context, id string) error {

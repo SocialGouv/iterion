@@ -178,6 +178,12 @@ func (s *Server) routes() {
 		s.registerBotBindingRoutes()
 	}
 
+	// Recurring cloud schedules — team-scoped CRUD. Cloud-only (the ticker
+	// that fires them lives on the same Server.cfg.ScheduledBots handle).
+	if s.cfg.ScheduledBots != nil && s.authSvc != nil {
+		s.registerScheduleRoutes()
+	}
+
 	// Outbound forge integrations (connect a repo + auto-provision). Gated
 	// on the orchestrator being built (full dependency set) + the auth stack.
 	if s.forgeOrchestrator != nil && s.authSvc != nil {
