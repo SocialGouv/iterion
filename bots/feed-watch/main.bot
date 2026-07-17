@@ -56,6 +56,17 @@ secrets:
     as: file
     optional: true
 
+  ## Forge API token, mounted read-only as a FILE (path/env only, never
+  ## read into a prompt). Used by state_commit=true runs so the cloud
+  ## runner injects it into the clone URL and the bot's `git push` of
+  ## the state dir authenticates. optional: true so a local/host run —
+  ## which authenticates git via the user's host credentials — still
+  ## works with no binding. An org binds its forge credential to this
+  ## name via a bot-secret binding, mirroring dep-update-guard.
+  forge_token:
+    as: file
+    optional: true
+
 vars:
   workspace_dir: string = "${PROJECT_DIR}"
 

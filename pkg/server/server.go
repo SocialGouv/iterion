@@ -105,6 +105,11 @@ type Server struct {
 	// webhookLaunchBot overrides the inbound-webhook launch path (test
 	// seam). nil → realWebhookLaunchBot (resolve bot source + s.runs.Launch).
 	webhookLaunchBot func(ctx context.Context, botID string, vars map[string]string, repoURL, repoRef, projectPath string, keyOverrides, secretOverrides map[string]string) (string, error)
+	// scheduleClock overrides the wall clock the schedules CRUD stamps on
+	// CreatedAt / UpdatedAt / NextFireAt (test seam — tests need a
+	// deterministic instant to assert NextFire jumps to the expected slot).
+	// nil → time.Now().UTC().
+	scheduleClock func() time.Time
 	// webhookNoteGate overrides the conversational replier gate (forge
 	// token + loop-guard + reply-in-thread detection + allowlist/role authz
 	// — test seam, the real gate calls the GitLab API). nil →

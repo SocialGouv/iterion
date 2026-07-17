@@ -96,6 +96,96 @@ func TestTicker_DisabledNotFired(t *testing.T) {
 	}
 }
 
+// TestMemoryStore_CRUDRoundTrip exercises the CRUD surface added by the
+// team-scoped schedules REST API: create → list-by-team → get → update cron
+// (recomputes NextFireAt) → delete. Kept in-memory so it runs on `go test`
+// with no external dependency.
+func TestMemoryStore_CRUDRoundTrip(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	nextInit, err := NextFire("*/5 * * * *", now)
+	if err != nil {
+		t.Fatalf("NextFire seed: %v", err)
+	}
+	sb := ScheduledBot{
+		ID:         "sb-crud",
+		TenantID:   "team-A",
+		BotID:      "feed-watch",
+		Cron:       "*/5 * * * *",
+		Vars:       map[string]string{"mode": "digest"},
+		RepoURL:    "https://example.com/repo.git",
+		RepoRef:    "main",
+		NextFireAt: nextInit,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := store.Create(ctx, sb); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// List-by-team surfaces the new row (and only it).
+	rows, err := store.ListByTenant(ctx, "team-A")
+	if err != nil || len(rows) != 1 || rows[0].ID != "sb-crud" {
+		t.Fatalf("ListByTenant team-A: %+v err=%v", rows, err)
+	}
+	if rows[0].RepoURL != "https://example.com/repo.git" || rows[0].RepoRef != "main" {
+		t.Errorf("repo fields not persisted: %+v", rows[0])
+	}
+	otherRows, err := store.ListByTenant(ctx, "team-B")
+	if err != nil || len(otherRows) != 0 {
+		t.Errorf("ListByTenant team-B: %+v err=%v", otherRows, err)
+	}
+
+	// Get returns the same shape.
+	got, err := store.Get(ctx, "sb-crud")
+	if err != nil || got.BotID != "feed-watch" {
+		t.Fatalf("Get: %+v err=%v", got, err)
+	}
+
+	// Update: switch cron → NextFireAt must jump to the hourly slot.
+	newCron := "0 * * * *"
+	nextUpdated, err := NextFire(newCron, now)
+	if err != nil {
+		t.Fatalf("NextFire update: %v", err)
+	}
+	disabled := true
+	updated, err := store.Update(ctx, "sb-crud", SchedulePatch{
+		Cron:       &newCron,
+		NextFireAt: &nextUpdated,
+		Disabled:   &disabled,
+		UpdatedAt:  now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Cron != newCron || !updated.NextFireAt.Equal(nextUpdated) {
+		t.Errorf("post-update state: %+v (want cron=%q next=%s)", updated, newCron, nextUpdated)
+	}
+	if !updated.Disabled {
+		t.Errorf("disabled flag not applied: %+v", updated)
+	}
+	if !updated.UpdatedAt.Equal(now.Add(time.Hour)) {
+		t.Errorf("UpdatedAt not stamped: %s", updated.UpdatedAt)
+	}
+
+	// Update unknown id → ErrNotFound (round-tripped by the REST handler as 404).
+	if _, err := store.Update(ctx, "does-not-exist", SchedulePatch{Disabled: &disabled}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Update ghost: want ErrNotFound, got %v", err)
+	}
+
+	// Delete removes it.
+	if err := store.Delete(ctx, "sb-crud"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := store.Get(ctx, "sb-crud"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after delete: want ErrNotFound, got %v", err)
+	}
+	if err := store.Delete(ctx, "sb-crud"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Delete after delete: want ErrNotFound, got %v", err)
+	}
+}
+
 func TestMongoStore_CAS(t *testing.T) {
 	uri := os.Getenv("ITERION_TEST_MONGO_URI")
 	if uri == "" {

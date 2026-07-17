@@ -742,7 +742,13 @@ func (s *Server) resolveBotSource(botID string) (path, source string, err error)
 // launchScheduledBot is the cloudsched.LaunchFunc: it launches a recurring bot
 // run for its tenant through the run service (cloud → publisher). The tenant
 // identity is stamped on the ctx so the publisher seals credentials + scopes
-// the run to the org.
+// the run to the org. When the schedule pins a RepoURL, it is threaded onto
+// the LaunchSpec so the runner clones the repo before the bot starts —
+// mandatory for stateful bots that persist state to git (feed-watch
+// state_commit=true), which need a workspace with push credentials wired.
+// Generic secrets declared by the bot (e.g. `webhooks`) resolve via the
+// publisher's bot-secret bindings, so SecretOverrides plumbing is not needed
+// here.
 func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.ScheduledBot) error {
 	if s.runs == nil {
 		return errors.New("run service unavailable")
@@ -752,13 +758,24 @@ func (s *Server) launchScheduledBot(ctx context.Context, sb cloudsched.Scheduled
 	if err != nil {
 		return err
 	}
-	_, err = s.runs.Launch(ctx, runview.LaunchSpec{
+	_, err = s.runs.Launch(ctx, buildScheduledLaunchSpec(sb, path, source))
+	return err
+}
+
+// buildScheduledLaunchSpec is the pure-data half of launchScheduledBot,
+// exposed for unit testing without wiring a full runview.Service. It carries
+// the schedule's Vars + repo binding onto the LaunchSpec so the runner clones
+// the pinned repo (mandatory for stateful bots persisting state to git) and
+// stamps the BotID for the publisher's credential-resolution path.
+func buildScheduledLaunchSpec(sb cloudsched.ScheduledBot, path, source string) runview.LaunchSpec {
+	return runview.LaunchSpec{
 		FilePath: path,
 		Source:   source,
 		BotID:    sb.BotID,
 		Vars:     sb.Vars,
-	})
-	return err
+		RepoURL:  sb.RepoURL,
+		RepoRef:  sb.RepoRef,
+	}
 }
 
 // realWebhookLaunchBot is the production launch path for an inbound
