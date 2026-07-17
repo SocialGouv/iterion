@@ -166,19 +166,19 @@ type RepoRequirement struct {
 	// "optional" (section offered, skippable), or "none" (explicit
 	// repo-independence — same as omitting the block; kept so a bot can
 	// document the choice).
-	Mode string `yaml:"mode"`
+	Mode string `yaml:"mode" json:"mode"`
 	// AllowCreate offers "create a new repository" (forge RepoCreator)
 	// next to "attach an existing one".
-	AllowCreate bool `yaml:"allow_create,omitempty"`
+	AllowCreate bool `yaml:"allow_create,omitempty" json:"allow_create,omitempty"`
 	// Purpose is a one-line operator-facing explanation of what the bot
 	// does with the repo, shown under the section title.
-	Purpose string `yaml:"purpose,omitempty"`
+	Purpose string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
 	// DefaultBranch seeds a created repo's default branch name (empty =
 	// the forge's default).
-	DefaultBranch string `yaml:"default_branch,omitempty"`
+	DefaultBranch string `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`
 	// Visibility seeds a created repo's visibility: "private" (the
 	// default) or "public".
-	Visibility string `yaml:"visibility,omitempty"`
+	Visibility string `yaml:"visibility,omitempty" json:"visibility,omitempty"`
 }
 
 // Normalized forge event vocabulary used in a manifest `forge.events`
