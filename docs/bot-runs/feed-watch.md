@@ -4,6 +4,59 @@
 
 Newest first. One section per dogfooded run.
 
+## 2026-07-17 — Cloud rollout: native scheduler on prod, veille runs on ephemeral runners
+
+- Status: **validated (production cloud)** — the veille now runs on the
+  `iterion.fabrique.social.gouv.fr` (ovh-prod) cloud instance via the NATIVE
+  scheduler, against a git-backed workspace, posting to the prod Mattermost
+  channels. Both modes proven end-to-end on a real cloud run.
+- Versions: bot 1.0.0 (+3 cloud fixes) · iterion prod `33f6f425e`.
+- Method: a new engine feature (#219) makes `cloudsched` run a stateful,
+  repo-bound bot; the veille config + state live in a private repo
+  (`github.com/SocialGouv/iterion-veille`), the runner clones it (forge_token) and
+  the bot commits + pushes state each run (`state_commit=true`). Team-secrets
+  (`webhooks` = the 3 prod Mattermost URLs read by-reference from the ovh-prod
+  Huginn; `forge_token` = a fine-grained GitHub PAT) resolve by NAME for the bot
+  (no bot-binding needed — `teamByName` is a resolution tier). 10 schedules
+  registered on the Ministères-Sociaux team via the new
+  `/api/teams/{id}/schedules` API.
+- Result (proven on iterion-veille's git history):
+  - `chore(feed-watch): collect +165 item(s)` @08:15Z — a scheduled run cloned
+    the private repo, collected cyber feeds (zero-LLM), pushed state. Validates
+    scheduler → clone → run → push.
+  - `chore(feed-watch): digest cyber (165 item(s))` @10:00Z — a scheduled digest
+    synthesized (claude_code + the team's Claude Code OAuth forfait), posted to
+    the prod Mattermost fan-out, cleared the queue, pushed state. Since
+    `commit_state` is gated `when posted`, the commit PROVES the Mattermost post.
+- Engine feature shipped: **native cloud schedules for stateful repo-bound bots**
+  (#219) — `ScheduledBot.RepoURL/RepoRef` threaded onto the scheduled LaunchSpec
+  (the runner then clones + auth-pushes, same mechanics as the webhook path) +
+  a team-scoped schedule CRUD API + `iterion remote schedules`. This closes a
+  real gap: before it, the cloud scheduler fired bots against no repo, so no
+  stateful bot could run on cloud.
+- Three bot adaptations found by validating on cloud (each invisible on host):
+  - **#220** — `git push` of state is now rebase-retry safe: concurrent cloud
+    runs clone independently and race on push; a losing push left an uncleared
+    queue → a duplicate digest next run. Each run touches a disjoint per-category
+    subdir, so rebase auto-merges.
+  - **#221** — dropped `capabilities: [board.create, board.read]` from
+    `synthesize`: a declared capability forces the `iterion_board` MCP server
+    active on every run; it is NOT active on a cloud runner, so the node failed
+    at setup even with `post_to_board=false`. The digest's sink is the chat
+    webhook; the speculative board-card path is removed.
+  - **#222** — pinned `backend: claude_code` (was auto-detected): on a cloud
+    runner with a Claude Code OAuth-forfait credential, auto-detect picked
+    `claw`, which refuses the forfait as a third-party-SDK CGU violation.
+    `claude_code` is the only backend allowed to use the forfait; overridable
+    via `FEED_WATCH_BACKEND=claw` + an OpenAI key.
+- Lessons for next run: **validating a bot on CLOUD reveals specs invisible on
+  host** — the board MCP is host/studio-wired, backend auto-detection differs by
+  credential environment, and runners are ephemeral (state must be git-backed,
+  pushes must be concurrency-safe). Any bot destined for scheduled cloud runs
+  should be validated there, not only on host. The `iterion runs prune` retention
+  (2026-07-16) does not cover cloud (Mongo TTL on events only) — cloud run
+  documents persist; a cloud retention pass is a separate follow-on.
+
 ## 2026-07-16 — Full production rollout: 2 Huginn scenarios, 9 categories, 6 live posts, schedules wired
 
 - Status: **validated (production)** — the reference self-host veille is live on a
