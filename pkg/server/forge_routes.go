@@ -917,6 +917,15 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 	}
 	state := r.URL.Query().Get("state")
 	instStr := r.URL.Query().Get("installation_id")
+	// GitHub redirects here with setup_action=update (and NO state) when an
+	// org owner edits the installation's repo list from GitHub's own
+	// settings page — outside iterion's install flow. There is nothing to
+	// persist (the live scope is re-probed on demand via InstallationInfo),
+	// so send the operator back to Integrations instead of a bare 400.
+	if r.URL.Query().Get("setup_action") == "update" && state == "" {
+		http.Redirect(w, r, "/integrations", http.StatusFound)
+		return
+	}
 	if state == "" || instStr == "" {
 		httpError(w, http.StatusBadRequest, "missing state or installation_id")
 		return
