@@ -480,6 +480,16 @@ type Runner struct {
 	runEnginesMu sync.Mutex
 	runEngines   map[string]*runtime.Engine
 
+	// steer maps an in-flight run to its live-steering state (override
+	// channel + command-id dedup cache) so the per-run NATS subscriber
+	// can push bump_loop / raise_budget into the engine. See steer.go.
+	steerMu sync.Mutex
+	steer   map[string]*runSteerState
+	// steerAckFn / steerAckTimeout are test seams for the steering
+	// transport (default: NATS PublishSteerAck / 4s engine wait).
+	steerAckFn      func(runID, commandID string, body []byte) error
+	steerAckTimeout time.Duration
+
 	// ssrfPinUnavailableOnce demotes the expected, permanent "hosts file not
 	// writable" SSRF IP-pin condition (non-root runner + kubelet-managed
 	// /etc/hosts) to a single info log for the runner's lifetime, instead of a
@@ -714,6 +724,18 @@ func (r *Runner) processOne(parent context.Context, delivery *natsq.Delivery) {
 	// handleContextDoneWithCheckpoint.
 	if _, err := r.cfg.NATS.SubscribeCancel(runCtx, msg.RunID, runCancel); err != nil {
 		logger.Warn("runner: subscribe cancel %s: %v (continuing without)", msg.RunID, err)
+	}
+
+	// Live steering: register the override channel BEFORE the engine is
+	// built (the engine picks it up at construction via
+	// steerChannelFor), then subscribe the per-run steer subject. Same
+	// lifecycle as the cancel subscription — torn down with runCtx.
+	r.registerSteerChannel(runCtx, msg.RunID)
+	defer r.unregisterSteerChannel(msg.RunID)
+	if _, err := r.cfg.NATS.SubscribeSteer(runCtx, msg.RunID, func(body []byte, cmdID string) {
+		r.handleSteerDelivery(msg.RunID, body, cmdID)
+	}); err != nil {
+		logger.Warn("runner: subscribe steer %s: %v (steering disabled for this run)", msg.RunID, err)
 	}
 
 	// Cooperative cancel check: if the server flipped the run to
@@ -1230,6 +1252,12 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 		// hash-mismatch guard in pkg/runtime/resume.go reads the flag.
 		// This was previously dropped on the floor.
 		engineOpts = append(engineOpts, runtime.WithForceResume(true))
+	}
+	// Live steering: hand the engine the override channel processOne
+	// registered for this run, so bump_loop / raise_budget commands
+	// arriving on iterion.steer.<run_id> reach the execution loop.
+	if steerCh := r.steerChannelFor(msg.RunID); steerCh != nil {
+		engineOpts = append(engineOpts, runtime.WithOverrideChannel(steerCh))
 	}
 	engine := runtime.New(wf, r.cfg.Store, executor, engineOpts...)
 	// Publish the engine so the store's Event.ActiveMs stamping reads
