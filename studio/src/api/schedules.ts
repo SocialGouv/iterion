@@ -21,6 +21,14 @@ export interface ScheduledBot {
   created_by?: string;
   created_at: string;
   updated_at: string;
+  // Overlap policy + guard (pkg/schedgate). overlap defaults to "skip":
+  // a tick that would overlap a still-live run of the same schedule
+  // passes, audited (actions schedule.tick.* on the team audit trail).
+  overlap?: "skip" | "allow";
+  max_concurrent?: number;
+  guard?: string;
+  guard_timeout?: string;
+  guard_var?: string;
 }
 
 export async function listTeamSchedules(teamID: string): Promise<ScheduledBot[]> {
@@ -36,6 +44,13 @@ export interface SchedulePatch {
   repo_url?: string;
   repo_ref?: string;
   disabled?: boolean;
+  // Policy fields patch individually; the server validates the MERGED
+  // row (400 on e.g. max_concurrent without overlap=allow).
+  overlap?: "skip" | "allow";
+  max_concurrent?: number;
+  guard?: string;
+  guard_timeout?: string;
+  guard_var?: string;
 }
 
 export function updateTeamSchedule(
