@@ -326,3 +326,40 @@ export async function uploadBotBundle(
   }
   return (await res.json()) as InstallBotResult;
 }
+
+// ---- workflow-script import (POST /api/v1/bots/import) ----
+
+/** ImportScriptRequest converts a Claude-Code workflow script (.js —
+ *  the `export const meta` + agent()/phase()/log() shape) into a draft
+ *  .bot. Lossy by contract: the server never executes the JS (goja AST
+ *  walk) and everything unmappable degrades into `## IMPORT` markers +
+ *  report entries. */
+export interface ImportScriptRequest {
+  source: string;
+  filename?: string;
+  name?: string;
+  dry_run?: boolean;
+}
+
+export interface ImportScriptReport {
+  mapped?: string[];
+  holes?: string[];
+  placeholders?: string[];
+  dropped?: string[];
+}
+
+export interface ImportScriptResult {
+  workflow_name: string;
+  path?: string;
+  dry_run?: boolean;
+  needs_attention: boolean;
+  report: ImportScriptReport;
+  bot_source: string;
+}
+
+export function importBotScript(req: ImportScriptRequest): Promise<ImportScriptResult> {
+  return apiRequest<ImportScriptResult>(`${BASE}/import`, {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}

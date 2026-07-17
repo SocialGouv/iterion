@@ -6438,6 +6438,20 @@
         ]
       }
     },
+    "/api/v1/bots/import": {
+      "post": {
+        "operationId": "postV1BotsImport",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "POST /api/v1/bots/import",
+        "tags": [
+          "bots"
+        ]
+      }
+    },
     "/api/v1/bots/install": {
       "post": {
         "operationId": "postV1BotsInstall",

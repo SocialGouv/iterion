@@ -3140,6 +3140,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bots/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /api/v1/bots/import */
+        post: operations["postV1BotsImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/bots/install": {
         parameters: {
             query?: never;
@@ -8720,6 +8737,24 @@ export interface operations {
         };
     };
     postV1Bots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postV1BotsImport: {
         parameters: {
             query?: never;
             header?: never;

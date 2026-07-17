@@ -113,22 +113,11 @@ func RunImport(opts ImportOptions, p *Printer) error {
 }
 
 func reportJSON(r *botimport.Report) importReportJSON {
-	format := func(entries []botimport.ReportEntry) []string {
-		out := make([]string, 0, len(entries))
-		for _, e := range entries {
-			if e.Line > 0 {
-				out = append(out, fmt.Sprintf("js:%d %s", e.Line, e.Text))
-			} else {
-				out = append(out, e.Text)
-			}
-		}
-		return out
-	}
 	return importReportJSON{
-		Mapped:       format(r.Mapped),
-		Holes:        format(r.Holes),
-		Placeholders: format(r.Placeholders),
-		Dropped:      format(r.Dropped),
+		Mapped:       botimport.FormatEntries(r.Mapped),
+		Holes:        botimport.FormatEntries(r.Holes),
+		Placeholders: botimport.FormatEntries(r.Placeholders),
+		Dropped:      botimport.FormatEntries(r.Dropped),
 	}
 }
 

@@ -69,6 +69,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/bots/templates", s.handleBotTemplates)
 	s.mux.HandleFunc("POST /api/v1/bots/install", s.handleBotInstall)
 	s.mux.HandleFunc("POST /api/v1/bots/upload", s.handleBotUpload)
+	s.mux.HandleFunc("POST /api/v1/bots/import", s.handleBotImport)
 	s.mux.HandleFunc("GET /api/v1/bots/{name}", s.handleBotsGet)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}", s.handleBotsPut)
 	s.mux.HandleFunc("PUT /api/v1/bots/{name}/overlay", s.handleBotOverlay)

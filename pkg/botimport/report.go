@@ -50,6 +50,21 @@ func (r *Report) NeedsAttention() bool {
 	return len(r.Placeholders) > 0 || len(r.Holes) > 0 || len(r.Dropped) > 0
 }
 
+// FormatEntries renders report entries as "js:<line> <text>" strings —
+// the wire/CLI presentation shared by `iterion import --json` and the
+// studio import route.
+func FormatEntries(entries []ReportEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Line > 0 {
+			out = append(out, fmt.Sprintf("js:%d %s", e.Line, e.Text))
+		} else {
+			out = append(out, e.Text)
+		}
+	}
+	return out
+}
+
 // header renders the `## IMPORT REPORT` comment block for the top of
 // the generated .bot.
 func (r *Report) header() string {

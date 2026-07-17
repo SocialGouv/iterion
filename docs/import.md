@@ -85,7 +85,18 @@ iterion import flow.js --dry-run --json                       # machine-readable
 4. Promote it to a bundle when it earns a manifest: `iterion bundle
    init` and move the workflow in.
 
+## In the studio
+
+The `/bots` gallery's **Import → From a workflow script (.js)…** entry
+runs the same conversion over `POST /api/v1/bots/import` (local-mode
+only). It previews the draft and its IMPORT REPORT before you commit,
+then saves it into `bots/<workflow-name>.bot`. The endpoint mirrors the
+CLI's contract: `dry_run` returns the draft + report without writing;
+a write refuses to overwrite an existing file (409); unparsable JS or a
+script with no `agent()` calls is a 422.
+
 The importer is a **porting accelerator**, not a compatibility layer:
 the goal is a readable first draft carrying over prompts, schemas and
 graph shape, with every gap marked. Implementation:
-[pkg/botimport](../pkg/botimport/botimport.go).
+[pkg/botimport](../pkg/botimport/botimport.go) (shared by the CLI and
+the studio route).
