@@ -2,7 +2,6 @@ package trigger
 
 import (
 	"context"
-	"fmt"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -240,44 +239,34 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 	// Overlap + guard gate (pkg/schedgate). A skipped tick is a normal,
 	// audited outcome — the cron slot simply passes.
 	policy := sub.Policy()
-	if s.gate != nil && s.gate.Lister != nil {
-		live := schedgate.LiveRunsForSchedule(ctx, s.gate.Lister, sub.ID, s.logger)
-		if decision, blocking := schedgate.EvaluateOverlap(live, policy); decision == schedgate.DecisionSkipOverlap {
-			rec := s.tickRecord(sub, schedgate.TickSkippedOverlap)
-			rec.BlockingRunID = blocking
-			rec.Reason = fmt.Sprintf("blocked by live run %s (%d live, overlap=%s)", blocking, len(live), policy.Overlap)
-			s.audit(rec)
-			s.warn("scheduler: %s (%s) skipped — %s", sub.ID, sub.BotID, rec.Reason)
-			return
-		}
+	var lister schedgate.ScheduleRunLister
+	if s.gate != nil {
+		lister = s.gate.Lister
 	}
-	if policy.Guard != "" {
-		res := schedgate.RunGuard(ctx, schedgate.GuardSpec{
-			Command: policy.Guard,
-			Dir:     s.guardDir(),
-			Env: []string{
-				"ITERION_SCHEDULE=" + sub.ID,
-				"ITERION_SCHEDULE_BOT=" + sub.BotID,
-			},
-			Timeout: policy.GuardTimeoutDuration(),
-		})
-		switch res.Kind {
-		case schedgate.GuardBlocked:
-			rec := s.tickRecord(sub, schedgate.TickGuardBlocked)
-			rec.Reason = fmt.Sprintf("guard exited %d — nothing to do", res.ExitCode)
-			rec.ApplyGuard(res)
-			s.audit(rec)
-			return
-		case schedgate.GuardError:
-			rec := s.tickRecord(sub, schedgate.TickGuardError)
-			rec.Reason = "guard failed to execute"
-			rec.ApplyGuard(res)
-			s.audit(rec)
-			s.warn("scheduler: %s (%s) guard error: %v", sub.ID, sub.BotID, res.Err)
-			return
-		default:
-			vars[policy.GuardVar] = res.Stdout
+	out := schedgate.Apply(ctx, schedgate.GateInput{
+		Policy:     policy,
+		Lister:     lister,
+		ScheduleID: sub.ID,
+		Record:     s.tickRecord(sub, ""),
+		GuardDir:   s.guardDir(),
+		GuardEnv: []string{
+			"ITERION_SCHEDULE=" + sub.ID,
+			"ITERION_SCHEDULE_BOT=" + sub.BotID,
+		},
+		Logger: s.logger,
+	})
+	if !out.Proceed {
+		s.audit(out.Record)
+		switch out.Record.Decision {
+		case schedgate.TickSkippedOverlap:
+			s.warn("scheduler: %s (%s) skipped — %s", sub.ID, sub.BotID, out.Record.Reason)
+		case schedgate.TickGuardError:
+			s.warn("scheduler: %s (%s) guard error: %s", sub.ID, sub.BotID, out.Record.Error)
 		}
+		return
+	}
+	if out.GuardRan {
+		vars[policy.GuardVar] = out.GuardStdout
 	}
 
 	plan := LaunchPlan{

@@ -450,47 +450,34 @@ func RunScheduleRun(ctx context.Context, p *Printer, opts ScheduleRunOptions) er
 	if err != nil {
 		return fmt.Errorf("schedule %q: open store %s for overlap check: %w", e.Name, storeDir, err)
 	}
-	live := schedgate.LiveRunsForSchedule(ctx, s, e.Name, nil)
-	if decision, blocking := schedgate.EvaluateOverlap(live, policy); decision == schedgate.DecisionSkipOverlap {
-		rec := newHostCronTickRecord(*e, schedgate.TickSkippedOverlap)
-		rec.BlockingRunID = blocking
-		rec.Reason = fmt.Sprintf("blocked by live run %s (%d live, overlap=%s)", blocking, len(live), policy.Overlap)
-		writeTickAudit(p, auditPath, rec)
-		p.Line("⏭ schedule %q skipped — %s (cancel it or set overlap: allow; see `iterion schedule audit --name %s`)", e.Name, rec.Reason, e.Name)
+	out := schedgate.Apply(ctx, schedgate.GateInput{
+		Policy:     policy,
+		Lister:     s,
+		ScheduleID: e.Name,
+		Record:     newHostCronTickRecord(*e, ""),
+		GuardDir:   e.Workdir,
+		GuardEnv: []string{
+			"ITERION_SCHEDULE=" + e.Name,
+			"ITERION_SCHEDULE_BOT=" + e.Bot,
+		},
+	})
+	if !out.Proceed {
+		writeTickAudit(p, auditPath, out.Record)
+		switch out.Record.Decision {
+		case schedgate.TickSkippedOverlap:
+			p.Line("⏭ schedule %q skipped — %s (cancel it or set overlap: allow; see `iterion schedule audit --name %s`)", e.Name, out.Record.Reason, e.Name)
+		case schedgate.TickGuardBlocked:
+			p.Line("⏭ schedule %q skipped — %s", e.Name, out.Record.Reason)
+		default:
+			p.Line("⏭ schedule %q skipped — guard error: %s", e.Name, out.Record.Error)
+		}
 		return nil
 	}
-
-	if policy.Guard != "" {
-		res := schedgate.RunGuard(ctx, schedgate.GuardSpec{
-			Command: policy.Guard,
-			Dir:     e.Workdir,
-			Env: []string{
-				"ITERION_SCHEDULE=" + e.Name,
-				"ITERION_SCHEDULE_BOT=" + e.Bot,
-			},
-			Timeout: policy.GuardTimeoutDuration(),
-		})
-		switch res.Kind {
-		case schedgate.GuardBlocked:
-			rec := newHostCronTickRecord(*e, schedgate.TickGuardBlocked)
-			rec.Reason = fmt.Sprintf("guard exited %d — nothing to do", res.ExitCode)
-			rec.ApplyGuard(res)
-			writeTickAudit(p, auditPath, rec)
-			p.Line("⏭ schedule %q skipped — guard exited %d", e.Name, res.ExitCode)
-			return nil
-		case schedgate.GuardError:
-			rec := newHostCronTickRecord(*e, schedgate.TickGuardError)
-			rec.Reason = "guard failed to execute"
-			rec.ApplyGuard(res)
-			writeTickAudit(p, auditPath, rec)
-			p.Line("⏭ schedule %q skipped — guard error: %v", e.Name, res.Err)
-			return nil
-		default: // GuardOK — stdout becomes the run's guard var.
-			if runOpts.Vars == nil {
-				runOpts.Vars = map[string]string{}
-			}
-			runOpts.Vars[policy.GuardVar] = res.Stdout
+	if out.GuardRan {
+		if runOpts.Vars == nil {
+			runOpts.Vars = map[string]string{}
 		}
+		runOpts.Vars[policy.GuardVar] = out.GuardStdout
 	}
 
 	// Pre-mint the run ID so the fired audit row correlates with the run

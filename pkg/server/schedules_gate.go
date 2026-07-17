@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
@@ -18,46 +17,44 @@ import (
 // repo-local guard is a local-mode feature (the runner, not the
 // server, holds the clone).
 func (s *Server) cloudScheduleGate(ctx context.Context, sb cloudsched.ScheduledBot) (bool, string, schedgate.TickRecord) {
-	policy := sb.Policy()
-
-	// Tenant-scope the provenance query the same way the launch does.
-	tctx := store.WithIdentity(ctx, sb.TenantID, "scheduler:"+sb.BotID)
+	// The provenance query is tenant-scoped the same way the launch is;
+	// a nil store degrades to guard-only (Apply skips the overlap leg).
+	var lister schedgate.ScheduleRunLister
 	if s.cfg.Store != nil {
-		live := schedgate.LiveRunsForSchedule(tctx, s.cfg.Store, sb.ID, s.logger)
-		if decision, blocking := schedgate.EvaluateOverlap(live, policy); decision == schedgate.DecisionSkipOverlap {
-			rec := s.cloudTickRecord(sb, schedgate.TickSkippedOverlap)
-			rec.BlockingRunID = blocking
-			rec.Reason = fmt.Sprintf("blocked by live run %s (%d live, overlap=%s)", blocking, len(live), policy.Overlap)
-			return false, "", rec
-		}
+		lister = tenantRunLister{s: s.cfg.Store, tenantID: sb.TenantID, actor: "scheduler:" + sb.BotID}
 	}
+	out := schedgate.Apply(ctx, schedgate.GateInput{
+		Policy:     sb.Policy(),
+		Lister:     lister,
+		ScheduleID: sb.ID,
+		Record:     s.cloudTickRecord(sb, ""),
+		GuardEnv: []string{
+			"ITERION_SCHEDULE=" + sb.ID,
+			"ITERION_SCHEDULE_BOT=" + sb.BotID,
+			"ITERION_TENANT=" + sb.TenantID,
+		},
+		Logger: s.logger,
+	})
+	if !out.Proceed {
+		return false, "", out.Record
+	}
+	return true, out.GuardStdout, schedgate.TickRecord{}
+}
 
-	if policy.Guard != "" {
-		res := schedgate.RunGuard(ctx, schedgate.GuardSpec{
-			Command: policy.Guard,
-			Env: []string{
-				"ITERION_SCHEDULE=" + sb.ID,
-				"ITERION_SCHEDULE_BOT=" + sb.BotID,
-				"ITERION_TENANT=" + sb.TenantID,
-			},
-			Timeout: policy.GuardTimeoutDuration(),
-		})
-		switch res.Kind {
-		case schedgate.GuardBlocked:
-			rec := s.cloudTickRecord(sb, schedgate.TickGuardBlocked)
-			rec.Reason = fmt.Sprintf("guard exited %d — nothing to do", res.ExitCode)
-			rec.ApplyGuard(res)
-			return false, "", rec
-		case schedgate.GuardError:
-			rec := s.cloudTickRecord(sb, schedgate.TickGuardError)
-			rec.Reason = "guard failed to execute"
-			rec.ApplyGuard(res)
-			return false, "", rec
-		default:
-			return true, res.Stdout, schedgate.TickRecord{}
-		}
-	}
-	return true, "", schedgate.TickRecord{}
+// tenantRunLister stamps the tenant identity on the context of every
+// store call, mirroring what the inline gate did with store.WithIdentity.
+type tenantRunLister struct {
+	s        store.RunStore
+	tenantID string
+	actor    string
+}
+
+func (t tenantRunLister) ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error) {
+	return t.s.ListRunsBySchedule(store.WithIdentity(ctx, t.tenantID, t.actor), scheduleID)
+}
+
+func (t tenantRunLister) LoadRun(ctx context.Context, runID string) (*store.Run, error) {
+	return t.s.LoadRun(store.WithIdentity(ctx, t.tenantID, t.actor), runID)
 }
 
 // cloudScheduleAudit lands every tick decision on the tenant audit
