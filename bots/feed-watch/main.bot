@@ -584,14 +584,19 @@ tool load_pending:
                       'editorial': editorial, 'digest_title': digest_title, 'sinks': sinks},
                      ensure_ascii=False))
 
-## Editorial synthesis — the ONE LLM step. No backend/model pinned: the
-## engine auto-detects from the host credentials (claw gets web_fetch/
-## web_search natively; claude_code brings its own web tools and
-## ignores the lowercase list). No board capabilities: the digest's sink
-## is the chat webhook, and declaring board.* would require the
-## iterion_board MCP server to be active on every run (it is not on a
-## cloud runner), failing the node at setup even when unused.
+## Editorial synthesis — the ONE LLM step. Backend defaults to
+## claude_code (overridable via FEED_WATCH_BACKEND): it uses its own web
+## tools (WebFetch/WebSearch), and — decisively — it is the ONLY backend
+## allowed to use a Claude Code OAuth-forfait credential (claw refuses
+## the forfait as a third-party-SDK CGU violation, which is what a
+## forfait-backed cloud runner hits when the backend auto-detects to
+## claw). Set FEED_WATCH_BACKEND=claw + FEED_WATCH_MODEL=openai/… to run
+## on a metered OpenAI key instead. No board capabilities: the digest's
+## sink is the chat webhook, and declaring board.* would require the
+## iterion_board MCP server active on every run (it is not on a cloud
+## runner), failing the node at setup even when unused.
 agent synthesize:
+  backend: "${FEED_WATCH_BACKEND:-claude_code}"
   model: "${FEED_WATCH_MODEL:-}"
   reasoning_effort: "${FEED_WATCH_EFFORT:-medium}"
   input: synthesize_input
