@@ -37,6 +37,7 @@ const CloudReloginModal = lazy(() => import("@/components/shared/CloudReloginMod
 const SettingsPage = lazy(() => import("@/views/account/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
+const ConnectRepoWizardView = lazy(() => import("@/views/integrations/ConnectRepoWizard"));
 const OrgPage = lazy(() => import("@/views/orgs/OrgPage"));
 
 // Auth side-doors reachable when anonymous (forced password rotation,
@@ -370,6 +371,7 @@ function AuthedApp() {
           <Route path="/account" component={SettingsPage} />
           <Route path="/orgs/:id" component={OrgPage} />
           <Route path="/teams/:id" component={TeamPage} />
+          <Route path="/integrations/connect" component={ConnectRepoWizardView} />
           <Route path="/integrations" component={IntegrationsPage} />
           <Route path="/admin" component={OrgsAdminPage} />
           <Route path="/admin/orgs" component={OrgsAdminPage} />

@@ -429,7 +429,9 @@ func (o *Orchestrator) Provision(ctx context.Context, req ProvisionRequest) (Pro
 	o.narrowGitHubAppSecret(ctx, &conn)
 
 	// Materialise cloud schedules for the enabled bots' schedule invocations.
-	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, invByBot, req.ScheduleCrons, req.ActorID); err != nil {
+	// The repo clone URL rides along so a stateful scheduled bot gets a git
+	// workspace (#219) — without it the run lands in the pod's bare WorkDir.
+	if err := o.syncSchedules(ctx, req.TenantID, ri.ID, CloneURLFor(conn.BaseURL(), req.RepoFullName), invByBot, req.ScheduleCrons, req.ActorID); err != nil {
 		return ProvisionResult{}, err
 	}
 
@@ -525,6 +527,13 @@ func (o *Orchestrator) narrowGitHubAppSecret(ctx context.Context, conn *Connecti
 	_ = o.Secrets.Update(ctx, gs)
 }
 
+// EnsureManagedSecret exposes ensureManagedSecret to launch-time callers
+// (the repo-targeted launch pins the connection's managed token as the
+// run's forge secret — same Tier-0 pinning the webhook path uses).
+func (o *Orchestrator) EnsureManagedSecret(ctx context.Context, conn *Connection, actor string) (string, error) {
+	return o.ensureManagedSecret(ctx, conn, actor)
+}
+
 // ensureManagedSecret creates (once per connection) the team-scoped generic
 // secret holding the connection's admin token as the bot-runtime forge
 // token, stamping its id onto the connection. Reused across every repo/bot
@@ -608,7 +617,7 @@ func (o *Orchestrator) Deprovision(ctx context.Context, tenantID, integrationID 
 // schedule invocation (with a suggested cron) of the enabled bots, so the
 // cloud scheduler fires them. Clean-slate (delete-then-create) keeps it
 // idempotent across re-provisions. No-op when no schedule store is wired.
-func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string) error {
+func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationID, repoURL string, invByBot map[string][]bundle.Invocation, crons map[string]string, actor string) error {
 	if o.Schedules == nil {
 		return nil
 	}
@@ -640,6 +649,7 @@ func (o *Orchestrator) syncSchedules(ctx context.Context, tenantID, integrationI
 				BotID:             bot,
 				Cron:              cron,
 				Vars:              inv.Schedule.DefaultVars,
+				RepoURL:           repoURL,
 				NextFireAt:        next,
 				CreatedBy:         actor,
 				CreatedAt:         now,

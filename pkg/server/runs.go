@@ -189,6 +189,19 @@ type launchRunRequest struct {
 	// the receiver can correlate the callback to its originating request
 	// (e.g. a chat thread id) without server-side state.
 	CallbackToken string `json:"callback_token,omitempty"`
+	// RepoURL / RepoRef aim this run at a git repository: the cloud
+	// runner clones it (prepareRepoWorkspace) before sandboxing —
+	// the launch-form "Target repository" section. Cloud-only: a
+	// local-mode server rejects a repo-targeted launch explicitly
+	// (no forge stores → no credential source for an authed clone).
+	RepoURL string `json:"repo_url,omitempty"`
+	RepoRef string `json:"repo_ref,omitempty"`
+	// ConnectionID names the team's forge connection whose managed
+	// token authenticates the clone/push: the server pins
+	// SecretOverrides[forge secret] to the connection's managed secret
+	// — the same Tier-0 pinning webhook launches use. Tenant-checked
+	// against the caller's active team (cross-team ids 404).
+	ConnectionID string `json:"connection_id,omitempty"`
 	// CallbackAnswerNode optionally names the node whose latest artifact
 	// holds the run's user-facing answer (the "final_answer" field).
 	// Empty → the notifier scans all artifact nodes for "final_answer".
@@ -362,6 +375,47 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Repo-targeted launch (the "Target repository" section): resolve the
+	// forge context on the request ctx (auth identity) BEFORE detaching.
+	var repoProjectPath string
+	var repoSecretOverrides map[string]string
+	if req.RepoURL != "" || req.ConnectionID != "" {
+		if s.cfg.Mode != "cloud" {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "repo-targeted launches need cloud mode — on a local studio, clone the repo and launch from its checkout")
+			span.SetStatus(codes.Error, "repo target on local mode")
+			return
+		}
+		if req.RepoURL == "" || req.ConnectionID == "" || s.forgeConnections == nil || s.forgeOrchestrator == nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "repo_url and connection_id go together (and need forge integrations enabled)")
+			span.SetStatus(codes.Error, "incomplete repo target")
+			return
+		}
+		id, _ := auth.FromContext(r.Context())
+		conn, err := s.forgeConnections.Get(r.Context(), req.ConnectionID)
+		if err != nil || conn.TenantID != id.TeamID {
+			// Cross-team ids 404 (non-enumeration), like every forge route.
+			s.httpErrorFor(w, r, http.StatusNotFound, "connection not found")
+			span.SetStatus(codes.Error, "connection not found")
+			return
+		}
+		// The repo must live on the connection's forge host: the managed
+		// token is only ever aimed at the host it belongs to.
+		base := strings.TrimSuffix(conn.BaseURL(), "/")
+		if !strings.HasPrefix(req.RepoURL, base+"/") {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "repo_url is not on the connection's forge host")
+			span.SetStatus(codes.Error, "repo host mismatch")
+			return
+		}
+		secID, err := s.forgeOrchestrator.EnsureManagedSecret(store.WithTenant(r.Context(), conn.TenantID), &conn, id.UserID)
+		if err != nil {
+			s.httpErrorFor(w, r, http.StatusBadGateway, "forge token for the clone: %v", err)
+			span.SetStatus(codes.Error, "managed secret")
+			return
+		}
+		repoSecretOverrides = map[string]string{"forge_token": secID}
+		repoProjectPath = strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")
+	}
+
 	// Detach lifecycle from the HTTP request context so a client
 	// disconnect doesn't abort the run, but keep the trace span so
 	// the runner-side span chains under this one. context.WithoutCancel
@@ -403,6 +457,10 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 		CallbackURL:        req.CallbackURL,
 		CallbackToken:      req.CallbackToken,
 		CallbackAnswerNode: req.CallbackAnswerNode,
+		RepoURL:            req.RepoURL,
+		RepoRef:            req.RepoRef,
+		ProjectPath:        repoProjectPath,
+		SecretOverrides:    repoSecretOverrides,
 	})
 	if err != nil {
 		if errors.Is(err, runtime.ErrServerDraining) {

@@ -1,6 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { useSearch } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { CheckIcon } from "@radix-ui/react-icons";
 
 import { FeatureUnavailableError } from "@/api/client";
@@ -60,6 +60,7 @@ export default function IntegrationsTab({
   // ?bot=<name> (set by the catalog's "Connect to a repo" affordance) pre-checks
   // that bot in the enable dialog and auto-opens it when there's one connection.
   const preselectBot = new URLSearchParams(useSearch()).get("bot") ?? undefined;
+  const [, navigate] = useLocation();
 
   const reload = async () => {
     setErr(null);
@@ -134,11 +135,63 @@ export default function IntegrationsTab({
         canManage={canManage}
       />
 
+      {/* Repo-centric summary first: repositories are the operator's
+          mental model; connections are plumbing one section below. */}
       <div>
-        <h3 className="font-medium mb-1">Connected forges</h3>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <h3 className="font-medium">Repositories</h3>
+          {canManage && (
+            <Button variant="primary" size="sm" onClick={() => navigate("/integrations/connect")}>
+              + Connect a repository
+            </Button>
+          )}
+        </div>
         <p className="text-xs text-fg-muted mb-3">
-          Connect a GitLab/GitHub/Forgejo account once, then enable a bot on a repo — iterion
-          creates the webhook on the forge and wires the bot's token for you.
+          Each connected repo carries its enabled bots — webhook, token and schedules are
+          provisioned automatically.
+        </p>
+        {integrations.length === 0 ? (
+          <EmptyState
+            title="No repository connected yet"
+            message="The guided flow connects your forge account and enables bots on a repo in one pass."
+            action={
+              canManage ? (
+                <Button variant="primary" size="sm" onClick={() => navigate("/integrations/connect")}>
+                  Connect a repository
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <ul className="divide-y divide-border-subtle rounded border border-border-subtle bg-surface-0">
+            {integrations.map((i) => {
+              const conn = connections.find((c) => c.id === i.connection_id);
+              return (
+                <li key={i.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                    {i.repo_full_name}
+                  </span>
+                  <span className="text-caption text-fg-muted">
+                    {i.bot_ids.length > 0
+                      ? `${i.bot_ids.length} bot${i.bot_ids.length > 1 ? "s" : ""}`
+                      : "no bots"}
+                  </span>
+                  <span className="rounded bg-surface-2 px-1.5 py-0.5 text-caption text-fg-muted">
+                    {i.provider}
+                    {conn?.status && conn.status !== "active" ? ` · ${conn.status}` : ""}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <div>
+        <h3 className="font-medium mb-1">Connections</h3>
+        <p className="text-xs text-fg-muted mb-3">
+          The forge accounts behind those repos. Connect once, then enable bots per repo —
+          iterion creates the webhook on the forge and wires the bot's token for you.
         </p>
         {connections.length === 0 ? (
           <EmptyState
@@ -146,7 +199,7 @@ export default function IntegrationsTab({
             message="Connect a GitLab, GitHub or Forgejo account to let bots act on your repositories."
             action={
               canManage ? (
-                <Button variant="primary" size="sm" onClick={scrollToConnectForm}>
+                <Button variant="primary" size="sm" onClick={() => navigate("/integrations/connect")}>
                   Connect a forge
                 </Button>
               ) : undefined

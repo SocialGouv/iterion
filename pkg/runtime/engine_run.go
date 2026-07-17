@@ -67,6 +67,14 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 			if e.logger != nil {
 				e.logger.Warn("runtime: workspace %s is not a git repository — running in-place (set `worktree: none` to silence this)", e.workDir)
 			}
+		} else if !workspaceHasCommits(e.workDir) {
+			// An empty repository (unborn HEAD — a freshly created forge
+			// repo right after clone) can't anchor a worktree. Degrade
+			// in-place: the bot's first commit lands on the unborn default
+			// branch directly, and its own push publishes it.
+			if e.logger != nil {
+				e.logger.Warn("runtime: workspace %s has no commits yet — running in-place (worktree needs a HEAD to anchor on)", e.workDir)
+			}
 		} else {
 			wtc, cleanup, wtErr := setupWorktree(e.store.Root(), runID, e.workDir, e.logger)
 			if wtErr != nil {

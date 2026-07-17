@@ -2648,6 +2648,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teams/{id}/forge/connections/{conn_id}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/forge/connections/{conn_id}/health */
+        get: operations["getTeamsByIdForgeConnectionsByConnIdHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/forge/connections/{conn_id}/repos": {
         parameters: {
             query?: never;
@@ -2781,6 +2801,26 @@ export interface paths {
         post?: never;
         /** DELETE /api/teams/{id}/forge/repo-bots/{integration_id} */
         delete: operations["deleteTeamsByIdForgeRepoBotsByIntegrationId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/forge/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/forge/repos */
+        get: operations["getTeamsByIdForgeRepos"];
+        put?: never;
+        /** POST /api/teams/{id}/forge/repos */
+        post: operations["postTeamsByIdForgeRepos"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -4209,8 +4249,32 @@ export interface components {
             connection?: components["schemas"]["Connection"];
             install_url?: string;
         };
+        forgeConnectionHealth: {
+            account_login?: string;
+            app_slug?: string;
+            installation_account?: string;
+            installation_id?: number;
+            installation_repos?: string[];
+            kind: string;
+            live_error?: string;
+            manage_install_url?: string;
+            provider: string;
+            provisioned_repo_count: number;
+            status: string;
+            status_reason?: string;
+        };
+        forgeCreateRepoReq: {
+            connection_id: string;
+            default_branch?: string;
+            description?: string;
+            init_readme?: boolean;
+            name: string;
+            owner?: string;
+            private?: boolean;
+        };
         forgeOAuthAppReq: {
             admin_token?: string;
+            allow_repo_creation?: boolean;
             client_id?: string;
             client_secret?: string;
             connection_id?: string;
@@ -4219,6 +4283,17 @@ export interface components {
             mode?: string;
             next?: string;
             provider: string;
+        };
+        forgeTeamRepo: {
+            bot_ids: string[];
+            clone_url?: string;
+            connection_id: string;
+            connection_status?: string;
+            integration_id: string;
+            provider: string;
+            repo_full_name: string;
+            sync_issues_enabled: boolean;
+            web_url?: string;
         };
         loginReq: {
             email: string;
@@ -7756,6 +7831,29 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdForgeConnectionsByConnIdHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                conn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["forgeConnectionHealth"];
+                };
+            };
+        };
+    };
     getTeamsByIdForgeConnectionsByConnIdRepos: {
         parameters: {
             query?: never;
@@ -7960,6 +8058,59 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getTeamsByIdForgeRepos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        repos: components["schemas"]["forgeTeamRepo"][];
+                    };
+                };
+            };
+        };
+    };
+    postTeamsByIdForgeRepos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["forgeCreateRepoReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        clone_url: string;
+                        repo: components["schemas"]["RepoSummary"];
+                    };
+                };
             };
         };
     };
