@@ -78,6 +78,17 @@ forge:
     issues: write            # post the MR URL back onto the source issue
   secret: forge_token
 
+## Appy builds a NEW application, so the launch surface offers a target
+## repository up front: attach a connected repo, or CREATE a fresh one on
+## the forge (the run clones it empty, Appy scaffolds, commits and pushes;
+## finalize_mr opens the PR against it). Optional — a bare local directory
+## (greenfield, `git init` by the bot) stays fully supported.
+repo:
+  mode: optional
+  allow_create: true
+  purpose: "Where the new application will live — pick an existing repo to evolve, or create a fresh one for it."
+  visibility: private
+
 invocations:
   - kind: command
     mode: board

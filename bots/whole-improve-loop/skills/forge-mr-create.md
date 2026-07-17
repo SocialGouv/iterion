@@ -15,6 +15,19 @@ You are turning the commits this run produced into ONE merge/pull
 request, then optionally posting its URL back onto the source issue. You
 push and open an MR — you do NOT edit, fix, or re-commit the workspace.
 
+## Fresh repository (created for this run — no remote branches yet)
+
+When the run targeted a repository CREATED at launch, `origin` exists
+but has no branches (`git ls-remote --heads origin` is empty). There is
+no base to open an MR against — the FIRST push IS the publication:
+
+1. `git push -u origin HEAD` — publishes the current branch; on an
+   empty repo it becomes the default branch.
+2. Skip the MR entirely (an MR needs base ≠ head). Report the repo's
+   web URL as the deliverable instead of an MR URL.
+3. Only from the SECOND run onward (remote default branch exists) does
+   the normal branch → MR flow below apply.
+
 ## 0. Resolve the base, then check there are commits to ship
 
 The CWD is the run's git worktree (or clone). First resolve the BASE the
