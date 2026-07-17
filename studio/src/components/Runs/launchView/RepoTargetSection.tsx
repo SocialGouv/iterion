@@ -144,31 +144,34 @@ export default function RepoTargetSection({
   createError,
   submitting,
 }: RepoTargetSectionProps) {
-  // Connections list: only fetched when we're in create mode and can't
-  // derive connections from the existing repos (nothing connected yet or
-  // no repo on the chosen connection). Matches the useActiveRepo pattern.
+  // Connections list: fetched whenever create mode is open — a freshly
+  // added connection has no provisioned repo yet, so deriving options
+  // from `repos` alone would hide it (seen live: a new PAT connection
+  // was unselectable for create). Repo-derived entries stay first for
+  // familiar labels; the full list unions in behind them.
   const connectionsQuery = useQuery<ForgeConnection[]>({
     queryKey: ["forge-connections", teamID],
     queryFn: () => listForgeConnections(teamID ?? ""),
-    enabled: state.mode === "create" && !!teamID && repos.length === 0,
+    enabled: state.mode === "create" && !!teamID,
     staleTime: 30_000,
   });
   const connections: ForgeConnection[] = connectionsQuery.data ?? EMPTY_CONNECTIONS;
-  const connectionsLoading = connectionsQuery.isLoading;
+  const connectionsLoading = connectionsQuery.isLoading && repos.length === 0;
 
   const createConnOptions = useMemo(() => {
-    if (repos.length > 0) {
-      // Dedupe by connection_id: one option per distinct forge connection.
-      const seen = new Map<string, ForgeTeamRepo>();
-      for (const r of repos) {
-        if (!seen.has(r.connection_id)) seen.set(r.connection_id, r);
-      }
-      return Array.from(seen.values()).map((r) => ({
-        id: r.connection_id,
-        label: `${r.provider} · ${ownerOf(r.repo_full_name)}`,
-      }));
+    const out: Array<{ id: string; label: string }> = [];
+    const seen = new Set<string>();
+    for (const r of repos) {
+      if (seen.has(r.connection_id)) continue;
+      seen.add(r.connection_id);
+      out.push({ id: r.connection_id, label: `${r.provider} · ${ownerOf(r.repo_full_name)}` });
     }
-    return connections.map((c) => ({ id: c.id, label: connectionLabel(c) }));
+    for (const c of connections) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
+      out.push({ id: c.id, label: connectionLabel(c) });
+    }
+    return out;
   }, [repos, connections]);
 
   // Owner default when the user picks a connection: pre-fill from the
