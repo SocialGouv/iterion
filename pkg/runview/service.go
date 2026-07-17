@@ -432,6 +432,11 @@ type Service struct {
 	// spawnRun, removed when the run goroutine exits. Same lifecycle as
 	// runLogs, so it shares runLogsMu.
 	runEngines map[string]*runtime.Engine
+	// runSteer holds the send side of each live run's override channel
+	// (live steering: bump_loop / raise_budget). Registered/removed
+	// together with runEngines under runLogsMu; the engine holds the
+	// receive side and drains it at its safe boundary.
+	runSteer map[string]chan *runtime.OverrideMsg
 
 	// draining is set by Drain at the start of graceful shutdown.
 	// Once true, Launch and Resume early-return runtime.ErrServerDraining
@@ -657,6 +662,7 @@ func NewService(storeDir string, opts ...ServiceOption) (*Service, error) {
 		recoveryDispatch: recovery.Dispatch(recovery.DefaultRecipes()),
 		runLogs:          make(map[string]*RunLogBuffer),
 		runEngines:       make(map[string]*runtime.Engine),
+		runSteer:         make(map[string]chan *runtime.OverrideMsg),
 	}
 	for _, opt := range opts {
 		opt(s)

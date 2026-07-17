@@ -107,6 +107,17 @@ func NewRaiseBudgetOverride(caps ir.BudgetOverrides, issuedBy string) *OverrideM
 	}
 }
 
+// Ack delivers the result to the waiting sender. The reply primitive of
+// whoever owns the receive side of the channel — the engine's drain in
+// production, a harness in tests. Buffered(1): never blocks; a second
+// Ack on the same message is dropped rather than panicking.
+func (m *OverrideMsg) Ack(res OverrideResult) {
+	select {
+	case m.ack <- res:
+	default:
+	}
+}
+
 // Await blocks for the engine's ack, bounded by timeout and ctx. The
 // engine goroutine may have exited (run just finished) — the timeout is
 // the guard against waiting on a dead channel.
@@ -138,8 +149,7 @@ func (e *Engine) drainOverrides(rs *runState) {
 			if msg == nil {
 				continue
 			}
-			res := e.applyOverride(rs, msg)
-			msg.ack <- res // buffered(1); the engine never blocks here
+			msg.Ack(e.applyOverride(rs, msg))
 		default:
 			return
 		}

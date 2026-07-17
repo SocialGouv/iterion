@@ -516,10 +516,15 @@ func (s *Service) spawnRun(
 	if pauseCh, perr := s.manager.PauseSignal(runID); perr == nil {
 		opts = append(opts, runtime.WithPauseSignal(pauseCh))
 	}
+	// Live-steering channel (bump_loop / raise_budget): buffered so a
+	// burst of commands never blocks the HTTP handler; the engine
+	// drains it at the same safe boundary as the pause signal.
+	steerCh := make(chan *runtime.OverrideMsg, 8)
+	opts = append(opts, runtime.WithOverrideChannel(steerCh))
 	eng := runtime.New(wf, emitStore, executor, opts...)
 	// Publish the engine so the store's Event.ActiveMs stamping can read
 	// this run's monotonic active elapsed. Removed when the goroutine exits.
-	s.registerRunEngine(runID, eng)
+	s.registerRunEngine(runID, eng, steerCh)
 
 	done := make(chan struct{})
 	go func() {
