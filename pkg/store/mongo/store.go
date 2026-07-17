@@ -281,6 +281,9 @@ func (s *Store) EnsureSchema(ctx context.Context, eventsTTLDays int) error {
 		// run sets source.issue_id, a shard/child sets parent_run_id;
 		// plain manual runs leave both empty.
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "source.issue_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_source_issue_created").SetPartialFilterExpression(bson.M{"source.issue_id": bson.M{"$exists": true}})},
+		// Schedule←run reverse edge (pkg/schedgate overlap gate). Partial
+		// on source.schedule_id so only schedule-launched runs index.
+		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "source.schedule_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_source_schedule_created").SetPartialFilterExpression(bson.M{"source.schedule_id": bson.M{"$exists": true}})},
 		{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "parent_run_id", Value: 1}, {Key: "created_at", Value: 1}}, Options: options.Index().SetName("tenant_parent_run_created").SetPartialFilterExpression(bson.M{"parent_run_id": bson.M{"$exists": true}})},
 	})
 	if err != nil && !mongoutil.IsIndexConflict(err) {

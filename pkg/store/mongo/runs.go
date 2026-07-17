@@ -249,6 +249,18 @@ func (s *Store) ListRunsBySourceIssue(ctx context.Context, issueID string) ([]st
 	return s.listRunIDsBy(ctx, bson.M{"source.issue_id": issueID}, "list runs by source issue")
 }
 
+// ListRunsBySchedule returns the ids of runs whose source.schedule_id
+// equals scheduleID (the schedule←run reverse edge used by the
+// pkg/schedgate overlap gate), sorted by created_at ascending. Indexed
+// by (tenant_id, source.schedule_id, created_at); tenant scope is
+// enforced when ctx carries a tenant_id.
+func (s *Store) ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error) {
+	if scheduleID == "" {
+		return []string{}, nil
+	}
+	return s.listRunIDsBy(ctx, bson.M{"source.schedule_id": scheduleID}, "list runs by schedule")
+}
+
 // ListChildRuns returns the ids of runs whose parent_run_id equals
 // parentRunID (a run's shard/child subtree), sorted by created_at
 // ascending. Indexed by (tenant_id, parent_run_id, created_at); tenant

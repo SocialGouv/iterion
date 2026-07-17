@@ -62,6 +62,7 @@ func RunWithOpts(t *testing.T, factory Factory, opts Opts) {
 	t.Run("UserMessagesInbox", func(t *testing.T) { testUserMessagesInbox(t, factory(t)) })
 	t.Run("WatchedIssues", func(t *testing.T) { testWatchedIssues(t, factory(t)) })
 	t.Run("ReverseTreeQueries", func(t *testing.T) { testReverseTreeQueries(t, factory(t)) })
+	t.Run("ScheduleReverseQuery", func(t *testing.T) { testScheduleReverseQuery(t, factory(t)) })
 	t.Run("DeleteRun", func(t *testing.T) { testDeleteRun(t, factory(t)) })
 	t.Run("RunLogStore", func(t *testing.T) { testRunLogStore(t, factory(t)) })
 	t.Run("TurnStore", func(t *testing.T) { testTurnStore(t, factory(t)) })
@@ -664,6 +665,71 @@ func testReverseTreeQueries(t *testing.T, s store.RunStore) {
 			t.Errorf("shard_0 ParentNodeID = %q, want %q", child.ParentNodeID, "sb_node")
 		}
 	})
+}
+
+// testScheduleReverseQuery exercises ListRunsBySchedule (the
+// schedule←run reverse edge counted by the pkg/schedgate overlap
+// gate): exactly the matching ids, created_at ascending, empty for
+// unknown/empty schedule ids, and ScheduleID/ScheduleName round-trip
+// on RunSource.
+func testScheduleReverseQuery(t *testing.T, s store.RunStore) {
+	t.Helper()
+	ctx := testCtx()
+
+	saveScheduled := func(id, scheduleID string, createdAt time.Time) {
+		if _, err := s.CreateRun(ctx, id, "demo", nil); err != nil {
+			t.Fatalf("CreateRun %s: %v", id, err)
+		}
+		r, err := s.LoadRun(ctx, id)
+		if err != nil {
+			t.Fatalf("LoadRun %s: %v", id, err)
+		}
+		if scheduleID != "" {
+			r.Source = &store.RunSource{
+				Kind:         store.RunSourceKindSchedule,
+				ScheduleID:   scheduleID,
+				ScheduleName: scheduleID + "-label",
+			}
+		}
+		r.CreatedAt = createdAt
+		if err := s.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun %s: %v", id, err)
+		}
+	}
+
+	base := time.Date(2026, 7, 17, 2, 0, 0, 0, time.UTC)
+	// Saved out of chronological order to assert the query re-sorts.
+	saveScheduled("sched_b", "weekly-audit", base.Add(2*time.Minute))
+	saveScheduled("sched_a", "weekly-audit", base.Add(1*time.Minute))
+	saveScheduled("sched_other", "nightly-docs", base.Add(3*time.Minute))
+	saveScheduled("manual", "", base.Add(4*time.Minute))
+
+	got, err := s.ListRunsBySchedule(ctx, "weekly-audit")
+	if err != nil {
+		t.Fatalf("ListRunsBySchedule: %v", err)
+	}
+	if want := []string{"sched_a", "sched_b"}; !sameOrderedSlice(got, want) {
+		t.Errorf("ListRunsBySchedule(weekly-audit) = %v, want %v", got, want)
+	}
+
+	for _, q := range []string{"absent-schedule", ""} {
+		got, err = s.ListRunsBySchedule(ctx, q)
+		if err != nil {
+			t.Fatalf("ListRunsBySchedule(%q): %v", q, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("ListRunsBySchedule(%q) = %v, want empty", q, got)
+		}
+	}
+
+	r, err := s.LoadRun(ctx, "sched_a")
+	if err != nil {
+		t.Fatalf("LoadRun sched_a: %v", err)
+	}
+	if r.Source == nil || r.Source.Kind != store.RunSourceKindSchedule ||
+		r.Source.ScheduleID != "weekly-audit" || r.Source.ScheduleName != "weekly-audit-label" {
+		t.Errorf("RunSource round-trip mismatch: %+v", r.Source)
+	}
 }
 
 // sameOrderedSlice reports whether got and want are element-wise equal

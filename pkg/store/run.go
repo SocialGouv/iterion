@@ -475,11 +475,13 @@ func removeWatchedIssues(existing, drop []string) []string {
 // known set today.
 const (
 	RunSourceKindDispatcher = "dispatcher"
+	RunSourceKindSchedule   = "schedule"
 )
 
 // RunSource captures who originated this run. Populated by the
-// dispatcher when an issue is claimed; empty for CLI / studio /
-// fork-spawned runs.
+// dispatcher when an issue is claimed and by the scheduled-launch
+// paths (host-cron, trigger spine, cloudsched); empty for CLI /
+// studio / fork-spawned runs.
 type RunSource struct {
 	// Kind is the producer of this run (see RunSourceKind* consts).
 	Kind string `json:"kind,omitempty" bson:"kind,omitempty"`
@@ -495,6 +497,16 @@ type RunSource struct {
 	// not re-fetched on resume, so a later title edit doesn't
 	// rewrite the historical run record.
 	IssueTitle string `json:"issue_title,omitempty" bson:"issue_title,omitempty"`
+	// ScheduleID is the stable schedule identity for
+	// RunSourceKindSchedule runs: ScheduleEntry.Name (host-cron),
+	// trigger.Subscription.ID (spine), cloudsched.ScheduledBot.ID
+	// (cloud). Deliberately distinct from IssueID — the overlap gate
+	// queries it (ListRunsBySchedule) and the issue index must not be
+	// polluted with schedule identities.
+	ScheduleID string `json:"schedule_id,omitempty" bson:"schedule_id,omitempty"`
+	// ScheduleName is the human label of the schedule when it differs
+	// from ScheduleID (display only).
+	ScheduleName string `json:"schedule_name,omitempty" bson:"schedule_name,omitempty"`
 }
 
 // ForkAnchor identifies where a forked run resumes inside the parent's

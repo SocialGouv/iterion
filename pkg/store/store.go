@@ -759,6 +759,19 @@ func (s *FilesystemRunStore) ListRunsBySourceIssue(ctx context.Context, issueID 
 	})
 }
 
+// ListRunsBySchedule returns the ids of runs whose Source.ScheduleID
+// equals scheduleID (the schedule←run reverse edge used by the
+// pkg/schedgate overlap gate), sorted by created_at ascending. Same
+// scan-and-filter strategy as ListRunsBySourceIssue.
+func (s *FilesystemRunStore) ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error) {
+	if scheduleID == "" {
+		return []string{}, nil
+	}
+	return s.filterRunsSorted(ctx, func(r *Run) bool {
+		return r.Source != nil && r.Source.ScheduleID == scheduleID
+	})
+}
+
 // ListChildRuns returns the ids of runs whose ParentRunID equals
 // parentRunID (a run's shard/child subtree), sorted by created_at
 // ascending. Same scan-and-filter strategy as ListRunsBySourceIssue.

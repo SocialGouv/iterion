@@ -59,6 +59,14 @@ type RunStore interface {
 	ListRunsBySourceIssue(ctx context.Context, issueID string) ([]string, error)
 	ListChildRuns(ctx context.Context, parentRunID string) ([]string, error)
 
+	// ListRunsBySchedule returns every run whose Source.ScheduleID
+	// equals scheduleID — the schedule←run reverse edge the overlap
+	// gate (pkg/schedgate) counts live runs through. Same projection
+	// contract as the other reverse queries: ids only, created_at
+	// ascending, empty slice (no error) when nothing matches or
+	// scheduleID is empty.
+	ListRunsBySchedule(ctx context.Context, scheduleID string) ([]string, error)
+
 	// Watch subscriptions (MVP3b) — the set of native-kanban issue IDs
 	// this run is subscribed to. Concurrency-safe read-modify-write of
 	// Run.WatchedIssueIDs (parallel branches' onNodeFinished hooks and
