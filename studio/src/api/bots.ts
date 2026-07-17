@@ -56,6 +56,12 @@ export interface BotEntry {
    *  renders it read-only so an operator sees what enabling the bot on a
    *  repo will set up. */
   forge?: ForgeRequirements;
+  /** Runtime repository need (manifest `repo:` block). Present when a bot
+   *  declares it wants a repo target for the run; the Launch surfaces
+   *  render a "Target repository" section (attach / create-new /
+   *  optional-skip) driven off this. `mode: "none"` behaves like an
+   *  absent block (kept so a bot can document the choice). */
+  repo?: RepoRequirement;
   /** Typed routing contract (manifest `invocations:`) — how this bot can be
    *  triggered (forge event, /slash-command, schedule, board) and the
    *  execution mode each path uses. Drives the Integrations picker grouping.
@@ -116,6 +122,28 @@ export interface ForgeRequirements {
 export interface ForgeWebhookHints {
   launch_vars?: Record<string, string>;
   min_replier_role?: string;
+}
+
+/** RepoRequirement mirrors the manifest `repo:` block — the bot's runtime
+ *  repository need. The Launch surfaces render it as the "Target
+ *  repository" section (attach an active/other connected repo, create a
+ *  new one on a connected forge, or opt out when the mode is optional).
+ *  `mode: "none"` is equivalent to omitting the block; the launch surfaces
+ *  treat it as "no section". Cloud-only launch path — the server 400s a
+ *  repo-targeted launch in local mode. */
+export interface RepoRequirement {
+  /** "required" (launch soft-blocks without a target), "optional" (section
+   *  offered, skippable), or "none" (explicit repo-independence). */
+  mode: "required" | "optional" | "none";
+  /** When true, the section offers a "create a new repository" path
+   *  alongside "attach an existing one". */
+  allow_create?: boolean;
+  /** One-line operator-facing explanation shown under the section title. */
+  purpose?: string;
+  /** Seeds a created repo's default branch name (empty = forge default). */
+  default_branch?: string;
+  /** Seeds a created repo's visibility (default "private"). */
+  visibility?: "private" | "public";
 }
 
 /** BotPatch is the editable subset of a bot's manifest. Omitted fields

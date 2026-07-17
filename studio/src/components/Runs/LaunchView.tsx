@@ -4,6 +4,7 @@ import { useLocation, useSearch } from "wouter";
 
 import { useBotsStore } from "@/store/bots";
 import * as filesApi from "@/api/client";
+import { createForgeRepo } from "@/api/forgeConnections";
 import { createRun, getServerInfo, uploadAttachment } from "@/api/runs";
 import type { MergeStrategy } from "@/api/runs";
 import type { AttachmentField, IterDocument, ServerInfo } from "@/api/types";
@@ -14,6 +15,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useDocumentStore } from "@/store/document";
 import { useBackendDetectStore } from "@/store/backendDetect";
 
@@ -34,6 +36,12 @@ import ModelOverridesSection, {
   type NodeOverride,
 } from "./launchView/ModelOverridesSection";
 import PresetSection from "./launchView/PresetSection";
+import RepoTargetSection, {
+  findAttachedRepo,
+  initialRepoTargetState,
+  isRepoTargetValid,
+  type RepoTargetState,
+} from "./launchView/RepoTargetSection";
 import RunSettingsSection from "./launchView/RunSettingsSection";
 import VarFieldsSection from "./launchView/VarFieldsSection";
 import WorktreeFinalizationSection from "./launchView/WorktreeFinalizationSection";
@@ -133,6 +141,20 @@ export default function LaunchView() {
   // inherit the bot's DSL default. Folded into createRun.model_overrides.
   const [modelOverrides, setModelOverrides] = useState<Record<string, NodeOverride>>({});
   const backendReport = useBackendDetectStore((s) => s.report);
+
+  // Target-repository section — cloud-only. When the bot's manifest declares
+  // a `repo:` block (mode != "none"), the operator picks attach/create/skip
+  // before launch. State is owned here so the create-then-launch flow can
+  // stage a createForgeRepo() call and pipe its output into createRun.
+  const {
+    activeRepo,
+    repos: teamRepos,
+    teamID,
+    enabled: repoContextEnabled,
+    loading: repoContextLoading,
+  } = useActiveRepo();
+  const [repoTargetState, setRepoTargetState] = useState<RepoTargetState | null>(null);
+  const [repoTargetCreateError, setRepoTargetCreateError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -271,26 +293,66 @@ export default function LaunchView() {
     });
   };
 
+  // Show the "Target repository" section when: the bot declares a repo need
+  // (mode !== "none"), we're in cloud mode with a team context, and the
+  // useActiveRepo hook is wired (repos + activeRepo available).
+  const repoRequirement = bot?.repo && bot.repo.mode !== "none" ? bot.repo : null;
+  const showRepoTarget =
+    !!repoRequirement && serverInfo?.mode === "cloud" && repoContextEnabled;
+
+  // Initialise / re-initialise the repo-target state when the bot changes.
+  // Deliberately keyed on the bot's rel_path + the useActiveRepo loading
+  // flag so operator edits aren't clobbered by every useActiveRepo refetch,
+  // but the initial pick doesn't miss "Use <active repo>" just because the
+  // repos query hadn't landed yet. The activeRepo / teamRepos snapshot is
+  // captured via closure at the moment the effect fires.
+  const botKey = bot?.rel_path ?? "";
+  useEffect(() => {
+    if (!repoRequirement) {
+      setRepoTargetState(null);
+      return;
+    }
+    if (repoContextLoading) return;
+    setRepoTargetState(initialRepoTargetState(repoRequirement, activeRepo, teamRepos));
+    setRepoTargetCreateError(null);
+    // activeRepo / teamRepos intentionally excluded — we seed from the
+    // current snapshot then let the operator drive further changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [botKey, repoRequirement?.mode, repoRequirement?.allow_create, repoContextLoading]);
+
+  const repoTargetValid =
+    !repoRequirement ||
+    !showRepoTarget ||
+    (repoTargetState !== null &&
+      isRepoTargetValid(repoRequirement, repoTargetState, activeRepo, teamRepos));
+  const missingRepoTarget =
+    showRepoTarget && repoRequirement?.mode === "required" && !repoTargetValid;
+
   // First unfilled required field, in precedence order (attachments before
-  // vars). One walk feeds the launch gate, the caption text, and the
-  // scroll/focus target — so the precedence can't drift across them.
+  // vars, then repo target). One walk feeds the launch gate, the caption
+  // text, and the scroll/focus target — so the precedence can't drift
+  // across them.
   const missingAttachmentField = attachmentFields.find(
     (f) => f.required && !attachments[f.name]?.uploadId,
   );
   const missingVarField = fields.find((f) =>
     isVarMissing(f, values[f.name] ?? ""),
   );
-  const missingRequired = !!(missingAttachmentField || missingVarField);
+  const missingRequired = !!(missingAttachmentField || missingVarField || missingRepoTarget);
   const missingTitle = missingAttachmentField
     ? "Provide every required attachment first"
     : missingVarField
       ? "Fill every required input first"
-      : undefined;
+      : missingRepoTarget
+        ? "Target repository required"
+        : undefined;
   const firstMissingFieldId = missingAttachmentField
     ? `attach-${missingAttachmentField.name}`
     : missingVarField
       ? `var-${missingVarField.name}`
-      : null;
+      : missingRepoTarget
+        ? "repo-target-section"
+        : null;
 
   // Tracks whether Launch was pressed while required fields are still
   // missing — promotes the inline caption from polite to assertive and
@@ -372,6 +434,53 @@ export default function LaunchView() {
   const launchRun = async () => {
     setSubmitting(true);
     setError(null);
+    setRepoTargetCreateError(null);
+    // Resolve the repo target (attach / create / active / none). For
+    // "create" we first mint the forge repo, then feed its clone_url +
+    // connection_id into createRun below. Errors here are inline in the
+    // section (createError), not the page-level banner — they're
+    // actionable in-place (409 name taken, 422 App perms).
+    let repoUrl: string | undefined;
+    let connectionID: string | undefined;
+    if (showRepoTarget && repoTargetState && repoRequirement && teamID) {
+      switch (repoTargetState.mode) {
+        case "active":
+          if (activeRepo?.clone_url) {
+            repoUrl = activeRepo.clone_url;
+            connectionID = activeRepo.connection_id;
+          }
+          break;
+        case "attach": {
+          const chosen = findAttachedRepo(teamRepos, repoTargetState.attachKey);
+          if (chosen?.clone_url) {
+            repoUrl = chosen.clone_url;
+            connectionID = chosen.connection_id;
+          }
+          break;
+        }
+        case "create":
+          try {
+            const created = await createForgeRepo(teamID, {
+              connection_id: repoTargetState.createConnectionID,
+              owner: repoTargetState.createOwner || undefined,
+              name: repoTargetState.createName.trim(),
+              private: repoTargetState.createPrivate,
+              default_branch: repoRequirement.default_branch || undefined,
+              init_readme: true,
+            });
+            repoUrl = created.clone_url;
+            connectionID = repoTargetState.createConnectionID;
+          } catch (e) {
+            setRepoTargetCreateError(errorMessage(e));
+            setSubmitting(false);
+            return;
+          }
+          break;
+        case "none":
+          // Explicit skip — send nothing new.
+          break;
+      }
+    }
     try {
       const attachmentsPayload: Record<string, string> = {};
       for (const f of attachmentFields) {
@@ -407,6 +516,8 @@ export default function LaunchView() {
             .filter((e) => e.model || e.backend);
           return entries.length > 0 ? entries : undefined;
         })(),
+        repo_url: repoUrl,
+        connection_id: connectionID,
       });
       setLocation(`/runs/${encodeURIComponent(res.run_id)}`);
     } catch (e) {
@@ -597,6 +708,22 @@ export default function LaunchView() {
                 setBudgetFields((prev) => ({ ...prev, ...patch }))
               }
             />
+            {showRepoTarget && repoRequirement && repoTargetState && (
+              <div id="repo-target-section">
+                <RepoTargetSection
+                  repo={repoRequirement}
+                  activeRepo={activeRepo}
+                  repos={teamRepos}
+                  teamID={teamID}
+                  state={repoTargetState}
+                  onChange={(patch) =>
+                    setRepoTargetState((prev) => (prev ? { ...prev, ...patch } : prev))
+                  }
+                  createError={repoTargetCreateError}
+                  submitting={submitting}
+                />
+              </div>
+            )}
             <WorktreeFinalizationSection
               showAdvanced={showAdvanced}
               worktreeOn={worktreeOn}
