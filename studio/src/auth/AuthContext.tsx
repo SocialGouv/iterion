@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { apiBase } from "@/lib/scope";
+import { useActiveRepoStore } from "@/store/activeRepo";
 import {
   ApiError,
   getMe,
@@ -207,6 +208,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Cookies already cleared even if the server rejected — proceed.
     }
+    // Drop the repo-first context so a different account on this browser
+    // never inherits the previous user's active repo.
+    useActiveRepoStore.getState().reset();
     setState({ ...initial, status: "anonymous" });
   }, []);
 

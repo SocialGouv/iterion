@@ -6,6 +6,7 @@ import {
 
 import NavLinks from "./NavLinks";
 import OrgSwitcher from "./OrgSwitcher";
+import RepoSwitcher from "./RepoSwitcher";
 import SidebarContext from "./SidebarContext";
 import { BrandMark } from "@/components/ui/BrandMark";
 import { BrandWordmark } from "@/components/ui/BrandWordmark";
@@ -82,6 +83,13 @@ export default function Sidebar() {
           org context out of the bottom account chip. */}
       <div className={`shrink-0 ${collapsed ? "px-1.5 pt-2" : "px-2 pt-2"}`}>
         <OrgSwitcher collapsed={collapsed} />
+      </div>
+
+      {/* Repo-first context: the active repository scopes most views and
+          pre-fills repo-targeting actions. Cloud-only; the zero-repo state
+          doubles as the connect CTA. */}
+      <div className={`shrink-0 ${collapsed ? "px-1.5 pt-1.5" : "px-2 pt-1.5"}`}>
+        <RepoSwitcher collapsed={collapsed} />
       </div>
 
       {/* Context block: project + search/command palette */}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -20,9 +21,14 @@ export default function TriggersView() {
   const [unavailable, setUnavailable] = useState(false);
   const [creating, setCreating] = useState(false);
 
+  // Repo-first scope: the active repo narrows the list server-side
+  // (ListByRepo also returns tenant-wide rows with no repo binding).
+  const { activeRepo, overview, enabled: repoScope } = useActiveRepo();
+  const scopeRepo = repoScope && !overview ? (activeRepo?.repo_full_name ?? "") : "";
+
   const reload = useCallback(async () => {
     try {
-      const list = await listTriggers();
+      const list = await listTriggers(scopeRepo ? { repo: scopeRepo } : undefined);
       setSubs(list);
       setLoadErr(null);
     } catch (err) {
@@ -32,14 +38,23 @@ export default function TriggersView() {
       }
       setLoadErr(errorMessage(err));
     }
-  }, []);
+  }, [scopeRepo]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
   useHeaderSlot({
-    left: <span className="text-xs font-medium text-fg-default">Automations</span>,
+    left: (
+      <span className="text-xs font-medium text-fg-default">
+        Automations
+        {scopeRepo && (
+          <span className="ml-2 rounded bg-surface-2 px-1.5 py-0.5 text-caption font-normal text-fg-muted">
+            {scopeRepo}
+          </span>
+        )}
+      </span>
+    ),
     right: (
       <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
         New trigger

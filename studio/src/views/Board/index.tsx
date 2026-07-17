@@ -5,6 +5,7 @@ import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import DispatcherControlBar from "@/components/shared/DispatcherControlBar";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { cancelIssue } from "@/api/dispatcher";
 import {
   createIssue,
@@ -16,7 +17,7 @@ import {
   type NativeState,
   type NativeView,
 } from "@/api/native";
-import IssueModal from "./IssueModal";
+import IssueModal, { type IssueDraft } from "./IssueModal";
 import { BoardFilters } from "./BoardFilters";
 import { BoardKeyboardHelp } from "./BoardKeyboardHelp";
 import { Column } from "./Column";
@@ -84,6 +85,17 @@ export default function BoardView() {
   const [botFilter, setBotFilter] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("priority");
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
+  // Repo-first scoping: when the sidebar has an active repo (cloud + not
+  // overview), filter cards to that repo. `includeUnlinked` widens the
+  // filter to also show cards with no external link (default off).
+  const {
+    activeRepo,
+    overview: repoOverview,
+    enabled: repoScopeEnabled,
+  } = useActiveRepo();
+  const repoScope =
+    repoScopeEnabled && !repoOverview ? (activeRepo?.repo_full_name ?? null) : null;
+  const [includeUnlinked, setIncludeUnlinked] = useState(false);
   // Saved views: activeView is the currently-applied preset's name ("" =
   // custom/unsaved). viewAction tracks the save/delete REST call.
   const [activeView, setActiveView] = useState("");
@@ -135,6 +147,8 @@ export default function BoardView() {
       assigneeFilter,
       botFilter,
       sortMode,
+      repoScope,
+      includeUnlinked,
     });
 
   // Swimlanes: null when grouping is off (flat board), else the per-lane
@@ -243,7 +257,7 @@ export default function BoardView() {
   useUndoKeyboardShortcut({ historyRef, onDrop, modalOpen });
 
   const onCreate = useCallback(
-    async (input: Partial<NativeIssue>) => {
+    async (input: IssueDraft) => {
       try {
         await createIssue({
           title: input.title ?? "",
@@ -255,6 +269,7 @@ export default function BoardView() {
           fields: input.fields,
           bot: input.bot,
           bot_args: input.bot_args,
+          external: input.external,
         });
         setCreating(false);
         await refresh();
@@ -266,7 +281,7 @@ export default function BoardView() {
   );
 
   const onSave = useCallback(
-    async (input: Partial<NativeIssue>) => {
+    async (input: IssueDraft) => {
       if (!editing) return;
       try {
         await patchIssue(editing.id, {
@@ -287,6 +302,7 @@ export default function BoardView() {
           fields: input.fields,
           bot: input.bot ?? "",
           bot_args: input.bot_args ?? {},
+          external: input.external,
         });
         setEditing(null);
         await refresh();
@@ -584,6 +600,9 @@ export default function BoardView() {
         onGroupChange={setGroupMode}
         fieldNames={(board.fields ?? []).map((f) => f.name)}
         hasRepoLinks={hasRepoLinks}
+        repoScope={repoScope}
+        includeUnlinked={includeUnlinked}
+        onIncludeUnlinkedChange={setIncludeUnlinked}
         onReset={() => {
           setSearchQuery("");
           clearLabelFilter();

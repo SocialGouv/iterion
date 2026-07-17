@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 
@@ -34,6 +35,9 @@ export function BoardFilters({
   onGroupChange,
   fieldNames,
   hasRepoLinks,
+  repoScope,
+  includeUnlinked,
+  onIncludeUnlinkedChange,
   onReset,
 }: {
   searchQuery: string;
@@ -58,6 +62,12 @@ export function BoardFilters({
   // hasRepoLinks: true when at least one card is forge-linked, so the
   // "Repository" swimlane grouping is worth offering.
   hasRepoLinks: boolean;
+  // repoScope: the active repo's full name when the board is scoped to one
+  // repo. Null outside cloud mode or in overview — the "Include unlinked"
+  // toggle is only offered when scoped.
+  repoScope: string | null;
+  includeUnlinked: boolean;
+  onIncludeUnlinkedChange: (v: boolean) => void;
   onReset: () => void;
 }) {
   const filtersActive =
@@ -154,6 +164,14 @@ export function BoardFilters({
           ))}
         </Select>
       </label>
+      {repoScope && (
+        <Checkbox
+          checked={includeUnlinked}
+          onChange={(e) => onIncludeUnlinkedChange(e.target.checked)}
+          label="Include unlinked"
+          help={`When on, cards with no repository also show alongside cards linked to ${repoScope}.`}
+        />
+      )}
       <span className="ml-auto text-fg-muted">
         {filtersActive ? `${filtered} / ${total}` : `${total} issue${total === 1 ? "" : "s"}`}
       </span>

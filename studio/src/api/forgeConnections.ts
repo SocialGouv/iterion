@@ -43,6 +43,33 @@ export interface ForgeIntegration {
   created_at: string;
 }
 
+// ForgeTeamRepo is one row of the team-wide connected-repo aggregator
+// (GET /api/teams/{id}/forge/repos) — the RepoSwitcher's data source: a
+// RepoIntegration joined with its connection server-side.
+export interface ForgeTeamRepo {
+  connection_id: string;
+  connection_status?: ForgeConnectionStatus | "degraded";
+  provider: ForgeProvider;
+  repo_full_name: string;
+  clone_url?: string;
+  web_url?: string;
+  integration_id: string;
+  bot_ids: string[];
+  sync_issues_enabled: boolean;
+}
+
+/** Stable identity of a connected repo across connections. */
+export function forgeTeamRepoKey(r: Pick<ForgeTeamRepo, "connection_id" | "repo_full_name">): string {
+  return `${r.connection_id}::${r.repo_full_name}`;
+}
+
+export async function listTeamForgeRepos(teamID: string): Promise<ForgeTeamRepo[]> {
+  const r = await guard404("forge_integrations", () =>
+    request<{ repos: ForgeTeamRepo[] }>(`/teams/${teamID}/forge/repos`),
+  );
+  return r.repos ?? [];
+}
+
 /** Counts returned by a manual issue-sync run (POST …/sync). */
 export interface ForgeSyncResult {
   synced: number;

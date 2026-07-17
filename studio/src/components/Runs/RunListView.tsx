@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useLocation } from "wouter";
 
 import {
@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { RunRepo, RunSourceKind, RunStatus } from "@/api/runs";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useRuns } from "@/hooks/useRuns";
 import { useRunRepos } from "@/hooks/useRunRepos";
 import { useServerInfoStore } from "@/store/serverInfo";
@@ -80,6 +81,25 @@ export default function RunListView() {
   // split once so neither the fetch nor filterRuns has to know about mode.
   const serverRepo = mode === "cloud" ? repo : "";
   const clientRepo = mode === "cloud" ? "" : repo;
+
+  // Repo-first scope: the sidebar's active repo re-anchors this list
+  // whenever it CHANGES; the chips stay usable as a local override until
+  // the next scope change. A ?repo= deep-link wins over the initial
+  // scope adoption so shared URLs keep their filter.
+  const { activeRepo, overview, enabled: repoScope, loading: repoScopeLoading } = useActiveRepo();
+  const scopeRepoName = repoScope && !overview ? (activeRepo?.repo_full_name ?? "") : "";
+  const seenScopeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (mode !== "cloud" || !repoScope || repoScopeLoading) return;
+    const prev = seenScopeRef.current;
+    seenScopeRef.current = scopeRepoName;
+    if (prev === null) {
+      if (repo === "" && scopeRepoName !== "") setRepo(scopeRepoName);
+      return;
+    }
+    if (prev !== scopeRepoName) setRepo(scopeRepoName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, repoScope, repoScopeLoading, scopeRepoName]);
 
   const { runs, counts, loading, error } = useRuns({ status, repo: serverRepo });
 

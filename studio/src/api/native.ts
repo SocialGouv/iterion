@@ -77,6 +77,15 @@ export interface ExternalLink {
   state?: string;
 }
 
+// ExternalLinkInput is the WRITE shape for repo-first scoping: operator
+// picks a connected repo (provider + connection_id + repo_full_name) and
+// the server fills number/url/state via push-to-forge or the sync worker.
+export type ExternalLinkInput = Pick<
+  ExternalLink,
+  "provider" | "connection_id" | "repo"
+> &
+  Partial<Pick<ExternalLink, "number" | "url" | "state">>;
+
 export interface NativeBoard {
   states: NativeState[];
   fields?: NativeField[];
@@ -128,6 +137,10 @@ export interface NativeIssueCreate {
   fields?: Record<string, unknown>;
   bot?: string;
   bot_args?: Record<string, string>;
+  // Optional repo-first scoping: link the new card to a connected forge
+  // repo at creation. number/url/state stay empty until push-to-forge or
+  // the sync worker populate them.
+  external?: ExternalLinkInput;
 }
 
 export interface NativeIssuePatch {
@@ -140,6 +153,9 @@ export interface NativeIssuePatch {
   fields?: Record<string, unknown>;
   bot?: string;
   bot_args?: Record<string, string>;
+  // When present, re-links the card's forge repo (absent = unchanged; the
+  // server keeps sync-owned number/url/state semantics).
+  external?: ExternalLinkInput;
 }
 
 // ---------------------------------------------------------------------------

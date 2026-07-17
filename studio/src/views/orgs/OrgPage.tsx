@@ -25,6 +25,7 @@ import {
   updateOrgMemberRole,
 } from "@/api/orgMembers";
 import { type OrgRole } from "@/api/auth";
+import { createOrgTeam } from "@/api/orgs";
 import {
   type OrgUsage,
   fmtBytes,
@@ -37,10 +38,11 @@ import AuditTab from "@/views/teams/tabs/AuditTab";
 
 const ORG_ROLES: OrgRole[] = ["member", "admin", "owner"];
 
-type Tab = "members" | "sso" | "usage" | "audit" | "billing";
+type Tab = "members" | "teams" | "sso" | "usage" | "audit" | "billing";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "members", label: "Members + invitations" },
+  { id: "teams", label: "Teams" },
   { id: "sso", label: "SSO" },
   { id: "usage", label: "Usage" },
   { id: "audit", label: "Audit log" },
@@ -111,6 +113,7 @@ export default function OrgPage() {
 
         <main>
           {tab === "members" && <OrgMembers orgID={org.org_id} canManage={canManage} />}
+          {tab === "teams" && <OrgTeams orgID={org.org_id} canManage={canManage} />}
           {tab === "sso" && <SSOTab teamID={org.org_id} canManage={canManage} />}
           {tab === "usage" && <UsageTab orgID={org.org_id} />}
           {tab === "audit" && <AuditTab orgID={org.org_id} canManage={canManage} />}
@@ -419,6 +422,107 @@ function OrgBilling({ orgID }: { orgID: string }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// OrgTeams lists the org's teams (from the identity tree — no extra
+// fetch for the member's own orgs) and lets an org admin create one.
+// This is the real target of the OrgSwitcher's "create one" deep-link
+// (/orgs/:id?tab=teams).
+function OrgTeams({ orgID, canManage }: { orgID: string; canManage: boolean }) {
+  const { orgs, reloadIdentity, selectTeam } = useAuth();
+  const org = useMemo(() => orgs.find((o) => o.org_id === orgID), [orgs, orgID]);
+  const teams = org?.teams ?? [];
+  const [draft, setDraft] = useState({ name: "", slug: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const create = async () => {
+    if (!draft.name.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const t = await createOrgTeam({
+        name: draft.name.trim(),
+        slug: draft.slug.trim() || undefined,
+        org_id: orgID,
+      });
+      setDraft({ name: "", slug: "" });
+      // The new team lands in the identity tree; switch to it so the
+      // operator continues in the context they just created.
+      await reloadIdentity();
+      if (t?.id) await selectTeam(t.id);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-fg-muted">
+        Teams partition the organization's resources (repos, runs, boards,
+        secrets). Most orgs need just one — the studio only surfaces team
+        switching when there are several.
+      </p>
+      {err && <InlineBanner tone="danger">{err}</InlineBanner>}
+      <Table caption="Teams of this organization">
+        <THead>
+          <Tr>
+            <Th>Name</Th>
+            <Th>Slug</Th>
+            <Th>Your role</Th>
+          </Tr>
+        </THead>
+        <TBody>
+          {teams.length === 0 && (
+            <Tr>
+              <Td colSpan={3} className="text-fg-muted">
+                No teams yet.
+              </Td>
+            </Tr>
+          )}
+          {teams.map((t) => (
+            <Tr key={t.team_id}>
+              <Td>
+                {t.team_name}
+                {t.personal && (
+                  <span className="ml-2 text-xs text-fg-muted">personal</span>
+                )}
+              </Td>
+              <Td className="font-mono text-xs">{t.team_slug}</Td>
+              <Td>{t.role}</Td>
+            </Tr>
+          ))}
+        </TBody>
+      </Table>
+      {canManage && (
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1 text-xs text-fg-muted">
+            Team name
+            <Input
+              size="sm"
+              value={draft.name}
+              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+              placeholder="e.g. Platform"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-fg-muted">
+            Slug (optional)
+            <Input
+              size="sm"
+              value={draft.slug}
+              onChange={(e) => setDraft((d) => ({ ...d, slug: e.target.value }))}
+              placeholder="platform"
+            />
+          </label>
+          <Button size="sm" onClick={() => void create()} disabled={busy || !draft.name.trim()}>
+            {busy ? <Spinner size="sm" /> : "Create team"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

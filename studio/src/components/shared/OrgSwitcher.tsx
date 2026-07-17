@@ -25,7 +25,17 @@ function orgInitials(name: string, fallback: string): string {
 }
 
 export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean }) {
-  const { user, orgs, activeOrg, activeOrgID, activeOrgRole, selectOrg } = useAuth();
+  const {
+    user,
+    orgs,
+    activeOrg,
+    activeOrgID,
+    activeOrgRole,
+    activeTeamID,
+    teams,
+    selectOrg,
+    selectTeam,
+  } = useAuth();
   const [, navigate] = useLocation();
   const [open, setOpen] = useState(false);
 
@@ -105,6 +115,50 @@ export default function OrgSwitcher({ collapsed = false }: { collapsed?: boolean
           </button>
         </PopoverClose>
       ))}
+      {/* Teams stay escamotées: the studio reads Org → Repo. The team —
+          the resource tenant — only surfaces here when the org actually
+          has several, as a section of the org menu (never a separate
+          switcher in the chrome). */}
+      {teams.length > 1 && (
+        <>
+          <div className="my-1 border-t border-border-subtle" />
+          <div className="px-2 py-1 text-xs uppercase tracking-wider text-fg-muted">
+            Teams
+          </div>
+          {teams.map((t) => (
+            <PopoverClose asChild key={t.team_id}>
+              <button
+                onClick={closeAfter(() => void selectTeam(t.team_id))}
+                className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${
+                  t.team_id === activeTeamID ? "bg-surface-2" : ""
+                }`}
+              >
+                <div className="font-medium">{t.team_name}</div>
+                <div className="text-xs text-fg-muted">
+                  {t.role}
+                  {t.personal && " · personal"}
+                </div>
+              </button>
+            </PopoverClose>
+          ))}
+        </>
+      )}
+      {teams.length === 0 && activeOrg && canManageActiveOrg && (
+        <>
+          <div className="my-1 border-t border-border-subtle" />
+          <div className="px-2 py-1.5 text-xs text-fg-muted">
+            No teams in this organization —{" "}
+            <PopoverClose asChild>
+              <button
+                onClick={closeAfter(() => navigate(`/orgs/${activeOrgID}?tab=teams`))}
+                className="text-accent hover:underline"
+              >
+                create one
+              </button>
+            </PopoverClose>
+          </div>
+        </>
+      )}
       <div className="my-1 border-t border-border-subtle" />
       {activeOrg && canManageActiveOrg && (
         <PopoverClose asChild>
