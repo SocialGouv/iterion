@@ -97,6 +97,7 @@ func (s *Server) registerRunRoutes() {
 	s.mux.HandleFunc("POST /api/runs/{id}/rename", s.handleRenameRun)
 	s.mux.HandleFunc("DELETE /api/runs/{id}", s.handleDeleteRun)
 	s.mux.HandleFunc("GET /api/ws/runs/{id}", s.handleRunWebSocket)
+	s.mux.HandleFunc("GET /api/ws/runs/{id}/shell", s.handleRunShell)
 	s.mux.HandleFunc("GET /api/runs/{id}/preview", s.handlePreviewProxy)
 	s.mux.HandleFunc("GET /api/runs/{id}/browser/cdp", s.handleBrowserCDP)
 	s.mux.HandleFunc("POST /api/runs/{id}/browser/attach", s.handleBrowserAttach)
