@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -577,7 +579,9 @@ func (b *ClaudeCodeBackend) handleAssistantMessage(m *claudesdk.AssistantMessage
 			if isRateLimitMessage(tb.Text) {
 				b.Logger.Warn("[%s#%d/claude-code] 🚦 rate-limit signal in assistant text — aborting: %s", task.NodeID, task.Iteration, truncate(tb.Text, 200))
 				cancelStream()
-				return &ErrRateLimited{Provider: BackendClaudeCode, Detail: strings.TrimSpace(tb.Text)}
+				detail := strings.TrimSpace(tb.Text)
+				kind, resetAt := classifyRateLimit(detail, time.Now())
+				return &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
 			}
 			// Narration hook: surface the agent's mid-turn prose to the
 			// conversation views. The bridge filters structured-JSON
@@ -798,6 +802,81 @@ func isRateLimitMessage(text string) bool {
 		}
 	}
 	return false
+}
+
+// usageWindowSignals are the subset of rate-limit shapes that mean a
+// subscription/quota WINDOW is exhausted (the Anthropic forfait 5h /
+// session / weekly caps, the ZAI 5h facade) — waiting for the reset is
+// the only cure, so retries inside the window just burn attempts.
+// Plain throttles ("rate limit exceeded") stay transient.
+var usageWindowSignals = []string{
+	"hit your limit",
+	"hit your session limit",
+	"usage limit reached",
+}
+
+// classifyRateLimit refines a matched rate-limit message into
+// (Kind, ResetAt). All parsing is best-effort: an unrecognized shape
+// keeps Kind = transient and a zero ResetAt — never a hard failure.
+func classifyRateLimit(text string, now time.Time) (kind string, resetAt time.Time) {
+	lower := strings.ToLower(text)
+	kind = RateLimitKindTransient
+	for _, sig := range usageWindowSignals {
+		if strings.Contains(lower, sig) {
+			kind = RateLimitKindUsageWindow
+			break
+		}
+	}
+	if kind != RateLimitKindUsageWindow {
+		return kind, time.Time{}
+	}
+	return kind, parseResetHint(lower, now)
+}
+
+// resetClockRe matches the clock-time reset hints observed in forfait
+// notices: "resets 3pm", "resets 10:30am (UTC)", "reset at 7pm".
+var resetClockRe = regexp.MustCompile(`reset[s]?(?: at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
+
+// resetWindowRe matches the window-duration shape: "reached for 5 hour".
+var resetWindowRe = regexp.MustCompile(`for\s+(\d{1,2})\s*hour`)
+
+// parseResetHint extracts the next reset instant from a usage-window
+// notice, interpreting bare clock times as the NEXT occurrence (UTC —
+// the forfait notices print UTC). Zero when nothing parses.
+func parseResetHint(lower string, now time.Time) time.Time {
+	if m := resetClockRe.FindStringSubmatch(lower); m != nil {
+		hour, _ := strconv.Atoi(m[1])
+		minute := 0
+		if m[2] != "" {
+			minute, _ = strconv.Atoi(m[2])
+		}
+		switch m[3] {
+		case "pm":
+			if hour < 12 {
+				hour += 12
+			}
+		case "am":
+			if hour == 12 {
+				hour = 0
+			}
+		}
+		if hour > 23 || minute > 59 {
+			return time.Time{}
+		}
+		nowUTC := now.UTC()
+		at := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), hour, minute, 0, 0, time.UTC)
+		if !at.After(nowUTC) {
+			at = at.Add(24 * time.Hour)
+		}
+		return at
+	}
+	if m := resetWindowRe.FindStringSubmatch(lower); m != nil {
+		hours, _ := strconv.Atoi(m[1])
+		if hours > 0 {
+			return now.UTC().Add(time.Duration(hours) * time.Hour)
+		}
+	}
+	return time.Time{}
 }
 
 // toolUseDetail extracts a short single-line summary from tool input for

@@ -66,6 +66,20 @@ func (f RecipeFunc) Apply(ctx context.Context, err *runtime.RuntimeError, attemp
 // per recipe.
 const DefaultMaxRetries = 3
 
+// UsageLimitRecipe: fail terminal immediately — a subscription/quota
+// WINDOW (forfait 5h / session / weekly cap) cannot clear within a
+// node's retry budget, so in-node retries only burn attempts. The run
+// lands failed_resumable; the run-level auto-resume loop owns the
+// reset-aware wait (pkg/cli/auto_resume.go).
+func UsageLimitRecipe() Recipe {
+	return RecipeFunc(func(_ context.Context, _ *runtime.RuntimeError, _ int) Action {
+		return Action{
+			Kind:   ActionFailTerminal,
+			Reason: "provider usage window exhausted; resume after the quota resets (auto-resume waits for it)",
+		}
+	})
+}
+
 // RateLimitRecipe: exponential backoff + jitter, escalates to human
 // pause after maxRetries (operator may rotate credentials).
 func RateLimitRecipe(maxRetries int) Recipe {
@@ -272,6 +286,7 @@ func NetworkTransientRecipe(maxRetries int) Recipe {
 func DefaultRecipes() map[runtime.ErrorCode]Recipe {
 	return map[runtime.ErrorCode]Recipe{
 		runtime.ErrCodeRateLimited:           RateLimitRecipe(DefaultMaxRetries),
+		runtime.ErrCodeUsageLimitBlocked:     UsageLimitRecipe(),
 		runtime.ErrCodeContextLengthExceeded: ContextLengthRecipe(),
 		runtime.ErrCodeBudgetExceeded:        BudgetRecipe(),
 		runtime.ErrCodeToolFailedTransient:   TransientToolRecipe(2),
@@ -339,6 +354,9 @@ func Classify(err error) runtime.ErrorCode {
 	}
 	var rateLimited *delegate.ErrRateLimited
 	if errors.As(err, &rateLimited) {
+		if rateLimited.Kind == delegate.RateLimitKindUsageWindow {
+			return runtime.ErrCodeUsageLimitBlocked
+		}
 		return runtime.ErrCodeRateLimited
 	}
 	var apiErr *api.APIError

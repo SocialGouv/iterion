@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/forfait"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/runtime"
@@ -88,7 +89,8 @@ var autoResumeRetryableCodes = map[runtime.ErrorCode]bool{
 	runtime.ErrCodeExecutionFailed:     true, // transient backend error surfaced after in-executor retries
 	runtime.ErrCodeBudgetExceeded:      true, // special-cased: needs a raised cap
 	runtime.ErrCodeTimeout:             true, // context deadline (max_duration / --timeout)
-	runtime.ErrCodeRateLimited:         true, // provider quota / forfait window
+	runtime.ErrCodeRateLimited:         true, // provider throttle (short backoff)
+	runtime.ErrCodeUsageLimitBlocked:   true, // forfait window exhausted — special-cased: reset-aware delay
 	runtime.ErrCodeNetworkTransient:    true, // connectivity blip beyond the LAYER-1 budget
 	runtime.ErrCodeToolFailedTransient: true, // transient tool failure
 }
@@ -140,6 +142,34 @@ func autoResumeBackoff(attempt int) time.Duration {
 		d = float64(autoResumeBackoffCap)
 	}
 	return time.Duration(d * (0.5 + rand.Float64()))
+}
+
+// usageLimitFallbackDelay is the wait before retrying a usage-window
+// block whose reset instant could not be parsed: window-scale, not
+// backoff-scale (retrying a 5h forfait cap after 30s just burns an
+// attempt).
+const usageLimitFallbackDelay = 15 * time.Minute
+
+// usageLimitMaxDelay caps a parsed reset hint so a mis-parsed
+// timestamp can never sleep the loop for days.
+const usageLimitMaxDelay = 5 * time.Hour
+
+// usageLimitDelay picks the wait for a USAGE_LIMIT_BLOCKED resume:
+// honor the provider's parsed reset instant (plus a small margin) when
+// present, else the window-scale fallback. Clamped to
+// [fallback floor when hint is in the past, usageLimitMaxDelay].
+func usageLimitDelay(err error, now time.Time) time.Duration {
+	delay := usageLimitFallbackDelay
+	var rl *delegate.ErrRateLimited
+	if errors.As(err, &rl) && !rl.ResetAt.IsZero() {
+		if until := rl.ResetAt.Sub(now) + time.Minute; until > 0 {
+			delay = until
+		}
+	}
+	if delay > usageLimitMaxDelay {
+		delay = usageLimitMaxDelay
+	}
+	return delay
 }
 
 // autoResumeLoop drives the bounded run-level auto-resume. It re-uses eng (so
@@ -198,6 +228,14 @@ func autoResumeLoop(
 		}
 
 		delay := autoResumeBackoff(attempt - 1)
+		if code == runtime.ErrCodeUsageLimitBlocked {
+			// Reset-aware wait: retrying inside the forfait window can
+			// never succeed, so the delay tracks the provider's reset
+			// hint instead of the exponential backoff.
+			delay = usageLimitDelay(err, time.Now())
+			logger.Warn("auto-resume: provider usage window exhausted; waiting %s for the quota reset",
+				delay.Round(time.Minute))
+		}
 		logger.Warn("auto-resume %d/%d: run %s failed_resumable (%s); waiting %s then resuming",
 			attempt, cfg.MaxAttempts, runID, nonEmptyCode(code), delay.Round(time.Second))
 		emitAutoResume(ctx, s, runID, attempt, cfg.MaxAttempts, code, delay, logger)
