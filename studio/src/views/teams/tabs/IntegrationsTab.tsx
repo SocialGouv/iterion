@@ -23,6 +23,7 @@ import { useBotsStore } from "@/store/bots";
 import { ConnectForm } from "./integrations/ConnectForm";
 import { ConnectionCard } from "./integrations/ConnectionCard";
 import { OAuthAppsSection } from "./integrations/OAuthAppsSection";
+import SchedulesSection from "./integrations/SchedulesSection";
 
 // scrollToConnectForm jumps the operator to the "Connect a forge" form — the
 // CTA the empty / partly-wired states point them at.
@@ -186,6 +187,8 @@ export default function IntegrationsTab({
           </ul>
         )}
       </div>
+
+      <SchedulesSection teamID={teamID} canManage={canManage} />
 
       <div>
         <h3 className="font-medium mb-1">Connected accounts</h3>
