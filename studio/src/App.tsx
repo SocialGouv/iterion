@@ -45,6 +45,7 @@ const ForcedPasswordChange = lazy(() => import("@/views/auth/ForcedPasswordChang
 const ForgotPassword = lazy(() => import("@/views/auth/ForgotPassword"));
 const ResetPassword = lazy(() => import("@/views/auth/ResetPassword"));
 const AcceptInvitation = lazy(() => import("@/views/auth/AcceptInvitation"));
+const Login = lazy(() => import("@/views/Login"));
 
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import GlobalCommandPalette from "@/components/shared/GlobalCommandPalette";
@@ -140,6 +141,10 @@ function AuthGate() {
     return (
       <Suspense fallback={<BootLoading />}>
         <Switch>
+          {/* Dedicated sign-in page: every "Sign in" button and the
+              auth side-doors' navigate("/login") land on the plain
+              SignInCard instead of scrolling the marketing landing. */}
+          <Route path="/login" component={Login} />
           <Route path="/auth/password/change" component={ForcedPasswordChange} />
           <Route path="/auth/forgot-password" component={ForgotPassword} />
           <Route path="/auth/reset" component={ResetPassword} />

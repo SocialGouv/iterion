@@ -66,7 +66,7 @@ function LandingTopBar() {
           >
             <GitHubLogoIcon className="h-4 w-4" />
           </a>
-          <Button variant="primary" size="sm" onClick={() => navigate("/")}>
+          <Button variant="primary" size="sm" onClick={() => navigate("/login")}>
             Sign in
           </Button>
         </div>
@@ -176,7 +176,7 @@ export function PublicTopBar() {
       </button>
       <div className="flex items-center gap-2 sm:gap-3">
         <ThemeToggle />
-        <Button variant="primary" size="sm" onClick={() => navigate("/")}>
+        <Button variant="primary" size="sm" onClick={() => navigate("/login")}>
           Sign in
         </Button>
       </div>
