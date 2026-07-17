@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -178,6 +179,60 @@ func (s *Server) registerPipelineBoardRoutes() {
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskCreate)))
 	s.mux.Handle("POST /api/v1/pipeline-board/tasks/{id}/ready", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskReady)))
 	s.mux.Handle("PATCH /api/v1/pipeline-board/tasks/{id}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardTaskUpdate)))
+	// Input thumbnails: a ticket's bot_args may reference images living in the
+	// studio workdir (e.g. a character-reference list) — this endpoint lets the
+	// card sidebar actually SHOW them instead of printing bare paths.
+	s.mux.Handle("GET /api/v1/pipeline-board/workspace-images/{path...}", s.requireAuth(http.HandlerFunc(s.handlePipelineBoardWorkspaceImage)))
+}
+
+// workspaceImageExts is the strict allowlist of the input-thumbnail endpoint:
+// it exists solely to preview images referenced by ticket inputs, so anything
+// that is not an image stays out of scope on purpose (no generic file reads).
+var workspaceImageExts = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".webp": "image/webp",
+	".gif":  "image/gif",
+}
+
+// handlePipelineBoardWorkspaceImage serves one image file from the studio
+// workdir for the card sidebar's input thumbnails. Containment relies on
+// safePath — the same audited symlink-aware traversal boundary as the file
+// editor — and the extension allowlist keeps the endpoint image-only.
+func (s *Server) handlePipelineBoardWorkspaceImage(w http.ResponseWriter, r *http.Request) {
+	relPath := strings.TrimSpace(r.PathValue("path"))
+	if relPath == "" {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "workspace image: missing path")
+		return
+	}
+	contentType, ok := workspaceImageExts[strings.ToLower(filepath.Ext(relPath))]
+	if !ok {
+		s.httpErrorFor(w, r, http.StatusNotFound, "workspace image: unsupported extension: %s", filepath.Ext(relPath))
+		return
+	}
+	absPath, err := s.safePath(relPath)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "workspace image: invalid path: %v", err)
+		return
+	}
+	info, err := os.Stat(absPath)
+	if err != nil || !info.Mode().IsRegular() {
+		s.httpErrorFor(w, r, http.StatusNotFound, "workspace image: not found: %s", relPath)
+		return
+	}
+	file, err := os.Open(absPath)
+	if err != nil {
+		s.httpErrorFor(w, r, http.StatusNotFound, "workspace image: not found: %s", relPath)
+		return
+	}
+	defer file.Close()
+	w.Header().Set("Content-Type", contentType)
+	// Reference images are regenerated IN PLACE under the same filename
+	// (portrait refresh): revalidate on each load so the sidebar never shows
+	// a stale face after a refresh, while still allowing conditional requests.
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeContent(w, r, filepath.Base(absPath), info.ModTime(), file)
 }
 
 func (s *Server) resolvePipelineBoardStore(r *http.Request) (native.BoardStore, error) {

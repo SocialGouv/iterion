@@ -1,9 +1,15 @@
-import { Cross2Icon } from "@radix-ui/react-icons";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  Cross2Icon,
+  DownloadIcon,
+} from "@radix-ui/react-icons";
+import { useState } from "react";
 import { Link } from "wouter";
 
-import type { PipelineBoardCard } from "@/api/pipelineBoards";
+import { pipelineBoardImageURL, type PipelineBoardCard } from "@/api/pipelineBoards";
 import type { UnifiedStatus } from "@/components/Runs/runStatusClasses";
-import { Badge, IconButton, InlineBanner, StatusBadge } from "@/components/ui";
+import { Badge, Dialog, IconButton, InlineBanner, StatusBadge } from "@/components/ui";
 
 import { ProducedElements } from "./ProducedElements";
 import { SequentialReviews } from "./SequentialReviews";
@@ -41,9 +47,148 @@ function stringifyValue(value: unknown): string {
   }
 }
 
+const IMAGE_PATH_RE = /\.(png|jpe?g|webp|gif)$/i;
+
+// imagePathsFrom extracts workdir-relative image paths from one input value:
+// either a JSON array of image paths (how bots ship reference-image lists in
+// bot_args) or a single bare path. Mixed arrays and anything else yield []
+// so the value falls back to the plain monospace rendering — a thumbnail
+// must never hide non-image content.
+function imagePathsFrom(value: unknown): string[] {
+  const asPathList = (items: unknown[]): string[] => {
+    const paths = items.filter(
+      (item): item is string => typeof item === "string" && IMAGE_PATH_RE.test(item.trim()),
+    );
+    return paths.length > 0 && paths.length === items.length
+      ? paths.map((p) => p.trim())
+      : [];
+  };
+  if (Array.isArray(value)) return asPathList(value);
+  if (typeof value !== "string") return [];
+  const text = value.trim();
+  if (!text || text.length > 4096) return [];
+  if (text.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      return Array.isArray(parsed) ? asPathList(parsed) : [];
+    } catch {
+      return [];
+    }
+  }
+  // Bare-path case: a single token only — a SENTENCE that happens to end in
+  // ".png" must stay plain text.
+  return IMAGE_PATH_RE.test(text) && !/\s/.test(text) ? [text] : [];
+}
+
+// InputImageCarousel renders an image-path input value as one image at a
+// time with prev/next cycling — reference lists carry several views of the
+// same character, so a carousel keeps the sidebar compact while every image
+// stays reachable. Clicking the image opens the SAME preview dialog as the
+// produced-elements viewer (large image + Download), with the carousel
+// arrows still available inside it. A failed load (deleted file, foreign
+// workdir) collapses back to the plain monospace text so no information is
+// ever lost.
+function InputImageCarousel({ paths, rawText }: { paths: string[]; rawText: string }) {
+  const [index, setIndex] = useState(0);
+  const [broken, setBroken] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const current = ((index % paths.length) + paths.length) % paths.length;
+  const path = paths[current];
+  if (broken || path === undefined) {
+    return (
+      <dd className="whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default">
+        {rawText}
+      </dd>
+    );
+  }
+  const url = pipelineBoardImageURL(path);
+  const fileName = path.split("/").pop() ?? path;
+  const cycler = (dir: -1 | 1, size: "sm" | "md" = "sm") =>
+    paths.length > 1 ? (
+      <IconButton
+        label={dir < 0 ? "Previous image" : "Next image"}
+        size={size}
+        variant="ghost"
+        onClick={() => setIndex((i) => i + dir)}
+      >
+        {dir < 0 ? <ChevronLeftIcon /> : <ChevronRightIcon />}
+      </IconButton>
+    ) : (
+      <span />
+    );
+  return (
+    <dd className="space-y-1 rounded-md border border-border-subtle bg-surface-2/40 p-2">
+      <button
+        type="button"
+        onClick={() => setViewerOpen(true)}
+        title={`${path} — open preview`}
+        className="block w-full"
+      >
+        <img
+          src={url}
+          alt={path}
+          loading="lazy"
+          className="max-h-44 w-full rounded object-contain"
+          onError={() => setBroken(true)}
+        />
+      </button>
+      <div className="flex items-center justify-between gap-1">
+        {cycler(-1)}
+        <span
+          className="min-w-0 truncate font-mono text-micro text-fg-muted"
+          title={path}
+        >
+          {fileName}
+          {paths.length > 1 ? ` · ${current + 1}/${paths.length}` : ""}
+        </span>
+        {cycler(1)}
+      </div>
+      {viewerOpen && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setViewerOpen(false);
+          }}
+          widthClass="max-w-3xl"
+          title={<span className="font-mono text-xs">{path}</span>}
+          description={
+            paths.length > 1 ? <span>Image {current + 1}/{paths.length}</span> : undefined
+          }
+          footer={
+            <a
+              href={url}
+              download
+              className="inline-flex items-center gap-1 rounded-md border border-border-default px-2.5 py-1 text-xs font-medium text-fg-default hover:bg-surface-2"
+            >
+              <DownloadIcon /> Download
+            </a>
+          }
+        >
+          <div className="space-y-2">
+            <div className="flex max-h-[70vh] items-center justify-center overflow-auto rounded bg-surface-0 p-3">
+              <img src={url} alt={path} className="max-w-full" />
+            </div>
+            {paths.length > 1 && (
+              <div className="flex items-center justify-center gap-3">
+                {cycler(-1, "md")}
+                <span className="font-mono text-xs text-fg-muted">
+                  {current + 1}/{paths.length}
+                </span>
+                {cycler(1, "md")}
+              </div>
+            )}
+          </div>
+        </Dialog>
+      )}
+    </dd>
+  );
+}
+
 // InputsList renders the pipeline's full entry input (launch vars / task
 // bot-args) as an untruncated key → value list. The sidebar has the room the
-// compact card body does not, so values wrap instead of clipping.
+// compact card body does not, so values wrap instead of clipping. Values that
+// are image paths (reference-image lists…) render as an inline carousel
+// instead of bare paths.
 function InputsList({ input }: { input?: Record<string, unknown> }) {
   const entries = input ? Object.entries(input) : [];
   if (entries.length === 0) {
@@ -51,16 +196,23 @@ function InputsList({ input }: { input?: Record<string, unknown> }) {
   }
   return (
     <dl className="space-y-2">
-      {entries.map(([key, value]) => (
-        <div key={key} className="space-y-0.5">
-          <dt className="text-micro font-medium uppercase tracking-wide text-fg-muted">
-            {key}
-          </dt>
-          <dd className="whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default">
-            {stringifyValue(value)}
-          </dd>
-        </div>
-      ))}
+      {entries.map(([key, value]) => {
+        const imagePaths = imagePathsFrom(value);
+        return (
+          <div key={key} className="space-y-0.5">
+            <dt className="text-micro font-medium uppercase tracking-wide text-fg-muted">
+              {key}
+            </dt>
+            {imagePaths.length > 0 ? (
+              <InputImageCarousel paths={imagePaths} rawText={stringifyValue(value)} />
+            ) : (
+              <dd className="whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default">
+                {stringifyValue(value)}
+              </dd>
+            )}
+          </div>
+        );
+      })}
     </dl>
   );
 }

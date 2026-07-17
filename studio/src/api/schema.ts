@@ -3443,6 +3443,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pipeline-board/workspace-images/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                path: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/v1/pipeline-board/workspace-images/{path...} */
+        get: operations["getV1PipelineBoardWorkspaceImagesByPath"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/plugins": {
         parameters: {
             query?: never;
@@ -8973,6 +8992,26 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Issue"];
                 };
+            };
+        };
+    };
+    getV1PipelineBoardWorkspaceImagesByPath: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
