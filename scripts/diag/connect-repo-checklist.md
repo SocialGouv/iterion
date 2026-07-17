@@ -57,6 +57,23 @@ Add the repo to the installation, then re-run the search.
 Note: run-time tokens ARE narrowed to the provisioned repo set
 (`narrowGitHubAppSecret`); that narrowing never affects ListRepos.
 
+## 3bis. Widening a GitHub App installation via API — token-type maze
+
+`PUT /user/installations/{installation_id}/repositories/{repo_id}` (and
+the whole `/user/installations*` family) has a token-acceptance matrix
+of its own, with misleading error messages (verified live 2026-07-17):
+
+- `gho_…` (OAuth app token — what `gh auth login` mints) → 403
+  "contact an Organization Owner" EVEN for an actual org owner.
+- `github_pat_…` (fine-grained) → 403 "Resource not accessible by
+  personal access token".
+- `ghp_…` (classic PAT, `repo` scope, org-owner account) → **204**.
+
+So: script the widening only with a classic `ghp_` PAT from an org
+owner; otherwise use the installation settings page (the
+`manage_install_url` the health endpoint returns). Either way iterion
+needs no redeploy — `InstallationInfo` probes the live scope.
+
 ## 4. Cross-site round-trips
 
 - The OAuth / App-install / manifest callbacks rely on a signed `state`
