@@ -5,6 +5,7 @@ import type { ExecutionState, RunEvent } from "@/api/runs";
 import { CopyButton, IconButton, StatusBadge } from "@/components/ui";
 import { formatContextUsage, formatDurationBetween, formatMs } from "@/lib/format";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
+import { humanizeNodeId } from "@/lib/runChat/nodeKindResolver";
 
 import { FollowLivePill } from "./FollowLivePill";
 import { IterationCrumb } from "./IterationCrumb";
@@ -65,7 +66,10 @@ export function DetailHeader({
             <StatusBadge status={exec.status} />
             <NodeKindIcon kind={exec.kind} />
             <h2 className="text-sm font-semibold truncate" title={exec.ir_node_id}>
-              {exec.ir_node_id}
+              {humanizeNodeId(exec.ir_node_id)}
+              <span className="ml-2 font-mono font-normal text-micro text-fg-subtle">
+                {exec.ir_node_id}
+              </span>
             </h2>
             {onToggleFollowLive && (
               <FollowLivePill

@@ -5,6 +5,7 @@ import { NodeIcon } from "@/components/icons/NodeIcon";
 import { formatMs } from "@/lib/format";
 import type { NodeKind } from "@/api/types";
 import type { ExecutionState, RunHeader } from "@/api/runs";
+import { humanizeNodeId } from "@/lib/runChat/nodeKindResolver";
 
 interface StatusHeroProps {
   run: RunHeader;
@@ -87,8 +88,8 @@ function ActivityLine({
           {ex.kind && (
             <NodeIcon kind={ex.kind as NodeKind} size={14} className="shrink-0" />
           )}
-          <span className="font-mono text-fg-default truncate">
-            {ex.ir_node_id}
+          <span className="text-fg-default truncate" title={ex.ir_node_id}>
+            {humanizeNodeId(ex.ir_node_id)}
           </span>
           {elapsed !== null && (
             <span className="text-fg-subtle shrink-0">· {formatMs(elapsed)}</span>

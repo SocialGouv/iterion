@@ -63,7 +63,9 @@ describe("runChat messagesFromEvents", () => {
       kind: "banner",
       nodeId: "explorer",
       status: "running",
-      label: "explorer",
+      // The IR resolver humanizes node ids for display (capitalized,
+      // separators spaced); the raw id stays on nodeId.
+      label: "Explorer",
     });
   });
 
