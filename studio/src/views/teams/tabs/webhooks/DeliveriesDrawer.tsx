@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useState } from "react";
 
 import {
@@ -91,7 +92,7 @@ export function DeliveriesDrawer({
                   <DeliveryStatusBadge status={d.status} />
                 </Td>
                 <Td className="text-fg-muted whitespace-nowrap">
-                  {new Date(d.received_at).toLocaleString()}
+                  {formatDateTime(d.received_at)}
                 </Td>
                 <Td>
                   {d.event_kind ?? "—"}

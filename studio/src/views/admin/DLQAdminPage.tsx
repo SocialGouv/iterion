@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ReloadIcon } from "@radix-ui/react-icons";
 
+import { formatDateTime } from "@/lib/format";
+
 import {
   discardDLQ,
   FeatureUnavailableError,
@@ -278,7 +280,7 @@ export default function DLQAdminPage() {
                           )}
                         </Td>
                         <Td className="text-fg-muted text-xs whitespace-nowrap">
-                          <div>{new Date(m.parked_at).toLocaleString()}</div>
+                          <div>{formatDateTime(m.parked_at)}</div>
                           <div className="text-fg-subtle">{formatSize(m.size_bytes)}</div>
                         </Td>
                         <Td align="right" className="space-x-1 whitespace-nowrap">

@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -225,7 +226,7 @@ export default function OAuthConnections({
                         <Badge variant={expiring || notRefreshable ? "warning" : "success"}>
                           Connected
                           {conn.access_token_expires_at &&
-                            ` · expires ${new Date(conn.access_token_expires_at).toLocaleString()}`}
+                            ` · expires ${formatDateTime(conn.access_token_expires_at)}`}
                         </Badge>
                         {notRefreshable && (
                           <Badge variant="warning">Manual reconnect required before expiry</Badge>

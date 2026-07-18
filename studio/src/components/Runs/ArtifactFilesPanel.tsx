@@ -9,6 +9,7 @@ import {
 import { Button, Dialog, Popover } from "@/components/ui";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
+import { formatDateTime } from "@/lib/format";
 import { useRunStore } from "@/store/run";
 import { useDownloadsStore, type DownloadEntry } from "@/store/downloads";
 import { useUIStore } from "@/store/ui";
@@ -251,7 +252,7 @@ export default function ArtifactFilesPanel({ runId }: Props) {
                       {formatSize(f.size)}
                     </td>
                     <td className="px-3 py-1.5 text-fg-subtle whitespace-nowrap">
-                      {formatModified(f.modified_at)}
+                      {formatDateTime(f.modified_at)}
                     </td>
                     <td className="px-3 py-1.5 text-right whitespace-nowrap">
                       <button
@@ -378,7 +379,7 @@ function DownloadsButton({
                     {e.basename}
                   </button>
                   <span className="text-caption text-fg-subtle whitespace-nowrap">
-                    {formatModified(new Date(e.downloadedAt).toISOString())}
+                    {formatDateTime(new Date(e.downloadedAt).toISOString())}
                   </span>
                 </div>
                 <div className="text-micro text-fg-subtle truncate" title={e.localPath ?? e.path}>
@@ -463,10 +464,4 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function formatModified(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
 }

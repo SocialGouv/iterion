@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { clickableRowProps } from "@/lib/a11y";
+import { formatDateTime } from "@/lib/format";
 
 import {
   FeatureUnavailableError,
@@ -228,7 +229,7 @@ export default function MemoryTab({ teamID: _teamID }: Props) {
                   <div className="font-mono text-xs">{d.path}</div>
                   <div className="text-xs text-fg-muted">
                     {fmtBytes(d.size)} ·{" "}
-                    {d.updated_at ? new Date(d.updated_at).toLocaleString() : ""}
+                    {d.updated_at ? formatDateTime(d.updated_at) : ""}
                   </div>
                 </li>
               ))}

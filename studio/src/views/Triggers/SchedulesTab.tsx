@@ -10,6 +10,7 @@ import {
   updateTeamSchedule,
   type ScheduledBot,
 } from "@/api/schedules";
+import { formatDateTime } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -336,7 +337,7 @@ function ScheduleGroupCard({
             ) : (
               <span
                 className="text-fg-subtle"
-                title={new Date(s.next_fire_at).toLocaleString()}
+                title={formatDateTime(s.next_fire_at)}
               >
                 next run {formatNextFire(s.next_fire_at)}
               </span>

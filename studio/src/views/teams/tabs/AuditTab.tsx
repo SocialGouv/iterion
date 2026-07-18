@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -216,7 +217,7 @@ export default function AuditTab({ teamID, orgID, platform, canManage }: Props) 
             {events.map((e) => (
               <Tr key={e.id} className="align-top">
                 <Td className="text-fg-muted whitespace-nowrap">
-                  {new Date(e.created_at).toLocaleString()}
+                  {formatDateTime(e.created_at)}
                 </Td>
                 <Td className="text-xs">
                   <div>{e.actor_id ?? "—"}</div>

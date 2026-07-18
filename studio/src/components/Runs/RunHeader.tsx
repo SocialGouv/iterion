@@ -18,7 +18,7 @@ import {
 import WSStatusDot from "@/components/shared/WSStatusDot";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm } from "@/hooks/useConfirm";
-import { formatRelative } from "@/lib/format";
+import { formatDateTime, formatRelative } from "@/lib/format";
 import { useRunStore, type WsState } from "@/store/run";
 import { useServerInfoStore } from "@/store/serverInfo";
 
@@ -389,7 +389,7 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
               </span>
             </Tooltip>
           )}
-          <Tooltip content={new Date(run.created_at).toLocaleString()}>
+          <Tooltip content={formatDateTime(run.created_at)}>
             <span className="inline-flex items-center gap-1">
               <ClockIcon className="w-3 h-3" />
               <span>started {startedRel}</span>

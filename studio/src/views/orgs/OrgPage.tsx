@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useParams, useSearch } from "wouter";
 
@@ -378,7 +379,7 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
                     <Td>{i.email}</Td>
                     <Td>{i.role}</Td>
                     <Td className="text-fg-muted">
-                      {new Date(i.expires_at).toLocaleString()}
+                      {formatDateTime(i.expires_at)}
                     </Td>
                     <Td align="right">
                       <Button variant="danger" size="sm" onClick={() => cancel(i.id)}>

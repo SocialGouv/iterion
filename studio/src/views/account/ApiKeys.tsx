@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -256,9 +257,9 @@ export default function ApiKeysPanel({ team }: Props) {
                     />
                   ) : k.is_default ? "✓" : ""}
                 </Td>
-                <Td className="text-fg-muted">{new Date(k.created_at).toLocaleDateString()}</Td>
+                <Td className="text-fg-muted">{formatDateTime(k.created_at)}</Td>
                 <Td className="text-fg-muted">
-                  {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "—"}
+                  {formatDateTime(k.last_used_at)}
                 </Td>
                 <Td align="right">
                   {canManage && (

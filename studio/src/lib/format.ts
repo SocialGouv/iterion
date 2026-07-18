@@ -82,6 +82,36 @@ export function formatRelative(iso: string): string {
   return `${days}d ago`;
 }
 
+// Absolute timestamp formatters shared by every table/tooltip that shows
+// a wall-clock instant. Locale is pinned to en-US so output is
+// deterministic across dev hosts and CI ("Jul 18, 2026, 2:32 PM").
+const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+});
+
+// formatDateTime renders an ISO timestamp as an absolute date + time,
+// e.g. "Jul 18, 2026, 2:32 PM". Returns "—" for missing or unparsable
+// input so callers can drop their own fallback branches.
+export function formatDateTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return dateTimeFormatter.format(t);
+}
+
+// formatDate renders an ISO timestamp as an absolute date only,
+// e.g. "Jul 18, 2026". Same fallbacks as formatDateTime.
+export function formatDate(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return dateFormatter.format(t);
+}
+
 // basename returns the trailing path segment after the last "/" or "\",
 // ignoring a trailing separator. "/a/b" → "b", "/a/b/" → "b",
 // "C:\\dev\\x" → "x", "group/project" → "project". Returns the input

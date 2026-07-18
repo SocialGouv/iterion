@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 
 import type { RunSummary } from "@/api/runs";
 import { listRuns } from "@/api/runs";
+import { formatDate } from "@/lib/format";
 
 interface Props {
   nodeId: string;
@@ -81,7 +82,7 @@ export default function NodeRunsChip({ nodeId }: Props) {
                 {r.id.length > 20 ? `${r.id.slice(0, 16)}…` : r.id}
               </span>
               <span className="text-caption text-fg-subtle shrink-0">
-                {new Date(r.created_at).toLocaleDateString()}
+                {formatDate(r.created_at)}
               </span>
             </button>
           </li>
