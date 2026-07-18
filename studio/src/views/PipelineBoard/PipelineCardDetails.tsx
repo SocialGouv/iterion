@@ -205,6 +205,14 @@ function InputsList({ input }: { input?: Record<string, unknown> }) {
             </dt>
             {imagePaths.length > 0 ? (
               <InputImageCarousel paths={imagePaths} rawText={stringifyValue(value)} />
+            ) : typeof value === "object" && value !== null ? (
+              // Structured values get a scrollable pretty-printed JSON block;
+              // scalars keep the plain wrapped rendering below.
+              <dd className="m-0">
+                <pre className="m-0 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-micro text-fg-default">
+                  {stringifyValue(value)}
+                </pre>
+              </dd>
             ) : (
               <dd className="whitespace-pre-wrap break-words rounded-md border border-border-subtle bg-surface-2/40 px-2 py-1 font-mono text-xs text-fg-default">
                 {stringifyValue(value)}

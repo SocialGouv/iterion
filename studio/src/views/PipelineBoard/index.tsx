@@ -122,8 +122,9 @@ export default function PipelineBoardView() {
       <div className="shrink-0 space-y-2 px-4 py-3">
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
-            <h1 className="text-display font-semibold text-fg-default">Pipeline board</h1>
-            <p className="mt-0.5 max-w-3xl text-xs text-fg-muted">
+            {/* The view's title lives in the header slot ("Pipelines");
+                the body opens with the explanatory intro line only. */}
+            <p className="max-w-3xl text-xs text-fg-muted">
               Every launched pipeline (and not-yet-started task) across all bots, bucketed
               into five fixed lanes. Cards advance automatically as their runs progress —
               there is no drag &amp; drop here, unlike the{" "}

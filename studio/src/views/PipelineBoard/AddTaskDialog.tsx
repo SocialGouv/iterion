@@ -43,6 +43,7 @@ interface Props {
 
 // coerceEntryInput turns a card's entry_input (launch vars / bot_args, whose
 // values may be non-strings) into the string map the arg form edits.
+// Objects/arrays pretty-print so they are editable in the json Textarea.
 function coerceEntryInput(
   input: Record<string, unknown> | undefined,
 ): Record<string, string> {
@@ -55,7 +56,7 @@ function coerceEntryInput(
         ? value
         : typeof value === "number" || typeof value === "boolean"
           ? String(value)
-          : JSON.stringify(value);
+          : JSON.stringify(value, null, 2);
   }
   return out;
 }

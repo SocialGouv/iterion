@@ -348,13 +348,23 @@ export default function MarketplaceView() {
         icon={<ArchiveIcon className="h-5 w-5" />}
         title="Marketplace"
         description={
-          <>
-            Browse the hosted registry, submit a repository, or install a
-            published bot (into this workspace's{" "}
-            <code className="font-mono text-fg-default">.botz/</code>) or
-            plugin (into{" "}
-            <code className="font-mono text-fg-default">~/.iterion/plugins/</code>).
-          </>
+          noWorkspace ? (
+            <>
+              Browse the hosted registry, submit a repository, or grab a
+              published bot as a{" "}
+              <code className="font-mono text-fg-default">.botz</code> download
+              — plugins install locally with the{" "}
+              <code className="font-mono text-fg-default">iterion</code> CLI.
+            </>
+          ) : (
+            <>
+              Browse the hosted registry, submit a repository, or install a
+              published bot (into this workspace's{" "}
+              <code className="font-mono text-fg-default">.botz/</code>) or
+              plugin (into{" "}
+              <code className="font-mono text-fg-default">~/.iterion/plugins/</code>).
+            </>
+          )
         }
         actions={
           <Button
@@ -474,6 +484,13 @@ export default function MarketplaceView() {
                 <>
                   No bots published yet. Sign in to submit a repository — once
                   reviewed, it appears here for anyone to download.
+                </>
+              ) : noWorkspace ? (
+                <>
+                  Use the form above to submit a repository. Submission validates
+                  the bundle and indexes its metadata; published entries appear
+                  here as <code className="font-mono text-fg-default">.botz</code>{" "}
+                  downloads and CLI install commands.
                 </>
               ) : (
                 <>

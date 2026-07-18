@@ -186,6 +186,22 @@ describe("PipelineCardDetailsBody", () => {
     expect(html).toContain('data-testid="produced"');
   });
 
+  it("renders object input values as pretty-printed JSON blocks, scalars inline", () => {
+    const html = render(
+      makeCard({
+        column_id: "todo",
+        kind: "task",
+        entry_input: { topic: "jazz", options: { tempo: 120, mood: "calm" } },
+      }),
+    );
+    // Structured value → <pre> with indented JSON (not a single-line blob).
+    expect(html).toContain("<pre");
+    expect(html).toContain("&quot;tempo&quot;: 120");
+    expect(html).not.toContain("{&quot;tempo&quot;:120");
+    // Scalar sibling keeps the plain rendering.
+    expect(html).toContain("jazz");
+  });
+
   it("renders a 'No inputs recorded' fallback and a stale banner", () => {
     const html = render(makeCard({ column_id: "todo", kind: "task" }), true);
     expect(html).toContain("No inputs recorded");
