@@ -5561,6 +5561,74 @@
         ]
       }
     },
+    "/api/teams/{id}/config-editor/shares": {
+      "get": {
+        "operationId": "getTeamsByIdConfigEditorShares",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-editor/shares",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/api/teams/{id}/config-editor/shares/{sid}/config": {
+      "get": {
+        "operationId": "getTeamsByIdConfigEditorSharesBySidConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "GET /api/teams/{id}/config-editor/shares/{sid}/config",
+        "tags": [
+          "teams"
+        ]
+      },
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "in": "path",
+          "name": "sid",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdConfigEditorSharesBySidConfig",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/config-editor/shares/{sid}/config",
+        "tags": [
+          "teams"
+        ]
+      }
+    },
     "/api/teams/{id}/config-shares": {
       "get": {
         "operationId": "getTeamsByIdConfigShares",

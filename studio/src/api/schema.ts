@@ -2723,6 +2723,46 @@ export interface paths {
         patch: operations["patchTeamsByIdBotsByBotIdBindingsByBindingId"];
         trace?: never;
     };
+    "/api/teams/{id}/config-editor/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares */
+        get: operations["getTeamsByIdConfigEditorShares"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/config-editor/shares/{sid}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares/{sid}/config */
+        get: operations["getTeamsByIdConfigEditorSharesBySidConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/config-editor/shares/{sid}/config */
+        patch: operations["patchTeamsByIdConfigEditorSharesBySidConfig"];
+        trace?: never;
+    };
     "/api/teams/{id}/config-shares": {
         parameters: {
             query?: never;
@@ -8162,6 +8202,68 @@ export interface operations {
                 id: string;
                 bot_id: string;
                 binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigEditorShares: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigEditorSharesBySidConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdConfigEditorSharesBySidConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
             };
             cookie?: never;
         };
