@@ -48,17 +48,19 @@ func (e *Engine) Resume(ctx context.Context, runID string, answers map[string]an
 		// message reaches a runner (queue-depth visibility + cooperative-
 		// cancel bypass — SubmitResume), so the resumable status that was
 		// validated server-side is gone by the time this engine loads the
-		// run. Route by evidence instead: a pending interaction id means a
-		// human pause; a bare checkpoint means a failure/cancel resume. A
-		// queued run with no checkpoint is an unclaimed LAUNCH — resuming
-		// it is a caller bug, so the strict error below stands.
+		// run. A queued status HERE is always a genuine resume: a fresh
+		// unclaimed launch reaches Engine.Run (the runner routes msg.Resume
+		// == nil there), and validateResumable rejects resuming a plain
+		// queued run — so the only way to reach Resume with queued is a
+		// publisher-flipped resumable run. Route by evidence: a pending
+		// interaction id means a human pause; otherwise resumeFromFailure —
+		// which restarts from the checkpoint node, or from entry when a
+		// pre-first-node failure (e.g. a runner-side clone-prep error) left
+		// no checkpoint at all.
 		if r.Checkpoint != nil && r.Checkpoint.InteractionID != "" {
 			return e.resumeFromPause(ctx, r, answers)
 		}
-		if r.Checkpoint != nil {
-			return e.resumeFromFailure(ctx, r)
-		}
-		return fmt.Errorf("runtime: cannot resume queued run %q: no checkpoint (not yet executed — it will start on claim)", runID)
+		return e.resumeFromFailure(ctx, r)
 	default:
 		return fmt.Errorf("runtime: cannot resume run %q with status %q", runID, r.Status)
 	}

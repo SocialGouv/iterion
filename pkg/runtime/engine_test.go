@@ -1435,24 +1435,51 @@ func TestResumeFromFailed_QueuedByCloudPublisher(t *testing.T) {
 	}
 }
 
-// A queued run with NO checkpoint is an unclaimed launch — resuming it
-// stays an error (it will start on claim; Resume would double-execute).
-func TestResume_QueuedWithoutCheckpointRejected(t *testing.T) {
+// A queued run with NO checkpoint models a runner-side pre-first-node
+// failure (e.g. clone-prep) that the cloud publisher flipped to queued on
+// resume: there is nothing to resume FROM, so it must restart from entry
+// and run — not error. (A fresh unclaimed launch never reaches Engine.Resume
+// — the runner routes it through Run, and validateResumable rejects resuming
+// a plain queued run at the server.)
+func TestResume_QueuedWithoutCheckpointRestartsFromEntry(t *testing.T) {
+	wf := &ir.Workflow{
+		Name:  "queued_no_cp",
+		Entry: "only",
+		Nodes: map[string]ir.Node{
+			"only": &ir.AgentNode{BaseNode: ir.BaseNode{ID: "only"}},
+			"done": &ir.DoneNode{BaseNode: ir.BaseNode{ID: "done"}},
+		},
+		Edges:   []*ir.Edge{{From: "only", To: "done"}},
+		Schemas: map[string]*ir.Schema{},
+		Prompts: map[string]*ir.Prompt{},
+		Vars:    map[string]*ir.Var{},
+		Loops:   map[string]*ir.Loop{},
+	}
+	ran := 0
+	exec := newStubExecutor()
+	exec.on("only", func(_ map[string]any) (map[string]any, error) {
+		ran++
+		return map[string]any{"ok": true}, nil
+	})
 	s := tmpStore(t)
 	ctx := context.Background()
-	if _, err := s.CreateRun(ctx, "run-queued-fresh", "wf", nil); err != nil {
+	if _, err := s.CreateRun(ctx, "run-queued-nocp", "wf", nil); err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	if err := s.UpdateRunStatus(ctx, "run-queued-fresh", store.RunStatusQueued, ""); err != nil {
+	// A pre-engine failure never wrote a checkpoint; the publisher flips
+	// the run to queued on resume.
+	if err := s.UpdateRunStatus(ctx, "run-queued-nocp", store.RunStatusQueued, ""); err != nil {
 		t.Fatalf("flip to queued: %v", err)
 	}
-	eng := New(&ir.Workflow{Entry: "n1", Nodes: map[string]ir.Node{}}, s, newStubExecutor())
-	err := eng.Resume(ctx, "run-queued-fresh", nil)
-	if err == nil {
-		t.Fatal("expected resume of a checkpoint-less queued run to be rejected")
+	if err := New(wf, s, exec).Resume(ctx, "run-queued-nocp", nil); err != nil {
+		t.Fatalf("resume of queued no-checkpoint run failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not yet executed") {
-		t.Errorf("expected the unclaimed-launch rejection, got: %v", err)
+	if ran != 1 {
+		t.Fatalf("entry node ran %d times, want 1 (restart from entry)", ran)
+	}
+	r, _ := s.LoadRun(ctx, "run-queued-nocp")
+	if r.Status != store.RunStatusFinished {
+		t.Fatalf("expected finished, got %s", r.Status)
 	}
 }
 
