@@ -1,3 +1,4 @@
+import { humanizeNodeId } from "@/lib/runChat/nodeKindResolver";
 import type { HumanQuestionMessage } from "@/lib/runChat/types";
 
 import HumanPromptForm from "./HumanPromptForm";
@@ -29,9 +30,12 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
     return (
       <div className="ml-5 mt-1 text-micro italic text-fg-subtle">
         Waiting for the run to pause at this step…{" "}
-        <code className="not-italic text-caption font-mono text-fg-muted">
-          {message.nodeId}
-        </code>
+        <span
+          className="not-italic text-caption text-fg-muted"
+          title={message.nodeId}
+        >
+          {humanizeNodeId(message.nodeId)}
+        </span>
       </div>
     );
   }
@@ -46,9 +50,12 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
         <span className="font-medium text-warning-fg">
           Your input unblocks this step
         </span>
-        <code className="px-1.5 py-0.5 rounded bg-warning-soft/40 font-mono text-fg-default">
-          {message.nodeId}
-        </code>
+        <span
+          className="px-1.5 py-0.5 rounded bg-warning-soft/40 text-fg-default"
+          title={message.nodeId}
+        >
+          {humanizeNodeId(message.nodeId)}
+        </span>
       </div>
       <div className="text-body text-fg-default">
         <MarkdownText value={message.prompt} size="sm" />

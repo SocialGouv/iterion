@@ -296,8 +296,9 @@ export function useDocumentFileOps({
       downloadBlob(blob, `${name}.bot`);
     } catch (err) {
       console.error("Download failed:", err);
+      addToast("Download failed", "error");
     }
-  }, [document]);
+  }, [document, addToast]);
 
   const handleCopySource = useCallback(async () => {
     if (!document) return;

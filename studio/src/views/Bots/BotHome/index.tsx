@@ -357,15 +357,20 @@ function ActionsRow({
         >
           Launch
         </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={onEdit}
-          disabled={!launchFile}
-          title={launchFile ? "Open the workflow in the editor" : noPathTitle}
-        >
-          Open in editor
-        </Button>
+        {/* Cloud has no editor save path (the Editor is out of the cloud
+            nav), so the button is hidden rather than disabled — it has no
+            cloud equivalent. */}
+        {!isCloud && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onEdit}
+            disabled={!launchFile}
+            title={launchFile ? "Open the workflow in the editor" : noPathTitle}
+          >
+            Open in editor
+          </Button>
+        )}
         {pipelineBoardsEnabled && (
           <Button
             variant="secondary"

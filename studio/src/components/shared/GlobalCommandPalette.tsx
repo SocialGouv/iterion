@@ -64,6 +64,8 @@ export default function GlobalCommandPalette() {
         group: "Navigate",
         title: "Editor",
         keywords: ["canvas", "design", "edit"],
+        // Cloud has no editor save path (the Editor is out of the cloud nav).
+        disabled: cloud,
         run: () => setLocation("/editor"),
       },
       {
