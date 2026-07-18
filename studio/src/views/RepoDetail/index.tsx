@@ -6,6 +6,7 @@ import { Link, useParams } from "wouter";
 import { FeatureUnavailableError } from "@/api/client";
 import {
   disableForgeIntegration,
+  updateForgeRepoBots,
   forgeTeamRepoKey,
   listForgeIntegrations,
   type ForgeIntegration,
@@ -203,32 +204,36 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
     [botEntryFor],
   );
 
-  // The forge API has no per-bot unbind: Provision UNIONS existing +
-  // requested bot ids (pkg/forge/orchestrator.go), so posting a reduced
-  // list is a silent no-op. Unbinding therefore deprovisions the whole
-  // repo integration (webhook + all bots); the confirm spells that out
-  // when the integration covers several bots.
+  // Per-bot unbind: PATCH the integration down to the remaining bots
+  // (replace semantics — webhook events and schedules narrow with it).
+  // Removing the last bot deprovisions the whole integration, which also
+  // tears down the forge webhook; the confirm says which one happens.
   const unbind = async (botId: string) => {
     if (!integration) return;
-    const all = integration.bot_ids;
+    const remaining = integration.bot_ids.filter((b) => b !== botId);
     const ok = await confirm({
       title: `Unbind ${botLabelFor(botId)}?`,
       message:
-        all.length > 1
-          ? `Unbinding removes the iterion webhook from ${repo.repo_full_name} — all ${all.length} bots bound to it (${all.join(", ")}) stop reacting to this repo. Re-bind the ones you keep from Integrations.`
-          : `This removes the iterion webhook from ${repo.repo_full_name} and unbinds ${botLabelFor(botId)}.`,
+        remaining.length > 0
+          ? `${botLabelFor(botId)} stops reacting to ${repo.repo_full_name}. The ${remaining.length === 1 ? "other bot stays" : `${remaining.length} other bots stay`} bound.`
+          : `${botLabelFor(botId)} is the last bot on ${repo.repo_full_name} — this also removes the iterion webhook from the repository.`,
       confirmLabel: "Unbind",
       confirmVariant: "danger",
     });
     if (!ok) return;
     const done = await action.run(async () => {
-      await disableForgeIntegration(teamID, integration.id);
+      if (remaining.length > 0) {
+        await updateForgeRepoBots(teamID, integration.id, remaining);
+      } else {
+        await disableForgeIntegration(teamID, integration.id);
+      }
       return true;
     });
     if (done) {
       await reload();
       // Refresh the connected-repos aggregator (RepoSwitcher, Home, this
-      // view's own not-found fallback) so the unbound repo disappears.
+      // view's own not-found fallback) so the bot counts / unbound repo
+      // update everywhere.
       void qc.invalidateQueries({ queryKey: ["team-forge-repos", teamID] });
     }
   };

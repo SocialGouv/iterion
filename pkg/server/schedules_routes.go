@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
@@ -131,6 +133,10 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		Vars:          req.Vars,
 		RepoURL:       strings.TrimSpace(req.RepoURL),
 		RepoRef:       strings.TrimSpace(req.RepoRef),
+		// First-class repo binding when the URL maps to a provisioned
+		// integration: the schedules UI then groups this row with the
+		// repo's other automation instead of joining by URL string.
+		RepoIntegrationID: s.resolveRepoIntegrationID(r.Context(), teamID, req.RepoURL),
 		Disabled:      req.Disabled,
 		Overlap:       req.Overlap,
 		MaxConcurrent: req.MaxConcurrent,
@@ -151,6 +157,45 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	})
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, sb)
+}
+
+// resolveRepoIntegrationID maps a schedule's repo_url onto the team's
+// provisioned integration for that repo, when one exists. Best-effort:
+// an unknown URL (or no forge stores wired) just leaves the schedule
+// URL-bound, which the ticker handles identically — the integration id
+// only improves grouping and lifecycle (DeleteByIntegration).
+func (s *Server) resolveRepoIntegrationID(ctx context.Context, teamID, repoURL string) string {
+	target := normalizeRepoURL(repoURL)
+	if target == "" || s.forgeIntegrations == nil || s.forgeConnections == nil {
+		return ""
+	}
+	integrations, err := s.forgeIntegrations.ListByTenant(ctx, teamID)
+	if err != nil {
+		return ""
+	}
+	for _, ri := range integrations {
+		conn, cerr := s.forgeConnections.Get(ctx, ri.ConnectionID)
+		if cerr != nil {
+			continue
+		}
+		if normalizeRepoURL(forge.CloneURLFor(conn.BaseURL(), ri.RepoFullName)) == target {
+			return ri.ID
+		}
+	}
+	return ""
+}
+
+// normalizeRepoURL canonicalizes a repo URL for equality: lowercase,
+// scheme-less, no trailing ".git" or "/".
+func normalizeRepoURL(u string) string {
+	u = strings.ToLower(strings.TrimSpace(u))
+	for _, p := range []string{"https://", "http://", "ssh://"} {
+		u = strings.TrimPrefix(u, p)
+	}
+	u = strings.TrimPrefix(u, "git@")
+	u = strings.Replace(u, ":", "/", 1) // git@host:owner/repo → host/owner/repo
+	u = strings.TrimSuffix(strings.TrimSuffix(u, "/"), ".git")
+	return u
 }
 
 // scheduleForTeam looks the row up and enforces tenant ownership. A row that

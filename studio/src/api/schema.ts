@@ -2998,7 +2998,8 @@ export interface paths {
         delete: operations["deleteTeamsByIdForgeRepoBotsByIntegrationId"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** PATCH /api/teams/{id}/forge/repo-bots/{integration_id} */
+        patch: operations["patchTeamsByIdForgeRepoBotsByIntegrationId"];
         trace?: never;
     };
     "/api/teams/{id}/forge/repos": {
@@ -8559,6 +8560,27 @@ export interface operations {
         };
     };
     deleteTeamsByIdForgeRepoBotsByIntegrationId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                integration_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdForgeRepoBotsByIntegrationId: {
         parameters: {
             query?: never;
             header?: never;

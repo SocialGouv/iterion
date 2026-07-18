@@ -248,6 +248,25 @@ export async function enableForgeRepoBots(
   });
 }
 
+// updateForgeRepoBots sets an integration's EXACT bot set (replace
+// semantics — the per-bot unbind). Empty lists are rejected server-side;
+// removing the last bot is disableForgeIntegration.
+export async function updateForgeRepoBots(
+  teamID: string,
+  integrationID: string,
+  botIDs: string[],
+  scheduleCrons?: Record<string, string>,
+): Promise<ForgeProvisionResult> {
+  return request(`/teams/${teamID}/forge/repo-bots/${integrationID}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      bot_ids: botIDs,
+      schedule_crons:
+        scheduleCrons && Object.keys(scheduleCrons).length > 0 ? scheduleCrons : undefined,
+    }),
+  });
+}
+
 export async function disableForgeIntegration(
   teamID: string,
   integrationID: string,

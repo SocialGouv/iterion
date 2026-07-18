@@ -6133,7 +6133,19 @@
             "type": "string"
           }
         }
-      ]
+      ],
+      "patch": {
+        "operationId": "patchTeamsByIdForgeRepoBotsByIntegrationId",
+        "responses": {
+          "default": {
+            "description": "Response"
+          }
+        },
+        "summary": "PATCH /api/teams/{id}/forge/repo-bots/{integration_id}",
+        "tags": [
+          "teams"
+        ]
+      }
     },
     "/api/teams/{id}/forge/repos": {
       "get": {

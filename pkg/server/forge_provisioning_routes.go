@@ -15,6 +15,7 @@ func (s *Server) registerForgeProvisioningRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleListForgeRepoBots)))
 	s.mux.Handle("POST /api/teams/{id}/forge/repo-bots", s.requireAuth(http.HandlerFunc(s.handleEnableForgeRepoBots)))
 	s.mux.Handle("GET /api/teams/{id}/forge/repo-bots/preview", s.requireAuth(http.HandlerFunc(s.handlePreviewForgeEnable)))
+	s.mux.Handle("PATCH /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(http.HandlerFunc(s.handleUpdateForgeRepoBots)))
 	s.mux.Handle("DELETE /api/teams/{id}/forge/repo-bots/{integration_id}", s.requireAuth(http.HandlerFunc(s.handleDisableForgeRepoBots)))
 }
 
@@ -82,6 +83,57 @@ func (s *Server) handleEnableForgeRepoBots(w http.ResponseWriter, r *http.Reques
 	}
 	s.auditTenant(r, teamID, "forge.integration.provisioned", "forge_integration", res.IntegrationID, map[string]any{
 		"repo": req.Repo, "bots": res.BotIDs, "connection_id": req.ConnectionID,
+	})
+	writeJSON(w, res)
+}
+
+// forgeUpdateReq sets an integration's EXACT bot set (replace semantics —
+// the per-bot unbind). An empty list is a 400: removing the last bot is
+// the DELETE (full deprovision), which also tears down webhook + hook.
+type forgeUpdateReq struct {
+	BotIDs []string `json:"bot_ids"`
+	// ScheduleCrons follows forgeEnableReq semantics for bots (re)gaining a
+	// schedule through this update.
+	ScheduleCrons map[string]string `json:"schedule_crons,omitempty"`
+}
+
+func (s *Server) handleUpdateForgeRepoBots(w http.ResponseWriter, r *http.Request) {
+	id, _ := auth.FromContext(r.Context())
+	teamID := r.PathValue("id")
+	if !s.canManageTeam(r.Context(), id, teamID) {
+		httpError(w, http.StatusForbidden, "admin or owner required")
+		return
+	}
+	integrationID := r.PathValue("integration_id")
+	ri, err := s.forgeIntegrations.Get(r.Context(), integrationID)
+	if err != nil || ri.TenantID != teamID {
+		httpError(w, http.StatusNotFound, "integration not found")
+		return
+	}
+	var req forgeUpdateReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.BotIDs) == 0 {
+		httpError(w, http.StatusBadRequest, "bot_ids must be non-empty — use DELETE to remove the integration entirely")
+		return
+	}
+	ctx := store.WithTenant(r.Context(), teamID)
+	res, err := s.forgeOrchestrator.Provision(ctx, forge.ProvisionRequest{
+		TenantID:      teamID,
+		ConnectionID:  ri.ConnectionID,
+		RepoFullName:  ri.RepoFullName,
+		BotIDs:        req.BotIDs,
+		ScheduleCrons: req.ScheduleCrons,
+		ActorID:       id.UserID,
+		Replace:       true,
+	})
+	if err != nil {
+		s.writeForgeProvisionError(w, err)
+		return
+	}
+	s.auditTenant(r, teamID, "forge.integration.bots_updated", "forge_integration", res.IntegrationID, map[string]any{
+		"repo": ri.RepoFullName, "bots": res.BotIDs,
 	})
 	writeJSON(w, res)
 }

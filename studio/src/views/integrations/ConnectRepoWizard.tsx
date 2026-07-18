@@ -40,6 +40,7 @@ import {
   DEFAULT_BASE,
   canonicalBase,
 } from "@/views/teams/tabs/integrations/forgeShared";
+import { sanitizeReturnTo } from "@/views/integrations/wizard/bindModel";
 import { StepIndicator } from "@/views/integrations/wizard/StepIndicator";
 
 // The wizard is the centrepiece of the cloud connect-repo UX redesign:
@@ -59,6 +60,7 @@ const STEP_LABEL: Record<Step, string> = {
 };
 
 const RETURN_PATH = "/integrations/connect";
+const CONNECT_RETURN_KEY = "iterion.connect-wizard.returnTo";
 
 // Provider-facing metadata for the picker cards. GitHub is flagged as
 // "Recommended" (least-privilege App path when the platform is wired).
@@ -193,14 +195,32 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
       ? explicitStep
       : "provider";
 
+  // The bind wizard (and any caller) can hand us a ?returnTo= in-app path
+  // to land on after the connect flow. It must survive both SPA step
+  // navigation (kept in the URL by gotoStep) and the OAuth/App round-trip
+  // whose `next` URL we don't control fully — hence the sessionStorage
+  // mirror, restored when the operator comes back with ?connected=.
+  const returnTo =
+    sanitizeReturnTo(q.get("returnTo")) ??
+    sanitizeReturnTo(sessionStorage.getItem(CONNECT_RETURN_KEY));
+  useEffect(() => {
+    const fromURL = sanitizeReturnTo(q.get("returnTo"));
+    if (fromURL) sessionStorage.setItem(CONNECT_RETURN_KEY, fromURL);
+  }, [q]);
+  const clearReturnTo = () => sessionStorage.removeItem(CONNECT_RETURN_KEY);
+
   const gotoStep = (next: Step, extra?: Record<string, string>) => {
     const p = new URLSearchParams();
     p.set("step", next);
+    if (returnTo) p.set("returnTo", returnTo);
     if (extra) for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
     navigate(withQuery(p), { replace: false });
   };
 
-  const restart = () => navigate(withQuery(new URLSearchParams()));
+  const restart = () => {
+    clearReturnTo();
+    navigate(withQuery(new URLSearchParams()));
+  };
 
   // Bot catalog — repo-capable bots feed EnableRepoPanel just like the
   // existing IntegrationsTab does.
@@ -310,6 +330,15 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
           <DoneStep
             connectionID={connectedID}
             repo={q.get("repo") ?? ""}
+            returnTo={returnTo}
+            onReturn={
+              returnTo
+                ? () => {
+                    clearReturnTo();
+                    navigate(returnTo);
+                  }
+                : undefined
+            }
             onGoToRepos={() => navigate("/integrations?tab=forges")}
             onOpenBoard={() => navigate("/board")}
             onLaunchBot={() => navigate("/bots")}
@@ -1213,6 +1242,9 @@ interface DoneStepProps {
   onOpenBoard: () => void;
   onLaunchBot: () => void;
   onConnectAnother: () => void;
+  /** In-app path the caller asked to come back to (sanitized). */
+  returnTo?: string | null;
+  onReturn?: () => void;
 }
 
 function DoneStep({
@@ -1222,6 +1254,8 @@ function DoneStep({
   onOpenBoard,
   onLaunchBot,
   onConnectAnother,
+  returnTo,
+  onReturn,
 }: DoneStepProps) {
   return (
     <div className="space-y-4">
@@ -1257,7 +1291,12 @@ function DoneStep({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" onClick={onGoToRepos}>
+        {onReturn && (
+          <Button variant="primary" onClick={onReturn}>
+            {returnTo?.startsWith("/integrations/bind") ? "Continue binding" : "Continue"}
+          </Button>
+        )}
+        <Button variant={onReturn ? "secondary" : "primary"} onClick={onGoToRepos}>
           Go to Repositories
         </Button>
         <Button variant="secondary" onClick={onOpenBoard}>

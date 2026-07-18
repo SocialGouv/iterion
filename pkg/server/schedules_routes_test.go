@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
+	"github.com/SocialGouv/iterion/pkg/forge"
 )
 
 // newScheduleTestServer wires an in-memory ScheduledBots store into a stock
@@ -228,5 +229,51 @@ func TestBuildScheduledLaunchSpec(t *testing.T) {
 	}
 	if spec.RepoURL != "https://example.com/repo.git" || spec.RepoRef != "feat/x" {
 		t.Errorf("repo fields not threaded: %+v", spec)
+	}
+}
+
+func TestSchedule_CreateResolvesRepoIntegration(t *testing.T) {
+	s := newScheduleTestServer(t)
+	s.forgeConnections = forge.NewMemoryConnectionStore()
+	s.forgeIntegrations = forge.NewMemoryRepoIntegrationStore()
+	ctx := context.Background()
+	if err := s.forgeConnections.Create(ctx, forge.Connection{
+		ID: "conn-1", TenantID: "t1", Provider: forge.ProviderGitHub,
+		ForgeBaseURL: "https://github.com", Status: forge.StatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.forgeIntegrations.Create(ctx, forge.RepoIntegration{
+		ID: "ri-1", TenantID: "t1", ConnectionID: "conn-1",
+		Provider: forge.ProviderGitHub, RepoFullName: "Acme/widgets",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.handleCreateSchedule(w, scheduleReq(superAdminCtx(), "POST", "/api/teams/t1/schedules",
+		`{"bot_id":"feed-watch","cron":"*/5 * * * *","repo_url":"https://github.com/acme/widgets"}`, "t1", ""))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: code=%d body=%s", w.Code, w.Body.String())
+	}
+	var created cloudsched.ScheduledBot
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.RepoIntegrationID != "ri-1" {
+		t.Errorf("RepoIntegrationID = %q, want ri-1 (URL-matched, case/scheme/.git-insensitive)", created.RepoIntegrationID)
+	}
+
+	// Unknown repo URL stays URL-bound (no integration id) — not an error.
+	w2 := httptest.NewRecorder()
+	s.handleCreateSchedule(w2, scheduleReq(superAdminCtx(), "POST", "/api/teams/t1/schedules",
+		`{"bot_id":"feed-watch","cron":"*/5 * * * *","repo_url":"https://github.com/other/repo"}`, "t1", ""))
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("create 2: code=%d", w2.Code)
+	}
+	var created2 cloudsched.ScheduledBot
+	_ = json.Unmarshal(w2.Body.Bytes(), &created2)
+	if created2.RepoIntegrationID != "" {
+		t.Errorf("unknown repo should not bind an integration, got %q", created2.RepoIntegrationID)
 	}
 }
