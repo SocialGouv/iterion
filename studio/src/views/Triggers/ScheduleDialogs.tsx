@@ -48,7 +48,7 @@ function CronField({
   const human = humanizeCron(value);
   return (
     <div>
-      <FieldLabel>Cron (5-field, UTC)</FieldLabel>
+      <FieldLabel>Cron (5-field, UTC — or prefix CRON_TZ=&lt;zone&gt;)</FieldLabel>
       <Input
         value={value}
         disabled={disabled}
