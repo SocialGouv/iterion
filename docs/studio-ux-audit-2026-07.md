@@ -52,6 +52,25 @@ fallbacks for gated routes, cloud gating of the Editor affordances, and
 platform `/admin/audit` + `/admin/dlq` pages. #2 (cloud schedules UI)
 had already shipped as the Automations Schedules tab.
 
+Fourth pass (2026-07-18, commits `95cf81de1…39ce1d264`) closed #2 and
+#3 (run-console headers resolve the authored `description:` via
+`useNodeLabel`; `/board/labels` + `/board/fields` gained explanatory
+fallbacks) and moved to fresh, code-evidenced ground: dispatcher-free
+Board vocabulary in cloud (ColumnDialogs/bulk actions say
+"stage/staged" when `dispatcher_enabled` is off), cloud-truthful
+Marketplace copy (no local install paths for tenants without a
+workspace), humanized enums/ids across account/admin/integrations
+(PAT team names, org-status badge labels + tones, connection
+status/kind, invocation kinds, ADR references dropped), shared
+`formatDateTime`/`formatDate` helpers replacing ~22 hand-rolled
+`toLocaleString` renders, `formatRelative` future-instant support
+("in 30d" instead of "-2564872s ago" on share expiries), destructive
+confirms unified on `useConfirm`, a config-share delivery log drawer
+(previously API-only), an edit-trigger dialog (whose PUT projection
+also fixed `setTriggerEnabled` clobbering schedgate policy), and
+feedback/a11y polish (download-failure toast, invitation loading
+state, WatchPanel tracker gating, dead API clients removed).
+
 Still open:
 
 1. **Launch form as a guided flow** (declined for now) — the
@@ -60,13 +79,13 @@ Still open:
    strict multi-step wizard would add clicks to the most frequent
    flow. Revisit only if evidence shows the single-page form still
    confuses.
-2. **Run-console node headers** (L) — `StatusHero`/`DetailHeader`
-   still call `humanizeNodeId` directly (no workflow context), so an
-   authored node `description:` doesn't yet show there — only in the
-   conversation banners via the node resolver.
-3. Assorted low-severity polish: `/board/labels` + `/board/fields`
-   deep links still fall through silently when the tracker is off
-   (main `/board` now explains).
+2. **Editor disk affordances in cloud** (declined for now) — `/editor`
+   is off the cloud nav but still URL-reachable; File-menu Save/Open
+   present disk paths that fail with a generic toast there. Revisit if
+   the editor gets a cloud save path.
+3. Low-value API/UI symmetry leftovers: `server_info.pipeline_concurrency`
+   duplicates the pipeline-board payload (unused by the UI); trigger
+   editing is unverifiable on deployments with `triggers_enabled=false`.
 
 ## Method notes
 
