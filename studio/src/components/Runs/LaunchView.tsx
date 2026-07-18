@@ -2,6 +2,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 
+import type { RepoRequirement } from "@/api/bots";
 import { useBotsStore } from "@/store/bots";
 import * as filesApi from "@/api/client";
 import { createForgeRepo } from "@/api/forgeConnections";
@@ -350,7 +351,17 @@ export default function LaunchView() {
   // Show the "Target repository" section when: the bot declares a repo need
   // (mode !== "none"), we're in cloud mode with a team context, and the
   // useActiveRepo hook is wired (repos + activeRepo available).
-  const repoRequirement = bot?.repo && bot.repo.mode !== "none" ? bot.repo : null;
+  //
+  // In cloud, a bot WITHOUT a manifest `repo:` block still gets an
+  // optional attach-only section: a manual cloud launch otherwise runs
+  // in the bare runner pod, which is almost never what a code bot wants
+  // — the repo target IS the cloud workspace. `mode: "none"` stays an
+  // explicit opt-out.
+  const repoRequirement = useMemo<RepoRequirement | null>(() => {
+    if (bot?.repo) return bot.repo.mode !== "none" ? bot.repo : null;
+    if (bot && serverInfo?.mode === "cloud") return { mode: "optional" };
+    return null;
+  }, [bot, serverInfo?.mode]);
   const showRepoTarget =
     !!repoRequirement && serverInfo?.mode === "cloud" && repoContextEnabled;
 
