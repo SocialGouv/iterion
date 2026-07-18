@@ -43,11 +43,18 @@ export interface CreateShareInput {
   label: string;
   repo_url: string;
   repo_ref: string;
-  config_path: string;
+  /** Config file + paths are DERIVED server-side from the bot's manifest
+   *  config_share: block when omitted (the normal path). Kept optional for a
+   *  bot with no declared surface, where the operator supplies them. */
+  config_path?: string;
   category: string;
   schema_ref?: string;
-  allowed_paths: string[];
-  visible_paths: string[];
+  allowed_paths?: string[];
+  visible_paths?: string[];
+  /** Optional least-privilege subset of the bot's declared editable fields
+   *  (by leaf name, e.g. ["feeds"]) for a DERIVED grant. Omitted / full list =
+   *  the whole declared surface. */
+  editable_fields?: string[];
   read_only?: boolean;
   expires_days?: number;
 }

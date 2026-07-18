@@ -3,11 +3,14 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/botregistry"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 )
 
@@ -34,8 +37,13 @@ type createConfigShareReq struct {
 	SchemaRef    string   `json:"schema_ref"`
 	AllowedPaths []string `json:"allowed_paths"`
 	VisiblePaths []string `json:"visible_paths"`
-	ReadOnly     bool     `json:"read_only"`
-	ExpiresDays  int      `json:"expires_days"`
+	// EditableFields optionally narrows a derived (config_share-block) grant to
+	// a SUBSET of the bot's declared editable fields (by leaf name, e.g.
+	// ["feeds"]) — least privilege per share. Empty = the full declared
+	// surface. Ignored for a bot with no declared block.
+	EditableFields []string `json:"editable_fields"`
+	ReadOnly       bool     `json:"read_only"`
+	ExpiresDays    int      `json:"expires_days"`
 }
 
 // shareView is the operator-facing projection — never the token hash.
@@ -59,6 +67,25 @@ func (s *Server) shareURL(id, token string) string {
 		return ""
 	}
 	return base + "/config/" + id + "#" + token
+}
+
+// botConfigShareSpec resolves a bot_id to its declared config-share surface
+// (manifest config_share: block), or nil when the bot declares none or is not
+// resolvable on this server (a loose .bot, or a bot absent from the effective
+// paths). Best-effort by design: the operator is trusted (canManageTeam), so a
+// bot without a discoverable surface mints with explicit operator-supplied
+// paths — the block is a guard-rail + convenience for the common case, not the
+// trust boundary against the operator.
+func (s *Server) botConfigShareSpec(botID string) *bundle.ConfigShareSpec {
+	mainFile, err := botregistry.ResolveBotPath(botID, s.effectivePaths())
+	if err != nil {
+		return nil
+	}
+	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(mainFile), "manifest.yaml"))
+	if err != nil || m == nil {
+		return nil
+	}
+	return m.ConfigShare
 }
 
 func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request) {
@@ -85,15 +112,34 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	if err := configshare.ValidateConfigPath(req.ConfigPath); err != nil {
+	// When the bot DECLARES a config-share surface (manifest config_share:),
+	// it is authoritative: the mint DERIVES the config file + editable/visible
+	// paths from it (expanding {category}), so a share can never be minted
+	// outside what the bot committed to git. The operator supplies only
+	// bot_id + category. A bot with no declared surface (or one not resolvable
+	// on this server — e.g. a loose .bot) falls back to explicit
+	// operator-supplied paths, unchanged.
+	configPath := req.ConfigPath
+	allowed := req.AllowedPaths
+	visible := req.VisiblePaths
+	if spec := s.botConfigShareSpec(req.BotID); spec != nil {
+		a, v, err := configshare.DeriveGrant(spec.EditablePaths, spec.VisiblePaths, req.Category, req.EditableFields...)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
+		allowed, visible = a, v
+		if spec.ConfigPath != "" {
+			configPath = spec.ConfigPath
+		}
+	} else if len(visible) == 0 {
+		visible = allowed
+	}
+	if err := configshare.ValidateConfigPath(configPath); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
-	visible := req.VisiblePaths
-	if len(visible) == 0 {
-		visible = req.AllowedPaths
-	}
-	if err := configshare.ValidatePaths(req.AllowedPaths, visible); err != nil {
+	if err := configshare.ValidatePaths(allowed, visible); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
@@ -109,9 +155,9 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 	now := time.Now().UTC()
 	sh := &configshare.Share{
 		ID: uuid.NewString(), TenantID: teamID, BotID: req.BotID, Label: req.Label,
-		RepoURL: req.RepoURL, RepoRef: req.RepoRef, ConfigPath: req.ConfigPath,
+		RepoURL: req.RepoURL, RepoRef: req.RepoRef, ConfigPath: configPath,
 		Category: req.Category, SchemaRef: req.SchemaRef,
-		AllowedPaths: req.AllowedPaths, VisiblePaths: visible, ReadOnly: req.ReadOnly,
+		AllowedPaths: allowed, VisiblePaths: visible, ReadOnly: req.ReadOnly,
 		TokenHash: hash, TokenLast4: last4, Fingerprint: fp,
 		Enabled: true, CreatedBy: id.UserID, CreatedAt: now, ExpiresAt: now.AddDate(0, 0, ttl),
 	}

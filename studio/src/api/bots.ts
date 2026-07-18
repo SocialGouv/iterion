@@ -62,6 +62,11 @@ export interface BotEntry {
    *  optional-skip) driven off this. `mode: "none"` behaves like an
    *  absent block (kept so a bot can document the choice). */
   repo?: RepoRequirement;
+  /** Scoped config-share surface (manifest `config_share:` block) — which
+   *  fields of the bot's config file a non-operator may edit through a share
+   *  URL. Present only when the bot declares one; the "Share config" card
+   *  reads it to drive a data-driven mint form and is hidden otherwise. */
+  config_share?: ConfigShareSpec;
   /** Typed routing contract (manifest `invocations:`) — how this bot can be
    *  triggered (forge event, /slash-command, schedule, board) and the
    *  execution mode each path uses. Drives the Integrations picker grouping.
@@ -144,6 +149,22 @@ export interface RepoRequirement {
   default_branch?: string;
   /** Seeds a created repo's visibility (default "private"). */
   visibility?: "private" | "public";
+}
+
+/** ConfigShareSpec mirrors the manifest `config_share:` block — the bot's
+ *  scoped config-share surface. The mint DERIVES a share's editable/visible
+ *  paths + config file from this (expanding a `{category}` placeholder), so a
+ *  share can never exceed what the bot committed to git and a second bot
+ *  adopts the editor by adding this block alone. */
+export interface ConfigShareSpec {
+  /** Config file inside the target repo a share edits (e.g. "feed-watch.json"). */
+  config_path: string;
+  /** Dotted leaf paths a share may WRITE. A `{category}` placeholder is
+   *  expanded per share (e.g. "categories.{category}.feeds"). No globs. */
+  editable_paths: string[];
+  /** Extra read-only dotted paths a share may READ back as context (same
+   *  `{category}` expansion). The projection returns editable ∪ visible. */
+  visible_paths?: string[];
 }
 
 /** BotPatch is the editable subset of a bot's manifest. Omitted fields
