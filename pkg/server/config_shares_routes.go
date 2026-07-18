@@ -44,18 +44,28 @@ type createConfigShareReq struct {
 	EditableFields []string `json:"editable_fields"`
 	ReadOnly       bool     `json:"read_only"`
 	ExpiresDays    int      `json:"expires_days"`
+	// NeverExpires opts a share out of the default TTL entirely (durable access
+	// for standing, semi-trusted editors). Revocation is then only via rotate /
+	// delete — there is no time-bounded safety net, so it is opt-in.
+	NeverExpires bool `json:"never_expires"`
 }
 
 // shareView is the operator-facing projection — never the token hash.
 func (s *Server) shareView(sh *configshare.Share) map[string]any {
-	return map[string]any{
+	v := map[string]any{
 		"id": sh.ID, "bot_id": sh.BotID, "label": sh.Label, "repo_url": sh.RepoURL,
 		"repo_ref": sh.RepoRef, "config_path": sh.ConfigPath, "category": sh.Category,
 		"schema_ref": sh.SchemaRef, "allowed_paths": sh.AllowedPaths, "visible_paths": sh.VisiblePaths,
 		"read_only": sh.ReadOnly, "enabled": sh.Enabled, "token_last4": sh.TokenLast4,
-		"fingerprint": sh.Fingerprint, "created_at": sh.CreatedAt, "expires_at": sh.ExpiresAt,
+		"fingerprint": sh.Fingerprint, "created_at": sh.CreatedAt,
 		"revoked_at": sh.RevokedAt, "last_used_at": sh.LastUsedAt,
 	}
+	// Omit expires_at for a never-expiring share (zero time) so the UI renders
+	// "never" instead of the Go zero year.
+	if !sh.ExpiresAt.IsZero() {
+		v["expires_at"] = sh.ExpiresAt
+	}
+	return v
 }
 
 func (s *Server) shareURL(id, token string) string {
@@ -148,18 +158,24 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusInternalServerError, "mint failed")
 		return
 	}
-	ttl := req.ExpiresDays
-	if ttl <= 0 {
-		ttl = defaultShareTTLDays
-	}
 	now := time.Now().UTC()
+	// A zero ExpiresAt never expires (Share.Active). never_expires opts into
+	// that; otherwise 0/omitted days falls back to the default TTL.
+	var expiresAt time.Time
+	if !req.NeverExpires {
+		ttl := req.ExpiresDays
+		if ttl <= 0 {
+			ttl = defaultShareTTLDays
+		}
+		expiresAt = now.AddDate(0, 0, ttl)
+	}
 	sh := &configshare.Share{
 		ID: uuid.NewString(), TenantID: teamID, BotID: req.BotID, Label: req.Label,
 		RepoURL: req.RepoURL, RepoRef: req.RepoRef, ConfigPath: configPath,
 		Category: req.Category, SchemaRef: req.SchemaRef,
 		AllowedPaths: allowed, VisiblePaths: visible, ReadOnly: req.ReadOnly,
 		TokenHash: hash, TokenLast4: last4, Fingerprint: fp,
-		Enabled: true, CreatedBy: id.UserID, CreatedAt: now, ExpiresAt: now.AddDate(0, 0, ttl),
+		Enabled: true, CreatedBy: id.UserID, CreatedAt: now, ExpiresAt: expiresAt,
 	}
 	if err := s.configShares.Create(r.Context(), sh); err != nil {
 		httpError(w, http.StatusInternalServerError, "create failed")
