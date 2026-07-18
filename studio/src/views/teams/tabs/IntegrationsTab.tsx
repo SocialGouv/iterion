@@ -2,6 +2,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { CheckIcon } from "@radix-ui/react-icons";
+import { ChevronRight } from "lucide-react";
 
 import { FeatureUnavailableError } from "@/api/client";
 import {
@@ -24,14 +25,6 @@ import { ConnectForm } from "./integrations/ConnectForm";
 import { ConnectionCard } from "./integrations/ConnectionCard";
 import { OAuthAppsSection } from "./integrations/OAuthAppsSection";
 import SchedulesSection from "./integrations/SchedulesSection";
-
-// scrollToConnectForm jumps the operator to the "Connect a forge" form — the
-// CTA the empty / partly-wired states point them at.
-function scrollToConnectForm() {
-  document
-    .getElementById("connect-forge-form")
-    ?.scrollIntoView({ behavior: "smooth", block: "center" });
-}
 
 export default function IntegrationsTab({
   teamID,
@@ -60,8 +53,34 @@ export default function IntegrationsTab({
   );
   // ?bot=<name> (set by the catalog's "Connect to a repo" affordance) pre-checks
   // that bot in the enable dialog and auto-opens it when there's one connection.
-  const preselectBot = new URLSearchParams(useSearch()).get("bot") ?? undefined;
+  const search = useSearch();
+  const preselectBot = new URLSearchParams(search).get("bot") ?? undefined;
   const [, navigate] = useLocation();
+
+  // "Manual setup (advanced)" folds the legacy Connect-a-forge form + the
+  // OAuth-apps registry away — the /integrations/connect wizard is the
+  // recommended path. Closed by default, but auto-opened when the URL says
+  // the operator is mid-manual-flow: an OAuth / GitHub-App return lands here
+  // with ?connected= / ?installed= (the manual forms are where the result
+  // shows), and a #connect-forge-form anchor deep-links straight to it.
+  const oauthReturn = useMemo(() => {
+    const q = new URLSearchParams(search);
+    return q.has("connected") || q.has("installed");
+  }, [search]);
+  const [manualOpen, setManualOpen] = useState(
+    () => oauthReturn || window.location.hash === "#connect-forge-form",
+  );
+  useEffect(() => {
+    if (oauthReturn) setManualOpen(true);
+  }, [oauthReturn]);
+  useEffect(() => {
+    if (window.location.hash === "#connect-forge-form") {
+      setManualOpen(true);
+      document
+        .getElementById("connect-forge-form")
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
 
   const reload = async () => {
     setErr(null);
@@ -230,26 +249,48 @@ export default function IntegrationsTab({
         )}
       </div>
 
-      <OAuthAppsSection
-        teamID={teamID}
-        apps={oauthApps}
-        connections={connections}
-        canManage={canManage}
-        onChanged={reload}
-        onError={setErr}
-        confirm={confirm}
-      />
-
-      {canManage && (
-        <div id="connect-forge-form">
-          <ConnectForm
-            teamID={teamID}
-            oauthApps={oauthApps}
-            onConnected={reload}
-            onError={setErr}
+      <div id="connect-forge-form">
+        <button
+          type="button"
+          onClick={() => setManualOpen((o) => !o)}
+          aria-expanded={manualOpen}
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-fg-default hover:text-accent-text"
+        >
+          <ChevronRight
+            size={14}
+            className={`shrink-0 text-fg-subtle transition-transform duration-[var(--motion-fast)] ${
+              manualOpen ? "rotate-90" : ""
+            }`}
+            aria-hidden
           />
-        </div>
-      )}
+          Manual setup (advanced)
+        </button>
+        <p className="mt-0.5 text-xs text-fg-muted">
+          The guided “Connect a repository” flow above is the recommended path. Use these
+          forms to register a forge OAuth app or connect an account by hand.
+        </p>
+        {manualOpen && (
+          <div className="mt-3 space-y-6">
+            <OAuthAppsSection
+              teamID={teamID}
+              apps={oauthApps}
+              connections={connections}
+              canManage={canManage}
+              onChanged={reload}
+              onError={setErr}
+              confirm={confirm}
+            />
+            {canManage && (
+              <ConnectForm
+                teamID={teamID}
+                oauthApps={oauthApps}
+                onConnected={reload}
+                onError={setErr}
+              />
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -268,6 +309,7 @@ function WiringGuide({
   repoEnabled: boolean;
   canManage: boolean;
 }) {
+  const [, navigate] = useLocation();
   const wired = forgeConnected && repoEnabled;
   // Default state follows `wired` (collapsed once a forge + repo are wired),
   // but a manual expand/collapse wins. Tracking an override rather than seeding
@@ -321,12 +363,12 @@ function WiringGuide({
           n={1}
           done={forgeConnected}
           label="Connect a forge"
-          hint="GitLab, GitHub or Forgejo — once per account."
+          hint="GitLab, GitHub or Forgejo — once per account. The guided flow connects it and enables a repo in one pass."
           action={
             !forgeConnected && canManage ? (
               <button
                 type="button"
-                onClick={scrollToConnectForm}
+                onClick={() => navigate("/integrations/connect")}
                 className="text-accent-text hover:underline"
               >
                 Connect →

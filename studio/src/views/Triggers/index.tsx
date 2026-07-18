@@ -18,6 +18,7 @@ import {
 } from "@/api/triggers";
 import NewTriggerDialog from "./NewTriggerDialog";
 import SchedulesTab from "./SchedulesTab";
+import TriggerFamiliesExplainer from "./TriggerFamiliesExplainer";
 import TriggerList from "./TriggerList";
 
 type Tab = "automations" | "schedules";
@@ -154,6 +155,11 @@ export default function TriggersView() {
         Event-driven triggers fire a bot when something happens — a board card moves, a run finishes,
         a cron tick, a forge event, or a custom integration. Managed by repo and by bot on one spine.
       </p>
+
+      <TriggerFamiliesExplainer
+        onOpenSchedules={() => selectTab("schedules")}
+        onNewTrigger={() => setCreatingTrigger(true)}
+      />
 
       {loadErr && (
         <InlineBanner tone="danger" title="Couldn't load triggers">

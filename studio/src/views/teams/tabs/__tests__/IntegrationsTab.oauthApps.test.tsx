@@ -33,14 +33,22 @@ describe("IntegrationsTab — OAuth apps", () => {
     cleanup();
   });
 
+  // The legacy OAuth-apps + connect forms live behind the collapsed
+  // "Manual setup (advanced)" disclosure — open it before asserting.
+  const openManualSetup = async () => {
+    fireEvent.click(await screen.findByRole("button", { name: /Manual setup \(advanced\)/ }));
+  };
+
   it("renders the OAuth apps section with an empty state", async () => {
     render(<IntegrationsTab teamID="t1" canManage />);
+    await openManualSetup();
     await screen.findByText("Forge OAuth apps");
     await screen.findByText("No OAuth app registered yet.");
   });
 
   it("registers an app via the default auto (admin-token) flow", async () => {
     render(<IntegrationsTab teamID="t1" canManage />);
+    await openManualSetup();
     fireEvent.click(await screen.findByText("+ Register an OAuth app"));
     // Default mode is auto → an admin-token field is shown.
     const tokenInput = await screen.findByPlaceholderText(/Admin token/i);
@@ -56,6 +64,7 @@ describe("IntegrationsTab — OAuth apps", () => {
 
   it("registers an app via the manual (paste credentials) flow", async () => {
     render(<IntegrationsTab teamID="t1" canManage />);
+    await openManualSetup();
     fireEvent.click(await screen.findByText("+ Register an OAuth app"));
     fireEvent.click(screen.getByLabelText("Paste credentials"));
     fireEvent.change(await screen.findByPlaceholderText(/Client ID/i), {
