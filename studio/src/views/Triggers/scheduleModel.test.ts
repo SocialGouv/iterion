@@ -149,6 +149,25 @@ describe("buildCreatePayload", () => {
     ).toEqual({ bot_id: "feature-dev", cron: "0 2 * * *" });
   });
 
+  it("threads non-empty vars and drops blank keys", () => {
+    expect(
+      buildCreatePayload({
+        botId: "feed-watch",
+        cron: "0 8 * * 1",
+        repo: null,
+        policy,
+        vars: { mode: "digest", category: "a11y", "": "ignored", "  ": "x" },
+      }).vars,
+    ).toEqual({ mode: "digest", category: "a11y" });
+  });
+
+  it("omits vars when every key is blank", () => {
+    expect(
+      buildCreatePayload({ botId: "b", cron: "0 * * * *", repo: null, policy, vars: { "": "x" } })
+        .vars,
+    ).toBeUndefined();
+  });
+
   it("binds the repo via clone_url, falling back to web_url", () => {
     const withClone = repo({ clone_url: "https://github.com/acme/app.git" });
     expect(
