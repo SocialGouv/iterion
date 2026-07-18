@@ -37,6 +37,7 @@ import RunTagsRow from "./runHeader/RunTagsRow";
 import SourceTicketRow from "./runHeader/SourceTicketRow";
 import WSDisconnectBanner from "./runHeader/WSDisconnectBanner";
 import { cancelTooltip } from "./runHeader/cancelTooltip";
+import { isDeletable, isResumable } from "./runStatusActions";
 
 interface Props {
   run: RunHeaderType;
@@ -109,11 +110,9 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
   // Resume from header is a "best-effort" trigger — for paused_waiting_human
   // runs the user normally fills the Pause form in the detail panel
   // (Phase 5). The header button stays for failed_resumable / cancelled
-  // / paused_operator runs.
-  const canResume =
-    run.status === "failed_resumable" ||
-    run.status === "cancelled" ||
-    run.status === "paused_operator";
+  // / paused_operator runs (isResumable — shared with the run list's
+  // inline Resume quick action).
+  const canResume = isResumable(run.status);
 
   const onCancel = () => runAction(() => cancelRun(run.id));
 
@@ -199,7 +198,8 @@ export default function RunHeader({ run, active, wsState, onResetLayout, bare = 
 
   // Delete is offered only for terminal runs — an active run must be
   // cancelled first. Irreversible: removes the run + all its data.
-  const canDelete = ["finished", "failed", "failed_resumable", "cancelled"].includes(run.status);
+  // isDeletable is shared with the run list's bulk Delete.
+  const canDelete = isDeletable(run.status);
   const deleteWithConfirm = async () => {
     const ok = await confirm({
       title: "Delete this run?",

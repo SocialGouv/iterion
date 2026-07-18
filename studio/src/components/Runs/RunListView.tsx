@@ -8,12 +8,15 @@ import {
 } from "@radix-ui/react-icons";
 
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { EmptyState } from "@/components/ui/EmptyState";
 import type { RunRepo, RunSourceKind, RunStatus } from "@/api/runs";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
+import { useConfirm } from "@/hooks/useConfirm";
 import { useRuns } from "@/hooks/useRuns";
 import { useRunRepos } from "@/hooks/useRunRepos";
 import { useServerInfoStore } from "@/store/serverInfo";
+import { useUIStore } from "@/store/ui";
 import QueueDepthBar from "./QueueDepthBar";
 import {
   availableSourceKinds,
@@ -42,9 +45,12 @@ import { RunListFilters } from "./runList/RunListFilters";
 import { RunListRow } from "./runList/RunListRow";
 import { RunRowGroup } from "./runList/RunRowGroup";
 import { RunCardGroupHeader } from "./runList/RunCardGroupHeader";
+import { RunSelectionToolbar } from "./runList/RunSelectionToolbar";
 import { SortGroupControls } from "./runList/SortGroupControls";
+import { useRunListActions } from "./runList/useRunListActions";
 import { useRunListFilters } from "./runList/useRunListFilters";
 import { useRunListLiveTick } from "./runList/useRunListLiveTick";
+import { useRunListSelection } from "./runList/useRunListSelection";
 
 export default function RunListView() {
   const [, setLocation] = useLocation();
@@ -179,6 +185,23 @@ export default function RunListView() {
   );
   const groups = useMemo(() => groupRuns(sortedRuns, group), [sortedRuns, group]);
   const isGrouped = group !== "none";
+
+  // Multi-selection over the visible (filtered + sorted) list, plus the
+  // mutations it drives (inline Resume, bulk cancel/delete). Selection
+  // checkboxes exist on the desktop table only.
+  const { selectedIds, selectedRuns, allSelected, toggle, toggleAll, clear } =
+    useRunListSelection(sortedRuns);
+  const addToast = useUIStore((s) => s.addToast);
+  const { confirm, dialog } = useConfirm();
+  const { onResume, resumingIds, onBulkCancel, onBulkDelete } =
+    useRunListActions({
+      selectedRuns,
+      clearSelection: clear,
+      addToast,
+      confirm,
+      onOpenRun: openRun,
+    });
+  const someSelected = selectedIds.size > 0;
 
   // Shared "All" option count for the source + bot menus (the full
   // status-filtered fetch size). Omitted when zero.
@@ -367,6 +390,16 @@ export default function RunListView() {
           <caption className="sr-only">Runs</caption>
           <thead className="text-fg-subtle">
             <tr className="border-b border-border-default">
+              <th scope="col" className="pl-4 pr-1 py-2 w-8">
+                <Checkbox
+                  aria-label="Select all runs"
+                  checked={allSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someSelected && !allSelected;
+                  }}
+                  onChange={toggleAll}
+                />
+              </th>
               <th scope="col" className="text-left px-4 py-2 font-medium">Run</th>
               <th scope="col" className="text-left px-4 py-2 font-medium">Workflow</th>
               <th scope="col" className="text-left px-4 py-2 font-medium">Source</th>
@@ -383,14 +416,18 @@ export default function RunListView() {
                 label={g.label}
                 count={g.runs.length}
                 showHeader={isGrouped}
-                columnSpan={7}
+                columnSpan={8}
               >
                 {g.runs.map((r) => (
                   <RunListRow
                     key={r.id}
                     run={r}
+                    selected={selectedIds.has(r.id)}
+                    resuming={resumingIds.has(r.id)}
                     onOpen={openRun}
                     onFilterBot={filterByBot}
+                    onToggleSelect={toggle}
+                    onResume={onResume}
                   />
                 ))}
               </RunRowGroup>
@@ -406,7 +443,13 @@ export default function RunListView() {
               <ul className="divide-y divide-border-default">
                 {g.runs.map((r) => (
                   <li key={r.id}>
-                    <RunListCard run={r} onOpen={openRun} onFilterBot={filterByBot} />
+                    <RunListCard
+                      run={r}
+                      resuming={resumingIds.has(r.id)}
+                      onOpen={openRun}
+                      onFilterBot={filterByBot}
+                      onResume={onResume}
+                    />
                   </li>
                 ))}
               </ul>
@@ -467,7 +510,17 @@ export default function RunListView() {
         </div>
       </div>
 
+      {someSelected && (
+        <RunSelectionToolbar
+          selectedRuns={selectedRuns}
+          onCancel={() => void onBulkCancel()}
+          onDelete={() => void onBulkDelete()}
+          onClear={clear}
+        />
+      )}
+
       <div className="flex-1 overflow-auto">{body}</div>
+      {dialog}
     </div>
   );
 }
