@@ -188,6 +188,14 @@ func (s *Server) routes() {
 		s.registerScheduleRoutes()
 	}
 
+	// Scoped config-share editor. Needs the store (defaulted in New) + the
+	// generic-secret stack (to resolve the repo's forge_token) + the auth
+	// stack (operator CRUD). Public self-auth routes + operator CRUD.
+	if s.configShares != nil && s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
+		s.registerConfigSharePublicRoutes()
+		s.registerConfigShareAdminRoutes()
+	}
+
 	// Outbound forge integrations (connect a repo + auto-provision). Gated
 	// on the orchestrator being built (full dependency set) + the auth stack.
 	if s.forgeOrchestrator != nil && s.authSvc != nil {

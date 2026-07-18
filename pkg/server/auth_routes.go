@@ -1554,6 +1554,11 @@ func (s *Server) handleAdminResetUserPassword(w http.ResponseWriter, r *http.Req
 // ---- Authorization helpers ----
 
 func (s *Server) canViewTeam(ctx context.Context, id auth.Identity, teamID string) bool {
+	// Synthetic principals (webhook / config-share) never authorize an
+	// operator team action, even if a future bug set a role on one.
+	if id.IsSynthetic() {
+		return false
+	}
 	if id.IsSuperAdmin {
 		return true
 	}
@@ -1568,6 +1573,9 @@ func (s *Server) canViewTeam(ctx context.Context, id auth.Identity, teamID strin
 }
 
 func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID string) bool {
+	if id.IsSynthetic() {
+		return false
+	}
 	if id.IsSuperAdmin {
 		return true
 	}
@@ -1591,6 +1599,9 @@ func (s *Server) orgAdminOfTeam(ctx context.Context, id auth.Identity, teamID st
 // canViewOrg reports whether the principal may read an org's settings /
 // roster / usage. Super-admins and any org member pass.
 func (s *Server) canViewOrg(ctx context.Context, id auth.Identity, orgID string) bool {
+	if id.IsSynthetic() {
+		return false
+	}
 	if id.IsSuperAdmin {
 		return true
 	}
@@ -1607,6 +1618,9 @@ func (s *Server) canViewOrg(ctx context.Context, id auth.Identity, orgID string)
 // canManageOrg reports whether the principal may mutate an org (members,
 // SSO, settings, teams). Super-admins and org admins/owners pass.
 func (s *Server) canManageOrg(ctx context.Context, id auth.Identity, orgID string) bool {
+	if id.IsSynthetic() {
+		return false
+	}
 	if id.IsSuperAdmin {
 		return true
 	}

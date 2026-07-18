@@ -56,6 +56,7 @@ import MissingCLIBanner from "@/components/MissingCLIBanner";
 import CloudLanding, { PublicTopBar } from "@/views/CloudLanding";
 const RestrictedShell = lazy(() => import("@/views/RestrictedShell"));
 const CliAuthPage = lazy(() => import("@/views/CliAuthPage"));
+const ConfigShareView = lazy(() => import("@/views/ConfigShare"));
 import { useDesktop } from "@/hooks/useDesktop";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useProjectSwitchListener } from "@/hooks/useProjectSwitchListener";
@@ -151,6 +152,16 @@ function AuthGate() {
           <Route path="/auth/forgot-password" component={ForgotPassword} />
           <Route path="/auth/reset" component={ResetPassword} />
           <Route path="/invitations/accept" component={AcceptInvitation} />
+          {/* Self-authenticating config-share editor. Renders shell-less
+              (no AppShell/Sidebar/Header) — the visitor is NOT an
+              operator, and the token in the URL fragment authenticates
+              them. Mounted in the anonymous branch so a share link
+              works without any session cookie. */}
+          <Route path="/config/:id">
+            <ErrorBoundary area="Config share editor">
+              <ConfigShareView />
+            </ErrorBoundary>
+          </Route>
           {/* Public marketplace — browsable + downloadable without an
               account (submit/install gate behind sign-in). Outside the
               AppShell, so it carries its own slim top bar. */}
@@ -187,6 +198,18 @@ function AuthGate() {
     return (
       <Suspense fallback={<BootLoading />}>
         <CliAuthPage />
+      </Suspense>
+    );
+  }
+  // Config-share editor — deliberately shell-less even when the operator is
+  // signed in (opening the link in the same browser must NOT reveal any
+  // studio chrome; the editor authenticates on the share token alone). The
+  // isolated fetch client at @/api/configShare pins credentials: "omit", so
+  // the operator's cookie is never sent even though same-origin.
+  if (location.startsWith("/config/")) {
+    return (
+      <Suspense fallback={<BootLoading />}>
+        <ConfigShareView />
       </Suspense>
     );
   }

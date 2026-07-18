@@ -1,0 +1,557 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+import type { BotEntryWithSchema } from "@/api/bots";
+import {
+  createConfigShare,
+  deleteConfigShare,
+  FeatureUnavailableError,
+  listConfigShares,
+  rotateConfigShare,
+  type CreateShareInput,
+  type ShareView,
+  type ShareWithToken,
+} from "@/api/configShareAdmin";
+import { useAuth } from "@/auth/AuthContext";
+import {
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  CopyButton,
+  Dialog,
+  FieldLabel,
+  InlineBanner,
+  Input,
+  Spinner,
+} from "@/components/ui";
+import { errorMessage } from "@/lib/errorHints";
+import { formatRelative } from "@/lib/format";
+import { useUIStore } from "@/store/ui";
+
+/**
+ * ConfigSharesCard — operator UI on a bot's home page: list this bot's
+ * config-shares for the active team, mint a new one (surfacing token + URL
+ * ONCE), rotate, and revoke.
+ *
+ * Gated by serverInfo.config_shares_enabled at the call site; if the
+ * feature is off on this deployment the card renders nothing.
+ *
+ * Cloud-only in practice: creating a share needs an active team_id.
+ * Locally there's no team; the parent hides the card when activeTeam is
+ * missing.
+ */
+export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
+  const { activeTeam } = useAuth();
+  const teamID = activeTeam?.team_id;
+
+  const [shares, setShares] = useState<ShareView[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [mintedForOnce, setMintedForOnce] = useState<ShareWithToken | null>(null);
+  const [busyShareID, setBusyShareID] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ShareView | null>(null);
+
+  const addToast = useUIStore((s) => s.addToast);
+
+  const reload = useCallback(async () => {
+    if (!teamID) return;
+    setError(null);
+    try {
+      const rows = await listConfigShares(teamID);
+      setShares(rows.filter((s) => s.bot_id === entry.name));
+    } catch (err) {
+      if (err instanceof FeatureUnavailableError) {
+        setUnavailable(true);
+        return;
+      }
+      setError(errorMessage(err));
+    }
+  }, [teamID, entry.name]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  if (!teamID) return null;
+  if (unavailable) return null;
+
+  const onRotate = async (share: ShareView) => {
+    setBusyShareID(share.id);
+    try {
+      const minted = await rotateConfigShare(teamID, share.id);
+      setMintedForOnce(minted);
+      await reload();
+    } catch (err) {
+      addToast(errorMessage(err), "error");
+    } finally {
+      setBusyShareID(null);
+    }
+  };
+
+  const onDelete = async (share: ShareView) => {
+    setBusyShareID(share.id);
+    try {
+      await deleteConfigShare(teamID, share.id);
+      addToast("Share revoked", "info");
+      setConfirmDelete(null);
+      await reload();
+    } catch (err) {
+      addToast(errorMessage(err), "error");
+    } finally {
+      setBusyShareID(null);
+    }
+  };
+
+  return (
+    <Card>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-xs font-semibold text-fg-default">Config-share links</h2>
+        <Button variant="secondary" size="sm" onClick={() => setCreating(true)}>
+          Create share link…
+        </Button>
+      </div>
+      <p className="mb-2 text-caption text-fg-subtle">
+        Scoped, self-service editor links for a category of the bot's config
+        file. The visitor only edits the fields you allow; the token stays
+        live until rotated or revoked.
+      </p>
+      {error && (
+        <InlineBanner tone="danger" layout="inline" title="Couldn't load shares">
+          {error}
+        </InlineBanner>
+      )}
+      {shares === null && !error ? (
+        <div className="flex items-center gap-2 py-2 text-sm text-fg-muted">
+          <Spinner /> Loading…
+        </div>
+      ) : (shares ?? []).length === 0 ? (
+        <p className="py-1 text-xs text-fg-subtle">
+          No shares yet — create one to give a non-operator scoped edit access.
+        </p>
+      ) : (
+        <ul className="mt-1 space-y-1.5">
+          {(shares ?? []).map((s) => (
+            <ShareRow
+              key={s.id}
+              share={s}
+              busy={busyShareID === s.id}
+              onRotate={() => void onRotate(s)}
+              onDelete={() => setConfirmDelete(s)}
+            />
+          ))}
+        </ul>
+      )}
+
+      {creating && teamID && (
+        <CreateShareDialog
+          teamID={teamID}
+          botID={entry.name}
+          onCancel={() => setCreating(false)}
+          onCreated={(minted) => {
+            setCreating(false);
+            setMintedForOnce(minted);
+            void reload();
+          }}
+        />
+      )}
+      {mintedForOnce && (
+        <TokenOnceDialog
+          minted={mintedForOnce}
+          onClose={() => setMintedForOnce(null)}
+        />
+      )}
+      {confirmDelete && (
+        <Dialog
+          open
+          onOpenChange={(v) => {
+            if (!v) setConfirmDelete(null);
+          }}
+          title="Revoke this share?"
+          description="The bookmarked link will stop working immediately."
+          stack="confirm"
+          footer={
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmDelete(null)}
+                disabled={busyShareID === confirmDelete.id}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                loading={busyShareID === confirmDelete.id}
+                onClick={() => void onDelete(confirmDelete)}
+              >
+                Revoke
+              </Button>
+            </>
+          }
+        >
+          <p className="text-xs text-fg-muted">
+            {confirmDelete.label?.trim() || confirmDelete.id} ({confirmDelete.category})
+          </p>
+        </Dialog>
+      )}
+    </Card>
+  );
+}
+
+function ShareRow({
+  share,
+  busy,
+  onRotate,
+  onDelete,
+}: {
+  share: ShareView;
+  busy: boolean;
+  onRotate: () => void;
+  onDelete: () => void;
+}) {
+  const now = Date.now();
+  const expiresAt = share.expires_at ? new Date(share.expires_at).getTime() : 0;
+  const expired = expiresAt > 0 && expiresAt < now;
+  const revoked = !!share.revoked_at;
+  const disabled = revoked || expired;
+  return (
+    <li className="rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="text-xs font-medium text-fg-default">
+          {share.label?.trim() || share.id}
+        </span>
+        <span className="font-mono text-caption text-fg-subtle">
+          category: {share.category}
+        </span>
+        {share.read_only && <Badge variant="info">read-only</Badge>}
+        {disabled && (
+          <Badge variant="warning">{revoked ? "revoked" : "expired"}</Badge>
+        )}
+        <span className="ml-auto text-caption text-fg-subtle">
+          token …{share.token_last4}
+        </span>
+      </div>
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-caption text-fg-subtle">
+        <span className="truncate">{share.repo_url}#{share.repo_ref}</span>
+        <span aria-hidden>·</span>
+        <span className="truncate">{share.config_path}</span>
+      </div>
+      {(share.allowed_paths?.length ?? 0) > 0 && (
+        <div className="mt-0.5 text-caption text-fg-subtle">
+          fields: {share.allowed_paths.join(", ")}
+        </div>
+      )}
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-caption text-fg-subtle">
+        <span>
+          created {formatRelative(share.created_at)}
+          {share.expires_at && !expired && (
+            <> · expires {formatRelative(share.expires_at)}</>
+          )}
+          {share.last_used_at && <> · last used {formatRelative(share.last_used_at)}</>}
+        </span>
+        <span className="ml-auto flex items-center gap-1.5">
+          <Button variant="secondary" size="sm" onClick={onRotate} disabled={busy}>
+            Rotate token
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onDelete} disabled={busy}>
+            Revoke
+          </Button>
+        </span>
+      </div>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Create dialog
+// ---------------------------------------------------------------------------
+
+const FEED_WATCH_DEFAULT_FIELDS: { key: string; label: string }[] = [
+  { key: "feeds", label: "Feeds (RSS source URLs)" },
+  { key: "editorial", label: "Editorial prompt" },
+];
+const FEED_WATCH_VISIBLE_EXTRA = ["digest_title"];
+
+function CreateShareDialog({
+  teamID,
+  botID,
+  onCancel,
+  onCreated,
+}: {
+  teamID: string;
+  botID: string;
+  onCancel: () => void;
+  onCreated: (minted: ShareWithToken) => void;
+}) {
+  const [label, setLabel] = useState("");
+  const [repoURL, setRepoURL] = useState("");
+  const [repoRef, setRepoRef] = useState("main");
+  const [configPath, setConfigPath] = useState("veille.yaml");
+  const [category, setCategory] = useState("");
+  const [selected, setSelected] = useState<Record<string, boolean>>({
+    feeds: true,
+    editorial: true,
+  });
+  const [readOnly, setReadOnly] = useState(false);
+  const [expiresDays, setExpiresDays] = useState<number | "">(14);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const allowedPaths = useMemo(() => {
+    if (!category.trim()) return [];
+    const cat = category.trim();
+    return FEED_WATCH_DEFAULT_FIELDS.filter((f) => selected[f.key]).map(
+      (f) => `categories.${cat}.${f.key}`,
+    );
+  }, [category, selected]);
+
+  const visiblePaths = useMemo(() => {
+    if (allowedPaths.length === 0) return [];
+    const cat = category.trim();
+    const extras = FEED_WATCH_VISIBLE_EXTRA.map((k) => `categories.${cat}.${k}`);
+    return [...allowedPaths, ...extras];
+  }, [allowedPaths, category]);
+
+  const submitDisabled =
+    !label.trim() ||
+    !repoURL.trim() ||
+    !repoRef.trim() ||
+    !configPath.trim() ||
+    !category.trim() ||
+    allowedPaths.length === 0 ||
+    busy;
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const input: CreateShareInput = {
+        bot_id: botID,
+        label: label.trim(),
+        repo_url: repoURL.trim(),
+        repo_ref: repoRef.trim(),
+        config_path: configPath.trim(),
+        category: category.trim(),
+        allowed_paths: allowedPaths,
+        visible_paths: visiblePaths,
+        read_only: readOnly,
+        ...(typeof expiresDays === "number" && expiresDays > 0
+          ? { expires_days: expiresDays }
+          : {}),
+      };
+      const minted = await createConfigShare(teamID, input);
+      onCreated(minted);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(v) => {
+        if (!v && !busy) onCancel();
+      }}
+      title="Create a config-share link"
+      description="Pick which category and which fields the visitor may edit. The link + token are shown once after creation."
+      widthClass="max-w-xl"
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => void submit()}
+            loading={busy}
+            disabled={submitDisabled}
+          >
+            Mint share link
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3 text-sm">
+        {error && (
+          <InlineBanner tone="danger" layout="inline">
+            {error}
+          </InlineBanner>
+        )}
+        <div>
+          <FieldLabel htmlFor="cs-label">Label</FieldLabel>
+          <Input
+            id="cs-label"
+            size="md"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="e.g. Veille A11y — Alice"
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <FieldLabel htmlFor="cs-repo">Repo URL</FieldLabel>
+            <Input
+              id="cs-repo"
+              size="md"
+              value={repoURL}
+              onChange={(e) => setRepoURL(e.target.value)}
+              placeholder="https://github.com/org/repo"
+              className="font-mono"
+            />
+          </div>
+          <div>
+            <FieldLabel htmlFor="cs-ref">Branch / ref</FieldLabel>
+            <Input
+              id="cs-ref"
+              size="md"
+              value={repoRef}
+              onChange={(e) => setRepoRef(e.target.value)}
+              placeholder="main"
+              className="font-mono"
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <FieldLabel htmlFor="cs-path">Config path</FieldLabel>
+            <Input
+              id="cs-path"
+              size="md"
+              value={configPath}
+              onChange={(e) => setConfigPath(e.target.value)}
+              placeholder="veille.yaml"
+              className="font-mono"
+            />
+          </div>
+          <div>
+            <FieldLabel htmlFor="cs-cat">Category</FieldLabel>
+            <Input
+              id="cs-cat"
+              size="md"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              placeholder="a11y"
+              className="font-mono"
+            />
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Editable fields</FieldLabel>
+          <div className="flex flex-col gap-1 rounded-md border border-border-default bg-surface-2 p-2">
+            {FEED_WATCH_DEFAULT_FIELDS.map((f) => (
+              <div key={f.key} className="flex items-center gap-2 text-xs">
+                <Checkbox
+                  checked={!!selected[f.key]}
+                  onChange={(e) =>
+                    setSelected((s) => ({ ...s, [f.key]: e.target.checked }))
+                  }
+                  label={f.label}
+                />
+                <span className="ml-auto font-mono text-caption text-fg-subtle">
+                  {category.trim()
+                    ? `categories.${category.trim()}.${f.key}`
+                    : `categories.<category>.${f.key}`}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-1 text-caption text-fg-subtle">
+            Read-only context (visible but not editable):{" "}
+            <span className="font-mono">digest_title</span>
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          <Checkbox
+            checked={readOnly}
+            onChange={(e) => setReadOnly(e.target.checked)}
+            label="Read-only share"
+          />
+          <div className="flex items-center gap-2 text-xs">
+            <label htmlFor="cs-exp">Expires in</label>
+            <Input
+              id="cs-exp"
+              type="number"
+              min={1}
+              size="sm"
+              value={expiresDays}
+              onChange={(e) => {
+                const n = e.target.value === "" ? "" : Number(e.target.value);
+                setExpiresDays(Number.isFinite(n) ? (n as number) : "");
+              }}
+              className="w-16 font-mono"
+            />
+            <span className="text-fg-subtle">days</span>
+          </div>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Token-once dialog — the ONE moment the plaintext token is on screen.
+// ---------------------------------------------------------------------------
+
+function TokenOnceDialog({
+  minted,
+  onClose,
+}: {
+  minted: ShareWithToken;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      open
+      onOpenChange={(v) => {
+        if (!v) onClose();
+      }}
+      title="Share link — copy it now"
+      description="The token is shown only this once. If you lose it, rotate the share to mint a fresh one."
+      widthClass="max-w-2xl"
+      stack="confirm"
+      footer={
+        <Button variant="primary" size="sm" onClick={onClose}>
+          Done — hide token
+        </Button>
+      }
+    >
+      <div className="space-y-3 text-sm">
+        <section>
+          <div className="text-xs uppercase tracking-wider text-fg-muted">
+            Complete link (URL + token)
+          </div>
+          <div className="flex items-center gap-2 rounded border border-border-subtle bg-surface-0 p-2 font-mono text-xs break-all">
+            <span className="flex-1" data-testid="config-share-url">
+              {minted.url}
+            </span>
+            <CopyButton value={minted.url} variant="icon" />
+          </div>
+          <p className="mt-1 text-caption text-fg-subtle">
+            Send this whole URL to the editor. The part after{" "}
+            <code className="font-mono">#</code> is the credential — chat apps
+            that strip fragments will break the link.
+          </p>
+        </section>
+        <section>
+          <div className="text-xs uppercase tracking-wider text-fg-muted">
+            Token alone
+          </div>
+          <div className="flex items-center gap-2 rounded border border-border-subtle bg-surface-0 p-2 font-mono text-xs break-all">
+            <span className="flex-1">{minted.token}</span>
+            <CopyButton value={minted.token} variant="icon" />
+          </div>
+        </section>
+        <InlineBanner tone="warning" layout="inline">
+          Once you close this dialog, the token is gone from this session. Only
+          the last 4 characters (…{minted.token_last4}) remain visible for
+          identification.
+        </InlineBanner>
+      </div>
+    </Dialog>
+  );
+}

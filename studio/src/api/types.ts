@@ -146,6 +146,12 @@ export interface ServerInfo {
   // triggers_enabled is true when the event-driven trigger store is wired.
   // The SPA exposes the Automations (Triggers) view + nav entry conditionally.
   triggers_enabled?: boolean;
+  // config_shares_enabled is true when the scoped config-share editor is wired
+  // (store + generic-secret stack + auth). The SPA exposes the operator "Share
+  // config" surface on the bot home when set; the shell-less /config/:id
+  // editor route is always mounted (a public link renders its own error state
+  // when the share is unknown or the feature is off).
+  config_shares_enabled?: boolean;
   // plugins_enabled is always true: the plugin registry is available in every
   // mode, so the SPA can surface the Plugins management view + nav entry.
   plugins_enabled?: boolean;
