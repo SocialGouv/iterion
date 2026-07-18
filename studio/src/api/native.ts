@@ -177,7 +177,8 @@ export interface PushIssueResult {
   provider: string;
 }
 
-// PullRef mirrors a forge pull/merge request linked to the issue.
+// PullRef mirrors a forge pull request (merge request on GitLab) linked to
+// the issue.
 export interface PullRef {
   number: number;
   title: string;
@@ -265,14 +266,15 @@ export function pushIssueToForge(id: string, body?: PushIssueBody): Promise<Push
   });
 }
 
-// listIssuePulls returns the forge pull/merge requests linked to a card.
+// listIssuePulls returns the forge pull requests (merge requests on GitLab)
+// linked to a card.
 export function listIssuePulls(id: string): Promise<PullRef[]> {
   return request<{ pulls: PullRef[] }>(`/issues/${encodeURIComponent(id)}/pulls`).then(
     (r) => r.pulls ?? [],
   );
 }
 
-// CreateIssuePullBody opens a PR/MR linking the card to a forge. A forge-linked
+// CreateIssuePullBody opens a PR linking the card to a forge. A forge-linked
 // card reuses its connection + repo (omit connection_id/repo); an unlinked card
 // must supply both connection_id and repo ("owner/repo"). title/body default
 // server-side from the card when omitted.
@@ -286,8 +288,8 @@ export interface CreateIssuePullBody {
   draft?: boolean;
 }
 
-// createIssuePull opens a forge pull/merge request for the card and returns the
-// new PR ref.
+// createIssuePull opens a forge pull request (merge request on GitLab) for the
+// card and returns the new PR ref.
 export function createIssuePull(id: string, body: CreateIssuePullBody): Promise<PullRef> {
   return request(`/issues/${encodeURIComponent(id)}/pulls`, {
     method: "POST",

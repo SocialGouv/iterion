@@ -1,11 +1,11 @@
 ---
 name: forge-reply
-description: How to POST a reply note in an EXISTING pull/merge-request discussion thread on GitHub, GitLab, or Forgejo/Gitea. Read this before posting the answer note. Enforces the anti-trigger-loop rule (never begin the body with `/revi` or `/ask`).
+description: How to POST a reply note in an EXISTING pull-request (merge-request on GitLab) discussion thread on GitHub, GitLab, or Forgejo/Gitea. Read this before posting the answer note. Enforces the anti-trigger-loop rule (never begin the body with `/revi` or `/ask`).
 ---
 
-# Posting an answer in an existing PR/MR discussion thread
+# Posting an answer in an existing PR discussion thread
 
-You are answering an operator's question on an open MR/PR. The answer must
+You are answering an operator's question on an open PR. The answer must
 land as a REPLY in the SAME discussion thread the operator's note opened
 (`{{vars.discussion_id}}`), not as a new top-level comment. You POST one
 note — you NEVER edit, fix, or commit the workspace.
@@ -44,7 +44,7 @@ Parse the URL host:
 - otherwise assume **Forgejo / Gitea** → REST API.
 
 Derive `<host>`, `<group>/<project>` (or `<owner>/<repo>`) and the
-MR/PR iid/number directly from `{{vars.pr_url}}`. URL-encode the
+PR iid/number directly from `{{vars.pr_url}}`. URL-encode the
 project path when calling GitLab.
 
 ## 2. Read the forge_token (file secret)
@@ -178,7 +178,7 @@ asking a sharp question; an essay is worse than a paragraph.
 Re: {{vars.replier}} — "<short echo of the question>"
 
 <3-8 sentences answering. Anchor every claim to file:line in the diff
-or an explicit "based on the MR description" / "based on Revi's
+or an explicit "based on the PR description" / "based on Revi's
 earlier finding X" attribution. Quote ≤3 lines of code with a markdown
 fence when it sharpens the answer.>
 

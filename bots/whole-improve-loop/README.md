@@ -79,7 +79,7 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ gate
   converged → back to `campaign`; a RED gate carries the failure log so the
   agent fixes what it broke, a green-but-more-work pass carries an empty log so
   the agent simply continues.
-- **`mr_gate` → `finalize_mr`** is the opt-in MR/PR path shipping the series of
+- **`mr_gate` → `finalize_mr`** is the opt-in PR path shipping the series of
   per-pass commits (`open_mr`).
 
 ## Convergence & bounding
@@ -129,7 +129,7 @@ while remaining universal: the agent writes the repo's own build/test into
 | `scope_notes` | Free-form extra context for the campaign agent. |
 | `baseline` | **G5** — known pre-existing failures / flaky tests the campaign must SKIP (empty = it establishes the baseline once cheaply, then skips what predates its work). |
 | `max_passes` | Hard cap on continuation passes (default 8) — the convergence backstop; sizes the declared loop. |
-| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | Opt-in MR/PR path shipping the series of per-pass commits. |
+| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | Opt-in PR path shipping the series of per-pass commits. |
 | `workspace_dir` | Target repo (defaults to `${PROJECT_DIR}` → the run's worktree). |
 | `scratch_dir` | Out-of-tree working files (the gate's `verify.sh` / `verify.log` only — git is the state). Default `${PROJECT_SCRATCH_DIR}/whole-improve-loop`, engine-resolved off the repo — never inside the target worktree. |
 

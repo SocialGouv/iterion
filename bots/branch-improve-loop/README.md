@@ -30,7 +30,7 @@ committing each fix **as it finishes** (never batch).
 
 Same v2 shape as [`whole_improve_loop`](../whole-improve-loop/main.bot)
 (ADR-058): one adaptive `campaign` agent + a deterministic build/test gate + a
-bounded continuation loop + git-as-state + an opt-in MR path. The **only**
+bounded continuation loop + git-as-state + an opt-in PR path. The **only**
 difference is scope — `whole_improve_loop` applies ONE determined **axis**
 across the whole codebase; `branch_improve_loop` reviews+improves the **diff of
 one branch**. `whole_improve_loop`'s AXIS is replaced here by the branch diff
@@ -86,7 +86,7 @@ campaign ──▶ verify_build ──▶ verify_run ──▶ gate
   → back to `campaign`; a RED gate carries the failure log so the agent fixes
   what it broke, a green-but-more-work pass carries an empty log so the agent
   simply keeps reviewing.
-- **`mr_gate` → `finalize_mr`** is the opt-in MR/PR path shipping the series of
+- **`mr_gate` → `finalize_mr`** is the opt-in PR path shipping the series of
   per-pass commits (`open_mr`).
 
 ## Convergence & bounding
@@ -150,7 +150,7 @@ while remaining universal: the agent writes the repo's own build/test into
 | `scope_notes` | `""` | Free-form extra context for the campaign agent. |
 | `baseline` | `""` | **G5** — known pre-existing failures / flaky tests the campaign must SKIP (empty = it establishes the baseline once cheaply against `base_ref`). |
 | `max_passes` | `8` | Hard cap on continuation passes — the convergence backstop; sizes the declared loop. |
-| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | off | Opt-in MR/PR path shipping the series of per-pass commits (`mr_base` empty = `base_ref`). |
+| `open_mr` / `mr_branch` / `mr_base` / `source_issue_ref` | off | Opt-in PR path shipping the series of per-pass commits (`mr_base` empty = `base_ref`). |
 | `scratch_dir` | `${PROJECT_SCRATCH_DIR}/branch-improve-loop` | Out-of-tree working files (the gate's `verify.sh` / `verify.log` only — git is the state). |
 
 ## Run

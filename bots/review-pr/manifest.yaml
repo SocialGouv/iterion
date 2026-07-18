@@ -8,8 +8,8 @@ description: |
   (Claude + GPT), merges and de-duplicates their findings (cross-family
   agreement raises confidence), then publishes one issue per finding to
   the iterion native kanban board (labelled severity + type +
-  source:revi) and writes a markdown report. Given a pull/merge-request
-  URL (--var pr_url), it ALSO posts the findings onto that PR as a real
+  source:revi) and writes a markdown report. Given a pull-request URL
+  (PR; merge request on GitLab; --var pr_url), it ALSO posts the findings onto that PR as a real
   forge review — inline comments anchored to file:line with one-click
   ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
   or commits code — that is the improve-loops' job (Billy / Willy).
@@ -32,7 +32,7 @@ dispatch_vars:
 # Forge-access requirements for the studio Integrations auto-provisioner
 # (advisory + discovery-time — the runtime does not read this).
 forge:
-  events: [pull_request, pull_request_comment]  # MR/PR open → review ; /revi note → re-review
+  events: [pull_request, pull_request_comment]  # PR open → review ; /revi note → re-review
   token_scopes:
     pull_requests: write     # post the review + inline ```suggestion blocks
     repository: read         # clone + read the diff
@@ -42,7 +42,7 @@ forge:
       pr_review_mode: summary
       post_to_board: "false"
   rationale: |
-    Revi reads the MR/PR diff and posts one forge review with inline
+    Revi reads the PR diff and posts one forge review with inline
     comments + ```suggestion blocks. /revi in a note triggers a
     re-review on the same PR.
 

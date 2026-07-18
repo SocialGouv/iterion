@@ -14,7 +14,7 @@
 ##
 ## Sibling of `whole_improve_loop` v2: SAME shape (one adaptive `campaign`
 ## agent + a deterministic build/test gate + a bounded continuation loop +
-## git-as-state + the opt-in MR path), DIFFERENT scope — whole_improve_loop
+## git-as-state + the opt-in PR path), DIFFERENT scope — whole_improve_loop
 ## applies ONE determined axis across the whole codebase; branch_improve_loop
 ## reviews+improves the diff of ONE branch. `whole_improve_loop`'s AXIS is
 ## replaced here by the branch diff itself: `base_ref` + the diff define the
@@ -54,7 +54,7 @@
 ##                  → ship; else loop back to `campaign` (RED → with the
 ##                  failure log so the agent fixes what it broke; green but
 ##                  issues remain → another pass). No LLM, no shell.
-##   mr_gate      — deterministic: open the optional MR/PR (the series of
+##   mr_gate      — deterministic: open the optional PR (the series of
 ##     + finalize_mr per-pass commits) when open_mr, else finish.
 ##
 ## CONTINUATION IS BOUNDED. The single declared loop
@@ -136,23 +136,24 @@ vars:
   ## dogfood 019f3d4d-1aed).
   max_passes: int = 8
 
-  ## ─── MR/PR finalization (opt-in) ───────────────────────────────
+  ## ─── PR finalization (opt-in) ───────────────────────────────
   ## When open_mr=true, after convergence finalize_mr pushes the run's HEAD
-  ## (the SERIES of per-pass commits) to the forge and opens a merge/pull
-  ## request. Off by default so a plain local run just leaves the commits on
-  ## the operator's branch. The comment→MR trigger sets this true. This bot
+  ## (the SERIES of per-pass commits) to the forge and opens a pull
+  ## request (PR; merge request on GitLab). Off by default so a plain
+  ## local run just leaves the commits on
+  ## the operator's branch. The comment→PR trigger sets this true. This bot
   ## runs in a per-run git worktree (worktree: auto), so the commits advance
   ## the worktree HEAD and finalize_mr pushes that branch. Requires a
   ## forge_token secret (or host-authenticated gh/glab).
   open_mr: bool = false
-  ## Branch name to push + open the MR from. Empty = derive a stable name
+  ## Branch name to push + open the PR from. Empty = derive a stable name
   ## from the run (iterion/improve/<run-id>).
   mr_branch: string = ""
-  ## Integration base the MR targets. Empty = vars.base_ref.
+  ## Integration base the PR targets. Empty = vars.base_ref.
   mr_base: string = ""
   ## Optional back-link target: the source issue this run answers, as
   ## "native:<id>" (local board) or a forge issue URL. When set, finalize_mr
-  ## posts the opened MR's URL back as a comment on it.
+  ## posts the opened PR's URL back as a comment on it.
   source_issue_ref: string = ""
   ## PR-context push-back: the existing forge branch the run's commits belong
   ## to (the PR's source branch). When set with open_mr=false and the campaign
@@ -169,7 +170,7 @@ vars:
   pr_url: string = ""
 
 secrets:
-  ## Forge access for push + MR creation + the issue back-link. Mounted as a
+  ## Forge access for push + PR creation + the issue back-link. Mounted as a
   ## read-only file the gh/glab CLI authenticates from; never read into a
   ## prompt. optional:true so manual/local runs relying on host-authenticated
   ## gh/glab still work. See skills/forge-mr-create.md.
@@ -353,11 +354,11 @@ prompt verify_user:
   skill). Do NOT change code; the deterministic gate runs your script and the
   campaign fixes any red on the next pass.
 
-## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
+## ─── PR finalization prompts (opt-in) ────────────────────────────
 
 prompt review_system:
   You are an adversarial code reviewer running as a stage INSIDE the branch
-  loop, BEFORE the work is pushed back / opened as an MR. Your job is to
+  loop, BEFORE the work is pushed back / opened as a PR. Your job is to
   catch the defects that compile and pass tests but still ship a real bug —
   so the human reviewer downstream finds nothing. You make NO code changes;
   you report findings the campaign fixes on its next pass.
@@ -406,30 +407,31 @@ prompt review_user:
   return specific, actionable findings for the campaign to fix.
 
 prompt finalize_mr_system:
-  You finalize a converged branch-improvement run by opening ONE merge/pull
-  request for the SERIES of per-pass commits this run produced, then
-  (optionally) posting the MR link back to the source issue. You make NO
+  You finalize a converged branch-improvement run by opening ONE pull
+  request (PR; merge request on GitLab) for the SERIES of per-pass
+  commits this run produced, then
+  (optionally) posting the PR link back to the source issue. You make NO
   further code changes.
 
   Read the `forge-mr-create` skill FIRST — it tells you how to detect the
   forge, authenticate from the mounted forge_token, push the branch, and open
-  the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+  the PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
 
   Procedure:
     1. Confirm there are commits to ship: the run's HEAD must be ahead of the
        base (`git rev-list --count <base>..HEAD` > 0). If not, set
        opened=false with skipped_reason "no commits ahead of base" — do NOT
-       open an empty MR.
+       open an empty PR.
     2. Determine the branch name (mr_branch if set, else a stable
        iterion/improve/<run-id> name) and the base (mr_base if set, else
        base_ref).
     3. Authenticate the matching forge CLI from the mounted forge_token file
        when present; otherwise assume host auth. If neither is available, set
        opened=false with a precise skipped_reason — never pretend.
-    4. Push HEAD to the branch on the origin remote, then open the MR/PR from
+    4. Push HEAD to the branch on the origin remote, then open the PR from
        that branch into the base, with a clear title + body summarising the
        branch improvements landed (use scope_notes for context).
-    5. If source_issue_ref is set, post the opened MR URL back to it: a forge
+    5. If source_issue_ref is set, post the opened PR URL back to it: a forge
        issue URL → comment via the same forge CLI; a "native:<id>" ref → use
        the board comment tool. Set back_linked accordingly.
 
@@ -443,7 +445,7 @@ prompt finalize_mr_user:
   Source issue to back-link (may be empty): {{input.source_issue_ref}}
   Context / scope: {{input.scope_notes}}
 
-  Push the branch, open the MR/PR, post the back-link when a source issue is
+  Push the branch, open the PR, post the back-link when a source issue is
   given, and return the structured result.
 
 prompt post_feedback_system:
@@ -775,7 +777,7 @@ compute gate:
 ## mr_gate routes the post-convergence tail into at most ONE of two
 ## mutually-exclusive booleans (the unconditional edge to done is the C012
 ## fallback when neither matches): open_mr (finalize path), push_back
-## (PR-context: no MR wanted but a target forge branch is declared — whether
+## (PR-context: no PR wanted but a target forge branch is declared — whether
 ## anything NEW exists to push is decided by push_back_tool's own rev-list,
 ## the in-repo truth across all passes). No LLM, no shell.
 compute mr_gate:
@@ -914,7 +916,7 @@ print(json.dumps({'pushed': False, 'reason': 'push failed after 3 rebase-retries
 "`
   output: push_state
 
-## finalize_mr — opt-in MR/PR creation shipping the SERIES of per-pass commits.
+## finalize_mr — opt-in PR creation shipping the SERIES of per-pass commits.
 ## claude_code so the bundled forge-mr-create skill is mirrored and the board
 ## comment tool (native back-link) is available. Only reached when
 ## forge_auth_probe confirmed a push credential exists.
@@ -928,7 +930,7 @@ agent finalize_mr:
   user: finalize_mr_user
   tools: [bash, read_file, glob, grep]
   capabilities: [board.read, board.comment]
-  ## 20 is ample for push + open-MR + back-link (~5-8 commands nominal); 40 was
+  ## 20 is ample for push + open-PR + back-link (~5-8 commands nominal); 40 was
   ## headroom for a degenerate credential-probe spin that forge_auth_probe now
   ## makes impossible (the node is only entered when a push credential exists).
   tool_max_steps: 20
@@ -1007,7 +1009,7 @@ workflow branch_improve_loop:
   review -> gate
 
   ## Converged (green AND the campaign reports the branch diff clean) → ship
-  ## what is banked (optional MR, else finish).
+  ## what is banked (optional PR, else finish).
   gate -> mr_gate when converged
   ## Not converged → another campaign pass. RED carries the failure log so the
   ## agent fixes what it broke; green-but-more-work carries an empty log so the
@@ -1023,7 +1025,7 @@ workflow branch_improve_loop:
   ## Unconditional fallthrough after the loop-back retries are spent.
   gate -> mr_gate
 
-  ## Converged (or capped) → exactly one of: MR path, PR push-back path, or
+  ## Converged (or capped) → exactly one of: PR path, PR push-back path, or
   ## finish (mr_gate's three booleans are mutually exclusive). Each remote
   ## path first pays a ~100ms deterministic credential probe before any
   ## agent/push work.
@@ -1051,7 +1053,7 @@ workflow branch_improve_loop:
   post_pr_feedback -> done
 
   ## Push credential present → finalize_mr pushes the run's HEAD (the series of
-  ## per-pass commits) + opens the MR/PR and (when source_issue_ref is set)
+  ## per-pass commits) + opens the PR and (when source_issue_ref is set)
   ## posts the URL back. Absent → finish cleanly; the commits are on the
   ## engine's persistent iterion/run/<name> storage branch for a manual push.
   forge_auth_probe -> finalize_mr when available with {

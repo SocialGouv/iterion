@@ -1,11 +1,11 @@
 ---
 name: forge-pr-review
-description: How to publish a code review onto a GitHub / GitLab / Forgejo-Gitea pull/merge request as inline comments with one-click ```suggestion blocks. Read this before the publish_review step posts anything.
+description: How to publish a code review onto a GitHub / GitLab / Forgejo-Gitea pull request (merge request on GitLab) as inline comments with one-click ```suggestion blocks. Read this before the publish_review step posts anything.
 ---
 
 # Publishing a review onto a forge PR
 
-You are turning a finished, merged finding set into ONE pull/merge-request
+You are turning a finished, merged finding set into ONE pull-request
 review: an inline comment per finding, anchored to `file:line` in the
 PR's diff, with a one-click `suggestion` block when the finding carries a
 concrete `replacement`. You only POST comments — never edit, fix, or

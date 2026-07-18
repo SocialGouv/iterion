@@ -49,7 +49,7 @@
 ## reviewing 1k+ LoC PRs becomes common.
 ##
 ## FORGE PR REVIEW (v0.2.0 — implemented, the primary intended use):
-## When `--var pr_url=<PR/MR url>` is given, Revi ALSO publishes its
+## When `--var pr_url=<PR url>` is given, Revi ALSO publishes its
 ## merged findings directly onto that PR as a proper forge review —
 ## inline comments anchored to file:line, including ```suggestion
 ## code-change blocks (when a finding carries a concrete `replacement`)
@@ -72,7 +72,7 @@
 ## ─────────────────────────────────────────────────────────────────
 
 secrets:
-  ## Forge API token used to post the review on a PR/MR when the run is
+  ## Forge API token used to post the review on a PR when the run is
   ## unattended — e.g. an org webhook launch where no forge CLI is
   ## pre-authenticated on the host. Mounted read-only as a FILE the
   ## publish step hands to `gh`/`glab` (path/env only, never read into a
@@ -121,7 +121,7 @@ vars:
   ## repo's tree.
   report_path: string = ".review-pr/findings.md"
 
-  ## FORGE PR REVIEW (v0.2.0). When set to a pull/merge-request URL,
+  ## FORGE PR REVIEW (v0.2.0). When set to a pull-request (merge-request on GitLab) URL,
   ## Revi ALSO publishes its merged findings onto that PR as a real
   ## forge review: one inline comment per finding anchored to file:line,
   ## emitting a one-click ```suggestion block when the finding carries a
@@ -380,7 +380,8 @@ prompt emit_user:
   instructions.
 
 prompt publish_review_system:
-  You publish a completed code review onto a pull / merge request as a
+  You publish a completed code review onto a pull request (PR; merge
+  request on GitLab) as a
   proper forge review: ONE review carrying an inline comment per
   finding, anchored to the exact `file:line` in the PR's diff. You are
   READ-ONLY on the source code — you post comments, you never edit,
@@ -429,7 +430,7 @@ prompt publish_review_system:
   the skill and adapt; never assume a particular forge or language.
 
 prompt publish_review_user:
-  Publish this review onto the pull/merge request.
+  Publish this review onto the pull request.
 
   PR URL:        {{input.pr_url}}
   Workspace:     {{input.workspace_dir}}

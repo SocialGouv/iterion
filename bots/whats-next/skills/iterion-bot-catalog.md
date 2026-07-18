@@ -344,8 +344,8 @@ build/test gate + adversarial self-review re-check every pass, and
 an opt-in draft-review gate lets the operator ship, request changes
 (feedback loops back into the campaign), or hold. Re-running against
 the generated app EVOLVES it (brownfield detection) instead of
-re-scaffolding. Opt-in MR tail pushes the series and opens the
-merge/pull request.
+re-scaffolding. An opt-in tail pushes the series and opens the
+pull request (PR; merge request on GitLab).
 
 - **Use when**:
   Use to create a NEW application from a natural-language brief —
@@ -400,7 +400,8 @@ re-checks the tree after each pass (the anti-Goodhart truth oracle: the agent
 can't self-certify); RED routes back with the failure log, green + branch
 clean converges. git IS the durable state — an interrupted / budget-capped
 run keeps every committed fix, and a re-dispatch re-runs the campaign. Bounded
-by a max_passes cap. Optional MR/PR path ships the series of per-pass commits.
+by a max_passes cap. An optional PR path (merge request on GitLab) ships the
+series of per-pass commits.
 Sibling of whole-improve-loop v2 (ADR-058). See
 docs/references/productive-session-patterns.md.
 
@@ -560,8 +561,8 @@ campaign explores, builds a living todo of slices, and ships the
 feature one verified semantic commit at a time (tests included, ADRs
 authored for non-trivial decisions). A deterministic build/test gate +
 bounded continuation loop re-poke it until the feature is complete and
-the tree is green; an opt-in MR tail pushes the series and opens the
-merge/pull request.
+the tree is green; an opt-in tail pushes the series and opens the
+pull request (PR; merge request on GitLab).
 
 - **Use when**:
   Use when an item can be phrased as one feature with a clear,
@@ -670,9 +671,9 @@ human / subbot only — no API keys, runs in seconds.
 ### `revi-converse` — Revi (converse)
 
 Conversational sibling of Revi (review-pr). Triggered when an
-authorized forge user asks a focused QUESTION on an open merge /
-pull request — `/revi <question>` (e.g.
-`/revi why is the SSRF critical?`). Reads the question + the MR
+authorized forge user asks a focused QUESTION on an open pull
+request (PR; merge request on GitLab) — `/revi <question>` (e.g.
+`/revi why is the SSRF critical?`). Reads the question + the PR
 diff against the branch's merge-base, formulates a CONCISE,
 GROUNDED answer (a senior code reviewer's follow-up — not a
 fresh full review), and posts the answer as a REPLY in the same
@@ -682,10 +683,10 @@ webhook handler routes to review-pr for a fresh re-review
 instead.
 
 - **Use when**:
-  Use when an operator asks a follow-up question on an open MR
+  Use when an operator asks a follow-up question on an open PR
   about Revi's earlier findings or the diff itself — clarification,
   rationale, severity justification, alternative fixes. NOT for
-  re-reviewing the MR (that is review-pr / Revi), NOT for editing
+  re-reviewing the PR (that is review-pr / Revi), NOT for editing
   code (that is Billy or Featurly), NOT for triaging issues on the
   board.
 - **Triggers**: revi-converse, ask, converse
@@ -699,8 +700,8 @@ of the current branch against its base with two independent reviewers
 (Claude + GPT), merges and de-duplicates their findings (cross-family
 agreement raises confidence), then publishes one issue per finding to
 the iterion native kanban board (labelled severity + type +
-source:revi) and writes a markdown report. Given a pull/merge-request
-URL (--var pr_url), it ALSO posts the findings onto that PR as a real
+source:revi) and writes a markdown report. Given a pull-request URL
+(PR; merge request on GitLab; --var pr_url), it ALSO posts the findings onto that PR as a real
 forge review — inline comments anchored to file:line with one-click
 ```suggestion blocks (GitHub / GitLab / Forgejo). Never edits, fixes,
 or commits code — that is the improve-loops' job (Billy / Willy).
@@ -845,8 +846,8 @@ trivy CVE baseline, and an LLM deep-read of install scripts /
 entry points when heuristics are inconclusive. A deterministic
 coverage gate hard-fails when the scanner floor did not run so a
 missing analyzer never reads as "0 malware found". Confirmed findings
-are reported back onto the PR/MR via the native forge API (GitHub /
-GitLab / Forgejo) — a sticky summary comment, inline review comments,
+are reported back onto the PR (merge request on GitLab) via the
+native forge API (GitHub / GitLab / Forgejo) — a sticky summary comment, inline review comments,
 and a SARIF / code-scanning upload — and emitted to the kanban board.
 
 Cross-run memory: the package cache is shared (a published package
@@ -876,7 +877,8 @@ osv-scanner, no install needed) plus the per-ecosystem SCA scanners
 (npm audit / pip-audit / govulncheck), validates each advisory
 against the resolved version (affected range / fixed version / Go
 reachability) with an LLM reviewer, and reports confirmed CVEs back
-onto the PR/MR via the native forge API (sticky comment, inline
+onto the PR (merge request on GitLab) via the native forge API
+(sticky comment, inline
 review, SARIF / code-scanning) and the kanban board. A deterministic
 coverage gate hard-fails when the CVE floor did not run so a missing
 scanner never reads as "0 CVEs found".
@@ -986,8 +988,8 @@ failure log to fix what it broke, green + axis-complete converges. git IS the
 durable state — an interrupted / budget-capped run keeps every committed
 site, and a re-dispatch re-runs the campaign, which reads `git log` and
 continues (no worklist/cursor scratch). Bounded by a max_passes cap so a
-pathological axis terminates. Optional MR/PR path ships the series of
-per-pass commits. Supersedes the v1 axis-sweep (ADR-057). See
+pathological axis terminates. An optional PR path (merge request on
+GitLab) ships the series of per-pass commits. Supersedes the v1 axis-sweep (ADR-057). See
 docs/references/productive-session-patterns.md.
 
 - **Use when**:

@@ -4,8 +4,8 @@ A PR / push-driven, **diff-scoped** malware gate for dependency changes.
 Where `sec-audit-deps` (Depsy) runs a full-tree weekly audit emitting
 only to the board, Shieldy inspects **only the dependency versions a
 change adds or upgrades**, reuses a **shared cache** so a version is
-analysed once, and **reports back onto the PR/MR** via the native forge
-API. The CVE-focused sibling is `supply-shield-cve` (Vulny).
+analysed once, and **reports back onto the PR** (merge request on
+GitLab) via the native forge API. The CVE-focused sibling is `supply-shield-cve` (Vulny).
 
 ## What it does
 
@@ -21,7 +21,7 @@ API. The CVE-focused sibling is `supply-shield-cve` (Vulny).
    floor did not run, so a missing analyzer never reads as "0 malware".
 4. **Shared store** — every `(ecosystem, name, version, checksum)` verdict
    (`kind: malware`) is cached and reused across runs / PRs / repos.
-5. **Reports back** — sticky PR/MR summary comment + inline review +
+5. **Reports back** — sticky PR summary comment + inline review +
    SARIF / code-scanning upload (GitHub / GitLab / Forgejo), plus board
    cards labelled `source:supply-shield`.
 

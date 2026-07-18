@@ -37,7 +37,7 @@ interface CommitsPanelProps {
   onMergeComplete?: () => void;
 }
 
-// CommitsPanel is the GitHub-PR-style listing for the run: every
+// CommitsPanel is the PR-style listing for the run: every
 // workflow `git commit` shows up as a row, and once the run has
 // finished a merge form lets the user pick squash vs merge and
 // confirm. Mounted inside LeftPanel; visible when the Commits tab
@@ -442,7 +442,7 @@ function MergeFooter({
 // SquashMessageEditor renders the proposed squash commit message in two
 // modes: a readonly `<pre>` preview with a small Edit button (default),
 // or an editable Textarea with a Reset button (after first edit).
-// Behaves like GitHub's PR-merge dialog so the user sees what will
+// Behaves like a forge's PR-merge dialog so the user sees what will
 // land on `main` before clicking and only types when they need to
 // override the workflow's auto-generated message.
 function SquashMessageEditor({

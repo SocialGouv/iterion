@@ -29,7 +29,8 @@ description: |
   can't self-certify); RED routes back with the failure log, green + branch
   clean converges. git IS the durable state — an interrupted / budget-capped
   run keeps every committed fix, and a re-dispatch re-runs the campaign. Bounded
-  by a max_passes cap. Optional MR/PR path ships the series of per-pass commits.
+  by a max_passes cap. An optional PR path (merge request on GitLab) ships the
+  series of per-pass commits.
   Sibling of whole-improve-loop v2 (ADR-058). See
   docs/references/productive-session-patterns.md.
 when_to_use: |
@@ -48,21 +49,21 @@ dispatch_vars:
     {{issue.title}}
 
     {{issue.body}}
-  ## Board/comment-dispatched runs open a merge/pull request at the end
+  ## Board/comment-dispatched runs open a pull request at the end
   ## and post the URL back onto the source issue. CLI runs keep the
   ## defaults (open_mr=false) so a plain local run just commits.
   open_mr: "true"
   source_issue_ref: "{{issue.id}}"
 
-## Forge access for the MR/PR push + creation + the issue back-link.
+## Forge access for the PR push + creation + the issue back-link.
 ## The auto-provisioner requests these scopes and binds the connection
 ## token under `forge_token` (cross-ref main.bot `secrets: { forge_token }`).
 forge:
   events: [pull_request_comment]
   token_scopes:
-    pull_requests: write     # open the MR/PR
+    pull_requests: write     # open the PR
     repository: write         # push the branch
-    issues: write             # post the MR URL back onto the source issue
+    issues: write             # post the PR URL back onto the source issue
   secret: forge_token
 
 invocations:

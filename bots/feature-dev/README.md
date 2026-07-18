@@ -8,9 +8,9 @@ semantic commit at a time — tests included, ADRs authored for
 non-trivial decisions, out-of-scope observations filed to the board. A
 deterministic build/test gate re-checks the tree after each pass; a
 bounded continuation loop re-pokes the campaign until the feature is
-complete and the tree is green. git is the durable state. An opt-in MR
-tail pushes the series and opens the merge/pull request (the
-issue-label → PR lineage).
+complete and the tree is green. git is the durable state. An opt-in
+tail pushes the series and opens the pull request (PR; merge request
+on GitLab — the issue-label → PR lineage).
 
 ## Inputs
 
@@ -20,8 +20,8 @@ issue-label → PR lineage).
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` (the run's worktree — do not override) |
 | `baseline` | no | Known pre-existing failures to SKIP (empty = cheap stash-check once) |
 | `max_passes` | no | Continuation-loop cap (default 8) |
-| `open_mr` | no | Push the series + open an MR/PR on convergence (default false) |
-| `mr_branch` / `mr_base` / `source_issue_ref` | no | MR wiring — see main.bot |
+| `open_mr` | no | Push the series + open a PR on convergence (default false) |
+| `mr_branch` / `mr_base` / `source_issue_ref` | no | PR wiring — see main.bot |
 
 ## Shape (v2 — one agent, minimal framing)
 
@@ -42,7 +42,7 @@ mr_gate → done         when not open_mr
   (see `skills/verify-build.md`), a tool node re-runs it and gates on
   the real exit code.
 - `gate` — deterministic compute: `converged = passed && feature_complete`.
-- `finalize_mr` — opt-in: pushes the series, opens the MR/PR
+- `finalize_mr` — opt-in: pushes the series, opens the PR
   (`skills/forge-mr-create.md`), back-links the source issue.
 
 The v1 staged pipeline (plan → act → simplify session chain →

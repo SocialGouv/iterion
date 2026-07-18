@@ -130,7 +130,7 @@ For GitLab swap the user to `oauth2:${TOKEN}`; for Forgejo/Gitea
 
 ## 6. Posting the comment (forge REST + token)
 
-Post ONE PR/MR comment via the forge REST API (no host `gh`/`glab` — use
+Post ONE PR comment via the forge REST API (no host `gh`/`glab` — use
 the token directly so it works in the sandbox). Detect the forge from the
 PR URL host:
 

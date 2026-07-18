@@ -22,7 +22,7 @@ app EVOLVES it (brownfield detection) instead of re-scaffolding.
 | `workspace_dir` | no | Defaults to `${PROJECT_DIR}` — do not override |
 | `baseline` | no | Pre-existing failures to SKIP (meaningful on brownfield re-runs) |
 | `max_passes` / `max_interview_turns` / `max_draft_loops` | no | Loop caps (10 / 30 / 5) |
-| `open_mr` + `mr_branch` / `mr_base` / `source_issue_ref` | no | Opt-in MR tail — needs a forge remote |
+| `open_mr` + `mr_branch` / `mr_base` / `source_issue_ref` | no | Opt-in PR tail — needs a forge remote |
 
 ## Shape
 

@@ -10,7 +10,7 @@
 ## Sibling of `feature_dev` v2: SAME campaign shape (ADR-058 — one
 ## adaptive `campaign` agent + a deterministic build/test gate + an
 ## adversarial in-loop review + a bounded continuation loop +
-## git-as-state + the opt-in MR tail), DIFFERENT scope: the target is
+## git-as-state + the opt-in PR tail), DIFFERENT scope: the target is
 ## a NEW application in a (possibly empty, possibly non-git) workspace,
 ## and the run carries two operator-facing additions:
 ##
@@ -104,10 +104,11 @@ vars:
   ## verify script/log ONLY (never pollute the target tree).
   scratch_dir: string = "${PROJECT_SCRATCH_DIR}/app-dev"
 
-  ## ─── MR/PR finalization (opt-in) ───────────────────────────────
+  ## ─── PR finalization (opt-in) ─────────────────────────────────
   ## Same contract as feature-dev: when open_mr=true, after the run
   ## converges (and the operator ships), finalize_mr pushes the series
-  ## and opens the merge/pull request. Requires a git remote — a pure
+  ## and opens the pull request (PR; merge request on GitLab).
+  ## Requires a git remote — a pure
   ## local greenfield run keeps the default (false) and the commits
   ## stay on the workspace (in-place first run) or the run's storage
   ## branch (worktree re-runs).
@@ -117,7 +118,7 @@ vars:
   source_issue_ref: string = ""
 
 secrets:
-  ## Forge access for push + MR creation + the issue back-link. Mounted
+  ## Forge access for push + PR creation + the issue back-link. Mounted
   ## as a read-only file the gh/glab CLI authenticates from; never read
   ## into a prompt. optional:true so local greenfield runs (no forge at
   ## all) and host-authenticated gh/glab setups work unchanged.
@@ -485,7 +486,7 @@ prompt draft_review_instructions:
 
   Try the app with the commands above, then decide:
 
-  - **ship** — accept the draft. The run finishes (and opens a merge/pull
+  - **ship** — accept the draft. The run finishes (and opens a pull
     request when `open_mr` is set).
   - **request_changes** — send it back to Appy with your feedback below
     (reframe, redefine, extend — this is the "recadrage après premier
@@ -493,23 +494,23 @@ prompt draft_review_instructions:
   - **hold_for_later** — stop without shipping. Every commit stays where
     the run banked it for you to inspect.
 
-## ─── MR/PR finalization prompts (opt-in) ────────────────────────────
+## ─── PR finalization prompts (opt-in) ──────────────────────────────
 
 prompt finalize_mr_system:
-  You finalize a converged app run by opening ONE merge/pull request
-  for the SERIES of per-slice commits this run produced, then
-  (optionally) posting the MR link back to the source issue. You make NO
-  further code changes.
+  You finalize a converged app run by opening ONE pull request (PR;
+  merge request on GitLab) for the SERIES of per-slice commits this run
+  produced, then (optionally) posting the PR link back to the source
+  issue. You make NO further code changes.
 
   Read the `forge-mr-create` skill FIRST — it tells you how to detect the
   forge, authenticate from the mounted forge_token, push the branch, and
-  open the MR/PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
+  open the PR (GitHub via gh, GitLab via glab, Forgejo/Gitea via REST).
 
   Procedure:
     1. Confirm there are commits to ship: the run's HEAD must be ahead of
        the base (`git rev-list --count <base>..HEAD` > 0). If not, set
        opened=false with skipped_reason "no commits ahead of base" — do
-       NOT open an empty MR.
+       NOT open an empty PR.
     2. Determine the branch name (mr_branch if set, else a stable
        iterion/improve/<run-id> name) and the base (mr_base if set, else
        the repo's default branch — see the skill).
@@ -517,11 +518,11 @@ prompt finalize_mr_system:
        file when present; otherwise assume host auth. If neither is
        available, set opened=false with a precise skipped_reason — never
        pretend.
-    4. Push HEAD to the branch on the origin remote, then open the MR/PR
+    4. Push HEAD to the branch on the origin remote, then open the PR
        from that branch into the base, with a clear title + body
        summarising the app and the slices landed (use scope_notes
        for context).
-    5. If source_issue_ref is set, post the opened MR URL back to it: a
+    5. If source_issue_ref is set, post the opened PR URL back to it: a
        forge issue URL → comment via the same forge CLI; a "native:<id>"
        ref → use the board comment tool. Set back_linked accordingly.
 
@@ -535,7 +536,7 @@ prompt finalize_mr_user:
   Source issue to back-link (may be empty): {{input.source_issue_ref}}
   Context / scope: {{input.scope_notes}}
 
-  Push the branch, open the MR/PR, post the back-link when a source issue
+  Push the branch, open the PR, post the back-link when a source issue
   is given, and return the structured result.
 
 ## ─── Schemas ────────────────────────────────────────────────────
@@ -1144,7 +1145,7 @@ workflow app_dev:
     feedback: "{{outputs.draft_review.feedback}}"
   }
 
-  ## ship → the MR tail; request_changes → one more campaign round with the
+  ## ship → the PR tail; request_changes → one more campaign round with the
   ## operator's feedback (bounded); hold_for_later → done (unconditional
   ## fallthrough — commits stay banked where the run left them).
   derive_draft -> mr_gate when is_ship
@@ -1153,7 +1154,7 @@ workflow app_dev:
   }
   derive_draft -> done
 
-  ## ── MR tail (opt-in, feature-dev verbatim) ──────────────────────
+  ## ── PR tail (opt-in, feature-dev verbatim) ──────────────────────
   mr_gate -> forge_auth_probe when open_mr
   mr_gate -> done when not open_mr
 
