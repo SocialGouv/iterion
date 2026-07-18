@@ -1562,14 +1562,41 @@ func (s *Server) canViewTeam(ctx context.Context, id auth.Identity, teamID strin
 	if id.IsSuperAdmin {
 		return true
 	}
-	if id.TeamID == teamID && id.Role.Valid() {
+	// AtLeast(RoleViewer) is equivalent to the old Valid() for the four ladder
+	// roles, but excludes the orthogonal config_editor capability (rank 0) — a
+	// config editor is not a team viewer (ADR-078); it reaches only its own
+	// endpoints via canEditConfigShares.
+	if id.TeamID == teamID && id.Role.AtLeast(identity.RoleViewer) {
 		return true
 	}
-	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role.Valid() {
+	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role.AtLeast(identity.RoleViewer) {
 		return true
 	}
 	// An org admin/owner can view every team in their org.
 	return s.orgAdminOfTeam(ctx, id, teamID)
+}
+
+// canEditConfigShares reports whether the principal may read/write this team's
+// config-shares through the AUTHENTICATED (session) editor endpoints: the
+// orthogonal config_editor capability on this team, plus anyone who already
+// manages it (admin/owner, org admin, super-admin). Deliberately NOT
+// canViewTeam — a plain viewer/member was never delegated config editing. The
+// public iws_ token path has its own middleware; synthetic principals are
+// rejected here. See ADR-078.
+func (s *Server) canEditConfigShares(ctx context.Context, id auth.Identity, teamID string) bool {
+	if id.IsSynthetic() {
+		return false
+	}
+	if id.IsSuperAdmin {
+		return true
+	}
+	if id.TeamID == teamID && id.Role == identity.RoleConfigEditor {
+		return true
+	}
+	if mb, err := s.authStore().GetMembership(ctx, id.UserID, teamID); err == nil && mb.Role == identity.RoleConfigEditor {
+		return true
+	}
+	return s.canManageTeam(ctx, id, teamID)
 }
 
 func (s *Server) canManageTeam(ctx context.Context, id auth.Identity, teamID string) bool {

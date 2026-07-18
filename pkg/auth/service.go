@@ -821,6 +821,13 @@ func (s *Service) grantOrgMembershipForTeam(ctx context.Context, userID, teamID 
 		return "", nil
 	}
 	want := identity.OrgRoleForTeamRole(teamRole)
+	if want == "" {
+		// A team capability outside the ladder (config_editor) confers no org
+		// membership — never mirror it up (an org-member row would pass
+		// canViewOrg → org roster/usage read). Login still resolves the org
+		// context with an empty OrgRole, which the org gates reject. ADR-078.
+		return t.OrgID, nil
+	}
 	// Never downgrade an existing higher org-role.
 	if existing, gerr := s.store.GetOrgMembership(ctx, userID, t.OrgID); gerr == nil && existing.Role.AtLeast(want) {
 		return t.OrgID, nil

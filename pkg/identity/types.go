@@ -30,6 +30,15 @@ const (
 	RoleMember Role = "member"
 	RoleAdmin  Role = "admin"
 	RoleOwner  Role = "owner"
+	// RoleConfigEditor is an ORTHOGONAL least-privilege capability, NOT a rung
+	// on the viewer<member<admin<owner ladder (ADR-078): it grants exactly one
+	// thing — edit this team's config-shares — and nothing else. It ranks 0, so
+	// AtLeast never places it in the ladder (it is neither ≥ viewer nor is any
+	// ladder role ≥ it), yet Valid() accepts it so it round-trips through the
+	// JWT claim and the member-management API. Standard team gates admit
+	// AtLeast(RoleViewer) (equivalent to the old Valid() for the four ladder
+	// roles), which excludes this; only canEditConfigShares admits it.
+	RoleConfigEditor Role = "config_editor"
 )
 
 // rank gives a totally-ordered weight so callers can express
@@ -58,8 +67,10 @@ func (r Role) AtLeast(want Role) bool {
 	return haveRank >= wantRank
 }
 
-// Valid reports whether r is one of the four known roles.
-func (r Role) Valid() bool { return r.rank() > 0 }
+// Valid reports whether r is an assignable role — the four ladder roles plus
+// the orthogonal config_editor capability (rank 0, so ladder comparisons
+// exclude it, but it is still a real, storable, JWT-round-trippable role).
+func (r Role) Valid() bool { return r.rank() > 0 || r == RoleConfigEditor }
 
 // OrgRole is the org-level RBAC level — coarser than the per-team
 // Role: an org member is granted access to 0..N teams within the org,
@@ -103,10 +114,17 @@ func (r OrgRole) Valid() bool { return r.rank() > 0 }
 // and the teams→orgs backfill): team owners/admins become org admins,
 // everyone else an org member.
 func OrgRoleForTeamRole(r Role) OrgRole {
-	if r.AtLeast(RoleAdmin) {
+	switch {
+	case r.AtLeast(RoleAdmin):
 		return OrgRoleAdmin
+	case r.AtLeast(RoleViewer):
+		return OrgRoleMember
 	}
-	return OrgRoleMember
+	// A capability OUTSIDE the ladder (config_editor, rank 0) confers no org
+	// role — it must not mirror up to an org membership (ADR-078), else it
+	// would pass canViewOrg. Login still resolves the org context with an empty
+	// OrgRole, which the org gates reject.
+	return ""
 }
 
 // UserStatus tracks whether the user can log in. Disabled users

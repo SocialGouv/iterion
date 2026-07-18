@@ -194,6 +194,9 @@ func (s *Server) routes() {
 	if s.configShares != nil && s.genericSecrets != nil && s.sealer != nil && s.authSvc != nil {
 		s.registerConfigSharePublicRoutes()
 		s.registerConfigShareAdminRoutes()
+		// Authenticated config-editor surface (ADR-078): SSO-team-scoped session
+		// editing, distinct from the public token path.
+		s.registerConfigEditorRoutes()
 	}
 
 	// Outbound forge integrations (connect a repo + auto-provision). Gated
