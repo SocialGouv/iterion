@@ -126,27 +126,27 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sb := cloudsched.ScheduledBot{
-		ID:            uuid.NewString(),
-		TenantID:      teamID,
-		BotID:         botID,
-		Cron:          cronExpr,
-		Vars:          req.Vars,
-		RepoURL:       strings.TrimSpace(req.RepoURL),
-		RepoRef:       strings.TrimSpace(req.RepoRef),
+		ID:       uuid.NewString(),
+		TenantID: teamID,
+		BotID:    botID,
+		Cron:     cronExpr,
+		Vars:     req.Vars,
+		RepoURL:  strings.TrimSpace(req.RepoURL),
+		RepoRef:  strings.TrimSpace(req.RepoRef),
 		// First-class repo binding when the URL maps to a provisioned
 		// integration: the schedules UI then groups this row with the
 		// repo's other automation instead of joining by URL string.
 		RepoIntegrationID: s.resolveRepoIntegrationID(r.Context(), teamID, req.RepoURL),
-		Disabled:      req.Disabled,
-		Overlap:       req.Overlap,
-		MaxConcurrent: req.MaxConcurrent,
-		Guard:         req.Guard,
-		GuardTimeout:  req.GuardTimeout,
-		GuardVar:      req.GuardVar,
-		NextFireAt:    next,
-		CreatedBy:     id.UserID,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		Disabled:          req.Disabled,
+		Overlap:           req.Overlap,
+		MaxConcurrent:     req.MaxConcurrent,
+		Guard:             req.Guard,
+		GuardTimeout:      req.GuardTimeout,
+		GuardVar:          req.GuardVar,
+		NextFireAt:        next,
+		CreatedBy:         id.UserID,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if err := s.cfg.ScheduledBots.Create(r.Context(), sb); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
