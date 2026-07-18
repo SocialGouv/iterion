@@ -57,6 +57,7 @@ import ToastContainer from "@/components/shared/Toast";
 import MissingCLIBanner from "@/components/MissingCLIBanner";
 import CloudLanding, { PublicTopBar } from "@/views/CloudLanding";
 const RestrictedShell = lazy(() => import("@/views/RestrictedShell"));
+const ConfigEditorShell = lazy(() => import("@/views/ConfigEditorShell"));
 const CliAuthPage = lazy(() => import("@/views/CliAuthPage"));
 const ConfigShareView = lazy(() => import("@/views/ConfigShare"));
 import { useDesktop } from "@/hooks/useDesktop";
@@ -117,7 +118,7 @@ function ScopedPaneReauth() {
 // session so the AuthGate consults the URL when it sees the
 // "anonymous" state and dispatches to the matching public view.
 function AuthGate() {
-  const { status, signOut, isRestricted, retryConnection } = useAuth();
+  const { status, signOut, isRestricted, activeRole, retryConnection } = useAuth();
   const [location] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
 
@@ -212,6 +213,18 @@ function AuthGate() {
     return (
       <Suspense fallback={<BootLoading />}>
         <ConfigShareView />
+      </Suspense>
+    );
+  }
+  // The least-privilege `config_editor` role gets a limited shell that can
+  // ONLY edit the team's config-shares — no Sidebar, no runs/board/launch.
+  // It's a real team member (isRestricted is false for them), so this branch
+  // must sit ABOVE the isRestricted check. The auth side-doors above
+  // (/invitations/accept, /cli-auth, /config/:id) stay reachable for them.
+  if (activeRole === "config_editor") {
+    return (
+      <Suspense fallback={<BootLoading />}>
+        <ConfigEditorShell />
       </Suspense>
     );
   }

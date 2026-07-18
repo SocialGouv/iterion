@@ -28,7 +28,17 @@ import InviteLinkPanel from "@/components/shared/InviteLinkPanel";
 import AuditTab from "./tabs/AuditTab";
 import MemoryTab from "./tabs/MemoryTab";
 
-const ROLES = ["viewer", "member", "admin", "owner"] as const;
+// config_editor is prepended (index 0) so it reads as the least-privileged
+// role: the demotion-confirm heuristic below (ROLES.indexOf comparison)
+// correctly flags any downgrade *to* config_editor as a demotion, and it
+// mirrors the access ladder in @/api/auth.
+const ROLES = ["config_editor", "viewer", "member", "admin", "owner"] as const;
+
+// roleLabel gives the technical `config_editor` string a friendly display
+// name; every other role renders as-is (matching the existing lowercase UI).
+function roleLabel(role: string): string {
+  return role === "config_editor" ? "Config editor" : role;
+}
 
 // SSO, Usage, members-roster and billing are ORG-level — they live on the Org
 // settings page (/orgs/:id). The team page keeps the team's own administrative
@@ -88,7 +98,9 @@ export default function TeamPage() {
       <span className="text-sm font-semibold">Team not found</span>
     ),
     right: team ? (
-      <span className="text-xs text-fg-muted">Your role: {activeRole ?? "—"}</span>
+      <span className="text-xs text-fg-muted">
+        Your role: {activeRole ? roleLabel(activeRole) : "—"}
+      </span>
     ) : null,
   });
 
@@ -266,7 +278,7 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
               >
                 {ROLES.map((r) => (
                   <option key={r} value={r}>
-                    {r}
+                    {roleLabel(r)}
                   </option>
                 ))}
               </Select>
@@ -315,12 +327,12 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
                     >
                       {ROLES.map((r) => (
                         <option key={r} value={r}>
-                          {r}
+                          {roleLabel(r)}
                         </option>
                       ))}
                     </Select>
                   ) : (
-                    m.role
+                    roleLabel(m.role)
                   )}
                 </Td>
                 <Td align="right">
@@ -356,7 +368,7 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
               {invs.map((i) => (
                 <Tr key={i.id}>
                   <Td>{i.email}</Td>
-                  <Td>{i.role}</Td>
+                  <Td>{roleLabel(i.role)}</Td>
                   <Td className="text-fg-muted">
                     {new Date(i.expires_at).toLocaleString()}
                   </Td>

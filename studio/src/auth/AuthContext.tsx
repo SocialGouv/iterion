@@ -280,7 +280,15 @@ export function isLocalIdentity(user: UserView | null | undefined): boolean {
 // 403 message).
 export function hasRole(role: Role | null, want: Role | "super-admin"): boolean {
   if (!role) return false;
-  const order: Record<Role, number> = { viewer: 1, member: 2, admin: 3, owner: 4 };
+  // config_editor is least-privilege (0): it satisfies no viewer/member/admin/
+  // owner requirement — it can only reach the config editor, never the studio.
+  const order: Record<Role, number> = {
+    config_editor: 0,
+    viewer: 1,
+    member: 2,
+    admin: 3,
+    owner: 4,
+  };
   if (want === "super-admin") return false; // checked separately via user.is_super_admin
   return order[role] >= order[want];
 }
