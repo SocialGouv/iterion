@@ -66,20 +66,24 @@ export function formatContextUsage(
 }
 
 // formatRelative renders an ISO timestamp as "5m ago" / "2h ago" /
-// "3d ago". Used by the run list and the commits panel; both want the
-// same rounding behaviour so they stay in lockstep on screen.
+// "3d ago" — or "in 5m" / "in 3d" for future instants (expiry dates,
+// scheduled fires). Used by the run list and the commits panel; both
+// want the same rounding behaviour so they stay in lockstep on screen.
 export function formatRelative(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return iso;
   const delta = Date.now() - t;
-  const seconds = Math.round(delta / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
+  const future = delta < 0;
+  const phrase = (n: number, unit: string) =>
+    future ? `in ${n}${unit}` : `${n}${unit} ago`;
+  const seconds = Math.round(Math.abs(delta) / 1000);
+  if (seconds < 60) return phrase(seconds, "s");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return phrase(minutes, "m");
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return phrase(hours, "h");
   const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  return phrase(days, "d");
 }
 
 // Absolute timestamp formatters shared by every table/tooltip that shows

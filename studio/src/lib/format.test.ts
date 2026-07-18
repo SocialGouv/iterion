@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, formatDateTime } from "./format";
+import { formatDate, formatDateTime, formatRelative } from "./format";
 
 // Locale is pinned to en-US inside the helpers, but the rendered value
 // still depends on the host timezone, so assertions stay shape-loose
@@ -41,5 +41,21 @@ describe("formatDate", () => {
 
   it("returns the em-dash fallback for unparsable input", () => {
     expect(formatDate("garbage")).toBe("—");
+  });
+});
+
+describe("formatRelative", () => {
+  it("renders past instants with the ago suffix", () => {
+    const past = new Date(Date.now() - 5 * 60_000).toISOString();
+    expect(formatRelative(past)).toBe("5m ago");
+  });
+
+  it("renders future instants with the in prefix", () => {
+    const future = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    expect(formatRelative(future)).toBe("in 30d");
+  });
+
+  it("passes unparsable input through", () => {
+    expect(formatRelative("garbage")).toBe("garbage");
   });
 });
