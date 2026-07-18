@@ -29,3 +29,23 @@ func TestRoleConfigEditor_OrthogonalToLadder(t *testing.T) {
 		t.Error("config_editor must NOT be AtLeast(viewer) — that is the over-grant hazard ADR-078 closes")
 	}
 }
+
+// TestOrgRoleForTeamRole_ConfigEditorConfersNoOrgRole locks ADR-078 decision 4:
+// a config_editor team membership must NOT mirror to an org role (an org-member
+// row would pass canViewOrg → org roster/usage read). The ladder roles are
+// unchanged.
+func TestOrgRoleForTeamRole_ConfigEditorConfersNoOrgRole(t *testing.T) {
+	if got := OrgRoleForTeamRole(RoleConfigEditor); got != "" {
+		t.Errorf("config_editor org role = %q, want \"\" (no org mirror)", got)
+	}
+	for role, want := range map[Role]OrgRole{
+		RoleViewer: OrgRoleMember,
+		RoleMember: OrgRoleMember,
+		RoleAdmin:  OrgRoleAdmin,
+		RoleOwner:  OrgRoleAdmin,
+	} {
+		if got := OrgRoleForTeamRole(role); got != want {
+			t.Errorf("OrgRoleForTeamRole(%s) = %q, want %q", role, got, want)
+		}
+	}
+}

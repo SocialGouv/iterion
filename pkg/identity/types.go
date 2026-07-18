@@ -114,10 +114,17 @@ func (r OrgRole) Valid() bool { return r.rank() > 0 }
 // and the teams→orgs backfill): team owners/admins become org admins,
 // everyone else an org member.
 func OrgRoleForTeamRole(r Role) OrgRole {
-	if r.AtLeast(RoleAdmin) {
+	switch {
+	case r.AtLeast(RoleAdmin):
 		return OrgRoleAdmin
+	case r.AtLeast(RoleViewer):
+		return OrgRoleMember
 	}
-	return OrgRoleMember
+	// A capability OUTSIDE the ladder (config_editor, rank 0) confers no org
+	// role — it must not mirror up to an org membership (ADR-078), else it
+	// would pass canViewOrg. Login still resolves the org context with an empty
+	// OrgRole, which the org gates reject.
+	return ""
 }
 
 // UserStatus tracks whether the user can log in. Disabled users
