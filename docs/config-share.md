@@ -136,16 +136,16 @@ Mongo store (`configshare.NewMongoStore`, TTL'd audit).
 ## MVP scope + follow-ups
 
 Shipped: GitHub provider, Bearer-only token (no cookie exchange), 14-day default
-TTL, one share per category, the team `forge_token` PAT for writes, and the
-per-bot `config_share:` manifest block that declares the shareable surface — the
-mint derives `config_path` + `allowed_paths` + `visible_paths` from it, and the
-studio card renders a data-driven form, so a **second bot adopts the whole editor
-by adding the block alone** (no Go or SPA change).
+TTL, one share per category, the team `forge_token` PAT for writes, the per-bot
+`config_share:` manifest block that declares the shareable surface (the mint
+derives `config_path` + `allowed_paths` + `visible_paths` from it and the studio
+card renders a data-driven form, so a **second bot adopts the whole editor by
+adding the block alone** — no Go or SPA change), and **per-share field
+subsetting** (an operator mints, say, a feeds-only share; a non-selected field is
+neither writable nor visible).
 
 Follow-ups (not blockers): a repo-narrowed github-app installation token (tighter
 blast radius than the team PAT); a one-shot code-per-handout exchange (so a
-pasted URL burns once); per-share field subsetting (a share exposing a subset of
-the bot's declared editable fields — today a share exposes the full declared
-surface for its category); richer per-field JSON-Schema constraints in the block
+pasted URL burns once); richer per-field JSON-Schema constraints in the block
 (beyond the built-in `feeds`/`editorial` validators); GitLab/Forgejo
 `FileClient`; a preview/test-run button.

@@ -37,8 +37,13 @@ type createConfigShareReq struct {
 	SchemaRef    string   `json:"schema_ref"`
 	AllowedPaths []string `json:"allowed_paths"`
 	VisiblePaths []string `json:"visible_paths"`
-	ReadOnly     bool     `json:"read_only"`
-	ExpiresDays  int      `json:"expires_days"`
+	// EditableFields optionally narrows a derived (config_share-block) grant to
+	// a SUBSET of the bot's declared editable fields (by leaf name, e.g.
+	// ["feeds"]) — least privilege per share. Empty = the full declared
+	// surface. Ignored for a bot with no declared block.
+	EditableFields []string `json:"editable_fields"`
+	ReadOnly       bool     `json:"read_only"`
+	ExpiresDays    int      `json:"expires_days"`
 }
 
 // shareView is the operator-facing projection — never the token hash.
@@ -118,7 +123,7 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 	allowed := req.AllowedPaths
 	visible := req.VisiblePaths
 	if spec := s.botConfigShareSpec(req.BotID); spec != nil {
-		a, v, err := configshare.DeriveGrant(spec.EditablePaths, spec.VisiblePaths, req.Category)
+		a, v, err := configshare.DeriveGrant(spec.EditablePaths, spec.VisiblePaths, req.Category, req.EditableFields...)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return

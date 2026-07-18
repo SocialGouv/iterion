@@ -299,8 +299,9 @@ function CreateShareDialog({
 
   // The bot DECLARES its shareable surface (spec); the server derives + pins
   // the exact editable/visible paths + config file at mint. This form only
-  // collects who/where + the category — never the paths, which is what keeps
-  // it generic (a second bot needs no change here).
+  // collects who/where + the category + WHICH of the declared editable fields
+  // this share exposes — never raw paths, which keeps it generic (a second bot
+  // needs no change here).
   const needsCategory = useMemo(
     () =>
       [...spec.editable_paths, ...(spec.visible_paths ?? [])].some((p) =>
@@ -308,6 +309,16 @@ function CreateShareDialog({
       ),
     [spec],
   );
+  // Declared editable fields, by leaf name — the least-privilege subset unit.
+  // Start with all selected (the full declared surface).
+  const editableFields = useMemo(
+    () => spec.editable_paths.map((p) => p.split(".").pop() ?? p),
+    [spec],
+  );
+  const [selected, setSelected] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(editableFields.map((f) => [f, true])),
+  );
+  const selectedFields = editableFields.filter((f) => selected[f]);
   const expand = (p: string) =>
     p.split("{category}").join(category.trim() || "<category>");
 
@@ -316,6 +327,7 @@ function CreateShareDialog({
     !repoURL.trim() ||
     !repoRef.trim() ||
     (needsCategory && !category.trim()) ||
+    selectedFields.length === 0 ||
     busy;
 
   const submit = async () => {
@@ -328,9 +340,10 @@ function CreateShareDialog({
         repo_url: repoURL.trim(),
         repo_ref: repoRef.trim(),
         category: category.trim(),
+        // Least-privilege subset of the bot's declared editable fields; the
+        // server derives + pins the paths. config_path + paths never sent.
+        editable_fields: selectedFields,
         read_only: readOnly,
-        // config_path + paths are DERIVED server-side from the bot's
-        // config_share block — never sent from here.
         ...(typeof expiresDays === "number" && expiresDays > 0
           ? { expires_days: expiresDays }
           : {}),
@@ -423,6 +436,27 @@ function CreateShareDialog({
             />
           </div>
         )}
+        {editableFields.length > 1 && (
+          <div>
+            <FieldLabel>Fields this share may edit</FieldLabel>
+            <div className="flex flex-col gap-1 rounded-md border border-border-default bg-surface-2 p-2">
+              {editableFields.map((f) => (
+                <Checkbox
+                  key={f}
+                  checked={!!selected[f]}
+                  onChange={(e) =>
+                    setSelected((s) => ({ ...s, [f]: e.target.checked }))
+                  }
+                  label={f}
+                />
+              ))}
+            </div>
+            <p className="mt-1 text-caption text-fg-subtle">
+              Uncheck a field to withhold it — a share can't touch or even read
+              the fields you leave off.
+            </p>
+          </div>
+        )}
         <div>
           <FieldLabel>What this share exposes</FieldLabel>
           <div className="rounded-md border border-border-default bg-surface-2 p-2 text-xs">
@@ -434,11 +468,13 @@ function CreateShareDialog({
             </div>
             <div className="font-medium text-fg-default">Editable</div>
             <ul className="mb-1 flex flex-col gap-0.5">
-              {spec.editable_paths.map((p) => (
-                <li key={p} className="font-mono text-caption text-fg-muted">
-                  {expand(p)}
-                </li>
-              ))}
+              {spec.editable_paths
+                .filter((p) => selected[p.split(".").pop() ?? p])
+                .map((p) => (
+                  <li key={p} className="font-mono text-caption text-fg-muted">
+                    {expand(p)}
+                  </li>
+                ))}
             </ul>
             {(spec.visible_paths?.length ?? 0) > 0 && (
               <>

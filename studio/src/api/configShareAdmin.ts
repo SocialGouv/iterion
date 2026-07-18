@@ -51,6 +51,10 @@ export interface CreateShareInput {
   schema_ref?: string;
   allowed_paths?: string[];
   visible_paths?: string[];
+  /** Optional least-privilege subset of the bot's declared editable fields
+   *  (by leaf name, e.g. ["feeds"]) for a DERIVED grant. Omitted / full list =
+   *  the whole declared surface. */
+  editable_fields?: string[];
   read_only?: boolean;
   expires_days?: number;
 }

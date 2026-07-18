@@ -30,6 +30,15 @@ func HasCategoryPlaceholder(sets ...[]string) bool {
 	return false
 }
 
+// leafOf returns a path template's last segment — the field name a share
+// selects on (e.g. "categories.{category}.feeds" → "feeds").
+func leafOf(t string) string {
+	if i := strings.LastIndex(t, "."); i >= 0 {
+		return t[i+1:]
+	}
+	return t
+}
+
 // DeriveGrant expands a bot's declared config-share path templates (manifest
 // config_share.editable_paths / visible_paths) for ONE category into the
 // concrete (allowed, visible) dotted-path sets a Share pins at mint time. A
@@ -38,16 +47,42 @@ func HasCategoryPlaceholder(sets ...[]string) bool {
 // visible set is the union of the expanded editable + visible templates
 // (VisiblePaths is a read superset of AllowedPaths), deduped, editable first.
 //
+// selectedFields narrows the grant to a SUBSET of the bot's declared editable
+// fields (by leaf name — least privilege per share): empty = the full declared
+// editable surface; otherwise only the named fields, and every name MUST match
+// a declared editable leaf (else ErrValidation). A non-selected editable field
+// is neither writable nor visible (it drops out of both sets), keeping a
+// feeds-only editor blind to the editorial prompt.
+//
 // All failures wrap ErrValidation so the mint maps them to 400. The output is
 // still run through ValidatePaths by the mint — DeriveGrant resolves the
 // surface; ValidatePaths enforces the literal/no-overlap/no-forbidden rules.
-func DeriveGrant(editable, visible []string, category string) (allowed []string, visibleOut []string, err error) {
+func DeriveGrant(editable, visible []string, category string, selectedFields ...string) (allowed []string, visibleOut []string, err error) {
 	if HasCategoryPlaceholder(editable, visible) {
 		if category == "" {
 			return nil, nil, fmt.Errorf("%w: category required for this bot's config-share surface", ErrValidation)
 		}
 		if !categoryRe.MatchString(category) {
 			return nil, nil, fmt.Errorf("%w: invalid category %q (letters, digits, _ and - only)", ErrValidation, category)
+		}
+	}
+	// Narrow the editable templates to the selected fields, if any.
+	editableUsed := editable
+	if len(selectedFields) > 0 {
+		byLeaf := make(map[string][]string, len(editable))
+		for _, t := range editable {
+			if strings.TrimSpace(t) == "" {
+				continue
+			}
+			byLeaf[leafOf(t)] = append(byLeaf[leafOf(t)], t)
+		}
+		editableUsed = nil
+		for _, f := range selectedFields {
+			ts, ok := byLeaf[f]
+			if !ok {
+				return nil, nil, fmt.Errorf("%w: field %q is not editable for this bot", ErrValidation, f)
+			}
+			editableUsed = append(editableUsed, ts...)
 		}
 	}
 	expand := func(templates []string) ([]string, error) {
@@ -66,7 +101,7 @@ func DeriveGrant(editable, visible []string, category string) (allowed []string,
 		}
 		return out, nil
 	}
-	allowed, err = expand(editable)
+	allowed, err = expand(editableUsed)
 	if err != nil {
 		return nil, nil, err
 	}

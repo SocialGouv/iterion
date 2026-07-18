@@ -87,6 +87,69 @@ func TestConfigShare_MintDerivesFromBotManifest(t *testing.T) {
 	}
 }
 
+// TestConfigShare_MintSubsetOfEditableFields proves per-share least privilege:
+// an operator mints a feeds-only share of feed-watch (editable_fields:["feeds"]),
+// and the derived grant excludes editorial from BOTH the writable and visible
+// sets — a feeds curator can't touch or even read the editorial prompt.
+func TestConfigShare_MintSubsetOfEditableFields(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.auditStore = audit.NewMemoryStore()
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	seedTeam(t, s, "t1", "acme")
+	ctx := context.Background()
+	if _, err := s.authStore().CreateUser(ctx, identity.User{ID: "op", Email: "op@x", Status: identity.UserStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{UserID: "op", TeamID: "t1", Role: identity.RoleAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	adminCtx := auth.WithIdentity(ctx, auth.Identity{UserID: "op", TeamID: "t1", Role: identity.RoleAdmin})
+
+	body := `{"bot_id":"feed-watch","label":"feeds-only","repo_url":"https://github.com/o/r","repo_ref":"main","category":"a11y","editable_fields":["feeds"]}`
+	cw := httptest.NewRecorder()
+	s.handleCreateConfigShare(cw, mintShareReq(t, adminCtx, body))
+	if cw.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", cw.Code, cw.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(cw.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if allowed := jsonStrs(created["allowed_paths"]); !reflect.DeepEqual(allowed, []string{"categories.a11y.feeds"}) {
+		t.Errorf("allowed_paths = %v, want [categories.a11y.feeds] only", allowed)
+	}
+	for _, p := range jsonStrs(created["visible_paths"]) {
+		if p == "categories.a11y.editorial" {
+			t.Errorf("editorial leaked into a feeds-only share's visible_paths: %v", created["visible_paths"])
+		}
+	}
+}
+
+// TestConfigShare_MintRejectsUndeclaredEditableField proves the subset can't
+// escape the declared surface: selecting a field the bot never declared
+// editable (here `sinks`, the digest routing) is a 400, not a silent widen.
+func TestConfigShare_MintRejectsUndeclaredEditableField(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.auditStore = audit.NewMemoryStore()
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	seedTeam(t, s, "t1", "acme")
+	ctx := context.Background()
+	if _, err := s.authStore().CreateUser(ctx, identity.User{ID: "op", Email: "op@x", Status: identity.UserStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{UserID: "op", TeamID: "t1", Role: identity.RoleAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	adminCtx := auth.WithIdentity(ctx, auth.Identity{UserID: "op", TeamID: "t1", Role: identity.RoleAdmin})
+
+	body := `{"bot_id":"feed-watch","label":"x","repo_url":"https://github.com/o/r","repo_ref":"main","category":"a11y","editable_fields":["sinks"]}`
+	cw := httptest.NewRecorder()
+	s.handleCreateConfigShare(cw, mintShareReq(t, adminCtx, body))
+	if cw.Code != http.StatusBadRequest {
+		t.Fatalf("select undeclared field = %d, want 400 (%s)", cw.Code, cw.Body.String())
+	}
+}
+
 // TestConfigShare_MintRejectsMissingCategoryForCategorySurface proves the
 // derived surface enforces its own contract: feed-watch's paths carry
 // {category}, so minting without one fails closed (400) rather than pinning a
