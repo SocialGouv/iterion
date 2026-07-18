@@ -8,6 +8,7 @@ import {
   updateTeamSchedule,
   type ScheduledBot,
 } from "@/api/schedules";
+import CronField from "@/components/shared/CronField";
 import SchedulePolicyEditor, {
   policyFieldsFromValue,
   policyValueFromSchedule,
@@ -17,11 +18,9 @@ import { Button } from "@/components/ui/Button";
 import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { Dialog } from "@/components/ui/Dialog";
 import { FieldLabel } from "@/components/ui/FieldLabel";
-import { Input } from "@/components/ui/Input";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Select } from "@/components/ui/Select";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
-import { humanizeCron } from "@/lib/humanizeCron";
 
 import { buildCreatePayload } from "./scheduleModel";
 
@@ -29,55 +28,6 @@ import { buildCreatePayload } from "./scheduleModel";
 // the CronField (live humanized preview + preset shortcuts) and the
 // shared SchedulePolicyEditor; the server validates cron and the merged
 // schedgate policy (400 with a precise message surfaced inline).
-
-const CRON_PRESETS = [
-  { label: "Hourly", cron: "0 * * * *" },
-  { label: "Daily 02:00", cron: "0 2 * * *" },
-  { label: "Weekly Mon 02:00", cron: "0 2 * * 1" },
-];
-
-function CronField({
-  value,
-  onChange,
-  disabled = false,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-}) {
-  const human = humanizeCron(value);
-  return (
-    <div>
-      <FieldLabel>Cron (5-field, UTC — or prefix CRON_TZ=&lt;zone&gt;)</FieldLabel>
-      <Input
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.currentTarget.value)}
-        placeholder="0 2 * * *"
-        className="font-mono"
-      />
-      <div className="mt-1 flex flex-wrap items-center gap-1">
-        {CRON_PRESETS.map((p) => (
-          <Button
-            key={p.cron}
-            variant="ghost"
-            size="sm"
-            disabled={disabled}
-            onClick={() => onChange(p.cron)}
-          >
-            {p.label}
-          </Button>
-        ))}
-      </div>
-      <p className="mt-1 min-h-4 text-xs text-fg-muted" aria-live="polite">
-        {human ??
-          (value.trim()
-            ? "Unrecognized shape — the raw expression is used as-is."
-            : "")}
-      </p>
-    </div>
-  );
-}
 
 /** Bot options for a picker: the repo's bound bots when one is chosen,
  *  the full registry otherwise. Personas label, technical id selects. */

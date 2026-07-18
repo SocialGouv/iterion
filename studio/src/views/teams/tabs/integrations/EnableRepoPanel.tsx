@@ -12,6 +12,7 @@ import {
   listForgeRepos,
   previewForgeEnable,
 } from "@/api/forgeConnections";
+import CronField from "@/components/shared/CronField";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
@@ -261,15 +262,18 @@ export function EnableRepoPanel({
                           </label>
                         </div>
                         {selectedBots.includes(b.name) && hasSchedule(b) && (
-                          <div className="ml-6 flex items-center gap-2">
-                            <span className="text-caption text-fg-muted">cron</span>
-                            <Input
-                              className="w-40 font-mono text-xs"
+                          <div className="ml-6 max-w-sm">
+                            <span className="text-caption text-fg-muted">
+                              cron (UTC — or prefix CRON_TZ=&lt;zone&gt;)
+                            </span>
+                            <CronField
                               value={scheduleCrons[b.name] ?? scheduleCronFor(b)}
-                              onChange={(e) =>
-                                setScheduleCrons((s) => ({ ...s, [b.name]: e.target.value }))
+                              onChange={(v) =>
+                                setScheduleCrons((s) => ({ ...s, [b.name]: v }))
                               }
-                              aria-label={`Cron schedule for ${b.display_name || b.name}`}
+                              disabled={busy}
+                              hideLabel
+                              ariaLabel={`Cron schedule for ${b.display_name || b.name} (5-field, UTC — or prefix CRON_TZ=<zone>)`}
                             />
                           </div>
                         )}
