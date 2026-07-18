@@ -33,6 +33,8 @@ interface Props {
   nameExtras?: ReactNode;
   /** Rendered below the description (chips, secondary lines). */
   meta?: ReactNode;
+  /** Clamp long manifest descriptions to two lines (list contexts). */
+  clampDescription?: boolean;
   className?: string;
 }
 
@@ -47,6 +49,7 @@ export default function BotIdentity({
   avatar,
   nameExtras,
   meta,
+  clampDescription = false,
   className = "",
 }: Props) {
   const identity = botVisual(bot);
@@ -71,7 +74,12 @@ export default function BotIdentity({
           {nameExtras}
         </div>
         {bot.description && (
-          <p className="mt-0.5 text-xs text-fg-muted">{bot.description}</p>
+          <p
+            className={`mt-0.5 text-xs text-fg-muted ${clampDescription ? "line-clamp-2" : ""}`.trim()}
+            title={clampDescription ? bot.description : undefined}
+          >
+            {bot.description}
+          </p>
         )}
         {meta}
       </div>

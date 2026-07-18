@@ -31,6 +31,7 @@ import { errorMessage } from "@/lib/errorHints";
 import { forgeLabel } from "@/lib/forge";
 import { humanizeCron } from "@/lib/humanizeCron";
 import { useBotsStore } from "@/store/bots";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { botLaunchFile } from "@/views/Bots/botPaths";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { formatNextFire } from "@/views/Triggers/scheduleModel";
@@ -142,13 +143,18 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
   const [err, setErr] = useState<string | null>(null);
 
   const repoFullName = repo.repo_full_name;
+  const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled ?? false);
   const reload = useCallback(async () => {
     if (!teamID) return;
     setErr(null);
     const results = await Promise.allSettled([
       listForgeIntegrations(teamID),
       listTeamSchedules(teamID),
-      listTriggers({ repo: repoFullName }),
+      // Skip the round-trip (and its console 404) when the server
+      // advertises no trigger store.
+      triggersEnabled
+        ? listTriggers({ repo: repoFullName })
+        : Promise.reject(new FeatureUnavailableError("triggers")),
     ]);
     const [ints, scheds, triggers] = results;
     const failures: string[] = [];
@@ -169,7 +175,7 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
     settle(scheds, setSchedules, () => setSchedules([]));
     settle(triggers, setSubs, () => setTriggersUnavailable(true));
     if (failures.length > 0) setErr(failures.join(" · "));
-  }, [teamID, repoFullName]);
+  }, [teamID, repoFullName, triggersEnabled]);
 
   useEffect(() => {
     void reload();
@@ -321,6 +327,7 @@ function RepoDetail({ repo, teamID }: { repo: ForgeTeamRepo; teamID: string }) {
                 >
                   <BotIdentity
                     bot={entry ?? { name: id }}
+                    clampDescription
                     className="min-w-0 flex-1"
                   />
                   <div className="flex shrink-0 items-center gap-1.5">

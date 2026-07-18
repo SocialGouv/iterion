@@ -479,7 +479,14 @@ function AutomationsCard({ entry }: { entry: BotEntryWithSchema }) {
   // Per-invocation outcome note ("already enabled", explicit 400 reason).
   const [notes, setNotes] = useState<Record<number, string>>({});
 
+  const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled ?? false);
   const reload = useCallback(async () => {
+    // Skip the round-trip (and its console 404) when the server
+    // advertises no trigger store.
+    if (!triggersEnabled) {
+      setUnavailable(true);
+      return;
+    }
     try {
       const list = await listTriggers({ bot: entry.name });
       setSubs(list);
@@ -491,7 +498,7 @@ function AutomationsCard({ entry }: { entry: BotEntryWithSchema }) {
       }
       setLoadErr(errorMessage(err));
     }
-  }, [entry.name]);
+  }, [entry.name, triggersEnabled]);
 
   useEffect(() => {
     void reload();

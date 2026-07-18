@@ -39,9 +39,14 @@ export default function TriggersView() {
 
   // URL-synced tab (+ optional ?repo= schedules pre-filter), so
   // /triggers?tab=schedules&repo=owner/repo deep-links from Integrations.
+  // With no trigger store, the Schedules tab is the one that works —
+  // make it the landing tab instead of an "unavailable" panel.
+  const defaultTab: Tab = useServerInfoStore((s) =>
+    s.info?.triggers_enabled ? "automations" : "schedules",
+  );
   const tabFromURL = (s: string): Tab => {
     const t = new URLSearchParams(s).get("tab");
-    return TABS.some((x) => x.id === t) ? (t as Tab) : "automations";
+    return TABS.some((x) => x.id === t) ? (t as Tab) : defaultTab;
   };
   const [tab, setTab] = useState<Tab>(() => tabFromURL(search));
   useEffect(() => {
@@ -50,7 +55,7 @@ export default function TriggersView() {
   }, [search]);
   const selectTab = (t: Tab) => {
     setTab(t);
-    navigate(t === "automations" ? "/triggers" : `/triggers?tab=${t}`, { replace: true });
+    navigate(t === defaultTab ? "/triggers" : `/triggers?tab=${t}`, { replace: true });
   };
   const repoParam = useMemo(() => new URLSearchParams(search).get("repo"), [search]);
 
@@ -69,7 +74,15 @@ export default function TriggersView() {
   const onSchedUnavailable = useCallback(() => setSchedUnavailable(true), []);
   const canCreateSchedule = repoScope && canManage && !schedUnavailable;
 
+  const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled ?? false);
   const reload = useCallback(async () => {
+    // Skip the round-trip (and its console 404) when the server
+    // advertises no trigger store — the Automations panel shows its
+    // unavailable state, the Schedules tab keeps working.
+    if (!triggersEnabled) {
+      setUnavailable(true);
+      return;
+    }
     try {
       const list = await listTriggers(scopeRepo ? { repo: scopeRepo } : undefined);
       setSubs(list);
@@ -81,7 +94,7 @@ export default function TriggersView() {
       }
       setLoadErr(errorMessage(err));
     }
-  }, [scopeRepo]);
+  }, [scopeRepo, triggersEnabled]);
 
   useEffect(() => {
     void reload();

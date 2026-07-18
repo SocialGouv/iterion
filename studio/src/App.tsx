@@ -487,23 +487,14 @@ function AuthedApp() {
               />
             </Route>
           )}
-          {serverInfo?.triggers_enabled ? (
-            <Route path="/triggers">
-              <ErrorBoundary area="Automations view">
-                <TriggersView />
-              </ErrorBoundary>
-            </Route>
-          ) : (
-            <Route path="/triggers">
-              <FeatureUnavailable
-                title="Automations"
-                description="Event-driven triggers fire a bot when something happens — a board card move, a run finishing, a cron tick, or a forge event."
-                ctaLabel="Open Integrations"
-                ctaHref="/integrations"
-                ctaHint="Automations on this server run via forge webhooks and scheduled bots — manage them from Integrations."
-              />
-            </Route>
-          )}
+          {/* Not gated on triggers_enabled: the view handles a missing
+              trigger store per tab, and cloud servers carry Schedules
+              even when the event-trigger spine is off. */}
+          <Route path="/triggers">
+            <ErrorBoundary area="Automations view">
+              <TriggersView />
+            </ErrorBoundary>
+          </Route>
           {serverInfo?.marketplace_enabled ? (
             <Route path="/marketplace">
               <ErrorBoundary area="Marketplace view">

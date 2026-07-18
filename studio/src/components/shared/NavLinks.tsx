@@ -156,7 +156,10 @@ export default function NavLinks({ collapsed }: Props) {
   if (info?.dispatcher_enabled) {
     operate.push({ section: "dispatcher", href: "/dispatcher", label: "Dispatcher", icon: RocketIcon });
   }
-  if (info?.triggers_enabled) {
+  // Shown when EITHER the trigger spine or cloud schedules exist — the
+  // Automations view carries the Schedules tab, which cloud servers have
+  // even with the event-trigger store off.
+  if (info?.triggers_enabled || info?.mode === "cloud") {
     operate.push({ section: "triggers", href: "/triggers", label: "Automations", icon: LightningBoltIcon });
   }
 

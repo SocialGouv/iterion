@@ -387,6 +387,7 @@ function BotStep({
                 >
                   <BotIdentity
                     bot={b}
+                    clampDescription
                     nameExtras={
                       bound && (
                         <Badge variant="neutral" size="sm">
@@ -497,7 +498,7 @@ function ReviewStep({
         </p>
       </header>
 
-      {botEntry && <BotIdentity bot={botEntry} />}
+      {botEntry && <BotIdentity bot={botEntry} clampDescription />}
 
       {previewLoading ? (
         <div className="flex items-center gap-2 text-sm text-fg-muted">
