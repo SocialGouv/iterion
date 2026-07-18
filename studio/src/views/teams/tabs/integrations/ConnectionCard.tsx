@@ -24,6 +24,7 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { bindBotPath } from "@/views/integrations/wizard/bindModel";
 import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
+import { connectionKindLabel, connectionStatusLabel } from "./connectionLabels";
 import { type ConfirmFn, statusTone } from "./forgeShared";
 import { EnableRepoPanel } from "./EnableRepoPanel";
 
@@ -91,11 +92,11 @@ export function ConnectionCard({
           <div className="font-medium">
             {conn.provider} · @{conn.account_login ?? "—"}
             <InlineBanner tone={statusTone(conn.status)} layout="inline" className="ml-2 inline-flex">
-              {conn.status}
+              {connectionStatusLabel(conn.status)}
             </InlineBanner>
           </div>
           <div className="text-xs text-fg-muted">
-            {conn.forge_base_url ?? conn.provider} · {conn.kind}
+            {conn.forge_base_url ?? conn.provider} · {connectionKindLabel(conn.kind)}
           </div>
         </div>
         {canManage && (

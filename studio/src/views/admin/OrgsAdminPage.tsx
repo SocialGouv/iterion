@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useCallback, useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { clickableRowProps } from "@/lib/a11y";
@@ -28,6 +29,20 @@ import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import AdminNav from "./AdminNav";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { useServerInfoStore } from "@/store/serverInfo";
+
+// Friendly label + badge tone for the org-status enum (the descriptions live
+// with the status Select in OrgDrawer). Unknown values fall back to the raw
+// enum with a neutral tone.
+const ORG_STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
+  active: { label: "Active", variant: "success" },
+  suspended: { label: "Suspended", variant: "danger" },
+  read_only: { label: "Read-only", variant: "warning" },
+  pending_deletion: { label: "Pending deletion", variant: "danger" },
+};
+
+function orgStatusMeta(status: string): { label: string; variant: BadgeVariant } {
+  return ORG_STATUS_META[status] ?? { label: status, variant: "neutral" };
+}
 
 export default function OrgsAdminPage() {
   const { user, activeOrgID, reloadIdentity } = useAuth();
@@ -192,17 +207,12 @@ export default function OrgsAdminPage() {
               </THead>
               <TBody>
                 {orgs.map((o) => {
-                  const statusVariant: BadgeVariant =
-                    o.status === "suspended" || o.status === "pending_deletion"
-                      ? "danger"
-                      : o.status === "read_only"
-                        ? "neutral"
-                        : "success";
+                  const status = orgStatusMeta(o.status);
                   return (
                     <Tr
                       key={o.id}
                       className="cursor-pointer"
-                      {...clickableRowProps(() => setActive(o), `Open ${o.name} (${o.status})`)}
+                      {...clickableRowProps(() => setActive(o), `Open ${o.name} (${status.label})`)}
                     >
                       <Td>
                         {o.name}
@@ -210,7 +220,7 @@ export default function OrgsAdminPage() {
                       </Td>
                       <Td className="text-fg-muted">{o.slug}</Td>
                       <Td>
-                        <Badge variant={statusVariant}>{o.status}</Badge>
+                        <Badge variant={status.variant}>{status.label}</Badge>
                       </Td>
                       <Td className="text-fg-muted">{fmtQuotaGiB(o.memory_quota_bytes)}</Td>
                       <Td align="right">
@@ -489,9 +499,9 @@ function OrgDrawer({
                 setConfirmStatus(false);
               }}
             >
-              <option value="active">active</option>
-              <option value="suspended">suspended</option>
-              <option value="read_only">read_only</option>
+              <option value="active">{orgStatusMeta("active").label}</option>
+              <option value="suspended">{orgStatusMeta("suspended").label}</option>
+              <option value="read_only">{orgStatusMeta("read_only").label}</option>
             </Select>
             <p className="text-xs text-fg-muted">
               {statusDraft === "suspended"
@@ -516,7 +526,8 @@ function OrgDrawer({
             return (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-danger">
-                  Applies <strong>{statusDraft}</strong> to the whole org immediately.
+                  Applies <strong>{orgStatusMeta(statusDraft).label}</strong> to the whole org
+                  immediately.
                 </span>
                 <Button
                   variant="ghost"
@@ -533,7 +544,7 @@ function OrgDrawer({
                     void saveStatus();
                   }}
                 >
-                  Confirm — apply {statusDraft}
+                  Confirm — apply {orgStatusMeta(statusDraft).label}
                 </Button>
               </div>
             );
@@ -563,7 +574,7 @@ function OrgDrawer({
             <p className="text-xs text-fg-muted">
               Deletion scheduled
               {org.purge_after
-                ? ` — will be permanently purged after ${new Date(org.purge_after).toLocaleString()}`
+                ? ` — will be permanently purged after ${formatDateTime(org.purge_after)}`
                 : ""}
               . The organization is blocked until then. You can still cancel.
             </p>

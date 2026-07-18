@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
@@ -48,6 +49,11 @@ export default function TokensPanel() {
   useEffect(() => {
     void reload();
   }, []);
+
+  // Tokens store only the team_id — resolve it to the friendly team name the
+  // create dialog shows, falling back to the raw id for a team this account
+  // no longer sees.
+  const teamNameByID = new Map(teams.map((t) => [t.team_id, t.team_name]));
 
   const doDelete = async () => {
     if (!deleting) return;
@@ -109,17 +115,17 @@ export default function TokensPanel() {
               <Tr key={t.id}>
                 <Td>{t.name}</Td>
                 <Td className="text-xs text-fg-muted">
-                  {t.team_id ?? "(default)"}
+                  {t.team_id ? (teamNameByID.get(t.team_id) ?? t.team_id) : "(default)"}
                 </Td>
                 <Td className="font-mono text-xs text-fg-muted">…{t.token_last4}</Td>
                 <Td className="text-xs text-fg-muted">
-                  {new Date(t.created_at).toLocaleString()}
+                  {formatDateTime(t.created_at)}
                 </Td>
                 <Td className="text-xs text-fg-muted">
-                  {t.expires_at ? new Date(t.expires_at).toLocaleString() : "never"}
+                  {t.expires_at ? formatDateTime(t.expires_at) : "never"}
                 </Td>
                 <Td className="text-xs text-fg-muted">
-                  {t.last_used_at ? new Date(t.last_used_at).toLocaleString() : "—"}
+                  {formatDateTime(t.last_used_at)}
                 </Td>
                 <Td align="right">
                   {t.revoked_at ? (

@@ -461,6 +461,19 @@ function MetadataCard({ entry }: { entry: BotEntryWithSchema }) {
 // Automations card — suggested manifest invocations + active triggers
 // ---------------------------------------------------------------------------
 
+// Friendly labels for the manifest invocation kinds; unknown kinds (a newer
+// server) fall back to the raw value.
+const INVOCATION_KIND_LABELS: Record<Invocation["kind"], string> = {
+  forge: "Forge event",
+  command: "Slash command",
+  schedule: "Schedule",
+  board: "Board event",
+};
+
+function invocationKindLabel(kind: Invocation["kind"]): string {
+  return INVOCATION_KIND_LABELS[kind] ?? kind;
+}
+
 function describeBoardInvocation(inv: Invocation): string {
   const states = inv.board?.to_states ?? [];
   const labels = inv.board?.all_labels ?? [];
@@ -631,7 +644,7 @@ function SuggestedInvocationRow({
     const human = cron.trim() ? humanizeCron(cron.trim()) : null;
     return (
       <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
-        <Badge variant="info">schedule</Badge>
+        <Badge variant="info">{invocationKindLabel("schedule")}</Badge>
         <span className="min-w-0 flex-1 text-xs text-fg-default">
           {human ? `Runs ${human}` : "Runs on a cron cadence"}
         </span>
@@ -655,7 +668,7 @@ function SuggestedInvocationRow({
     if (!inv.board) {
       return (
         <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5 opacity-70">
-          <Badge>board</Badge>
+          <Badge>{invocationKindLabel("board")}</Badge>
           <span className="min-w-0 flex-1 text-xs text-fg-muted">
             Dispatcher board target — no card-event filter declared, nothing to subscribe.
           </span>
@@ -664,7 +677,7 @@ function SuggestedInvocationRow({
     }
     return (
       <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5">
-        <Badge variant="info">board</Badge>
+        <Badge variant="info">{invocationKindLabel("board")}</Badge>
         <span className="min-w-0 flex-1 text-xs text-fg-default">{describeBoardInvocation(inv)}</span>
         <Button variant="secondary" size="sm" onClick={onEnable} disabled={busy} loading={busy}>
           Enable
@@ -681,7 +694,7 @@ function SuggestedInvocationRow({
       : `forge ${inv.forge?.event ?? "event"}`;
   return (
     <li className="flex flex-wrap items-center gap-2 rounded-md border border-border-default bg-surface-2 px-2 py-1.5 opacity-70">
-      <Badge>{inv.kind}</Badge>
+      <Badge>{invocationKindLabel(inv.kind)}</Badge>
       <span className="min-w-0 flex-1 text-xs text-fg-muted">
         {desc} — wire through the forge integration.
       </span>

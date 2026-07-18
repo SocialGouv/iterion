@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Spinner } from "@/components/ui/Spinner";
@@ -78,7 +79,21 @@ export default function SettingsPage() {
                 <h2 className="text-lg font-semibold">Profile</h2>
                 <div>Email: {user?.email}</div>
                 {user?.name && <div>Name: {user.name}</div>}
-                <div>Status: {user?.status}</div>
+                {user && user.status !== "active" && (
+                  <div>
+                    Status:{" "}
+                    <Badge
+                      size="sm"
+                      variant={user.status === "disabled" ? "danger" : "warning"}
+                    >
+                      {user.status === "disabled"
+                        ? "Disabled"
+                        : user.status === "pending_password_change"
+                          ? "Password change required"
+                          : user.status}
+                    </Badge>
+                  </div>
+                )}
                 {user?.is_super_admin && (
                   <div className="text-warning-fg">You are a platform super-admin.</div>
                 )}

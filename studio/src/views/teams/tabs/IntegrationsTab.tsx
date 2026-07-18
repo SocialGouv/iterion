@@ -22,6 +22,7 @@ import { isRepoCapable } from "@/lib/triggers";
 import { useBotsStore } from "@/store/bots";
 
 import { ConnectForm } from "./integrations/ConnectForm";
+import { connectionStatusLabel } from "./integrations/connectionLabels";
 import { ConnectionCard } from "./integrations/ConnectionCard";
 import { OAuthAppsSection } from "./integrations/OAuthAppsSection";
 import SchedulesSection from "./integrations/SchedulesSection";
@@ -198,7 +199,9 @@ export default function IntegrationsTab({
                   </span>
                   <span className="rounded bg-surface-2 px-1.5 py-0.5 text-caption text-fg-muted">
                     {i.provider}
-                    {conn?.status && conn.status !== "active" ? ` · ${conn.status}` : ""}
+                    {conn?.status && conn.status !== "active"
+                      ? ` · ${connectionStatusLabel(conn.status)}`
+                      : ""}
                   </span>
                 </li>
               );

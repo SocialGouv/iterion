@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -126,7 +127,7 @@ export default function BindingsTab({ teamID, canManage }: Props) {
           <div className="font-medium">Bot secret bindings</div>
           <p className="text-xs text-fg-subtle">
             Map a team secret to the name a bot's workflow declares in its <code>secrets:</code>{" "}
-            block, optionally narrowing the egress hosts (ADR-018).
+            block, optionally narrowing the egress hosts.
           </p>
           <p className="text-caption text-fg-subtle mt-0.5">
             Values come from{" "}
@@ -274,7 +275,7 @@ export default function BindingsTab({ teamID, canManage }: Props) {
                       )}
                     </Td>
                     <Td className="text-fg-muted text-xs">
-                      {new Date(b.updated_at).toLocaleString()}
+                      {formatDateTime(b.updated_at)}
                     </Td>
                     <Td align="right" className="space-x-1 whitespace-nowrap">
                       {canManage && (
@@ -434,7 +435,7 @@ function BindingDialog({
           <div className="text-xs text-fg-muted mb-1">Allowed egress hosts (optional)</div>
           <TagInput value={hosts} onChange={setHosts} placeholder="gitlab.example.com" />
           <div className="text-caption text-fg-subtle mt-1">
-            ADR-018: if set, these hosts intersect (never broaden) the workflow's declared{" "}
+            If set, these hosts intersect (never broaden) the workflow's declared{" "}
             <code>hosts:</code>. Leave empty to keep the workflow default.
           </div>
         </label>
