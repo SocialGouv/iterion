@@ -66,14 +66,19 @@ export interface CreateShareInput {
 // editor-side request. Rendered as a table for the operator to audit.
 export interface Delivery {
   id: string;
+  share_id: string;
+  tenant_id: string;
   at: string;
-  source_ip?: string;
-  user_agent?: string;
+  source_ip: string;
+  user_agent: string;
   method: string;
+  /** "share:<id>" for a token edit, "user:<id>" for an authenticated
+   *  config-editor session. Absent on legacy rows. */
+  actor?: string;
   status: number;
-  changed_paths?: string[];
   before_sha?: string;
   after_sha?: string;
+  changed_paths?: string[];
   error?: string;
 }
 

@@ -24,9 +24,12 @@ import {
   Input,
   Spinner,
 } from "@/components/ui";
+import { useConfirm } from "@/hooks/useConfirm";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 import { useUIStore } from "@/store/ui";
+
+import { ShareDeliveriesDrawer } from "./ShareDeliveriesDrawer";
 
 /**
  * ConfigSharesCard — operator UI on a bot's home page: list this bot's
@@ -50,7 +53,8 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
   const [creating, setCreating] = useState(false);
   const [mintedForOnce, setMintedForOnce] = useState<ShareWithToken | null>(null);
   const [busyShareID, setBusyShareID] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<ShareView | null>(null);
+  const [deliveriesShare, setDeliveriesShare] = useState<ShareView | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
   const addToast = useUIStore((s) => s.addToast);
 
@@ -96,11 +100,25 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
   };
 
   const onDelete = async (share: ShareView) => {
+    const ok = await confirm({
+      title: "Revoke this share?",
+      message: (
+        <>
+          The bookmarked link will stop working immediately.
+          <br />
+          <span className="text-fg-muted">
+            {share.label?.trim() || share.id} ({share.category})
+          </span>
+        </>
+      ),
+      confirmLabel: "Revoke",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
     setBusyShareID(share.id);
     try {
       await deleteConfigShare(teamID, share.id);
       addToast("Share revoked", "info");
-      setConfirmDelete(null);
       await reload();
     } catch (err) {
       addToast(errorMessage(err), "error");
@@ -143,7 +161,8 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
               share={s}
               busy={busyShareID === s.id}
               onRotate={() => void onRotate(s)}
-              onDelete={() => setConfirmDelete(s)}
+              onDelete={() => void onDelete(s)}
+              onDeliveries={() => setDeliveriesShare(s)}
             />
           ))}
         </ul>
@@ -168,41 +187,14 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
           onClose={() => setMintedForOnce(null)}
         />
       )}
-      {confirmDelete && (
-        <Dialog
-          open
-          onOpenChange={(v) => {
-            if (!v) setConfirmDelete(null);
-          }}
-          title="Revoke this share?"
-          description="The bookmarked link will stop working immediately."
-          stack="confirm"
-          footer={
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setConfirmDelete(null)}
-                disabled={busyShareID === confirmDelete.id}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                size="sm"
-                loading={busyShareID === confirmDelete.id}
-                onClick={() => void onDelete(confirmDelete)}
-              >
-                Revoke
-              </Button>
-            </>
-          }
-        >
-          <p className="text-xs text-fg-muted">
-            {confirmDelete.label?.trim() || confirmDelete.id} ({confirmDelete.category})
-          </p>
-        </Dialog>
+      {deliveriesShare && (
+        <ShareDeliveriesDrawer
+          teamID={teamID}
+          share={deliveriesShare}
+          onClose={() => setDeliveriesShare(null)}
+        />
       )}
+      {confirmDialog}
     </Card>
   );
 }
@@ -212,11 +204,13 @@ function ShareRow({
   busy,
   onRotate,
   onDelete,
+  onDeliveries,
 }: {
   share: ShareView;
   busy: boolean;
   onRotate: () => void;
   onDelete: () => void;
+  onDeliveries: () => void;
 }) {
   const now = Date.now();
   const expiresAt = share.expires_at ? new Date(share.expires_at).getTime() : 0;
@@ -260,6 +254,9 @@ function ShareRow({
           {share.last_used_at && <> · last used {formatRelative(share.last_used_at)}</>}
         </span>
         <span className="ml-auto flex items-center gap-1.5">
+          <Button variant="ghost" size="sm" onClick={onDeliveries} disabled={busy}>
+            Deliveries
+          </Button>
           <Button variant="secondary" size="sm" onClick={onRotate} disabled={busy}>
             Rotate token
           </Button>
