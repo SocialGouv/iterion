@@ -11,6 +11,7 @@ import {
 } from "@/api/secrets";
 import { errorMessage } from "@/lib/errorHints";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useConfirm } from "@/hooks/useConfirm";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Dialog } from "@/components/ui/Dialog";
@@ -20,7 +21,6 @@ import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
-import ConfirmDialog from "@/components/shared/ConfirmDialog";
 
 // Secrets manages the local (non-cloud) sealed secret store: machine-global
 // ~/.iterion/secrets.json plus an optional per-project override. Values are
@@ -32,7 +32,7 @@ export default function Secrets() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [rotating, setRotating] = useState<LocalSecretView | null>(null);
-  const [deleting, setDeleting] = useState<LocalSecretView | null>(null);
+  const { confirm, dialog } = useConfirm();
 
   const reload = useCallback(async () => {
     setError(null);
@@ -48,11 +48,17 @@ export default function Secrets() {
     void reload();
   }, [reload]);
 
-  const doDelete = async () => {
-    if (!deleting) return;
+  const doDelete = async (rec: LocalSecretView) => {
+    const ok = await confirm({
+      title: `Delete ${rec.name}?`,
+      message:
+        "Bots that reference this secret by name will fail to resolve it until you add it again.",
+      confirmLabel: "Delete",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
     try {
-      await deleteLocalSecret(deleting.id);
-      setDeleting(null);
+      await deleteLocalSecret(rec.id);
       void reload();
     } catch (e) {
       setError(errorMessage(e));
@@ -103,7 +109,7 @@ export default function Secrets() {
           <SecretsTable
             secrets={secrets}
             onRotate={setRotating}
-            onDelete={setDeleting}
+            onDelete={(rec) => void doDelete(rec)}
           />
         )}
       </div>
@@ -129,15 +135,7 @@ export default function Secrets() {
         />
       )}
 
-      <ConfirmDialog
-        open={deleting !== null}
-        title={`Delete ${deleting?.name ?? ""}?`}
-        message="Bots that reference this secret by name will fail to resolve it until you add it again."
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        onConfirm={() => void doDelete()}
-        onCancel={() => setDeleting(null)}
-      />
+      {dialog}
     </div>
   );
 }

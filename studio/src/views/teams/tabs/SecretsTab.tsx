@@ -1,4 +1,5 @@
 import { errorMessage } from "@/lib/errorHints";
+import { formatDateTime } from "@/lib/format";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -22,8 +23,8 @@ import { Dialog } from "@/components/ui/Dialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
-import ConfirmDialog from "@/components/shared/ConfirmDialog";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useConfirm } from "@/hooks/useConfirm";
 
 interface Props {
   teamID: string;
@@ -41,9 +42,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
   const [rotating, setRotating] = useState<{ scope: "team" | "me"; rec: GenericSecretView } | null>(
     null,
   );
-  const [deleting, setDeleting] = useState<{ scope: "team" | "me"; rec: GenericSecretView } | null>(
-    null,
-  );
+  const { confirm, dialog } = useConfirm();
 
   const reload = async () => {
     setLoading(true);
@@ -75,12 +74,18 @@ export default function SecretsTab({ teamID, canManage }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teamID]);
 
-  const doDelete = async () => {
-    if (!deleting) return;
+  const doDelete = async (scope: "team" | "me", rec: GenericSecretView) => {
+    const ok = await confirm({
+      title: `Delete ${rec.name}?`,
+      message:
+        "Bot bindings that reference this secret will stop resolving immediately. Workflows that need it will fail until you add a new secret with the same workflow name.",
+      confirmLabel: "Delete",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
     try {
-      if (deleting.scope === "team") await deleteTeamSecret(teamID, deleting.rec.id);
-      else await deleteMySecret(deleting.rec.id);
-      setDeleting(null);
+      if (scope === "team") await deleteTeamSecret(teamID, rec.id);
+      else await deleteMySecret(rec.id);
       void reload();
     } catch (e) {
       setErr(errorMessage(e));
@@ -133,7 +138,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           }
           canManage={canManage}
           onRotate={(rec) => setRotating({ scope: "team", rec })}
-          onDelete={(rec) => setDeleting({ scope: "team", rec })}
+          onDelete={(rec) => void doDelete("team", rec)}
         />
       </section>
 
@@ -150,7 +155,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           emptyText="No personal secrets yet."
           canManage
           onRotate={(rec) => setRotating({ scope: "me", rec })}
-          onDelete={(rec) => setDeleting({ scope: "me", rec })}
+          onDelete={(rec) => void doDelete("me", rec)}
         />
       </section>
 
@@ -179,15 +184,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
         />
       )}
 
-      <ConfirmDialog
-        open={deleting !== null}
-        title={`Delete ${deleting?.rec.name ?? ""}?`}
-        message="Bot bindings that reference this secret will stop resolving immediately. Workflows that need it will fail until you add a new secret with the same workflow name."
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        onConfirm={() => void doDelete()}
-        onCancel={() => setDeleting(null)}
-      />
+      {dialog}
     </div>
   );
 }
@@ -254,10 +251,10 @@ function SecretsTable({
               {s.fingerprint ? s.fingerprint.slice(0, 12) : "—"}
             </Td>
             <Td className="text-fg-muted text-xs">
-              {new Date(s.created_at).toLocaleString()}
+              {formatDateTime(s.created_at)}
             </Td>
             <Td className="text-fg-muted text-xs">
-              {s.last_used_at ? new Date(s.last_used_at).toLocaleString() : "—"}
+              {formatDateTime(s.last_used_at)}
             </Td>
             <Td align="right" className="space-x-1 whitespace-nowrap">
               {canManage && (

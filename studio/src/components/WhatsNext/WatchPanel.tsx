@@ -6,6 +6,7 @@ import { queueMessage } from "@/api/queueMessages";
 import { transitionIssue } from "@/api/native";
 import { addWatch } from "@/api/runs";
 import { stateChipStyle } from "@/lib/board/stateTheme";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { shortIssueId } from "@/lib/whats-next/issueId";
 import {
   formatUpdatesAsChatMessage,
@@ -88,6 +89,11 @@ export default function WatchPanel({ runId }: WatchPanelProps) {
 function WatchRow({ entry, runId }: { entry: WatchEntry; runId: string | null }) {
   const { issue, issueId, lastFetchError } = entry;
   const title = issue?.title ?? shortIssueId(issueId);
+  // The dispatch affordance mutates the native board (transitionIssue),
+  // so it only exists on servers with the native tracker enabled.
+  const nativeTrackerEnabled = useServerInfoStore(
+    (s) => !!s.info?.native_tracker_enabled,
+  );
   // Optimistic local override: once the operator clicks Dispatch we
   // flip the chip to "ready" immediately rather than wait for the
   // (up to 15s) poll. The poll's real state takes over on its next
@@ -101,7 +107,7 @@ function WatchRow({ entry, runId }: { entry: WatchEntry; runId: string | null })
   // Dispatchable = currently in backlog. Promoting backlog → ready is
   // what the dispatcher's polling actor waits for; from any other
   // state the button is meaningless (already moving / done).
-  const canDispatch = issue?.state === "backlog" && !optimisticReady;
+  const canDispatch = nativeTrackerEnabled && issue?.state === "backlog" && !optimisticReady;
 
   const onDispatch = async () => {
     setDispatching(true);

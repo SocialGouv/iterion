@@ -148,6 +148,15 @@ export default function AcceptInvitation() {
             {err}
           </InlineBanner>
         )}
+        {token && !info && !err && (
+          <div
+            className="flex items-center gap-2 text-sm text-fg-muted"
+            aria-live="polite"
+          >
+            <Spinner size="sm" />
+            <span>Checking your invitation…</span>
+          </div>
+        )}
         {info && !err && (
           <div className="space-y-2 text-sm">
             <div>

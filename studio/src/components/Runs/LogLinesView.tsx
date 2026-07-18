@@ -463,6 +463,7 @@ export default function LogLinesView({
                   downloadBlob(blob, `${runId}.log`);
                 } catch (err) {
                   console.error("[LogLinesView] download log failed:", err);
+                  useUIStore.getState().addToast("Download failed", "error");
                 }
               })();
             }}

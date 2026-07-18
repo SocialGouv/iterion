@@ -333,10 +333,6 @@ export function getBoard(): Promise<NativeBoard> {
   return request("/board");
 }
 
-export function putBoard(board: Partial<NativeBoard>): Promise<NativeBoard> {
-  return request("/board", { method: "PUT", body: JSON.stringify(board) });
-}
-
 // ---------------------------------------------------------------------------
 // Column (state) management. Mirrors the native /board/states REST surface.
 // Each call returns the refreshed board so callers refresh without a
