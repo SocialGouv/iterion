@@ -26,6 +26,18 @@ func validateDraft(srcFile, botSrc string, rep *Report) error {
 	}
 	cr := ir.Compile(pr.File)
 	for _, d := range cr.Diagnostics {
+		// C018 (agent/judge has neither model nor backend) is emitted as an
+		// ERROR only when the host has no auto-detectable credential
+		// (ir.canAutoResolveBackend) — a property of the ENVIRONMENT, not of
+		// the generated draft. Skip it entirely, neither failing nor
+		// annotating the report: a lossy import legitimately leaves the
+		// backend for the operator to pin, and swallowing it keeps
+		// validateDraft AND the re-emitted IMPORT REPORT byte-deterministic
+		// across a credential-less CI runner and a credentialed dev host —
+		// otherwise the golden import test passes locally and fails in CI.
+		if d.Code == ir.DiagMissingModelOrBackend {
+			continue
+		}
 		if d.Severity == ir.SeverityError {
 			errs = append(errs, d.Error())
 		} else {

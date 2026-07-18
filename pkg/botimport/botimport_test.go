@@ -47,6 +47,44 @@ func TestImportFixturesAgainstGoldens(t *testing.T) {
 	}
 }
 
+// TestImportSucceedsWithoutDetectableCredentials pins the fix for the
+// credential-environment-dependent CI failure. A generated draft's agents
+// carry no `backend:` (a lossy import leaves that choice for the operator), so
+// ir.Compile emits C018 as an ERROR whenever the host has no auto-detectable
+// credential. validateDraft must NOT treat that host-environment property as
+// "the draft does not compile" — otherwise TestImportFixturesAgainstGoldens
+// above passes on a credentialed dev box and fails on a credential-less CI
+// runner. This test reproduces the CI environment by scrubbing every
+// credential detect.Detect reads (same scrub set as
+// ir.TestCompileSupervisorModelFallbackMissing), and asserts every fixture
+// still imports.
+func TestImportSucceedsWithoutDetectableCredentials(t *testing.T) {
+	for _, k := range []string{
+		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL", "ZAI_API_KEY",
+		"OPENAI_API_KEY",
+		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+		"AWS_REGION", "AWS_DEFAULT_REGION",
+		"GOOGLE_CLOUD_PROJECT",
+		"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "CODEX_HOME",
+		"ITERION_BACKEND_PREFERENCE",
+	} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	for _, name := range fixtureNames {
+		src, err := os.ReadFile(filepath.Join("testdata", name+".js"))
+		if err != nil {
+			t.Fatalf("read fixture %s: %v", name, err)
+		}
+		if _, err := Import(name+".js", src, Options{}); err != nil {
+			t.Fatalf("Import(%s) must succeed without detectable credentials "+
+				"(C018 is a host-env property, not a draft compile error): %v", name, err)
+		}
+	}
+}
+
 func TestRoundtripStability(t *testing.T) {
 	// Importing the same source twice must produce byte-identical
 	// drafts (goldens depend on it, and so does operator trust).
