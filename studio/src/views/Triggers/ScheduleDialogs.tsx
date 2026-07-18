@@ -74,6 +74,7 @@ export function NewScheduleDialog({
   const [botId, setBotId] = useState("");
   const [cron, setCron] = useState("0 2 * * *");
   const [policy, setPolicy] = useState<SchedulePolicyValue>(policyValueFromSchedule());
+  const [vars, setVars] = useState<{ key: string; value: string }[]>([]);
   const action = useAsyncAction();
   const [, navigate] = useLocation();
 
@@ -90,6 +91,7 @@ export function NewScheduleDialog({
       setBotId("");
       setCron("0 2 * * *");
       setPolicy(policyValueFromSchedule());
+      setVars([]);
       action.clearError();
     }
   }
@@ -107,7 +109,16 @@ export function NewScheduleDialog({
       return;
     }
     const res = await action.run(() =>
-      createTeamSchedule(teamID, buildCreatePayload({ botId, cron, repo, policy })),
+      createTeamSchedule(
+        teamID,
+        buildCreatePayload({
+          botId,
+          cron,
+          repo,
+          policy,
+          vars: Object.fromEntries(vars.map((r) => [r.key, r.value])),
+        }),
+      ),
     );
     if (res) onCreated();
   }
@@ -164,6 +175,69 @@ export function NewScheduleDialog({
         </div>
 
         <CronField value={cron} onChange={setCron} />
+
+        <div>
+          <FieldLabel>Variables (optional)</FieldLabel>
+          <p className="mb-1 text-caption text-fg-subtle">
+            Passed to the bot on each fire — e.g. a feed-watch per-category
+            digest needs <span className="font-mono">mode=digest</span> and{" "}
+            <span className="font-mono">category=a11y</span>.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {vars.map((row, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <Input
+                  size="sm"
+                  placeholder="name"
+                  value={row.key}
+                  onChange={(e) =>
+                    setVars((rows) =>
+                      rows.map((r, j) =>
+                        j === i ? { ...r, key: e.target.value } : r,
+                      ),
+                    )
+                  }
+                  className="w-32 font-mono"
+                />
+                <span className="text-fg-subtle">=</span>
+                <Input
+                  size="sm"
+                  placeholder="value"
+                  value={row.value}
+                  onChange={(e) =>
+                    setVars((rows) =>
+                      rows.map((r, j) =>
+                        j === i ? { ...r, value: e.target.value } : r,
+                      ),
+                    )
+                  }
+                  className="flex-1 font-mono"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    setVars((rows) => rows.filter((_, j) => j !== i))
+                  }
+                  aria-label="Remove variable"
+                >
+                  ✕
+                </Button>
+              </div>
+            ))}
+            <div>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() =>
+                  setVars((rows) => [...rows, { key: "", value: "" }])
+                }
+              >
+                + Add variable
+              </Button>
+            </div>
+          </div>
+        </div>
 
         <div>
           <FieldLabel>Tick policy</FieldLabel>

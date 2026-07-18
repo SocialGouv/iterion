@@ -150,6 +150,9 @@ export interface ScheduleDraft {
   /** The connected repo to bind to, or null for "no repository". */
   repo: ForgeTeamRepo | null;
   policy: SchedulePolicyValue;
+  /** Per-run vars passed to the bot on each fire (e.g. a feed-watch digest's
+   *  `mode=digest` + `category=a11y`). Empty when the bot needs none. */
+  vars?: Record<string, string>;
 }
 
 /**
@@ -166,6 +169,13 @@ export function buildCreatePayload(d: ScheduleDraft): ScheduleCreateInput {
   };
   if (d.repo) {
     input.repo_url = d.repo.clone_url || d.repo.web_url || d.repo.repo_full_name;
+  }
+  if (d.vars) {
+    const vars: Record<string, string> = {};
+    for (const [k, v] of Object.entries(d.vars)) {
+      if (k.trim()) vars[k.trim()] = v;
+    }
+    if (Object.keys(vars).length > 0) input.vars = vars;
   }
   const p = policyFieldsFromValue(d.policy);
   if (p.overlap === "allow") {
