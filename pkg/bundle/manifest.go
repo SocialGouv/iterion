@@ -149,6 +149,19 @@ type Manifest struct {
 	// me at a repo"), never a target-repo assumption: catalog bots stay
 	// repo-agnostic.
 	Repo *RepoRequirement `yaml:"repo,omitempty"`
+
+	// ConfigShare declares this bot's SCOPED CONFIG-SHARE surface: which
+	// fields of its workspace config file a non-operator may edit through a
+	// scoped share URL (pkg/configshare), so a share can be minted for THIS
+	// bot without the operator hand-typing the config file's JSON paths. The
+	// mint DERIVES the grant's editable/visible paths and config file from
+	// this block (expanding a {category} placeholder for a per-category
+	// config), pinning them at mint time — a share can never be minted
+	// outside the surface the bot committed to git. Advisory declaration like
+	// Repo/Forge (the runtime never reads it; the config-share mint does).
+	// A second bot adopts the whole config-share editor by adding this block
+	// alone — no server or SPA change.
+	ConfigShare *ConfigShareSpec `yaml:"config_share,omitempty"`
 }
 
 // Valid RepoRequirement.Mode values.
@@ -179,6 +192,29 @@ type RepoRequirement struct {
 	// Visibility seeds a created repo's visibility: "private" (the
 	// default) or "public".
 	Visibility string `yaml:"visibility,omitempty" json:"visibility,omitempty"`
+}
+
+// ConfigShareSpec is a bot's declared scoped config-share surface — the
+// contract that lets an operator mint a share for the bot (pkg/configshare)
+// without knowing its config file's JSON structure, and that a share can never
+// exceed. A second bot adopts the config-share editor by adding this block
+// alone: no server or SPA change.
+type ConfigShareSpec struct {
+	// ConfigPath is the config file inside the target repo a share edits
+	// (e.g. "feed-watch.json"). Repo-relative; normalized + guarded at mint
+	// (no traversal, no .git/.github, inside the workspace).
+	ConfigPath string `yaml:"config_path" json:"config_path"`
+	// EditablePaths are the dotted leaf paths a share may WRITE. A
+	// "{category}" placeholder is expanded to the concrete category at mint
+	// (e.g. "categories.{category}.feeds"), so ONE declaration covers every
+	// category; a config with no categories lists literal paths. No globs —
+	// every entry is a full leaf path.
+	EditablePaths []string `yaml:"editable_paths" json:"editable_paths"`
+	// VisiblePaths are extra READ-ONLY dotted paths a share may read back as
+	// context (e.g. "categories.{category}.digest_title"). The GET projection
+	// returns EditablePaths ∪ VisiblePaths and nothing else. Same {category}
+	// expansion. Optional.
+	VisiblePaths []string `yaml:"visible_paths,omitempty" json:"visible_paths,omitempty"`
 }
 
 // Normalized forge event vocabulary used in a manifest `forge.events`

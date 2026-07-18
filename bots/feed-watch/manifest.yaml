@@ -57,3 +57,17 @@ invocations:
     mode: direct
     context_vars: { mode: digest }
     schedule: { suggested_cron: "0 8 * * 1" }
+
+## Scoped config-share surface: what a non-operator may edit from a share URL
+## (pkg/configshare). The operator mints a share for one category; the mint
+## expands {category} and pins these exact paths — feeds + editorial are
+## editable, digest_title is read-only context, and everything else (other
+## categories, the `sinks` routing) stays off-limits. A share can never exceed
+## this. Adding this block is all a bot needs to gain the config-share editor.
+config_share:
+  config_path: feed-watch.json
+  editable_paths:
+    - "categories.{category}.feeds"
+    - "categories.{category}.editorial"
+  visible_paths:
+    - "categories.{category}.digest_title"

@@ -22,6 +22,37 @@ The operator gets back a URL `…/config/<id>#<token>` and the `iws_` token
 and Save commits the change straight to the repo through the forge's contents
 API — an atomic `if-match` write, no clone, no bot run.
 
+### The shareable surface is declared by the bot
+
+`config_path`, `allowed_paths` and `visible_paths` are not hand-typed by the
+operator — they are **derived from the bot's own manifest** at mint time. A bot
+declares what a share may touch with a `config_share:` block in its
+`manifest.yaml`:
+
+```yaml
+config_share:
+  config_path: feed-watch.json
+  editable_paths:
+    - "categories.{category}.feeds"
+    - "categories.{category}.editorial"
+  visible_paths:
+    - "categories.{category}.digest_title"
+```
+
+A `{category}` placeholder makes the surface per-category: the operator mints a
+share by naming a category (`a11y`), and the mint expands `{category}` →
+`a11y`, pins `config_path`, and computes `allowed_paths` / `visible_paths` from
+the templates. A share **can never exceed** what the bot committed to git, and a
+second bot adopts the whole editor by adding this block alone — no server or SPA
+change (the studio's "Config-share links" card reads the block to render a
+data-driven mint form, and hides itself for bots that declare none). The
+`{category}` value is validated (`[A-Za-z0-9_-]+` — no dots or traversal), and
+the derived paths still run through the same literal/no-overlap/no-forbidden
+`ValidatePaths` guard. A bot with no `config_share:` block (or a loose `.bot`
+not resolvable on the server) falls back to explicit operator-supplied paths.
+See [`pkg/configshare/schema.go`](../pkg/configshare/schema.go)
+(`DeriveGrant`).
+
 ## Security model
 
 The editor is the anti-injection boundary for a feature that hands a token to an
@@ -105,12 +136,16 @@ Mongo store (`configshare.NewMongoStore`, TTL'd audit).
 ## MVP scope + follow-ups
 
 Shipped: GitHub provider, Bearer-only token (no cookie exchange), 14-day default
-TTL, one share per category, the team `forge_token` PAT for writes, operator
-paths supplied explicitly (or derived by the studio's create dialog).
+TTL, one share per category, the team `forge_token` PAT for writes, and the
+per-bot `config_share:` manifest block that declares the shareable surface — the
+mint derives `config_path` + `allowed_paths` + `visible_paths` from it, and the
+studio card renders a data-driven form, so a **second bot adopts the whole editor
+by adding the block alone** (no Go or SPA change).
 
 Follow-ups (not blockers): a repo-narrowed github-app installation token (tighter
 blast radius than the team PAT); a one-shot code-per-handout exchange (so a
-pasted URL burns once); a per-bot `config_share:` manifest block + schema so the
-editor form auto-derives fields; GitLab/Forgejo `FileClient`; a preview/test-run
-button. The server primitive is already generic — a second bot needs no Go
-change, only its paths.
+pasted URL burns once); per-share field subsetting (a share exposing a subset of
+the bot's declared editable fields — today a share exposes the full declared
+surface for its category); richer per-field JSON-Schema constraints in the block
+(beyond the built-in `feeds`/`editorial` validators); GitLab/Forgejo
+`FileClient`; a preview/test-run button.

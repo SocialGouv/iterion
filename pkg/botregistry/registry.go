@@ -66,6 +66,13 @@ type Entry struct {
 	// allow_create adds "create a new repository" on a connected forge.
 	Repo *bundle.RepoRequirement `json:"repo,omitempty" yaml:"repo,omitempty"`
 
+	// ConfigShare mirrors the manifest config_share: block (the bot's
+	// scoped config-share surface). The studio's "Share config" card reads
+	// it to drive a data-driven mint form (the editable fields + config
+	// file come from the bot, not hardcoded per bot); nil = the bot exposes
+	// no config-share surface and the card is not offered.
+	ConfigShare *bundle.ConfigShareSpec `json:"config_share,omitempty" yaml:"config_share,omitempty"`
+
 	// Invocations is the typed routing contract from the manifest
 	// (manifest.yaml invocations:) — how this bot can be triggered (forge
 	// event, /slash-command, schedule, board) and the execution mode each
@@ -382,6 +389,7 @@ func parseBundle(dir string) (*Entry, error) {
 		DispatchVars:    m.DispatchVars,
 		Forge:           m.Forge,
 		Repo:            m.Repo,
+		ConfigShare:     m.ConfigShare,
 		Invocations:     bundle.EffectiveInvocations(m),
 		WhenToUse:       strings.TrimSpace(m.WhenToUse),
 		Author:          m.Author,

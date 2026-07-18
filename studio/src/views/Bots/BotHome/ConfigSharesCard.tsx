@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { BotEntryWithSchema } from "@/api/bots";
+import type { BotEntryWithSchema, ConfigShareSpec } from "@/api/bots";
 import {
   createConfigShare,
   deleteConfigShare,
@@ -75,6 +75,12 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
 
   if (!teamID) return null;
   if (unavailable) return null;
+  // Config-share is offered only for bots that DECLARE a shareable surface
+  // (manifest config_share: block). Everything the mint form needs — the
+  // config file + which fields are editable — comes from this spec, so a
+  // second bot gets the card by adding the block, with no code change here.
+  const spec = entry.config_share;
+  if (!spec) return null;
 
   const onRotate = async (share: ShareView) => {
     setBusyShareID(share.id);
@@ -147,6 +153,7 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
         <CreateShareDialog
           teamID={teamID}
           botID={entry.name}
+          spec={spec}
           onCancel={() => setCreating(false)}
           onCreated={(minted) => {
             setCreating(false);
@@ -268,59 +275,47 @@ function ShareRow({
 // Create dialog
 // ---------------------------------------------------------------------------
 
-const FEED_WATCH_DEFAULT_FIELDS: { key: string; label: string }[] = [
-  { key: "feeds", label: "Feeds (RSS source URLs)" },
-  { key: "editorial", label: "Editorial prompt" },
-];
-const FEED_WATCH_VISIBLE_EXTRA = ["digest_title"];
-
 function CreateShareDialog({
   teamID,
   botID,
+  spec,
   onCancel,
   onCreated,
 }: {
   teamID: string;
   botID: string;
+  spec: ConfigShareSpec;
   onCancel: () => void;
   onCreated: (minted: ShareWithToken) => void;
 }) {
   const [label, setLabel] = useState("");
   const [repoURL, setRepoURL] = useState("");
   const [repoRef, setRepoRef] = useState("main");
-  const [configPath, setConfigPath] = useState("veille.yaml");
   const [category, setCategory] = useState("");
-  const [selected, setSelected] = useState<Record<string, boolean>>({
-    feeds: true,
-    editorial: true,
-  });
   const [readOnly, setReadOnly] = useState(false);
   const [expiresDays, setExpiresDays] = useState<number | "">(14);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const allowedPaths = useMemo(() => {
-    if (!category.trim()) return [];
-    const cat = category.trim();
-    return FEED_WATCH_DEFAULT_FIELDS.filter((f) => selected[f.key]).map(
-      (f) => `categories.${cat}.${f.key}`,
-    );
-  }, [category, selected]);
-
-  const visiblePaths = useMemo(() => {
-    if (allowedPaths.length === 0) return [];
-    const cat = category.trim();
-    const extras = FEED_WATCH_VISIBLE_EXTRA.map((k) => `categories.${cat}.${k}`);
-    return [...allowedPaths, ...extras];
-  }, [allowedPaths, category]);
+  // The bot DECLARES its shareable surface (spec); the server derives + pins
+  // the exact editable/visible paths + config file at mint. This form only
+  // collects who/where + the category — never the paths, which is what keeps
+  // it generic (a second bot needs no change here).
+  const needsCategory = useMemo(
+    () =>
+      [...spec.editable_paths, ...(spec.visible_paths ?? [])].some((p) =>
+        p.includes("{category}"),
+      ),
+    [spec],
+  );
+  const expand = (p: string) =>
+    p.split("{category}").join(category.trim() || "<category>");
 
   const submitDisabled =
     !label.trim() ||
     !repoURL.trim() ||
     !repoRef.trim() ||
-    !configPath.trim() ||
-    !category.trim() ||
-    allowedPaths.length === 0 ||
+    (needsCategory && !category.trim()) ||
     busy;
 
   const submit = async () => {
@@ -332,11 +327,10 @@ function CreateShareDialog({
         label: label.trim(),
         repo_url: repoURL.trim(),
         repo_ref: repoRef.trim(),
-        config_path: configPath.trim(),
         category: category.trim(),
-        allowed_paths: allowedPaths,
-        visible_paths: visiblePaths,
         read_only: readOnly,
+        // config_path + paths are DERIVED server-side from the bot's
+        // config_share block — never sent from here.
         ...(typeof expiresDays === "number" && expiresDays > 0
           ? { expires_days: expiresDays }
           : {}),
@@ -416,18 +410,7 @@ function CreateShareDialog({
             />
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <FieldLabel htmlFor="cs-path">Config path</FieldLabel>
-            <Input
-              id="cs-path"
-              size="md"
-              value={configPath}
-              onChange={(e) => setConfigPath(e.target.value)}
-              placeholder="veille.yaml"
-              className="font-mono"
-            />
-          </div>
+        {needsCategory && (
           <div>
             <FieldLabel htmlFor="cs-cat">Category</FieldLabel>
             <Input
@@ -439,30 +422,44 @@ function CreateShareDialog({
               className="font-mono"
             />
           </div>
-        </div>
+        )}
         <div>
-          <FieldLabel>Editable fields</FieldLabel>
-          <div className="flex flex-col gap-1 rounded-md border border-border-default bg-surface-2 p-2">
-            {FEED_WATCH_DEFAULT_FIELDS.map((f) => (
-              <div key={f.key} className="flex items-center gap-2 text-xs">
-                <Checkbox
-                  checked={!!selected[f.key]}
-                  onChange={(e) =>
-                    setSelected((s) => ({ ...s, [f.key]: e.target.checked }))
-                  }
-                  label={f.label}
-                />
-                <span className="ml-auto font-mono text-caption text-fg-subtle">
-                  {category.trim()
-                    ? `categories.${category.trim()}.${f.key}`
-                    : `categories.<category>.${f.key}`}
-                </span>
-              </div>
-            ))}
+          <FieldLabel>What this share exposes</FieldLabel>
+          <div className="rounded-md border border-border-default bg-surface-2 p-2 text-xs">
+            <div className="mb-1 text-fg-subtle">
+              Config file:{" "}
+              <span className="font-mono text-fg-default">
+                {spec.config_path}
+              </span>
+            </div>
+            <div className="font-medium text-fg-default">Editable</div>
+            <ul className="mb-1 flex flex-col gap-0.5">
+              {spec.editable_paths.map((p) => (
+                <li key={p} className="font-mono text-caption text-fg-muted">
+                  {expand(p)}
+                </li>
+              ))}
+            </ul>
+            {(spec.visible_paths?.length ?? 0) > 0 && (
+              <>
+                <div className="font-medium text-fg-default">
+                  Read-only context
+                </div>
+                <ul className="flex flex-col gap-0.5">
+                  {(spec.visible_paths ?? []).map((p) => (
+                    <li
+                      key={p}
+                      className="font-mono text-caption text-fg-subtle"
+                    >
+                      {expand(p)}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
           </div>
           <p className="mt-1 text-caption text-fg-subtle">
-            Read-only context (visible but not editable):{" "}
-            <span className="font-mono">digest_title</span>
+            These fields come from the bot's manifest and can't be widened here.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-4">
