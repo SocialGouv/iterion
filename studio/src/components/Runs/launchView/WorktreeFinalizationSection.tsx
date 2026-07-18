@@ -7,6 +7,8 @@
 
 import type { MergeStrategy } from "@/api/runs";
 
+import { forgeLabel } from "@/lib/forge";
+
 import { Badge } from "@/components/ui/Badge";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
@@ -30,6 +32,10 @@ export interface WorktreeFinalizationSectionProps {
    *  "your current branch" copy is meaningless. The FF/branch semantics
    *  target the cloned target repo's checked-out branch instead. */
   cloud: boolean;
+  /** Forge provider of the selected repo target ("github" | "gitlab" |
+   *  "forgejo" | …), when known — drives PR/MR wording. Null/undefined
+   *  falls back to neutral copy. */
+  provider?: string | null;
 }
 
 export default function WorktreeFinalizationSection({
@@ -45,7 +51,14 @@ export default function WorktreeFinalizationSection({
   onMergeStrategyChange,
   onAutoMergeChange,
   cloud,
+  provider,
 }: WorktreeFinalizationSectionProps) {
+  // "Merge when the run finishes" wording, provider-aware: on a known
+  // forge, name the review unit it mirrors ("merge request"-style on
+  // GitLab, "pull request"-style elsewhere); neutral otherwise.
+  const autoMergeCaption = provider
+    ? `${forgeLabel(provider).long}-style auto-merge`
+    : "auto-merge";
   return (
     <div className="mt-6 border-t border-border-default pt-4">
       <button
@@ -160,7 +173,7 @@ export default function WorktreeFinalizationSection({
             <label htmlFor="launch-auto-merge" className="pt-1">
               <div className="text-xs font-medium font-mono">auto_merge</div>
               <div className="text-caption text-fg-subtle">
-                GitLab-style auto-merge
+                {autoMergeCaption}
               </div>
             </label>
             <div className="pt-1">

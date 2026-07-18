@@ -9,12 +9,15 @@ import { createRun, getServerInfo, previewRunCost, uploadAttachment } from "@/ap
 import type { MergeStrategy, PreviewEffectiveSettings } from "@/api/runs";
 import type { AttachmentField, IterDocument, ServerInfo } from "@/api/types";
 
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { DesktopOnlyNotice } from "@/components/ui/DesktopOnlyNotice";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import BotIdentity from "@/components/shared/BotIdentity";
 import ConfirmDialog from "@/components/shared/ConfirmDialog";
+import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { useDocumentStore } from "@/store/document";
 import { useBackendDetectStore } from "@/store/backendDetect";
@@ -44,7 +47,10 @@ import RepoTargetSection, {
   type RepoTargetState,
 } from "./launchView/RepoTargetSection";
 import RunSettingsSection from "./launchView/RunSettingsSection";
+import AutoManagedVarsSection from "./launchView/AutoManagedVarsSection";
 import VarFieldsSection from "./launchView/VarFieldsSection";
+import { classifyVar, isAutoManagedVar } from "./launchView/varClassify";
+import { buildVarsPayload } from "./launchView/varsPayload";
 import WorktreeFinalizationSection from "./launchView/WorktreeFinalizationSection";
 import {
   isSandboxActive,
@@ -54,6 +60,8 @@ import {
   pickVars,
   sandboxModeLabel,
 } from "./launchView/utils";
+
+const ADVANCED_OPEN_KEY = "iterion.launch.advanced-open";
 
 export default function LaunchView() {
   const [, setLocation] = useLocation();
@@ -114,9 +122,18 @@ export default function LaunchView() {
   // controls without having to click — they're meaningful options,
   // not "advanced" in the obscure sense.
   const [showAdvanced, setShowAdvanced] = useState(false);
-  // The single Advanced disclosure grouping backend/model/budget/worktree
-  // tuning — collapsed on first launch so the page reads target + inputs.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // The single Advanced disclosure grouping optional/auto-managed inputs
+  // + backend/model/budget/worktree tuning — collapsed on first launch so
+  // the page reads target + inputs. Open/closed state persists across
+  // visits (power users keep it open, everyone else keeps the short form).
+  const [advancedOpen, setAdvancedOpen] = useState(() =>
+    readBooleanFlag(ADVANCED_OPEN_KEY),
+  );
+  const toggleAdvanced = () => {
+    const next = !advancedOpen;
+    setAdvancedOpen(next);
+    writeBooleanFlag(ADVANCED_OPEN_KEY, next);
+  };
   // Backend override for this run. "" = let the resolver pick (the
   // current behaviour, mirrored in Settings → Backends).
   // Sending an explicit name overrides the workflow's `default_backend:`
@@ -261,6 +278,13 @@ export default function LaunchView() {
   }, [filePath, noSource, setCurrentSource, storeDocument]);
 
   const fields = pickVars(doc);
+  // Progressive disclosure buckets: required vars stay on the short form;
+  // optional vars with defaults move under Advanced; vars whose default
+  // references a runner-resolved `${PROJECT*_DIR}` placeholder become
+  // read-only "auto" rows there (override opt-in).
+  const primaryFields = fields.filter((f) => classifyVar(f) === "primary");
+  const advancedVarFields = fields.filter((f) => classifyVar(f) === "advanced");
+  const autoManagedFields = fields.filter((f) => classifyVar(f) === "auto");
 
   // LLM nodes (agents + judges) the operator can retarget per run. Names are
   // the exact node ids used as override selectors. Judges first so the review
@@ -358,6 +382,27 @@ export default function LaunchView() {
   const missingRepoTarget =
     showRepoTarget && repoRequirement?.mode === "required" && !repoTargetValid;
 
+  // Forge provider of the selected repo target, when knowable — drives
+  // PR/MR wording in the worktree-finalization copy. Null (neutral copy)
+  // when no repo target is in play or the choice doesn't pin a provider.
+  const selectedRepoProvider = useMemo(() => {
+    if (!showRepoTarget || !repoTargetState) return null;
+    switch (repoTargetState.mode) {
+      case "active":
+        return activeRepo?.provider ?? null;
+      case "attach":
+        return findAttachedRepo(teamRepos, repoTargetState.attachKey)?.provider ?? null;
+      case "create":
+        return (
+          teamRepos.find(
+            (r) => r.connection_id === repoTargetState.createConnectionID,
+          )?.provider ?? null
+        );
+      case "none":
+        return null;
+    }
+  }, [showRepoTarget, repoTargetState, activeRepo, teamRepos]);
+
   // First unfilled required field, in precedence order (attachments before
   // vars, then repo target). One walk feeds the launch gate, the caption
   // text, and the scroll/focus target — so the precedence can't drift
@@ -365,14 +410,16 @@ export default function LaunchView() {
   const missingAttachmentField = attachmentFields.find(
     (f) => f.required && !attachments[f.name]?.uploadId,
   );
-  const missingVarField = fields.find((f) =>
-    isVarMissing(f, values[f.name] ?? ""),
+  // Auto-managed vars count as satisfied: the runner resolves their
+  // placeholder default at start, so a required-but-auto var never blocks.
+  const missingVarField = fields.find(
+    (f) => !isAutoManagedVar(f) && isVarMissing(f, values[f.name] ?? ""),
   );
   const missingRequired = !!(missingAttachmentField || missingVarField || missingRepoTarget);
   const missingTitle = missingAttachmentField
-    ? "Provide every required attachment first"
+    ? `Required attachment missing: ${missingAttachmentField.name}`
     : missingVarField
-      ? "Fill every required input first"
+      ? `Required input missing: ${missingVarField.name}`
       : missingRepoTarget
         ? "Target repository required"
         : undefined;
@@ -520,7 +567,24 @@ export default function LaunchView() {
       const res = await createRun({
         file_path: filePath,
         source: currentSource || undefined,
-        vars: values,
+        // Only touched values are sent: a var left at its declared
+        // default (auto-managed or not) is omitted so the server applies
+        // its own default + ${...} placeholder expansion. Keys the active
+        // preset covers compare against the preset's value instead — the
+        // server applies preset values before spec.Vars, so a field edited
+        // back to its declared default must still be sent to win.
+        vars: buildVarsPayload(
+          fields,
+          values,
+          selectedPresetMeta
+            ? Object.fromEntries(
+                selectedPresetMeta.values.map((pv) => [
+                  pv.key,
+                  literalToString(pv.value),
+                ]),
+              )
+            : undefined,
+        ),
         preset: selectedPreset || undefined,
         merge_into: mergeInto || undefined,
         branch_name: branchName || undefined,
@@ -593,6 +657,19 @@ export default function LaunchView() {
   const worktreeMode = doc?.workflows?.[0]?.worktree ?? "";
   const worktreeOn = worktreeMode === "auto";
 
+  // Option count surfaced on the Advanced toggle so the collapsed state
+  // still says how much is tucked away: optional + auto-managed inputs,
+  // the three run-settings knobs (+ review topology when declared),
+  // per-node model overrides, five budget caps, four worktree fields.
+  const advancedCount =
+    advancedVarFields.length +
+    autoManagedFields.length +
+    3 +
+    (fields.some((f) => f.name === "review_mode") ? 1 : 0) +
+    llmNodes.length +
+    5 +
+    4;
+
   // Auto-open the worktree-finalization block once the document loads
   // and the workflow uses worktree:auto. Done in an effect so it only
   // fires after `doc` is populated and doesn't fight a user who
@@ -604,7 +681,9 @@ export default function LaunchView() {
   useHeaderSlot({
     left: (
       <>
-        <span className="text-xs font-semibold text-fg-muted">Launch run</span>
+        <span className="text-xs font-semibold text-fg-muted">
+          {bot ? `Launch — ${bot.display_name?.trim() || bot.name}` : "Launch run"}
+        </span>
         {/* "Unsaved workflow" only when there IS a workflow (in-memory
             doc without a file). With nothing to launch at all, a
             subtitle would contradict the empty state below. */}
@@ -705,6 +784,26 @@ export default function LaunchView() {
           <div className="text-xs text-fg-subtle">Loading workflow…</div>
         ) : (
           <>
+            {/* Persona header: who runs, in the bot's own identity. The
+                workflow file path demotes to a small secondary line. */}
+            {bot && (
+              <div className="mb-6">
+                <BotIdentity
+                  bot={bot}
+                  size="md"
+                  meta={
+                    filePath ? (
+                      <p
+                        className="mt-1 font-mono text-caption text-fg-subtle truncate"
+                        title={filePath}
+                      >
+                        {filePath}
+                      </p>
+                    ) : undefined
+                  }
+                />
+              </div>
+            )}
             {/* The target repository is the launch's primary decision for
                 repo-declaring bots — it leads, mirroring the wizard's
                 one-decision-first ordering. */}
@@ -746,34 +845,77 @@ export default function LaunchView() {
               }
             />
             <VarFieldsSection
-              fields={fields}
-              attachmentFields={attachmentFields}
+              fields={primaryFields}
               values={values}
               submitting={submitting}
               onValueChange={(name, value) =>
                 setValues((prev) => ({ ...prev, [name]: value }))
               }
               onSubmit={onSubmit}
+              emptyFallback={
+                fields.length === 0 ? (
+                  attachmentFields.length === 0 ? (
+                    <div className="space-y-1">
+                      <p className="text-xs text-fg-subtle">
+                        This workflow declares no input vars. You can launch it as-is.
+                      </p>
+                      <p className="text-caption text-fg-subtle">
+                        The workflow&apos;s prompts will read directly from{" "}
+                        <code>vars:</code> defaults.
+                      </p>
+                    </div>
+                  ) : null
+                ) : (
+                  <p className="text-xs text-fg-subtle">
+                    No required inputs — every var has a default. Tune them
+                    under Advanced, or launch as-is.
+                  </p>
+                )
+              }
             />
             {/* Everything below is tuning, not launch-blocking: one
                 disclosure keeps the first-launch page to target + inputs
-                (the wizard bar), while power users open it for backend,
-                per-node models, budget caps and worktree finalization. */}
+                (the wizard bar), while power users open it for optional/
+                auto-managed inputs, backend, per-node models, budget caps
+                and worktree finalization. */}
             <div className="mt-4 border-t border-border-subtle pt-2">
               <button
                 type="button"
-                onClick={() => setAdvancedOpen((v) => !v)}
+                onClick={toggleAdvanced}
                 aria-expanded={advancedOpen}
                 className="flex w-full items-center gap-1.5 py-1 text-xs font-medium text-fg-muted hover:text-fg-default"
               >
                 <span aria-hidden>{advancedOpen ? "▾" : "▸"}</span>
                 Advanced
+                <Badge variant="neutral" size="sm">
+                  {advancedCount} option{advancedCount === 1 ? "" : "s"}
+                </Badge>
                 <span className="font-normal text-fg-subtle">
-                  backend · per-node models · budget · worktree
+                  inputs · backend · models · budget · worktree
                 </span>
               </button>
               {advancedOpen && (
                 <>
+                  <div className="mt-3">
+                    <VarFieldsSection
+                      fields={advancedVarFields}
+                      title="Optional inputs"
+                      values={values}
+                      submitting={submitting}
+                      onValueChange={(name, value) =>
+                        setValues((prev) => ({ ...prev, [name]: value }))
+                      }
+                      onSubmit={onSubmit}
+                    />
+                    <AutoManagedVarsSection
+                      fields={autoManagedFields}
+                      values={values}
+                      submitting={submitting}
+                      onValueChange={(name, value) =>
+                        setValues((prev) => ({ ...prev, [name]: value }))
+                      }
+                    />
+                  </div>
                   <RunSettingsSection
                     backendOverride={backendOverride}
                     compressOverride={compressOverride}
@@ -819,6 +961,7 @@ export default function LaunchView() {
                     onMergeStrategyChange={setMergeStrategy}
                     onAutoMergeChange={setAutoMerge}
                     cloud={cloud}
+                    provider={selectedRepoProvider}
                   />
                 </>
               )}
