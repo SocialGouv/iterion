@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 
-import { CaretSortIcon, PlusIcon } from "@radix-ui/react-icons";
+import { CaretSortIcon, ChevronRightIcon, PlusIcon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
 
 import { forgeTeamRepoKey, type ForgeTeamRepo } from "@/api/forgeConnections";
 import { Input } from "@/components/ui/Input";
 import { Popover, PopoverClose } from "@/components/ui/Popover";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
+import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
 // Repository switcher, pinned right below the OrgSwitcher: the studio is
 // repo-first — one concrete connected repo scopes most views and
@@ -189,27 +190,39 @@ export default function RepoSwitcher({ collapsed = false }: { collapsed?: boolea
             const active = !overview && activeRepo != null && forgeTeamRepoKey(activeRepo) === key;
             const rowTone = statusTone(r.connection_status);
             return (
-              <PopoverClose asChild key={key}>
-                <button
-                  onClick={pick(key)}
-                  className={`w-full text-left px-2 py-1.5 rounded hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
-                >
-                  <div className="flex items-center gap-1.5 font-medium">
-                    <span className="truncate">{r.repo_full_name}</span>
-                    {rowTone && (
-                      <span
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${rowTone}`}
-                        title={`Connection ${r.connection_status}`}
-                      />
-                    )}
-                  </div>
-                  <div className="text-xs text-fg-muted">
-                    {r.bot_ids.length > 0
-                      ? `${r.bot_ids.length} bot${r.bot_ids.length > 1 ? "s" : ""} enabled`
-                      : "no bots enabled"}
-                  </div>
-                </button>
-              </PopoverClose>
+              <div key={key} className="flex items-center gap-0.5">
+                <PopoverClose asChild>
+                  <button
+                    onClick={pick(key)}
+                    className={`min-w-0 flex-1 text-left px-2 py-1.5 rounded hover:bg-surface-2 ${active ? "bg-surface-2" : ""}`}
+                  >
+                    <div className="flex items-center gap-1.5 font-medium">
+                      <span className="truncate">{r.repo_full_name}</span>
+                      {rowTone && (
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${rowTone}`}
+                          title={`Connection ${r.connection_status}`}
+                        />
+                      )}
+                    </div>
+                    <div className="text-xs text-fg-muted">
+                      {r.bot_ids.length > 0
+                        ? `${r.bot_ids.length} bot${r.bot_ids.length > 1 ? "s" : ""} enabled`
+                        : "no bots enabled"}
+                    </div>
+                  </button>
+                </PopoverClose>
+                <PopoverClose asChild>
+                  <button
+                    onClick={() => navigate(repoDetailPath(r))}
+                    className="shrink-0 rounded p-1.5 text-fg-subtle hover:bg-surface-2 hover:text-fg-default transition-colors"
+                    title={`Repository details — ${r.repo_full_name}`}
+                    aria-label={`Repository details — ${r.repo_full_name}`}
+                  >
+                    <ChevronRightIcon className="h-4 w-4" />
+                  </button>
+                </PopoverClose>
+              </div>
             );
           })}
         </div>

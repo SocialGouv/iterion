@@ -1,8 +1,9 @@
 import { Link } from "wouter";
-import { CheckIcon } from "@radix-ui/react-icons";
+import { CheckIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 
 import { forgeTeamRepoKey, type ForgeTeamRepo } from "@/api/forgeConnections";
 import { Badge } from "@/components/ui/Badge";
+import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
 // CloudReposPanel is the cloud Home counterpart of the local
 // RecentFilesPanel: the team's connected repositories, with the active
@@ -47,11 +48,11 @@ export default function CloudReposPanel({
               activeRepo !== null && forgeTeamRepoKey(activeRepo) === key;
             const botCount = r.bot_ids?.length ?? 0;
             return (
-              <li key={key}>
+              <li key={key} className="flex items-center">
                 <button
                   type="button"
                   onClick={() => choose(key)}
-                  className={`w-full px-4 py-2 flex items-center gap-2 text-left hover:bg-surface-2 transition-colors ${
+                  className={`min-w-0 flex-1 pl-4 pr-1 py-2 flex items-center gap-2 text-left hover:bg-surface-2 transition-colors ${
                     isActive ? "bg-surface-2/60" : ""
                   }`}
                   title={
@@ -75,6 +76,14 @@ export default function CloudReposPanel({
                     </span>
                   )}
                 </button>
+                <Link
+                  href={repoDetailPath(r)}
+                  className="shrink-0 self-stretch flex items-center px-2 text-fg-subtle hover:bg-surface-2 hover:text-fg-default transition-colors"
+                  title={`Repository details — ${r.repo_full_name}`}
+                  aria-label={`Repository details — ${r.repo_full_name}`}
+                >
+                  <ChevronRightIcon className="h-4 w-4" />
+                </Link>
               </li>
             );
           })}
