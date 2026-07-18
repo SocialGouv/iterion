@@ -18,6 +18,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/auth/oidc"
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgeforgejo "github.com/SocialGouv/iterion/pkg/forge/forgejo"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -383,7 +384,7 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	// store error), do NOT fall back to a whole-installation token. The
 	// orchestrator treats this error as best-effort and keeps the prior
 	// (narrower) token rather than widening scope.
-	repos, err := s.forgeConnRepoNames(ctx, conn)
+	repos, err := s.forgeMintRepoNames(ctx, conn)
 	if err != nil {
 		return "", fmt.Errorf("forge: cannot determine provisioned repos for least-privilege token: %w", err)
 	}
@@ -396,6 +397,100 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	return tok, err
 }
 
+// forgeMintRepoNames is the repo-scope oracle for a github_app connection's
+// least-privilege token, shared by BOTH re-mint paths — the orchestrator's
+// provision-time GitHubAppMinter AND the refresh worker's AppRefresher — so
+// the narrowed token stays consistent whichever re-mints it. It is
+// forgeConnRepoNames (repo_integration repos) folded with the tenant's
+// schedule-target repos on this connection's host.
+func (s *Server) forgeMintRepoNames(ctx context.Context, conn forge.Connection) ([]string, error) {
+	repos, err := s.forgeConnRepoNames(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	return s.augmentWithScheduleRepos(ctx, conn, repos), nil
+}
+
+// augmentWithScheduleRepos unions `base` (integration repo short-names,
+// installation-guaranteed) with the tenant's schedule-target repos on conn's
+// host, then — because schedule repos are NOT provisioning-verified — filters
+// the schedule additions to those actually in the installation (via ListRepos)
+// so the mint never 422s on an unknown repo. Best-effort throughout: any error
+// (store, ListRepos) returns `base` unchanged, preserving the prior behaviour
+// and never widening scope beyond the installation.
+func (s *Server) augmentWithScheduleRepos(ctx context.Context, conn forge.Connection, base []string) []string {
+	if s.cfg.ScheduledBots == nil {
+		return base
+	}
+	sched, err := s.cfg.ScheduledBots.ListByTenant(store.WithTenant(ctx, conn.TenantID), conn.TenantID)
+	if err != nil || len(sched) == 0 {
+		return base
+	}
+	candidates := scheduleRepoCandidates(sched, base, conn.BaseURL())
+	if len(candidates) == 0 {
+		return base
+	}
+	// Verify candidate repos are actually in the installation — a name GitHub
+	// doesn't recognise 422s the whole token mint, so an unverified schedule
+	// repo must never reach the Repositories list.
+	admin, err := s.forgeAdminFor(ctx, conn)
+	if err != nil {
+		return base
+	}
+	installRepos, err := admin.ListRepos(ctx, forge.RepoQuery{})
+	if err != nil {
+		return base
+	}
+	inInstall := make(map[string]bool, len(installRepos))
+	for _, r := range installRepos {
+		inInstall[shortRepoName(r.FullName)] = true
+	}
+	out := append([]string(nil), base...)
+	for _, name := range candidates {
+		if inInstall[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// scheduleRepoCandidates returns the distinct short repo names of schedules
+// whose repo_url is on `webBaseURL`'s host and not already in `base`. Pure —
+// the host filter, ".git"/short-name parsing and dedup-vs-base logic that the
+// installation-membership intersection then guards.
+func scheduleRepoCandidates(sched []cloudsched.ScheduledBot, base []string, webBaseURL string) []string {
+	have := make(map[string]bool, len(base))
+	for _, n := range base {
+		have[n] = true
+	}
+	hostPrefix := webBaseURL + "/"
+	seen := make(map[string]bool)
+	var out []string
+	for _, sb := range sched {
+		if sb.RepoURL == "" || !strings.HasPrefix(sb.RepoURL, hostPrefix) {
+			continue
+		}
+		short := shortRepoName(sb.RepoURL)
+		if short == "" || have[short] || seen[short] {
+			continue
+		}
+		seen[short] = true
+		out = append(out, short)
+	}
+	return out
+}
+
+// shortRepoName extracts the trailing repo segment ("owner/repo" → "repo",
+// a clone/web URL → its last path element) minus any ".git" suffix. Empty
+// when there is no usable segment.
+func shortRepoName(s string) string {
+	s = strings.TrimSuffix(s, ".git")
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	return s
+}
+
 // forgeRefresherFor returns the token refresher for a connection, or nil
 // when it cannot/should-not refresh (PAT, GitHub-App, or a provider with no
 // configured OAuth app). The per-provider OAuth clients implement both
@@ -406,7 +501,7 @@ func (s *Server) forgeRefresherFor(conn forge.Connection) forge.TokenRefresher {
 		if !ok {
 			return nil
 		}
-		return forgegithub.AppRefresher{HTTP: s.forgeHTTPClient(), Cfg: cfg, Repos: s.forgeConnRepoNames}
+		return forgegithub.AppRefresher{HTTP: s.forgeHTTPClient(), Cfg: cfg, Repos: s.forgeMintRepoNames}
 	}
 	if conn.Kind != forge.KindOAuthApp {
 		return nil

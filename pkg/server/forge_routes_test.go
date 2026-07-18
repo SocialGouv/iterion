@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -398,5 +399,38 @@ func TestForgeConnectionHealth_PAT(t *testing.T) {
 	s.handleForgeConnectionHealth(w2, req2)
 	if w2.Code != http.StatusNotFound {
 		t.Fatalf("cross-tenant health must 404, got %d", w2.Code)
+	}
+}
+
+func TestScheduleRepoCandidates(t *testing.T) {
+	sched := []cloudsched.ScheduledBot{
+		{RepoURL: "https://github.com/SocialGouv/iterion-veille"}, // on host, new → candidate
+		{RepoURL: "https://github.com/SocialGouv/iterion-veille"}, // dup → collapsed
+		{RepoURL: "https://github.com/SocialGouv/iterion.git"},    // on host but in base → skip
+		{RepoURL: "https://gitlab.com/acme/other"},                // different host → skip
+		{RepoURL: ""}, // empty → skip
+	}
+	got := scheduleRepoCandidates(sched, []string{"iterion"}, "https://github.com")
+	if len(got) != 1 || got[0] != "iterion-veille" {
+		t.Fatalf("candidates = %v, want [iterion-veille]", got)
+	}
+	// No schedules on host → nothing added.
+	if c := scheduleRepoCandidates(sched, []string{"iterion"}, "https://git.example.org"); len(c) != 0 {
+		t.Fatalf("off-host candidates = %v, want none", c)
+	}
+}
+
+func TestShortRepoName(t *testing.T) {
+	cases := map[string]string{
+		"SocialGouv/iterion-veille":                    "iterion-veille",
+		"https://github.com/SocialGouv/iterion-veille": "iterion-veille",
+		"https://github.com/SocialGouv/iterion.git":    "iterion",
+		"iterion": "iterion",
+		"":        "",
+	}
+	for in, want := range cases {
+		if got := shortRepoName(in); got != want {
+			t.Errorf("shortRepoName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
