@@ -212,6 +212,34 @@ func TestAttachmentsRoundtrip(t *testing.T) {
 	}
 }
 
+func TestToolParallelSafeRoundtrip(t *testing.T) {
+	original := &ast.File{
+		Tools: []*ast.ToolNodeDecl{
+			{Name: "render_scene", Command: "render --scene x", ParallelSafe: true},
+			{Name: "plain", Command: "echo ok"},
+		},
+	}
+	data, err := ast.MarshalFile(original)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"parallel_safe": true`) {
+		t.Errorf("expected parallel_safe in JSON: %s", data)
+	}
+	restored, err := ast.UnmarshalFile(data)
+	if err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !reflect.DeepEqual(original, restored) {
+		t.Errorf("roundtrip mismatch:\noriginal=%#v\nrestored=%#v", original, restored)
+	}
+	// omitempty: the plain tool must not emit the key.
+	plainData, _ := ast.MarshalFile(&ast.File{Tools: []*ast.ToolNodeDecl{{Name: "plain", Command: "echo ok"}}})
+	if strings.Contains(string(plainData), "parallel_safe") {
+		t.Errorf("parallel_safe should be omitted when false: %s", plainData)
+	}
+}
+
 func TestLoopClauseRoundtrip(t *testing.T) {
 	// The loop bound has three wire forms (literal / expression / unbounded
 	// with optional fuel); each must survive marshal → unmarshal untouched,

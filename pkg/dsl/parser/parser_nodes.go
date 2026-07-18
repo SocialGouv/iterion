@@ -502,6 +502,11 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 			td.Policy = p.expectIdent()
 		case "recovery":
 			td.Recovery = p.parseRecoveryBlock(propTok)
+		case "parallel_safe":
+			p.expect(TokenColon)
+			if v := p.parseBool(); v != nil {
+				td.ParallelSafe = *v
+			}
 		default:
 			p.addError(DiagUnknownProperty, propTok, "unknown tool property '"+propTok.Value+"'")
 			p.skipToNewline()
