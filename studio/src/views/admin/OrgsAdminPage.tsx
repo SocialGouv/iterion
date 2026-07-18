@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
+import AdminNav from "./AdminNav";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { useServerInfoStore } from "@/store/serverInfo";
 
@@ -130,6 +131,8 @@ export default function OrgsAdminPage() {
   return (
     <div className="h-full overflow-auto">
       <div className="max-w-5xl mx-auto p-3 sm:p-6 space-y-4">
+        <AdminNav />
+
         {error && (
           <InlineBanner tone="danger" layout="inline">
             {error}
@@ -490,6 +493,13 @@ function OrgDrawer({
               <option value="suspended">suspended</option>
               <option value="read_only">read_only</option>
             </Select>
+            <p className="text-xs text-fg-muted">
+              {statusDraft === "suspended"
+                ? "Blocks all new run launches org-wide (studio, API, inbound webhooks). Existing data stays readable."
+                : statusDraft === "read_only"
+                  ? "Members can still sign in and read runs and boards, but no new runs can launch (studio, API, inbound webhooks)."
+                  : "Normal operation — members can launch runs."}
+            </p>
           </Field>
           <Field label="Reason (audit log)">
             <Input

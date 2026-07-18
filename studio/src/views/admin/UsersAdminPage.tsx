@@ -22,6 +22,8 @@ import { CloudOnlyNotice } from "@/components/shared/CloudOnlyNotice";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { useServerInfoStore } from "@/store/serverInfo";
 
+import AdminNav from "./AdminNav";
+
 const PAGE = 50;
 
 export default function UsersAdminPage() {
@@ -159,6 +161,8 @@ export default function UsersAdminPage() {
   return (
     <div className="h-full overflow-auto">
       <div className="max-w-5xl mx-auto p-3 sm:p-6 space-y-4">
+        <AdminNav />
+
         {err && (
           <InlineBanner tone="danger" layout="inline">
             {err}

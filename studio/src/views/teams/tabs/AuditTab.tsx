@@ -7,6 +7,7 @@ import {
   type AuditEvent,
   type AuditQuery,
   FeatureUnavailableError,
+  listAdminAudit,
   listOrgAudit,
   listTeamAudit,
 } from "@/api/audit";
@@ -17,20 +18,26 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Input } from "@/components/ui/Input";
 import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/Table";
 
-// Either teamID (team audit) or orgID (org control-plane audit) — the
-// component picks the matching loader. Exactly one should be set.
+// Three scopes, one table: teamID (team audit), orgID (org control-plane
+// audit), or platform (the super-admin /api/admin/audit feed spanning
+// every org). Exactly one should be set.
 interface Props {
   teamID?: string;
   orgID?: string;
+  platform?: boolean;
   canManage: boolean;
 }
 
 const PAGE = 50;
 
-export default function AuditTab({ teamID, orgID, canManage }: Props) {
-  const id = orgID ?? teamID ?? "";
+export default function AuditTab({ teamID, orgID, platform, canManage }: Props) {
+  const id = platform ? "platform" : (orgID ?? teamID ?? "");
   const load = (q: AuditQuery) =>
-    orgID ? listOrgAudit(orgID, q) : listTeamAudit(teamID ?? "", q);
+    platform
+      ? listAdminAudit(q)
+      : orgID
+        ? listOrgAudit(orgID, q)
+        : listTeamAudit(teamID ?? "", q);
   const [, navigate] = useLocation();
   // Cross-link the two audit surfaces. When rendering the team audit we
   // resolve the containing org (the team is expected to live under the
@@ -113,7 +120,13 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
         </InlineBanner>
       )}
 
-      {orgID ? (
+      {platform ? (
+        <p className="text-caption text-fg-subtle">
+          Platform scope: every control-plane action across all orgs and teams,
+          including super-admin operations. Tenant-scoped views live on each
+          org and team page.
+        </p>
+      ) : orgID ? (
         <p className="text-caption text-fg-subtle">
           Team-scope changes (webhooks, secrets, bindings) are audited on each team's page.
         </p>
@@ -196,6 +209,7 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
             <Th>Actor</Th>
             <Th>Action</Th>
             <Th>Target</Th>
+            {platform && <Th>Tenant</Th>}
             <Th>IP</Th>
           </THead>
           <TBody>
@@ -221,6 +235,11 @@ export default function AuditTab({ teamID, orgID, canManage }: Props) {
                     </details>
                   )}
                 </Td>
+                {platform && (
+                  <Td className="text-xs font-mono text-fg-muted break-all">
+                    {e.tenant_id ?? "—"}
+                  </Td>
+                )}
                 <Td className="text-xs font-mono text-fg-muted">{e.ip ?? "—"}</Td>
               </Tr>
             ))}
