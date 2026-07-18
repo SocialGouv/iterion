@@ -67,18 +67,22 @@ func (s *Share) Active(now time.Time) bool {
 // through a share — the forensic trail after a token leak: who (source IP +
 // UA), when, what changed (before/after blob SHA + the changed leaf paths).
 type Delivery struct {
-	ID           string    `json:"id" bson:"_id"`
-	ShareID      string    `json:"share_id" bson:"share_id"`
-	TenantID     string    `json:"tenant_id" bson:"tenant_id"`
-	At           time.Time `json:"at" bson:"at"`
-	SourceIP     string    `json:"source_ip" bson:"source_ip"`
-	UserAgent    string    `json:"user_agent" bson:"user_agent"`
-	Method       string    `json:"method" bson:"method"`
-	Status       int       `json:"status" bson:"status"`
-	BeforeSHA    string    `json:"before_sha,omitempty" bson:"before_sha,omitempty"`
-	AfterSHA     string    `json:"after_sha,omitempty" bson:"after_sha,omitempty"`
-	ChangedPaths []string  `json:"changed_paths,omitempty" bson:"changed_paths,omitempty"`
-	Error        string    `json:"error,omitempty" bson:"error,omitempty"`
+	ID        string    `json:"id" bson:"_id"`
+	ShareID   string    `json:"share_id" bson:"share_id"`
+	TenantID  string    `json:"tenant_id" bson:"tenant_id"`
+	At        time.Time `json:"at" bson:"at"`
+	SourceIP  string    `json:"source_ip" bson:"source_ip"`
+	UserAgent string    `json:"user_agent" bson:"user_agent"`
+	Method    string    `json:"method" bson:"method"`
+	// Actor attributes the edit: "share:<id>" for a token (capability-URL)
+	// edit, "user:<id>" for an authenticated config-editor session (ADR-078).
+	// Empty on legacy rows.
+	Actor        string   `json:"actor,omitempty" bson:"actor,omitempty"`
+	Status       int      `json:"status" bson:"status"`
+	BeforeSHA    string   `json:"before_sha,omitempty" bson:"before_sha,omitempty"`
+	AfterSHA     string   `json:"after_sha,omitempty" bson:"after_sha,omitempty"`
+	ChangedPaths []string `json:"changed_paths,omitempty" bson:"changed_paths,omitempty"`
+	Error        string   `json:"error,omitempty" bson:"error,omitempty"`
 }
 
 // Store persists shares + their delivery audit, tenant-scoped. GetByID takes

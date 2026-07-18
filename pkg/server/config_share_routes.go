@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	forgegithub "github.com/SocialGouv/iterion/pkg/forge/github"
@@ -99,12 +100,20 @@ func (s *Server) handleConfigSharePatch(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusBadRequest, "sha required")
 		return
 	}
+	msg := "chore(config-share): edit " + sh.ConfigPath + " via share " + sh.TokenLast4
+	s.applyShareEditAndRespond(w, r, sh, req, msg)
+}
+
+// applyShareEditAndRespond runs ApplyEdit for BOTH the public token path and
+// the authenticated config-editor path (ADR-078), recording the delivery and
+// writing the response identically so the two surfaces can never drift. The
+// caller validates read_only / patch / sha and supplies the commit message.
+func (s *Server) applyShareEditAndRespond(w http.ResponseWriter, r *http.Request, sh *configshare.Share, req configSharePatchReq, msg string) {
 	fc, err := s.resolveShareFC(r.Context(), sh)
 	if err != nil {
 		httpError(w, http.StatusBadGateway, "config source unavailable")
 		return
 	}
-	msg := "chore(config-share): edit " + sh.ConfigPath + " via share " + sh.TokenLast4
 	newSHA, changed, err := s.configShareSvc.ApplyEdit(r.Context(), fc, sh, req.Patch, req.SHA, msg, shareCommitAuthorName, shareCommitAuthorEmail)
 	switch {
 	case errors.Is(err, forge.ErrFileConflict):
@@ -133,9 +142,20 @@ func (s *Server) handleConfigSharePatch(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) recordShareDelivery(r *http.Request, sh *configshare.Share, status int, beforeSHA, afterSHA string, changed []string, errMsg string) {
+	// Attribute the edit from the request principal: the token middleware
+	// stamps a "share:<id>" UserID (KindShare); an authenticated config-editor
+	// is a real user (ADR-078).
+	actor := ""
+	if id, ok := auth.FromContext(r.Context()); ok {
+		if id.Kind == auth.KindShare {
+			actor = id.UserID
+		} else if id.UserID != "" {
+			actor = "user:" + id.UserID
+		}
+	}
 	d := &configshare.Delivery{
 		ID: uuid.NewString(), ShareID: sh.ID, TenantID: sh.TenantID, At: time.Now().UTC(),
-		SourceIP: s.clientIP(r), UserAgent: r.UserAgent(), Method: r.Method,
+		SourceIP: s.clientIP(r), UserAgent: r.UserAgent(), Method: r.Method, Actor: actor,
 		Status: status, BeforeSHA: beforeSHA, AfterSHA: afterSHA, ChangedPaths: changed, Error: errMsg,
 	}
 	// Synchronous + detached ctx: the audit trail is the forensic record after

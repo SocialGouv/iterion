@@ -30,6 +30,15 @@ const (
 	RoleMember Role = "member"
 	RoleAdmin  Role = "admin"
 	RoleOwner  Role = "owner"
+	// RoleConfigEditor is an ORTHOGONAL least-privilege capability, NOT a rung
+	// on the viewer<member<admin<owner ladder (ADR-078): it grants exactly one
+	// thing — edit this team's config-shares — and nothing else. It ranks 0, so
+	// AtLeast never places it in the ladder (it is neither ≥ viewer nor is any
+	// ladder role ≥ it), yet Valid() accepts it so it round-trips through the
+	// JWT claim and the member-management API. Standard team gates admit
+	// AtLeast(RoleViewer) (equivalent to the old Valid() for the four ladder
+	// roles), which excludes this; only canEditConfigShares admits it.
+	RoleConfigEditor Role = "config_editor"
 )
 
 // rank gives a totally-ordered weight so callers can express
@@ -58,8 +67,10 @@ func (r Role) AtLeast(want Role) bool {
 	return haveRank >= wantRank
 }
 
-// Valid reports whether r is one of the four known roles.
-func (r Role) Valid() bool { return r.rank() > 0 }
+// Valid reports whether r is an assignable role — the four ladder roles plus
+// the orthogonal config_editor capability (rank 0, so ladder comparisons
+// exclude it, but it is still a real, storable, JWT-round-trippable role).
+func (r Role) Valid() bool { return r.rank() > 0 || r == RoleConfigEditor }
 
 // OrgRole is the org-level RBAC level — coarser than the per-team
 // Role: an org member is granted access to 0..N teams within the org,
