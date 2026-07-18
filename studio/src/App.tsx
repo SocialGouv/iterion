@@ -30,6 +30,8 @@ const SecretsView = lazy(() => import("@/views/Secrets"));
 const SkillsView = lazy(() => import("@/views/Skills"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
+const AuditAdminPage = lazy(() => import("@/views/admin/AuditAdminPage"));
+const DLQAdminPage = lazy(() => import("@/views/admin/DLQAdminPage"));
 const Welcome = lazy(() => import("@/views/Welcome"));
 const SettingsDialog = lazy(() => import("@/views/SettingsDialog"));
 const ProjectSwitcher = lazy(() => import("@/views/ProjectSwitcher"));
@@ -416,6 +418,8 @@ function AuthedApp() {
           <Route path="/admin" component={OrgsAdminPage} />
           <Route path="/admin/orgs" component={OrgsAdminPage} />
           <Route path="/admin/users" component={UsersAdminPage} />
+          <Route path="/admin/audit" component={AuditAdminPage} />
+          <Route path="/admin/dlq" component={DLQAdminPage} />
           {serverInfo?.native_tracker_enabled && (
             <Route path="/board/labels">
               <ErrorBoundary area="Board labels view">
@@ -435,39 +439,90 @@ function AuthedApp() {
               <RunsAnalyticsView />
             </ErrorBoundary>
           </Route>
-          {serverInfo?.plugins_enabled && (
+          {serverInfo?.plugins_enabled ? (
             <Route path="/plugins">
               <ErrorBoundary area="Plugins view">
                 <PluginsView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/plugins">
+              <FeatureUnavailable
+                title="Plugins"
+                description="Installable packages contributing rewriters (command-output compression), MCP servers, skills, and hooks."
+                reason="This server doesn't expose the plugin registry."
+                ctaHint="Plugins are managed on the server host with the `iterion plugin` CLI."
+              />
+            </Route>
           )}
-          {serverInfo?.secrets_enabled && (
+          {serverInfo?.secrets_enabled ? (
             <Route path="/secrets">
               <ErrorBoundary area="Secrets view">
                 <SecretsView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/secrets">
+              <FeatureUnavailable
+                title="Secrets"
+                description="Local sealed secret store — API keys and named secrets resolved into runs."
+                reason="The local secret store lives on the studio host (sealed with the OS keychain), so it isn't available on this server."
+                ctaHint="In cloud mode, manage secrets from your team page's Secrets tab; locally, use `iterion secret set|list|rm`."
+              />
+            </Route>
           )}
-          {serverInfo?.skills_enabled && (
+          {serverInfo?.skills_enabled ? (
             <Route path="/skills">
               <ErrorBoundary area="Skills view">
                 <SkillsView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/skills">
+              <FeatureUnavailable
+                title="Skills"
+                description="Operator-curated skill library referenced by workflows via the DSL `skills:` field."
+                reason="The skill library lives on the studio host's filesystem, so it's only available in local (non-cloud) mode."
+                ctaLabel="Open Bots"
+                ctaHref="/bots"
+                ctaHint="Bots still ship their own bundled skills — browse them from the catalog."
+              />
+            </Route>
           )}
-          {serverInfo?.native_tracker_enabled && (
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/pipelines">
               <ErrorBoundary area="Pipeline board view">
                 <PipelineBoardView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/pipelines">
+              <FeatureUnavailable
+                title="Pipelines"
+                description="Global control-center board tracking staged tasks and their in-flight runs."
+                reason="The pipeline board sits on the native kanban tracker, which isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+                ctaHint="Runs launched on this server remain visible in the Runs view."
+              />
+            </Route>
           )}
-          {serverInfo?.native_tracker_enabled && (
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/board">
               <ErrorBoundary area="Board view">
                 <BoardView />
               </ErrorBoundary>
+            </Route>
+          ) : (
+            <Route path="/board">
+              <FeatureUnavailable
+                title="Board"
+                description="Native kanban tracker — issues, labels, and drag-and-drop states feeding the dispatcher."
+                reason="The native kanban tracker isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+                ctaHint="Work dispatched on this server still shows up in the Runs view."
+              />
             </Route>
           )}
           {serverInfo?.dispatcher_enabled ? (
