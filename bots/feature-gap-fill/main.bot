@@ -13,9 +13,9 @@
 ## Sibling of `whole_improve_loop` / `branch_improve_loop` v2: SAME shape
 ## (one adaptive `campaign` agent + a deterministic build/test gate + a
 ## bounded continuation loop + git-as-state), DIFFERENT scope — the gap
-## spec defines the work. No MR tail: Fini answers a board issue whose
+## spec defines the work. No PR tail: Fini answers a board issue whose
 ## commits land on the run worktree's storage branch; feature_dev owns the
-## issue→MR lineage.
+## issue→PR lineage.
 ##
 ## WHY THIS SHAPE. The v1 gap loop was ~12 nodes of staged machinery
 ## (survey_existing → plan → act → simplify → alt → reviewer_claude /
