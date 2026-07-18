@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 
 import { useActiveRepo } from "@/hooks/useActiveRepo";
+import { useCanManageTeam } from "@/hooks/useCanManageTeam";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Spinner } from "@/components/ui/Spinner";
+import { Tabs } from "@/components/ui/Tabs";
 import { errorMessage } from "@/lib/errorHints";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
@@ -15,20 +17,57 @@ import {
   type TriggerSubscription,
 } from "@/api/triggers";
 import NewTriggerDialog from "./NewTriggerDialog";
+import SchedulesTab from "./SchedulesTab";
 import TriggerList from "./TriggerList";
+
+type Tab = "automations" | "schedules";
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: "automations", label: "Automations" },
+  { id: "schedules", label: "Schedules" },
+];
 
 export default function TriggersView() {
   const [subs, setSubs] = useState<TriggerSubscription[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const [creatingTrigger, setCreatingTrigger] = useState(false);
+  const [creatingSchedule, setCreatingSchedule] = useState(false);
+  const search = useSearch();
   const [, navigate] = useLocation();
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
+
+  // URL-synced tab (+ optional ?repo= schedules pre-filter), so
+  // /triggers?tab=schedules&repo=owner/repo deep-links from Integrations.
+  const tabFromURL = (s: string): Tab => {
+    const t = new URLSearchParams(s).get("tab");
+    return TABS.some((x) => x.id === t) ? (t as Tab) : "automations";
+  };
+  const [tab, setTab] = useState<Tab>(() => tabFromURL(search));
+  useEffect(() => {
+    const t = tabFromURL(search);
+    setTab((cur) => (cur === t ? cur : t));
+  }, [search]);
+  const selectTab = (t: Tab) => {
+    setTab(t);
+    navigate(t === "automations" ? "/triggers" : `/triggers?tab=${t}`, { replace: true });
+  };
+  const repoParam = useMemo(() => new URLSearchParams(search).get("repo"), [search]);
 
   // Repo-first scope: the active repo narrows the list server-side
   // (ListByRepo also returns tenant-wide rows with no repo binding).
   const { activeRepo, overview, enabled: repoScope } = useActiveRepo();
   const scopeRepo = repoScope && !overview ? (activeRepo?.repo_full_name ?? "") : "";
+
+  // The header "New schedule" button only renders when SchedulesTab can
+  // actually open its dialog: cloud team context (repoScope), manage
+  // rights, and a schedule store present (SchedulesTab reports absence
+  // up via onUnavailable). Otherwise the click would be a silent no-op.
+  const canManage = useCanManageTeam();
+  const [schedUnavailable, setSchedUnavailable] = useState(false);
+  // Stable identity: SchedulesTab keys its reload effect on this callback.
+  const onSchedUnavailable = useCallback(() => setSchedUnavailable(true), []);
+  const canCreateSchedule = repoScope && canManage && !schedUnavailable;
 
   const reload = useCallback(async () => {
     try {
@@ -52,46 +91,52 @@ export default function TriggersView() {
     left: (
       <span className="text-xs font-medium text-fg-default">
         Automations
-        {scopeRepo && (
+        {scopeRepo && tab === "automations" && (
           <span className="ml-2 rounded bg-surface-2 px-1.5 py-0.5 text-caption font-normal text-fg-muted">
             {scopeRepo}
           </span>
         )}
       </span>
     ),
-    right: (
-      <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
-        New trigger
-      </Button>
-    ),
+    right:
+      tab === "schedules" ? (
+        canCreateSchedule ? (
+          <Button variant="primary" size="sm" onClick={() => setCreatingSchedule(true)}>
+            New schedule
+          </Button>
+        ) : null
+      ) : (
+        <Button variant="primary" size="sm" onClick={() => setCreatingTrigger(true)}>
+          New trigger
+        </Button>
+      ),
   });
 
   const rows = useMemo(() => subs ?? [], [subs]);
 
-  if (unavailable) {
-    return (
-      <div className="p-6">
-        <EmptyState
-          title="Automations not enabled"
-          message={
-            cloud
-              ? "Event triggers aren't enabled on this server. Automations for cloud repos run via forge webhooks and scheduled bots — manage them from Integrations."
-              : "This server has no trigger store wired. Launch a studio with the native tracker to manage event-driven triggers."
-          }
-          action={
-            cloud ? (
-              <Button variant="primary" size="sm" onClick={() => navigate("/integrations")}>
-                Open Integrations
-              </Button>
-            ) : undefined
-          }
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-3 p-4">
+  // The event-trigger store being absent doesn't hide the Schedules tab —
+  // cloud servers carry schedules even without a trigger store, so only
+  // the Automations panel shows the unavailable state.
+  const automationsPanel = unavailable ? (
+    <div className="py-6">
+      <EmptyState
+        title="Automations not enabled"
+        message={
+          cloud
+            ? "Event triggers aren't enabled on this server. Cloud repos are automated via forge webhooks and the Schedules tab."
+            : "This server has no trigger store wired. Launch a studio with the native tracker to manage event-driven triggers."
+        }
+        action={
+          cloud ? (
+            <Button variant="primary" size="sm" onClick={() => selectTab("schedules")}>
+              Open Schedules
+            </Button>
+          ) : undefined
+        }
+      />
+    </div>
+  ) : (
+    <div className="flex flex-col gap-3">
       <p className="text-xs text-fg-muted">
         Event-driven triggers fire a bot when something happens — a board card moves, a run finishes,
         a cron tick, a forge event, or a custom integration. Managed by repo and by bot on one spine.
@@ -112,7 +157,7 @@ export default function TriggersView() {
           title="No triggers yet"
           message="Create one to launch a bot automatically — e.g. when a card enters “ready” with the “feature” label, or after another bot finishes."
           action={
-            <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
+            <Button variant="primary" size="sm" onClick={() => setCreatingTrigger(true)}>
               New trigger
             </Button>
           }
@@ -120,12 +165,33 @@ export default function TriggersView() {
       ) : (
         <TriggerList subs={rows} onChanged={() => void reload()} />
       )}
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => selectTab(v as Tab)}
+        items={TABS.map((t) => ({ value: t.id, label: t.label }))}
+      />
+
+      {tab === "automations" ? (
+        automationsPanel
+      ) : (
+        <SchedulesTab
+          repoFilterParam={repoParam}
+          creating={creatingSchedule}
+          onCreatingChange={setCreatingSchedule}
+          onUnavailable={onSchedUnavailable}
+        />
+      )}
 
       <NewTriggerDialog
-        open={creating}
-        onOpenChange={setCreating}
+        open={creatingTrigger}
+        onOpenChange={setCreatingTrigger}
         onCreated={() => {
-          setCreating(false);
+          setCreatingTrigger(false);
           void reload();
         }}
       />

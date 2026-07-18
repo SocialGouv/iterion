@@ -3,7 +3,7 @@
 // repo (repo_url); provisioning (EnableRepoPanel / the orchestrator)
 // creates them, this client lets the studio list and manage them.
 
-import { request } from "./client";
+import { guard404, request } from "./client";
 
 export interface ScheduledBot {
   id: string;
@@ -32,10 +32,42 @@ export interface ScheduledBot {
 }
 
 export async function listTeamSchedules(teamID: string): Promise<ScheduledBot[]> {
-  const res = await request<{ schedules: ScheduledBot[] }>(
-    `/teams/${encodeURIComponent(teamID)}/schedules`,
+  // 404 → FeatureUnavailableError: a local-mode server has no cloudsched
+  // store, so the route isn't registered at all. Callers render the
+  // "not enabled" empty state instead of an error banner.
+  const res = await guard404("schedules", () =>
+    request<{ schedules: ScheduledBot[] }>(
+      `/teams/${encodeURIComponent(teamID)}/schedules`,
+    ),
   );
   return res.schedules ?? [];
+}
+
+// ScheduleCreateInput mirrors pkg/server createScheduleReq. The server
+// validates cron (5-field UTC) and the schedgate policy, and returns the
+// created row (201) with its computed next_fire_at.
+export interface ScheduleCreateInput {
+  bot_id: string;
+  cron: string;
+  vars?: Record<string, string>;
+  repo_url?: string;
+  repo_ref?: string;
+  disabled?: boolean;
+  overlap?: "skip" | "allow";
+  max_concurrent?: number;
+  guard?: string;
+  guard_timeout?: string;
+  guard_var?: string;
+}
+
+export function createTeamSchedule(
+  teamID: string,
+  input: ScheduleCreateInput,
+): Promise<ScheduledBot> {
+  return request<ScheduledBot>(`/teams/${encodeURIComponent(teamID)}/schedules`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export interface SchedulePatch {
