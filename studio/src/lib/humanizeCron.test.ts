@@ -94,3 +94,18 @@ describe("humanizeCron", () => {
     expect(humanizeCron(expr)).toBeNull();
   });
 });
+
+describe("humanizeCron with CRON_TZ prefix", () => {
+  it("humanizes the schedule part and appends the zone", () => {
+    expect(humanizeCron("CRON_TZ=Europe/Paris 0 8 * * *")).toBe(
+      "daily at 08:00 (Europe/Paris)",
+    );
+    expect(humanizeCron("CRON_TZ=Europe/Paris 0 8 * * 1")).toBe(
+      "every Monday at 08:00 (Europe/Paris)",
+    );
+  });
+
+  it("returns null when the schedule part is not humanizable", () => {
+    expect(humanizeCron("CRON_TZ=Europe/Paris 0 8 1,15 * *")).toBeNull();
+  });
+});
