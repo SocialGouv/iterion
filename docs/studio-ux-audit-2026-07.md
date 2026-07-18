@@ -38,28 +38,35 @@ bulk shipped in the wave commits `048c8e8af…b24361e8c` (2026-07-17).
 
 ## Remaining backlog (ranked)
 
-1. **Launch form as a guided flow** (H/L) — /runs/new is still 8
-   stacked sections; the WizardForm treatment (target → inputs →
-   advanced → review) is designed in the audit but not built.
-2. **Cloud schedules UI** (H/L) — `/api/teams/{id}/schedules` CRUD is
-   live server-side with zero studio surface; provisioned schedules
-   never resurface after EnableRepoPanel commits them.
-3. **CreateWebhookDialog** (H/M) — 15-field wall; fold into WizardForm
-   steps with provider-driven defaults.
-4. **Integrations wizard-return dedup** (H/M) — `?tab=forges` still
-   re-exposes the legacy ConnectForm + OAuth-app registration next to
-   the wizard-born Repositories section; demote/merge.
-5. **Trigger-families explainer** (M/M) — one page explaining forge
-   webhooks vs schedules vs board triggers vs run-completion, and
-   which surface owns each.
-6. **DSL node `description:`** (M/L) — humanized ids are the 80% fix;
-   authored labels need a DSL field + IR + wire plumbing.
-7. **Org page** (M) — duplicate org/team audit surfaces could merge;
-   org-status enums (suspended/read_only) still unexplained in the
-   admin drawer.
-8. Assorted low-severity polish tracked in the audit transcript
-   (SettingsDialog About links, Dispatcher WS banner spam local,
-   cron humanization presets in EnableRepoPanel).
+Third pass (2026-07-18, commits `3df0716b9…e519c2fad`) closed the bulk
+of what was left: CreateWebhookDialog is a 4-step wizard with
+provider-driven event defaults (#3), the legacy ConnectForm/OAuth-apps
+fold behind a "Manual setup (advanced)" disclosure and the WiringGuide
+routes to the connect wizard (#4), Automations carries a
+trigger-families explainer (#5), nodes accept a DSL `description:`
+surfaced as the run-console label (#6), org-status enums are explained
+(#7), and the #8 polish shipped (About links in web mode, shared
+CronField with presets/preview in EnableRepoPanel). The same pass added
+inline Resume + bulk cancel/delete on the runs list, explanatory
+fallbacks for gated routes, cloud gating of the Editor affordances, and
+platform `/admin/audit` + `/admin/dlq` pages. #2 (cloud schedules UI)
+had already shipped as the Automations Schedules tab.
+
+Still open:
+
+1. **Launch form as a guided flow** (declined for now) — the
+   progressive-disclosure LaunchView (persona header, auto-managed
+   vars, single Advanced fold) already broke the 8-section wall; a
+   strict multi-step wizard would add clicks to the most frequent
+   flow. Revisit only if evidence shows the single-page form still
+   confuses.
+2. **Run-console node headers** (L) — `StatusHero`/`DetailHeader`
+   still call `humanizeNodeId` directly (no workflow context), so an
+   authored node `description:` doesn't yet show there — only in the
+   conversation banners via the node resolver.
+3. Assorted low-severity polish: `/board/labels` + `/board/fields`
+   deep links still fall through silently when the tracker is off
+   (main `/board` now explains).
 
 ## Method notes
 
