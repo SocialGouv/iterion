@@ -1,6 +1,8 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useState } from "react";
 
+import { Link } from "wouter";
+
 import type { BotEntryWithSchema } from "@/api/bots";
 import {
   type ForgeConnection,
@@ -9,6 +11,7 @@ import {
   type ForgeSyncResult,
   deleteForgeConnection,
   disableForgeIntegration,
+  forgeTeamRepoKey,
   listForgeIntegrationHooks,
   syncForgeIntegration,
   updateForgeIntegration,
@@ -18,6 +21,8 @@ import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { bindBotPath } from "@/views/integrations/wizard/bindModel";
+import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 
 import { type ConfirmFn, statusTone } from "./forgeShared";
 import { EnableRepoPanel } from "./EnableRepoPanel";
@@ -205,13 +210,31 @@ function RepoRow({
     <li className="border-t border-border-subtle pt-1 space-y-1">
       <div className="flex items-center justify-between gap-2 text-sm">
         <span>
-          <span className="font-mono">{integration.repo_full_name}</span>{" "}
+          <Link
+            href={repoDetailPath(integration)}
+            className="font-mono hover:underline"
+            title={`Repository details — ${integration.repo_full_name}`}
+          >
+            {integration.repo_full_name}
+          </Link>{" "}
           <span className="text-fg-muted">· {integration.bot_ids.join(", ")}</span>
         </span>
         {canManage && (
-          <Button variant="danger" size="sm" onClick={onDisable}>
-            Disable
-          </Button>
+          <span className="flex shrink-0 items-center gap-1.5">
+            <Link
+              href={bindBotPath({
+                repoKey: forgeTeamRepoKey(integration),
+                returnTo: "/integrations",
+              })}
+            >
+              <Button variant="ghost" size="sm" title="Bind another bot to this repo">
+                Bind bot…
+              </Button>
+            </Link>
+            <Button variant="danger" size="sm" onClick={onDisable}>
+              Disable
+            </Button>
+          </span>
         )}
       </div>
       {canManage && (

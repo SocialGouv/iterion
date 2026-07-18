@@ -3,6 +3,7 @@ import { Link, useLocation, useParams } from "wouter";
 
 import type { BotEntryWithSchema, Invocation } from "@/api/bots";
 import { ApiError } from "@/api/client";
+import { forgeTeamRepoKey } from "@/api/forgeConnections";
 import { listBindings, type BotSecretBinding } from "@/api/botBindings";
 import { listRuns, type RunSummary } from "@/api/runs";
 import {
@@ -38,11 +39,14 @@ import { EmojiPicker } from "@/components/ui/EmojiPicker";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 import { humanizeCron } from "@/lib/humanizeCron";
+import BotIdentity from "@/components/shared/BotIdentity";
 import { botVisual } from "@/lib/personas";
 import { useBotsStore } from "@/store/bots";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useTabsStore } from "@/store/tabs";
 import { useUIStore } from "@/store/ui";
+import { bindBotPath } from "@/views/integrations/wizard/bindModel";
+import { repoDetailPath } from "@/views/RepoDetail/repoKey";
 import NewTriggerDialog from "@/views/Triggers/NewTriggerDialog";
 import TriggerList from "@/views/Triggers/TriggerList";
 
@@ -227,45 +231,35 @@ function IdentityHeader({ entry }: { entry: BotEntryWithSchema }) {
   return (
     <Card>
       <div className="flex items-start gap-3">
-        {entry.is_bundle ? (
-          <EmojiPicker
-            onSelect={(emoji) => void onPickIcon(emoji)}
-            trigger={
-              <button
-                type="button"
-                aria-label={`Icon ${identity.emoji} — change`}
-                title="Pick an emoji icon for this bot"
-                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-border-strong bg-surface-1 text-2xl leading-none transition-colors hover:border-accent"
-              >
-                {identity.emoji}
-              </button>
-            }
-          />
-        ) : (
-          <span
-            className="flex h-12 w-12 shrink-0 items-center justify-center text-2xl leading-none"
-            aria-hidden="true"
-          >
-            {identity.emoji}
-          </span>
-        )}
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <h1 className={`text-base font-semibold ${identity.color}`}>{label}</h1>
-            {entry.display_name?.trim() && (
-              <span className="font-mono text-caption text-fg-subtle">{entry.name}</span>
-            )}
-            {!entry.is_bundle && <Badge>single file</Badge>}
-          </div>
-          {entry.description && (
-            <p className="mt-0.5 text-xs text-fg-muted">{entry.description}</p>
-          )}
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {entry.version && <Chip>v{entry.version}</Chip>}
-            {entry.author && <Chip>by {entry.author}</Chip>}
-          </div>
-        </div>
+        <BotIdentity
+          bot={entry}
+          size="lg"
+          className="min-w-0 flex-1"
+          avatar={
+            entry.is_bundle ? (
+              <EmojiPicker
+                onSelect={(emoji) => void onPickIcon(emoji)}
+                trigger={
+                  <button
+                    type="button"
+                    aria-label={`Icon ${identity.emoji} — change`}
+                    title="Pick an emoji icon for this bot"
+                    className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-border-strong bg-surface-1 text-2xl leading-none transition-colors hover:border-accent"
+                  >
+                    {identity.emoji}
+                  </button>
+                }
+              />
+            ) : undefined
+          }
+          nameExtras={!entry.is_bundle && <Badge>single file</Badge>}
+          meta={
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {entry.version && <Chip>v{entry.version}</Chip>}
+              {entry.author && <Chip>by {entry.author}</Chip>}
+            </div>
+          }
+        />
 
         <div className="flex shrink-0 flex-col items-end gap-1">
           <Button
@@ -318,7 +312,7 @@ function ActionsRow({
     (state) => !!state.info?.native_tracker_enabled,
   );
   const isCloud = useServerInfoStore((s) => s.info?.mode === "cloud");
-  const { activeRepo, enabled: repoScopeEnabled } = useActiveRepo();
+  const { activeRepo, repos, enabled: repoScopeEnabled } = useActiveRepo();
 
   const noPathTitle =
     "The server couldn't relativise this bot's path to the workspace — launch it from its own directory instead.";
@@ -334,12 +328,22 @@ function ActionsRow({
     setLocation(`/editor?file=${encodeURIComponent(launchFile)}`);
   };
 
-  // Cloud repo-context row: surfaces the manifest `repo:` requirement against
-  // the sidebar's active repo, so the operator knows before clicking Launch
-  // whether the target is set (or that the bot needs one).
+  // Cloud repo-context row: the repositories this bot is bound to (webhook
+  // provisioned), plus the guided bind flow. A manifest `repo: required`
+  // with nothing bound surfaces as a warning instead of a passive line.
   const repoReq = entry.repo && entry.repo.mode !== "none" ? entry.repo : null;
-  const showRepoContext = isCloud && repoScopeEnabled && !!repoReq;
-  const needsRepo = repoReq?.mode === "required" && !activeRepo;
+  const boundRepos = useMemo(
+    () => repos.filter((r) => r.bot_ids.includes(entry.name)),
+    [repos, entry.name],
+  );
+  const showRepoContext =
+    isCloud && repoScopeEnabled && (!!repoReq || boundRepos.length > 0);
+  const needsRepo =
+    repoReq?.mode === "required" && boundRepos.length === 0 && !activeRepo;
+  const bindHref = bindBotPath({
+    bot: entry.name,
+    returnTo: `/bots/${encodeURIComponent(entry.name)}`,
+  });
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -392,20 +396,36 @@ function ActionsRow({
         </Button>
       </div>
       {showRepoContext && (
-        needsRepo ? (
-          <p className="text-caption text-warning-fg">
-            Needs a target repository —{" "}
-            <Link href="/integrations/connect" className="text-accent-text hover:underline">
-              connect one
-            </Link>
-            .
-          </p>
-        ) : activeRepo ? (
-          <p className="text-caption text-fg-subtle">
-            Runs on{" "}
-            <span className="font-mono text-fg-muted">{activeRepo.repo_full_name}</span>
-          </p>
-        ) : null
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          {boundRepos.length > 0 ? (
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-fg-subtle">
+              Bound to
+              {boundRepos.map((r) => (
+                <Link
+                  key={forgeTeamRepoKey(r)}
+                  href={repoDetailPath(r)}
+                  className="font-mono text-accent-text hover:underline"
+                  title={`Repository details — ${r.repo_full_name}`}
+                >
+                  {r.repo_full_name}
+                </Link>
+              ))}
+            </span>
+          ) : (
+            <span
+              className={`text-caption ${needsRepo ? "text-warning-fg" : "text-fg-subtle"}`}
+            >
+              {needsRepo
+                ? "Needs a target repository."
+                : "Not bound to any repository yet."}
+            </span>
+          )}
+          <Link href={bindHref}>
+            <Button variant="secondary" size="sm">
+              Bind to repository…
+            </Button>
+          </Link>
+        </div>
       )}
     </div>
   );

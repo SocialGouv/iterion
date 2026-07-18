@@ -38,6 +38,8 @@ const SettingsPage = lazy(() => import("@/views/account/SettingsPage"));
 const TeamPage = lazy(() => import("@/views/teams/TeamPage"));
 const IntegrationsPage = lazy(() => import("@/views/integrations/IntegrationsPage"));
 const ConnectRepoWizardView = lazy(() => import("@/views/integrations/ConnectRepoWizard"));
+const BindBotWizardView = lazy(() => import("@/views/integrations/BindBotWizard"));
+const RepoDetailView = lazy(() => import("@/views/RepoDetail"));
 const OrgPage = lazy(() => import("@/views/orgs/OrgPage"));
 
 // Auth side-doors reachable when anonymous (forced password rotation,
@@ -404,7 +406,13 @@ function AuthedApp() {
           <Route path="/orgs/:id" component={OrgPage} />
           <Route path="/teams/:id" component={TeamPage} />
           <Route path="/integrations/connect" component={ConnectRepoWizardView} />
+          <Route path="/integrations/bind" component={BindBotWizardView} />
           <Route path="/integrations" component={IntegrationsPage} />
+          <Route path="/repos/:key">
+            <ErrorBoundary area="Repository view">
+              <RepoDetailView />
+            </ErrorBoundary>
+          </Route>
           <Route path="/admin" component={OrgsAdminPage} />
           <Route path="/admin/orgs" component={OrgsAdminPage} />
           <Route path="/admin/users" component={UsersAdminPage} />

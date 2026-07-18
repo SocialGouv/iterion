@@ -40,6 +40,7 @@ import {
   DEFAULT_BASE,
   canonicalBase,
 } from "@/views/teams/tabs/integrations/forgeShared";
+import { StepIndicator } from "@/views/integrations/wizard/StepIndicator";
 
 // The wizard is the centrepiece of the cloud connect-repo UX redesign:
 // four short steps (Provider → Authorize → Repositories → Done), driven
@@ -214,7 +215,11 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
   return (
     <div className="h-full overflow-auto">
       <div className="max-w-2xl mx-auto p-3 sm:p-6 space-y-5">
-        <StepIndicator step={step} />
+        <StepIndicator
+          steps={STEP_ORDER.map((s) => ({ id: s, label: STEP_LABEL[s] }))}
+          current={step}
+          ariaLabel="Connect a repository — progress"
+        />
 
         {error && (
           <InlineBanner tone="danger" layout="inline">
@@ -313,56 +318,6 @@ function WizardInner({ teamID, q, navigate }: WizardInnerProps) {
         )}
       </div>
     </div>
-  );
-}
-
-/* -------------------------- step indicator -------------------------- */
-
-function StepIndicator({ step }: { step: Step }) {
-  const idx = STEP_ORDER.indexOf(step);
-  return (
-    <ol
-      className="flex flex-wrap items-center gap-2 text-xs text-fg-subtle"
-      aria-label="Connect a repository — progress"
-    >
-      {STEP_ORDER.map((s, i) => {
-        const done = i < idx;
-        const active = i === idx;
-        return (
-          <li
-            key={s}
-            aria-current={active ? "step" : undefined}
-            className={[
-              "inline-flex items-center gap-1.5",
-              active ? "text-fg-default font-semibold" : "",
-              !active && !done ? "opacity-60" : "",
-            ]
-              .join(" ")
-              .trim()}
-          >
-            <span
-              className={[
-                "inline-flex h-5 w-5 items-center justify-center rounded-full border text-caption shrink-0",
-                done
-                  ? "bg-success-soft text-success-fg border-success/40"
-                  : active
-                    ? "bg-accent-soft text-accent-text border-accent/40"
-                    : "bg-surface-2 text-fg-muted border-border-default",
-              ].join(" ")}
-              aria-hidden
-            >
-              {done ? <CheckIcon className="h-3 w-3" /> : i + 1}
-            </span>
-            <span>{STEP_LABEL[s]}</span>
-            {i < STEP_ORDER.length - 1 && (
-              <span aria-hidden className="text-fg-subtle">
-                →
-              </span>
-            )}
-          </li>
-        );
-      })}
-    </ol>
   );
 }
 
