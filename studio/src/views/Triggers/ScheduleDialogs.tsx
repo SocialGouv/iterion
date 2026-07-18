@@ -19,6 +19,7 @@ import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { Dialog } from "@/components/ui/Dialog";
 import { FieldLabel } from "@/components/ui/FieldLabel";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
