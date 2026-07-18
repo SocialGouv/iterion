@@ -52,6 +52,7 @@ export default function BotsView() {
   const marketplaceEnabled = useServerInfoStore(
     (s) => s.info?.marketplace_enabled === true,
   );
+  const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled === true);
 
   const [query, setQuery] = useState("");
   // Trigger counts per bot_id. null = not loaded (or the trigger store
@@ -76,6 +77,9 @@ export default function BotsView() {
   }, []);
 
   useEffect(() => {
+    // Skip the round-trip (and its console 404) when the server
+    // advertises no trigger store — the badge is simply hidden.
+    if (!triggersEnabled) return;
     let cancelled = false;
     listTriggers()
       .then((subs: TriggerSubscription[]) => {
@@ -93,7 +97,7 @@ export default function BotsView() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [triggersEnabled]);
 
   const onUploadBotz = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

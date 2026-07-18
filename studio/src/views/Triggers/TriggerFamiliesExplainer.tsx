@@ -14,9 +14,21 @@ export default function TriggerFamiliesExplainer({
 }: {
   /** Switches to the Schedules tab of this page (URL-synced). */
   onOpenSchedules: () => void;
-  /** Opens the New-trigger dialog (board / run-completion kinds). */
-  onNewTrigger: () => void;
+  /**
+   * Opens the New-trigger dialog (board / run-completion kinds). Omit when
+   * the trigger store is unavailable — the two "created here" families then
+   * state that instead of offering a dead-end CTA.
+   */
+  onNewTrigger?: () => void;
 }) {
+  const createdHere = (label: string) =>
+    onNewTrigger ? (
+      <button type="button" onClick={onNewTrigger} className="text-accent-text hover:underline">
+        {label}
+      </button>
+    ) : (
+      <span className="text-fg-subtle">{label} — not enabled on this server</span>
+    );
   return (
     <details className="group rounded border border-border-subtle bg-surface-1">
       <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-fg-default list-none [&::-webkit-details-marker]:hidden">
@@ -33,15 +45,7 @@ export default function TriggerFamiliesExplainer({
       <dl className="space-y-3 border-t border-border-subtle px-3 py-3">
         <Family
           name="Board trigger"
-          where={
-            <button
-              type="button"
-              onClick={onNewTrigger}
-              className="text-accent-text hover:underline"
-            >
-              created here — New trigger → “Board card”
-            </button>
-          }
+          where={createdHere("created here — New trigger → “Board card”")}
         >
           Fires when a native-board card enters a state (e.g. “ready”) with the
           required labels. The card is promoted to the bot and the dispatcher
@@ -49,15 +53,7 @@ export default function TriggerFamiliesExplainer({
         </Family>
         <Family
           name="Run-completion"
-          where={
-            <button
-              type="button"
-              onClick={onNewTrigger}
-              className="text-accent-text hover:underline"
-            >
-              created here — New trigger → “Run finished”
-            </button>
-          }
+          where={createdHere("created here — New trigger → “Run finished”")}
         >
           Chains a bot after another run ends (<code>run.finished</code> /{" "}
           <code>run.failed</code>), optionally filtered by the upstream bot —

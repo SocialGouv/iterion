@@ -132,22 +132,25 @@ export default function TriggersView() {
   // cloud servers carry schedules even without a trigger store, so only
   // the Automations panel shows the unavailable state.
   const automationsPanel = unavailable ? (
-    <div className="py-6">
-      <EmptyState
-        title="Automations not enabled"
-        message={
-          cloud
-            ? "Event triggers aren't enabled on this server. Cloud repos are automated via forge webhooks and the Schedules tab."
-            : "This server has no trigger store wired. Launch a studio with the native tracker to manage event-driven triggers."
-        }
-        action={
-          cloud ? (
-            <Button variant="primary" size="sm" onClick={() => selectTab("schedules")}>
-              Open Schedules
-            </Button>
-          ) : undefined
-        }
-      />
+    <div className="flex flex-col gap-3">
+      <TriggerFamiliesExplainer onOpenSchedules={() => selectTab("schedules")} />
+      <div className="py-6">
+        <EmptyState
+          title="Automations not enabled"
+          message={
+            cloud
+              ? "Event triggers aren't enabled on this server. Cloud repos are automated via forge webhooks and the Schedules tab."
+              : "This server has no trigger store wired. Launch a studio with the native tracker to manage event-driven triggers."
+          }
+          action={
+            cloud ? (
+              <Button variant="primary" size="sm" onClick={() => selectTab("schedules")}>
+                Open Schedules
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
     </div>
   ) : (
     <div className="flex flex-col gap-3">

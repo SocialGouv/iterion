@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/dsl/workflowfile"
@@ -425,15 +426,17 @@ func parseBotFile(path string) (*Entry, error) {
 		}
 	}
 	if e.Description == "" {
-		e.Description = leadingCommentDescription(raw)
+		e.Description = leadingCommentDescription(raw, filepath.Base(path))
 	}
 	return e, nil
 }
 
 // leadingCommentDescription returns the first paragraph of `## ` lines
 // at the top of the file (excluding any `## ---` framing). Stops at the
-// first blank line or non-comment line.
-func leadingCommentDescription(raw []byte) string {
+// first blank line or non-comment line. Decoration-only lines (banner
+// rules like `## ────`) and a header line repeating the file's own name
+// are skipped — they are framing, not description.
+func leadingCommentDescription(raw []byte, filename string) string {
 	lines := strings.Split(string(raw), "\n")
 	var out []string
 	skippingFM := false
@@ -453,7 +456,7 @@ func leadingCommentDescription(raw []byte) string {
 			continue
 		}
 		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trim, "##"), " "))
-		if body == "" {
+		if body == "" || isDecorationLine(body) || body == filename {
 			if len(out) > 0 {
 				break
 			}
@@ -462,6 +465,17 @@ func leadingCommentDescription(raw []byte) string {
 		out = append(out, body)
 	}
 	return strings.Join(out, " ")
+}
+
+// isDecorationLine reports whether a comment body is pure framing — no
+// letter or digit in it (e.g. `────…`, `=====`, `***`).
+func isDecorationLine(body string) bool {
+	for _, r := range body {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func fileExists(path string) bool {
