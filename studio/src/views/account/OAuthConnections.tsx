@@ -208,6 +208,7 @@ export default function OAuthConnections({
             const expiring = conn?.access_token_expires_at
               ? new Date(conn.access_token_expires_at).getTime() - Date.now() < 24 * 3600_000
               : false;
+            const notRefreshable = conn ? conn.refreshable === false : false;
             return (
               <div
                 key={kind}
@@ -218,13 +219,18 @@ export default function OAuthConnections({
                     <h3 className="font-medium">{display}</h3>
                     <div className="text-xs text-fg-muted">{filename}</div>
                   </div>
-                  <div className="text-sm">
+                  <div className="text-sm flex items-center gap-2">
                     {conn ? (
-                      <Badge variant={expiring ? "warning" : "success"}>
-                        Connected
-                        {conn.access_token_expires_at &&
-                          ` · expires ${new Date(conn.access_token_expires_at).toLocaleString()}`}
-                      </Badge>
+                      <>
+                        <Badge variant={expiring || notRefreshable ? "warning" : "success"}>
+                          Connected
+                          {conn.access_token_expires_at &&
+                            ` · expires ${new Date(conn.access_token_expires_at).toLocaleString()}`}
+                        </Badge>
+                        {notRefreshable && (
+                          <Badge variant="warning">Manual reconnect required before expiry</Badge>
+                        )}
+                      </>
                     ) : (
                       <Badge variant="neutral">Not connected</Badge>
                     )}
@@ -322,9 +328,11 @@ export default function OAuthConnections({
                     )}
                     {conn && (
                       <>
-                        <Button variant="secondary" onClick={() => refresh(kind)} disabled={busy}>
-                          Refresh tokens
-                        </Button>
+                        {!notRefreshable && (
+                          <Button variant="secondary" onClick={() => refresh(kind)} disabled={busy}>
+                            Refresh tokens
+                          </Button>
+                        )}
                         <Button variant="danger" onClick={() => remove(kind)}>
                           Disconnect
                         </Button>

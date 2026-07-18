@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -23,6 +24,12 @@ const (
 	codexTokenURL     = "https://auth.openai.com/oauth/token"
 )
 
+// ErrNotRefreshable marks a credential whose sealed payload carries no
+// refresh token: no refresh exchange can ever succeed for it, so callers
+// must skip it (worker) or tell the user to re-connect (HTTP) instead of
+// retrying forever.
+var ErrNotRefreshable = errors.New("secrets: credential has no refresh token")
+
 // RefreshResult carries the bits a successful refresh produces.
 // Pass them through ApplyAnthropicRefresh / ApplyCodexRefresh to
 // rebuild the credentials JSON the CLI expects.
@@ -41,8 +48,11 @@ func RefreshAnthropic(ctx context.Context, hc *http.Client, clientID, refreshTok
 	if hc == nil {
 		hc = http.DefaultClient
 	}
-	if clientID == "" || refreshToken == "" {
-		return RefreshResult{}, fmt.Errorf("secrets: anthropic refresh requires client_id + refresh_token")
+	if refreshToken == "" {
+		return RefreshResult{}, fmt.Errorf("anthropic refresh: %w", ErrNotRefreshable)
+	}
+	if clientID == "" {
+		return RefreshResult{}, fmt.Errorf("secrets: anthropic refresh requires client_id")
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -150,6 +160,9 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		if perr != nil {
 			return perr
 		}
+		if strings.TrimSpace(view.ClaudeAIOauth.RefreshToken) == "" {
+			return fmt.Errorf("anthropic: %w", ErrNotRefreshable)
+		}
 		clientID := strings.TrimSpace(anthropicClientID)
 		if clientID == "" {
 			return fmt.Errorf("secrets: anthropic oauth client id not configured")
@@ -178,6 +191,9 @@ func RefreshRecord(ctx context.Context, sealer Sealer, hc *http.Client, anthropi
 		view, perr := ParseCodexView(payload)
 		if perr != nil {
 			return perr
+		}
+		if strings.TrimSpace(view.Tokens.RefreshToken) == "" {
+			return fmt.Errorf("codex: %w", ErrNotRefreshable)
 		}
 		clientID := strings.TrimSpace(codexClientID)
 		if clientID == "" {
@@ -215,8 +231,11 @@ func RefreshCodex(ctx context.Context, hc *http.Client, clientID, refreshToken s
 	if hc == nil {
 		hc = http.DefaultClient
 	}
-	if clientID == "" || refreshToken == "" {
-		return RefreshResult{}, fmt.Errorf("secrets: codex refresh requires client_id + refresh_token")
+	if refreshToken == "" {
+		return RefreshResult{}, fmt.Errorf("codex refresh: %w", ErrNotRefreshable)
+	}
+	if clientID == "" {
+		return RefreshResult{}, fmt.Errorf("secrets: codex refresh requires client_id")
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")

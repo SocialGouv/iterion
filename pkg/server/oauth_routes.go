@@ -36,8 +36,11 @@ type oauthConnectionView struct {
 	Scopes               []string `json:"scopes,omitempty"`
 	AccessTokenExpiresAt *string  `json:"access_token_expires_at,omitempty"`
 	LastRefreshedAt      *string  `json:"last_refreshed_at,omitempty"`
-	CreatedAt            string   `json:"created_at"`
-	UpdatedAt            string   `json:"updated_at"`
+	// Refreshable is false when the sealed payload has no refresh token:
+	// the token will expire and only a manual re-connect renews it.
+	Refreshable bool   `json:"refreshable"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 func toOAuthView(r secrets.OAuthRecord) oauthConnectionView {
@@ -48,6 +51,7 @@ func toOAuthView(r secrets.OAuthRecord) oauthConnectionView {
 		UpdatedAt:            r.UpdatedAt.Format(time.RFC3339),
 		AccessTokenExpiresAt: optRFC3339(r.AccessTokenExpiresAt),
 		LastRefreshedAt:      optRFC3339(r.LastRefreshedAt),
+		Refreshable:          !r.NotRefreshable,
 	}
 }
 
@@ -283,6 +287,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 			t := time.UnixMilli(v.ClaudeAIOauth.ExpiresAt).UTC()
 			rec.AccessTokenExpiresAt = &t
 		}
+		rec.NotRefreshable = v.ClaudeAIOauth.RefreshToken == ""
 		rec.Scopes = v.ClaudeAIOauth.Scopes
 	case secrets.OAuthKindCodex:
 		v, err := secrets.ParseCodexView(blob)
@@ -296,6 +301,7 @@ func (s *Server) sealOAuthRecord(ctx context.Context, ownerKey string, kind secr
 			t := time.Now().Add(time.Duration(v.Tokens.ExpiresIn) * time.Second).UTC()
 			rec.AccessTokenExpiresAt = &t
 		}
+		rec.NotRefreshable = v.Tokens.RefreshToken == ""
 	}
 	sealed, err := secrets.SealOAuthPayload(s.sealer, ownerKey, kind, blob)
 	if err != nil {
@@ -323,6 +329,20 @@ func (s *Server) refreshOAuthForOwner(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	if err := secrets.RefreshRecord(r.Context(), s.sealer, s.httpClient, s.cfg.AnthropicOAuthClientID, s.cfg.CodexOAuthClientID, &rec); err != nil {
+		if errors.Is(err, secrets.ErrNotRefreshable) {
+			// Self-heal the record so the background worker stops
+			// attempting it; surface an actionable message instead of
+			// the raw exchange error.
+			if !rec.NotRefreshable {
+				rec.NotRefreshable = true
+				rec.UpdatedAt = time.Now().UTC()
+				if uerr := s.oauthStore.Upsert(r.Context(), rec); uerr != nil {
+					s.logger.Warn("oauth: mark not-refreshable %s/%s: %v", ownerKey, kind, uerr)
+				}
+			}
+			httpError(w, http.StatusConflict, "this connection has no refresh token and can't auto-refresh — reconnect it to renew")
+			return
+		}
 		httpError(w, http.StatusBadGateway, "refresh: %v", err)
 		return
 	}

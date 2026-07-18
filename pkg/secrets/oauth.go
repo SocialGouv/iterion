@@ -72,8 +72,14 @@ type OAuthRecord struct {
 	Scopes               []string   `bson:"scopes,omitempty" json:"scopes,omitempty"`
 	AccessTokenExpiresAt *time.Time `bson:"access_token_expires_at,omitempty" json:"access_token_expires_at,omitempty"`
 	LastRefreshedAt      *time.Time `bson:"last_refreshed_at,omitempty" json:"last_refreshed_at,omitempty"`
-	CreatedAt            time.Time  `bson:"created_at" json:"created_at"`
-	UpdatedAt            time.Time  `bson:"updated_at" json:"updated_at"`
+	// NotRefreshable marks a payload that carries no refresh token: the
+	// refresh worker and manual refresh must skip it — only a re-connect
+	// can renew it. Inverted polarity so legacy records (field absent =
+	// false) keep being attempted; the first ErrNotRefreshable outcome
+	// self-heals them by setting this flag.
+	NotRefreshable bool      `bson:"not_refreshable,omitempty" json:"not_refreshable,omitempty"`
+	CreatedAt      time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt      time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // OAuthStore is the persistence interface for sealed OAuth records.

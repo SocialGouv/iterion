@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -81,6 +82,79 @@ func TestOAuthRefreshWorker_RefreshesPersonalAndOrg(t *testing.T) {
 	bob, _ := st.Get(context.Background(), "bob", OAuthKindClaudeCode)
 	if bob.LastRefreshedAt != nil {
 		t.Error("bob should not have been refreshed")
+	}
+}
+
+// seedRecordNoRefreshToken seals a credentials.json WITHOUT a refresh
+// token (an access-token-only snapshot) expiring at exp.
+func seedRecordNoRefreshToken(t *testing.T, st OAuthStore, sealer Sealer, ownerKey string, exp time.Time) {
+	t.Helper()
+	blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-snapshot1234567890abcd","expiresAt":0}}`)
+	sealed, err := SealOAuthPayload(sealer, ownerKey, OAuthKindClaudeCode, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	e := exp
+	if err := st.Upsert(context.Background(), OAuthRecord{
+		UserID:               ownerKey,
+		Kind:                 OAuthKindClaudeCode,
+		SealedPayload:        sealed,
+		AccessTokenExpiresAt: &e,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+}
+
+func TestOAuthRefreshWorker_NotRefreshableIsSkippedNotFailed(t *testing.T) {
+	freshRetrySchedule(t)
+	sealer, _ := NewAESGCMSealer(make([]byte, 32))
+	st := NewMemoryOAuthStore()
+	// Legacy-shaped record: expiry tracked, but sealed payload has no
+	// refresh token and NotRefreshable is unset (pre-migration row).
+	seedRecordNoRefreshToken(t, st, sealer, "carol", time.Now().Add(time.Minute))
+
+	w := &OAuthRefreshWorker{
+		Store:             st,
+		Sealer:            sealer,
+		HTTP:              http.DefaultClient,
+		AnthropicClientID: "client-xyz",
+		Lead:              30 * time.Minute,
+	}
+	// First sweep: attempts, hits ErrNotRefreshable, self-heals — no error.
+	n, err := w.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 refreshed, got %d", n)
+	}
+	rec, err := st.Get(context.Background(), "carol", OAuthKindClaudeCode)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !rec.NotRefreshable {
+		t.Fatal("record should have been self-healed to NotRefreshable")
+	}
+	// Second sweep: skipped structurally, still quiet.
+	if _, err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce (2nd): %v", err)
+	}
+}
+
+func TestRefreshRecord_NoRefreshTokenIsErrNotRefreshable(t *testing.T) {
+	sealer, _ := NewAESGCMSealer(make([]byte, 32))
+	blob := []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-snapshot1234567890abcd"}}`)
+	sealed, err := SealOAuthPayload(sealer, "dave", OAuthKindClaudeCode, blob)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	rec := OAuthRecord{UserID: "dave", Kind: OAuthKindClaudeCode, SealedPayload: sealed}
+	err = RefreshRecord(context.Background(), sealer, http.DefaultClient, "client-xyz", "", &rec)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrNotRefreshable) {
+		t.Fatalf("expected ErrNotRefreshable, got %v", err)
 	}
 }
 
