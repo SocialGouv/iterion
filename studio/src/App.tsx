@@ -433,18 +433,38 @@ function AuthedApp() {
           <Route path="/admin/users" component={UsersAdminPage} />
           <Route path="/admin/audit" component={AuditAdminPage} />
           <Route path="/admin/dlq" component={DLQAdminPage} />
-          {serverInfo?.native_tracker_enabled && (
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/board/labels">
               <ErrorBoundary area="Board labels view">
                 <LabelsView />
               </ErrorBoundary>
             </Route>
+          ) : (
+            <Route path="/board/labels">
+              <FeatureUnavailable
+                title="Board labels"
+                description="Label vocabulary of the native kanban tracker."
+                reason="The native kanban tracker isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+              />
+            </Route>
           )}
-          {serverInfo?.native_tracker_enabled && (
+          {serverInfo?.native_tracker_enabled ? (
             <Route path="/board/fields">
               <ErrorBoundary area="Board fields view">
                 <FieldsView />
               </ErrorBoundary>
+            </Route>
+          ) : (
+            <Route path="/board/fields">
+              <FeatureUnavailable
+                title="Board fields"
+                description="Custom card fields of the native kanban tracker."
+                reason="The native kanban tracker isn't wired on this server."
+                ctaLabel="Open Runs"
+                ctaHref="/runs"
+              />
             </Route>
           )}
           <Route path="/insights">

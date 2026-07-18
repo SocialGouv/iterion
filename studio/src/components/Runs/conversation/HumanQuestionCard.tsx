@@ -1,4 +1,4 @@
-import { humanizeNodeId } from "@/lib/runChat/nodeKindResolver";
+import { useNodeLabel } from "@/lib/runChat/useNodeLabel";
 import type { HumanQuestionMessage } from "@/lib/runChat/types";
 
 import HumanPromptForm from "./HumanPromptForm";
@@ -23,6 +23,7 @@ interface Props {
 //     for run to pause here…"). Shouldn't happen often but covers
 //     races between the message arriving and the status flipping.
 export default function HumanQuestionCard({ runId, message, isActive }: Props) {
+  const nodeLabel = useNodeLabel();
   if (message.status === "answered") {
     return <AnsweredBubble message={message} />;
   }
@@ -34,7 +35,7 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
           className="not-italic text-caption text-fg-muted"
           title={message.nodeId}
         >
-          {humanizeNodeId(message.nodeId)}
+          {nodeLabel(message.nodeId)}
         </span>
       </div>
     );
@@ -54,7 +55,7 @@ export default function HumanQuestionCard({ runId, message, isActive }: Props) {
           className="px-1.5 py-0.5 rounded bg-warning-soft/40 text-fg-default"
           title={message.nodeId}
         >
-          {humanizeNodeId(message.nodeId)}
+          {nodeLabel(message.nodeId)}
         </span>
       </div>
       <div className="text-body text-fg-default">

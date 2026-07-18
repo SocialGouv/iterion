@@ -5,7 +5,7 @@ import { NodeIcon } from "@/components/icons/NodeIcon";
 import { formatMs } from "@/lib/format";
 import type { NodeKind } from "@/api/types";
 import type { ExecutionState, RunHeader } from "@/api/runs";
-import { humanizeNodeId } from "@/lib/runChat/nodeKindResolver";
+import { useNodeLabel } from "@/lib/runChat/useNodeLabel";
 
 interface StatusHeroProps {
   run: RunHeader;
@@ -73,6 +73,7 @@ function ActivityLine({
   running: { first?: ExecutionState; extra: number };
   nowMs: number;
 }) {
+  const nodeLabel = useNodeLabel();
   switch (run.status) {
     case "running": {
       const ex = running.first;
@@ -89,7 +90,7 @@ function ActivityLine({
             <NodeIcon kind={ex.kind as NodeKind} size={14} className="shrink-0" />
           )}
           <span className="text-fg-default truncate" title={ex.ir_node_id}>
-            {humanizeNodeId(ex.ir_node_id)}
+            {nodeLabel(ex.ir_node_id)}
           </span>
           {elapsed !== null && (
             <span className="text-fg-subtle shrink-0">· {formatMs(elapsed)}</span>
