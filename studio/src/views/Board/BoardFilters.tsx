@@ -181,7 +181,7 @@ export function BoardFilters({
       </span>
       {filtersActive && (
         <Button variant="ghost" size="sm" onClick={onReset}>
-          reset
+          Reset
         </Button>
       )}
     </div>

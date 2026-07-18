@@ -343,9 +343,10 @@ export default function BoardView() {
     [confirm, refresh, setError, setSelectedIds, setAnchorId],
   );
 
-  // The dispatch lane: the first eligible, non-terminal state (the
-  // "Let's go"/ready column the dispatcher claims from). Falls back to
-  // "ready" for boards that haven't flagged eligibility.
+  // The staging/dispatch lane: the first eligible, non-terminal state
+  // (the "Let's go"/ready column). The dispatcher claims from it when
+  // enabled; otherwise cards staged here launch their assigned bot.
+  // Falls back to "ready" for boards that haven't flagged eligibility.
   const dispatchState = useMemo(
     () => board?.states.find((s) => s.eligible && !s.terminal)?.name ?? "ready",
     [board],
@@ -374,6 +375,7 @@ export default function BoardView() {
     board,
     selectedIssues,
     dispatchState,
+    dispatcherEnabled,
     onDrop,
     refresh,
     setError,
@@ -710,7 +712,10 @@ export default function BoardView() {
                   const id = editing.id;
                   setEditing(null);
                   void onDrop(id, dispatchState);
-                  addToast("Dispatched 1 issue", "success");
+                  addToast(
+                    dispatcherEnabled ? "Dispatched 1 issue" : "Staged 1 issue",
+                    "success",
+                  );
                 }
               : undefined
           }

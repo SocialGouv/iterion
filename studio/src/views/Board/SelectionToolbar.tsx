@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Tooltip } from "@/components/ui";
+import { useServerInfoStore } from "@/store/serverInfo";
 import type { NativeBoard, NativeIssue } from "@/api/native";
 
 import { PRIORITY_PRESETS } from "./boardShared";
@@ -40,6 +41,11 @@ export function SelectionToolbar({
   onDelete: () => void;
   onClear: () => void;
 }) {
+  // Without a dispatcher the eligible column is the staging lane (cards
+  // launch their assigned bot on arrival), so the tooltip names it that way.
+  const dispatcherEnabled = useServerInfoStore(
+    (s) => s.info?.dispatcher_enabled === true,
+  );
   return (
     <div className="shrink-0 px-3 py-1.5 border-b border-border-default bg-accent-soft flex flex-wrap items-center gap-2 text-xs text-fg-default">
       <span>
@@ -48,7 +54,7 @@ export function SelectionToolbar({
       <Tooltip
         content={
           allSelectedDispatchable
-            ? "Move all selected into the dispatch lane"
+            ? `Move all selected into the ${dispatcherEnabled ? "dispatch" : "staging"} lane`
             : "All selected cards must be in Inbox or Backlog"
         }
       >
