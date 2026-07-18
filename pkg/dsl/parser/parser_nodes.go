@@ -83,12 +83,17 @@ func (p *parser) parseLLMProp(d *ast.LLMDecl, propTok Token, kind string) {
 	case TokenReasoningEffort:
 		d.ReasoningEffort = p.parseReasoningEffort()
 	case TokenIdent:
-		// `timeout:` is not a reserved keyword (the wait node also parses it
-		// as a bare ident), so match on the value here rather than a token.
-		if propTok.Value == "timeout" {
+		// `timeout:` and `description:` are not reserved keywords (the wait
+		// node also parses them as bare idents), so match on the value here
+		// rather than a token.
+		switch propTok.Value {
+		case "timeout":
 			p.expect(TokenColon)
 			d.Timeout = p.expectString()
-		} else {
+		case "description":
+			p.expect(TokenColon)
+			d.Description = p.expectString()
+		default:
 			p.addError(DiagUnknownProperty, propTok, "unknown "+kind+" property '"+propTok.Value+"'")
 			p.skipToNewline()
 		}
@@ -263,6 +268,16 @@ func (p *parser) parseRouterDecl() *ast.RouterDecl {
 		case TokenReasoningEffort:
 			p.next()
 			rd.ReasoningEffort = p.parseReasoningEffort()
+		case TokenIdent:
+			if t.Value == "description" {
+				p.next()
+				p.expect(TokenColon)
+				rd.Description = p.expectString()
+			} else {
+				p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
+				p.next()
+				p.skipToNewline()
+			}
 		default:
 			p.addError(DiagUnknownProperty, t, "unknown router property '"+t.Value+"'")
 			p.next()
@@ -372,6 +387,9 @@ func (p *parser) parseHumanProp(hd *ast.HumanDecl, propTok Token) {
 		hd.Await = p.parseAwaitMode()
 	case TokenIdent:
 		switch propTok.Value {
+		case "description":
+			p.expect(TokenColon)
+			hd.Description = p.expectString()
 		case "min_answers":
 			p.expect(TokenColon)
 			hd.MinAnswers = p.expectInt()
@@ -491,6 +509,9 @@ func (p *parser) parseToolNodeProp(td *ast.ToolNodeDecl, propTok Token) {
 		// reserved keywords, so they arrive as plain identifiers (the
 		// same convention compute's `expr` block uses).
 		switch propTok.Value {
+		case "description":
+			p.expect(TokenColon)
+			td.Description = p.expectString()
 		case "goal":
 			p.expect(TokenColon)
 			td.Goal = p.expectString()
@@ -621,9 +642,13 @@ func (p *parser) parseComputeProp(cd *ast.ComputeDecl, propTok Token) {
 		p.expect(TokenColon)
 		cd.Await = p.parseAwaitMode()
 	case TokenIdent:
-		if propTok.Value == "expr" {
+		switch propTok.Value {
+		case "expr":
 			cd.Expr = p.parseComputeExprBlock()
-		} else {
+		case "description":
+			p.expect(TokenColon)
+			cd.Description = p.expectString()
+		default:
 			p.addError(DiagUnknownProperty, propTok, "unknown compute property '"+propTok.Value+"'")
 			p.skipToNewline()
 		}
@@ -829,6 +854,10 @@ func (p *parser) parseSubbotDecl() *ast.SubbotDecl {
 			p.next()
 			p.expect(TokenColon)
 			sd.Source = p.expectString()
+		case t.Type == TokenIdent && t.Value == "description":
+			p.next()
+			p.expect(TokenColon)
+			sd.Description = p.expectString()
 		case t.Type == TokenIdent && t.Value == "isolated":
 			p.next()
 			p.expect(TokenColon)
@@ -878,6 +907,10 @@ func (p *parser) parseEmitDecl() *ast.EmitDecl {
 			p.next()
 			p.expect(TokenColon)
 			ed.Event = p.expectString()
+		case t.Type == TokenIdent && t.Value == "description":
+			p.next()
+			p.expect(TokenColon)
+			ed.Description = p.expectString()
 		default:
 			p.addError(DiagUnknownProperty, t, "unknown emit property '"+t.Value+"'")
 			p.next()
@@ -921,6 +954,10 @@ func (p *parser) parseWaitDecl() *ast.WaitDecl {
 			p.next()
 			p.expect(TokenColon)
 			wd.Timeout = p.expectString()
+		case t.Type == TokenIdent && t.Value == "description":
+			p.next()
+			p.expect(TokenColon)
+			wd.Description = p.expectString()
 		default:
 			p.addError(DiagUnknownProperty, t, "unknown wait property '"+t.Value+"'")
 			p.next()

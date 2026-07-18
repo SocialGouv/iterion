@@ -111,9 +111,11 @@ export function irKindResolver(workflow: WireWorkflow | null): NodeKindResolver 
   // every lookup falls back to "banner" so events render *something*
   // (better degradation than dropping all events while we wait for
   // the workflow fetch to land).
-  const byId = new Map<string, { kind: string }>();
+  const byId = new Map<string, { kind: string; description?: string }>();
   if (workflow) {
-    for (const n of workflow.nodes) byId.set(n.id, { kind: n.kind });
+    for (const n of workflow.nodes) {
+      byId.set(n.id, { kind: n.kind, description: n.description });
+    }
   }
   return {
     kind(nodeId) {
@@ -135,7 +137,11 @@ export function irKindResolver(workflow: WireWorkflow | null): NodeKindResolver 
       }
     },
     label(nodeId) {
-      return humanizeNodeId(nodeId);
+      // An authored `description:` on the .bot node wins; the
+      // humanizeNodeId heuristic is the fallback. The raw node id
+      // stays available on the message (`nodeId`) for tooltips/suffixes.
+      const desc = byId.get(nodeId)?.description;
+      return desc && desc.trim() !== "" ? desc : humanizeNodeId(nodeId);
     },
     emitsOutputCard(nodeId) {
       const node = byId.get(nodeId);

@@ -493,6 +493,9 @@ export interface WireWorkflow {
 export interface WireNode {
   id: string;
   kind: string;
+  // Optional authored `description:` from the .bot node — the
+  // human-readable label. Falls back to humanizeNodeId(id) when absent.
+  description?: string;
   model?: string;
   backend?: string;
   reasoning_effort?: string;

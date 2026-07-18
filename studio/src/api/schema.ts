@@ -4470,6 +4470,7 @@ export interface components {
         };
         WireNode: {
             backend?: string;
+            description?: string;
             id: string;
             isolated?: boolean;
             kind: string;

@@ -544,6 +544,7 @@ schema finalize_mr_output:
 ## capabilities power the end-of-pass findings handoff (out-of-scope
 ## observations → inbox), replacing v1's prepare_commit handoff.
 agent campaign:
+  description: "Campaign: implement & commit units"
   backend: "claude_code"
   model: "${ITERION_VIBE_MODEL_CLAUDE:-claude-opus-4-8}"
   reasoning_effort: "${ITERION_VIBE_EFFORT_CLAUDE:-high}"
@@ -612,6 +613,7 @@ agent verify_build:
 ## the gate stays universal while the verdict stays deterministic. python3 for
 ## safe JSON + subprocess capture; double-quote-free body, no backticks (E012).
 tool verify_run:
+  description: "Verify gate: run build+tests (real exit code)"
   command: `WS={{vars.workspace_dir}} SCRATCH={{vars.scratch_dir}} python3 -c "
 import os, subprocess, json
 ws = os.environ.get('WS', '.')
@@ -719,6 +721,7 @@ agent review:
 ## real build failure (RED build) or the review findings (green but dirty) to
 ## the campaign; empty when green + clean. No LLM, no shell.
 compute gate:
+  description: "Convergence check: feature complete & gates green"
   output: gate_state
   expr:
     converged: "outputs.verify_run.passed && outputs.campaign.feature_complete && outputs.review.clean"

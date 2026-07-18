@@ -73,11 +73,12 @@ type UseDecl struct {
 // The child executes as a real run (it may contain loops); its terminal
 // output is mapped back to `outputs.<subbot>.<field>`.
 type SubbotDecl struct {
-	Name   string
-	Source string       // path/ref to the child .bot (relative to the parent's workdir)
-	With   []*WithEntry // vars passed to the child run (key = var name)
-	Output string       // schema reference describing the child's terminal output
-	Needs  []string     // named resource leases held while the child runs
+	Name        string
+	Description string       // optional human-readable node label (surfaced in the run console)
+	Source      string       // path/ref to the child .bot (relative to the parent's workdir)
+	With        []*WithEntry // vars passed to the child run (key = var name)
+	Output      string       // schema reference describing the child's terminal output
+	Needs       []string     // named resource leases held while the child runs
 	// Isolated asserts the child run does NOT mutate the parent's shared
 	// workspace (it confines writes to its own run store / worktree), so the
 	// workspace-safety guard may fan it out in parallel. Mirror of an
@@ -94,10 +95,11 @@ type SubbotDecl struct {
 //	  event: "ready"
 //	  with: { value: "{{outputs.producer.n}}" }
 type EmitDecl struct {
-	Name  string
-	Event string       // event name to publish (required)
-	With  []*WithEntry // immutable payload (key = payload field)
-	Span  Span
+	Name        string
+	Description string       // optional human-readable node label (surfaced in the run console)
+	Event       string       // event name to publish (required)
+	With        []*WithEntry // immutable payload (key = payload field)
+	Span        Span
 }
 
 // WaitDecl is a `wait` node: it blocks its branch until the named event is
@@ -109,11 +111,12 @@ type EmitDecl struct {
 //	  timeout: "30s"
 //	  output: <schema>   ## optional: types the received payload
 type WaitDecl struct {
-	Name    string
-	Event   string // event name to wait for (required)
-	Timeout string // Go duration string (required)
-	Output  string // optional schema reference for the received payload
-	Span    Span
+	Name        string
+	Description string // optional human-readable node label (surfaced in the run console)
+	Event       string // event name to wait for (required)
+	Timeout     string // Go duration string (required)
+	Output      string // optional schema reference for the received payload
+	Span        Span
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +448,7 @@ const (
 // field access keeps working via promotion, and parsed by the single
 // parseLLMProp helper.
 type LLMDecl struct {
+	Description       string // optional human-readable node label (surfaced in the run console)
 	Model             string // string literal, may contain ${...} env refs
 	Backend           string // execution backend name (e.g. "claude_code"); when set, bypasses direct LLM API
 	Provider          string // credential routing hint(s): single ("anthropic"/"zai"/"openai"/""=auto) or an ordered fallback chain ("anthropic,zai,openai"); may contain ${...} env refs
@@ -521,6 +525,7 @@ const (
 // (convergence is only meaningful on target nodes: agent, judge, human, tool).
 type RouterDecl struct {
 	Name            string
+	Description     string // optional human-readable node label (surfaced in the run console)
 	Mode            RouterMode
 	Model           string   // only for mode: llm
 	Backend         string   // execution backend name, only for mode: llm
@@ -574,6 +579,7 @@ const (
 // HumanDecl represents a `human <name>:` node declaration.
 type HumanDecl struct {
 	Name              string
+	Description       string          // optional human-readable node label (surfaced in the run console)
 	Input             string          // schema reference name
 	Output            string          // schema reference name
 	Publish           string          // persistent artifact name
@@ -611,6 +617,7 @@ type HumanDecl struct {
 // Setting both is a validation error; setting neither is also an error.
 type ToolNodeDecl struct {
 	Name           string
+	Description    string        // optional human-readable node label (surfaced in the run console)
 	Command        string        // command to execute, may contain ${...} env refs and {{...}} template refs
 	Script         string        // script body for higher-level interpreters (mutually exclusive with Command)
 	Language       string        // interpreter selector for Script: js | py | sh | bash. Defaults to sh when empty.
@@ -661,6 +668,7 @@ type RecoveryBlock struct {
 // counters, etc., without invoking an LLM or shelling out.
 type ComputeDecl struct {
 	Name           string
+	Description    string         // optional human-readable node label (surfaced in the run console)
 	Input          string         // optional input schema reference name
 	Output         string         // schema reference name (defines the output fields)
 	Publish        string         // persistent artifact name (empty if not set)

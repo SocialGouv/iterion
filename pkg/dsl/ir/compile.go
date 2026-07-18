@@ -813,7 +813,7 @@ func (c *compiler) compileAgents() {
 			continue
 		}
 		c.nodes[a.Name] = &AgentNode{
-			BaseNode:          BaseNode{ID: a.Name},
+			BaseNode:          BaseNode{ID: a.Name, Description: a.Description},
 			LLMFields:         llm,
 			SchemaFields:      sch,
 			InteractionFields: inter,
@@ -849,7 +849,7 @@ func (c *compiler) compileJudges() {
 			continue
 		}
 		c.nodes[j.Name] = &JudgeNode{
-			BaseNode:          BaseNode{ID: j.Name},
+			BaseNode:          BaseNode{ID: j.Name, Description: j.Description},
 			LLMFields:         llm,
 			SchemaFields:      sch,
 			InteractionFields: inter,
@@ -887,7 +887,7 @@ func (c *compiler) compileRouters() {
 		}
 		mode := r.Mode
 		node := &RouterNode{
-			BaseNode:   BaseNode{ID: r.Name},
+			BaseNode:   BaseNode{ID: r.Name, Description: r.Description},
 			RouterMode: mode,
 			Needs:      r.Needs,
 		}
@@ -997,7 +997,7 @@ func (c *compiler) compileHumans() {
 			}
 		}
 		node := &HumanNode{
-			BaseNode: BaseNode{ID: h.Name},
+			BaseNode: BaseNode{ID: h.Name, Description: h.Description},
 			SchemaFields: SchemaFields{
 				InputSchema:  h.Input,
 				OutputSchema: h.Output,
@@ -1165,7 +1165,7 @@ func (c *compiler) compileTools() {
 		}
 
 		c.nodes[t.Name] = &ToolNode{
-			BaseNode: BaseNode{ID: t.Name},
+			BaseNode: BaseNode{ID: t.Name, Description: t.Description},
 			SchemaFields: SchemaFields{
 				InputSchema:  t.Input,
 				OutputSchema: t.Output,
@@ -1227,7 +1227,7 @@ func (c *compiler) compileComputes() {
 			})
 		}
 		c.nodes[cd.Name] = &ComputeNode{
-			BaseNode: BaseNode{ID: cd.Name},
+			BaseNode: BaseNode{ID: cd.Name, Description: cd.Description},
 			SchemaFields: SchemaFields{
 				InputSchema:  cd.Input,
 				OutputSchema: cd.Output,
@@ -1255,7 +1255,7 @@ func (c *compiler) compileSubbots() {
 			c.validateSchemaRef(sd.Name, "output", sd.Output)
 		}
 		c.nodes[sd.Name] = &SubbotNode{
-			BaseNode:     BaseNode{ID: sd.Name},
+			BaseNode:     BaseNode{ID: sd.Name, Description: sd.Description},
 			Source:       sd.Source,
 			With:         c.compileWithMappings(sd.Name, sd.With),
 			OutputSchema: sd.Output,
@@ -1294,7 +1294,7 @@ func (c *compiler) compileEmits() {
 			c.errorfAt(DiagEventNoName, ed.Name, "", "emit %q has no `event:` name", ed.Name)
 		}
 		c.nodes[ed.Name] = &EmitNode{
-			BaseNode: BaseNode{ID: ed.Name},
+			BaseNode: BaseNode{ID: ed.Name, Description: ed.Description},
 			Event:    ed.Event,
 			With:     c.compileWithMappings(ed.Name, ed.With),
 		}
@@ -1329,7 +1329,7 @@ func (c *compiler) compileWaits() {
 			c.validateSchemaRef(wd.Name, "output", wd.Output)
 		}
 		c.nodes[wd.Name] = &WaitNode{
-			BaseNode:     BaseNode{ID: wd.Name},
+			BaseNode:     BaseNode{ID: wd.Name, Description: wd.Description},
 			SchemaFields: SchemaFields{OutputSchema: wd.Output},
 			Event:        wd.Event,
 			Timeout:      timeout,

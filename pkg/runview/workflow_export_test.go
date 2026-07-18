@@ -16,6 +16,7 @@ schema child_out:
   verdict: string
 
 tool prep:
+  description: "Prepare the episode payload"
   command: ` + "`printf '{\"ready\":true}'`" + `
   output: child_out
 
@@ -68,6 +69,21 @@ func TestBuildWireWorkflow_SubbotNodeProjection(t *testing.T) {
 	for _, n := range wire.Nodes {
 		if n.ID == "prep" && (n.Source != "" || n.Isolated) {
 			t.Errorf("tool node carries subbot fields: %+v", n)
+		}
+	}
+
+	// The authored `description:` projects onto the wire node; nodes
+	// without one stay empty (omitempty on the wire).
+	for _, n := range wire.Nodes {
+		switch n.ID {
+		case "prep":
+			if n.Description != "Prepare the episode payload" {
+				t.Errorf("prep description = %q, want %q", n.Description, "Prepare the episode payload")
+			}
+		case "produce_episode":
+			if n.Description != "" {
+				t.Errorf("produce_episode description = %q, want empty", n.Description)
+			}
 		}
 	}
 }

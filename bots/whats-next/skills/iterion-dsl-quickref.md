@@ -78,6 +78,10 @@ workflow my_workflow:
 | `subbot` | Run another `.bot` as a nested run | `source:` + `with { ... }` + `output:`; child may contain loops |
 | `done` / `fail` | Built-in terminals | Never declare them |
 
+Every declarable node kind accepts an optional `description: "…"` — a human-readable
+label the run console shows instead of the humanized node id (the raw id stays
+available as tooltip/suffix).
+
 ## Reuse & iteration (see docs/groups-iteration-subbots.md)
 
 - **`group <name>(params):` + `use <group> as <prefix> with { p: "v" }`** — reusable node

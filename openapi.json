@@ -1200,6 +1200,9 @@
           "backend": {
             "type": "string"
           },
+          "description": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },

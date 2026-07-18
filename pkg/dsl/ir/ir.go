@@ -141,13 +141,18 @@ func NodeNeeds(n Node) []string {
 	}
 }
 
-// BaseNode provides the common ID field embedded in every concrete node.
+// BaseNode provides the common fields embedded in every concrete node.
 type BaseNode struct {
-	ID string // unique identifier (= DSL name)
+	ID          string // unique identifier (= DSL name)
+	Description string // optional human-readable label (surfaced in the run console)
 }
 
 // NodeID implements Node.
 func (b BaseNode) NodeID() string { return b.ID }
+
+// NodeDescription returns the node's optional human-readable label.
+// Promoted onto every concrete node type via embedding.
+func (b BaseNode) NodeDescription() string { return b.Description }
 
 // ---------------------------------------------------------------------------
 // Shared field groups (embedded in concrete node types)
