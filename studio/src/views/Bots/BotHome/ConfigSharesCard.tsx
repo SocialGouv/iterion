@@ -256,6 +256,7 @@ function ShareRow({
           {share.expires_at && !expired && (
             <> · expires {formatRelative(share.expires_at)}</>
           )}
+          {!share.expires_at && !revoked && <> · never expires</>}
           {share.last_used_at && <> · last used {formatRelative(share.last_used_at)}</>}
         </span>
         <span className="ml-auto flex items-center gap-1.5">
@@ -294,6 +295,7 @@ function CreateShareDialog({
   const [category, setCategory] = useState("");
   const [readOnly, setReadOnly] = useState(false);
   const [expiresDays, setExpiresDays] = useState<number | "">(14);
+  const [neverExpires, setNeverExpires] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -344,9 +346,11 @@ function CreateShareDialog({
         // server derives + pins the paths. config_path + paths never sent.
         editable_fields: selectedFields,
         read_only: readOnly,
-        ...(typeof expiresDays === "number" && expiresDays > 0
-          ? { expires_days: expiresDays }
-          : {}),
+        ...(neverExpires
+          ? { never_expires: true }
+          : typeof expiresDays === "number" && expiresDays > 0
+            ? { expires_days: expiresDays }
+            : {}),
       };
       const minted = await createConfigShare(teamID, input);
       onCreated(minted);
@@ -504,14 +508,22 @@ function CreateShareDialog({
             onChange={(e) => setReadOnly(e.target.checked)}
             label="Read-only share"
           />
-          <div className="flex items-center gap-2 text-xs">
+          <Checkbox
+            checked={neverExpires}
+            onChange={(e) => setNeverExpires(e.target.checked)}
+            label="Never expires"
+          />
+          <div
+            className={`flex items-center gap-2 text-xs ${neverExpires ? "opacity-50" : ""}`}
+          >
             <label htmlFor="cs-exp">Expires in</label>
             <Input
               id="cs-exp"
               type="number"
               min={1}
               size="sm"
-              value={expiresDays}
+              disabled={neverExpires}
+              value={neverExpires ? "" : expiresDays}
               onChange={(e) => {
                 const n = e.target.value === "" ? "" : Number(e.target.value);
                 setExpiresDays(Number.isFinite(n) ? (n as number) : "");

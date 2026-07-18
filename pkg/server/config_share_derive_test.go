@@ -150,6 +150,38 @@ func TestConfigShare_MintRejectsUndeclaredEditableField(t *testing.T) {
 	}
 }
 
+// TestConfigShare_MintNeverExpires proves the opt-out from the default TTL: a
+// never_expires mint stores a zero ExpiresAt (Share.Active never times out) and
+// the view omits expires_at so the UI renders "never".
+func TestConfigShare_MintNeverExpires(t *testing.T) {
+	s := newOrgTestServer(t)
+	s.auditStore = audit.NewMemoryStore()
+	s.cfg.Bots.Paths = []string{botsDirAbs(t)}
+	seedTeam(t, s, "t1", "acme")
+	ctx := context.Background()
+	if _, err := s.authStore().CreateUser(ctx, identity.User{ID: "op", Email: "op@x", Status: identity.UserStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.authStore().UpsertMembership(ctx, identity.Membership{UserID: "op", TeamID: "t1", Role: identity.RoleAdmin}); err != nil {
+		t.Fatal(err)
+	}
+	adminCtx := auth.WithIdentity(ctx, auth.Identity{UserID: "op", TeamID: "t1", Role: identity.RoleAdmin})
+
+	body := `{"bot_id":"feed-watch","label":"durable","repo_url":"https://github.com/o/r","repo_ref":"main","category":"a11y","never_expires":true}`
+	cw := httptest.NewRecorder()
+	s.handleCreateConfigShare(cw, mintShareReq(t, adminCtx, body))
+	if cw.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", cw.Code, cw.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(cw.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := created["expires_at"]; ok {
+		t.Errorf("never-expiring share must omit expires_at, got %v", v)
+	}
+}
+
 // TestConfigShare_MintRejectsMissingCategoryForCategorySurface proves the
 // derived surface enforces its own contract: feed-watch's paths carry
 // {category}, so minting without one fails closed (400) rather than pinning a

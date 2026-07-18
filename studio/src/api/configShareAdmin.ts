@@ -57,6 +57,9 @@ export interface CreateShareInput {
   editable_fields?: string[];
   read_only?: boolean;
   expires_days?: number;
+  /** Opt out of the default TTL entirely — durable access (revoke via
+   *  rotate/delete). Wins over expires_days. */
+  never_expires?: boolean;
 }
 
 // Delivery mirrors configshare.Delivery — the forensic record of every
