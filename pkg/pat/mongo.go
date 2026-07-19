@@ -10,15 +10,16 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 const colTokens = "personal_access_tokens"
 
 // MongoStore is the production PAT store.
-type MongoStore struct{ col *mongo.Collection }
+type MongoStore struct{ kit *storekit.Mongo[Token] }
 
 func NewMongoStore(db *mongo.Database) *MongoStore {
-	return &MongoStore{col: db.Collection(colTokens)}
+	return &MongoStore{kit: storekit.NewMongo[Token](db.Collection(colTokens), ErrNotFound, "pat")}
 }
 
 // EnsureSchema creates the PAT indexes idempotently.
@@ -34,41 +35,28 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 }
 
 func (s *MongoStore) Create(ctx context.Context, t Token) error {
-	if _, err := s.col.InsertOne(ctx, t); err != nil {
-		return fmt.Errorf("pat: insert: %w", err)
-	}
-	return nil
+	return s.kit.Insert(ctx, t, nil, "insert")
 }
 
 func (s *MongoStore) GetByTokenHash(ctx context.Context, hash string) (Token, error) {
-	return mongoutil.FindOne[Token](ctx, s.col, bson.M{"token_hash": hash}, ErrNotFound, "pat: get by hash")
+	return s.kit.FindOne(ctx, bson.M{"token_hash": hash}, "get by hash")
 }
 
 func (s *MongoStore) Get(ctx context.Context, id string) (Token, error) {
-	return mongoutil.FindOne[Token](ctx, s.col, bson.M{"_id": id}, ErrNotFound, "pat: get")
+	return s.kit.GetByID(ctx, id, "get")
 }
 
 func (s *MongoStore) ListByUser(ctx context.Context, userID string) ([]Token, error) {
-	cur, err := s.col.Find(ctx, bson.M{"user_id": userID}, options.Find().SetSort(bson.M{"created_at": -1}))
-	if err != nil {
-		return nil, fmt.Errorf("pat: list: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Token
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("pat: decode: %w", err)
-	}
-	return out, nil
+	return s.kit.List(ctx, bson.M{"user_id": userID}, "list", "decode",
+		options.Find().SetSort(bson.M{"created_at": -1}))
 }
 
 func (s *MongoStore) Revoke(ctx context.Context, id string, at time.Time) error {
-	return mongoutil.UpdateOneChecked(ctx, s.col, bson.M{"_id": id}, bson.M{"$set": bson.M{"revoked_at": at}}, ErrNotFound, "pat: revoke")
+	return s.kit.Set(ctx, id, bson.M{"revoked_at": at}, "revoke")
 }
 
+// MarkUsed is a best-effort stamp: a token revoked-and-purged mid-request
+// is not an error here.
 func (s *MongoStore) MarkUsed(ctx context.Context, id string, at time.Time) error {
-	_, err := s.col.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"last_used_at": at}})
-	if err != nil {
-		return fmt.Errorf("pat: mark used: %w", err)
-	}
-	return nil
+	return s.kit.SetAny(ctx, id, bson.M{"last_used_at": at}, "mark used")
 }

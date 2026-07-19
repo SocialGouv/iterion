@@ -210,10 +210,16 @@ jobs:
           done
 
       - name: Mongo conformance harness
+        # Alongside the pkg/store/mongo harness, run every store suite
+        # gated on the same URI: the storekit skeleton and the paired
+        # Mongo+memory backends built on it (audit, pat, cloudsched,
+        # desktopsso, wsticket).
         env:
           ITERION_TEST_MONGO_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
-          go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/...
+          go test -mod=vendor -v -timeout 5m ./pkg/store/mongo/... \
+            ./pkg/internal/storekit/... ./pkg/audit/... ./pkg/pat/... \
+            ./pkg/cloudsched/... ./pkg/auth/desktopsso/... ./pkg/auth/wsticket/...
 
   cloud-e2e:
     # Builds the iterion image, spins kind + Helm-installs the cloud

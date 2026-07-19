@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
 	"github.com/SocialGouv/iterion/pkg/internal/mongoutil"
+	"github.com/SocialGouv/iterion/pkg/internal/storekit"
 )
 
 // Collection names.
@@ -35,8 +36,8 @@ type MongoStores struct {
 
 func NewMongoStores(db *mongo.Database) *MongoStores {
 	return &MongoStores{
-		Configs:    &MongoConfigStore{col: db.Collection(colConfigs)},
-		Deliveries: &MongoDeliveryStore{col: db.Collection(colDeliveries)},
+		Configs:    &MongoConfigStore{kit: storekit.NewMongo[Config](db.Collection(colConfigs), ErrNotFound, "webhooks")},
+		Deliveries: &MongoDeliveryStore{kit: storekit.NewMongo[Delivery](db.Collection(colDeliveries), ErrNotFound, "webhooks")},
 		Counter:    &MongoCounter{col: db.Collection(colQuotas)},
 	}
 }
@@ -63,81 +64,57 @@ func EnsureSchema(ctx context.Context, db *mongo.Database) error {
 
 // ---- MongoConfigStore ----
 
-type MongoConfigStore struct{ col *mongo.Collection }
+type MongoConfigStore struct{ kit *storekit.Mongo[Config] }
 
 func (s *MongoConfigStore) Create(ctx context.Context, c Config) error {
-	if _, err := s.col.InsertOne(ctx, c); err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return ErrDuplicate
-		}
-		return fmt.Errorf("webhooks: insert config: %w", err)
-	}
-	return nil
+	return s.kit.Insert(ctx, c, ErrDuplicate, "insert config")
 }
 
 func (s *MongoConfigStore) Get(ctx context.Context, id string) (Config, error) {
-	return mongoutil.FindOne[Config](ctx, s.col, bson.M{"_id": id}, ErrNotFound, "webhooks: get config")
+	return s.kit.GetByID(ctx, id, "get config")
 }
 
 func (s *MongoConfigStore) Update(ctx context.Context, c Config) error {
-	return mongoutil.ReplaceOneChecked(ctx, s.col, bson.M{"_id": c.ID}, c, ErrDuplicate, ErrNotFound, "webhooks: update config")
+	return s.kit.Replace(ctx, c.ID, c, ErrDuplicate, "update config")
 }
 
 func (s *MongoConfigStore) Delete(ctx context.Context, id string) error {
-	return mongoutil.DeleteOneChecked(ctx, s.col, bson.M{"_id": id}, ErrNotFound, "webhooks: delete config")
+	return s.kit.Delete(ctx, id, "delete config")
 }
 
 func (s *MongoConfigStore) ListByTenant(ctx context.Context, tenantID string) ([]Config, error) {
-	return mongoutil.FindAllSorted[Config](ctx, s.col, bson.M{"tenant_id": tenantID}, "created_at",
-		"webhooks: list configs", "webhooks: decode configs")
+	return s.kit.List(ctx, bson.M{"tenant_id": tenantID}, "list configs", "decode configs",
+		options.Find().SetSort(bson.M{"created_at": 1}))
 }
 
 func (s *MongoConfigStore) MarkUsed(ctx context.Context, id string, t time.Time) error {
-	_, err := s.col.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{"last_used_at": t}})
-	if err != nil {
-		return fmt.Errorf("webhooks: mark used: %w", err)
-	}
-	return nil
+	return s.kit.SetAny(ctx, id, bson.M{"last_used_at": t}, "mark used")
 }
 
 // ---- MongoDeliveryStore ----
 
-type MongoDeliveryStore struct{ col *mongo.Collection }
+type MongoDeliveryStore struct{ kit *storekit.Mongo[Delivery] }
 
 func (s *MongoDeliveryStore) Insert(ctx context.Context, d Delivery) error {
-	if _, err := s.col.InsertOne(ctx, d); err != nil {
-		if mongoutil.IsDuplicateKey(err) {
-			return ErrDuplicate
-		}
-		return fmt.Errorf("webhooks: insert delivery: %w", err)
-	}
-	return nil
+	return s.kit.Insert(ctx, d, ErrDuplicate, "insert delivery")
 }
 
 func (s *MongoDeliveryStore) GetByIdempotencyKey(ctx context.Context, key string) (Delivery, error) {
-	return mongoutil.FindOne[Delivery](ctx, s.col, bson.M{"idempotency_key": key}, ErrNotFound, "webhooks: get delivery")
+	return s.kit.FindOne(ctx, bson.M{"idempotency_key": key}, "get delivery")
 }
 
 func (s *MongoDeliveryStore) Update(ctx context.Context, d Delivery) error {
-	return mongoutil.ReplaceOneChecked(ctx, s.col, bson.M{"_id": d.ID}, d, nil, ErrNotFound, "webhooks: update delivery")
+	return s.kit.Replace(ctx, d.ID, d, nil, "update delivery")
 }
 
 func (s *MongoDeliveryStore) ListByWebhook(ctx context.Context, tenantID, webhookID string, limit int) ([]Delivery, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	cur, err := s.col.Find(ctx,
+	return s.kit.List(ctx,
 		bson.M{"tenant_id": tenantID, "webhook_id": webhookID},
+		"list deliveries", "decode deliveries",
 		options.Find().SetSort(bson.M{"received_at": -1}).SetLimit(int64(limit)))
-	if err != nil {
-		return nil, fmt.Errorf("webhooks: list deliveries: %w", err)
-	}
-	defer cur.Close(ctx)
-	var out []Delivery
-	if err := cur.All(ctx, &out); err != nil {
-		return nil, fmt.Errorf("webhooks: decode deliveries: %w", err)
-	}
-	return out, nil
 }
 
 // ---- MongoCounter ----
