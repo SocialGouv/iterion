@@ -162,6 +162,58 @@ type Manifest struct {
 	// A second bot adopts the whole config-share editor by adding this block
 	// alone — no server or SPA change.
 	ConfigShare *ConfigShareSpec `yaml:"config_share,omitempty"`
+
+	// Launch opinionates the studio launch form for this bot: which
+	// workflow vars are primary (surfaced top-level, in order) and which
+	// are hidden (never rendered, still settable via --var). Advisory
+	// launch-surface metadata like Repo/DispatchVars — the runtime never
+	// reads it. Names are normalized at parse time (trim, drop empties,
+	// dedupe) but NOT validated against the workflow's vars block —
+	// manifests load without the DSL, so an unknown name is a soft
+	// authoring mistake for the studio to surface, never a load error.
+	Launch *LaunchHints `yaml:"launch,omitempty"`
+}
+
+// LaunchHints is a bot's declared launch-form opinion (manifest
+// `launch:` block), carried by discovery onto the bot entry served at
+// /api/v1/bots so the studio can order and prune the var form.
+type LaunchHints struct {
+	// Primary lists the bot inputs to surface top-level, in this order.
+	Primary []string `json:"primary,omitempty" yaml:"primary,omitempty"`
+	// Hidden lists the bot inputs the launch form never renders.
+	Hidden []string `json:"hidden,omitempty" yaml:"hidden,omitempty"`
+}
+
+// normalized returns the hints with each list cleaned — entries
+// trimmed, empties dropped, duplicates removed keeping the first
+// occurrence — and collapses to nil when nothing remains, so an
+// effectively-empty block serialises as an absent `launch` key.
+func (l *LaunchHints) normalized() *LaunchHints {
+	if l == nil {
+		return nil
+	}
+	primary := normalizeNameList(l.Primary)
+	hidden := normalizeNameList(l.Hidden)
+	if len(primary) == 0 && len(hidden) == 0 {
+		return nil
+	}
+	return &LaunchHints{Primary: primary, Hidden: hidden}
+}
+
+// normalizeNameList trims each entry, drops empties, and dedupes
+// keeping first-occurrence order. Returns nil when nothing survives.
+func normalizeNameList(names []string) []string {
+	var out []string
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	return out
 }
 
 // Valid RepoRequirement.Mode values.
@@ -639,6 +691,9 @@ func decodeManifest(body []byte, srcLabel string) (*Manifest, error) {
 	if len(m.Icon) > maxIconLen {
 		return nil, fmt.Errorf("bundle: manifest %s: icon %q exceeds %d bytes — expected a short emoji", srcLabel, m.Icon, maxIconLen)
 	}
+	// Soft-normalize only — launch names may reference workflow vars,
+	// which the manifest loader cannot see, so nothing here hard-fails.
+	m.Launch = m.Launch.normalized()
 	// Every attachment value is later joined to the bundle's attachments/
 	// directory and opened as a file by the runtime. Reject absolute or
 	// "../"-escaping values at parse time so a hostile bundle can't turn

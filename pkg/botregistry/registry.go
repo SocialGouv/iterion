@@ -74,6 +74,12 @@ type Entry struct {
 	// no config-share surface and the card is not offered.
 	ConfigShare *bundle.ConfigShareSpec `json:"config_share,omitempty" yaml:"config_share,omitempty"`
 
+	// Launch mirrors the manifest launch: block (launch-form hints): which
+	// vars the studio launch form surfaces as primary (in order) and which
+	// it hides (still settable via --var). Nil when the bot declares no
+	// opinion — the form renders every var as before.
+	Launch *bundle.LaunchHints `json:"launch,omitempty" yaml:"launch,omitempty"`
+
 	// Invocations is the typed routing contract from the manifest
 	// (manifest.yaml invocations:) — how this bot can be triggered (forge
 	// event, /slash-command, schedule, board) and the execution mode each
@@ -391,6 +397,7 @@ func parseBundle(dir string) (*Entry, error) {
 		Forge:           m.Forge,
 		Repo:            m.Repo,
 		ConfigShare:     m.ConfigShare,
+		Launch:          m.Launch,
 		Invocations:     bundle.EffectiveInvocations(m),
 		WhenToUse:       strings.TrimSpace(m.WhenToUse),
 		Author:          m.Author,

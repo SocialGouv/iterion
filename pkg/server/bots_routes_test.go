@@ -81,7 +81,13 @@ func TestBotsListRoute_DisplayName(t *testing.T) {
 	botregistry.ClearSchemaCache()
 	dir := t.TempDir()
 	bundleDir := filepath.Join(dir, "whats-next")
-	writeBotFile(t, filepath.Join(bundleDir, "manifest.yaml"), "name: whats-next\ndisplay_name: Nexie\ndescription: Orchestrator bot.\n")
+	writeBotFile(t, filepath.Join(bundleDir, "manifest.yaml"), `name: whats-next
+display_name: Nexie
+description: Orchestrator bot.
+launch:
+  primary: [workspace_dir, loop_cap]
+  hidden: [internal_var]
+`)
 	writeBotFile(t, filepath.Join(bundleDir, "main.bot"), testBotSrc)
 
 	srv := New(Config{
@@ -108,6 +114,21 @@ func TestBotsListRoute_DisplayName(t *testing.T) {
 	}
 	if resp.Bots[0].DisplayName != "Nexie" {
 		t.Errorf("DisplayName = %q, want Nexie (the /bots payload must expose the manifest persona)", resp.Bots[0].DisplayName)
+	}
+	// The manifest launch: block flows onto the bot entry so the studio
+	// launch form can order primary vars and prune hidden ones.
+	launch := resp.Bots[0].Launch
+	if launch == nil {
+		t.Fatalf("expected launch hints in /bots payload; body=%s", rec.Body.String())
+	}
+	if len(launch.Primary) != 2 || launch.Primary[0] != "workspace_dir" || launch.Primary[1] != "loop_cap" {
+		t.Errorf("launch.primary = %v, want [workspace_dir loop_cap] in manifest order", launch.Primary)
+	}
+	if len(launch.Hidden) != 1 || launch.Hidden[0] != "internal_var" {
+		t.Errorf("launch.hidden = %v, want [internal_var]", launch.Hidden)
+	}
+	if !strings.Contains(rec.Body.String(), `"launch"`) {
+		t.Errorf("wire payload missing \"launch\" key; body=%s", rec.Body.String())
 	}
 }
 

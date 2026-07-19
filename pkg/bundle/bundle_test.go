@@ -269,3 +269,53 @@ func TestLoadManifest_MissingFileIsNotError(t *testing.T) {
 		t.Errorf("expected nil manifest, got %+v", m)
 	}
 }
+
+func TestLoadManifest_ParsesAndNormalizesLaunchHints(t *testing.T) {
+	body := `name: appy
+schema_version: 1
+launch:
+  primary: ["  app_prompt ", "mode", "", "app_prompt", "budget"]
+  hidden: [" internal_var", "internal_var", "   "]
+`
+	m, err := LoadManifest(writeManifestForTest(t, body))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Launch == nil {
+		t.Fatal("launch block not parsed")
+	}
+	// Trimmed, empties dropped, deduped keeping first-occurrence order.
+	wantPrimary := []string{"app_prompt", "mode", "budget"}
+	if len(m.Launch.Primary) != len(wantPrimary) {
+		t.Fatalf("primary = %v, want %v", m.Launch.Primary, wantPrimary)
+	}
+	for i, w := range wantPrimary {
+		if m.Launch.Primary[i] != w {
+			t.Errorf("primary[%d] = %q, want %q (order must be preserved)", i, m.Launch.Primary[i], w)
+		}
+	}
+	if len(m.Launch.Hidden) != 1 || m.Launch.Hidden[0] != "internal_var" {
+		t.Errorf("hidden = %v, want [internal_var]", m.Launch.Hidden)
+	}
+}
+
+func TestLoadManifest_LaunchHints_EmptyCollapsesToNil(t *testing.T) {
+	// A block whose lists are all-blank normalizes away entirely so the
+	// bot entry's JSON omits `launch` (omitempty on a nil pointer).
+	body := "name: appy\nschema_version: 1\nlaunch:\n  primary: [\"\", \"  \"]\n"
+	m, err := LoadManifest(writeManifestForTest(t, body))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.Launch != nil {
+		t.Errorf("expected nil Launch after normalization, got %+v", m.Launch)
+	}
+
+	m, err = LoadManifest(writeManifestForTest(t, "name: plain\nschema_version: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Launch != nil {
+		t.Errorf("expected nil Launch when block absent, got %+v", m.Launch)
+	}
+}
