@@ -56,6 +56,7 @@ COPY vendor ./vendor
 # the go build layer stays CACHED (the binary never compiles test files anyway).
 COPY --exclude=**/*_test.go cmd ./cmd
 COPY --exclude=**/*_test.go pkg ./pkg
+COPY --exclude=**/*_test.go internal ./internal
 # bots/ holds the productised bot bundles. pkg/cli embeds them via the
 # github.com/SocialGouv/iterion/bots package, so the source tree must be present
 # for `go build` under -mod=vendor. (e2e/ and examples/ are NOT imported or
