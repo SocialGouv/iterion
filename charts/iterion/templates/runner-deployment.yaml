@@ -133,6 +133,16 @@ spec:
             - secretRef:
                 name: {{ default (printf "%s-auth" (include "iterion.fullname" .)) .Values.secrets.auth.existingSecret }}
             {{- end }}
+            {{- if .Values.secrets.forfait.enabled }}
+            # Optional forfait secret, managed MANUALLY in k8s (never sealed in
+            # the chart): a Claude Code OAuth token (CLAUDE_CODE_OAUTH_TOKEN) so
+            # claude_code runs execute on the subscription instead of a metered
+            # API key. optional: true — a missing/absent secret never blocks the
+            # runner from starting.
+            - secretRef:
+                name: {{ default (printf "%s-forfait" (include "iterion.fullname" .)) .Values.secrets.forfait.existingSecret }}
+                optional: true
+            {{- end }}
           volumeMounts:
             # Writable tmpfs for file secrets (secrets.SecretFilesMountDir =
             # /run/iterion/secrets). In a SANDBOXED run the sandbox driver

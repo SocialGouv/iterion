@@ -294,6 +294,15 @@ secrets:
     existingSecret: ""
     anthropicApiKey: ""
     openaiApiKey: ""
+  # Optional forfait credentials, managed MANUALLY in k8s (never created or
+  # sealed by the chart): e.g. CLAUDE_CODE_OAUTH_TOKEN so claude_code runs
+  # execute on the subscription instead of a metered API key. When enabled it
+  # is mounted as an OPTIONAL envFrom on the runner (optional: true — a missing
+  # secret never blocks startup). Enable per-environment; the secret's contents
+  # are set by hand (kubectl), not by values.
+  forfait:
+    enabled: false
+    existingSecret: ""
   # SMTP relay credentials (host/port/from live in config.smtp).
   smtp:
     create: false
