@@ -93,7 +93,7 @@ func TestIsMutatingNode_AgentWithNoTools(t *testing.T) {
 }
 
 func TestIsMutatingNode_CLIBackendWithNoTools(t *testing.T) {
-	for _, backend := range []string{"codex", "claude_code", "kimi", "custom_cli"} {
+	for _, backend := range []string{"codex", "claude_code", "kimi", "grok", "custom_cli"} {
 		n := &ir.AgentNode{
 			BaseNode:  ir.BaseNode{ID: "a"},
 			LLMFields: ir.LLMFields{Backend: backend},
