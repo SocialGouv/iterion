@@ -6,7 +6,7 @@ import (
 )
 
 func TestValidateDocPath(t *testing.T) {
-	ok := []string{"a.md", "findings/2026.md", "a/b/c.md", "dotted.name.md"}
+	ok := []string{"a.md", "findings/2026.md", "a/b/c.md", "dotted.name.md", "./x.md"}
 	for _, p := range ok {
 		if err := ValidateDocPath(p); err != nil {
 			t.Errorf("ValidateDocPath(%q) = %v, want nil", p, err)
@@ -21,6 +21,9 @@ func TestValidateDocPath(t *testing.T) {
 		`\\windows`, // backslash absolute
 		"C:/win.md", // drive letter
 		"a\x00b.md", // NUL
+		// Characterization: the drive-letter guard rejects ANY path whose
+		// second character is ':', even a plausible relative name.
+		"a:b.md",
 	}
 	for _, p := range bad {
 		if err := ValidateDocPath(p); err == nil {
