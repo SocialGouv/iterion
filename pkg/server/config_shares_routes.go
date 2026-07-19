@@ -132,6 +132,7 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 	configPath := req.ConfigPath
 	allowed := req.AllowedPaths
 	visible := req.VisiblePaths
+	derivedFromSpec := false
 	if spec := s.botConfigShareSpec(req.BotID); spec != nil {
 		a, v, err := configshare.DeriveGrant(spec.EditablePaths, spec.VisiblePaths, req.Category, req.EditableFields...)
 		if err != nil {
@@ -142,6 +143,7 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 		if spec.ConfigPath != "" {
 			configPath = spec.ConfigPath
 		}
+		derivedFromSpec = true
 	} else if len(visible) == 0 {
 		visible = allowed
 	}
@@ -152,6 +154,25 @@ func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request)
 	if err := configshare.ValidatePaths(allowed, visible); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
+	}
+	// Guard the common mistake: minting a category share for a category that
+	// doesn't exist in the config file yet (e.g. "design" when the real ones
+	// are "design-systems"/"design-sp"). A best-effort projected read — if the
+	// forge is reachable AND the projection is empty, the category (or its
+	// editable fields) isn't there, so the editor would land on an empty form.
+	// Reject with a clear error. A forge/transport failure does NOT block the
+	// mint (the operator is trusted; this is a guard-rail, not a gate).
+	if derivedFromSpec && req.Category != "" {
+		probe := &configshare.Share{
+			TenantID: teamID, BotID: req.BotID, RepoURL: req.RepoURL, RepoRef: req.RepoRef,
+			ConfigPath: configPath, Category: req.Category, AllowedPaths: allowed, VisiblePaths: visible,
+		}
+		if fc, ferr := s.resolveShareFC(r.Context(), probe); ferr == nil {
+			if proj, _, perr := s.configShareSvc.ProjectedRead(r.Context(), fc, probe); perr == nil && len(proj) == 0 {
+				httpError(w, http.StatusBadRequest, "category %q has no editable fields in %s — create it in the config file first", req.Category, configPath)
+				return
+			}
+		}
 	}
 	plaintext, hash, last4, fp, err := configshare.MintToken()
 	if err != nil {

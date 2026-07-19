@@ -66,6 +66,8 @@ invocations:
 ## this. Adding this block is all a bot needs to gain the config-share editor.
 config_share:
   config_path: feed-watch.json
+  editor_title: "Éditeur de veilles"
+  editor_description: "Gérez les sources et l'éditorial de vos veilles, ainsi que leur fréquence de publication."
   editable_paths:
     - "categories.{category}.feeds"
     - "categories.{category}.editorial"

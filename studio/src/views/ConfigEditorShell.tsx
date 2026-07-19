@@ -27,8 +27,10 @@ import { useAuth } from "@/auth/AuthContext";
 import { errorMessage } from "@/lib/errorHints";
 import {
   getEditorConfig,
+  getEditorSchedule,
   listEditorShares,
   patchEditorConfig,
+  patchEditorSchedule,
   type EditorConfigResponse,
   type EditorShare,
 } from "@/api/configEditor";
@@ -200,8 +202,18 @@ function buildPatch(
 // Shell chrome — brand header + Sign out, matching RestrictedShell.
 // ---------------------------------------------------------------------------
 
+// Branding is the bot-declared editor title/description, surfaced once the
+// share list loads so the header + heading can read "Éditeur de veilles"
+// instead of the generic "Config editor".
+interface Branding {
+  title?: string;
+  description?: string;
+}
+
 export default function ConfigEditorShell() {
   const { user, signOut, activeTeamID, activeTeam } = useAuth();
+  const [branding, setBranding] = useState<Branding>({});
+  const title = branding.title || "Config editor";
   return (
     <div className="flex h-screen min-h-0 flex-col bg-surface-0 text-fg-default">
       <header className="flex items-center justify-between border-b border-border-subtle px-4 py-3 sm:px-6">
@@ -211,7 +223,7 @@ export default function ConfigEditorShell() {
           <span aria-hidden className="text-fg-subtle">
             /
           </span>
-          <span className="text-sm font-medium text-fg-default">Config editor</span>
+          <span className="text-sm font-medium text-fg-default">{title}</span>
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
           <ThemeToggle />
@@ -225,7 +237,11 @@ export default function ConfigEditorShell() {
       <div className="min-h-0 flex-1 overflow-auto">
         <main className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
           {activeTeamID ? (
-            <Workspace teamID={activeTeamID} teamName={activeTeam?.team_name} />
+            <Workspace
+              teamID={activeTeamID}
+              teamName={activeTeam?.team_name}
+              onBranding={setBranding}
+            />
           ) : (
             <InlineBanner tone="warning" layout="inline" title="No active team">
               Your account has no active team, so there are no config-shares to edit.
@@ -242,7 +258,15 @@ export default function ConfigEditorShell() {
 // Workspace — share list (master) + editor (detail).
 // ---------------------------------------------------------------------------
 
-function Workspace({ teamID, teamName }: { teamID: string; teamName?: string }) {
+function Workspace({
+  teamID,
+  teamName,
+  onBranding,
+}: {
+  teamID: string;
+  teamName?: string;
+  onBranding?: (b: { title?: string; description?: string }) => void;
+}) {
   const [shares, setShares] = useState<EditorShare[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -254,11 +278,14 @@ function Workspace({ teamID, teamName }: { teamID: string; teamName?: string }) 
       setShares(list);
       // Auto-select the first share so the editor isn't an empty right pane.
       setSelectedId((cur) => cur ?? list[0]?.id ?? null);
+      // Surface the bot-declared editor branding (first share wins — a team's
+      // shares are typically all one bot) up to the shell header + heading.
+      onBranding?.({ title: list[0]?.editor_title, description: list[0]?.editor_description });
     } catch (err) {
       setShares([]);
       setError(errorMessage(err));
     }
-  }, [teamID]);
+  }, [teamID, onBranding]);
 
   useEffect(() => {
     void load();
@@ -277,15 +304,33 @@ function Workspace({ teamID, teamName }: { teamID: string; teamName?: string }) 
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-lg font-semibold text-fg-default">Config editor</h1>
+        <h1 className="text-lg font-semibold text-fg-default">
+          {shares?.[0]?.editor_title || "Config editor"}
+        </h1>
         <p className="text-sm text-fg-muted">
-          Edit the config-shares
-          {teamName ? (
+          {shares?.[0]?.editor_description ? (
             <>
-              {" "}for <span className="font-medium text-fg-default">{teamName}</span>
+              {shares[0].editor_description}
+              {teamName ? (
+                <>
+                  {" "}
+                  <span className="text-fg-subtle">
+                    · <span className="font-medium text-fg-default">{teamName}</span>
+                  </span>
+                </>
+              ) : null}
             </>
-          ) : null}
-          . Only the fields listed for each share are editable.
+          ) : (
+            <>
+              Edit the config-shares
+              {teamName ? (
+                <>
+                  {" "}for <span className="font-medium text-fg-default">{teamName}</span>
+                </>
+              ) : null}
+              . Only the fields listed for each share are editable.
+            </>
+          )}
         </p>
       </div>
 
@@ -528,9 +573,16 @@ function ShareEditor({ teamID, share }: { teamID: string; share: EditorShare }) 
         </InlineBanner>
       )}
 
+      <CadenceCard teamID={teamID} share={share} readOnly={readOnly} />
+
       {fields.length === 0 ? (
         <Card>
-          <EmptyState message="This config-share exposes no editable fields." />
+          <EmptyState
+            title="Nothing to edit yet"
+            message={`This ${
+              share.category ? `"${share.category}" ` : ""
+            }section isn't set up in the config file yet, so there are no fields to edit. Ask an administrator to add it.`}
+          />
         </Card>
       ) : (
         fields.map((f) =>
@@ -601,6 +653,155 @@ function ShareEditor({ teamID, share }: { teamID: string; share: EditorShare }) 
         />
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CadenceCard — edit the cron of the schedule bound to this share's category.
+// The recurrence lives in iterion's schedule store (visible in the Schedules
+// view), NOT the repo config. Self-hides when the category has no schedule or
+// the server has no scheduler (local mode) — it never breaks the content editor.
+// ---------------------------------------------------------------------------
+
+const CRON_PRESETS: { label: string; expr: string }[] = [
+  { label: "Daily 08:00", expr: "0 8 * * *" },
+  { label: "Weekdays 08:00", expr: "0 8 * * 1-5" },
+  { label: "Weekly · Mon 08:00", expr: "0 8 * * 1" },
+  { label: "Weekly · Wed 08:00", expr: "0 8 * * 3" },
+];
+
+// splitCronTZ preserves an optional "CRON_TZ=…" prefix so a preset only rewrites
+// the schedule fields, keeping the timezone the operator set on the schedule.
+function splitCronTZ(cron: string): { tz: string; expr: string } {
+  const m = cron.match(/^(CRON_TZ=\S+\s+)([\s\S]*)$/);
+  return m ? { tz: m[1] ?? "", expr: (m[2] ?? "").trim() } : { tz: "", expr: cron.trim() };
+}
+
+function formatNextFire(iso?: string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
+}
+
+function CadenceCard({
+  teamID,
+  share,
+  readOnly,
+}: {
+  teamID: string;
+  share: EditorShare;
+  readOnly: boolean;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const [cron, setCron] = useState("");
+  const [baseline, setBaseline] = useState("");
+  const [nextFire, setNextFire] = useState<string | undefined>(undefined);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<SaveStatus>({ kind: "idle" });
+  const bootRef = useRef(false);
+
+  useEffect(() => {
+    if (bootRef.current) return;
+    bootRef.current = true;
+    void (async () => {
+      try {
+        const sched = await getEditorSchedule(teamID, share.id);
+        if (!sched.exists || !sched.cron) {
+          setHidden(true);
+          return;
+        }
+        setCron(sched.cron);
+        setBaseline(sched.cron);
+        setNextFire(sched.next_fire_at);
+        setLoaded(true);
+      } catch {
+        // No scheduler on this server, or the schedule read failed: the cadence
+        // simply isn't editable here — hide the card, never break the editor.
+        setHidden(true);
+      }
+    })();
+  }, [teamID, share.id]);
+
+  const dirty = cron.trim() !== baseline.trim();
+
+  const setPreset = (expr: string) => {
+    setCron(splitCronTZ(cron).tz + expr);
+    setStatus({ kind: "idle" });
+  };
+
+  const onSave = async () => {
+    const c = cron.trim();
+    if (!c || c === baseline.trim()) return;
+    setSaving(true);
+    setStatus({ kind: "idle" });
+    try {
+      const r = await patchEditorSchedule(teamID, share.id, c);
+      setCron(r.cron);
+      setBaseline(r.cron);
+      setNextFire(r.next_fire_at);
+      setStatus({ kind: "saved", changed: 1 });
+    } catch (err) {
+      setStatus({ kind: "error", message: errorMessage(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (hidden || !loaded) return null;
+
+  const next = formatNextFire(nextFire);
+  return (
+    <Card>
+      <FieldLabel help="How often the digest is published — kept in the Schedules view">
+        Cadence
+      </FieldLabel>
+      {!readOnly && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {CRON_PRESETS.map((p) => (
+            <Button key={p.expr} variant="secondary" size="sm" onClick={() => setPreset(p.expr)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+      <Input
+        value={cron}
+        disabled={readOnly}
+        onChange={(e) => {
+          setCron(e.target.value);
+          setStatus({ kind: "idle" });
+        }}
+        spellCheck={false}
+        autoComplete="off"
+        aria-label="Cron expression"
+        className="font-mono"
+      />
+      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-caption text-fg-subtle">
+          {next ? `Next run: ${next}` : "cron expression, e.g. 0 8 * * 1"}
+        </span>
+        {!readOnly && (
+          <div className="flex items-center gap-2">
+            {status.kind === "saved" && (
+              <span className="text-xs text-success-fg">Cadence saved</span>
+            )}
+            {status.kind === "error" && (
+              <span className="text-xs text-danger-fg">{status.message}</span>
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={saving}
+              disabled={saving || !dirty}
+              onClick={() => void onSave()}
+            >
+              Save cadence
+            </Button>
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 

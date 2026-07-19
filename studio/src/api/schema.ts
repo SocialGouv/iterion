@@ -2763,6 +2763,27 @@ export interface paths {
         patch: operations["patchTeamsByIdConfigEditorSharesBySidConfig"];
         trace?: never;
     };
+    "/api/teams/{id}/config-editor/shares/{sid}/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares/{sid}/schedule */
+        get: operations["getTeamsByIdConfigEditorSharesBySidSchedule"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule */
+        patch: operations["patchTeamsByIdConfigEditorSharesBySidSchedule"];
+        trace?: never;
+    };
     "/api/teams/{id}/config-shares": {
         parameters: {
             query?: never;
@@ -8259,6 +8280,48 @@ export interface operations {
         };
     };
     patchTeamsByIdConfigEditorSharesBySidConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdConfigEditorSharesBySidSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdConfigEditorSharesBySidSchedule: {
         parameters: {
             query?: never;
             header?: never;

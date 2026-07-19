@@ -3,8 +3,11 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/bundle"
+	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
 )
 
@@ -19,6 +22,11 @@ func (s *Server) registerConfigEditorRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/config-editor/shares", s.requireAuth(http.HandlerFunc(s.handleConfigEditorList)))
 	s.mux.Handle("GET /api/teams/{id}/config-editor/shares/{sid}/config", s.requireAuth(http.HandlerFunc(s.handleConfigEditorGet)))
 	s.mux.Handle("PATCH /api/teams/{id}/config-editor/shares/{sid}/config", s.requireAuth(http.HandlerFunc(s.handleConfigEditorPatch)))
+	// Cadence: a config_editor may edit the cron of the schedule tied to its
+	// share's (bot, category) — the recurrence stays first-class in iterion's
+	// schedule store (visible in the Schedules UI), never buried in the repo.
+	s.mux.Handle("GET /api/teams/{id}/config-editor/shares/{sid}/schedule", s.requireAuth(http.HandlerFunc(s.handleConfigEditorGetSchedule)))
+	s.mux.Handle("PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule", s.requireAuth(http.HandlerFunc(s.handleConfigEditorPatchSchedule)))
 }
 
 // editorShareView is the REDUCED projection a config-editor sees — enough to
@@ -60,12 +68,29 @@ func (s *Server) handleConfigEditorList(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
+	specCache := map[string]*bundle.ConfigShareSpec{}
 	views := make([]map[string]any, 0, len(rows))
 	for _, sh := range rows {
 		if !sh.Enabled {
 			continue
 		}
-		views = append(views, editorShareView(sh))
+		v := editorShareView(sh)
+		// Bot-declared editor branding (manifest config_share.editor_title) so
+		// the shell can show "Éditeur de veilles" instead of the generic title.
+		spec, ok := specCache[sh.BotID]
+		if !ok {
+			spec = s.botConfigShareSpec(sh.BotID)
+			specCache[sh.BotID] = spec
+		}
+		if spec != nil {
+			if spec.EditorTitle != "" {
+				v["editor_title"] = spec.EditorTitle
+			}
+			if spec.EditorDescription != "" {
+				v["editor_description"] = spec.EditorDescription
+			}
+		}
+		views = append(views, v)
 	}
 	writeJSON(w, map[string]any{"shares": views})
 }
@@ -116,4 +141,116 @@ func (s *Server) handleConfigEditorPatch(w http.ResponseWriter, r *http.Request)
 	}
 	msg := "chore(config-share): edit " + sh.ConfigPath + " via config-editor"
 	s.applyShareEditAndRespond(w, r, sh, req, msg)
+}
+
+// findCategorySchedule locates the recurring schedule bound to a share's
+// (bot, category) — the per-category digest schedule feed-watch-style bots
+// register (vars.category == the share's category). Returns false when the
+// share isn't category-scoped, the schedule store is absent (local mode), or
+// no matching schedule exists. Deliberately narrow: a share with no category
+// never matches the category-less collect schedule, so the config_editor can
+// only ever touch its own category's cadence.
+func (s *Server) findCategorySchedule(r *http.Request, sh *configshare.Share) (cloudsched.ScheduledBot, bool) {
+	if s.cfg.ScheduledBots == nil || sh.Category == "" {
+		return cloudsched.ScheduledBot{}, false
+	}
+	rows, err := s.cfg.ScheduledBots.ListByTenant(r.Context(), sh.TenantID)
+	if err != nil {
+		return cloudsched.ScheduledBot{}, false
+	}
+	for _, sb := range rows {
+		if sb.BotID == sh.BotID && sb.Vars["category"] == sh.Category {
+			return sb, true
+		}
+	}
+	return cloudsched.ScheduledBot{}, false
+}
+
+// handleConfigEditorGetSchedule returns the cadence (cron + next fire) of the
+// share's category schedule, if one exists. The cadence lives in iterion's
+// schedule store, NOT the repo config — so it stays visible in the Schedules
+// UI; this endpoint only lets the scoped editor read/adjust it.
+func (s *Server) handleConfigEditorGetSchedule(w http.ResponseWriter, r *http.Request) {
+	sh, ok := s.loadEditableShare(w, r)
+	if !ok {
+		return
+	}
+	if s.cfg.ScheduledBots == nil {
+		httpError(w, http.StatusNotFound, "schedules not available")
+		return
+	}
+	sb, found := s.findCategorySchedule(r, sh)
+	resp := map[string]any{"exists": found}
+	if found {
+		resp["schedule_id"] = sb.ID
+		resp["cron"] = sb.Cron
+		resp["disabled"] = sb.Disabled
+		if !sb.NextFireAt.IsZero() {
+			resp["next_fire_at"] = sb.NextFireAt
+		}
+	}
+	writeJSON(w, resp)
+}
+
+// handleConfigEditorPatchSchedule updates ONLY the cron of the share's
+// category schedule. Edit-only by design: creating a schedule (and its
+// delivery sinks) stays an operator action, mirroring category creation —
+// a missing schedule returns a clear 404 rather than being auto-created.
+func (s *Server) handleConfigEditorPatchSchedule(w http.ResponseWriter, r *http.Request) {
+	sh, ok := s.loadEditableShare(w, r)
+	if !ok {
+		return
+	}
+	if sh.ReadOnly {
+		httpError(w, http.StatusForbidden, "read_only")
+		return
+	}
+	if s.cfg.ScheduledBots == nil {
+		httpError(w, http.StatusNotFound, "schedules not available")
+		return
+	}
+	var req struct {
+		Cron string `json:"cron"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	cronExpr := strings.TrimSpace(req.Cron)
+	if cronExpr == "" {
+		httpError(w, http.StatusBadRequest, "cron required")
+		return
+	}
+	if err := cloudsched.ValidateCron(cronExpr); err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	sb, found := s.findCategorySchedule(r, sh)
+	if !found {
+		httpError(w, http.StatusNotFound, "no schedule for this category — ask an administrator to create one")
+		return
+	}
+	now := s.scheduleNow()
+	next, err := cloudsched.NextFire(cronExpr, now)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	updated, err := s.cfg.ScheduledBots.Update(r.Context(), sb.ID, cloudsched.SchedulePatch{
+		UpdatedAt:  now,
+		Cron:       &cronExpr,
+		NextFireAt: &next,
+	})
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	s.auditTenant(r, sh.TenantID, "schedule.updated", "schedule", updated.ID, map[string]any{
+		"bot_id": updated.BotID, "category": sh.Category, "via": "config-editor", "cron_changed": true,
+	})
+	resp := map[string]any{"cron": updated.Cron}
+	if !updated.NextFireAt.IsZero() {
+		resp["next_fire_at"] = updated.NextFireAt
+	}
+	writeJSON(w, resp)
 }

@@ -27,6 +27,9 @@ export interface EditorShare {
   category: string;
   config_path: string;
   read_only: boolean;
+  /** Bot-declared branding for the shell heading (manifest config_share). */
+  editor_title?: string;
+  editor_description?: string;
 }
 
 // EditorConfigResponse mirrors GET .../shares/{sid}/config. `config` is the
@@ -116,4 +119,45 @@ export async function patchEditorConfig(
     // global sign-out); anything else is a genuine failure — propagate it.
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cadence — the recurrence of the share's category lives in iterion's schedule
+// store (visible in the Schedules UI), NOT the repo config. A config_editor may
+// read/adjust ONLY the cron of the schedule bound to its (bot, category).
+// ---------------------------------------------------------------------------
+
+// EditorSchedule mirrors GET .../shares/{sid}/schedule. `exists` is false when
+// the category has no schedule yet (creating one stays an operator action).
+export interface EditorSchedule {
+  exists: boolean;
+  schedule_id?: string;
+  cron?: string;
+  disabled?: boolean;
+  next_fire_at?: string;
+}
+
+// getEditorSchedule loads the cadence of the share's category schedule. A 404
+// (schedules unavailable — local mode) surfaces as FeatureUnavailableError;
+// callers treat that as "no cadence card".
+export function getEditorSchedule(teamID: string, shareID: string): Promise<EditorSchedule> {
+  return guard404("config-editor-schedule", () =>
+    apiRequest<EditorSchedule>(
+      `${teamBase(teamID)}/shares/${encodeURIComponent(shareID)}/schedule`,
+    ),
+  );
+}
+
+// patchEditorSchedule updates the cron of the share's category schedule. The
+// server validates the cron and returns the new cron + next fire time. A 404
+// means no schedule exists for this category (operator must create one first).
+export function patchEditorSchedule(
+  teamID: string,
+  shareID: string,
+  cron: string,
+): Promise<{ cron: string; next_fire_at?: string }> {
+  return apiRequest<{ cron: string; next_fire_at?: string }>(
+    `${teamBase(teamID)}/shares/${encodeURIComponent(shareID)}/schedule`,
+    { method: "PATCH", body: JSON.stringify({ cron }) },
+  );
 }

@@ -267,6 +267,13 @@ type ConfigShareSpec struct {
 	// returns EditablePaths ∪ VisiblePaths and nothing else. Same {category}
 	// expansion. Optional.
 	VisiblePaths []string `yaml:"visible_paths,omitempty" json:"visible_paths,omitempty"`
+	// EditorTitle overrides the generic "Config editor" heading in the
+	// signed-in config_editor shell with a bot-specific name (e.g. "Éditeur de
+	// veilles"). Optional; empty falls back to the generic title.
+	EditorTitle string `yaml:"editor_title,omitempty" json:"editor_title,omitempty"`
+	// EditorDescription is a one-line subtitle under EditorTitle explaining
+	// what the editor edits ("Sources et éditorial de vos veilles"). Optional.
+	EditorDescription string `yaml:"editor_description,omitempty" json:"editor_description,omitempty"`
 }
 
 // Normalized forge event vocabulary used in a manifest `forge.events`
