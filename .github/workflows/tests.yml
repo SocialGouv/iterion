@@ -39,6 +39,16 @@ jobs:
           rm -rf ../pkg/server/static/assets ../pkg/server/static/index.html
           cp -r dist/* ../pkg/server/static/
 
+      - name: Studio lint + typecheck + unit tests
+        # Mirror of `task studio:check` (eslint / tsc -b / vitest), inlined so
+        # the test job doesn't pull go-task. Reuses the node_modules installed
+        # by the build step above.
+        working-directory: studio
+        run: |
+          pnpm exec eslint .
+          pnpm exec tsc -b
+          pnpm exec vitest run
+
       - name: OpenAPI spec + client drift check
         # The committed openapi.json (offline-generated from the in-code route
         # table) and studio/src/api/schema.ts (typed client surface) must match
