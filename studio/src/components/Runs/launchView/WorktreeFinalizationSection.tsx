@@ -71,7 +71,7 @@ export default function WorktreeFinalizationSection({
             : "This workflow doesn't declare `worktree: auto`; the fields below have no effect."
         }
       >
-        <span>{showAdvanced ? "▼" : "▶"}</span>
+        <span>{showAdvanced ? "▾" : "▸"}</span>
         <span>Worktree finalization (squash / merge)</span>
         {!worktreeOn && (
           <Badge variant="neutral" size="sm">

@@ -88,7 +88,7 @@ export default function BudgetSection({
         onClick={onToggle}
         title="Cap this run's cost / tokens / duration without editing the bot."
       >
-        <span>{show ? "▼" : "▶"}</span>
+        <span>{show ? "▾" : "▸"}</span>
         <span>Budget overrides (cost / tokens / duration)</span>
       </button>
       {show && (
