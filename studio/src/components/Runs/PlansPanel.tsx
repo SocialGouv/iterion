@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { listPlans } from "@/api/runs";
 import type { PlanSnapshot } from "@/api/runs/types";
@@ -127,37 +128,27 @@ function toTodoItems(plan: PlanSnapshot): TodoItem[] {
   }));
 }
 
-// useRunPlans fetches the plan list once per run, then refetches
+// useRunPlans fetches the plan list once per run, then invalidates
 // (debounced) when a plan-producing event arrives. Returns null until the
-// first load resolves, then the (possibly empty) list. Mirrors
+// first load resolves, then the (possibly empty) list. Load failures are
+// best-effort (the panel just keeps its loading state). Mirrors
 // ArtifactFilesPanel's refresh discipline.
 function useRunPlans(runId: string | null): PlanSnapshot[] | null {
-  const [plans, setPlans] = useState<PlanSnapshot[] | null>(null);
+  const queryClient = useQueryClient();
   const events = useRunStore((s) => s.events);
-  const genRef = useRef(0);
   const lastSeenSeq = useRef<number>(-1);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchNow = useCallback(() => {
-    if (!runId) return;
-    const myGen = ++genRef.current;
-    listPlans(runId)
-      .then((res) => {
-        if (myGen === genRef.current) setPlans(res);
-      })
-      .catch(() => {});
-  }, [runId]);
+  const query = useQuery({
+    queryKey: ["run-plans", runId],
+    queryFn: ({ signal }) => listPlans(runId!, { signal }),
+    enabled: !!runId,
+  });
 
-  // Initial fetch + reset on run change.
+  // Reset the seq high-water mark on run change.
   useEffect(() => {
-    if (!runId) {
-      setPlans(null);
-      return;
-    }
-    setPlans(null);
     lastSeenSeq.current = -1;
-    fetchNow();
-  }, [runId, fetchNow]);
+  }, [runId]);
 
   // Debounced refetch when a new plan-producing event lands.
   useEffect(() => {
@@ -170,11 +161,13 @@ function useRunPlans(runId: string | null): PlanSnapshot[] | null {
     }
     if (!touched) return;
     if (debounce.current) clearTimeout(debounce.current);
-    debounce.current = setTimeout(fetchNow, DEBOUNCE_MS);
+    debounce.current = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: ["run-plans", runId] });
+    }, DEBOUNCE_MS);
     return () => {
       if (debounce.current) clearTimeout(debounce.current);
     };
-  }, [events, runId, fetchNow]);
+  }, [events, runId, queryClient]);
 
-  return plans;
+  return runId ? query.data ?? null : null;
 }

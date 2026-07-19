@@ -1,11 +1,10 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import type { BotEntryWithSchema } from "@/api/bots";
 import {
   type ForgeConnection,
-  type ForgeConnectionHealth,
-  type ForgeEnablePreview,
   type ForgeRepo,
   enableForgeRepoBots,
   getForgeConnectionHealth,
@@ -54,7 +53,6 @@ export function EnableRepoPanel({
   const [selectedBots, setSelectedBots] = useState<string[]>(
     preselectBot ? [preselectBot] : [],
   );
-  const [preview, setPreview] = useState<ForgeEnablePreview | null>(null);
   // Per-bot cron overrides for scheduled bots (bot name → cron); empty entries
   // fall back to the manifest suggested_cron server-side.
   const [scheduleCrons, setScheduleCrons] = useState<Record<string, string>>({});
@@ -79,44 +77,29 @@ export function EnableRepoPanel({
   // GitHub App installations only expose the repos the operator granted
   // on GitHub — an empty search here used to dead-end with no
   // explanation. The health probe surfaces the installation's live
-  // scope + the GitHub settings URL where it can be widened.
-  const [health, setHealth] = useState<ForgeConnectionHealth | null>(null);
-  useEffect(() => {
-    if (conn.kind !== "github_app") return;
-    let cancelled = false;
-    void getForgeConnectionHealth(teamID, conn.id)
-      .then((h) => {
-        if (!cancelled) setHealth(h);
-      })
-      .catch(() => {
-        if (!cancelled) setHealth(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [teamID, conn.id, conn.kind]);
+  // scope + the GitHub settings URL where it can be widened. Probe
+  // failures deliberately just hide the banner.
+  const healthQuery = useQuery({
+    queryKey: ["forge-connection-health", teamID, conn.id],
+    queryFn: () => getForgeConnectionHealth(teamID, conn.id),
+    enabled: conn.kind === "github_app",
+  });
+  const health = healthQuery.data ?? null;
 
   // Fetch the authoritative preview (native events the hook will subscribe
   // to + identity + any scope/forge-block conflicts) whenever the selection
   // changes, so the operator sees exactly what Enable will provision.
-  useEffect(() => {
-    if (!repo || selectedBots.length === 0) {
-      setPreview(null);
-      return;
-    }
-    let cancelled = false;
-    void previewForgeEnable(teamID, conn.id, repo, selectedBots)
-      .then((p) => {
-        if (!cancelled) setPreview(p);
-      })
-      .catch(() => {
-        if (!cancelled) setPreview(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repo, selectedBots]);
+  // Failures deliberately collapse to "no preview box".
+  const previewEnabled = repo !== "" && selectedBots.length > 0;
+  const previewQuery = useQuery({
+    queryKey: ["forge-enable-preview", teamID, conn.id, repo, selectedBots],
+    queryFn: () => previewForgeEnable(teamID, conn.id, repo, selectedBots),
+    enabled: previewEnabled,
+    // Keep the previous selection's preview on screen while the next one
+    // loads, instead of blinking the box out on every checkbox toggle.
+    placeholderData: keepPreviousData,
+  });
+  const preview = previewEnabled ? previewQuery.data ?? null : null;
 
   const toggleBot = (name: string) =>
     setSelectedBots((s) => (s.includes(name) ? s.filter((b) => b !== name) : [...s, name]));

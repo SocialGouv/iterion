@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
@@ -33,46 +34,43 @@ interface Props {
 
 export default function SecretsTab({ teamID, canManage }: Props) {
   const [, navigate] = useLocation();
-  const [teamSecrets, setTeamSecrets] = useState<GenericSecretView[]>([]);
-  const [mySecrets, setMySecrets] = useState<GenericSecretView[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const queryClient = useQueryClient();
+  // Mutation failures report through setActionErr; load failures surface
+  // from the team-secrets query. One banner shows whichever is current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [creating, setCreating] = useState<null | "team" | "me">(null);
   const [rotating, setRotating] = useState<{ scope: "team" | "me"; rec: GenericSecretView } | null>(
     null,
   );
   const { confirm, dialog } = useConfirm();
 
-  const reload = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      const [t, m] = await Promise.all([
-        listTeamSecrets(teamID).catch((e) => {
-          if (e instanceof FeatureUnavailableError) throw e;
-          throw e;
-        }),
-        listMySecrets().catch(() => [] as GenericSecretView[]),
-      ]);
-      setTeamSecrets(t);
-      setMySecrets(m);
-      setUnavailable(false);
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-      } else {
-        setErr(errorMessage(e));
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
+  const teamSecretsQuery = useQuery({
+    queryKey: ["team-secrets", teamID],
+    queryFn: () => listTeamSecrets(teamID),
+  });
+  // Personal secrets are best-effort: a failure just renders an empty
+  // list (the team list is the tab's primary content).
+  const mySecretsQuery = useQuery({
+    queryKey: ["my-secrets"],
+    queryFn: () => listMySecrets().catch(() => [] as GenericSecretView[]),
+  });
+  const teamSecrets = teamSecretsQuery.data ?? [];
+  const mySecrets = mySecretsQuery.data ?? [];
+  // isFetching (not isLoading): the pre-query code skeletoned both tables
+  // on every reload, including post-mutation refreshes.
+  const loading = teamSecretsQuery.isFetching || mySecretsQuery.isFetching;
+  const unavailable = teamSecretsQuery.error instanceof FeatureUnavailableError;
+  const err =
+    actionErr ??
+    (teamSecretsQuery.error && !unavailable && !loading
+      ? errorMessage(teamSecretsQuery.error)
+      : null);
 
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["team-secrets", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["my-secrets"] });
+  };
 
   const doDelete = async (scope: "team" | "me", rec: GenericSecretView) => {
     const ok = await confirm({
@@ -86,9 +84,9 @@ export default function SecretsTab({ teamID, canManage }: Props) {
     try {
       if (scope === "team") await deleteTeamSecret(teamID, rec.id);
       else await deleteMySecret(rec.id);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -166,7 +164,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           onClose={() => setCreating(null)}
           onCreated={() => {
             setCreating(null);
-            void reload();
+            reload();
           }}
         />
       )}
@@ -179,7 +177,7 @@ export default function SecretsTab({ teamID, canManage }: Props) {
           onClose={() => setRotating(null)}
           onRotated={() => {
             setRotating(null);
-            void reload();
+            reload();
           }}
         />
       )}

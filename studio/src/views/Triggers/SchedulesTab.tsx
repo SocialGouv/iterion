@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 
 import { listBots, type BotEntryWithSchema } from "@/api/bots";
@@ -30,6 +31,10 @@ import {
   type ScheduleRepoGroup,
 } from "./scheduleModel";
 
+// Stable empty fallback so the undefined→loaded transition doesn't hand
+// downstream memos a fresh [] reference each render.
+const EMPTY_BOTS: BotEntryWithSchema[] = [];
+
 // SchedulesTab is the management surface for a team's scheduled bots
 // (cloudsched rows) inside Automations: grouped by repository via the
 // client-side join against the connected-repos list, with pause/resume,
@@ -54,10 +59,7 @@ export default function SchedulesTab({
   const [, navigate] = useLocation();
   const { confirm, dialog } = useConfirm();
 
-  const [schedules, setSchedules] = useState<ScheduledBot[] | null>(null);
-  const [bots, setBots] = useState<BotEntryWithSchema[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState<ScheduledBot | null>(null);
 
@@ -65,37 +67,38 @@ export default function SchedulesTab({
   const [repoFilter, setRepoFilter] = useState<string | null>(repoFilterParam);
   useEffect(() => setRepoFilter(repoFilterParam), [repoFilterParam]);
 
-  const reload = useCallback(async () => {
-    if (!teamID) return;
-    try {
-      setErr(null);
-      setSchedules(await listTeamSchedules(teamID));
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        onUnavailable();
-        return;
-      }
-      setErr(errorMessage(e));
-    }
-  }, [teamID, onUnavailable]);
-
+  const queryClient = useQueryClient();
+  const schedulesQuery = useQuery<ScheduledBot[]>({
+    queryKey: ["team-schedules", teamID],
+    queryFn: () => listTeamSchedules(teamID ?? ""),
+    enabled: !!teamID,
+  });
+  const schedules = schedulesQuery.data ?? null;
+  // No schedule store on this server: the tab swaps to its EmptyState,
+  // and the view header hides its New-schedule button (reported up).
+  const unavailable = schedulesQuery.error instanceof FeatureUnavailableError;
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    if (unavailable) onUnavailable();
+  }, [unavailable, onUnavailable]);
+  // Mutation failures overlay the fetch error; reload() clears them.
+  const err =
+    actionErr ??
+    (schedulesQuery.error && !unavailable
+      ? errorMessage(schedulesQuery.error)
+      : null);
 
-  // Bot personas are decoration — a registry failure must not block the list.
-  useEffect(() => {
-    let cancelled = false;
-    listBots()
-      .then((b) => {
-        if (!cancelled) setBots(b);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const reload = useCallback(() => {
+    setActionErr(null);
+    return queryClient.invalidateQueries({ queryKey: ["team-schedules", teamID] });
+  }, [queryClient, teamID]);
+
+  // Bot personas are decoration — a registry failure must not block the
+  // list (the query holds the error; nothing renders it).
+  const botsQuery = useQuery<BotEntryWithSchema[]>({
+    queryKey: ["bots"],
+    queryFn: () => listBots(),
+  });
+  const bots = botsQuery.data ?? EMPTY_BOTS;
 
   const groups = useMemo(
     () => groupSchedulesByRepo(schedules ?? [], repos),
@@ -137,7 +140,7 @@ export default function SchedulesTab({
       await updateTeamSchedule(teamID, s.id, { disabled: !s.disabled });
       await reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -157,7 +160,7 @@ export default function SchedulesTab({
       await deleteTeamSchedule(teamID, s.id);
       await reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     } finally {
       setBusy(null);
     }

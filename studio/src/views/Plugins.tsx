@@ -1,6 +1,7 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { Component1Icon } from "@radix-ui/react-icons";
 import { useLocation } from "wouter";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   installPlugin,
@@ -10,6 +11,7 @@ import {
   type PluginView,
 } from "@/api/plugins";
 import { useAuth } from "@/auth/AuthContext";
+import { errorMessage } from "@/lib/errorHints";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 import { useConfirm } from "@/hooks/useConfirm";
@@ -30,8 +32,20 @@ import PluginDetail from "./plugins/PluginDetail";
 // ones. Clicking a card opens a detail drawer (contributes/config/lifecycle/
 // README) backed by GET /api/v1/plugins/{name}.
 export default function Plugins() {
-  const [plugins, setPlugins] = useState<PluginView[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const pluginsQuery = useQuery<PluginView[]>({
+    queryKey: ["plugins"],
+    queryFn: listPlugins,
+  });
+  const plugins = pluginsQuery.data ?? null;
+  // Enable/disable/remove failures share the fetch error's banner; any
+  // reload clears them (the fetch side clears itself on refetch).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error =
+    actionError ??
+    (pluginsQuery.error && !pluginsQuery.isFetching
+      ? errorMessage(pluginsQuery.error)
+      : null);
   const [busy, setBusy] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -50,18 +64,12 @@ export default function Plugins() {
   // single-user local/desktop operator (auth disabled → no login).
   const canManage = (user?.is_super_admin ?? false) || authRequired === false;
 
+  // Post-mutation reload: invalidate so the registry list refetches
+  // (awaitable — resolves once the active query has refetched).
   const refresh = useCallback(async () => {
-    try {
-      setError(null);
-      setPlugins(await listPlugins());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    setActionError(null);
+    await queryClient.invalidateQueries({ queryKey: ["plugins"] });
+  }, [queryClient]);
 
   // The set of contribution kinds present across the registry, for the filter.
   const allKinds = useMemo(
@@ -92,7 +100,7 @@ export default function Plugins() {
         await setPluginEnabled(p.name, !p.enabled);
         await refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setActionError(errorMessage(e));
       } finally {
         setBusy(null);
       }
@@ -116,7 +124,7 @@ export default function Plugins() {
         setSelected((s) => (s === p.name ? null : s));
         await refresh();
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setActionError(errorMessage(e));
       } finally {
         setBusy(null);
       }
@@ -154,7 +162,14 @@ export default function Plugins() {
         actions={
           <div className="flex items-center gap-2">
             {browseMarketplace}
-            <Button variant="secondary" size="sm" onClick={() => void refresh()}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setActionError(null);
+                void pluginsQuery.refetch();
+              }}
+            >
               Refresh
             </Button>
             {canManage && (

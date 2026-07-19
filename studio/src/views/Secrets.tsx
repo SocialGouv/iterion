@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { LockClosedIcon } from "@radix-ui/react-icons";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type LocalSecretView,
@@ -27,26 +28,40 @@ import { Table, THead, Th, TBody, Tr, Td, TableSkeleton } from "@/components/ui/
 // AES-GCM sealed at rest, injected into runs at tool/shell exec time, and
 // never enter the agent's context. Backed by /api/local/secrets
 // (server_info.secrets_enabled).
+// Stable empty fallback for the errored state, so renders don't hand the
+// table a fresh [] reference each time.
+const EMPTY_SECRETS: LocalSecretView[] = [];
+
 export default function Secrets() {
-  const [secrets, setSecrets] = useState<LocalSecretView[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [rotating, setRotating] = useState<LocalSecretView | null>(null);
   const { confirm, dialog } = useConfirm();
 
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      setSecrets(await listLocalSecrets());
-    } catch (e) {
-      setError(errorMessage(e));
-      setSecrets([]);
-    }
-  }, []);
+  const secretsQuery = useQuery<LocalSecretView[]>({
+    queryKey: ["local-secrets"],
+    queryFn: listLocalSecrets,
+  });
+  // On a fetch error the list reads as empty (banner over the empty
+  // state, not a stale table or an endless skeleton).
+  const secrets = secretsQuery.isError
+    ? EMPTY_SECRETS
+    : (secretsQuery.data ?? null);
+  // Delete failures share the fetch error's banner; any reload clears
+  // them (the fetch side clears itself on refetch).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error =
+    actionError ??
+    (secretsQuery.error && !secretsQuery.isFetching
+      ? errorMessage(secretsQuery.error)
+      : null);
 
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  // Post-mutation reload (delete / create / rotate): invalidate so the
+  // list refetches.
+  const reload = useCallback(() => {
+    setActionError(null);
+    void queryClient.invalidateQueries({ queryKey: ["local-secrets"] });
+  }, [queryClient]);
 
   const doDelete = async (rec: LocalSecretView) => {
     const ok = await confirm({
@@ -59,9 +74,9 @@ export default function Secrets() {
     if (!ok) return;
     try {
       await deleteLocalSecret(rec.id);
-      void reload();
+      reload();
     } catch (e) {
-      setError(errorMessage(e));
+      setActionError(errorMessage(e));
     }
   };
 
@@ -81,7 +96,14 @@ export default function Secrets() {
         }
         actions={
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void reload()}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setActionError(null);
+                void secretsQuery.refetch();
+              }}
+            >
               Refresh
             </Button>
             <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
@@ -119,7 +141,7 @@ export default function Secrets() {
           onClose={() => setCreating(false)}
           onDone={() => {
             setCreating(false);
-            void reload();
+            reload();
           }}
         />
       )}
@@ -130,7 +152,7 @@ export default function Secrets() {
           onClose={() => setRotating(null)}
           onDone={() => {
             setRotating(null);
-            void reload();
+            reload();
           }}
         />
       )}

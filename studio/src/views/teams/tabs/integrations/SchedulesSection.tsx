@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 
-import { listTeamSchedules, type ScheduledBot } from "@/api/schedules";
+import { listTeamSchedules } from "@/api/schedules";
 import { FeatureUnavailableError } from "@/api/client";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
@@ -19,26 +19,19 @@ export default function SchedulesSection({
   teamID: string;
   canManage: boolean;
 }) {
-  const [schedules, setSchedules] = useState<ScheduledBot[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [, navigate] = useLocation();
 
-  useEffect(() => {
-    let cancelled = false;
-    listTeamSchedules(teamID)
-      .then((rows) => {
-        if (!cancelled) setSchedules(rows);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        // Local mode has no schedule store (404): the section only exists
-        // where the feature does. Any other failure must stay visible.
-        if (!(e instanceof FeatureUnavailableError)) setErr(errorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [teamID]);
+  const query = useQuery({
+    queryKey: ["team-schedules", teamID],
+    queryFn: () => listTeamSchedules(teamID),
+  });
+  const schedules = query.data;
+  // Local mode has no schedule store (404): the section only exists
+  // where the feature does. Any other failure must stay visible.
+  const err =
+    query.error && !(query.error instanceof FeatureUnavailableError)
+      ? errorMessage(query.error)
+      : null;
 
   if (err) {
     return (

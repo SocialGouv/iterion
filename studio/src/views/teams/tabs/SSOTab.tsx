@@ -1,8 +1,9 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { FeatureUnavailableError } from "@/api/client";
-import { type OrgSSOProvider, listOrgSSOProviders } from "@/api/orgSso";
+import { listOrgSSOProviders } from "@/api/orgSso";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
 import { DomainsSection } from "./sso/DomainsSection";
@@ -14,27 +15,27 @@ import { KeycloakSection } from "./sso/KeycloakSection";
 // GitHub team-gating allow-list. The actual section logic lives in
 // ./sso/ — this file only fetches the provider list and routes it.
 export default function SSOTab({ teamID, canManage }: { teamID: string; canManage: boolean }) {
-  const [providers, setProviders] = useState<OrgSSOProvider[]>([]);
-  const [unavailable, setUnavailable] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // Section mutations report through setActionErr; load failures surface
+  // from the query. One banner shows whichever is current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
 
-  const reload = async () => {
-    setErr(null);
-    try {
-      setProviders(await listOrgSSOProviders(teamID));
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        return;
-      }
-      setErr(errorMessage(e));
-    }
+  const query = useQuery({
+    queryKey: ["org-sso-providers", teamID],
+    queryFn: () => listOrgSSOProviders(teamID),
+  });
+  const providers = query.data ?? [];
+  const unavailable = query.error instanceof FeatureUnavailableError;
+  const err =
+    actionErr ??
+    (query.error && !unavailable && !query.isFetching
+      ? errorMessage(query.error)
+      : null);
+
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["org-sso-providers", teamID] });
   };
-
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
 
   const oidc = providers.filter((p) => p.kind === "oidc");
   const github = providers.find((p) => p.kind === "github");
@@ -59,16 +60,16 @@ export default function SSOTab({ teamID, canManage }: { teamID: string; canManag
         canManage={canManage}
         rows={oidc}
         onChange={reload}
-        onError={setErr}
+        onError={setActionErr}
       />
-      <DomainsSection teamID={teamID} canManage={canManage} onError={setErr} />
+      <DomainsSection teamID={teamID} canManage={canManage} onError={setActionErr} />
       <GitHubSection
         key={github?.id ?? "new"}
         teamID={teamID}
         canManage={canManage}
         row={github}
         onChange={reload}
-        onError={setErr}
+        onError={setActionErr}
       />
     </div>
   );

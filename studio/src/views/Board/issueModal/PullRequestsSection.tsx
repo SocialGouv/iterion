@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createIssuePull,
   getIssuePullCI,
   listIssuePulls,
   mergeIssuePull,
-  type CIRun,
   type MergeMethod,
   type NativeIssue,
   type PullRef,
@@ -19,6 +19,7 @@ import { LiveDot } from "@/components/ui/LiveDot";
 import { Select } from "@/components/ui/Select";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useConfirm, type ConfirmOptions } from "@/hooks/useConfirm";
+import { errorMessage } from "@/lib/errorHints";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 
@@ -31,37 +32,33 @@ import { ciRunVariant, ciTone, prStateVariant } from "./ci";
 export function PullRequestsSection({ issue }: { issue: NativeIssue }) {
   const mode = useServerInfoStore((s) => s.info?.mode);
   const addToast = useUIStore((s) => s.addToast);
-  const [pulls, setPulls] = useState<PullRef[] | null>(null);
   const [creating, setCreating] = useState(false);
-  const loadAction = useAsyncAction();
   const { confirm, dialog } = useConfirm();
 
   const forgeLinked = !!issue.external?.repo;
   const eligible = mode === "cloud" && forgeLinked;
 
-  const refresh = async () => {
-    await loadAction.run(async () => {
-      setPulls(await listIssuePulls(issue.id));
-    });
-  };
+  const queryClient = useQueryClient();
+  const pullsQuery = useQuery<PullRef[]>({
+    queryKey: ["issue-pulls", issue.id],
+    queryFn: () => listIssuePulls(issue.id),
+    enabled: eligible,
+  });
+  // isFetching (not isLoading) so the post-create / post-merge re-pull
+  // shows the same loading line as the initial load; the error hides
+  // while a reload is in flight.
+  const loading = pullsQuery.isFetching;
+  const loadError =
+    pullsQuery.error && !loading ? errorMessage(pullsQuery.error) : null;
 
-  useEffect(() => {
-    if (!eligible) {
-      setPulls(null);
-      return;
-    }
-    void loadAction.run(async () => {
-      setPulls(await listIssuePulls(issue.id));
-    });
-    // Re-fetch only when the target issue changes; loadAction is stable.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [issue.id, eligible]);
+  const refresh = () =>
+    queryClient.invalidateQueries({ queryKey: ["issue-pulls", issue.id] });
 
   // Hide entirely for non-cloud / unlinked cards. A forge-linked card with no
   // PRs still renders so the operator can open one.
   if (!eligible) return null;
 
-  const pullList = pulls ?? [];
+  const pullList = pullsQuery.data ?? [];
 
   return (
     <div className="rounded border border-border-default bg-surface-1 p-2 space-y-2">
@@ -76,12 +73,12 @@ export function PullRequestsSection({ issue }: { issue: NativeIssue }) {
           {creating ? "Cancel" : "+ Open PR"}
         </button>
       </div>
-      {loadAction.busy && (
+      {loading && (
         <p className="text-xs text-fg-subtle italic">Loading pull requests…</p>
       )}
-      {loadAction.error && (
+      {loadError && (
         <InlineBanner tone="danger" layout="inline">
-          {loadAction.error}
+          {loadError}
         </InlineBanner>
       )}
       {creating && (
@@ -94,7 +91,7 @@ export function PullRequestsSection({ issue }: { issue: NativeIssue }) {
           }}
         />
       )}
-      {!loadAction.busy && pullList.length === 0 && !loadAction.error && !creating && (
+      {!loading && pullList.length === 0 && !loadError && !creating && (
         <p className="text-xs text-fg-subtle">No pull requests linked to this card yet.</p>
       )}
       {pullList.map((pr) => (
@@ -196,25 +193,32 @@ function PullRow({
   onMerged: (merged: PullRef) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [runs, setRuns] = useState<CIRun[] | null>(null);
-  const [ciState, setCIState] = useState<string>("");
+  // Latches true on the first expand: the CI query fetches once, then
+  // collapse / re-expand just shows the cached list.
+  const [ciRequested, setCIRequested] = useState(false);
   const [method, setMethod] = useState<MergeMethod>("merge");
-  const ciAction = useAsyncAction();
   const mergeAction = useAsyncAction();
 
-  const loadCI = async () => {
-    await ciAction.run(async () => {
-      const { status, history } = await getIssuePullCI(issueID, pr.number);
-      setCIState(status.state);
-      // Current runs first, then recent history; de-dupe is the server's job.
-      setRuns([...(status.runs ?? []), ...(history ?? [])]);
-    });
-  };
+  const ciQuery = useQuery({
+    queryKey: ["issue-pull-ci", issueID, pr.number],
+    queryFn: () => getIssuePullCI(issueID, pr.number),
+    enabled: ciRequested,
+  });
+  const ciState = ciQuery.data?.status.state ?? "";
+  // Current runs first, then recent history; de-dupe is the server's job.
+  const runs = useMemo(
+    () =>
+      ciQuery.data
+        ? [...(ciQuery.data.status.runs ?? []), ...(ciQuery.data.history ?? [])]
+        : null,
+    [ciQuery.data],
+  );
+  const ciLoading = ciQuery.isLoading;
+  const ciError = ciQuery.error ? errorMessage(ciQuery.error) : null;
 
   const toggle = () => {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && runs === null && !ciAction.busy) void loadCI();
+    setExpanded((v) => !v);
+    setCIRequested(true);
   };
 
   // Open PRs (not merged/closed/draft) can be merged. The forge enforces the
@@ -294,15 +298,15 @@ function PullRow({
       )}
       {expanded && (
         <div className="mt-1 space-y-1">
-          {ciAction.busy && (
+          {ciLoading && (
             <p className="text-micro text-fg-subtle italic">Loading CI runs…</p>
           )}
-          {ciAction.error && (
+          {ciError && (
             <InlineBanner tone="danger" layout="inline">
-              {ciAction.error}
+              {ciError}
             </InlineBanner>
           )}
-          {runs && runs.length === 0 && !ciAction.busy && (
+          {runs && runs.length === 0 && !ciLoading && (
             <p className="text-micro text-fg-subtle">No CI runs reported.</p>
           )}
           {(runs ?? []).map((run, i) => (

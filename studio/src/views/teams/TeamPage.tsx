@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -12,8 +13,6 @@ import { useConfirm } from "@/hooks/useConfirm";
 import { useCanManageTeam } from "@/hooks/useCanManageTeam";
 import { useAuth } from "@/auth/AuthContext";
 import {
-  type InvitationView,
-  type TeamMemberView,
   createInvitation,
   deleteInvitation,
   listInvitations,
@@ -139,9 +138,10 @@ export default function TeamPage() {
 }
 
 function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) {
-  const [members, setMembers] = useState<TeamMemberView[]>([]);
-  const [invs, setInvs] = useState<InvitationView[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // Mutation failures report through setActionErr; load failures surface
+  // from the queries. One banner shows whichever is current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState({ email: "", role: "member" });
   // Session-issued invites, newest first — tokens appear once, so a new
@@ -149,33 +149,40 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
   const [issued, setIssued] = useState<Array<{ email: string; token: string }>>([]);
   const { confirm, dialog } = useConfirm();
 
-  const reload = async () => {
-    setErr(null);
-    try {
-      const [m, i] = await Promise.all([listTeamMembers(teamID), listInvitations(teamID)]);
-      setMembers(m);
-      setInvs(i);
-    } catch (e) {
-      setErr(errorMessage(e));
-    }
-  };
+  const membersQuery = useQuery({
+    queryKey: ["team-members", teamID],
+    queryFn: () => listTeamMembers(teamID),
+  });
+  const invitationsQuery = useQuery({
+    queryKey: ["team-invitations", teamID],
+    queryFn: () => listInvitations(teamID),
+  });
+  const members = membersQuery.data ?? [];
+  const invs = invitationsQuery.data ?? [];
+  const fetching = membersQuery.isFetching || invitationsQuery.isFetching;
+  const loadError = membersQuery.error ?? invitationsQuery.error;
+  const err =
+    actionErr ?? (loadError && !fetching ? errorMessage(loadError) : null);
 
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
+  // Post-mutation refresh: invalidate both lists (and clear any stale
+  // mutation error, as the old reload() did).
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["team-members", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["team-invitations", teamID] });
+  };
 
   const invite = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setBusy(true);
-    setErr(null);
+    setActionErr(null);
     try {
       const r = await createInvitation(teamID, draft);
       setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
       setDraft({ email: "", role: "member" });
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -191,9 +198,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     if (!ok) return;
     try {
       await deleteInvitation(teamID, id);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -218,9 +225,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     }
     try {
       await updateMemberRole(teamID, userID, role);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -234,9 +241,9 @@ function Members({ teamID, canManage }: { teamID: string; canManage: boolean }) 
     if (!ok) return;
     try {
       await removeMember(teamID, userID);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 

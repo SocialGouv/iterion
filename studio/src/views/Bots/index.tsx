@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 
 import type { BotEntryWithSchema, ImportScriptResult } from "@/api/bots";
@@ -55,10 +56,6 @@ export default function BotsView() {
   const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled === true);
 
   const [query, setQuery] = useState("");
-  // Trigger counts per bot_id. null = not loaded (or the trigger store
-  // isn't wired on this server — the badge is simply hidden).
-  const [triggerCounts, setTriggerCounts] = useState<Record<string, number> | null>(null);
-  const [triggersError, setTriggersError] = useState<string | null>(null);
 
   const [uploadingBotz, setUploadingBotz] = useState(false);
   const botzFileRef = useRef<HTMLInputElement | null>(null);
@@ -76,28 +73,27 @@ export default function BotsView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    // Skip the round-trip (and its console 404) when the server
-    // advertises no trigger store — the badge is simply hidden.
-    if (!triggersEnabled) return;
-    let cancelled = false;
-    listTriggers()
-      .then((subs: TriggerSubscription[]) => {
-        if (cancelled) return;
-        const counts: Record<string, number> = {};
-        for (const s of subs) counts[s.bot_id] = (counts[s.bot_id] ?? 0) + 1;
-        setTriggerCounts(counts);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        // No trigger store on this server — not an error, just no badge.
-        if (err instanceof FeatureUnavailableError) return;
-        setTriggersError(errorMessage(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [triggersEnabled]);
+  // Trigger counts per bot_id. null = not loaded (or the trigger store
+  // isn't wired on this server — the badge is simply hidden). Gated on the
+  // server advertising a trigger store, skipping the round-trip (and its
+  // console 404) otherwise.
+  const triggersQuery = useQuery<TriggerSubscription[]>({
+    queryKey: ["triggers"],
+    queryFn: () => listTriggers(),
+    enabled: triggersEnabled,
+  });
+  const triggerCounts = useMemo(() => {
+    if (!triggersQuery.data) return null;
+    const counts: Record<string, number> = {};
+    for (const s of triggersQuery.data) counts[s.bot_id] = (counts[s.bot_id] ?? 0) + 1;
+    return counts;
+  }, [triggersQuery.data]);
+  // No trigger store on this server (FeatureUnavailableError) — not an
+  // error, just no badge.
+  const triggersError =
+    triggersQuery.error && !(triggersQuery.error instanceof FeatureUnavailableError)
+      ? errorMessage(triggersQuery.error)
+      : null;
 
   const onUploadBotz = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -443,6 +439,17 @@ function RepoImportDialog({
   );
 }
 
+// Cheap, non-cryptographic FNV-1a digest of the picked script for the
+// react-query cache key — keying on the raw source would stringify-compare
+// the whole file on every lookup.
+function digest(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h ^ s.charCodeAt(i)) * 0x01000193) >>> 0;
+  }
+  return h;
+}
+
 /** ScriptImportDialog previews a lossy .js → draft .bot conversion
  *  (POST /api/v1/bots/import, dry-run first) and saves it into bots/ on
  *  confirm. The IMPORT REPORT is surfaced up-front: this is a porting
@@ -460,25 +467,22 @@ function ScriptImportDialog({
   onImported: () => void;
 }) {
   const addToast = useUIStore((s) => s.addToast);
-  const [preview, setPreview] = useState<ImportScriptResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    setPreview(null);
-    setError(null);
-    importBotScript({ source, filename, dry_run: true })
-      .then((res) => {
-        if (!cancelled) setPreview(res);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Import failed");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [source, filename]);
+  // Dry-run conversion preview. The dialog is mounted only while a script
+  // is picked, so the query fetches exactly then; retry is off because a
+  // parse failure IS the result, not a transient hiccup to smooth over.
+  const previewQuery = useQuery<ImportScriptResult>({
+    queryKey: ["bot-script-import-preview", filename, digest(source)],
+    queryFn: () => importBotScript({ source, filename, dry_run: true }),
+    retry: false,
+  });
+  const preview = previewQuery.data ?? null;
+  const error = previewQuery.error
+    ? previewQuery.error instanceof Error
+      ? previewQuery.error.message
+      : "Import failed"
+    : null;
 
   const onSave = async () => {
     setSaving(true);

@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { FeatureUnavailableError } from "@/api/client";
 import {
@@ -31,28 +32,29 @@ export function DomainsSection({
   onError: (m: string) => void;
 }) {
   const { confirm, dialog } = useConfirm();
-  const [domains, setDomains] = useState<OrgDomain[]>([]);
+  const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
-  const [unavailable, setUnavailable] = useState(false);
   const [verifying, setVerifying] = useState<Record<string, boolean>>({});
   const [verifyMsg, setVerifyMsg] = useState<Record<string, string>>({});
   const { busy, run } = useAsyncAction();
 
-  const reload = async () => {
-    try {
-      setDomains(await listOrgDomains(teamID));
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        return;
-      }
-      onError(errorMessage(e));
-    }
-  };
+  const query = useQuery({
+    queryKey: ["org-domains", teamID],
+    queryFn: () => listOrgDomains(teamID),
+  });
+  const domains = query.data ?? [];
+  const unavailable = query.error instanceof FeatureUnavailableError;
+  // The section has no banner of its own — load failures surface on the
+  // parent SSO tab's error channel, like every mutation failure here.
+  const loadError = query.error;
   useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
+    if (loadError && !(loadError instanceof FeatureUnavailableError)) {
+      onError(errorMessage(loadError));
+    }
+  }, [loadError, onError]);
+
+  const reload = () =>
+    queryClient.invalidateQueries({ queryKey: ["org-domains", teamID] });
 
   if (unavailable) {
     return null; // the SSO tab already surfaces the "not enabled" banner

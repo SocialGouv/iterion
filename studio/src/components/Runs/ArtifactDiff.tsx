@@ -1,7 +1,8 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
-import type { Artifact, ArtifactSummary } from "@/api/runs";
+import type { ArtifactSummary } from "@/api/runs";
 import { getArtifact } from "@/api/runs";
 import { CopyButton, Select, Spinner } from "@/components/ui";
 
@@ -230,9 +231,6 @@ export default function ArtifactDiff({ runId, nodeId, versions }: Props) {
 
   const [fromV, setFromV] = useState<number>(previous);
   const [toV, setToV] = useState<number>(latest);
-  const [fromBody, setFromBody] = useState<Artifact | null>(null);
-  const [toBody, setToBody] = useState<Artifact | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   // Reset selection when the underlying versions list changes (new
   // execution selected, or fresh artifact landed mid-run).
@@ -241,25 +239,23 @@ export default function ArtifactDiff({ runId, nodeId, versions }: Props) {
     setToV(latest);
   }, [previous, latest]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setError(null);
-    Promise.all([
-      getArtifact(runId, nodeId, fromV),
-      getArtifact(runId, nodeId, toV),
-    ])
-      .then(([a, b]) => {
-        if (cancelled) return;
-        setFromBody(a);
-        setToBody(b);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(errorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, nodeId, fromV, toV]);
+  // keepPreviousData keeps the previously selected version's body (and
+  // its diff) on screen while the newly selected one loads, instead of
+  // flashing the panel back to a spinner on every version switch.
+  const fromQuery = useQuery({
+    queryKey: ["run-artifact", runId, nodeId, fromV],
+    queryFn: () => getArtifact(runId, nodeId, fromV),
+    placeholderData: keepPreviousData,
+  });
+  const toQuery = useQuery({
+    queryKey: ["run-artifact", runId, nodeId, toV],
+    queryFn: () => getArtifact(runId, nodeId, toV),
+    placeholderData: keepPreviousData,
+  });
+  const fromBody = fromQuery.data ?? null;
+  const toBody = toQuery.data ?? null;
+  const loadError = fromQuery.error ?? toQuery.error;
+  const error = loadError ? errorMessage(loadError) : null;
 
   const diff = useMemo(() => {
     if (!fromBody || !toBody) return null;

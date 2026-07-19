@@ -1,8 +1,8 @@
-import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useShallow } from "zustand/react/shallow";
 
 import { getSessionBoard } from "@/api/runs";
-import type { SessionBoardSpec } from "@/api/runs/types";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { Badge, EmptyState, LiveDot } from "@/components/ui";
 import { humanizeKey } from "@/lib/humanizeKey";
@@ -101,28 +101,34 @@ function useSessionBoardWidgets(runId: string, lastSeq: number) {
   const enabled = useServerInfoStore(
     (s) => s.info?.session_board_enabled ?? false,
   );
-  const [spec, setSpec] = useState<SessionBoardSpec | null>(null);
+  const queryClient = useQueryClient();
+  // Fetch failures are best-effort (the deterministic task board above
+  // doesn't depend on curation), so the query error is deliberately
+  // unread.
+  const query = useQuery({
+    queryKey: ["session-board", runId],
+    queryFn: ({ signal }) => getSessionBoard(runId, { signal }),
+    enabled: enabled && !!runId,
+  });
   const fetchedRun = useRef<string | null>(null);
 
+  // The first fetch for a run is the query's own mount fetch — immediate,
+  // since a finished run has a stable seq and would otherwise wait out
+  // the debounce. Subsequent seq advances invalidate on a 1.5s debounce
+  // so a live run doesn't refetch every event.
   useEffect(() => {
     if (!runId || !enabled) return;
-    // Immediate on the first fetch for this run (a finished run has a
-    // stable seq and would otherwise wait out the debounce); debounced on
-    // subsequent seq advances so a live run doesn't refetch every event.
-    const immediate = fetchedRun.current !== runId;
-    fetchedRun.current = runId;
-    const t = window.setTimeout(
-      () => {
-        getSessionBoard(runId)
-          .then(setSpec)
-          .catch(() => {});
-      },
-      immediate ? 0 : 1500,
-    );
+    if (fetchedRun.current !== runId) {
+      fetchedRun.current = runId;
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: ["session-board", runId] });
+    }, 1500);
     return () => window.clearTimeout(t);
-  }, [runId, lastSeq, enabled]);
+  }, [runId, lastSeq, enabled, queryClient]);
 
-  return spec?.widgets ?? [];
+  return query.data?.widgets ?? [];
 }
 
 function SectionHeading({ children }: { children: React.ReactNode }) {

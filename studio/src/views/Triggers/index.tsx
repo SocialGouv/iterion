@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 
 import { useActiveRepo } from "@/hooks/useActiveRepo";
@@ -29,9 +30,6 @@ const TABS: Array<{ id: Tab; label: string }> = [
 ];
 
 export default function TriggersView() {
-  const [subs, setSubs] = useState<TriggerSubscription[] | null>(null);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
   const [creatingTrigger, setCreatingTrigger] = useState(false);
   const [creatingSchedule, setCreatingSchedule] = useState(false);
   const search = useSearch();
@@ -71,35 +69,36 @@ export default function TriggersView() {
   // up via onUnavailable). Otherwise the click would be a silent no-op.
   const canManage = useCanManageTeam();
   const [schedUnavailable, setSchedUnavailable] = useState(false);
-  // Stable identity: SchedulesTab keys its reload effect on this callback.
+  // Stable identity: SchedulesTab keys its unavailable-report effect on
+  // this callback.
   const onSchedUnavailable = useCallback(() => setSchedUnavailable(true), []);
   const canCreateSchedule = repoScope && canManage && !schedUnavailable;
 
   const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled ?? false);
-  const reload = useCallback(async () => {
-    // Skip the round-trip (and its console 404) when the server
-    // advertises no trigger store — the Automations panel shows its
-    // unavailable state, the Schedules tab keeps working.
-    if (!triggersEnabled) {
-      setUnavailable(true);
-      return;
-    }
-    try {
-      const list = await listTriggers(scopeRepo ? { repo: scopeRepo } : undefined);
-      setSubs(list);
-      setLoadErr(null);
-    } catch (err) {
-      if (err instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        return;
-      }
-      setLoadErr(errorMessage(err));
-    }
-  }, [scopeRepo, triggersEnabled]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  const queryClient = useQueryClient();
+  // Gated on the server advertising a trigger store, skipping the
+  // round-trip (and its console 404) otherwise — the Automations panel
+  // shows its unavailable state, the Schedules tab keeps working. The
+  // unscoped fetch shares the ["triggers"] cache with the bots gallery.
+  const subsQuery = useQuery<TriggerSubscription[]>({
+    queryKey: scopeRepo ? ["triggers", scopeRepo] : ["triggers"],
+    queryFn: () => listTriggers(scopeRepo ? { repo: scopeRepo } : undefined),
+    enabled: triggersEnabled,
+    // The repo switch changes the key; keep the previous list on screen
+    // while the new scope loads instead of flashing the spinner.
+    placeholderData: (prev: TriggerSubscription[] | undefined) => prev,
+  });
+  const subs = subsQuery.data ?? null;
+  const unavailable =
+    !triggersEnabled || subsQuery.error instanceof FeatureUnavailableError;
+  const loadErr =
+    subsQuery.error && !(subsQuery.error instanceof FeatureUnavailableError)
+      ? errorMessage(subsQuery.error)
+      : null;
+  const reload = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["triggers"] }),
+    [queryClient],
+  );
 
   useHeaderSlot({
     left: (

@@ -2,7 +2,8 @@
 // Manifest-flow card: GitHub creates the App from the manifest iterion
 // sends, then 302s back to our callback.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   getMyGitHubOrgs,
@@ -29,27 +30,17 @@ export default function CreateGitHubAppCard({
   onError,
 }: CreateGitHubAppCardProps) {
   const [busy, setBusy] = useState(false);
-  const [orgs, setOrgs] = useState<string[]>([]);
   const [orgIsCustom, setOrgIsCustom] = useState(false);
   const [githubOrg, setGithubOrg] = useState("");
   const [allowRepoCreation, setAllowRepoCreation] = useState(true);
-  const loadedRef = useRef(false);
 
-  useEffect(() => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
-    let cancelled = false;
-    getMyGitHubOrgs()
-      .then((o) => {
-        if (!cancelled) setOrgs(o);
-      })
-      .catch(() => {
-        /* silent — the picker link below covers the empty case */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Fetch failures stay silent (no error surfaced) — the "Pick from
+  // GitHub" link below covers the empty case.
+  const orgsQuery = useQuery<string[]>({
+    queryKey: ["github-my-orgs"],
+    queryFn: () => getMyGitHubOrgs(),
+  });
+  const orgs = orgsQuery.data ?? [];
 
   const pickOrgs = async () => {
     try {

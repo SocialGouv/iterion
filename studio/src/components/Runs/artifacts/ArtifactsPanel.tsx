@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { listAllArtifacts, listArtifacts } from "@/api/runs";
-import type { ArtifactSummary, RunArtifactSummary } from "@/api/runs/types";
+import type { RunArtifactSummary } from "@/api/runs/types";
 import { Badge, Spinner } from "@/components/ui";
 import { humanizeKey } from "@/lib/humanizeKey";
 import { useRunStore } from "@/store/run";
@@ -72,20 +73,18 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 // renders ArtifactDiff (plan/verdict cards + version diff) on expand.
 function ArtifactRow({ runId, a }: { runId: string; a: RunArtifactSummary }) {
   const [open, setOpen] = useState(false);
-  const [versions, setVersions] = useState<ArtifactSummary[] | null>(null);
 
-  useEffect(() => {
-    if (!open || versions) return;
-    let cancelled = false;
-    listArtifacts(runId, a.node_id)
-      .then((v) => {
-        if (!cancelled) setVersions(v);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [open, versions, runId, a.node_id]);
+  // Lazy-loaded on first expand only (staleTime: Infinity mirrors the
+  // previous fetch-once-per-row behavior — collapsing and re-expanding
+  // doesn't refetch). Best-effort: a load failure just leaves the
+  // spinner, so the query error is deliberately unread.
+  const versionsQuery = useQuery({
+    queryKey: ["run-artifact-versions", runId, a.node_id],
+    queryFn: ({ signal }) => listArtifacts(runId, a.node_id, { signal }),
+    enabled: open,
+    staleTime: Infinity,
+  });
+  const versions = versionsQuery.data ?? null;
 
   const title = a.title || humanizeKey(a.node_id);
   return (
@@ -164,30 +163,30 @@ const REFRESH_EVENTS = new Set([
   "run_cancelled",
 ]);
 
+// Stable empty fallback so the undefined→loaded transition doesn't hand
+// groupByLabel a fresh [] reference each render.
+const EMPTY_ARTIFACTS: RunArtifactSummary[] = [];
+
 // useRunArtifacts fetches the aggregate artifact list once per run, then
-// refetches (debounced) when an artifact-producing event arrives. Returns
-// [] until loaded. Mirrors ArtifactFilesPanel's refresh discipline.
+// invalidates (debounced) when an artifact-producing event arrives.
+// Returns [] until loaded; load failures are best-effort (the query error
+// is deliberately unread). Mirrors ArtifactFilesPanel's refresh discipline.
 function useRunArtifacts(runId: string): RunArtifactSummary[] {
-  const [artifacts, setArtifacts] = useState<RunArtifactSummary[]>([]);
+  const queryClient = useQueryClient();
   const events = useRunStore((s) => s.events);
-  const fetchedRun = useRef<string | null>(null);
   const lastSeenSeq = useRef<number>(-1);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchNow = useCallback(() => {
-    if (!runId) return;
-    listAllArtifacts(runId)
-      .then(setArtifacts)
-      .catch(() => {});
-  }, [runId]);
+  const query = useQuery({
+    queryKey: ["run-artifacts", runId],
+    queryFn: ({ signal }) => listAllArtifacts(runId, { signal }),
+    enabled: !!runId,
+  });
 
-  // Initial fetch on run change.
+  // Reset the seq high-water mark on run change.
   useEffect(() => {
-    if (!runId || fetchedRun.current === runId) return;
-    fetchedRun.current = runId;
     lastSeenSeq.current = -1;
-    fetchNow();
-  }, [runId, fetchNow]);
+  }, [runId]);
 
   // Debounced refetch when a new artifact-producing event lands.
   useEffect(() => {
@@ -200,11 +199,13 @@ function useRunArtifacts(runId: string): RunArtifactSummary[] {
     }
     if (!touched) return;
     if (debounce.current) clearTimeout(debounce.current);
-    debounce.current = setTimeout(fetchNow, 300);
+    debounce.current = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: ["run-artifacts", runId] });
+    }, 300);
     return () => {
       if (debounce.current) clearTimeout(debounce.current);
     };
-  }, [events, runId, fetchNow]);
+  }, [events, runId, queryClient]);
 
-  return artifacts;
+  return query.data ?? EMPTY_ARTIFACTS;
 }

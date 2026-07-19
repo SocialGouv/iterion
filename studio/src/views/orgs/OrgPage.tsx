@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams, useSearch } from "wouter";
 
 import { hasOrgRole, useAuth } from "@/auth/AuthContext";
@@ -28,12 +29,7 @@ import {
 } from "@/api/orgMembers";
 import { type OrgRole } from "@/api/auth";
 import { createOrgTeam } from "@/api/orgs";
-import {
-  type OrgUsage,
-  fmtBytes,
-  fmtUSD,
-  getOrgUsage,
-} from "@/api/usage";
+import { fmtBytes, fmtUSD, getOrgUsage } from "@/api/usage";
 import SSOTab from "@/views/teams/tabs/SSOTab";
 import UsageTab from "@/views/teams/tabs/UsageTab";
 import AuditTab from "@/views/teams/tabs/AuditTab";
@@ -132,9 +128,36 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     () => orgs.find((o) => o.org_id === orgID)?.teams ?? [],
     [orgs, orgID],
   );
-  const [members, setMembers] = useState<OrgMemberView[]>([]);
-  const [invs, setInvs] = useState<OrgInvitationView[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const membersQuery = useQuery<OrgMemberView[]>({
+    queryKey: ["org-members", orgID],
+    queryFn: () => listOrgMembers(orgID),
+  });
+  // Invitations are admin-only server-side — don't fire the doomed request
+  // for a plain member (the manual fetch resolved [] in that case).
+  const invitationsQuery = useQuery<OrgInvitationView[]>({
+    queryKey: ["org-invitations", orgID],
+    queryFn: () => listOrgInvitations(orgID),
+    enabled: canManage,
+  });
+  const members = membersQuery.data ?? [];
+  const invs = invitationsQuery.data ?? [];
+  // Mutation failures share the banner with either fetch error (mutation
+  // wins, like the old single slot). They're tagged with their scope so a
+  // stale one never outlives an org switch — the manual reload cleared it
+  // there.
+  const errScope = `${orgID}:${canManage}`;
+  const [mutErrTag, setMutErrTag] = useState<{ scope: string; msg: string } | null>(null);
+  const setMutErr = (msg: string | null) =>
+    setMutErrTag(msg === null ? null : { scope: errScope, msg });
+  const mutErr = mutErrTag && mutErrTag.scope === errScope ? mutErrTag.msg : null;
+  const err =
+    mutErr ??
+    (membersQuery.error
+      ? errorMessage(membersQuery.error)
+      : invitationsQuery.error
+        ? errorMessage(invitationsQuery.error)
+        : null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState({ email: "", role: "member", team_id: "" });
   // Every invite issued in this session, newest first — tokens appear
@@ -143,29 +166,17 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
   const [issued, setIssued] = useState<Array<{ email: string; token: string }>>([]);
   const { confirm, dialog } = useConfirm();
 
-  const reload = async () => {
-    setErr(null);
-    try {
-      const [m, i] = await Promise.all([
-        listOrgMembers(orgID),
-        canManage ? listOrgInvitations(orgID) : Promise.resolve<OrgInvitationView[]>([]),
-      ]);
-      setMembers(m);
-      setInvs(i);
-    } catch (e) {
-      setErr(errorMessage(e));
-    }
+  // Post-mutation refresh: clear the shared error slot and refetch both lists.
+  const reload = () => {
+    setMutErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["org-members", orgID] });
+    void queryClient.invalidateQueries({ queryKey: ["org-invitations", orgID] });
   };
-
-  useEffect(() => {
-    void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orgID, canManage]);
 
   const invite = async (ev: React.FormEvent) => {
     ev.preventDefault();
     setBusy(true);
-    setErr(null);
+    setMutErr(null);
     try {
       const r = await createOrgInvitation(orgID, {
         email: draft.email,
@@ -174,9 +185,9 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
       });
       setIssued((list) => [{ email: draft.email, token: r.token }, ...list]);
       setDraft({ email: "", role: "member", team_id: draft.team_id });
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -192,9 +203,9 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     if (!ok) return;
     try {
       await deleteOrgInvitation(orgID, id);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -212,9 +223,9 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     }
     try {
       await updateOrgMemberRole(orgID, userID, role);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -228,9 +239,9 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
     if (!ok) return;
     try {
       await removeOrgMember(orgID, userID);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 
@@ -401,18 +412,12 @@ function OrgMembers({ orgID, canManage }: { orgID: string; canManage: boolean })
 // the caps is super-admin only (the platform admin console at
 // /admin/orgs). The data comes from the org usage view.
 function OrgBilling({ orgID }: { orgID: string }) {
-  const [usage, setUsage] = useState<OrgUsage | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    getOrgUsage(orgID)
-      .then((u) => alive && setUsage(u))
-      .catch((e) => alive && setErr(errorMessage(e)));
-    return () => {
-      alive = false;
-    };
-  }, [orgID]);
+  const usageQuery = useQuery({
+    queryKey: ["org-usage", orgID],
+    queryFn: () => getOrgUsage(orgID),
+  });
+  const usage = usageQuery.data ?? null;
+  const err = usageQuery.error ? errorMessage(usageQuery.error) : null;
 
   if (err) {
     return (

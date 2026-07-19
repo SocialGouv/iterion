@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cross1Icon, PlusIcon } from "@radix-ui/react-icons";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 
 import {
@@ -291,25 +292,16 @@ function TemplateGallery({
   hasDraft: boolean;
   onResumeDraft: () => void;
 }) {
-  const [templates, setTemplates] = useState<BotTemplate[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadTick, setReloadTick] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    listBotTemplates()
-      .then((ts) => {
-        if (cancelled) return;
-        setTemplates(ts);
-        setError(null);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(errorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [reloadTick]);
+  const templatesQuery = useQuery<BotTemplate[]>({
+    queryKey: ["bot-templates"],
+    queryFn: () => listBotTemplates(),
+  });
+  const templates = templatesQuery.data ?? null;
+  // Hidden while a retry is in flight so the loading state shows instead.
+  const error =
+    templatesQuery.error && !templatesQuery.isFetching
+      ? errorMessage(templatesQuery.error)
+      : null;
 
   return (
     <div className="mx-auto w-full max-w-4xl p-4">
@@ -336,10 +328,7 @@ function TemplateGallery({
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => {
-                  setError(null);
-                  setReloadTick((n) => n + 1);
-                }}
+                onClick={() => void templatesQuery.refetch()}
               >
                 Retry
               </Button>
@@ -677,27 +666,18 @@ function ModelSkillsCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [skillCatalog, setSkillCatalog] = useState<LibrarySkill[] | null>(null);
-  const [skillsNote, setSkillsNote] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    listLocalSkills()
-      .then((skills) => {
-        if (!cancelled) setSkillCatalog(skills);
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        setSkillCatalog([]);
-        setSkillsNote(
-          e instanceof FeatureUnavailableError
-            ? "The skills library isn't available on this server — skills can't be browsed here."
-            : `Couldn't load the skill library: ${errorMessage(e)}`,
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // A failed load renders as an empty catalog + a note; the library being
+  // absent on this server (FeatureUnavailableError) is expected, not an error.
+  const skillsQuery = useQuery<LibrarySkill[]>({
+    queryKey: ["local-skills"],
+    queryFn: () => listLocalSkills(),
+  });
+  const skillCatalog = skillsQuery.data ?? (skillsQuery.error ? [] : null);
+  const skillsNote = skillsQuery.error
+    ? skillsQuery.error instanceof FeatureUnavailableError
+      ? "The skills library isn't available on this server — skills can't be browsed here."
+      : `Couldn't load the skill library: ${errorMessage(skillsQuery.error)}`
+    : null;
 
   const toggleSkill = (name: string) =>
     patch({

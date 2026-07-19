@@ -18,9 +18,10 @@
 // dashboard is a manual surface, no auto-polling — operators hit
 // Refresh when they want a fresh number.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { ArrowLeftIcon } from "@radix-ui/react-icons";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { getRunsStats, type StatsResponse } from "@/api/runsStats";
 import { Button } from "@/components/ui/Button";
@@ -28,7 +29,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { Table, THead, Th, TBody, Tr, Td } from "@/components/ui/Table";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
-import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { errorMessage } from "@/lib/errorHints";
 import { formatCost, formatMs } from "@/lib/format";
 import { useServerInfoStore } from "@/store/serverInfo";
 
@@ -45,21 +46,19 @@ export default function RunsAnalyticsView() {
 
 function RunsAnalyticsViewInner() {
   const [sinceDays, setSinceDays] = useState<Window>(30);
-  const [stats, setStats] = useState<StatsResponse | null>(null);
-  const { busy: loading, error, run } = useAsyncAction();
   const cloud = useServerInfoStore((s) => s.info?.mode === "cloud");
 
-  const refresh = useCallback(
-    (window: Window) =>
-      run(async () => {
-        setStats(await getRunsStats(window));
-      }),
-    [run],
-  );
-
-  useEffect(() => {
-    void refresh(sinceDays);
-  }, [refresh, sinceDays]);
+  // keepPreviousData: switching the window keeps the current dashboard
+  // on screen while the new one loads — the skeleton is first-load only.
+  const statsQuery = useQuery<StatsResponse>({
+    queryKey: ["runs-stats", sinceDays],
+    queryFn: () => getRunsStats(sinceDays),
+    placeholderData: keepPreviousData,
+  });
+  const stats = statsQuery.data ?? null;
+  const loading = statsQuery.isFetching;
+  const error =
+    statsQuery.error && !loading ? errorMessage(statsQuery.error) : null;
 
   const workflowColors = useMemo(
     () => assignWorkflowColors(stats?.workflows.map((w) => w.workflow) ?? []),
@@ -102,7 +101,7 @@ function RunsAnalyticsViewInner() {
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => void refresh(sinceDays)}
+            onClick={() => void statsQuery.refetch()}
             disabled={loading}
           >
             {loading ? "…" : "Refresh"}

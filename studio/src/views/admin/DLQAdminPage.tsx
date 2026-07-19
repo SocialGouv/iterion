@@ -1,4 +1,9 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
+import {
+  useInfiniteQuery,
+  useQueryClient,
+  type InfiniteData,
+} from "@tanstack/react-query";
 import { ReloadIcon } from "@radix-ui/react-icons";
 
 import { formatDateTime } from "@/lib/format";
@@ -9,6 +14,7 @@ import {
   listDLQ,
   peekDLQ,
   replayDLQ,
+  type DLQListResponse,
   type DLQMessage,
 } from "@/api/dlq";
 import { useAuth } from "@/auth/AuthContext";
@@ -42,53 +48,55 @@ export default function DLQAdminPage() {
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog: confirmDialog } = useConfirm();
 
-  const [messages, setMessages] = useState<DLQMessage[]>([]);
-  const [nextCursor, setNextCursor] = useState(0); // 0 = exhausted
-  const [loaded, setLoaded] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const queryClient = useQueryClient();
+  const query = useInfiniteQuery({
+    queryKey: ["admin-dlq"],
+    queryFn: ({ pageParam }) => listDLQ(pageParam, PAGE),
+    initialPageParam: 0,
+    getNextPageParam: (last) => (last.next_cursor === 0 ? undefined : last.next_cursor),
+    enabled: isSuper && isCloud,
+    // Incident console: drop the cache on unmount so a revisit starts from
+    // a fresh first page, like the manual fetch always did.
+    gcTime: 0,
+  });
+  const messages = query.data?.pages.flatMap((p) => p.messages ?? []) ?? [];
+  // Drives the initial TableSkeleton only — refresh/load-more keep the
+  // table on screen (isPending stays false once a page exists).
+  const loaded = !query.isPending;
+  const unavailable = query.error instanceof FeatureUnavailableError;
+  // The fetch error hides while a fetch is in flight — the manual
+  // refresh/load-more cleared it up front.
+  const err =
+    query.error && !unavailable && !query.isFetching
+      ? errorMessage(query.error)
+      : null;
+  // Replay/discard busy; list fetches contribute through isFetching so the
+  // action buttons stay disabled during any load, as before.
+  const [mutBusy, setMutBusy] = useState(false);
+  const busy = mutBusy || query.isFetching;
   // Inspect drawer state: which seq is expanded + its fetched payload.
   const [openSeq, setOpenSeq] = useState<number | null>(null);
   const [payloads, setPayloads] = useState<Record<number, string>>({});
 
-  const refresh = useCallback(async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      const r = await listDLQ(0, PAGE);
-      setMessages(r.messages ?? []);
-      setNextCursor(r.next_cursor);
-      setUnavailable(false);
-      setOpenSeq(null);
-      setPayloads({});
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) setUnavailable(true);
-      else setErr(errorMessage(e));
-    } finally {
-      setBusy(false);
-      setLoaded(true);
-    }
-  }, []);
-
-  const loadMore = async () => {
-    if (nextCursor === 0) return;
-    setBusy(true);
-    setErr(null);
-    try {
-      const r = await listDLQ(nextCursor, PAGE);
-      setMessages((cur) => [...cur, ...(r.messages ?? [])]);
-      setNextCursor(r.next_cursor);
-    } catch (e) {
-      setErr(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
+  // Refresh returns to a single fresh first page, like the manual fetch:
+  // reset the inspect state, drop the loaded tail, refetch what remains.
+  const refresh = async () => {
+    setOpenSeq(null);
+    setPayloads({});
+    queryClient.setQueryData<InfiniteData<DLQListResponse, number>>(
+      ["admin-dlq"],
+      (d) =>
+        d && d.pages.length > 1
+          ? { pages: d.pages.slice(0, 1), pageParams: d.pageParams.slice(0, 1) }
+          : d,
+    );
+    await query.refetch();
   };
 
-  useEffect(() => {
-    if (isSuper && isCloud) void refresh();
-  }, [isSuper, isCloud, refresh]);
+  const loadMore = () => {
+    if (!query.hasNextPage) return;
+    void query.fetchNextPage();
+  };
 
   useHeaderSlot({
     left: <span className="text-sm font-semibold">Dead-letter queue</span>,
@@ -157,7 +165,7 @@ export default function DLQAdminPage() {
       confirmLabel: "Replay",
     });
     if (!ok) return;
-    setBusy(true);
+    setMutBusy(true);
     try {
       const r = await replayDLQ(m.seq);
       addToast(
@@ -168,7 +176,7 @@ export default function DLQAdminPage() {
     } catch (e) {
       toastError(addToast, e, "Replay failed");
     } finally {
-      setBusy(false);
+      setMutBusy(false);
     }
   };
 
@@ -191,7 +199,7 @@ export default function DLQAdminPage() {
       confirmVariant: "danger",
     });
     if (!ok) return;
-    setBusy(true);
+    setMutBusy(true);
     try {
       await discardDLQ(m.seq);
       addToast(`Message #${m.seq} deleted`, "success");
@@ -199,7 +207,7 @@ export default function DLQAdminPage() {
     } catch (e) {
       toastError(addToast, e, "Delete failed");
     } finally {
-      setBusy(false);
+      setMutBusy(false);
     }
   };
 
@@ -326,9 +334,9 @@ export default function DLQAdminPage() {
           </section>
         )}
 
-        {nextCursor !== 0 && !unavailable && (
+        {query.hasNextPage && !unavailable && (
           <div className="flex justify-center">
-            <Button size="sm" variant="ghost" loading={busy} onClick={() => void loadMore()}>
+            <Button size="sm" variant="ghost" loading={busy} onClick={loadMore}>
               Load more
             </Button>
           </div>

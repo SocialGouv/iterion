@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { createEmptyDocument } from "@/lib/defaults";
 import { getOrCreateDocumentStore } from "@/store/document";
@@ -45,7 +46,12 @@ describe("RecentFilesPanel — launching a first-class bot from Home", () => {
   // Goes through the shared openExampleIntoStore helper (also used by
   // Toolbar.handlePickFile and CanvasEmpty).
   it("binds bots/<name> path + keeps source and stays non-dirty", async () => {
-    render(<RecentFilesPanel />);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <RecentFilesPanel />
+      </QueryClientProvider>,
+    );
 
     // The Bots section auto-opens when there are no recents; click Featurly.
     const botButton = await screen.findByText("Featurly");

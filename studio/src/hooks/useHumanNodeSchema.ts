@@ -1,7 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
-import { getRunWorkflow, type WireSchemaField } from "@/api/runs";
+import { getRunWorkflow, type WireSchemaField, type WireWorkflow } from "@/api/runs";
 
 interface State {
   fields: WireSchemaField[] | null;
@@ -21,40 +21,33 @@ export function useHumanNodeSchema(
   runId: string | null,
   nodeId: string | undefined,
 ): State {
-  const [state, setState] = useState<State>(initial);
+  const enabled = !!runId && !!nodeId;
+  const query = useQuery<WireWorkflow>({
+    // Shares the run console's workflow cache (useNodeLabel,
+    // useRunChatMessages, RunView). The IR is immutable per run, so a
+    // nodeId change re-derives fields from the cached workflow instead
+    // of refetching.
+    queryKey: ["run-workflow", runId],
+    queryFn: () => getRunWorkflow(runId!),
+    enabled,
+    staleTime: Infinity,
+  });
 
-  useEffect(() => {
-    if (!runId || !nodeId) {
-      setState(initial);
-      return;
-    }
-    let cancelled = false;
-    setState({ fields: null, loading: true, staleHash: false, error: null });
-    (async () => {
-      try {
-        const wf = await getRunWorkflow(runId);
-        if (cancelled) return;
-        const node = wf.nodes.find((n) => n.id === nodeId);
-        setState({
-          fields: node?.output_schema ?? null,
-          loading: false,
-          staleHash: !!wf.stale_hash,
-          error: null,
-        });
-      } catch (e) {
-        if (cancelled) return;
-        setState({
-          fields: null,
-          loading: false,
-          staleHash: false,
-          error: errorMessage(e),
-        });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, nodeId]);
-
-  return state;
+  if (!enabled) return initial;
+  // isPending (not isLoading): whenever we have neither data nor a
+  // settled error, report loading — never the "no schema" fallback.
+  if (query.isPending && !query.error) {
+    return { fields: null, loading: true, staleHash: false, error: null };
+  }
+  if (query.error) {
+    return { fields: null, loading: false, staleHash: false, error: errorMessage(query.error) };
+  }
+  const wf = query.data;
+  const node = wf?.nodes.find((n) => n.id === nodeId);
+  return {
+    fields: node?.output_schema ?? null,
+    loading: false,
+    staleHash: !!wf?.stale_hash,
+    error: null,
+  };
 }

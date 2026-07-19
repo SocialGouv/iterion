@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { DiffEditor } from "@monaco-editor/react";
 
 import { Dialog, Tooltip } from "@/components/ui";
@@ -6,11 +7,10 @@ import {
   getRunCommit,
   getRunCommitFileDiff,
   type RunCommit,
-  type RunCommitDetail,
   type RunFile,
-  type RunFileDiff,
 } from "@/api/runs";
 import { useThemeStore } from "@/store/theme";
+import { errorMessage } from "@/lib/errorHints";
 import { inferMonacoLanguage } from "@/lib/inferMonacoLanguage";
 import { formatRelative } from "@/lib/format";
 import { StatusDot } from "./StatusDot";
@@ -31,48 +31,27 @@ export default function CommitDetailDialog({
   commit,
   onClose,
 }: CommitDetailDialogProps) {
-  const [detail, setDetail] = useState<RunCommitDetail | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   const sha = commit?.sha ?? null;
 
+  const detailQuery = useQuery({
+    queryKey: ["run-commit", runId, sha],
+    queryFn: () => getRunCommit(runId, sha!),
+    enabled: !!sha,
+  });
+  const detail = sha ? detailQuery.data ?? null : null;
+  const detailError =
+    sha && detailQuery.error ? errorMessage(detailQuery.error) : null;
+  const loadingDetail = detailQuery.isLoading;
+
+  // Selection seeding (the fetch itself lives in the query above):
+  // preselect the first file each time a loaded commit lands so the diff
+  // area is never empty when the modal opens; cleared while no commit is
+  // loaded (dialog closed, or detail still in flight).
   useEffect(() => {
-    if (!sha) {
-      setDetail(null);
-      setDetailError(null);
-      setSelectedPath(null);
-      return;
-    }
-    let cancelled = false;
-    setLoadingDetail(true);
-    setDetailError(null);
-    setDetail(null);
-    setSelectedPath(null);
-    getRunCommit(runId, sha)
-      .then((res) => {
-        if (cancelled) return;
-        setDetail(res);
-        // Preselect the first file so the diff area is never empty
-        // when the modal opens.
-        const first = res.files?.[0]?.path ?? null;
-        setSelectedPath(first);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setDetailError(
-          err instanceof Error ? err.message : "Failed to load commit",
-        );
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoadingDetail(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, sha]);
+    setSelectedPath(detail?.files?.[0]?.path ?? null);
+  }, [detail]);
 
   const open = commit !== null;
   const relativeDate = useMemo(
@@ -192,33 +171,15 @@ interface CommitFileDiffProps {
 }
 
 function CommitFileDiff({ runId, sha, path }: CommitFileDiffProps) {
-  const [diff, setDiff] = useState<RunFileDiff | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const resolvedTheme = useThemeStore((s) => s.resolved);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setDiff(null);
-    getRunCommitFileDiff(runId, sha, path)
-      .then((res) => {
-        if (cancelled) return;
-        setDiff(res);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load diff");
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, sha, path]);
+  const diffQuery = useQuery({
+    queryKey: ["run-commit-file-diff", runId, sha, path],
+    queryFn: () => getRunCommitFileDiff(runId, sha, path),
+  });
+  const diff = diffQuery.data ?? null;
+  const error = diffQuery.error ? errorMessage(diffQuery.error) : null;
+  const loading = diffQuery.isLoading;
 
   const language = inferMonacoLanguage(path);
   const monacoTheme = resolvedTheme === "dark" ? "vs-dark" : "vs";

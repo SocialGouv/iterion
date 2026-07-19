@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // Stub the API surface WebhooksTab uses so the page can render with a
 // controllable set of webhooks. The Create flow calls createWebhook —
@@ -52,7 +53,15 @@ afterEach(() => {
 
 describe("WebhooksTab token-once panel", () => {
   it("renders the issued token + inbound URL after a rotate", async () => {
-    render(<WebhooksTab teamID="team_1" canManage />);
+    // The tab reads the webhook list through react-query — provide a
+    // client (retry off so a mock failure surfaces immediately).
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <WebhooksTab teamID="team_1" canManage />
+      </QueryClientProvider>,
+    );
 
     // Wait for the row to appear.
     await screen.findByText("Demo");

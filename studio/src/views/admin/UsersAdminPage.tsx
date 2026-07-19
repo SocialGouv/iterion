@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeftIcon, ChevronRightIcon } from "@radix-ui/react-icons";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
@@ -35,14 +36,36 @@ export default function UsersAdminPage() {
   const serverInfo = useServerInfoStore((s) => s.info);
   const isCloud = serverInfo?.mode === "cloud";
 
-  const [users, setUsers] = useState<UserView[]>([]);
-  // loaded flips once the first list fetch settles — drives the initial
-  // TableSkeleton without re-skeletoning on pagination/refresh.
-  const [loaded, setLoaded] = useState(false);
+  const queryClient = useQueryClient();
+  // The offset requested by the pagination buttons; the query refetches on
+  // change. keepPreviousData holds the previous page's rows on screen while
+  // the next one loads — the manual fetch replaced them only on response.
   const [offset, setOffset] = useState(0);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const query = useQuery({
+    queryKey: ["admin-users", offset],
+    queryFn: () => listAdminUsers({ offset, limit: PAGE }),
+    enabled: isSuper && isCloud,
+    placeholderData: keepPreviousData,
+  });
+  const users = query.data?.users ?? [];
+  // Server-echoed offset — while a page is in flight this stays on the
+  // previous page's value, like the manual fetch did.
+  const effOffset = query.data?.offset ?? offset;
+  // Drives the initial TableSkeleton only — pagination/refetch keep the
+  // table on screen (isPending stays false once any page exists).
+  const loaded = !query.isPending;
+  const unavailable = query.error instanceof FeatureUnavailableError;
+  // Mutation failures share the banner with the fetch error (mutation wins,
+  // like the old single slot); the fetch error hides while a page load is
+  // in flight, which the manual refresh achieved by clearing it up front.
+  const [mutErr, setMutErr] = useState<string | null>(null);
+  const err =
+    mutErr ??
+    (query.error && !unavailable && !query.isFetching
+      ? errorMessage(query.error)
+      : null);
+  const [mutBusy, setMutBusy] = useState(false);
+  const busy = mutBusy || query.isFetching;
   const [confirm, setConfirm] = useState<{
     user: UserView;
     action: "disable" | "enable" | "grant" | "revoke" | "force_change" | "reset_password";
@@ -58,30 +81,6 @@ export default function UsersAdminPage() {
     left: <span className="text-sm font-semibold">Users</span>,
     right: <span className="text-xs text-fg-muted">{users.length} user(s)</span>,
   });
-
-  const refresh = useCallback(
-    async (off: number) => {
-      setBusy(true);
-      setErr(null);
-      try {
-        const r = await listAdminUsers({ offset: off, limit: PAGE });
-        setUsers(r.users ?? []);
-        setOffset(r.offset);
-        setUnavailable(false);
-      } catch (e) {
-        if (e instanceof FeatureUnavailableError) setUnavailable(true);
-        else setErr(errorMessage(e));
-      } finally {
-        setBusy(false);
-        setLoaded(true);
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (isSuper && isCloud) void refresh(0);
-  }, [isSuper, isCloud, refresh]);
 
   if (!isSuper) {
     return (
@@ -118,7 +117,7 @@ export default function UsersAdminPage() {
   const runAction = async () => {
     if (!confirm) return;
     const target = confirm.user;
-    setBusy(true);
+    setMutBusy(true);
     try {
       switch (confirm.action) {
         case "disable":
@@ -143,11 +142,13 @@ export default function UsersAdminPage() {
         }
       }
       setConfirm(null);
-      await refresh(offset);
+      setMutErr(null);
+      // Refetch the current page (and mark the others stale).
+      await queryClient.invalidateQueries({ queryKey: ["admin-users"] });
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     } finally {
-      setBusy(false);
+      setMutBusy(false);
     }
   };
 
@@ -290,20 +291,20 @@ export default function UsersAdminPage() {
             size="sm"
             variant="ghost"
             leadingIcon={<ChevronLeftIcon />}
-            disabled={busy || offset === 0}
-            onClick={() => void refresh(Math.max(0, offset - PAGE))}
+            disabled={busy || effOffset === 0}
+            onClick={() => setOffset(Math.max(0, effOffset - PAGE))}
           >
             Previous
           </Button>
           <div className="text-xs text-fg-muted">
-            Page offset {offset}
+            Page offset {effOffset}
           </div>
           <Button
             size="sm"
             variant="ghost"
             trailingIcon={<ChevronRightIcon />}
             disabled={busy || users.length < PAGE}
-            onClick={() => void refresh(offset + PAGE)}
+            onClick={() => setOffset(effOffset + PAGE)}
           >
             Next
           </Button>

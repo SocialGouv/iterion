@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { MixIcon } from "@radix-ui/react-icons";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   type LibrarySkill,
@@ -39,26 +40,38 @@ Imperative guidance the agent follows when this skill is loaded.
 // markdown (SKILL.md), referenced from a workflow's `skills:` field and
 // mirrored into a run's .claude/skills/ at launch. Backed by /api/local/skills
 // (server_info.skills_enabled).
+// Stable empty fallback for the errored state, so renders don't hand the
+// table a fresh [] reference each time.
+const EMPTY_SKILLS: LibrarySkill[] = [];
+
 export default function Skills() {
-  const [skills, setSkills] = useState<LibrarySkill[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<LibrarySkill | null>(null);
   const { confirm, dialog } = useConfirm();
 
-  const reload = useCallback(async () => {
-    setError(null);
-    try {
-      setSkills(await listLocalSkills());
-    } catch (e) {
-      setError(errorMessage(e));
-      setSkills([]);
-    }
-  }, []);
+  const skillsQuery = useQuery<LibrarySkill[]>({
+    queryKey: ["local-skills"],
+    queryFn: listLocalSkills,
+  });
+  // On a fetch error the list reads as empty (banner over the empty
+  // state, not a stale table or an endless skeleton).
+  const skills = skillsQuery.isError ? EMPTY_SKILLS : (skillsQuery.data ?? null);
+  // Delete failures share the fetch error's banner; any reload clears
+  // them (the fetch side clears itself on refetch).
+  const [actionError, setActionError] = useState<string | null>(null);
+  const error =
+    actionError ??
+    (skillsQuery.error && !skillsQuery.isFetching
+      ? errorMessage(skillsQuery.error)
+      : null);
 
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  // Post-mutation reload (delete / create / edit): invalidate so the
+  // list refetches.
+  const reload = useCallback(() => {
+    setActionError(null);
+    void queryClient.invalidateQueries({ queryKey: ["local-skills"] });
+  }, [queryClient]);
 
   const doDelete = async (rec: LibrarySkill) => {
     const ok = await confirm({
@@ -71,9 +84,9 @@ export default function Skills() {
     if (!ok) return;
     try {
       await deleteLocalSkill(rec.name, rec.scope);
-      void reload();
+      reload();
     } catch (e) {
-      setError(errorMessage(e));
+      setActionError(errorMessage(e));
     }
   };
 
@@ -93,7 +106,14 @@ export default function Skills() {
         }
         actions={
           <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => void reload()}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setActionError(null);
+                void skillsQuery.refetch();
+              }}
+            >
               Refresh
             </Button>
             <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
@@ -131,7 +151,7 @@ export default function Skills() {
           onClose={() => setCreating(false)}
           onDone={() => {
             setCreating(false);
-            void reload();
+            reload();
           }}
         />
       )}
@@ -142,7 +162,7 @@ export default function Skills() {
           onClose={() => setEditing(null)}
           onDone={() => {
             setEditing(null);
-            void reload();
+            reload();
           }}
         />
       )}

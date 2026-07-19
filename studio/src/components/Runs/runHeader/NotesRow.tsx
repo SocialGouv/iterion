@@ -4,10 +4,12 @@
 // run (filesystem locally, Mongo in cloud) and are visible to the whole
 // team — the durable "flaky, re-ran" / "root cause was X" annotations.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { addNote, listNotes, type RunNote } from "@/api/runs";
 import { Button, InlineBanner, Textarea } from "@/components/ui";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { errorMessage } from "@/lib/errorHints";
 import { formatRelative } from "@/lib/format";
 
@@ -16,34 +18,39 @@ import { formatRelative } from "@/lib/format";
 // first, and lets the operator append one. Notes are immutable in this
 // first cut, so there's no edit/delete affordance.
 export default function NotesRow({ runId }: { runId: string }) {
-  const [notes, setNotes] = useState<RunNote[]>([]);
+  const queryClient = useQueryClient();
+  const notesQuery = useQuery({
+    queryKey: ["run-notes", runId],
+    queryFn: ({ signal }) => listNotes(runId, { signal }),
+  });
+  const notes = notesQuery.data ?? [];
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    listNotes(runId, { signal: ctrl.signal })
-      .then(setNotes)
-      .catch((e) => {
-        if (!ctrl.signal.aborted) setError(errorMessage(e));
-      });
-    return () => ctrl.abort();
-  }, [runId]);
+  const addAction = useAsyncAction();
+  // One banner serves both surfaces: the add-flow error takes precedence,
+  // else the load error (hidden once dismissed — nothing refetches notes,
+  // so it would otherwise stick around forever).
+  const [loadErrorDismissed, setLoadErrorDismissed] = useState(false);
+  const loadError =
+    notesQuery.error && !loadErrorDismissed
+      ? errorMessage(notesQuery.error)
+      : null;
+  const error = addAction.error ?? loadError;
 
   const onAdd = async () => {
     const body = draft.trim();
-    if (!body || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const created = await addNote(runId, body);
-      setNotes((prev) => [...prev, created]);
+    if (!body || addAction.busy) return;
+    // Submitting clears whatever error was on display (run() resets the
+    // add-flow error; the load error is dismissed the same way).
+    setLoadErrorDismissed(true);
+    const created = await addAction.run(() => addNote(runId, body));
+    if (created) {
+      // The POST returned the authoritative record — fold it into the
+      // cached list rather than refetching the whole run's notes.
+      queryClient.setQueryData<RunNote[]>(["run-notes", runId], (prev) => [
+        ...(prev ?? []),
+        created,
+      ]);
       setDraft("");
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -91,13 +98,20 @@ export default function NotesRow({ runId }: { runId: string }) {
           variant="secondary"
           size="sm"
           onClick={() => void onAdd()}
-          disabled={busy || draft.trim() === ""}
+          disabled={addAction.busy || draft.trim() === ""}
         >
           Add note
         </Button>
       </div>
       {error && (
-        <InlineBanner tone="danger" dismissable onDismiss={() => setError(null)}>
+        <InlineBanner
+          tone="danger"
+          dismissable
+          onDismiss={() => {
+            addAction.clearError();
+            setLoadErrorDismissed(true);
+          }}
+        >
           {error}
         </InlineBanner>
       )}

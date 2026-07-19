@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useParams } from "wouter";
 
 import type { BotEntryWithSchema, Invocation } from "@/api/bots";
@@ -496,9 +497,6 @@ function describeBoardInvocation(inv: Invocation): string {
 function AutomationsCard({ entry }: { entry: BotEntryWithSchema }) {
   const addToast = useUIStore((s) => s.addToast);
   const { activeRepo } = useActiveRepo();
-  const [subs, setSubs] = useState<TriggerSubscription[] | null>(null);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
   const [adding, setAdding] = useState(false);
   // Per-invocation editable cron (schedule kinds), keyed by index.
   const [crons, setCrons] = useState<Record<number, string>>({});
@@ -507,29 +505,25 @@ function AutomationsCard({ entry }: { entry: BotEntryWithSchema }) {
   const [notes, setNotes] = useState<Record<number, string>>({});
 
   const triggersEnabled = useServerInfoStore((s) => s.info?.triggers_enabled ?? false);
-  const reload = useCallback(async () => {
-    // Skip the round-trip (and its console 404) when the server
-    // advertises no trigger store.
-    if (!triggersEnabled) {
-      setUnavailable(true);
-      return;
-    }
-    try {
-      const list = await listTriggers({ bot: entry.name });
-      setSubs(list);
-      setLoadErr(null);
-    } catch (err) {
-      if (err instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        return;
-      }
-      setLoadErr(errorMessage(err));
-    }
-  }, [entry.name, triggersEnabled]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  const queryClient = useQueryClient();
+  // Gated on the server advertising a trigger store, skipping the
+  // round-trip (and its console 404) otherwise.
+  const triggersQuery = useQuery<TriggerSubscription[]>({
+    queryKey: ["triggers", entry.name],
+    queryFn: () => listTriggers({ bot: entry.name }),
+    enabled: triggersEnabled,
+  });
+  const unavailable =
+    !triggersEnabled || triggersQuery.error instanceof FeatureUnavailableError;
+  const subs = triggersQuery.data ?? null;
+  const loadErr =
+    triggersQuery.error && !unavailable ? errorMessage(triggersQuery.error) : null;
+  // Trigger mutations (enable / edit / delete) invalidate the whole
+  // triggers scope so this card AND the gallery's badge counts refresh.
+  const reload = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["triggers"] }),
+    [queryClient],
+  );
 
   const invocations = entry.invocations ?? [];
 
@@ -790,22 +784,12 @@ function PresetsCard({ entry }: { entry: BotEntryWithSchema }) {
 // ---------------------------------------------------------------------------
 
 function RecentRunsCard({ botName }: { botName: string }) {
-  const [runs, setRuns] = useState<RunSummary[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    listRuns({ bot: botName, limit: 10 })
-      .then((rs) => {
-        if (!cancelled) setRuns(rs);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setErr(errorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [botName]);
+  const runsQuery = useQuery<RunSummary[]>({
+    queryKey: ["bot-runs", botName],
+    queryFn: () => listRuns({ bot: botName, limit: 10 }),
+  });
+  const runs = runsQuery.data ?? null;
+  const err = runsQuery.error ? errorMessage(runsQuery.error) : null;
 
   return (
     <Card>
@@ -862,25 +846,17 @@ function RecentRunsCard({ botName }: { botName: string }) {
 function SecretBindingsCard({ botName }: { botName: string }) {
   const { activeTeam } = useAuth();
   const teamID = activeTeam?.team_id;
-  const [bindings, setBindings] = useState<BotSecretBinding[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!teamID) return;
-    let cancelled = false;
-    listBindings(teamID, botName)
-      .then((bs) => {
-        if (!cancelled) setBindings(bs);
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        if (e instanceof FeatureUnavailableError) return; // no binding store wired
-        setErr(errorMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [teamID, botName]);
+  const bindingsQuery = useQuery<BotSecretBinding[]>({
+    queryKey: ["bot-secret-bindings", teamID, botName],
+    queryFn: () => listBindings(teamID ?? "", botName),
+    enabled: !!teamID,
+  });
+  const bindings = bindingsQuery.data ?? null;
+  // No binding store wired (FeatureUnavailableError) stays silent.
+  const err =
+    bindingsQuery.error && !(bindingsQuery.error instanceof FeatureUnavailableError)
+      ? errorMessage(bindingsQuery.error)
+      : null;
 
   if (!teamID) return null;
 

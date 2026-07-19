@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 
 import {
@@ -9,6 +10,7 @@ import {
   rotateWebhook,
   updateWebhook,
 } from "@/api/webhooks";
+import { errorMessage } from "@/lib/errorHints";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -34,8 +36,7 @@ interface Props {
 // create or rotate. The form and drawer live in ./webhooks/.
 export default function WebhooksTab({ teamID, canManage }: Props) {
   const [, navigate] = useLocation();
-  const [webhooks, setWebhooks] = useState<WebhookConfig[]>([]);
-  const [unavailable, setUnavailable] = useState(false);
+  const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   // Bots come from the shared cache so a metadata edit or catalog toggle
   // elsewhere in the studio re-renders this tab. The Webhooks tab only
@@ -49,39 +50,33 @@ export default function WebhooksTab({ teamID, canManage }: Props) {
   );
   const [deliveriesFor, setDeliveriesFor] = useState<WebhookConfig | null>(null);
 
-  // Outer list flows share a single error channel: list-load, toggle,
-  // rotate, and delete all flow through `run()`, so the banner shows
-  // the most recent failure.
-  const { error: err, run } = useAsyncAction();
-  // The list-load is the only flow that should show a tab-wide loading
-  // state. Mutations (toggle/rotate/delete) re-trigger `reload`
-  // but should not blank the table mid-flight.
-  const [loading, setLoading] = useState(true);
+  // Mutations (toggle/rotate/delete) flow through `run()`; list-load
+  // failures surface from the query. One banner shows whichever is
+  // current.
+  const { error: actionErr, run } = useAsyncAction();
   const { confirm, dialog: confirmDialog } = useConfirm();
 
-  const reload = async () => {
-    setLoading(true);
-    await run(async () => {
-      try {
-        const list = await listWebhooks(teamID);
-        setWebhooks(list);
-        setUnavailable(false);
-      } catch (e) {
-        if (e instanceof FeatureUnavailableError) {
-          setUnavailable(true);
-          return;
-        }
-        throw e;
-      }
-    });
-    setLoading(false);
-  };
+  const webhooksQuery = useQuery({
+    queryKey: ["team-webhooks", teamID],
+    queryFn: () => listWebhooks(teamID),
+  });
+  const webhooks = webhooksQuery.data ?? [];
+  // isFetching (not isLoading): every reload — initial and post-mutation
+  // — shows the skeleton, an explicit visible refresh.
+  const loading = webhooksQuery.isFetching;
+  const unavailable = webhooksQuery.error instanceof FeatureUnavailableError;
+  const err =
+    actionErr ??
+    (webhooksQuery.error && !unavailable && !loading
+      ? errorMessage(webhooksQuery.error)
+      : null);
+
+  const reload = () =>
+    queryClient.invalidateQueries({ queryKey: ["team-webhooks", teamID] });
 
   useEffect(() => {
-    void reload();
     void fetchBots();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
+  }, [fetchBots]);
 
   const toggleEnabled = (cfg: WebhookConfig) =>
     run(async () => {

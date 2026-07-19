@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { BotEntryWithSchema, ConfigShareSpec } from "@/api/bots";
 import {
@@ -47,9 +48,6 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
   const { activeTeam } = useAuth();
   const teamID = activeTeam?.team_id;
 
-  const [shares, setShares] = useState<ShareView[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
   const [creating, setCreating] = useState(false);
   const [mintedForOnce, setMintedForOnce] = useState<ShareWithToken | null>(null);
   const [busyShareID, setBusyShareID] = useState<string | null>(null);
@@ -58,24 +56,32 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
 
   const addToast = useUIStore((s) => s.addToast);
 
-  const reload = useCallback(async () => {
-    if (!teamID) return;
-    setError(null);
-    try {
-      const rows = await listConfigShares(teamID);
-      setShares(rows.filter((s) => s.bot_id === entry.name));
-    } catch (err) {
-      if (err instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        return;
-      }
-      setError(errorMessage(err));
-    }
-  }, [teamID, entry.name]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  const queryClient = useQueryClient();
+  // The list is team-wide; this card shows the rows for its bot only.
+  const sharesQuery = useQuery<ShareView[]>({
+    queryKey: ["config-shares", teamID],
+    queryFn: () => listConfigShares(teamID ?? ""),
+    enabled: !!teamID,
+  });
+  const shares = useMemo(
+    () =>
+      sharesQuery.data
+        ? sharesQuery.data.filter((s) => s.bot_id === entry.name)
+        : null,
+    [sharesQuery.data, entry.name],
+  );
+  const unavailable = sharesQuery.error instanceof FeatureUnavailableError;
+  // Hidden while a reload is in flight so the loading state shows instead.
+  const error =
+    sharesQuery.error && !unavailable && !sharesQuery.isFetching
+      ? errorMessage(sharesQuery.error)
+      : null;
+  // Mint / rotate / revoke reload through invalidation so every consumer
+  // of the team's share list refreshes.
+  const reload = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["config-shares", teamID] }),
+    [queryClient, teamID],
+  );
 
   if (!teamID) return null;
   if (unavailable) return null;

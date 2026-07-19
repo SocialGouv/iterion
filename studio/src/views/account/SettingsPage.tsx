@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -18,6 +19,7 @@ import {
   revokeAllMySessions,
   ssoLinkStartURL,
   unlinkSSO,
+  type ProvidersResponse,
   type SSOLink,
 } from "@/api/auth";
 import { consumeQueryParams } from "@/lib/queryFlash";
@@ -113,30 +115,36 @@ export default function SettingsPage() {
 // the user connect a new one (the exit from the login "an account already
 // exists — link from settings" 409) or disconnect an existing one.
 function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
-  const [links, setLinks] = useState<SSOLink[] | null>(null);
-  const [connectable, setConnectable] = useState<
-    Array<{ name: string; display: string }>
-  >([]);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const linksQuery = useQuery({
+    queryKey: ["sso-links"],
+    queryFn: async () => (await listSSOLinks()).links,
+  });
+  // null = still loading (drives the spinner below), like the old state.
+  const links = linksQuery.data ?? null;
+  // Connectable providers depend only on the email domain (an org's Keycloak
+  // shows up without its slug), so the link-list invalidation never touches
+  // them. Discovery failure just leaves the connect buttons out — they're
+  // decoration here, not a required surface (pre-existing swallow).
+  const connectableQuery = useQuery({
+    queryKey: ["sso-providers", userEmail ?? ""],
+    queryFn: () =>
+      listProviders(userEmail ? { email: userEmail } : undefined)
+        .then((p) => p.providers)
+        .catch((): ProvidersResponse["providers"] => []),
+  });
+  const connectable = connectableQuery.data ?? [];
+  // Unlink failures land here; the link-list fetch error shares the banner.
+  const [mutErr, setMutErr] = useState<string | null>(null);
+  const err =
+    mutErr ?? (linksQuery.error ? errorMessage(linksQuery.error) : null);
   const [notice, setNotice] = useState<{
     tone: "success" | "danger";
     text: string;
   } | null>(null);
   const { confirm, dialog } = useConfirm();
 
-  const loadLinks = () =>
-    void listSSOLinks()
-      .then((r) => setLinks(r.links))
-      .catch((e) => setErr(errorMessage(e)));
-
   useEffect(() => {
-    loadLinks();
-    // Connectable providers depend only on the email domain (an org's Keycloak
-    // shows up without its slug), so they're fetched here — not on every link
-    // change.
-    void listProviders(userEmail ? { email: userEmail } : undefined)
-      .then((p) => setConnectable(p.providers))
-      .catch(() => setConnectable([]));
     // Surface the post-link callback result, then clear the one-shot params.
     const f = consumeQueryParams(["sso_linked", "sso_link_error"]);
     if (f.sso_linked) {
@@ -150,8 +158,7 @@ function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
             : "Couldn't connect that SSO identity. Please try again.",
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userEmail]);
+  }, []);
 
   const linkedProviders = new Set((links ?? []).map((l) => l.provider));
 
@@ -166,9 +173,10 @@ function ConnectedSSOSection({ userEmail }: { userEmail?: string }) {
     try {
       await unlinkSSO(l.provider, l.provider_user_id);
       setNotice({ tone: "success", text: `Disconnected ${l.provider}.` });
-      loadLinks(); // providers are domain-derived; only the link list changed
+      // providers are domain-derived; only the link list changed
+      void queryClient.invalidateQueries({ queryKey: ["sso-links"] });
     } catch (e) {
-      setErr(errorMessage(e));
+      setMutErr(errorMessage(e));
     }
   };
 

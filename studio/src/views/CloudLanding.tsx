@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { GitHubLogoIcon, ArrowRightIcon } from "@radix-ui/react-icons";
 
 import { Button } from "@/components/ui/Button";
@@ -89,22 +90,15 @@ function PersonaAvatar({ name }: { name: string }) {
 // a graceful static fallback. Read-only and best-effort: a failed fetch
 // just shows the curated roster.
 function BotShowcase() {
-  const [bots, setBots] = useState<MarketplaceEntry[] | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    void listMarketplace()
-      .then((list) => {
-        if (alive) setBots(list);
-      })
-      .catch(() => {
-        if (alive) setFailed(true);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  // Same key + request as the Marketplace view's default unfiltered
+  // browse, so landing → marketplace navigation shares the cache. No
+  // error surface by design: failed just means the curated roster.
+  const query = useQuery<MarketplaceEntry[]>({
+    queryKey: ["marketplace", "", "", "", "popular"],
+    queryFn: () => listMarketplace("", "", "", "popular"),
+  });
+  const bots = query.data ?? null;
+  const failed = query.isError;
 
   const cards: ShowcaseBot[] | null =
     bots && bots.length > 0

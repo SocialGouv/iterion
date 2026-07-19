@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   artifactFileURL,
   downloadArtifactFile,
   listArtifactFiles,
-  type ArtifactFile,
 } from "@/api/runs";
 import { Button, Dialog, Popover } from "@/components/ui";
-import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { desktop, isDesktop } from "@/lib/desktopBridge";
+import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
 import { useRunStore } from "@/store/run";
 import { useDownloadsStore, type DownloadEntry } from "@/store/downloads";
@@ -37,13 +37,18 @@ interface Props {
 // — the per-run scratch area where in-sandbox tools (write_audit_md,
 // emit_sbom, …) drop arbitrary report/SBOM/manifest files.
 export default function ArtifactFilesPanel({ runId }: Props) {
-  const [files, setFiles] = useState<ArtifactFile[] | null>(null);
-  const filesLoader = useAsyncAction();
-  const { busy: loading, error, run: runLoad } = filesLoader;
+  const queryClient = useQueryClient();
+  const filesQuery = useQuery({
+    queryKey: ["run-artifact-files", runId],
+    queryFn: () => listArtifactFiles(runId!),
+    enabled: !!runId,
+  });
+  const files = filesQuery.data ?? null;
+  const loading = filesQuery.isLoading;
+  const error = filesQuery.error ? errorMessage(filesQuery.error) : null;
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const lastSeenSeqRef = useRef<number>(-1);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const genRef = useRef(0);
   const { preview, openPreview, closePreview } = usePreview(runId);
 
   const events = useRunStore((s) => s.events);
@@ -58,30 +63,8 @@ export default function ArtifactFilesPanel({ runId }: Props) {
     [allDownloads, runId],
   );
 
-  const fetchNow = useCallback(() => {
-    if (!runId) return;
-    // Bump generation so a slow response landing after a newer fetch
-    // (or after runId changed) is silently dropped. useAsyncAction
-    // owns busy/error; we only need the guard around the state setter.
-    const myGen = ++genRef.current;
-    void runLoad(async () => {
-      const res = await listArtifactFiles(runId);
-      if (myGen !== genRef.current) return;
-      setFiles(res);
-    });
-  }, [runId, runLoad]);
-
-  // Initial fetch + refetch on run change.
-  useEffect(() => {
-    if (!runId) {
-      setFiles(null);
-      return;
-    }
-    fetchNow();
-  }, [runId, fetchNow]);
-
   // Live refresh: when new events arrive that suggest a tool wrote a
-  // file, schedule a debounced refetch. Tracking the last seen seq
+  // file, schedule a debounced invalidation. Tracking the last seen seq
   // avoids re-triggering on the same event after a re-render.
   useEffect(() => {
     if (!runId || events.length === 0) return;
@@ -95,16 +78,20 @@ export default function ArtifactFilesPanel({ runId }: Props) {
     }
     if (!touched) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(fetchNow, DEBOUNCE_MS);
+    debounceRef.current = setTimeout(() => {
+      void queryClient.invalidateQueries({
+        queryKey: ["run-artifact-files", runId],
+      });
+    }, DEBOUNCE_MS);
     // Clear the pending timer on unmount so a panel torn down within
-    // the debounce window doesn't fire fetchNow after it's gone.
+    // the debounce window doesn't invalidate after it's gone.
     return () => {
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
         debounceRef.current = null;
       }
     };
-  }, [events, runId, fetchNow]);
+  }, [events, runId, queryClient]);
 
   const triggerDownload = useCallback(
     (target: { path: string; size: number }) => {
@@ -158,7 +145,12 @@ export default function ArtifactFilesPanel({ runId }: Props) {
     return (
       <div className="h-full overflow-auto px-4 py-3 text-xs">
         <div className="text-danger">Failed to load artifacts: {error}</div>
-        <Button variant="secondary" size="sm" className="mt-2" onClick={fetchNow}>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="mt-2"
+          onClick={() => void filesQuery.refetch()}
+        >
           Retry
         </Button>
       </div>

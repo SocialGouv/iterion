@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowUpFromLine } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
@@ -9,6 +10,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { useAuth } from "@/auth/AuthContext";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { errorMessage } from "@/lib/errorHints";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
 import {
@@ -96,28 +98,30 @@ function PushToForgeDialog({
   onClose: () => void;
   onPush: (connectionId: string, repo: string) => Promise<void>;
 }) {
-  const [connections, setConnections] = useState<ForgeConnection[] | null>(null);
   const [connectionId, setConnectionId] = useState("");
   const [repo, setRepo] = useState("");
-  const loadAction = useAsyncAction();
   const submitAction = useAsyncAction();
 
-  useEffect(() => {
-    void loadAction.run(async () => {
-      const conns = await listForgeConnections(teamID);
-      setConnections(conns);
-      const first = conns[0];
-      if (first) setConnectionId((cur) => cur || first.id);
-    });
-    // teamID is stable for the dialog's lifetime; load once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // The dialog mounts only while open, so the query fetches on open.
+  const connectionsQuery = useQuery<ForgeConnection[]>({
+    queryKey: ["forge-connections", teamID],
+    queryFn: () => listForgeConnections(teamID),
+  });
+  const connections = connectionsQuery.data ?? null;
+  const loadError = connectionsQuery.error
+    ? errorMessage(connectionsQuery.error)
+    : null;
+
+  // Default the picker to the first connection; an explicit operator
+  // choice always wins.
+  const selectedConnectionId = connectionId || (connections?.[0]?.id ?? "");
 
   const submit = async () => {
-    await submitAction.run(() => onPush(connectionId, repo.trim()));
+    await submitAction.run(() => onPush(selectedConnectionId, repo.trim()));
   };
 
-  const canSubmit = !!connectionId && repo.trim().length > 0 && !submitAction.busy;
+  const canSubmit =
+    !!selectedConnectionId && repo.trim().length > 0 && !submitAction.busy;
 
   return (
     <Dialog
@@ -145,14 +149,14 @@ function PushToForgeDialog({
       }
     >
       <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
-        {(loadAction.error || submitAction.error) && (
+        {(loadError || submitAction.error) && (
           <InlineBanner tone="danger" layout="inline">
-            {submitAction.error ?? loadAction.error}
+            {submitAction.error ?? loadError}
           </InlineBanner>
         )}
         <label className="block">
           <span className="text-xs text-fg-muted mb-1 block">Forge connection</span>
-          {loadAction.busy ? (
+          {connectionsQuery.isLoading ? (
             <p className="text-xs text-fg-subtle italic">Loading connections…</p>
           ) : connections && connections.length === 0 ? (
             <p className="text-xs text-fg-subtle">
@@ -160,7 +164,7 @@ function PushToForgeDialog({
             </p>
           ) : (
             <Select
-              value={connectionId}
+              value={selectedConnectionId}
               onChange={(e) => setConnectionId(e.target.value)}
               size="md"
             >

@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { clickableRowProps } from "@/lib/a11y";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
@@ -16,7 +17,7 @@ import {
   setOrgStatus,
   updateOrg,
 } from "@/api/orgs";
-import { FeatureUnavailableError, getAdminOrgUsage, type OrgUsage, fmtBytes, fmtUSD, pct } from "@/api/usage";
+import { FeatureUnavailableError, getAdminOrgUsage, fmtBytes, fmtUSD, pct } from "@/api/usage";
 
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -53,43 +54,41 @@ export default function OrgsAdminPage() {
   const serverInfo = useServerInfoStore((s) => s.info);
   const isCloud = serverInfo?.mode === "cloud";
 
-  const [orgs, setOrgs] = useState<OrgView[]>([]);
-  // loaded flips once the first list fetch settles — drives the initial
-  // TableSkeleton without re-skeletoning on post-mutation refreshes.
-  const [loaded, setLoaded] = useState(false);
+  const queryClient = useQueryClient();
+  const orgsQuery = useQuery<OrgView[]>({
+    queryKey: ["admin-orgs"],
+    queryFn: () => listOrgs(),
+    enabled: isSuper && isCloud,
+  });
+  const orgs = orgsQuery.data ?? [];
+  // Drives the initial TableSkeleton only — post-mutation refetches keep
+  // the table on screen (isPending stays false once data exists).
+  const loaded = !orgsQuery.isPending;
   const [name, setName] = useState("");
   const [ownerEmail, setOwnerEmail] = useState("");
   const [active, setActive] = useState<OrgView | null>(null);
-  // Single useAsyncAction underpins the refresh + every mutation
-  // (create, update, status). The shared error slot maps the
-  // FeatureUnavailable exception to a friendlier line; everything else
-  // falls through to the hook's default errorMessage().
-  const action = useAsyncAction();
-  const { busy, error, run: actionRun, setError } = action;
+  // Single useAsyncAction underpins every mutation (create, update,
+  // status); the list fetch error shares its banner slot below, with the
+  // FeatureUnavailable exception mapped to a friendlier line.
+  const { busy, error, run: actionRun } = useAsyncAction();
+  const fetchErr = orgsQuery.error
+    ? orgsQuery.error instanceof FeatureUnavailableError
+      ? "Organization administration is a cloud-mode feature — it isn't available on this server (local/desktop mode)."
+      : String(orgsQuery.error)
+    : null;
+  const bannerErr = error ?? fetchErr;
 
   useHeaderSlot({
     left: <span className="text-sm font-semibold">Organizations</span>,
     right: <span className="text-xs text-fg-muted">{orgs.length} org(s)</span>,
   });
 
-  const refresh = useCallback(async () => {
-    try {
-      setOrgs(await listOrgs());
-      setError(null);
-    } catch (e) {
-      setError(
-        e instanceof FeatureUnavailableError
-          ? "Organization administration is a cloud-mode feature — it isn't available on this server (local/desktop mode)."
-          : String(e),
-      );
-    } finally {
-      setLoaded(true);
-    }
-  }, [setError]);
-
-  useEffect(() => {
-    if (isSuper && isCloud) void refresh();
-  }, [isSuper, isCloud, refresh]);
+  // Refetch the list; awaited by callers that sequence identity reloads
+  // after it, exactly like the manual refresh was.
+  const refresh = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["admin-orgs"] }),
+    [queryClient],
+  );
 
   // Wrap a mutation in the shared busy/error slot, then refresh the
   // list once it settles successfully — identical sequencing to the
@@ -148,9 +147,9 @@ export default function OrgsAdminPage() {
       <div className="max-w-5xl mx-auto p-3 sm:p-6 space-y-4">
         <AdminNav />
 
-        {error && (
+        {bannerErr && (
           <InlineBanner tone="danger" layout="inline">
-            {error}
+            {bannerErr}
           </InlineBanner>
         )}
 
@@ -272,8 +271,16 @@ function OrgDrawer({
   reloadIdentity: () => Promise<void>;
   run: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
-  const [usage, setUsage] = useState<OrgUsage | null>(null);
-  const [usageErr, setUsageErr] = useState<string | null>(null);
+  const usageQuery = useQuery({
+    queryKey: ["admin-org-usage", org.id],
+    queryFn: () => getAdminOrgUsage(org.id),
+  });
+  const usage = usageQuery.data ?? null;
+  const usageErr = usageQuery.error
+    ? usageQuery.error instanceof FeatureUnavailableError
+      ? "Usage view not enabled."
+      : errorMessage(usageQuery.error)
+    : null;
 
   // Name + slug drafts.
   const [nameDraft, setNameDraft] = useState(org.name);
@@ -295,23 +302,6 @@ function OrgDrawer({
   const [confirmStatus, setConfirmStatus] = useState(false);
   // Typed confirmation for the irreversible org deletion.
   const [confirmName, setConfirmName] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    setUsageErr(null);
-    getAdminOrgUsage(org.id)
-      .then((u) => {
-        if (alive) setUsage(u);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        if (e instanceof FeatureUnavailableError) setUsageErr("Usage view not enabled.");
-        else setUsageErr(errorMessage(e));
-      });
-    return () => {
-      alive = false;
-    };
-  }, [org.id]);
 
   const saveDetails = () =>
     run(async () => {

@@ -12,7 +12,8 @@
 //
 // Mirrors Labels.tsx's structure (busy/error footer, confirm-on-delete).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
@@ -60,24 +61,23 @@ export default function FieldsView() {
 
 function FieldsViewInner() {
   const [, setLocation] = useLocation();
-  const [board, setBoard] = useState<NativeBoard | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
   const action = useAsyncAction();
   const { confirm, dialog: confirmDialog } = useConfirm();
 
-  const refresh = useCallback(async () => {
-    try {
-      setBoard(await getBoard());
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(errorMessage(e));
-    }
-  }, []);
+  const queryClient = useQueryClient();
+  const boardQuery = useQuery<NativeBoard>({
+    queryKey: ["board"],
+    queryFn: () => getBoard(),
+  });
+  const board = boardQuery.data ?? null;
+  const loadError = boardQuery.error ? errorMessage(boardQuery.error) : null;
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  // Field ops mutate the board schema — re-pull it after each write.
+  const refresh = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["board"] }),
+    [queryClient],
+  );
 
   const fields = useMemo(() => board?.fields ?? [], [board]);
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   approveModeration,
@@ -98,6 +99,10 @@ function parseSort(v: string | null): MarketplaceSort {
   return v === "recent" || v === "name" ? v : "popular";
 }
 
+// Stable empty install-state map for the anonymous / still-loading
+// renders (never mutated), so downstream props keep a stable reference.
+const EMPTY_VERSIONS: InstalledVersions = new Map();
+
 /** MarketplaceView is the hosted bot registry browse / submit / install
  *  surface. Mirrors the studio's other view conventions: page header,
  *  centred content, neutral surfaces, accent for primary actions. The
@@ -126,18 +131,13 @@ export default function MarketplaceView() {
     return { kind: parseKind(p.get("kind")), sort: parseSort(p.get("sort")) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [entries, setEntries] = useState<MarketplaceEntry[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState("");
   const [kind, setKind] = useState<MarketplaceKind | "">(initial.kind);
   const [sort, setSort] = useState<MarketplaceSort>(initial.sort);
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
-  const [installed, setInstalled] = useState<InstalledVersions>(new Map());
-  const [installedPlugins, setInstalledPlugins] = useState<InstalledVersions>(new Map());
-  const [config, setConfig] = useState<MarketplaceConfig | null>(null);
-  const [pending, setPending] = useState<MarketplaceEntry[]>([]);
 
   // Mirror kind/sort back into the URL (replace semantics) so the pills
   // are bookmarkable without stacking history entries. Defaults are
@@ -155,87 +155,100 @@ export default function MarketplaceView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, sort, navigate]);
 
-  // Config drives the submit scope picker; it's static so fetch once.
-  useEffect(() => {
-    getMarketplaceConfig()
-      .then(setConfig)
-      .catch(() => setConfig(null));
-  }, []);
+  // Config drives the submit scope picker; it's static, and a failed
+  // fetch just reads as "no config".
+  const configQuery = useQuery<MarketplaceConfig>({
+    queryKey: ["marketplace-config"],
+    queryFn: getMarketplaceConfig,
+  });
+  const config = configQuery.data ?? null;
 
   // The moderation queue only exists on a moderated (cloud) registry —
-  // config.moderated is the capability signal. Local mode gets no
-  // /api/v1/marketplace/moderation endpoint, so gating here avoids a
-  // doomed 404 on every visit.
+  // config.moderated is the capability signal — and the endpoint is
+  // auth-only, so `enabled` gating avoids a doomed 404 on every visit.
+  // Best-effort: populated only for admins (a 403/404 leaves the section
+  // hidden via the empty fallback).
   const moderated = config?.moderated ?? false;
+  const moderationEnabled = !anonymous && moderated;
+  const pendingQuery = useQuery<MarketplaceEntry[]>({
+    queryKey: ["marketplace-moderation"],
+    queryFn: listModerationQueue,
+    enabled: moderationEnabled,
+  });
+  const pending = (moderationEnabled ? pendingQuery.data : undefined) ?? [];
 
-  // Best-effort moderation queue — populated only for admins (the
-  // endpoint 403s / 404s otherwise, leaving the section hidden). Used by
-  // the mutation handlers to refetch after an approve/reject/submit.
+  // Used by the mutation handlers to refetch the queue after an
+  // approve/reject/submit (resolves once the active query refetched).
   const refreshPending = useCallback(async () => {
-    if (anonymous || !moderated) {
-      setPending([]);
-      return;
-    }
-    try {
-      setPending(await listModerationQueue());
-    } catch {
-      setPending([]);
-    }
-  }, [anonymous, moderated]);
-
-  // Initial load via a promise chain (no synchronous setState in the
-  // effect body) so the queue shows on first paint for admins. Skipped for
-  // anonymous viewers (the endpoint is auth-only) and for unmoderated
-  // registries (the endpoint doesn't exist).
-  useEffect(() => {
-    if (anonymous || !moderated) return;
-    listModerationQueue()
-      .then(setPending)
-      .catch(() => setPending([]));
-  }, [anonymous, moderated]);
+    await queryClient.invalidateQueries({ queryKey: ["marketplace-moderation"] });
+  }, [queryClient]);
 
   // Best-effort: reconcile the registry against the bots already in the
   // workspace (.botz/) and the plugins in ~/.iterion/plugins/ so cards
   // can show Installed / Update. Each fetch fails independently (e.g.
-  // cloud mode where install is disabled anyway) to an empty map.
-  const refreshInstalled = useCallback(async () => {
-    // Both endpoints are auth-gated; an anonymous viewer has no
-    // workspace to reconcile against, so the install state is empty.
-    if (anonymous) {
-      setInstalled(new Map());
-      setInstalledPlugins(new Map());
-      return;
-    }
-    const empty = (): InstalledVersions => new Map();
-    const [bots, plugins] = await Promise.all([
-      listBots().then(buildInstalledVersions).catch(empty),
-      listPlugins().then(buildInstalledPluginVersions).catch(empty),
-    ]);
-    setInstalled(bots);
-    setInstalledPlugins(plugins);
-  }, [anonymous]);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [list] = await Promise.all([
-        listMarketplace(search, tag, kind, sort),
-        refreshInstalled(),
+  // cloud mode where install is disabled anyway) to an empty map. Both
+  // endpoints are auth-gated; an anonymous viewer has no workspace to
+  // reconcile against, so the query is disabled and the maps stay empty.
+  const installedQuery = useQuery({
+    queryKey: ["marketplace-installed"],
+    queryFn: async () => {
+      const empty = (): InstalledVersions => new Map();
+      const [bots, plugins] = await Promise.all([
+        listBots().then(buildInstalledVersions).catch(empty),
+        listPlugins().then(buildInstalledPluginVersions).catch(empty),
       ]);
-      setEntries(list);
-    } catch (e) {
-      toastError(addToast, e, "Failed to load marketplace");
-    } finally {
-      setLoading(false);
-    }
-  }, [search, tag, kind, sort, addToast, refreshInstalled]);
+      return { bots, plugins };
+    },
+    enabled: !anonymous,
+  });
+  const installed =
+    (anonymous ? undefined : installedQuery.data?.bots) ?? EMPTY_VERSIONS;
+  const installedPlugins =
+    (anonymous ? undefined : installedQuery.data?.plugins) ?? EMPTY_VERSIONS;
 
-  // Debounced refetch on search/tag changes so typing in the search box
+  // Debounce the filters into the query key so typing in the search box
   // doesn't fire a request per keystroke.
+  const [filters, setFilters] = useState(() => ({
+    search: "",
+    tag: "",
+    kind: initial.kind,
+    sort: initial.sort,
+  }));
   useEffect(() => {
-    const t = window.setTimeout(() => void refresh(), 200);
+    const t = window.setTimeout(() => setFilters({ search, tag, kind, sort }), 200);
     return () => window.clearTimeout(t);
-  }, [refresh]);
+  }, [search, tag, kind, sort]);
+
+  // keepPreviousData: filter/sort changes keep the current list on
+  // screen under the "Refreshing…" hint instead of flashing back to the
+  // loading header.
+  const entriesQuery = useQuery<MarketplaceEntry[]>({
+    queryKey: ["marketplace", filters.search, filters.tag, filters.kind, filters.sort],
+    queryFn: () =>
+      listMarketplace(filters.search, filters.tag, filters.kind, filters.sort),
+    placeholderData: keepPreviousData,
+  });
+  const entries = entriesQuery.data ?? null;
+  const loading = entriesQuery.isFetching;
+
+  // Load failures surface as a toast (the browse list is the page's core
+  // surface — a banner would displace it), once per failed load.
+  const entriesError = entriesQuery.error;
+  useEffect(() => {
+    if (entriesError) toastError(addToast, entriesError, "Failed to load marketplace");
+  }, [entriesError, addToast]);
+
+  // Full reload (Refresh button + post-submit/approve/upload): browse
+  // list and installed reconcile together, like the pre-query refresh.
+  // invalidate — not refetch — so the disabled installed query
+  // (anonymous) stays a no-op. ["marketplace"] prefix-matches every
+  // cached filter combination but not marketplace-config/-moderation.
+  const refresh = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["marketplace"] }),
+      queryClient.invalidateQueries({ queryKey: ["marketplace-installed"] }),
+    ]);
+  }, [queryClient]);
 
   // install (force=false) and update (force=true) share a path — a bot
   // entry's bundle lands in the workspace .botz/, a plugin entry in
@@ -261,10 +274,11 @@ export default function MarketplaceView() {
         addToast(`${force ? "Updated" : "Installed"} ${e.name}`, "success");
       }
       // Reflect the bumped install counter without a full refetch.
-      setEntries((prev) =>
-        prev?.map((x) => (x.slug === e.slug ? res.entry : x)) ?? prev,
+      queryClient.setQueryData<MarketplaceEntry[]>(
+        ["marketplace", filters.search, filters.tag, filters.kind, filters.sort],
+        (prev) => prev?.map((x) => (x.slug === e.slug ? res.entry : x)),
       );
-      await refreshInstalled();
+      await queryClient.invalidateQueries({ queryKey: ["marketplace-installed"] });
     } catch (err) {
       toastError(addToast, err, force ? "Update failed" : "Install failed");
     } finally {
@@ -277,7 +291,7 @@ export default function MarketplaceView() {
     try {
       await uninstallMarketplaceBot(e.slug);
       addToast(`Uninstalled ${e.name}`, "success");
-      await refreshInstalled();
+      await queryClient.invalidateQueries({ queryKey: ["marketplace-installed"] });
     } catch (err) {
       toastError(addToast, err, "Uninstall failed");
     } finally {

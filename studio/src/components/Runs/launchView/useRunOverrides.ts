@@ -5,9 +5,10 @@
 // disclosure open/closed state itself.
 
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { previewRunCost } from "@/api/runs";
-import type { MergeStrategy, PreviewEffectiveSettings } from "@/api/runs";
+import type { MergeStrategy } from "@/api/runs";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 
 import {
@@ -73,10 +74,17 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
   // `permission:` DSL then ITERION_PERMISSION).
   const [permissionOverride, setPermissionOverride] = useState<string>("");
   // Server-resolved knob provenance below run-override (workflow/env/
-  // default), captioning the Run-settings selects. Best-effort — a
-  // parse failure just hides the captions.
-  const [effectiveSettings, setEffectiveSettings] =
-    useState<PreviewEffectiveSettings | null>(null);
+  // default), captioning the Run-settings selects. Best-effort — any
+  // failure just leaves the captions hidden.
+  const effectiveQuery = useQuery({
+    queryKey: ["preview-effective-settings", filePath],
+    queryFn: async () =>
+      (await previewRunCost({ file_path: filePath })).effective ?? null,
+    enabled: !!filePath,
+  });
+  const effectiveSettings = effectiveQuery.isError
+    ? null
+    : effectiveQuery.data ?? null;
   // Mono/dual review-topology override ("" = auto: resolve from the
   // providers detected at launch). Only sent when explicitly mono/dual;
   // ignored by bots that don't declare a `review_mode` var.
@@ -93,26 +101,6 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
   // Per-node model/backend overrides, keyed by node name. Empty fields =
   // inherit the bot's DSL default. Folded into createRun.model_overrides.
   const [modelOverrides, setModelOverrides] = useState<Record<string, NodeOverride>>({});
-
-  useEffect(() => {
-    // Knob provenance for the Run-settings captions. Best-effort: any
-    // failure just leaves the captions hidden.
-    if (!filePath) {
-      setEffectiveSettings(null);
-      return;
-    }
-    let cancelled = false;
-    previewRunCost({ file_path: filePath })
-      .then((res) => {
-        if (!cancelled) setEffectiveSettings(res.effective ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setEffectiveSettings(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [filePath]);
 
   // Auto-open the worktree-finalization block once the document loads
   // and the workflow uses worktree:auto. Done in an effect so it only

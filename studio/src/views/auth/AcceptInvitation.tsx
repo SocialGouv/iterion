@@ -1,5 +1,6 @@
 import { errorMessage } from "@/lib/errorHints";
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -8,7 +9,6 @@ import { useLocation } from "wouter";
 
 import {
   ApiError,
-  type InvitationLookup,
   acceptInvitationLoggedIn,
   lookupInvitation,
 } from "@/api/auth";
@@ -25,8 +25,7 @@ export default function AcceptInvitation() {
   const [, navigate] = useLocation();
   const [token, setToken] = useState("");
   const [pasted, setPasted] = useState("");
-  const [info, setInfo] = useState<InvitationLookup | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [acceptErr, setAcceptErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Parse the token once.
@@ -37,16 +36,20 @@ export default function AcceptInvitation() {
 
   // Look up the invitation as soon as we have a token. This works whether
   // or not the user is signed in (the endpoint is public).
-  useEffect(() => {
-    if (!token) return;
-    setErr(null);
-    lookupInvitation(token)
-      .then(setInfo)
-      .catch((e) => {
-        const msg = e instanceof ApiError ? e.message : errorMessage(e);
-        setErr(msg);
-      });
-  }, [token]);
+  const lookupQuery = useQuery({
+    queryKey: ["invitation-lookup", token],
+    queryFn: () => lookupInvitation(token),
+    enabled: token !== "",
+  });
+  const info = lookupQuery.data ?? null;
+  const lookupErr = lookupQuery.error
+    ? lookupQuery.error instanceof ApiError
+      ? lookupQuery.error.message
+      : errorMessage(lookupQuery.error)
+    : null;
+  // An accept failure replaces the lookup result display, like the old
+  // shared error slot did.
+  const err = acceptErr ?? lookupErr;
 
   // Anonymous → bounce to /login with the invite + return URL.
   useEffect(() => {
@@ -62,7 +65,7 @@ export default function AcceptInvitation() {
 
   const accept = async () => {
     setBusy(true);
-    setErr(null);
+    setAcceptErr(null);
     try {
       const mb = await acceptInvitationLoggedIn(token);
       await reloadIdentity();
@@ -74,7 +77,7 @@ export default function AcceptInvitation() {
       navigate(`/teams/${mb.team_id}`, { replace: true });
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : errorMessage(e);
-      setErr(msg);
+      setAcceptErr(msg);
     } finally {
       setBusy(false);
     }

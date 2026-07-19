@@ -1,6 +1,7 @@
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 
@@ -37,13 +38,11 @@ export default function BindingsTab({ teamID, canManage }: Props) {
   const bots = useBotsStore((s) => s.bots) ?? [];
   const botsLoading = useBotsStore((s) => s.loading);
   const fetchBots = useBotsStore((s) => s.fetch);
-  const [secrets, setSecrets] = useState<GenericSecretView[]>([]);
-  const [secretsLoading, setSecretsLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [activeBot, setActiveBot] = useState<string>("");
-  const [bindings, setBindings] = useState<BotSecretBinding[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  // Mutation failures report through setActionErr; load failures surface
+  // from the bindings query. One banner shows whichever is current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<BotSecretBinding | null>(null);
   const [deleting, setDeleting] = useState<BotSecretBinding | null>(null);
@@ -59,46 +58,44 @@ export default function BindingsTab({ teamID, canManage }: Props) {
     if (bots.length > 0 && activeBot === "") setActiveBot(bots[0]!.name);
   }, [bots, activeBot]);
 
-  // Load team secrets so the create dialog can pick from them.
-  useEffect(() => {
-    setSecretsLoading(true);
-    void listTeamSecrets(teamID)
-      .then((s) => setSecrets(s))
-      .catch(() => setSecrets([]))
-      .finally(() => setSecretsLoading(false));
-  }, [teamID]);
+  // Team secrets feed the create dialog's picker; a failure deliberately
+  // collapses to an empty list (the empty state nudges toward Secrets).
+  const secretsQuery = useQuery({
+    queryKey: ["team-secrets", teamID],
+    queryFn: () => listTeamSecrets(teamID),
+  });
+  const secrets = secretsQuery.data ?? [];
+  const secretsLoading = secretsQuery.isLoading;
 
-  const reload = async () => {
-    if (!activeBot) return;
-    setLoading(true);
-    setErr(null);
-    try {
-      setBindings(await listBindings(teamID, activeBot));
-      setUnavailable(false);
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-      } else {
-        setErr(errorMessage(e));
-      }
-    } finally {
-      setLoading(false);
-    }
+  const bindingsQuery = useQuery({
+    queryKey: ["bot-bindings", teamID, activeBot],
+    queryFn: () => listBindings(teamID, activeBot),
+    enabled: activeBot !== "",
+  });
+  const bindings = bindingsQuery.data ?? [];
+  // isFetching (not isLoading): the pre-query code skeletoned the table
+  // on every reload, including post-mutation refreshes.
+  const loading = bindingsQuery.isFetching;
+  const unavailable = bindingsQuery.error instanceof FeatureUnavailableError;
+  const err =
+    actionErr ??
+    (bindingsQuery.error && !unavailable && !loading
+      ? errorMessage(bindingsQuery.error)
+      : null);
+
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["bot-bindings", teamID] });
   };
-
-  useEffect(() => {
-    if (activeBot) void reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBot, teamID]);
 
   const doDelete = async () => {
     if (!deleting) return;
     try {
       await deleteBinding(teamID, deleting.bot_id, deleting.id);
       setDeleting(null);
-      void reload();
+      reload();
     } catch (e) {
-      setErr(errorMessage(e));
+      setActionErr(errorMessage(e));
     }
   };
 
@@ -143,7 +140,15 @@ export default function BindingsTab({ teamID, canManage }: Props) {
         </div>
         <div className="flex items-center gap-2">
           <label className="text-xs text-fg-muted">Bot:</label>
-          <Select value={activeBot} onChange={(e) => setActiveBot(e.target.value)} disabled={noBots}>
+          <Select
+            value={activeBot}
+            onChange={(e) => {
+              // A stale mutation error doesn't apply to the newly-picked bot.
+              setActionErr(null);
+              setActiveBot(e.target.value);
+            }}
+            disabled={noBots}
+          >
             <option value="" disabled>
               — select a bot —
             </option>
@@ -318,7 +323,7 @@ export default function BindingsTab({ teamID, canManage }: Props) {
           onSaved={() => {
             setCreating(false);
             setEditing(null);
-            void reload();
+            reload();
           }}
         />
       )}

@@ -1,14 +1,12 @@
 import { errorMessage } from "@/lib/errorHints";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { CheckIcon } from "@radix-ui/react-icons";
 import { ChevronRight } from "lucide-react";
 
 import { FeatureUnavailableError } from "@/api/client";
 import {
-  type ForgeConnection,
-  type ForgeIntegration,
-  type ForgeOAuthApp,
   listForgeConnections,
   listForgeIntegrations,
   listForgeOAuthApps,
@@ -34,12 +32,42 @@ export default function IntegrationsTab({
   teamID: string;
   canManage: boolean;
 }) {
-  const [connections, setConnections] = useState<ForgeConnection[]>([]);
-  const [integrations, setIntegrations] = useState<ForgeIntegration[]>([]);
-  const [oauthApps, setOAuthApps] = useState<ForgeOAuthApp[]>([]);
-  const [unavailable, setUnavailable] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // Mutations in the child sections report through setActionErr; load
+  // failures surface from the queries. One banner shows whichever is
+  // current.
+  const [actionErr, setActionErr] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
+
+  // The connections + OAuth-apps keys are shared with the connect wizard
+  // and RepoTargetSection, so a connection added there is fresh here
+  // without a manual bridge.
+  const connectionsQuery = useQuery({
+    queryKey: ["forge-connections", teamID],
+    queryFn: () => listForgeConnections(teamID),
+  });
+  const integrationsQuery = useQuery({
+    queryKey: ["forge-integrations", teamID],
+    queryFn: () => listForgeIntegrations(teamID),
+  });
+  const oauthAppsQuery = useQuery({
+    queryKey: ["forge-oauth-apps", teamID],
+    queryFn: () => listForgeOAuthApps(teamID),
+  });
+  const connections = connectionsQuery.data ?? [];
+  const integrations = integrationsQuery.data ?? [];
+  const oauthApps = oauthAppsQuery.data ?? [];
+  const fetching =
+    connectionsQuery.isFetching || integrationsQuery.isFetching || oauthAppsQuery.isFetching;
+  const fetchError =
+    connectionsQuery.error ?? integrationsQuery.error ?? oauthAppsQuery.error;
+  const unavailable =
+    connectionsQuery.error instanceof FeatureUnavailableError ||
+    integrationsQuery.error instanceof FeatureUnavailableError ||
+    oauthAppsQuery.error instanceof FeatureUnavailableError;
+  const err =
+    actionErr ??
+    (fetchError && !unavailable && !fetching ? errorMessage(fetchError) : null);
   // Bots come from the shared catalog cache so a metadata edit (e.g. in
   // the Bot panel) re-renders the connection cards immediately. We surface
   // every repo-capable bot — one that declares an invocations: block (forge
@@ -83,40 +111,26 @@ export default function IntegrationsTab({
     }
   }, []);
 
-  const reload = async () => {
-    setErr(null);
-    try {
-      const [conns, ints, apps] = await Promise.all([
-        listForgeConnections(teamID),
-        listForgeIntegrations(teamID),
-        listForgeOAuthApps(teamID),
-      ]);
-      setConnections(conns);
-      setIntegrations(ints);
-      setOAuthApps(apps);
-    } catch (e) {
-      if (e instanceof FeatureUnavailableError) {
-        setUnavailable(true);
-        return;
-      }
-      setErr(errorMessage(e));
-    }
+  const reload = () => {
+    setActionErr(null);
+    void queryClient.invalidateQueries({ queryKey: ["forge-connections", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["forge-integrations", teamID] });
+    void queryClient.invalidateQueries({ queryKey: ["forge-oauth-apps", teamID] });
   };
 
   useEffect(() => {
-    void reload();
     void fetchBots();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID]);
+  }, [fetchBots]);
 
   // Re-fetch when the tab/window regains focus. The GitHub App-Manifest flow
   // (and any OAuth-app registration done in another tab) navigates away and
-  // returns here WITHOUT a teamID change, so the [teamID] effect above never
-  // re-runs — without this the Connect form keeps showing a stale
-  // "OAuth (no app)" for an app that was just registered, until a hard reload.
+  // returns here WITHOUT a teamID change, and the app-wide query client has
+  // refetchOnWindowFocus off — without this the Connect form keeps showing a
+  // stale "OAuth (no app)" for an app that was just registered, until a hard
+  // reload.
   useEffect(() => {
     const refetch = () => {
-      if (document.visibilityState === "visible") void reload();
+      if (document.visibilityState === "visible") reload();
     };
     window.addEventListener("focus", refetch);
     document.addEventListener("visibilitychange", refetch);
@@ -242,7 +256,7 @@ export default function IntegrationsTab({
                 repoBots={repoCapableBots}
                 canManage={canManage}
                 onChanged={reload}
-                onError={setErr}
+                onError={setActionErr}
                 confirm={confirm}
                 preselectBot={preselectBot}
                 autoOpenEnable={!!preselectBot && connections.length === 1}
@@ -280,7 +294,7 @@ export default function IntegrationsTab({
               connections={connections}
               canManage={canManage}
               onChanged={reload}
-              onError={setErr}
+              onError={setActionErr}
               confirm={confirm}
             />
             {canManage && (
@@ -288,7 +302,7 @@ export default function IntegrationsTab({
                 teamID={teamID}
                 oauthApps={oauthApps}
                 onConnected={reload}
-                onError={setErr}
+                onError={setActionErr}
               />
             )}
           </div>
