@@ -13,6 +13,7 @@ package cloudpublisher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -591,11 +592,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 		Budget:  budgetForWire(spec.Budget),
 	}
 	if err := p.publish(ctx, msg); err != nil {
-		// Best-effort: roll the run doc back to failed so the studio
-		// surfaces the queue failure rather than a stuck "queued"
-		// row that never moves.
-		_ = p.store.UpdateRunStatus(ctx, runID, store.RunStatusFailed, fmt.Sprintf("queue publish: %v", err))
-		return 0, fmt.Errorf("cloudpublisher: publish: %w", err)
+		pubErr := fmt.Errorf("cloudpublisher: publish: %w", err)
+		// Roll the run doc back to failed so the studio surfaces the
+		// queue failure rather than a stuck "queued" row that never
+		// moves. Roll back on a cancel-immune ctx: a publish failure
+		// caused by request cancellation must not also doom the status
+		// rollback.
+		if uerr := p.store.UpdateRunStatus(context.WithoutCancel(ctx), runID, store.RunStatusFailed, fmt.Sprintf("queue publish: %v", err)); uerr != nil {
+			return 0, errors.Join(pubErr, fmt.Errorf("cloudpublisher: mark run %s failed after publish failure (run may be stuck queued): %w", runID, uerr))
+		}
+		return 0, pubErr
 	}
 	if p.metrics != nil {
 		p.metrics.RunsCreatedTotal.WithLabelValues(string(store.RunStatusQueued)).Inc()
