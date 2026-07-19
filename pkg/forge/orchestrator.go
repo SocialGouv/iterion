@@ -874,7 +874,10 @@ func addCommandRoute(m map[string][]webhooks.CommandRoute, key string, route web
 	}
 	for _, e := range m[key] {
 		if e.BotID == route.BotID {
-			return nil // same bot, alias overlap — keep the first
+			// Same bot re-listed in the provision set: manifest validation
+			// already rejects intra-bot duplicate command names, so the
+			// incumbent route is identical — keep-first is lossless dedup.
+			return nil
 		}
 		if !complementaryArgs(e.Disambiguator, route.Disambiguator) {
 			return fmt.Errorf("forge: bots %q and %q both claim command /%s without args disambiguation", e.BotID, route.BotID, key)
