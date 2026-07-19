@@ -27,6 +27,7 @@ aid, not the spec.
 vars:
   feature_prompt: string
   workspace_dir:  string = "${PROJECT_DIR}"
+  mode: string [enum: "autonomous", "interview"] = "autonomous"  # string-only closed value set; default + launch values validated (C125-C127)
 
 secrets:                            # optional; agent sees only an opaque placeholder
   github_token: "${GITHUB_TOKEN}"   #   __ITERION_SECRET_github_token__, materialised at exec

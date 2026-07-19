@@ -79,7 +79,7 @@ vars:
 
   ## collect = poll feeds into the pending queue (zero-LLM).
   ## digest  = synthesize the queue into a chat message and deliver it.
-  mode: string = "collect"
+  mode: string [enum: "collect", "digest"] = "collect"
 
   ## Category key from the config. digest REQUIRES it; collect with ""
   ## polls every category in one run.

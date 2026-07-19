@@ -73,7 +73,7 @@ vars:
   ## Policy
   scope: string = "patch,minor,major"
   max_packages_per_run: int = 30
-  major_policy: string = "attempt"   ## skip | gate | attempt
+  major_policy: string [enum: "skip", "gate", "attempt"] = "attempt"
   fix_loop_default: int = 3
   fix_loop_major:   int = 5
 

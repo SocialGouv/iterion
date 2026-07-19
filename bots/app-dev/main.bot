@@ -68,7 +68,7 @@ vars:
   ## prompt) or "interview" (spec-first conversational loop → SPEC.md →
   ## campaign). Dispatcher/board launches force "autonomous" via the
   ## manifest's dispatch_vars: an interview needs an operator answering.
-  mode: string = "autonomous"
+  mode: string [enum: "autonomous", "interview"] = "autonomous"
 
   ## DRAFT-REVIEW gate. true (default) pauses after convergence for the
   ## operator to ship / request_changes / hold_for_later — the pause is

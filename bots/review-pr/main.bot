@@ -103,7 +103,7 @@ vars:
 
   ## Drop findings below this severity (order: low < medium < high <
   ## critical). Default "low" surfaces everything.
-  severity_threshold: string = "low"
+  severity_threshold: string [enum: "low", "medium", "high", "critical"] = "low"
 
   ## Cap the number of board issues / report rows (highest severity
   ## first). A capped run says so prominently in the report so it is
@@ -145,7 +145,7 @@ vars:
   ## rolled-up note). Unattended webhook launches default to "summary"
   ## for a lower failure surface (no diff-position mapping); flip to
   ## inline once validated for the target forge.
-  pr_review_mode: string = "inline"
+  pr_review_mode: string [enum: "inline", "summary"] = "inline"
 
 ## ─── Prompts ────────────────────────────────────────────────────
 
