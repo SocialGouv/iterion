@@ -49,6 +49,7 @@ type VarsBlock struct {
 type VarField struct {
 	Name    string   `json:"name,omitempty"`
 	Type    string   `json:"type,omitempty"`
+	Enum    []string `json:"enum,omitempty"`
 	Default *Literal `json:"default,omitempty"`
 }
 

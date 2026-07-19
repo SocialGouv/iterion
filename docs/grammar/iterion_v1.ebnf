@@ -40,7 +40,10 @@ comment = "##" REST_OF_LINE ;
 
 vars_decl = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
 
-var_field = IDENT ":" type_expr [ "=" literal ] NEWLINE ;
+(* enum_constraint (défini dans la section Schemas) n'est valide que sur
+   les vars de type string (C125) ; le défaut doit appartenir à la liste
+   (C126) et les valeurs fournies au lancement sont validées contre elle. *)
+var_field = IDENT ":" type_expr [ enum_constraint ] [ "=" literal ] NEWLINE ;
 
 (* ---- Presets : jeux de valeurs nommés (dev / staging / prod) ----
    Sélectionnables via `iterion run … --preset <name>`. Précédence :

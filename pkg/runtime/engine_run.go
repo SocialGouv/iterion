@@ -47,6 +47,16 @@ func (e *Engine) Run(ctx context.Context, runID string, inputs map[string]any) (
 		}
 	}
 
+	// Enum gate: every launch surface (CLI --var, HTTP launch, dispatcher
+	// bot_args, preset overlay, cloud pickup) funnels its var values into
+	// run.Inputs, so this single check rejects any enum-constrained var
+	// value outside its declared set — before a worktree or sandbox is
+	// spun up for a doomed run.
+	if err := e.validateVarEnums(run.Inputs); err != nil {
+		e.markFailedBestEffort(ctx, runID, "var validation", err)
+		return fmt.Errorf("runtime: var validation: %w", err)
+	}
+
 	// Worktree setup stays inline: the finalizeOnExit defer must
 	// capture the named return `err`, and the defer installation
 	// is the meaningful side effect — extracting it would require

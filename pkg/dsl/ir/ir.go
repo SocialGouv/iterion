@@ -1004,6 +1004,7 @@ type Prompt struct {
 type Var struct {
 	Name       string
 	Type       VarType
+	EnumValues []string // non-nil only if enum constraint present (string vars)
 	HasDefault bool
 	Default    any // string, int64, float64, or bool
 }

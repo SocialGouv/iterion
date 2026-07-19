@@ -21,6 +21,23 @@ vars:
 
 Supported types: `string`, `bool`, `int`, `float`, `json`, `string[]`.
 
+A `string` var can constrain its value to a fixed set with the same
+`[enum: ...]` syntax as a schema field, placed between the type and the
+optional default:
+
+```iter
+vars:
+  mode: string [enum: "autonomous", "interview"] = "autonomous"
+```
+
+The constraint is string-only (C125), the default must be one of the
+declared values (C126), and duplicates warn and are deduplicated (C127).
+At launch the engine rejects any provided value outside the set —
+`--var`, HTTP launch vars, dispatcher `bot_args`, and preset overrides
+alike — with an error naming the var, the value, and the allowed list.
+The studio's launch form renders enum vars as a select (the `enum` field
+on `/api/v1/bots` var schemas).
+
 ## Prompts
 
 Reusable prompt templates with `{{...}}` interpolation:

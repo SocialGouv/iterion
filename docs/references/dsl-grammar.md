@@ -41,10 +41,24 @@ Comments start with `##` and extend to end of line. Allowed anywhere a top-level
 
 ```ebnf
 vars_decl = "vars" ":" NEWLINE INDENT { var_field } DEDENT ;
-var_field = IDENT ":" type_expr [ "=" literal ] NEWLINE ;
+var_field = IDENT ":" type_expr [ enum_constraint ] [ "=" literal ] NEWLINE ;
 type_expr = "string" | "bool" | "int" | "float" | "json" | "string[]" ;
 literal   = STRING_LIT | INT_LIT | FLOAT_LIT | BOOL_LIT ;
 ```
+
+A string var may constrain its value set with the same `enum_constraint`
+syntax as a schema field, between the type and the optional default:
+
+```
+vars:
+  mode: string [enum: "autonomous", "interview"] = "autonomous"
+```
+
+The constraint is only valid on `string` vars (C125), the default must be
+one of the declared values (C126), and duplicate values warn and are
+deduplicated (C127). At run start the engine rejects any launch-provided
+value (`--var`, HTTP launch, dispatcher `bot_args`, preset overlay)
+outside the enum set, naming the var, the value, and the allowed list.
 
 ## Presets
 

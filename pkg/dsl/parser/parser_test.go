@@ -290,6 +290,47 @@ func TestVarsWithDefaults(t *testing.T) {
 	assertEq(t, "debug.Default", vb.Fields[3].Default.BoolVal, false)
 }
 
+func TestVarsWithEnum(t *testing.T) {
+	src := `vars:
+  mode: string [enum: "autonomous", "interview"] = "autonomous"
+  bare: string [enum: "a", "b"]
+  plain: string = "x"
+`
+	res := parser.Parse("test.bot", src)
+	assertNoDiags(t, res)
+
+	vb := res.File.Vars
+	if vb == nil || len(vb.Fields) != 3 {
+		t.Fatalf("expected 3 var fields, got %v", vb)
+	}
+	f := vb.Fields[0]
+	assertEq(t, "mode.Type", f.Type, ast.TypeString)
+	if len(f.EnumValues) != 2 {
+		t.Fatalf("expected 2 enum values, got %d", len(f.EnumValues))
+	}
+	assertEq(t, "mode.enum[0]", f.EnumValues[0], "autonomous")
+	assertEq(t, "mode.enum[1]", f.EnumValues[1], "interview")
+	assertEq(t, "mode.Default", f.Default.StrVal, "autonomous")
+	// Enum without a default parses too.
+	if len(vb.Fields[1].EnumValues) != 2 || vb.Fields[1].Default != nil {
+		t.Errorf("bare enum var: enum=%v default=%v", vb.Fields[1].EnumValues, vb.Fields[1].Default)
+	}
+	// A var without a constraint carries no enum values.
+	if vb.Fields[2].EnumValues != nil {
+		t.Errorf("plain var should have nil EnumValues, got %v", vb.Fields[2].EnumValues)
+	}
+}
+
+func TestVarsEnumRejectsUnquotedValues(t *testing.T) {
+	src := `vars:
+  mode: string [enum: autonomous, "interview"]
+`
+	res := parser.Parse("test.bot", src)
+	if !hasDiagCode(res, parser.DiagInvalidValue) {
+		t.Fatal("expected DiagInvalidValue for an unquoted enum value in a var declaration")
+	}
+}
+
 func TestAttachmentsBlock_Short(t *testing.T) {
 	src := `attachments:
   logo: image

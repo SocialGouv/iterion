@@ -149,16 +149,7 @@ func (w *fileWriter) writeSchemas(schemas []*ast.SchemaDecl) {
 			w.b.WriteString(field.Name)
 			w.b.WriteString(": ")
 			w.b.WriteString(field.Type.String())
-			if len(field.EnumValues) > 0 {
-				w.b.WriteString(" [enum: ")
-				for i, v := range field.EnumValues {
-					if i > 0 {
-						w.b.WriteString(", ")
-					}
-					fmt.Fprintf(&w.b, "%q", v)
-				}
-				w.b.WriteByte(']')
-			}
+			writeEnumConstraint(&w.b, field.EnumValues)
 			w.b.WriteByte('\n')
 		}
 	}
@@ -694,12 +685,29 @@ func writeVarsBlock(b *strings.Builder, vars *ast.VarsBlock, indent string) {
 		b.WriteString(v.Name)
 		b.WriteString(": ")
 		b.WriteString(v.Type.String())
+		writeEnumConstraint(b, v.EnumValues)
 		if v.Default != nil {
 			b.WriteString(" = ")
 			writeLiteral(b, v.Default)
 		}
 		b.WriteByte('\n')
 	}
+}
+
+// writeEnumConstraint emits ` [enum: "a", "b"]` after a type for schema
+// fields and var declarations alike. No-op on an empty value set.
+func writeEnumConstraint(b *strings.Builder, vals []string) {
+	if len(vals) == 0 {
+		return
+	}
+	b.WriteString(" [enum: ")
+	for i, v := range vals {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(b, "%q", v)
+	}
+	b.WriteByte(']')
 }
 
 func writeSecretsBlock(b *strings.Builder, sb *ast.SecretsBlock, indent string) {

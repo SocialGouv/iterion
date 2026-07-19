@@ -141,6 +141,7 @@ type jsonVarsBlock struct {
 type jsonVarField struct {
 	Name    string       `json:"name,omitempty"`
 	Type    string       `json:"type,omitempty"`
+	Enum    []string     `json:"enum,omitempty"`
 	Default *jsonLiteral `json:"default,omitempty"`
 }
 
@@ -1006,6 +1007,7 @@ func varsBlockToJSON(v *VarsBlock) *jsonVarsBlock {
 		jf := &jsonVarField{
 			Name: f.Name,
 			Type: typeExprToStr[f.Type],
+			Enum: f.EnumValues,
 		}
 		if f.Default != nil {
 			jf.Default = literalToJSON(f.Default)
@@ -1532,7 +1534,7 @@ func varsBlockFromJSON(jv *jsonVarsBlock) (*VarsBlock, error) {
 		if !ok {
 			return nil, fmt.Errorf("astjson: unknown type %q", jf.Type)
 		}
-		vf := &VarField{Name: jf.Name, Type: te}
+		vf := &VarField{Name: jf.Name, Type: te, EnumValues: jf.Enum}
 		if jf.Default != nil {
 			l, err := literalFromJSON(jf.Default)
 			if err != nil {

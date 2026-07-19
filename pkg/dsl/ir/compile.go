@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1476,6 +1477,9 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 				Name: f.Name,
 				Type: convertVarType(f.Type),
 			}
+			if len(f.EnumValues) > 0 {
+				v.EnumValues = c.compileVarEnum(f)
+			}
 			if f.Default != nil {
 				v.HasDefault = true
 				// Reuse the preset coercion so a var default is validated and
@@ -1495,6 +1499,15 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 					}
 				}
 			}
+			// A default on an enum-constrained var must be one of the
+			// declared values. A non-string default is C109 territory
+			// (type mismatch) and deliberately not double-flagged here.
+			if len(v.EnumValues) > 0 && v.HasDefault {
+				if s, ok := v.Default.(string); ok && !slices.Contains(v.EnumValues, s) {
+					c.errorf(DiagVarDefaultNotInEnum,
+						"var %q default %q is not one of the enum values (%s)", f.Name, s, quoteList(v.EnumValues))
+				}
+			}
 			vars[f.Name] = v
 		}
 	}
@@ -1504,6 +1517,40 @@ func (c *compiler) compileVars(topLevel *ast.VarsBlock, workflowLevel *ast.VarsB
 	addVars(workflowLevel)
 
 	return vars
+}
+
+// compileVarEnum validates a var's `[enum: ...]` constraint: enums are
+// only meaningful on string vars (C125), and duplicate values are
+// deduplicated with a warning (C127). Returns the deduplicated value
+// set, or nil when the constraint is invalid for the var's type.
+func (c *compiler) compileVarEnum(f *ast.VarField) []string {
+	vt := convertVarType(f.Type)
+	if vt != VarString {
+		c.errorf(DiagVarEnumNonString,
+			"var %q: [enum: ...] is only valid on string vars, not %s", f.Name, vt.String())
+		return nil
+	}
+	seen := make(map[string]bool, len(f.EnumValues))
+	vals := make([]string, 0, len(f.EnumValues))
+	for _, ev := range f.EnumValues {
+		if seen[ev] {
+			c.warnf(DiagVarEnumDuplicate,
+				"var %q: duplicate enum value %q — keeping first occurrence", f.Name, ev)
+			continue
+		}
+		seen[ev] = true
+		vals = append(vals, ev)
+	}
+	return vals
+}
+
+// quoteList renders enum values as `"a", "b"` for diagnostics.
+func quoteList(vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // compileSecrets resolves a top-level `secrets:` block into the IR map.

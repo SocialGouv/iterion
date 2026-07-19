@@ -33,6 +33,7 @@ workflow w:
   vars:
     workspace_dir: string = "/tmp"
     loop_cap: int = 5
+    mode: string [enum: "autonomous", "interview"] = "autonomous"
   agent a:
     model: "test"
   a -> done
@@ -74,6 +75,23 @@ func TestBotsListRoute(t *testing.T) {
 	}
 	if b.Vars == nil || len(b.Vars.Fields) == 0 {
 		t.Errorf("expected vars schema in list payload; got %+v", b)
+	}
+	// The enum constraint rides the schema surface as `"enum"` — the key
+	// the studio's launch form reads to render a select instead of text.
+	var modeField *botregistry.VarField
+	for _, f := range b.Vars.Fields {
+		if f.Name == "mode" {
+			modeField = f
+		}
+	}
+	if modeField == nil {
+		t.Fatalf("mode var missing from schema payload; body=%s", rec.Body.String())
+	}
+	if len(modeField.Enum) != 2 || modeField.Enum[0] != "autonomous" || modeField.Enum[1] != "interview" {
+		t.Errorf("mode.Enum = %v, want [autonomous interview]", modeField.Enum)
+	}
+	if !strings.Contains(rec.Body.String(), `"enum"`) {
+		t.Errorf("wire payload missing \"enum\" key; body=%s", rec.Body.String())
 	}
 }
 
@@ -157,8 +175,8 @@ func TestBotsGetRoute(t *testing.T) {
 	if b.Name != "feature_dev" {
 		t.Errorf("Name = %q", b.Name)
 	}
-	if b.Vars == nil || len(b.Vars.Fields) != 2 {
-		t.Fatalf("expected 2 vars; got %+v", b.Vars)
+	if b.Vars == nil || len(b.Vars.Fields) != 3 {
+		t.Fatalf("expected 3 vars; got %+v", b.Vars)
 	}
 }
 

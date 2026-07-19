@@ -113,6 +113,10 @@ const (
 	DiagToolNodePermissionInert DiagCode = "C112" // permission: on a tool node — parsed but not enforced (warning)
 	DiagIndexOnScalar           DiagCode = "C120" // subscript `[...]` applied to a statically-scalar value (warning) — C113-C119 taken by the fan_out_each/groups epic
 	DiagInvalidNodeTimeout      DiagCode = "C122" // LLM node `timeout:` is not a valid Go duration (error) — C121 taken, C199 is skill-ref on main
+	// Var enum constraints (`name: string [enum: "a", "b"] = "a"`).
+	DiagVarEnumNonString    DiagCode = "C125" // enum constraint on a non-string var type (error)
+	DiagVarDefaultNotInEnum DiagCode = "C126" // var default value not in the enum list (error)
+	DiagVarEnumDuplicate    DiagCode = "C127" // duplicate enum values in a var constraint (warning; deduped)
 	// Event-driven primitives (ADR-051): emit/wait nodes.
 	DiagEventNoName     DiagCode = "C196" // emit/wait node with no `event:` name (error)
 	DiagWaitNoTimeout   DiagCode = "C197" // wait node with no `timeout:` (error — the no-silent-infinity invariant)

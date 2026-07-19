@@ -186,12 +186,14 @@ type VarsBlock struct {
 	Span   Span
 }
 
-// VarField is a single variable declaration: `name: type [= default]`.
+// VarField is a single variable declaration:
+// `name: type [enum: ...] [= default]`.
 type VarField struct {
-	Name    string
-	Type    TypeExpr
-	Default *Literal // nil if no default
-	Span    Span
+	Name       string
+	Type       TypeExpr
+	EnumValues []string // non-nil only if enum constraint present
+	Default    *Literal // nil if no default
+	Span       Span
 }
 
 // ---------------------------------------------------------------------------
