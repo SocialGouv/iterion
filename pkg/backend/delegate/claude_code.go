@@ -64,6 +64,12 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 	var opts []claudesdk.Option
 	var sandboxCleanup func()
 
+	// Route the SDK's internal error diagnostics (control-protocol
+	// delivery failures and the like) to the backend logger.
+	opts = append(opts, claudesdk.WithLogf(func(format string, args ...any) {
+		b.Logger.Error(format, args...)
+	}))
+
 	// APPEND, do not REPLACE. --system-prompt would discard Claude Code's
 	// native agentic system prompt (tool-use discipline, plan-before-act,
 	// read-before-edit, parallel-tool reflex, file:line conventions, refusal

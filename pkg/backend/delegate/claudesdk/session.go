@@ -345,7 +345,9 @@ func (s *Session) handleControlRequest(ctx context.Context, data json.RawMessage
 	case "hook_callback":
 		s.handleHookCallback(ctx, req)
 	default:
-		_ = s.ctrl.sendErrorResponse(req.RequestID, "unsupported: "+subtype)
+		if err := s.ctrl.sendErrorResponse(req.RequestID, "unsupported: "+subtype); err != nil {
+			s.cfg.errorf("claudesdk: failed to deliver error response (request_id=%s, subtype=%s): %v", req.RequestID, subtype, err)
+		}
 	}
 }
 
@@ -366,13 +368,20 @@ func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
 		ToolUseID  *string        `json:"tool_use_id,omitempty"`
 	}
 	if err := json.Unmarshal(req.Request, &body); err != nil {
-		_ = s.ctrl.sendErrorResponse(req.RequestID, "parse error: "+err.Error())
+		if sendErr := s.ctrl.sendErrorResponse(req.RequestID, "parse error: "+err.Error()); sendErr != nil {
+			s.cfg.errorf("claudesdk: failed to deliver hook parse-error response (request_id=%s): %v", req.RequestID, sendErr)
+		}
 		return
 	}
 
 	handler, ok := s.hookCallbacks[body.CallbackID]
 	if !ok {
-		_ = s.ctrl.sendErrorResponse(req.RequestID, "unknown callback: "+body.CallbackID)
+		// An unknown callback_id signals a hook-registration bug — worth a
+		// log line even when the error response is delivered fine.
+		s.cfg.errorf("claudesdk: hook callback for unknown callback_id %s", body.CallbackID)
+		if sendErr := s.ctrl.sendErrorResponse(req.RequestID, "unknown callback: "+body.CallbackID); sendErr != nil {
+			s.cfg.errorf("claudesdk: failed to deliver unknown-callback error response (request_id=%s, callback_id=%s): %v", req.RequestID, body.CallbackID, sendErr)
+		}
 		return
 	}
 
@@ -383,7 +392,9 @@ func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
 
 	output, err := handler(ctx, input)
 	if err != nil {
-		_ = s.ctrl.sendErrorResponse(req.RequestID, err.Error())
+		if sendErr := s.ctrl.sendErrorResponse(req.RequestID, err.Error()); sendErr != nil {
+			s.cfg.errorf("claudesdk: failed to deliver hook error response (request_id=%s, callback_id=%s, cause=%v): %v", req.RequestID, body.CallbackID, err, sendErr)
+		}
 		return
 	}
 
@@ -433,5 +444,9 @@ func (s *Session) handleHookCallback(ctx context.Context, req controlRequest) {
 		}
 	}
 
-	_ = s.ctrl.sendResponse(req.RequestID, "success", resp)
+	// A lost success response can drop a Stop-hook block decision — the
+	// CLI would end the turn a hook meant to hold open.
+	if sendErr := s.ctrl.sendResponse(req.RequestID, "success", resp); sendErr != nil {
+		s.cfg.errorf("claudesdk: failed to deliver hook response (request_id=%s, callback_id=%s): %v", req.RequestID, body.CallbackID, sendErr)
+	}
 }
