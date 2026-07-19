@@ -71,6 +71,13 @@ func (s *FilesystemRunStore) CreateQueuedRun(_ context.Context, id, workflowName
 	if err := sanitizePathComponent("run ID", id); err != nil {
 		return nil, err
 	}
+	// Same tombstone rule as CreateRun: a deleted run id is never
+	// reusable. Without the guard the exclusive create would succeed —
+	// a tombstoned dir has no run.json — and resurrect the run as an
+	// unreadable zombie (run.json and the deletion marker side by side).
+	if err := s.guardNotDeleted(id); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	r := &Run{
 		FormatVersion:  RunFormatVersion,

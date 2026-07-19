@@ -41,6 +41,11 @@ func (s *FilesystemRunStore) WriteToolBlob(_ context.Context, runID, toolUseID, 
 	if err := validateToolBlobKind(kind); err != nil {
 		return 0, err
 	}
+	// Tombstone guard BEFORE the MkdirAll below: a late tool-I/O flush
+	// gets the typed refusal instead of rebuilding a deleted run's tree.
+	if err := s.guardNotDeleted(runID); err != nil {
+		return 0, err
+	}
 	dir := filepath.Dir(s.toolBlobPath(runID, toolUseID, kind))
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return 0, fmt.Errorf("store: mkdir tool blob dir: %w", err)

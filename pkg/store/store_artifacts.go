@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,11 @@ func (s *FilesystemRunStore) WriteArtifact(ctx context.Context, a *Artifact) err
 		return err
 	}
 	if err := sanitizePathComponent("node ID", a.NodeID); err != nil {
+		return err
+	}
+	// Tombstone guard BEFORE the MkdirAll below: a late artifact write
+	// gets the typed refusal instead of rebuilding a deleted run's tree.
+	if err := s.guardNotDeleted(a.RunID); err != nil {
 		return err
 	}
 	if a.WrittenAt.IsZero() {
@@ -52,15 +58,15 @@ func (s *FilesystemRunStore) WriteArtifact(ctx context.Context, a *Artifact) err
 
 	// Update the artifact index in run.json. The index is a cache — if it's
 	// stale, LoadLatestArtifact falls back to a directory scan — so a fresh
-	// run with no run.json yet (LoadRun errors with NotExist) is not fatal.
-	// But once run.json exists, a failure to update the index (e.g. ENOSPC,
-	// permission denied, JSON encode error) IS surfaced to the caller: a
-	// silently dropped index update can cause downstream nodes to read a
-	// stale artifact version, which is a correctness bug, not a performance
-	// degradation. Callers can decide to retry or fail the run.
+	// run with no run.json yet (loadRunRaw reports ErrRunNotFound) is not
+	// fatal. But once run.json exists, a failure to update the index (e.g.
+	// ENOSPC, permission denied, JSON encode error) IS surfaced to the
+	// caller: a silently dropped index update can cause downstream nodes to
+	// read a stale artifact version, which is a correctness bug, not a
+	// performance degradation. Callers can decide to retry or fail the run.
 	r, err := s.loadRunRaw(a.RunID)
 	if err != nil {
-		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+		if errors.Is(err, ErrRunNotFound) {
 			// No run.json yet (e.g. early CreateRun race) — artifact written,
 			// index will be populated by a later write or by directory scan.
 			return nil

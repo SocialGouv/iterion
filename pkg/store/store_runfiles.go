@@ -30,6 +30,12 @@ func (s *FilesystemRunStore) EnsureRunFilesDir(_ context.Context, runID string) 
 	if err := sanitizePathComponent("run ID", runID); err != nil {
 		return "", err
 	}
+	// Tombstone guard BEFORE the MkdirAll below: re-provisioning the
+	// scratch dir gets the typed refusal instead of rebuilding a deleted
+	// run's tree.
+	if err := s.guardNotDeleted(runID); err != nil {
+		return "", err
+	}
 	runDir := s.runDir(runID)
 	if err := os.MkdirAll(runDir, dirPerm); err != nil {
 		return "", fmt.Errorf("store: mkdir run dir: %w", err)
