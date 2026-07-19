@@ -14,6 +14,7 @@ import {
   getMe,
   login as apiLogin,
   logout as apiLogout,
+  register as apiRegister,
   refresh as apiRefresh,
   switchOrg as apiSwitchOrg,
   switchTeam as apiSwitchTeam,
@@ -57,6 +58,12 @@ interface AuthCtx extends AuthState {
   // this is always false there.
   isRestricted: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signUp: (input: {
+    email: string;
+    password: string;
+    name?: string;
+    invitation?: string;
+  }) => Promise<void>;
   signOut: () => Promise<void>;
   selectOrg: (orgID: string) => Promise<void>;
   selectTeam: (teamID: string) => Promise<void>;
@@ -202,6 +209,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState((prev) => applyResponse(prev, res));
   }, []);
 
+  // Registration sets the session cookies server-side just like login; the
+  // response must flow into the auth state or the shell stays anonymous.
+  const signUp = useCallback(
+    async (input: { email: string; password: string; name?: string; invitation?: string }) => {
+      const res = await apiRegister(input);
+      setState((prev) => applyResponse(prev, res));
+    },
+    [],
+  );
+
   const signOut = useCallback(async () => {
     try {
       await apiLogout();
@@ -242,13 +259,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         !state.user?.is_super_admin &&
         state.orgs.every((o) => o.teams.length === 0),
       signIn,
+      signUp,
       signOut,
       selectOrg,
       selectTeam,
       reloadIdentity,
       retryConnection: bootstrap,
     };
-  }, [state, signIn, signOut, selectOrg, selectTeam, reloadIdentity, bootstrap]);
+  }, [state, signIn, signUp, signOut, selectOrg, selectTeam, reloadIdentity, bootstrap]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

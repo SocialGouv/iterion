@@ -4,7 +4,7 @@ import { InlineBanner } from "@/components/ui/InlineBanner";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useLocation } from "wouter";
-import { listProviders, register, type ProvidersResponse } from "@/api/auth";
+import { listProviders, type ProvidersResponse } from "@/api/auth";
 import { ApiError } from "@/api/auth";
 import { consumeQueryParams } from "@/lib/queryFlash";
 import { useAuth } from "@/auth/AuthContext";
@@ -66,7 +66,7 @@ function ssoErrorNotice(
 // Login so it can be composed both as a standalone full-screen page
 // (Login, below) and beneath the cloud marketing hero (CloudLanding).
 export function SignInCard() {
-  const { signIn, status } = useAuth();
+  const { signIn, signUp, status } = useAuth();
   const [, navigate] = useLocation();
   const serverInfo = useServerInfoStore((s) => s.info);
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -176,7 +176,7 @@ export function SignInCard() {
       if (mode === "login") {
         await signIn(email, password);
       } else {
-        await register({ email, password, name, invitation: invitation || undefined });
+        await signUp({ email, password, name, invitation: invitation || undefined });
       }
       navigate(returnTo());
     } catch (e) {
