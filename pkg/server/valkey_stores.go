@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 // Valkey-backed implementations of the per-pod state stores (forge CSRF state,
@@ -39,14 +41,18 @@ func newValkeyForgeStateStore(rdb redis.UniversalClient, ttl time.Duration) *val
 	return &valkeyForgeStateStore{rdb: rdb, ttl: ttl}
 }
 
-func (s *valkeyForgeStateStore) put(p forgePending) {
+func (s *valkeyForgeStateStore) put(p forgePending) error {
 	b, err := json.Marshal(p)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal forge oauth state: %w", err)
 	}
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	_ = s.rdb.Set(ctx, forgeStateKeyPrefix+p.State, b, s.ttl).Err()
+	// Never log or wrap the state token itself — it authenticates the callback.
+	if err := s.rdb.Set(ctx, forgeStateKeyPrefix+p.State, b, s.ttl).Err(); err != nil {
+		return fmt.Errorf("persist forge oauth state (provider=%s, team=%s): %w", p.Provider, p.TenantID, err)
+	}
+	return nil
 }
 
 func (s *valkeyForgeStateStore) take(state string) (forgePending, bool) {
@@ -70,28 +76,42 @@ func (s *valkeyForgeStateStore) take(state string) (forgePending, bool) {
 const boardTokenKeyPrefix = "iterion:board:tok:"
 
 type valkeyBoardMCPTokenStore struct {
-	rdb redis.UniversalClient
+	rdb    redis.UniversalClient
+	logger *iterlog.Logger
 }
 
-func newValkeyBoardMCPTokenStore(rdb redis.UniversalClient) *valkeyBoardMCPTokenStore {
-	return &valkeyBoardMCPTokenStore{rdb: rdb}
+func newValkeyBoardMCPTokenStore(rdb redis.UniversalClient, logger *iterlog.Logger) *valkeyBoardMCPTokenStore {
+	return &valkeyBoardMCPTokenStore{rdb: rdb, logger: logger}
 }
 
-func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string) {
+func (s *valkeyBoardMCPTokenStore) Register(token string, caps []string) error {
 	b, err := json.Marshal(caps)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal board MCP caps: %w", err)
 	}
 	ctx, cancel := valkeyCtx()
 	defer cancel()
 	// Redis TTL replaces the in-memory sweep; the run's lifetime cap.
-	_ = s.rdb.Set(ctx, boardTokenKeyPrefix+token, b, boardMCPDefaultTTL).Err()
+	// Caps are safe to include in the error; the token is not.
+	if err := s.rdb.Set(ctx, boardTokenKeyPrefix+token, b, boardMCPDefaultTTL).Err(); err != nil {
+		return fmt.Errorf("store board MCP token (caps=%v): %w", caps, err)
+	}
+	return nil
 }
 
+// Revoke is best-effort: it has no production caller today and the Redis
+// key's boardMCPDefaultTTL is the backstop that reaps a missed delete, so a
+// failure is logged (token prefix only) rather than propagated.
 func (s *valkeyBoardMCPTokenStore) Revoke(token string) {
 	ctx, cancel := valkeyCtx()
 	defer cancel()
-	_ = s.rdb.Del(ctx, boardTokenKeyPrefix+token).Err()
+	if err := s.rdb.Del(ctx, boardTokenKeyPrefix+token).Err(); err != nil && s.logger != nil {
+		prefix := token
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
+		s.logger.Warn("board MCP: revoke token %s…: %v (best-effort — Redis TTL %s is the backstop)", prefix, err, boardMCPDefaultTTL)
+	}
 }
 
 func (s *valkeyBoardMCPTokenStore) lookup(token string) (boardMCPGrant, bool) {

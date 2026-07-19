@@ -84,7 +84,11 @@ type forgePending struct {
 // (forge_state_valkey.go) shares it across replicas so the OAuth/manifest
 // /start and /callback can land on different pods.
 type forgeStateBackend interface {
-	put(p forgePending)
+	// put persists the pending state; a non-nil error means the OAuth
+	// round-trip cannot complete (the callback would miss the state), so
+	// callers must fail the connect start instead of handing out a doomed
+	// authorize URL.
+	put(p forgePending) error
 	take(state string) (forgePending, bool)
 }
 
@@ -103,10 +107,11 @@ func newForgeStateStore(ttl time.Duration) *forgeStateStore {
 	return &forgeStateStore{m: make(map[string]forgePending), ttl: ttl}
 }
 
-func (s *forgeStateStore) put(p forgePending) {
+func (s *forgeStateStore) put(p forgePending) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.m[p.State] = p
+	return nil
 }
 
 func (s *forgeStateStore) take(state string) (forgePending, bool) {
@@ -842,11 +847,17 @@ func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, r *http.Request, t
 		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.forgeStates.put(forgePending{
+	if err := s.forgeStates.put(forgePending{
 		State: state, Provider: forge.ProviderGitHub, ForgeBaseURL: forge.DefaultBaseURL(forge.ProviderGitHub),
 		TenantID: teamID, UserID: userID, AgentBinding: binding,
 		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Error("forge connect: %v", err)
+		}
+		httpError(w, http.StatusBadGateway, "could not persist OAuth state — try again")
+		return
+	}
 	s.setForgeAgentBindingCookie(w, binding)
 	installURL := "https://github.com/apps/" + url.PathEscape(cfg.AppSlug) + "/installations/new?state=" + url.QueryEscape(state)
 	writeJSON(w, forgeConnectResp{InstallURL: installURL})
@@ -911,11 +922,17 @@ func (s *Server) connectForgeOAuth(w http.ResponseWriter, r *http.Request, teamI
 		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.forgeStates.put(forgePending{
+	if err := s.forgeStates.put(forgePending{
 		State: state, CodeVerifier: verifier, Provider: provider, ForgeBaseURL: baseURL,
 		TenantID: teamID, UserID: userID, AgentBinding: binding,
 		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Error("forge connect: %v", err)
+		}
+		httpError(w, http.StatusBadGateway, "could not persist OAuth state — try again")
+		return
+	}
 	s.setForgeAgentBindingCookie(w, binding)
 	authURL := app.AuthorizeURL(s.forgeOAuthRedirectURI(), state, challenge, nil)
 	writeJSON(w, forgeConnectResp{AuthorizeURL: authURL})

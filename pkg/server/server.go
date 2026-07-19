@@ -179,10 +179,11 @@ type Server struct {
 	browserSessions mcp.BrowserRegistry
 
 	// boardMCPTokens authorizes sandboxed bots that hit the board MCP
-	// HTTP endpoint. The runtime obtains the handle via [Server.BoardMCPTokens]
-	// and calls Register/Revoke around each run. Non-nil iff
-	// cfg.NativeTrackerStore is non-nil (handler is only mounted when
-	// the board exists).
+	// HTTP endpoint. Tokens are minted per node by the closure
+	// boardMCPServiceOption hands to the runview Service, which calls
+	// Register at mint time; a Register failure degrades that node to
+	// board-disabled (empty token). Non-nil iff cfg.NativeTrackerStore
+	// is non-nil (handler is only mounted when the board exists).
 	boardMCPTokens BoardMCPTokenStore
 
 	// marketplace is the hosted bot registry store. Mirrors
@@ -225,7 +226,12 @@ func (s *Server) boardMCPServiceOption(logger *iterlog.Logger) (runview.ServiceO
 			}
 			return ""
 		}
-		reg.Register(token, caps)
+		if err := reg.Register(token, caps); err != nil {
+			if logger != nil {
+				logger.Error("board MCP: %v; sandboxed board-emit disabled for a node", err)
+			}
+			return ""
+		}
 		return token
 	}), true
 }
@@ -324,7 +330,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		// Valkey-backed token registry when a distributed backend is wired,
 		// else the in-memory one (replaced transparently — same interface).
 		if s.redis != nil {
-			s.boardMCPTokens = newValkeyBoardMCPTokenStore(s.redis.Redis())
+			s.boardMCPTokens = newValkeyBoardMCPTokenStore(s.redis.Redis(), s.logger)
 		} else {
 			s.boardMCPTokens = NewBoardMCPTokenRegistry()
 		}

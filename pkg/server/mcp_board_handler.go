@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -45,10 +46,12 @@ type boardMCPGrant struct {
 // *BoardMCPTokenRegistry is single-replica; the Valkey impl
 // (valkey_stores.go) shares tokens across replicas, since the sandboxed bot's
 // HTTP call to /api/v1/mcp/board is load-balanced to any server pod while the
-// token was registered by the runtime elsewhere. Register/Revoke are called
-// by the runtime; lookup by the HTTP handler.
+// token was registered by the runtime elsewhere. Register is called by the
+// server's per-node token-minter closure (Server.boardMCPServiceOption) —
+// a Register failure means the minted token would never authorize, so the
+// minter must not hand it out; lookup is called by the HTTP handler.
 type BoardMCPTokenStore interface {
-	Register(token string, caps []string)
+	Register(token string, caps []string) error
 	Revoke(token string)
 	lookup(token string) (boardMCPGrant, bool)
 }
@@ -74,8 +77,9 @@ func newBoardMCPToken() string {
 }
 
 // Register stores a token with its grant. A subsequent call with the same
-// token replaces the grant.
-func (r *BoardMCPTokenRegistry) Register(token string, caps []string) {
+// token replaces the grant. A full registry is an error: the token would
+// never authorize, so the caller must not hand it out.
+func (r *BoardMCPTokenRegistry) Register(token string, caps []string) error {
 	grant := boardMCPGrant{
 		Capabilities: boardops.Capabilities{},
 		ExpiresAt:    r.now().Add(boardMCPDefaultTTL),
@@ -89,13 +93,13 @@ func (r *BoardMCPTokenRegistry) Register(token string, caps []string) {
 	// doesn't accumulate dead tokens between explicit Revokes.
 	r.sweepLocked()
 	if len(r.tokens) >= boardMCPMaxTokens {
-		// Hard cap: refuse to grow the registry beyond the limit.
-		// Callers see this as a silent no-op on Register; the
-		// subsequent CallTool from the affected run will 401 since
-		// the lookup misses. Logging is the caller's responsibility.
-		return
+		// Hard cap: refuse to grow the registry beyond the limit. An
+		// unregistered token's CallTool would 401 (lookup miss), so
+		// surface the refusal instead of no-opping.
+		return fmt.Errorf("board MCP token registry full (%d tokens)", boardMCPMaxTokens)
 	}
 	r.tokens[token] = grant
+	return nil
 }
 
 // Revoke removes the token. A revoked token's subsequent calls fail with 401.

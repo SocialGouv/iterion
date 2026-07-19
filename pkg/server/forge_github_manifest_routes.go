@@ -50,11 +50,17 @@ func (s *Server) handleStartGitHubManifest(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.forgeStates.put(forgePending{
+	if err := s.forgeStates.put(forgePending{
 		State: state, Provider: forge.ProviderGitHub, ForgeBaseURL: baseURL,
 		TenantID: teamID, UserID: id.UserID, AgentBinding: binding,
 		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Error("forge connect: %v", err)
+		}
+		httpError(w, http.StatusBadGateway, "could not persist OAuth state — try again")
+		return
+	}
 	s.setForgeAgentBindingCookie(w, binding)
 
 	home := strings.TrimRight(s.cfg.PublicURL, "/")
