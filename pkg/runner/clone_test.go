@@ -2,8 +2,13 @@ package runner
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
 
 func TestInjectGitToken(t *testing.T) {
@@ -123,6 +128,123 @@ func TestValidateRepoTargetHostGuard(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGitAuthorIdentity pins the committer identity seeded into a cloud
+// clone: the neutral bot fallback (RFC 2606 .invalid domain so GitHub can
+// never attribute it to a real account) and the per-deployment env override.
+func TestGitAuthorIdentity(t *testing.T) {
+	t.Setenv("ITERION_GIT_AUTHOR_NAME", "")
+	t.Setenv("ITERION_GIT_AUTHOR_EMAIL", "")
+	if got := gitAuthorName(); got != "iterion-runner[bot]" {
+		t.Errorf("default author name = %q, want iterion-runner[bot]", got)
+	}
+	if got := gitAuthorEmail(); got != "iterion-runner@bot.iterion.invalid" {
+		t.Errorf("default author email = %q, want the .invalid fallback", got)
+	}
+
+	t.Setenv("ITERION_GIT_AUTHOR_NAME", "  Custom Bot  ")
+	t.Setenv("ITERION_GIT_AUTHOR_EMAIL", "bot@corp.example")
+	if got := gitAuthorName(); got != "Custom Bot" {
+		t.Errorf("override author name = %q, want trimmed Custom Bot", got)
+	}
+	if got := gitAuthorEmail(); got != "bot@corp.example" {
+		t.Errorf("override author email = %q, want bot@corp.example", got)
+	}
+}
+
+// TestDefaultGitOpTimeout pins the ITERION_RUNNER_GIT_TIMEOUT parsing
+// contract: unset/invalid → the 15m default; a valid duration wins,
+// including a non-positive one (which disables the bound).
+func TestDefaultGitOpTimeout(t *testing.T) {
+	cases := []struct {
+		name, env string
+		want      time.Duration
+	}{
+		{"unset", "", 15 * time.Minute},
+		{"valid", "90s", 90 * time.Second},
+		{"invalid falls back", "ninety-seconds", 15 * time.Minute},
+		{"non-positive disables", "-1s", -1 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("ITERION_RUNNER_GIT_TIMEOUT", c.env)
+			if got := defaultGitOpTimeout(); got != c.want {
+				t.Errorf("defaultGitOpTimeout() with env %q = %v, want %v", c.env, got, c.want)
+			}
+		})
+	}
+}
+
+// TestSeedRunScratchIgnore pins the local-exclude seeding: a fresh clone
+// gets `.claude/` appended to .git/info/exclude (so a bot's `git add -A`
+// never drags the mirrored skills into the review diff), and a non-repo
+// dir is a silent no-op (best-effort contract).
+func TestSeedRunScratchIgnore(t *testing.T) {
+	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
+	dir := t.TempDir()
+	if err := r.runGit(context.Background(), dir, "", "init", "-q"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	seedRunScratchIgnore(dir)
+	got, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatalf("read exclude: %v", err)
+	}
+	if !strings.Contains(string(got), ".claude/") {
+		t.Errorf("exclude does not ignore .claude/: %q", got)
+	}
+
+	// Non-repo dir: no panic, nothing created (OpenFile without O_CREATE).
+	bare := t.TempDir()
+	seedRunScratchIgnore(bare)
+	if _, err := os.Stat(filepath.Join(bare, ".git")); !os.IsNotExist(err) {
+		t.Errorf("seedRunScratchIgnore created .git in a non-repo dir")
+	}
+}
+
+// TestRunGitRedactsToken proves an authed-clone token never leaks into a
+// git error: both the shown args and the subprocess output are redacted
+// to *** before the error is returned (and thus before it can be logged).
+func TestRunGitRedactsToken(t *testing.T) {
+	const tok = "sekret-token-123"
+	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
+	dir := t.TempDir()
+	if err := r.runGit(context.Background(), dir, "", "init", "-q"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	err := r.runGit(context.Background(), dir, tok, "rev-parse", "--verify", tok)
+	if err == nil {
+		t.Fatal("expected rev-parse of a bogus revision to fail")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, tok) {
+		t.Fatalf("token leaked into git error: %q", msg)
+	}
+	if !strings.Contains(msg, "***") {
+		t.Errorf("expected *** placeholder in redacted error, got %q", msg)
+	}
+}
+
+// TestRunGitEnvExtraEnvReachesSubprocess proves runGitEnv's extraEnv
+// entries land in the git subprocess environment and win over the
+// baseline — the seam the clone-guard proxy rides via HTTPS_PROXY.
+func TestRunGitEnvExtraEnvReachesSubprocess(t *testing.T) {
+	r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
+	dir := t.TempDir()
+	if err := r.runGit(context.Background(), dir, "", "init", "-q"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	// Baseline: the repo resolves its own git dir.
+	if err := r.runGitEnv(context.Background(), dir, "", nil, "rev-parse", "--git-dir"); err != nil {
+		t.Fatalf("rev-parse without extraEnv: %v", err)
+	}
+	// GIT_DIR pointed at a nonexistent path must break resolution — only
+	// possible if extraEnv actually reaches the subprocess.
+	extra := []string{"GIT_DIR=" + filepath.Join(dir, "absent-git-dir")}
+	if err := r.runGitEnv(context.Background(), dir, "", extra, "rev-parse", "--git-dir"); err == nil {
+		t.Fatal("expected GIT_DIR override from extraEnv to fail rev-parse; extraEnv did not reach the subprocess")
 	}
 }
 

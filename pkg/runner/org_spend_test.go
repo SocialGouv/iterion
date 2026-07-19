@@ -8,6 +8,7 @@ import (
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/queue"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // TestRecordOrgSpendKey pins the usage key the runner charges spend to:
@@ -80,5 +81,75 @@ func TestGitOpTimeoutBoundsSubprocess(t *testing.T) {
 	_ = r.runGit(context.Background(), dir, "", "fetch", "http://192.0.2.1/repo.git")
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("runGit returned after %s — the per-op timeout did not bound the subprocess", elapsed)
+	}
+}
+
+// TestRecordOrgSpend_NoOpShapes pins the guard clauses: no counter wired,
+// zero accumulated spend, and a tenant-less message all record nothing
+// (and never panic).
+func TestRecordOrgSpend_NoOpShapes(t *testing.T) {
+	t.Run("nil counter", func(t *testing.T) {
+		r := &Runner{cfg: Config{Logger: iterlog.Nop()}}
+		usage := newMetricsEmitter(nil, nil)
+		usage.mu.Lock()
+		usage.runCostUSD = 1
+		usage.mu.Unlock()
+		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, usage)
+	})
+	t.Run("zero totals record nothing", func(t *testing.T) {
+		counter := orgusage.NewMemoryCounter()
+		r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.Nop()}}
+		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-a", OrgID: "org-1"}, newMetricsEmitter(nil, nil))
+		if u, _ := counter.Usage(context.Background(), "org-1", time.Now().UTC()); u.CostUSD != 0 || u.InputTokens != 0 {
+			t.Fatalf("zero-spend attempt recorded usage: %+v", u)
+		}
+	})
+	t.Run("tenant-less message records nothing", func(t *testing.T) {
+		counter := orgusage.NewMemoryCounter()
+		r := &Runner{cfg: Config{OrgUsage: counter, Logger: iterlog.Nop()}}
+		usage := newMetricsEmitter(nil, nil)
+		usage.mu.Lock()
+		usage.runCostUSD = 2
+		usage.mu.Unlock()
+		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1"}, usage)
+		if u, _ := counter.Usage(context.Background(), "", time.Now().UTC()); u.CostUSD != 0 {
+			t.Fatalf("tenant-less spend recorded: %+v", u)
+		}
+	})
+	t.Run("nil usage", func(t *testing.T) {
+		r := &Runner{cfg: Config{OrgUsage: orgusage.NewMemoryCounter(), Logger: iterlog.Nop()}}
+		r.recordOrgSpend(&queue.RunMessage{RunID: "run-1", TenantID: "team-a"}, nil)
+	})
+}
+
+// TestMetricsEmitter_RunTotalsAccumulate pins the per-run accumulation the
+// org-spend charge reads: claw step events add input+output tokens and a
+// cost for priced models; delegate events add their aggregated count to
+// the input side (no price table → cost floor untouched).
+func TestMetricsEmitter_RunTotalsAccumulate(t *testing.T) {
+	m := newMetricsEmitter(&recordingEmitter{}, nil) // nil registry: totals still accumulate
+
+	_, _ = m.AppendEvent(context.Background(), "run-1", store.Event{
+		Type: store.EventLLMRequest, NodeID: "n1",
+		Data: map[string]any{"model": "claude-sonnet-4-6"},
+	})
+	_, _ = m.AppendEvent(context.Background(), "run-1", store.Event{
+		Type: store.EventLLMStepFinished, NodeID: "n1",
+		Data: map[string]any{"input_tokens": float64(1000), "output_tokens": float64(500)},
+	})
+	_, _ = m.AppendEvent(context.Background(), "run-1", store.Event{
+		Type: store.EventDelegateFinished, NodeID: "n2",
+		Data: map[string]any{"backend": "claude_code", "tokens": float64(420)},
+	})
+
+	cost, in, out := m.RunTotals()
+	if in != 1420 {
+		t.Errorf("input tokens = %d, want 1420 (claw 1000 + delegate 420)", in)
+	}
+	if out != 500 {
+		t.Errorf("output tokens = %d, want 500", out)
+	}
+	if cost <= 0 {
+		t.Errorf("cost = %v, want > 0 for a priced claw model", cost)
 	}
 }

@@ -43,3 +43,73 @@ func TestMaterializeFileSecretsNoSandboxRejectsOutOfTreeMountPath(t *testing.T) 
 		t.Fatalf("out-of-tree secret file was written despite the containment guard: %s (stat err: %v)", evil, statErr)
 	}
 }
+
+// TestMaterializeFileSecretsNoSandbox_GateShapes pins the no-op gates in
+// front of the host-side materialisation: no workflow, no file secrets, an
+// active resolved sandbox (which mounts secrets into the container
+// instead), and a file secret with no resolved credential value all yield
+// (nil, nil, nil) — nothing touches the pod filesystem.
+func TestMaterializeFileSecretsNoSandbox_GateShapes(t *testing.T) {
+	r := &Runner{cfg: Config{Logger: iterlog.New(iterlog.LevelError, os.Stderr)}}
+	credCtx := secrets.WithCredentials(context.Background(), secrets.Credentials{
+		Generic: map[string]string{"forge_token": "tok"},
+	})
+
+	cases := []struct {
+		name string
+		ctx  context.Context
+		wf   *ir.Workflow
+	}{
+		{"nil workflow", credCtx, nil},
+		{"no secrets", credCtx, &ir.Workflow{}},
+		{"env-only secret", credCtx, &ir.Workflow{Secrets: map[string]*ir.Secret{
+			"forge_token": {Name: "forge_token", As: "env"},
+		}}},
+		// The RESOLVED sandbox decision gates — a workflow-declared active
+		// sandbox mounts file secrets into the container, so the host-side
+		// materialisation must not run even though the value resolves.
+		{"active sandbox", credCtx, &ir.Workflow{
+			Sandbox: &ir.SandboxSpec{Mode: "auto"},
+			Secrets: map[string]*ir.Secret{"forge_token": {Name: "forge_token", As: "file"}},
+		}},
+		{"unresolved value skipped", context.Background(), &ir.Workflow{Secrets: map[string]*ir.Secret{
+			"forge_token": {Name: "forge_token", As: "file"},
+		}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			written, cleanup, err := r.materializeFileSecretsNoSandbox(c.ctx, c.wf)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if written != nil || cleanup != nil {
+				if cleanup != nil {
+					cleanup()
+				}
+				t.Fatalf("expected nothing written, got %v", written)
+			}
+		})
+	}
+}
+
+// TestRemoveFilesFunc pins the cleanup closure: existing files are removed
+// and already-missing paths are tolerated (idempotent, never panics).
+func TestRemoveFilesFunc(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a")
+	b := filepath.Join(dir, "b")
+	if err := os.WriteFile(a, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rm := removeFilesFunc([]string{a, b, filepath.Join(dir, "never-existed")})
+	rm()
+	for _, p := range []string{a, b} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s survived removeFilesFunc", p)
+		}
+	}
+	rm() // second call is a no-op
+}
