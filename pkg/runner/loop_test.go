@@ -619,25 +619,39 @@ func TestDeleteRunSecrets(t *testing.T) {
 // stringifyVars / env parsing / cloud budget ceiling
 // ---------------------------------------------------------------------------
 
-// TestStringifyVars characterizes the wire-vars → executor-vars coercion.
-// NOTE: the doc comment promises nested structures are "JSON-encoded", but
-// the implementation uses fmt %v — a map arrives as Go-syntax
-// (`map[a:1]`), not JSON. Pinned as-is.
+// TestStringifyVars pins the wire-vars → executor-vars contract: strings
+// pass through, non-string scalars render with %v, and nested structures
+// are JSON-encoded so the downstream template engine sees parseable JSON
+// (`{"a":1}`), never Go %v syntax (`map[a:1]`). A value JSON cannot
+// encode is an error, not a silently mangled string.
 func TestStringifyVars(t *testing.T) {
-	if got := stringifyVars(nil); got != nil {
-		t.Errorf("stringifyVars(nil) = %v, want nil", got)
+	if got, err := stringifyVars(nil); err != nil || got != nil {
+		t.Errorf("stringifyVars(nil) = %v, %v, want nil, nil", got, err)
 	}
-	if got := stringifyVars(map[string]any{}); got != nil {
-		t.Errorf("stringifyVars(empty) = %v, want nil", got)
+	if got, err := stringifyVars(map[string]any{}); err != nil || got != nil {
+		t.Errorf("stringifyVars(empty) = %v, %v, want nil, nil", got, err)
 	}
-	got := stringifyVars(map[string]any{
+	got, err := stringifyVars(map[string]any{
 		"s": "x",
 		"f": float64(2),
+		"i": 7,
 		"b": true,
 		"z": nil,
-		"m": map[string]any{"a": float64(1)},
+		"m": map[string]any{"b": float64(2), "a": "one"},
+		"l": []any{"x", float64(1), true},
 	})
-	want := map[string]string{"s": "x", "f": "2", "b": "true", "z": "", "m": "map[a:1]"}
+	if err != nil {
+		t.Fatalf("stringifyVars: %v", err)
+	}
+	want := map[string]string{
+		"s": "x",
+		"f": "2",
+		"i": "7",
+		"b": "true",
+		"z": "",
+		"m": `{"a":"one","b":2}`, // JSON (sorted keys), not Go map syntax
+		"l": `["x",1,true]`,
+	}
 	for k, w := range want {
 		if got[k] != w {
 			t.Errorf("stringifyVars[%q] = %q, want %q", k, got[k], w)
@@ -645,6 +659,14 @@ func TestStringifyVars(t *testing.T) {
 	}
 	if len(got) != len(want) {
 		t.Errorf("len = %d, want %d", len(got), len(want))
+	}
+
+	// An unencodable nested value surfaces as an error naming the var —
+	// never a silent %v fallback.
+	if _, err := stringifyVars(map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("stringifyVars(chan var) = nil error, want JSON-encode error")
+	} else if !strings.Contains(err.Error(), `"bad"`) {
+		t.Errorf("stringifyVars(chan var) error = %q, want it to name var \"bad\"", err)
 	}
 }
 

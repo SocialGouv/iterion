@@ -14,11 +14,13 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -1294,7 +1296,10 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 	// at the runner boundary keeps pkg/backend/model free of any
 	// metrics dependency.
 	usage := newMetricsEmitter(emitter, r.cfg.Metrics)
-	vars := stringifyVars(msg.Vars)
+	vars, err := stringifyVars(msg.Vars)
+	if err != nil {
+		return nil, nil, err
+	}
 	exec, err := runview.BuildExecutor(runview.ExecutorSpec{
 		Ctx:      ctx,
 		Workflow: wf,
@@ -1318,11 +1323,13 @@ func (r *Runner) buildExecutor(ctx context.Context, msg *queue.RunMessage, wf *i
 
 // stringifyVars converts the wire payload's free-form vars into the
 // string-typed map the executor expects. Non-string scalars are
-// formatted with %v; nested structures are JSON-encoded so the
-// downstream template engine can still see them.
-func stringifyVars(in map[string]any) map[string]string {
+// formatted with %v; nested structures (maps, slices, structs, …) are
+// JSON-encoded so the downstream template engine can still see them.
+// A nested value JSON cannot encode surfaces as an error — never
+// silently degraded to Go %v syntax.
+func stringifyVars(in map[string]any) (map[string]string, error) {
 	if len(in) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string]string, len(in))
 	for k, v := range in {
@@ -1332,8 +1339,22 @@ func stringifyVars(in map[string]any) map[string]string {
 		case nil:
 			out[k] = ""
 		default:
-			out[k] = fmt.Sprintf("%v", t)
+			switch reflect.ValueOf(v).Kind() {
+			case reflect.Bool,
+				reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+				reflect.Float32, reflect.Float64,
+				reflect.Complex64, reflect.Complex128,
+				reflect.String:
+				out[k] = fmt.Sprintf("%v", t)
+			default:
+				b, err := json.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("runner: JSON-encode var %q (%T): %w", k, v, err)
+				}
+				out[k] = string(b)
+			}
 		}
 	}
-	return out
+	return out, nil
 }
