@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
-import { isSafeStoreParam, type RunEvent, type RunSnapshot } from "@/api/runs";
+import {
+  asRunEvent,
+  isSafeStoreParam,
+  type RunEvent,
+  type RunSnapshot,
+} from "@/api/runs";
 import { toastForEvent } from "@/hooks/useRunToasts";
 import { buildWsUrl } from "@/lib/wsUrl";
 import { useRunStore, useRunStoreInstance } from "@/store/run";
@@ -272,7 +277,10 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
               applySnapshot(env.payload as RunSnapshot);
               break;
             case "event": {
-              const evt = env.payload as RunEvent;
+              // asRunEvent is the typed-ingress boundary: raw envelope
+              // JSON becomes a RunEvent here (throws into the catch
+              // below on a non-event payload).
+              const evt = asRunEvent(env.payload);
               if (evt.type === "alert") {
                 handleAlertEvent(evt);
                 break;
@@ -290,7 +298,9 @@ export function useRunWebSocket(runId: string | null): RunWsHandle {
               // replay batch, but partition defensively in case a sink
               // ever multiplexes one in.
               flushEvents();
-              const batch = env.payload as RunEvent[];
+              const batch = Array.isArray(env.payload)
+                ? env.payload.map(asRunEvent)
+                : [];
               const persisted: RunEvent[] = [];
               for (const e of batch) {
                 if (e.type === "alert") handleAlertEvent(e);

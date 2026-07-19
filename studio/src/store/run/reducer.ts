@@ -3,8 +3,10 @@ import type {
   RunEvent,
   RunHeader,
   RunSnapshot,
+  UserMessageEvent,
 } from "@/api/runs";
 import { extractTodosFromInput } from "@/components/Runs/toolFormatters";
+import { isRecord } from "@/lib/isRecord";
 
 import type {
   BrowserScreenshot,
@@ -40,34 +42,30 @@ const TODO_LIST_TOOL_NAMES: ReadonlySet<string> = new Set([
 // queuedMessageFromEvent unmarshals one user_message_* event's Data
 // block into a QueuedUserMessage. Returns null when the payload is
 // missing the mandatory id field.
-function queuedMessageFromEvent(evt: RunEvent): QueuedUserMessage | null {
-  const data = (evt.data ?? {}) as Record<string, unknown>;
-  const id = typeof data.id === "string" ? data.id : "";
+function queuedMessageFromEvent(evt: UserMessageEvent): QueuedUserMessage | null {
+  const data = evt.data ?? {};
+  const id = data.id ?? "";
   if (!id) return null;
-  const text = typeof data.text === "string" ? data.text : "";
-  const statusRaw =
-    typeof data.status === "string" ? data.status : eventTypeToStatus(evt.type);
-  const status =
+  const statusRaw = data.status ?? eventTypeToStatus(evt.type);
+  const status: QueuedMessageStatus =
     statusRaw === "queued" ||
     statusRaw === "delivered" ||
     statusRaw === "consumed" ||
     statusRaw === "cancelled"
-      ? (statusRaw as QueuedMessageStatus)
+      ? statusRaw
       : "queued";
-  const queuedAt =
-    typeof data.queued_at === "string" ? data.queued_at : evt.timestamp;
   return {
     id,
-    text,
-    queued_at: queuedAt,
-    delivered_at: stringOrNull(data.delivered_at),
-    consumed_at: stringOrNull(data.consumed_at),
-    cancelled_at: stringOrNull(data.cancelled_at),
+    text: data.text ?? "",
+    queued_at: data.queued_at ?? evt.timestamp,
+    delivered_at: data.delivered_at ?? null,
+    consumed_at: data.consumed_at ?? null,
+    cancelled_at: data.cancelled_at ?? null,
     status,
   };
 }
 
-function eventTypeToStatus(t: string): QueuedMessageStatus {
+function eventTypeToStatus(t: UserMessageEvent["type"]): QueuedMessageStatus {
   switch (t) {
     case "user_message_delivered":
       return "delivered";
@@ -78,10 +76,6 @@ function eventTypeToStatus(t: string): QueuedMessageStatus {
     default:
       return "queued";
   }
-}
-
-function stringOrNull(v: unknown): string | null {
-  return typeof v === "string" ? v : null;
 }
 
 // sameQueuedMessages compares two inbox lists by (id, status, text).
@@ -133,25 +127,18 @@ export function rehydratePendingHumanInput(
 ): PendingHumanInput | null {
   if (snap.run.status !== "paused_waiting_human") return null;
   const cp = snap.run.checkpoint;
-  if (!cp || typeof cp !== "object") return null;
-  // Narrow each field with runtime type checks before reading. The
-  // server-side Checkpoint shape is opaque (any subset of fields may
-  // be missing on legacy snapshots), so a blind cast left
-  // PendingHumanInput populated with undefined when the payload
-  // didn't match expectations — the panel then rendered with no
-  // questions and no interaction_id.
-  const obj = cp as Record<string, unknown>;
-  const nodeID = typeof obj.node_id === "string" ? obj.node_id : undefined;
-  const interactionID =
-    typeof obj.interaction_id === "string" ? obj.interaction_id : undefined;
-  const questions =
-    obj.interaction_questions && typeof obj.interaction_questions === "object"
-      ? (obj.interaction_questions as Record<string, unknown>)
-      : {};
+  if (!cp) return null;
+  // node_id / interaction_id are typed on RunCheckpoint; the questions
+  // map sits behind the opaque index signature (any subset of fields
+  // may be missing on legacy snapshots), so narrow it at runtime — a
+  // blind cast left PendingHumanInput populated with undefined when
+  // the payload didn't match expectations, and the panel rendered
+  // with no questions and no interaction_id.
+  const q = cp.interaction_questions;
   return {
-    interaction_id: interactionID,
-    node_id: nodeID,
-    questions,
+    interaction_id: cp.interaction_id,
+    node_id: cp.node_id,
+    questions: isRecord(q) ? q : {},
   };
 }
 
@@ -345,7 +332,7 @@ export function reduceEvents(
           typeof rawPath === "string" && rawPath.length > 0
             ? `exec:${branch || "main"}:${evt.node_id}:${rawPath}`
             : makeExecutionId(branch, evt.node_id, iter);
-        const kind = (evt.data?.kind as string) ?? undefined;
+        const kind = evt.data?.kind;
         ensureExecCopy();
         const existing = executionsById.get(id);
         // Monotonic status: a duplicate `node_started` (history replay
@@ -449,8 +436,8 @@ export function reduceEvents(
       case "tool_started": {
         const exec = currentExec(executionsById, lastExecIDByNode, branch, evt.node_id);
         if (!exec) break;
-        const toolName = (evt.data?.tool as string) ?? "";
-        const toolUseID = (evt.data?.tool_use_id as string) ?? "";
+        const toolName = evt.data?.tool ?? "";
+        const toolUseID = evt.data?.tool_use_id ?? "";
         ensureInFlightCopy();
         const prev = inFlightToolsByExec.get(exec.execution_id) ?? [];
         const next = prev.concat({
@@ -488,8 +475,8 @@ export function reduceEvents(
         if (!exec) break;
         const prev = inFlightToolsByExec.get(exec.execution_id);
         if (!prev || prev.length === 0) break;
-        const toolUseID = (evt.data?.tool_use_id as string) ?? "";
-        const toolName = (evt.data?.tool as string) ?? "";
+        const toolUseID = evt.data?.tool_use_id ?? "";
+        const toolName = evt.data?.tool ?? "";
         // Prefer matching by toolUseID (only claude_code paths carry
         // one); fall back to the oldest entry with the same toolName,
         // and as a last resort drop the oldest entry to avoid leaks.
@@ -535,9 +522,9 @@ export function reduceEvents(
           });
         }
         pendingHumanInput = {
-          interaction_id: evt.data?.interaction_id as string | undefined,
+          interaction_id: evt.data?.interaction_id,
           node_id: evt.node_id,
-          questions: evt.data?.questions as Record<string, unknown> | undefined,
+          questions: evt.data?.questions,
           raw: evt,
         };
         break;
@@ -564,7 +551,7 @@ export function reduceEvents(
         break;
       }
       case "run_failed": {
-        const errMsg = (evt.data?.error as string) ?? null;
+        const errMsg = evt.data?.error ?? null;
         const exec = currentExec(executionsById, lastExecIDByNode, branch, evt.node_id);
         if (exec) {
           ensureExecCopy();
@@ -616,7 +603,7 @@ export function reduceEvents(
         break;
       }
       case "run_cancelled": {
-        const reason = (evt.data?.reason as string) ?? "cancelled by user";
+        const reason = evt.data?.reason ?? "cancelled by user";
         closeInFlightOnRunTermination(
           executionsById,
           ensureExecCopy,
@@ -637,7 +624,7 @@ export function reduceEvents(
         // persist as paused_operator on the backend. Human-input pause
         // leaves reason empty (or "human"). Branch so the live status
         // matches the persisted status without a second event round-trip.
-        const reason = (evt.data?.reason as string) ?? "";
+        const reason = evt.data?.reason ?? "";
         runStatusOverride =
           reason === "operator" || reason === "cost_cap_daily"
             ? "paused_operator"
@@ -645,7 +632,7 @@ export function reduceEvents(
         break;
       }
       case "browser_session_started": {
-        const sessionId = (evt.data?.session_id as string) ?? "";
+        const sessionId = evt.data?.session_id ?? "";
         if (!sessionId) break;
         browser = {
           ...browser,
@@ -659,7 +646,7 @@ export function reduceEvents(
         break;
       }
       case "browser_session_ended": {
-        const sessionId = (evt.data?.session_id as string) ?? "";
+        const sessionId = evt.data?.session_id ?? "";
         // Clear only if the ended session matches the active one;
         // otherwise a stale-old end event would clobber a fresh
         // session.
@@ -669,14 +656,14 @@ export function reduceEvents(
         break;
       }
       case "browser_screenshot": {
-        const attachmentName = (evt.data?.attachment_name as string) ?? "";
+        const attachmentName = evt.data?.attachment_name ?? "";
         if (!attachmentName) break;
         const shot: BrowserScreenshot = {
           seq: evt.seq,
           attachmentName,
-          url: evt.data?.url as string | undefined,
+          url: evt.data?.url,
           nodeId: evt.node_id,
-          toolCallId: evt.data?.tool_call_id as string | undefined,
+          toolCallId: evt.data?.tool_call_id,
         };
         // Append in seq order (events arrive monotonically; preserve
         // the invariant explicitly so a future late event doesn't
@@ -698,11 +685,11 @@ export function reduceEvents(
         break;
       }
       case "preview_url_available": {
-        const url = (evt.data?.url as string) ?? "";
+        const url = evt.data?.url ?? "";
         if (!url) break;
-        const rawScope = evt.data?.scope as string | undefined;
+        const rawScope = evt.data?.scope;
         const scope: PreviewScope = rawScope === "internal" ? "internal" : "external";
-        const rawSource = evt.data?.source as string | undefined;
+        const rawSource = evt.data?.source;
         // Manual URLs from setManualPreviewUrl take precedence: don't
         // overwrite an active manual selection with a workflow event.
         if (browser.source === "manual" && browser.currentUrl) {
@@ -714,7 +701,7 @@ export function reduceEvents(
           currentUrl: url,
           scope,
           source: rawSource === "tool-stdout" ? "tool-stdout" : "runtime",
-          kind: evt.data?.kind as string | undefined,
+          kind: evt.data?.kind,
           lastEventSeqSeen: evt.seq,
         };
         break;
