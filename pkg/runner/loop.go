@@ -1509,8 +1509,12 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 			authorName, authorEmail = n, e
 		}
 	}
-	_ = r.runGit(ctx, dir, "", "config", "user.name", authorName)
-	_ = r.runGit(ctx, dir, "", "config", "user.email", authorEmail)
+	if err := r.runGit(ctx, dir, "", "config", "user.name", authorName); err != nil {
+		return "", fmt.Errorf("runner: seed git author name in %s: %w", dir, err)
+	}
+	if err := r.runGit(ctx, dir, "", "config", "user.email", authorEmail); err != nil {
+		return "", fmt.Errorf("runner: seed git author email in %s: %w", dir, err)
+	}
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
 	return dir, nil
