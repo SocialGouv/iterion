@@ -25,6 +25,8 @@ func curatedCapabilities(provider, modelID string) ModelCapabilities {
 		return anthropicCapabilities(modelID)
 	case "openai":
 		return openaiCapabilities(modelID)
+	case "xai":
+		return xaiCapabilities(modelID)
 	default:
 		// Conservative default: tool calling + temperature, no reasoning.
 		return ModelCapabilities{
@@ -94,5 +96,28 @@ func openaiCapabilities(modelID string) ModelCapabilities {
 		Reasoning:   isReasoning,
 		ToolCall:    true,
 		Temperature: !isReasoning,
+	}
+}
+
+// xaiCapabilities returns static capabilities for xAI Grok models.
+// Mirrors claw-code-go's openai provider isReasoningModel (grok-3-mini
+// always uses reasoning mode) and claw's built-in context window
+// (131_072 for the grok-2/3 family). Dynamic modelspecs overlay newer
+// numbers when the online aggregator has them.
+func xaiCapabilities(modelID string) ModelCapabilities {
+	lower := strings.ToLower(modelID)
+	// stripRoutingPrefix-equivalent: "xai/grok-3-mini" won't reach here
+	// (ParseModelSpec already strips the provider), but a nested prefix
+	// like "grok/grok-3-mini" is still possible if someone types it.
+	if idx := strings.LastIndex(lower, "/"); idx >= 0 {
+		lower = lower[idx+1:]
+	}
+	// claw: grok-3-mini always uses reasoning mode (rejects temperature).
+	isReasoning := lower == "grok-3-mini"
+	return ModelCapabilities{
+		Reasoning:     isReasoning,
+		ToolCall:      true,
+		Temperature:   !isReasoning,
+		ContextWindow: 131_072,
 	}
 }

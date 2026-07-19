@@ -171,12 +171,12 @@ sandbox:
 
 The shipped **`iterion-default`** preset is the recommended
 starting point for allowlist mode: it covers the LLM endpoints
-(anthropic, openai, openrouter, bedrock, googleapis, azure,
-mistral) plus package registries (npm, PyPI, golang proxy) plus
-code hosts (github, gitlab, bitbucket) plus apt mirrors. It is
-**not** applied implicitly — operators name it explicitly so the
-default-open posture and the curated-allowlist posture are
-unambiguous from the YAML.
+(anthropic, openai, xAI/Grok, openrouter, bedrock, googleapis,
+azure, mistral, z.ai) plus package registries (npm, PyPI, golang
+proxy) plus code hosts (github, gitlab, bitbucket) plus apt
+mirrors. It is **not** applied implicitly — operators name it
+explicitly so the default-open posture and the curated-allowlist
+posture are unambiguous from the YAML.
 
 By default the proxy does NOT terminate TLS — only the CONNECT
 host:port is inspected, and the encrypted bytes pass through
