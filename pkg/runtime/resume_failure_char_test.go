@@ -450,21 +450,12 @@ func TestResumeFromFailure_BackendRehydrationInjectedOnce(t *testing.T) {
 	if !has {
 		t.Error("restart node input missing the rehydrated conversation")
 	} else {
-		// Dynamic-type quirk, pinned deliberately loose: today this path
-		// injects a plain []byte (resumeBackendState.conversation), NOT a
-		// json.RawMessage — while the sole executor-side consumer
-		// (applyResumeContinuity) type-asserts json.RawMessage, so the
-		// checkpoint-resume conversation currently never reaches the
-		// backend task. Accept both alias types here so a deliberate fix
-		// of that mismatch doesn't break the content pin.
-		var raw []byte
-		switch v := conv.(type) {
-		case json.RawMessage:
-			raw = v
-		case []byte:
-			raw = v
-		default:
-			t.Fatalf("rehydrated conversation type = %T, want a byte-slice form", conv)
+		// The consumer (applyResumeContinuity) type-asserts json.RawMessage;
+		// the injected value must satisfy it or the rehydration is
+		// silently dropped — pin the exact dynamic type.
+		raw, ok := conv.(json.RawMessage)
+		if !ok {
+			t.Fatalf("rehydrated conversation type = %T, want json.RawMessage (consumer's assertion)", conv)
 		}
 		// The store round-trip re-indents run.json, so the payload is only
 		// SEMANTICALLY stable — compare compacted forms.

@@ -7,6 +7,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -308,8 +309,12 @@ type runState struct {
 // payloads target. Bundling them keeps callers from partially
 // updating the group.
 type resumeBackendState struct {
-	nodeID       string
-	conversation []byte
+	nodeID string
+	// conversation is raw JSON; typed json.RawMessage so the value
+	// injected under delegate.ResumeConversationKey satisfies the
+	// consumer's json.RawMessage assertion in applyResumeContinuity
+	// (a plain []byte silently failed it and dropped the rehydration).
+	conversation json.RawMessage
 	sessionID    string
 }
 
