@@ -607,7 +607,12 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	tok := s.refreshTokenFromRequest(r)
 	if tok != "" {
-		_ = s.authSvc.Logout(r.Context(), tok)
+		// Logout stays 204 regardless (the client's cookies are cleared
+		// either way), but a failed revocation leaves the refresh token
+		// live server-side — make it visible.
+		if err := s.authSvc.Logout(r.Context(), tok); err != nil && s.logger != nil {
+			s.logger.Error("auth: revoke refresh token on logout: %v", err)
+		}
 	}
 	s.clearAuthCookies(w)
 	w.WriteHeader(http.StatusNoContent)

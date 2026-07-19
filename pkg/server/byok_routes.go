@@ -168,7 +168,10 @@ func (s *Server) handleCreateApiKey(w http.ResponseWriter, r *http.Request, team
 		return
 	}
 	if req.IsDefault {
-		_ = s.apiKeys.ClearDefault(r.Context(), teamID, userID, provider, keyID)
+		if err := s.apiKeys.ClearDefault(r.Context(), teamID, userID, provider, keyID); err != nil {
+			httpError(w, http.StatusInternalServerError, "key %s created but clearing previous default failed: %v", keyID, err)
+			return
+		}
 	}
 	s.auditTenant(r, teamID, "byok.created", "byok", keyID, map[string]any{"name": key.Name, "provider": string(provider), "user_scoped": userID != ""})
 	writeJSON(w, s.toApiKeyView(key))
@@ -217,7 +220,10 @@ func (s *Server) handleUpdateApiKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if key.IsDefault {
-		_ = s.apiKeys.ClearDefault(r.Context(), key.ScopeTeamID, key.ScopeUserID, key.Provider, key.ID)
+		if err := s.apiKeys.ClearDefault(r.Context(), key.ScopeTeamID, key.ScopeUserID, key.Provider, key.ID); err != nil {
+			httpError(w, http.StatusInternalServerError, "key updated but clearing previous default failed: %v", err)
+			return
+		}
 	}
 	s.auditTenant(r, key.ScopeTeamID, "byok.updated", "byok", key.ID, map[string]any{"name": key.Name, "rotated": req.Secret != nil})
 	writeJSON(w, s.toApiKeyView(key))

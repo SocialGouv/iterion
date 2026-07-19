@@ -272,7 +272,9 @@ func upsertForgeCard(board native.BoardStore, b *native.Board, openCol, doneCol 
 		return 0, 0, err
 	}
 	if is.State == "closed" && doneCol != "" && !isTerminalState(b, existing.State) {
-		_, _ = board.SetState(cardID, doneCol)
+		if _, err := board.SetState(cardID, doneCol); err != nil {
+			return 0, 0, err
+		}
 	}
 	return 0, 1, nil
 }
@@ -389,14 +391,19 @@ func (s *Server) handlePushIssueToForge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Stamp the card with its new forge linkage so future pushes update it.
-	_, _ = board.Update(cardID, native.Patch{External: &native.ExternalRef{
+	// A failed stamp must surface: an unlinked card whose forge issue exists
+	// would silently create a duplicate on the next push.
+	if _, err := board.Update(cardID, native.Patch{External: &native.ExternalRef{
 		Provider:     string(conn.Provider),
 		ConnectionID: req.ConnectionID,
 		Repo:         req.Repo,
 		Number:       ref.Number,
 		URL:          ref.URL,
 		State:        ref.State,
-	}})
+	}}); err != nil {
+		httpError(w, http.StatusInternalServerError, "forge issue created (%s) but linking the card failed: %v — re-push would create a duplicate; link manually", ref.URL, err)
+		return
+	}
 	writeJSON(w, pushIssueResp{URL: ref.URL, Number: ref.Number, Provider: string(conn.Provider)})
 }
 

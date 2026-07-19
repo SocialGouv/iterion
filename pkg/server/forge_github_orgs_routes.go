@@ -48,12 +48,18 @@ func (s *Server) handleStartGitHubOrgs(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.forgeStates.put(forgePending{
+	if err := s.forgeStates.put(forgePending{
 		State:    state,
 		UserID:   id.UserID,
 		NextURL:  safeNext(r.URL.Query().Get("next")),
 		IssuedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Error("forge connect: %v", err)
+		}
+		httpError(w, http.StatusBadGateway, "could not persist OAuth state — try again")
+		return
+	}
 	authURL, err := conn.AuthorizeURL(r.Context(), s.githubOrgsRedirectURI(), state, "")
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "%v", err)
@@ -93,7 +99,10 @@ func (s *Server) handleGitHubOrgsCallback(w http.ResponseWriter, r *http.Request
 		if u, err := st.GetUser(r.Context(), pending.UserID); err == nil {
 			u.GitHubOrgs = githubOrgsFromGroups(ext.Groups)
 			u.UpdatedAt = time.Now().UTC()
-			_ = st.UpdateUser(r.Context(), u)
+			if err := st.UpdateUser(r.Context(), u); err != nil {
+				httpError(w, http.StatusInternalServerError, "persist github orgs: %v", err)
+				return
+			}
 		}
 	}
 	target := pending.NextURL

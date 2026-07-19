@@ -99,10 +99,19 @@ func (s *Server) handleRemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cascade: removing a user from the org also revokes their access to
 	// every team within it (you cannot hold a team grant without an org
-	// membership).
-	teams, _ := s.authStore().ListTeamsByOrg(r.Context(), orgID)
+	// membership). Any failure aborts BEFORE the org membership is touched,
+	// so the member stays intact and the admin retries — never a half-removed
+	// member still holding team grants.
+	teams, err := s.authStore().ListTeamsByOrg(r.Context(), orgID)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "list org teams: %v", err)
+		return
+	}
 	for _, t := range teams {
-		_ = s.authStore().DeleteMembership(r.Context(), memberID, t.ID)
+		if err := s.authStore().DeleteMembership(r.Context(), memberID, t.ID); err != nil {
+			httpError(w, http.StatusInternalServerError, "revoke team %s membership: %v", t.ID, err)
+			return
+		}
 	}
 	if err := s.authStore().DeleteOrgMembership(r.Context(), memberID, orgID); err != nil {
 		httpError(w, mapAuthErrorStatus(err), "%s", err.Error())
