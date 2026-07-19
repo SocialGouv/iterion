@@ -976,6 +976,37 @@ iterion version                         # Print version
 
 Global flags: `--json` (machine output), `--help`
 
+### Remote CLI — pilot a cloud instance from your terminal
+
+`iterion remote` drives a running cloud instance (studio/server) over its
+HTTP API. Authenticate once via the **browser loopback flow**, then pilot it
+with typed subcommands. Full reference: [docs/cloud-cli.md](docs/cloud-cli.md).
+
+```bash
+# Browser login: opens <url>/cli-auth, you approve in the studio (already
+# signed in), a token is minted + saved to ~/.iterion/cli-auth.json. The
+# token pins to the team active in the studio at approval time.
+iterion remote login https://iterion.fabrique.social.gouv.fr
+iterion remote status                 # confirm instance + account + team
+```
+
+Then pilot: `iterion remote runs launch <file.bot> --follow` (uploads inline,
+or `--bot <catalog id>`), plus `runs`, `bots`, `board`, `issues`, `labels`,
+`dispatcher`, `schedules`, `triggers`, `secrets`, `api-keys`, `bindings`,
+`teams`, `orgs`, `webhooks`, `forge`, `audit`, `usage`, `memory`, `admin`,
+`sso`, `plugins`. `iterion remote api <METHOD> <path>` is the raw escape hatch
+for any endpoint. Headless auth (CI): `--token <iap_…>` (a PAT) or
+`--email/--password` (mints a CLI token).
+
+**Binary-freshness gotcha:** the full typed `remote` surface is recent — an
+older installed binary may expose only `api/login/logout/status/openapi/routes`
+(the `remote api` escape hatch still reaches everything). If subcommands are
+missing, refresh the install from a static build (see the binary-freshness note
+under Testing Patterns). Smoke-test claude_code auth on a cloud runner (e.g. a
+Claude-subscription **forfait** via `CLAUDE_CODE_OAUTH_TOKEN`) with a one-node
+`backend: "claude_code"` bot: `system/init … model=claude-opus-4-8` in the run
+log + `0 tokens` billed confirms the OAuth-forfait path (not a metered API key).
+
 ## Testing Patterns
 
 - `tmpStore()` — creates temp directory-backed RunStore for test isolation
