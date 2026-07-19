@@ -42,7 +42,7 @@ const EDGE_RE = /\b([A-Za-z_][A-Za-z0-9_]*)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)\b/;
  * Go side: `"<severity> [<code>]: <message>"`. Returns the unparsed input
  * gracefully when the prefix is absent.
  */
-export function parseDiagnostic(
+function parseDiagnostic(
   raw: string,
   fallbackSeverity: DiagnosticSeverity = "error",
 ): ParsedDiagnostic {

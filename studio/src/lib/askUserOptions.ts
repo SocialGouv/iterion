@@ -12,8 +12,8 @@ export interface AskUserOption {
 }
 
 export const ASK_USER_RESPONSE_KEY = "ask_user_response";
-export const ASK_USER_OPTIONS_KEY = "_ask_user_options";
-export const ASK_USER_ALLOW_FREE_TEXT_KEY = "_ask_user_allow_free_text";
+const ASK_USER_OPTIONS_KEY = "_ask_user_options";
+const ASK_USER_ALLOW_FREE_TEXT_KEY = "_ask_user_allow_free_text";
 
 /** Parse the structured options off a pause's questions map ([] when absent/malformed). */
 export function askUserOptions(questions: Record<string, unknown> | null | undefined): AskUserOption[] {

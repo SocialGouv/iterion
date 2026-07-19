@@ -340,14 +340,6 @@ export async function getDesktopWsBase(path: string): Promise<string | null> {
   return u.toString();
 }
 
-// resetDesktopWsCache is exposed for tests + future "explicit reload" paths.
-// Project-switch reload already invalidates the in-memory cache via the
-// page reload, but tests that swap the bindings stub between runs need a
-// way to drop it manually.
-export function resetDesktopWsCache(): void {
-  cachedDesktopWsBase = null;
-}
-
 // ── Events ───────────────────────────────────────────────────────────────
 
 /**

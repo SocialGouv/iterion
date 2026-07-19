@@ -1,4 +1,5 @@
 import type { RunStatus, RunSummary } from "@/api/runs";
+import { formatDayHeader } from "@/lib/format";
 
 import { labelForStatus } from "./runStatusMeta";
 import {
@@ -237,8 +238,8 @@ function dayBucket(iso: string | undefined): string {
 }
 
 // dayBucketLabel formats a day bucket for the group header. Today /
-// Yesterday get friendly labels; older days fall back to the locale's
-// medium date format.
+// Yesterday get friendly labels; older days fall back to the shared
+// weekday + date form (formatDayHeader).
 function dayBucketLabel(iso: string | undefined): string {
   if (!iso) return "(unknown date)";
   const t = Date.parse(iso);
@@ -253,12 +254,7 @@ function dayBucketLabel(iso: string | undefined): string {
   );
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Yesterday";
-  return d.toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: today.getFullYear() === d.getFullYear() ? undefined : "numeric",
-  });
+  return formatDayHeader(iso);
 }
 
 // statusGroupLabel returns the chip-style label for the status sort —

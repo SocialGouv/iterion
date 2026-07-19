@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, formatDateTime, formatRelative } from "./format";
+import {
+  formatDate,
+  formatDateTime,
+  formatDayHeader,
+  formatRelative,
+  formatTime,
+} from "./format";
 
 // Locale is pinned to en-US inside the helpers, but the rendered value
 // still depends on the host timezone, so assertions stay shape-loose
@@ -41,6 +47,41 @@ describe("formatDate", () => {
 
   it("returns the em-dash fallback for unparsable input", () => {
     expect(formatDate("garbage")).toBe("—");
+  });
+});
+
+describe("formatTime", () => {
+  it("renders wall-clock time only", () => {
+    const out = formatTime("2026-07-18T14:32:05Z");
+    expect(out).toMatch(/\d{1,2}:\d{2}:\d{2}/);
+    expect(out).not.toContain("2026");
+    expect(out).not.toMatch(/Jul/);
+  });
+
+  it("returns the em-dash fallback for missing or unparsable input", () => {
+    expect(formatTime(undefined)).toBe("—");
+    expect(formatTime(null)).toBe("—");
+    expect(formatTime("garbage")).toBe("—");
+  });
+});
+
+describe("formatDayHeader", () => {
+  it("renders a short weekday + date without the current year", () => {
+    const now = new Date();
+    const out = formatDayHeader(now.toISOString());
+    expect(out).toMatch(/^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}$/);
+  });
+
+  it("appends the year for instants outside the current year", () => {
+    const out = formatDayHeader("2000-07-18T12:00:00Z");
+    expect(out).toContain("2000");
+    expect(out).toMatch(/Jul 1[89]/);
+  });
+
+  it("returns the em-dash fallback for missing or unparsable input", () => {
+    expect(formatDayHeader(undefined)).toBe("—");
+    expect(formatDayHeader(null)).toBe("—");
+    expect(formatDayHeader("garbage")).toBe("—");
   });
 });
 

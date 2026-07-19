@@ -12,7 +12,7 @@ export const DETAIL_PREFIX_PROMPT = "__detail_prompt__:";
 export const DETAIL_PREFIX_VAR = "__detail_var__:";
 export const DETAIL_PREFIX_EDGE = "__detail_edge__:";
 export const DETAIL_PREFIX_TOOL = "__detail_tool__:";
-export const DETAIL_PREFIX_CENTRAL = "__detail_central__";
+const DETAIL_PREFIX_CENTRAL = "__detail_central__";
 
 export function isDetailNodeId(id: string): boolean {
   return (

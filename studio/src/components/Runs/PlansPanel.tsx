@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { listPlans } from "@/api/runs";
 import type { PlanSnapshot } from "@/api/runs/types";
+import { formatTime } from "@/lib/format";
 import { humanizeKey } from "@/lib/humanizeKey";
 import { useRunStore } from "@/store/run";
 
@@ -124,12 +125,6 @@ function toTodoItems(plan: PlanSnapshot): TodoItem[] {
     status: (VALID_STATUS.has(t.status) ? t.status : "pending") as TodoStatus,
     activeForm: t.active_form,
   }));
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString();
 }
 
 // useRunPlans fetches the plan list once per run, then refetches

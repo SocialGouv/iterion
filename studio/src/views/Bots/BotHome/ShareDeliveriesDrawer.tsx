@@ -6,11 +6,11 @@ import {
   type ShareView,
 } from "@/api/configShareAdmin";
 import {
-  Badge,
   Button,
   Dialog,
   EmptyState,
   InlineBanner,
+  StatusBadge,
   Table,
   TableSkeleton,
   TBody,
@@ -18,6 +18,7 @@ import {
   Th,
   THead,
   Tr,
+  type BadgeVariant,
 } from "@/components/ui";
 import { errorMessage } from "@/lib/errorHints";
 import { formatDateTime } from "@/lib/format";
@@ -99,7 +100,10 @@ export function ShareDeliveriesDrawer({
             {deliveries.map((d) => (
               <Tr key={d.id}>
                 <Td>
-                  <StatusBadge status={d.status} />
+                  <StatusBadge
+                    variant={deliveryVariant(d.status)}
+                    label={String(d.status)}
+                  />
                 </Td>
                 <Td className="text-fg-muted whitespace-nowrap">
                   {formatDateTime(d.at)}
@@ -121,14 +125,11 @@ export function ShareDeliveriesDrawer({
   );
 }
 
-function StatusBadge({ status }: { status: number }) {
-  const variant =
-    status >= 200 && status < 300
-      ? "success"
-      : status >= 400
-        ? "danger"
-        : "neutral";
-  return <Badge variant={variant}>{status}</Badge>;
+// Badge variant for a delivery's HTTP status code.
+function deliveryVariant(status: number): BadgeVariant {
+  if (status >= 200 && status < 300) return "success";
+  if (status >= 400) return "danger";
+  return "neutral";
 }
 
 // Actor is "share:<id>" (token edit) or "user:<id>" (authenticated editor

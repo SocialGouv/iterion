@@ -96,6 +96,9 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
 const dateFormatter = new Intl.DateTimeFormat("en-US", {
   dateStyle: "medium",
 });
+const timeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeStyle: "medium",
+});
 
 // formatDateTime renders an ISO timestamp as an absolute date + time,
 // e.g. "Jul 18, 2026, 2:32 PM". Returns "—" for missing or unparsable
@@ -114,6 +117,32 @@ export function formatDate(iso?: string | null): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return "—";
   return dateFormatter.format(t);
+}
+
+// formatTime renders an ISO timestamp as wall-clock time only,
+// e.g. "2:32:05 PM". Same fallbacks as formatDateTime.
+export function formatTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return timeFormatter.format(t);
+}
+
+// formatDayHeader renders an ISO timestamp as a short weekday + date for
+// day-group headers, e.g. "Sat, Jul 18" — appending the year only when
+// it differs from the current one. Same fallbacks as formatDateTime.
+export function formatDayHeader(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const d = new Date(t);
+  const opts: Intl.DateTimeFormatOptions = {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return new Intl.DateTimeFormat("en-US", opts).format(d);
 }
 
 // basename returns the trailing path segment after the last "/" or "\",

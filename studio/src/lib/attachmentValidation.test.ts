@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   formatBytes,
-  mimeMatches,
   validateAttachment,
   totalSize,
 } from "./attachmentValidation";
@@ -21,26 +20,6 @@ const file = (name: string, size: number, type: string): File => {
 };
 
 const imageField: AttachmentField = { name: "logo", type: "image" };
-
-describe("mimeMatches", () => {
-  it("matches exact MIME", () => {
-    expect(mimeMatches("image/png", "image/png")).toBe(true);
-  });
-  it("supports wildcard subtypes", () => {
-    expect(mimeMatches("image/png", "image/*")).toBe(true);
-    expect(mimeMatches("image/png", "text/*")).toBe(false);
-  });
-  it("tolerates content-type parameters", () => {
-    expect(mimeMatches("text/plain; charset=utf-8", "text/plain")).toBe(true);
-  });
-  it("is case-insensitive", () => {
-    expect(mimeMatches("IMAGE/PNG", "image/png")).toBe(true);
-  });
-  it("rejects empty inputs", () => {
-    expect(mimeMatches("", "image/*")).toBe(false);
-    expect(mimeMatches("image/png", "")).toBe(false);
-  });
-});
 
 describe("formatBytes", () => {
   it("formats small sizes in bytes", () => {

@@ -301,9 +301,9 @@ export function applyGroups(
 }
 
 // Prefixes for auxiliary node IDs
-export const AUX_PREFIX_SCHEMA = "__schema__:";
-export const AUX_PREFIX_PROMPT = "__prompt__:";
-export const AUX_PREFIX_VAR = "__var__:";
+const AUX_PREFIX_SCHEMA = "__schema__:";
+const AUX_PREFIX_PROMPT = "__prompt__:";
+const AUX_PREFIX_VAR = "__var__:";
 
 export function isAuxiliaryNodeId(id: string): boolean {
   return id.startsWith(AUX_PREFIX_SCHEMA) || id.startsWith(AUX_PREFIX_PROMPT) || id.startsWith(AUX_PREFIX_VAR);

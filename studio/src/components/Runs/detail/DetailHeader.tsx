@@ -3,7 +3,12 @@ import { useLocation } from "wouter";
 
 import type { ExecutionState, RunEvent } from "@/api/runs";
 import { CopyButton, IconButton, StatusBadge } from "@/components/ui";
-import { formatContextUsage, formatDurationBetween, formatMs } from "@/lib/format";
+import {
+  formatContextUsage,
+  formatDurationBetween,
+  formatMs,
+  formatTime,
+} from "@/lib/format";
 import { readBooleanFlag, writeBooleanFlag } from "@/lib/localStorageFlag";
 import { useNodeLabel } from "@/lib/runChat/useNodeLabel";
 
@@ -11,7 +16,6 @@ import { FollowLivePill } from "./FollowLivePill";
 import { IterationCrumb } from "./IterationCrumb";
 import { IterationPills } from "./IterationPills";
 import { NodeKindIcon } from "./NodeKindIcon";
-import { formatWallClock } from "./nodeDetailFormat";
 import { useExecutionCostMeta } from "./useExecutionCostMeta";
 
 export function DetailHeader({
@@ -101,8 +105,8 @@ export function DetailHeader({
                 }
               >
                 {showAbsoluteTimes && exec.started_at
-                  ? `${formatWallClock(exec.started_at)} → ${
-                      exec.finished_at ? formatWallClock(exec.finished_at) : "…"
+                  ? `${formatTime(exec.started_at)} → ${
+                      exec.finished_at ? formatTime(exec.finished_at) : "…"
                     }`
                   : `duration: ${duration}`}
               </button>

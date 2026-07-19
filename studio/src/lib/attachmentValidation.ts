@@ -50,7 +50,7 @@ export function validateAttachment(
 }
 
 /** Default MIME allowlist for each attachment type. */
-export function deriveAccept(type: AttachmentField["type"]): string[] {
+function deriveAccept(type: AttachmentField["type"]): string[] {
   switch (type) {
     case "image":
       return ["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -65,7 +65,7 @@ export function deriveAccept(type: AttachmentField["type"]): string[] {
  * Both `image/*` and `image/png` are accepted. Case-insensitive,
  * tolerates `; charset=...` parameters.
  */
-export function mimeMatches(mime: string, pattern: string): boolean {
+function mimeMatches(mime: string, pattern: string): boolean {
   if (!mime || !pattern) return false;
   const m = mime.toLowerCase().split(";", 1)[0]!.trim();
   const p = pattern.toLowerCase().split(";", 1)[0]!.trim();

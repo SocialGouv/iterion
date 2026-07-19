@@ -10,11 +10,11 @@ import type { RunStatus, RunSummary, WireWorkflow } from "@/api/runs";
 // Bucket key for children that cannot be attributed to a specific
 // subbot node: parent_node_id absent (legacy children, router shards)
 // AND the parent workflow has zero or 2+ subbot nodes.
-export const UNATTRIBUTED_NODE = "";
+const UNATTRIBUTED_NODE = "";
 
 // subbotNodeIds lists the parent workflow's subbot-kind node ids, in
 // declaration order. Empty when the IR hasn't loaded yet.
-export function subbotNodeIds(wf: WireWorkflow | null): string[] {
+function subbotNodeIds(wf: WireWorkflow | null): string[] {
   if (!wf) return [];
   return wf.nodes.filter((n) => n.kind === "subbot").map((n) => n.id);
 }
@@ -46,35 +46,6 @@ export function groupChildrenByNode(
   return byNode;
 }
 
-// SubbotContinuation describes how a subbot node sits in the parent
-// graph: which nodes feed it (edges in) and which nodes its child-run
-// output feeds (edges out — conditional/loop edges included, since the
-// child's output can flow down any of them). Drives the child banner's
-// "output feeds → collect" linkage line.
-export interface SubbotContinuation {
-  entryFeeders: string[];
-  successors: string[];
-}
-
-export function subbotContinuation(
-  wf: WireWorkflow | null,
-  nodeId: string,
-): SubbotContinuation {
-  const entryFeeders: string[] = [];
-  const successors: string[] = [];
-  if (wf && nodeId) {
-    for (const e of wf.edges) {
-      if (e.to === nodeId && !entryFeeders.includes(e.from)) {
-        entryFeeders.push(e.from);
-      }
-      if (e.from === nodeId && !successors.includes(e.to)) {
-        successors.push(e.to);
-      }
-    }
-  }
-  return { entryFeeders, successors };
-}
-
 // childTabLabel derives the short tab label for a child run: the shard
 // label when the spawner stamped one (fan_out_each item id), else the
 // run's friendly name, else "<workflow> #<n>" from its list position.
@@ -87,12 +58,12 @@ export function childTabLabel(child: RunSummary, index: number): string {
 // ChildStatusTone is the small palette bucket for sub-run status dots.
 // `variant` mirrors runStatusMeta.STATUS_VARIANT (badge conventions)
 // so dots and badges agree; `pulse` marks live work (running only).
-export interface ChildStatusTone {
+interface ChildStatusTone {
   variant: "info" | "warning" | "success" | "danger" | "neutral";
   pulse: boolean;
 }
 
-export function childStatusTone(status: RunStatus): ChildStatusTone {
+function childStatusTone(status: RunStatus): ChildStatusTone {
   switch (status) {
     case "running":
       return { variant: "info", pulse: true };
@@ -142,14 +113,5 @@ export function isSettledRunStatus(status: RunStatus): boolean {
     status === "failed" ||
     status === "failed_resumable" ||
     status === "cancelled"
-  );
-}
-
-// firstOpenChild picks the child a subbot node's chip click should
-// open: the first still-unsettled child (the one worth watching), else
-// the first child. Null for an empty list.
-export function firstOpenChild(children: RunSummary[]): RunSummary | null {
-  return (
-    children.find((c) => !isSettledRunStatus(c.status)) ?? children[0] ?? null
   );
 }
