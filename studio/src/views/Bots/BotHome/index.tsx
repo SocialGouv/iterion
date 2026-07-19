@@ -154,23 +154,32 @@ function BotHome({ entry }: { entry: BotEntryWithSchema }) {
     </>
   );
 
+  // <main> is overflow-hidden (each view owns its scroll, like Secrets/Skills):
+  // a full-height overflow-y-auto wrapper keeps a tall bot home (metadata +
+  // automations + vars + config-shares) reachable, scrollbar at the edge.
   if (!testOpen || !launchFile) {
-    return <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">{main}</div>;
+    return (
+      <div className="h-full overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 p-4">{main}</div>
+      </div>
+    );
   }
 
   // Test pane open: on xl the pane docks as a sticky right column next
   // to the existing sections; below xl it stacks as a bottom section.
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 xl:flex-row xl:items-start">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 xl:mx-0 xl:min-w-0 xl:flex-1">
-        {main}
-      </div>
-      <div className="w-full xl:sticky xl:top-4 xl:w-[460px] xl:shrink-0">
-        <TestRunPane
-          file={launchFile}
-          vars={entry.vars?.fields ?? []}
-          onClose={() => setTestOpen(false)}
-        />
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 xl:flex-row xl:items-start">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 xl:mx-0 xl:min-w-0 xl:flex-1">
+          {main}
+        </div>
+        <div className="w-full xl:sticky xl:top-4 xl:w-[460px] xl:shrink-0">
+          <TestRunPane
+            file={launchFile}
+            vars={entry.vars?.fields ?? []}
+            onClose={() => setTestOpen(false)}
+          />
+        </div>
       </div>
     </div>
   );
