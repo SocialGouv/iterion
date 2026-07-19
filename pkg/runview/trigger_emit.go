@@ -89,5 +89,7 @@ func (s *Service) emitRunOutcome(runID string, bodyErr error) {
 		Payload:    payload,
 		OccurredAt: time.Now().UTC(),
 	}
-	_ = s.eventPublisher.Publish(fctx, ev)
+	if err := s.eventPublisher.Publish(fctx, ev); err != nil && s.logger != nil {
+		s.logger.Error("runview: publish %s trigger event for run %s: %v — chained subscriptions will not fire", kind, runID, err)
+	}
 }
