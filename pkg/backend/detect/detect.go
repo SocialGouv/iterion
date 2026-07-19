@@ -286,6 +286,7 @@ func detectClaw(prov []ProviderStatus) BackendStatus {
 	st.Hints = []string{
 		"no ANTHROPIC_API_KEY",
 		"no OPENAI_API_KEY",
+		"no XAI_API_KEY",
 		"no AZURE_OPENAI_API_KEY",
 		"no AWS region (Bedrock)",
 		"no GOOGLE_CLOUD_PROJECT (Vertex)",
@@ -324,6 +325,16 @@ func detectProviders() []ProviderStatus {
 			SuggestedModel: "anthropic/glm-5.2",
 		},
 		detectOpenAIProvider(),
+		{
+			// xAI Grok — claw drives it through the OpenAI-compatible
+			// client (registry providers["xai"]). Detection is a pure
+			// env probe: XAI_API_KEY. Suggested model matches claw's
+			// built-in registry alias (`grok` → grok-3).
+			Name:           "xai",
+			Available:      os.Getenv("XAI_API_KEY") != "",
+			Source:         envSource("XAI_API_KEY"),
+			SuggestedModel: "xai/grok-3",
+		},
 		{
 			Name:           "foundry",
 			Available:      os.Getenv("AZURE_OPENAI_API_KEY") != "" && os.Getenv("AZURE_OPENAI_ENDPOINT") != "",

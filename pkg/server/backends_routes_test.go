@@ -18,7 +18,7 @@ func TestBackendsDetectRouteShape(t *testing.T) {
 	for _, k := range []string{
 		"ITERION_BACKEND_PREFERENCE",
 		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		"OPENAI_API_KEY",
+		"OPENAI_API_KEY", "XAI_API_KEY",
 		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",
@@ -54,6 +54,23 @@ func TestBackendsDetectRouteShape(t *testing.T) {
 	if got.ResolvedDefault != "" {
 		t.Fatalf("ResolvedDefault = %q, want empty (no creds)", got.ResolvedDefault)
 	}
+	// xai must appear in the providers list even when unavailable, so the
+	// studio can render it as a configure-me option.
+	foundXAI := false
+	for _, p := range got.Providers {
+		if p.Name == "xai" {
+			foundXAI = true
+			if p.Available {
+				t.Fatal("xai Available=true with no XAI_API_KEY")
+			}
+			if p.SuggestedModel != "xai/grok-3" {
+				t.Fatalf("xai SuggestedModel = %q", p.SuggestedModel)
+			}
+		}
+	}
+	if !foundXAI {
+		t.Fatal("xai provider missing from detect report")
+	}
 }
 
 // TestBackendsDetectReflectsAnthropic verifies that setting an env var is
@@ -61,7 +78,7 @@ func TestBackendsDetectRouteShape(t *testing.T) {
 func TestBackendsDetectReflectsAnthropic(t *testing.T) {
 	for _, k := range []string{
 		"ITERION_BACKEND_PREFERENCE",
-		"ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "XAI_API_KEY",
 		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
 		"AWS_REGION", "AWS_DEFAULT_REGION",
 		"GOOGLE_CLOUD_PROJECT",

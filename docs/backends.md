@@ -20,6 +20,7 @@ If you have **at least one** of:
   `~/.claude/.credentials.json` on Linux/WSL — "forfait")
 - `ANTHROPIC_API_KEY` set in your environment
 - `OPENAI_API_KEY` set in your environment
+- `XAI_API_KEY` set in your environment (xAI Grok)
 - `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`
 - AWS credentials (Bedrock) or `GOOGLE_CLOUD_PROJECT` (Vertex)
 
@@ -359,14 +360,39 @@ claw-only).
 |---|---|
 | `anthropic` | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` |
 | `openai` | `OPENAI_API_KEY`, **or** Codex CLI signed in via "Sign in with ChatGPT" (see `OpenAI via ChatGPT forfait` below) |
+| `xai` | `XAI_API_KEY` (xAI Grok — OpenAI-compatible chat completions at `api.x.ai`) |
 | `foundry` (Azure) | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` |
 | `bedrock` | `AWS_REGION` or `AWS_DEFAULT_REGION` (full chain handled by AWS SDK) |
 | `vertex` | `GOOGLE_CLOUD_PROJECT` |
 
 When `model:` on the agent is also empty, the runtime substitutes a
 sensible default for the first available provider — currently
-`anthropic/claude-opus-4-8` for Anthropic and
-`openai/gpt-5.4-mini` for OpenAI.
+`anthropic/claude-opus-4-8` for Anthropic,
+`openai/gpt-5.4-mini` for OpenAI, and
+`xai/grok-3` for xAI.
+
+### xAI Grok (`model: "xai/…"`)
+
+xAI is a first-class claw provider. Set `XAI_API_KEY` (or store a BYOK
+key under provider `xai` in cloud mode) and point a node at a Grok
+model:
+
+```yaml
+agent planner:
+  backend: "claw"
+  model: "xai/grok-3"
+  # optional: model: "xai/grok-3-mini"  # reasoning variant
+```
+
+Optional `XAI_BASE_URL` overrides the host (default `https://api.x.ai`).
+A trailing `/v1` is stripped automatically so pasting the public
+OpenAI-SDK base URL (`https://api.x.ai/v1`) still works — claw's
+OpenAI-compatible client always appends `/v1/chat/completions`.
+
+In cloud mode the same key can be stored as a per-org BYOK record with
+`provider: xai` (see [byok.md](byok.md)). Sandboxed runs with
+`network: allowlist` already include `api.x.ai` in the `iterion-default`
+preset.
 
 For web search & fetch on claw (the `web_search`/`web_fetch` tools, the
 SearXNG → Brave → DuckDuckGo backend ladder, `ITERION_WEB_SEARCH`, and the

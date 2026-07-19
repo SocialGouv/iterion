@@ -68,6 +68,13 @@ const (
 // registry agree without re-deriving the URL.
 const ZAIDefaultBaseURL = "https://api.z.ai/api/anthropic"
 
+// XAIDefaultBaseURL is the host claw's OpenAI-compatible client targets
+// for xAI Grok. The openai provider appends `/v1/chat/completions`, so
+// this value must NOT include a trailing `/v1` (unlike the public
+// OpenAI-SDK convention of `base_url=https://api.x.ai/v1`). Override
+// with `XAI_BASE_URL` when pointing at a proxy or regional endpoint.
+const XAIDefaultBaseURL = "https://api.x.ai"
+
 // Valid reports whether p is one of the known providers.
 func (p Provider) Valid() bool {
 	switch p {

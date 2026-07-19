@@ -228,6 +228,46 @@ func (r *Registry) registerDefaults() {
 		p := foundryprovider.New()
 		return p.NewClient(withClientIdentity(api.ProviderConfig{APIKey: apiKey, Model: modelID}))
 	}
+	// xAI Grok — OpenAI-compatible chat completions at api.x.ai.
+	// Auth via XAI_API_KEY (or cloud BYOK under provider "xai"). Model
+	// specs look like `xai/grok-3`, `xai/grok-3-mini`, `xai/grok-4`.
+	// claw-code-go reuses the openai provider for xAI (SelectProvider
+	// maps "xai" → openaiprovider); we do the same so StreamResponse,
+	// tool calling, and reasoning-model detection stay shared.
+	r.providers["xai"] = func(modelID string) (api.APIClient, error) {
+		p := openaiprovider.New()
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  os.Getenv("XAI_API_KEY"),
+			Model:   modelID,
+			BaseURL: xaiBaseURL(),
+		}))
+	}
+	r.providersWithKey["xai"] = func(modelID, apiKey string) (api.APIClient, error) {
+		p := openaiprovider.New()
+		return p.NewClient(withClientIdentity(api.ProviderConfig{
+			APIKey:  apiKey,
+			Model:   modelID,
+			BaseURL: xaiBaseURL(),
+		}))
+	}
+}
+
+// xaiBaseURL resolves the OpenAI-compatible host for xAI. Prefer an
+// explicit XAI_BASE_URL (operator / proxy override); otherwise the
+// published api.x.ai host. Trailing `/v1` is stripped so a user who
+// pastes the SDK-style base URL does not end up posting to
+// `…/v1/v1/chat/completions` (the openai client always appends
+// `/v1/chat/completions`).
+func xaiBaseURL() string {
+	base := strings.TrimSpace(os.Getenv("XAI_BASE_URL"))
+	if base == "" {
+		base = secrets.XAIDefaultBaseURL
+	}
+	base = strings.TrimRight(base, "/")
+	if strings.HasSuffix(strings.ToLower(base), "/v1") {
+		base = strings.TrimRight(base[:len(base)-3], "/")
+	}
+	return base
 }
 
 // withClientIdentity injects ITERION_LLM_USER_AGENT (the iterion-branded
