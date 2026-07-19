@@ -120,12 +120,20 @@ func (e *errEvaluator) Evaluate(context.Context, EvalInput) (*BoardDecision, Eva
 	return nil, EvalUsage{}, errors.New("eval boom")
 }
 
-// errEmitter always fails to publish.
-type errEmitter struct{ calls int }
+// failNEmitter fails the first n publishes, then records and succeeds.
+type failNEmitter struct {
+	n     int
+	calls int
+	specs []Spec
+}
 
-func (e *errEmitter) Publish(context.Context, string, Spec) error {
+func (e *failNEmitter) Publish(_ context.Context, _ string, spec Spec) error {
 	e.calls++
-	return fmt.Errorf("publish boom")
+	if e.calls <= e.n {
+		return fmt.Errorf("publish boom %d", e.calls)
+	}
+	e.specs = append(e.specs, spec)
+	return nil
 }
 
 func TestCoordinatorEvaluate(t *testing.T) {
@@ -213,20 +221,34 @@ func TestCoordinatorEvaluate(t *testing.T) {
 		}
 	})
 
-	t.Run("publish failure keeps the updated spec", func(t *testing.T) {
-		// Characterization: c.spec advances before Publish, so a failed
-		// publish keeps the in-memory board ahead of the persisted one.
-		eval := &fakeEvaluator{decs: []BoardDecision{{
+	t.Run("publish failure keeps spec at persisted state and retries next eval", func(t *testing.T) {
+		// c.spec commits only after a successful Publish, so a failed publish
+		// leaves the in-memory board mirroring the persisted one and the next
+		// evaluation re-derives the diff and retries.
+		dec := BoardDecision{
 			Upsert: []Widget{{ID: "w1", Kind: KindMetric, Props: map[string]any{"value": 1}}},
-		}}}
-		emit := &errEmitter{}
+		}
+		eval := &fakeEvaluator{decs: []BoardDecision{dec, dec}}
+		emit := &failNEmitter{n: 1}
 		c := newC(Config{Cooldown: time.Millisecond, MaxEvals: 5}, eval, emit)
+
 		c.evaluate("turn_boundary", true)
 		if emit.calls != 1 {
 			t.Fatalf("publish calls = %d, want 1", emit.calls)
 		}
-		if len(c.spec.Widgets) != 1 || c.spec.Version != 1 {
-			t.Errorf("spec not retained after publish failure: %+v", c.spec)
+		if c.spec.Version != 0 || len(c.spec.Widgets) != 0 {
+			t.Fatalf("failed publish advanced the in-memory spec: %+v", c.spec)
+		}
+
+		c.evaluate("turn_boundary", true)
+		if emit.calls != 2 || len(emit.specs) != 1 {
+			t.Fatalf("retry not published: calls=%d published=%d", emit.calls, len(emit.specs))
+		}
+		if c.spec.Version != 1 || len(c.spec.Widgets) != 1 {
+			t.Errorf("spec not committed after successful retry: %+v", c.spec)
+		}
+		if emit.specs[0].Version != 1 {
+			t.Errorf("published version = %d, want 1 (no phantom bump from the failed attempt)", emit.specs[0].Version)
 		}
 	})
 }
