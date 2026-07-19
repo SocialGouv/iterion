@@ -72,6 +72,25 @@ export interface BotEntry {
    *  execution mode each path uses. Drives the Integrations picker grouping.
    *  Empty for orchestrators (Nexie/Evoly) and loose .bot files. */
   invocations?: Invocation[];
+  /** Launch-form hints (manifest `launch:` block) — which vars the bot
+   *  considers its main inputs vs noise. Purely presentational: the launch
+   *  form regroups its buckets from this; requiredness/validation and the
+   *  engine's var resolution are untouched. */
+  launch?: BotLaunchHints;
+}
+
+/** BotLaunchHints mirrors the manifest `launch:` block. Unknown var names
+ *  are ignored silently on both lists. */
+export interface BotLaunchHints {
+  /** Var names forced into the launch form's always-visible primary
+   *  bucket, in the order listed — ahead of the heuristic primaries
+   *  (required vars without a default). A var hinted here keeps its
+   *  declared default and stays optional. */
+  primary?: string[];
+  /** Var names removed from the launch form entirely (never rendered in
+   *  any bucket). The engine still applies their declared defaults; a
+   *  name also listed in `primary` stays hidden. */
+  hidden?: string[];
 }
 
 /** Invocation mirrors the manifest `invocations:` entry. The payload field

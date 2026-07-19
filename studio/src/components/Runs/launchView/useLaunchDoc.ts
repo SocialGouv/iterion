@@ -15,7 +15,6 @@ import { useDocumentStore } from "@/store/document";
 
 import { type LLMNode } from "./ModelOverridesSection";
 import { pickAttachments, pickVars } from "./utils";
-import { classifyVar } from "./varClassify";
 
 export function useLaunchDoc(
   filePath: string,
@@ -105,14 +104,12 @@ export function useLaunchDoc(
     };
   }, [filePath, noSource, onError, setCurrentSource, storeDocument]);
 
+  // The full declared field list. Progressive-disclosure bucketing
+  // (primary / bot options / auto) happens in LaunchView via
+  // applyLaunchHints, because the split also folds in the resolved bot's
+  // launch hints — which this hook cannot see (the bot entry is matched
+  // by useBotPresets, downstream of the doc loaded here).
   const fields = pickVars(doc);
-  // Progressive disclosure buckets: required vars stay on the short form;
-  // optional vars with defaults move under Advanced; vars whose default
-  // references a runner-resolved `${PROJECT*_DIR}` placeholder become
-  // read-only "auto" rows there (override opt-in).
-  const primaryFields = fields.filter((f) => classifyVar(f) === "primary");
-  const advancedVarFields = fields.filter((f) => classifyVar(f) === "advanced");
-  const autoManagedFields = fields.filter((f) => classifyVar(f) === "auto");
 
   const attachmentFields = pickAttachments(doc);
 
@@ -148,9 +145,6 @@ export function useLaunchDoc(
     values,
     setValues,
     fields,
-    primaryFields,
-    advancedVarFields,
-    autoManagedFields,
     attachmentFields,
     llmNodes,
     worktreeOn,

@@ -15,12 +15,25 @@ interface Props {
    *  resolves to it (label-click focus) and the launch form can
    *  scroll/focus the first missing required field. */
   id?: string;
+  /** Force the prompt-style textarea for a string var regardless of the
+   *  name heuristics — e.g. a var the bot's launch hints promote to a
+   *  primary input. Non-string types ignore it. Undefined falls back to
+   *  isPromptLikeVar. */
+  promptLike?: boolean;
 }
 
 /** Per-type renderer for a single workflow var input. The form layer
  *  collects everything as strings — `POST /api/runs` accepts vars as a
  *  string→string map and the engine resolves them to the declared type. */
-export default function VarFieldInput({ field, value, onChange, required, invalid, id }: Props) {
+export default function VarFieldInput({
+  field,
+  value,
+  onChange,
+  required,
+  invalid,
+  id,
+  promptLike,
+}: Props) {
   const common = {
     id,
     "aria-required": required || undefined,
@@ -79,7 +92,7 @@ export default function VarFieldInput({ field, value, onChange, required, invali
       // match on prompt/description/instructions, or any string var
       // declared without a default) get a multi-row monospace textarea
       // so authors can paste full prompt bodies comfortably.
-      if (isPromptLikeVar(field)) {
+      if (promptLike ?? isPromptLikeVar(field)) {
         return (
           <Textarea
             value={value}

@@ -8,9 +8,11 @@ import { DesktopOnlyNotice } from "@/components/ui/DesktopOnlyNotice";
 import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useServerInfoStore } from "@/store/serverInfo";
 
-import AdvancedSection from "./launchView/AdvancedSection";
 import AttachmentsSection from "./launchView/AttachmentsSection";
+import BotOptionsSection from "./launchView/BotOptionsSection";
+import EngineOptionsSection from "./launchView/EngineOptionsSection";
 import LaunchBar from "./launchView/LaunchBar";
+import { applyLaunchHints } from "./launchView/launchHints";
 import NoSandboxConfirmDialog from "./launchView/NoSandboxConfirmDialog";
 import NoSourceEmptyState from "./launchView/NoSourceEmptyState";
 import PresetSection from "./launchView/PresetSection";
@@ -49,15 +51,22 @@ export default function LaunchView() {
     values,
     setValues,
     fields,
-    primaryFields,
-    advancedVarFields,
-    autoManagedFields,
     attachmentFields,
     llmNodes,
     worktreeOn,
   } = useLaunchDoc(filePath, setError);
   const { bot, presets, selectedPreset, selectedPresetMeta, applyPreset } =
     useBotPresets(filePath, doc, setValues);
+  // Progressive-disclosure buckets, folding in the resolved bot's launch
+  // hints (manifest `launch:` block): hint-forced primaries lead, hidden
+  // vars never render, everything else falls back to the varClassify
+  // heuristics. Presentation-only — validation + payload read `fields`.
+  const {
+    primary: primaryFields,
+    advanced: advancedVarFields,
+    auto: autoManagedFields,
+    hintedPrimary,
+  } = applyLaunchHints(fields, bot?.launch);
   const { attachments, handleAttachmentChange } = useAttachmentUploads();
   const repoTarget = useRepoTarget(bot, serverInfo);
   const overrides = useRunOverrides(filePath, worktreeOn);
@@ -212,6 +221,7 @@ export default function LaunchView() {
               submitting={submitting}
               onValueChange={onValueChange}
               onSubmit={onSubmit}
+              prominentNames={hintedPrimary}
               emptyFallback={
                 fields.length === 0 ? (
                   attachmentFields.length === 0 ? (
@@ -228,30 +238,38 @@ export default function LaunchView() {
                 ) : (
                   <p className="text-xs text-fg-subtle">
                     No required inputs — every var has a default. Tune them
-                    under Advanced, or launch as-is.
+                    under Bot options, or launch as-is.
                   </p>
                 )
               }
             />
-            {/* Everything below is tuning, not launch-blocking: one
-                disclosure keeps the first-launch page to target + inputs
-                (the wizard bar), while power users open it for optional/
-                auto-managed inputs, backend, per-node models, budget caps
-                and worktree finalization. */}
-            <AdvancedSection
-              overrides={overrides}
-              fields={fields}
-              advancedVarFields={advancedVarFields}
-              autoManagedFields={autoManagedFields}
-              values={values}
-              submitting={submitting}
-              onValueChange={onValueChange}
-              onSubmit={onSubmit}
-              llmNodes={llmNodes}
-              worktreeOn={worktreeOn}
-              cloud={cloud}
-              provider={repoTarget.selectedRepoProvider}
-            />
+            {/* Everything below is tuning, not launch-blocking: two sibling
+                disclosures keep the first-launch page to target + inputs
+                (the wizard bar). "Bot options" holds the bot's own optional
+                + auto-managed inputs (omitted when it has none); "Engine
+                options" holds the iterion knobs — backend, per-node models,
+                budget caps, worktree finalization — identical for every
+                bot. */}
+            <div className="mt-4 space-y-2">
+              <BotOptionsSection
+                advancedVarFields={advancedVarFields}
+                autoManagedFields={autoManagedFields}
+                values={values}
+                submitting={submitting}
+                onValueChange={onValueChange}
+                onSubmit={onSubmit}
+                open={overrides.botOptionsOpen}
+                onToggle={overrides.toggleBotOptions}
+              />
+              <EngineOptionsSection
+                overrides={overrides}
+                fields={fields}
+                llmNodes={llmNodes}
+                worktreeOn={worktreeOn}
+                cloud={cloud}
+                provider={repoTarget.selectedRepoProvider}
+              />
+            </div>
 
             <LaunchBar
               docReady={!!doc}

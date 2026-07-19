@@ -16,7 +16,8 @@ import {
 } from "./budgetPayload";
 import { type NodeOverride } from "./ModelOverridesSection";
 
-const ADVANCED_OPEN_KEY = "iterion.launch.advanced-open";
+const BOT_OPTIONS_OPEN_KEY = "iterion.launch.bot-options-open";
+const ENGINE_OPTIONS_OPEN_KEY = "iterion.launch.engine-options-open";
 
 export type UseRunOverridesResult = ReturnType<typeof useRunOverrides>;
 
@@ -38,17 +39,27 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
   // controls without having to click — they're meaningful options,
   // not "advanced" in the obscure sense.
   const [showAdvanced, setShowAdvanced] = useState(false);
-  // The single Advanced disclosure grouping optional/auto-managed inputs
-  // + backend/model/budget/worktree tuning — collapsed on first launch so
-  // the page reads target + inputs. Open/closed state persists across
-  // visits (power users keep it open, everyone else keeps the short form).
-  const [advancedOpen, setAdvancedOpen] = useState(() =>
-    readBooleanFlag(ADVANCED_OPEN_KEY),
+  // Two sibling disclosures below the primary inputs — "Bot options"
+  // (the bot's optional/auto-managed inputs) and "Engine options"
+  // (backend/model/budget/worktree tuning, identical for every bot) —
+  // both collapsed on first launch so the page reads target + inputs.
+  // Open/closed state persists per disclosure across visits (power users
+  // keep them open, everyone else keeps the short form).
+  const [botOptionsOpen, setBotOptionsOpen] = useState(() =>
+    readBooleanFlag(BOT_OPTIONS_OPEN_KEY),
   );
-  const toggleAdvanced = () => {
-    const next = !advancedOpen;
-    setAdvancedOpen(next);
-    writeBooleanFlag(ADVANCED_OPEN_KEY, next);
+  const toggleBotOptions = () => {
+    const next = !botOptionsOpen;
+    setBotOptionsOpen(next);
+    writeBooleanFlag(BOT_OPTIONS_OPEN_KEY, next);
+  };
+  const [engineOptionsOpen, setEngineOptionsOpen] = useState(() =>
+    readBooleanFlag(ENGINE_OPTIONS_OPEN_KEY),
+  );
+  const toggleEngineOptions = () => {
+    const next = !engineOptionsOpen;
+    setEngineOptionsOpen(next);
+    writeBooleanFlag(ENGINE_OPTIONS_OPEN_KEY, next);
   };
   // Backend override for this run. "" = let the resolver pick (the
   // current behaviour, mirrored in Settings → Backends).
@@ -122,8 +133,10 @@ export function useRunOverrides(filePath: string, worktreeOn: boolean) {
     setAutoMerge,
     showAdvanced,
     setShowAdvanced,
-    advancedOpen,
-    toggleAdvanced,
+    botOptionsOpen,
+    toggleBotOptions,
+    engineOptionsOpen,
+    toggleEngineOptions,
     backendOverride,
     setBackendOverride,
     compressOverride,

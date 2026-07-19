@@ -25,6 +25,10 @@ export interface VarFieldsSectionProps {
   /** Rendered instead of the form when `fields` is empty; null/undefined
    *  hides the section entirely. */
   emptyFallback?: ReactNode;
+  /** String vars listed here render with prompt-style prominence
+   *  (vertical label + textarea) even when the name heuristics wouldn't —
+   *  the launch form passes the hint-forced primary names. */
+  prominentNames?: ReadonlySet<string>;
 }
 
 export default function VarFieldsSection({
@@ -35,6 +39,7 @@ export default function VarFieldsSection({
   onSubmit,
   title = "Inputs",
   emptyFallback,
+  prominentNames,
 }: VarFieldsSectionProps) {
   if (fields.length === 0) return <>{emptyFallback ?? null}</>;
   return (
@@ -47,7 +52,9 @@ export default function VarFieldsSection({
       {title && <h2 className="text-xs font-medium text-fg-muted mb-2">{title}</h2>}
       <div className="space-y-4">
         {fields.map((f) => {
-          const promptLike = isPromptLikeVar(f);
+          const promptLike =
+            isPromptLikeVar(f) ||
+            (f.type === "string" && !!prominentNames?.has(f.name));
           const required = isVarRequired(f);
           const value = values[f.name] ?? "";
           const invalid = required && value.trim().length === 0;
@@ -66,6 +73,7 @@ export default function VarFieldsSection({
                   onChange={(v) => onValueChange(f.name, v)}
                   required={required}
                   invalid={invalid}
+                  promptLike={promptLike}
                 />
               </div>
             );
