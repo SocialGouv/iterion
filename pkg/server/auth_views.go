@@ -163,10 +163,22 @@ func (s *Server) buildOrgTree(ctx context.Context, userID string) ([]orgTreeView
 	for _, m := range teamMems {
 		teamRole[m.TeamID] = m.Role
 	}
+	orgIDs := make([]string, 0, len(orgMems))
+	for _, om := range orgMems {
+		orgIDs = append(orgIDs, om.OrgID)
+	}
+	// One bulk fetch instead of a GetOrg per membership. An org absent
+	// from the map is skipped exactly like the old per-row ErrNotFound;
+	// an infra failure renders the same empty tree it always did, but
+	// is logged instead of vanishing.
+	orgsByID, err := st.GetOrgsByIDs(ctx, orgIDs)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("auth: bulk-load orgs for user %s: %v", userID, err)
+	}
 	out := make([]orgTreeView, 0, len(orgMems))
 	for _, om := range orgMems {
-		org, err := st.GetOrg(ctx, om.OrgID)
-		if err != nil {
+		org, ok := orgsByID[om.OrgID]
+		if !ok {
 			continue
 		}
 		orgRole := om.Role

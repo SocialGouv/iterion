@@ -104,6 +104,31 @@ func (s *MongoStore) EnsureSchema(ctx context.Context) error {
 	return nil
 }
 
+// findByIDs runs coll.Find({_id: {$in: ids}}) and returns the matching
+// documents keyed by id (via idOf). Missing ids are simply absent from
+// the map — the bulk analogue of a per-id ErrNotFound — and an empty
+// ids slice short-circuits without a query. Shared by the MongoStore
+// Get*ByIDs methods.
+func findByIDs[T any](ctx context.Context, coll *mongo.Collection, ids []string, idOf func(T) string, findErrMsg, decodeErrMsg string) (map[string]T, error) {
+	out := make(map[string]T, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	cur, err := coll.Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", findErrMsg, err)
+	}
+	defer cur.Close(ctx)
+	var docs []T
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("%s: %w", decodeErrMsg, err)
+	}
+	for _, d := range docs {
+		out[idOf(d)] = d
+	}
+	return out, nil
+}
+
 // ----- Users -----
 
 func (s *MongoStore) CreateUser(ctx context.Context, u User) (User, error) {
@@ -124,6 +149,11 @@ func (s *MongoStore) GetUser(ctx context.Context, id string) (User, error) {
 func (s *MongoStore) GetUserByEmail(ctx context.Context, email string) (User, error) {
 	email = NormalizeEmail(email)
 	return mongoutil.FindOne[User](ctx, s.users, bson.M{"email": email}, ErrNotFound, "identity: get user by email")
+}
+
+func (s *MongoStore) GetUsersByIDs(ctx context.Context, ids []string) (map[string]User, error) {
+	return findByIDs(ctx, s.users, ids, func(u User) string { return u.ID },
+		"identity: get users by ids", "identity: decode users by ids")
 }
 
 func (s *MongoStore) UpdateUser(ctx context.Context, u User) error {
@@ -165,6 +195,11 @@ func (s *MongoStore) GetTeamBySlug(ctx context.Context, slug string) (Team, erro
 	return mongoutil.FindOne[Team](ctx, s.teams, bson.M{"slug": slug}, ErrNotFound, "identity: get team by slug")
 }
 
+func (s *MongoStore) GetTeamsByIDs(ctx context.Context, ids []string) (map[string]Team, error) {
+	return findByIDs(ctx, s.teams, ids, func(t Team) string { return t.ID },
+		"identity: get teams by ids", "identity: decode teams by ids")
+}
+
 func (s *MongoStore) UpdateTeam(ctx context.Context, t Team) error {
 	return mongoutil.ReplaceOneChecked(ctx, s.teams, bson.M{"_id": t.ID}, t, ErrSlugAlreadyTaken, ErrNotFound, "identity: update team")
 }
@@ -202,6 +237,11 @@ func (s *MongoStore) GetOrg(ctx context.Context, id string) (Org, error) {
 
 func (s *MongoStore) GetOrgBySlug(ctx context.Context, slug string) (Org, error) {
 	return mongoutil.FindOne[Org](ctx, s.orgs, bson.M{"slug": slug}, ErrNotFound, "identity: get org by slug")
+}
+
+func (s *MongoStore) GetOrgsByIDs(ctx context.Context, ids []string) (map[string]Org, error) {
+	return findByIDs(ctx, s.orgs, ids, func(o Org) string { return o.ID },
+		"identity: get orgs by ids", "identity: decode orgs by ids")
 }
 
 func (s *MongoStore) UpdateOrg(ctx context.Context, o Org) error {

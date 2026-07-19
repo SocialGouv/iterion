@@ -81,6 +81,12 @@ func (m *MemoryStore) GetUserByEmail(_ context.Context, email string) (User, err
 	return m.users[id], nil
 }
 
+func (m *MemoryStore) GetUsersByIDs(_ context.Context, ids []string) (map[string]User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return getByIDs(m.users, ids), nil
+}
+
 func (m *MemoryStore) UpdateUser(_ context.Context, u User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -99,6 +105,20 @@ func (m *MemoryStore) UpdateUser(_ context.Context, u User) error {
 	u.Email = newEmail
 	m.users[u.ID] = u
 	return nil
+}
+
+// getByIDs collects the entries of m matching ids into a fresh map.
+// Missing ids are simply absent — the bulk analogue of a per-id
+// ErrNotFound. Callers must hold the store's read lock. Shared by the
+// MemoryStore Get*ByIDs methods.
+func getByIDs[T any](m map[string]T, ids []string) map[string]T {
+	out := make(map[string]T, len(ids))
+	for _, id := range ids {
+		if v, ok := m[id]; ok {
+			out[id] = v
+		}
+	}
+	return out
 }
 
 // paginate applies a Page's offset/limit to items, clamping limit to a
@@ -183,6 +203,12 @@ func (m *MemoryStore) GetTeamBySlug(_ context.Context, slug string) (Team, error
 	return m.teams[id], nil
 }
 
+func (m *MemoryStore) GetTeamsByIDs(_ context.Context, ids []string) (map[string]Team, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return getByIDs(m.teams, ids), nil
+}
+
 func (m *MemoryStore) UpdateTeam(_ context.Context, t Team) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -254,6 +280,12 @@ func (m *MemoryStore) GetOrgBySlug(_ context.Context, slug string) (Org, error) 
 		return Org{}, ErrNotFound
 	}
 	return m.orgs[id], nil
+}
+
+func (m *MemoryStore) GetOrgsByIDs(_ context.Context, ids []string) (map[string]Org, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return getByIDs(m.orgs, ids), nil
 }
 
 func (m *MemoryStore) UpdateOrg(_ context.Context, o Org) error {

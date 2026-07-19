@@ -16,6 +16,12 @@ type Store interface {
 	CreateUser(ctx context.Context, u User) (User, error)
 	GetUser(ctx context.Context, id string) (User, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
+	// GetUsersByIDs returns the users matching ids, keyed by id. An id
+	// with no matching user is simply absent from the result — the bulk
+	// analogue of a per-id GetUser ErrNotFound — so callers resolving a
+	// reference list (member rosters, org trees) issue one query instead
+	// of a Get per row.
+	GetUsersByIDs(ctx context.Context, ids []string) (map[string]User, error)
 	UpdateUser(ctx context.Context, u User) error
 	ListUsers(ctx context.Context, page Page) ([]User, error)
 	UserCount(ctx context.Context) (int64, error)
@@ -24,6 +30,9 @@ type Store interface {
 	CreateOrg(ctx context.Context, o Org) (Org, error)
 	GetOrg(ctx context.Context, id string) (Org, error)
 	GetOrgBySlug(ctx context.Context, slug string) (Org, error)
+	// GetOrgsByIDs returns the orgs matching ids, keyed by id; missing
+	// ids are absent from the result (see GetUsersByIDs).
+	GetOrgsByIDs(ctx context.Context, ids []string) (map[string]Org, error)
 	UpdateOrg(ctx context.Context, o Org) error
 	// DeleteOrg removes an org. Orgs are never deleted in normal
 	// operation; this exists for the teams→orgs backfill's --reverse path.
@@ -40,6 +49,9 @@ type Store interface {
 	CreateTeam(ctx context.Context, t Team) (Team, error)
 	GetTeam(ctx context.Context, id string) (Team, error)
 	GetTeamBySlug(ctx context.Context, slug string) (Team, error)
+	// GetTeamsByIDs returns the teams matching ids, keyed by id; missing
+	// ids are absent from the result (see GetUsersByIDs).
+	GetTeamsByIDs(ctx context.Context, ids []string) (map[string]Team, error)
 	UpdateTeam(ctx context.Context, t Team) error
 	// DeleteTeam removes a team. Like DeleteOrg this is not part of
 	// normal operation; it backs super-admin org deletion (cascade) and

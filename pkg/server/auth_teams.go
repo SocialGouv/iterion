@@ -71,10 +71,22 @@ func (s *Server) handleListTeams(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "list memberships: %v", err)
 		return
 	}
+	teamIDs := make([]string, 0, len(memberships))
+	for _, m := range memberships {
+		teamIDs = append(teamIDs, m.TeamID)
+	}
+	// One bulk fetch instead of a GetTeam per membership. A team absent
+	// from the map is skipped exactly like the old per-row ErrNotFound;
+	// an infra failure renders the same empty list it always did, but
+	// is logged instead of vanishing.
+	teamsByID, err := s.authStore().GetTeamsByIDs(r.Context(), teamIDs)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("auth: bulk-load teams for user %s: %v", id.UserID, err)
+	}
 	views := make([]membershipView, 0, len(memberships))
 	for _, m := range memberships {
-		t, err := s.authStore().GetTeam(r.Context(), m.TeamID)
-		if err != nil {
+		t, ok := teamsByID[m.TeamID]
+		if !ok {
 			continue
 		}
 		views = append(views, membershipView{
@@ -141,9 +153,21 @@ func (s *Server) handleListTeamMembers(w http.ResponseWriter, r *http.Request) {
 		Name   string `json:"name,omitempty"`
 		Role   string `json:"role"`
 	}
+	userIDs := make([]string, 0, len(ms))
+	for _, m := range ms {
+		userIDs = append(userIDs, m.UserID)
+	}
+	// One bulk fetch instead of a GetUser per member. A missing user
+	// yields the zero User — the row still renders with id + role, as
+	// it did when the old per-row GetUser error was swallowed; an infra
+	// failure is logged instead of vanishing.
+	usersByID, err := s.authStore().GetUsersByIDs(r.Context(), userIDs)
+	if err != nil && s.logger != nil {
+		s.logger.Warn("auth: bulk-load members of team %s: %v", teamID, err)
+	}
 	out := make([]memberView, 0, len(ms))
 	for _, m := range ms {
-		u, _ := s.authStore().GetUser(r.Context(), m.UserID)
+		u := usersByID[m.UserID]
 		out = append(out, memberView{
 			UserID: m.UserID,
 			Email:  u.Email,
