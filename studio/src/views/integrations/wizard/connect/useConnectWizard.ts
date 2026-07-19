@@ -5,6 +5,7 @@
 // feeding EnableRepoPanel.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   type ForgeConnection,
@@ -25,35 +26,43 @@ export type ConnectWizardNavigate = (
   opts?: { replace?: boolean },
 ) => void;
 
+const NO_CONNECTIONS: ForgeConnection[] = [];
+const NO_OAUTH_APPS: ForgeOAuthApp[] = [];
+
 export function useConnectWizard(
   teamID: string,
   q: URLSearchParams,
   navigate: ConnectWizardNavigate,
 ) {
-  const [connections, setConnections] = useState<ForgeConnection[]>([]);
-  const [oauthApps, setOAuthApps] = useState<ForgeOAuthApp[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Step mutations (PAT connect, App install, …) report their failures
+  // through setError; fetch failures surface from the queries. One error
+  // slot is exposed — a step error wins, and reload clears it.
+  const [actionError, setActionError] = useState<string | null>(null);
 
+  // The connections key is shared with RepoTargetSection, so a connection
+  // added here is fresh there (and vice versa) without a manual bridge.
+  const connectionsQuery = useQuery({
+    queryKey: ["forge-connections", teamID],
+    queryFn: () => listForgeConnections(teamID),
+  });
+  const oauthAppsQuery = useQuery({
+    queryKey: ["forge-oauth-apps", teamID],
+    queryFn: () => listForgeOAuthApps(teamID),
+  });
+  const connections = connectionsQuery.data ?? NO_CONNECTIONS;
+  const oauthApps = oauthAppsQuery.data ?? NO_OAUTH_APPS;
+  const loading = connectionsQuery.isLoading || oauthAppsQuery.isLoading;
+  const fetching = connectionsQuery.isFetching || oauthAppsQuery.isFetching;
+  const fetchError = connectionsQuery.error ?? oauthAppsQuery.error;
+  const error =
+    actionError ?? (fetchError && !fetching ? errorMessage(fetchError) : null);
+
+  const { refetch: refetchConnections } = connectionsQuery;
+  const { refetch: refetchOAuthApps } = oauthAppsQuery;
   const reload = useCallback(async () => {
-    setError(null);
-    try {
-      const [conns, apps] = await Promise.all([
-        listForgeConnections(teamID),
-        listForgeOAuthApps(teamID),
-      ]);
-      setConnections(conns);
-      setOAuthApps(apps);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [teamID]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+    setActionError(null);
+    await Promise.all([refetchConnections(), refetchOAuthApps()]);
+  }, [refetchConnections, refetchOAuthApps]);
 
   const connectedID = q.get("connected") ?? "";
   const installedAppID = q.get("installed") ?? "";
@@ -111,7 +120,7 @@ export function useConnectWizard(
     oauthApps,
     loading,
     error,
-    setError,
+    setError: setActionError,
     reload,
     connectedID,
     installedAppID,

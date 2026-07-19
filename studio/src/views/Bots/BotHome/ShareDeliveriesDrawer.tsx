@@ -1,31 +1,15 @@
-import { useEffect, useState } from "react";
-
 import {
   listConfigShareDeliveries,
   type Delivery,
   type ShareView,
 } from "@/api/configShareAdmin";
-import {
-  Button,
-  Dialog,
-  EmptyState,
-  InlineBanner,
-  StatusBadge,
-  Table,
-  TableSkeleton,
-  TBody,
-  Td,
-  Th,
-  THead,
-  Tr,
-  type BadgeVariant,
-} from "@/components/ui";
-import { errorMessage } from "@/lib/errorHints";
+import { DeliveriesDrawer } from "@/components/shared/DeliveriesDrawer";
+import { StatusBadge, Td, Tr, type BadgeVariant } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
 
-// Drawer listing recent deliveries (editor-side requests) for one
-// config-share. Refresh is manual (operator-triggered) — the server already
-// audits each delivery, this is a read-only window over that log.
+// Recent deliveries (editor-side requests) for one config-share — a thin
+// parameterization (fetch + columns/row shape) of the shared deliveries
+// drawer.
 export function ShareDeliveriesDrawer({
   teamID,
   share,
@@ -35,93 +19,37 @@ export function ShareDeliveriesDrawer({
   share: ShareView;
   onClose: () => void;
 }) {
-  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-
-  const load = async () => {
-    setLoading(true);
-    setErr(null);
-    try {
-      setDeliveries(await listConfigShareDeliveries(teamID, share.id));
-    } catch (e) {
-      setErr(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [teamID, share.id]);
-
   const shareName = share.label?.trim() || share.id;
 
   return (
-    <Dialog
-      open
-      onOpenChange={(v) => {
-        if (!v) onClose();
-      }}
+    <DeliveriesDrawer
       title={`Deliveries — ${shareName}`}
-      widthClass="max-w-3xl"
-      footer={
-        <>
-          <Button variant="secondary" onClick={() => void load()}>
-            Refresh
-          </Button>
-          <Button variant="primary" onClick={onClose}>
-            Close
-          </Button>
-        </>
-      }
-    >
-      {err && (
-        <InlineBanner tone="danger" layout="inline" className="mb-3">
-          {err}
-        </InlineBanner>
+      caption={`Recent deliveries for share ${shareName}`}
+      emptyMessage="No deliveries yet — this share hasn't been fetched."
+      queryKey={["config-share-deliveries", teamID, share.id]}
+      fetcher={() => listConfigShareDeliveries(teamID, share.id)}
+      columns={["Status", "When", "Method", "Actor", "Changed", "Error"]}
+      renderRow={(d: Delivery) => (
+        <Tr key={d.id}>
+          <Td>
+            <StatusBadge
+              variant={deliveryVariant(d.status)}
+              label={String(d.status)}
+            />
+          </Td>
+          <Td className="text-fg-muted whitespace-nowrap">
+            {formatDateTime(d.at)}
+          </Td>
+          <Td className="font-mono">{d.method}</Td>
+          <Td className="text-fg-muted">{formatActor(d)}</Td>
+          <Td className="font-mono text-caption">
+            {d.changed_paths?.length ? d.changed_paths.join(", ") : "—"}
+          </Td>
+          <Td className="text-danger">{d.error || "—"}</Td>
+        </Tr>
       )}
-      {loading ? (
-        <TableSkeleton rows={4} cols={6} />
-      ) : deliveries.length === 0 ? (
-        <EmptyState message="No deliveries yet — this share hasn't been fetched." />
-      ) : (
-        <Table caption={`Recent deliveries for share ${shareName}`} density="sm">
-          <THead>
-            <Th>Status</Th>
-            <Th>When</Th>
-            <Th>Method</Th>
-            <Th>Actor</Th>
-            <Th>Changed</Th>
-            <Th>Error</Th>
-          </THead>
-          <TBody>
-            {deliveries.map((d) => (
-              <Tr key={d.id}>
-                <Td>
-                  <StatusBadge
-                    variant={deliveryVariant(d.status)}
-                    label={String(d.status)}
-                  />
-                </Td>
-                <Td className="text-fg-muted whitespace-nowrap">
-                  {formatDateTime(d.at)}
-                </Td>
-                <Td className="font-mono">{d.method}</Td>
-                <Td className="text-fg-muted">
-                  {formatActor(d)}
-                </Td>
-                <Td className="font-mono text-caption">
-                  {d.changed_paths?.length ? d.changed_paths.join(", ") : "—"}
-                </Td>
-                <Td className="text-danger">{d.error || "—"}</Td>
-              </Tr>
-            ))}
-          </TBody>
-        </Table>
-      )}
-    </Dialog>
+      onClose={onClose}
+    />
   );
 }
 

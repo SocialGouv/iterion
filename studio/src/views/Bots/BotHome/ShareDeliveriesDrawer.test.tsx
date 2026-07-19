@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { Delivery, ShareView } from "@/api/configShareAdmin";
 
@@ -42,12 +43,19 @@ afterEach(() => {
   listConfigShareDeliveries.mockReset();
 });
 
+function renderDrawer() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ShareDeliveriesDrawer teamID="t1" share={share} onClose={() => {}} />
+    </QueryClientProvider>,
+  );
+}
+
 describe("ShareDeliveriesDrawer", () => {
   it("renders the empty state when the share was never fetched", async () => {
     listConfigShareDeliveries.mockResolvedValue([]);
-    render(
-      <ShareDeliveriesDrawer teamID="t1" share={share} onClose={() => {}} />,
-    );
+    renderDrawer();
     expect(
       await screen.findByText(
         "No deliveries yet — this share hasn't been fetched.",
@@ -81,9 +89,7 @@ describe("ShareDeliveriesDrawer", () => {
         error: "share revoked",
       },
     ]);
-    render(
-      <ShareDeliveriesDrawer teamID="t1" share={share} onClose={() => {}} />,
-    );
+    renderDrawer();
     expect(await screen.findByText("share:sh-1")).toBeTruthy();
     expect(screen.getByText("200")).toBeTruthy();
     expect(screen.getByText("403")).toBeTruthy();
@@ -95,9 +101,7 @@ describe("ShareDeliveriesDrawer", () => {
 
   it("surfaces a load failure", async () => {
     listConfigShareDeliveries.mockRejectedValue(new Error("boom"));
-    render(
-      <ShareDeliveriesDrawer teamID="t1" share={share} onClose={() => {}} />,
-    );
+    renderDrawer();
     expect(await screen.findByText(/boom/)).toBeTruthy();
   });
 });
