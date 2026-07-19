@@ -100,8 +100,6 @@ func (r *Runner) refreshFileSecretsLoop(ctx context.Context, tenantID string, re
 	}
 }
 
-// refreshFileSecretsOnce is one tick of refreshFileSecretsLoop: re-read every
-// ref'd file secret and atomically rewrite the ones whose store value moved.
 // readFreshSecret re-reads and unseals a generic-secret record by id
 // under the tenant scope. Bounded, tenant-scoped; never logs the value.
 // Shared by the no-sandbox (refreshFileSecretsOnce) and sandboxed
@@ -116,6 +114,8 @@ func (r *Runner) readFreshSecret(ctx context.Context, tenantID, id string) ([]by
 	return secrets.OpenGenericSecret(r.cfg.Sealer, rec.ID, rec.SealedSecret)
 }
 
+// refreshFileSecretsOnce is one tick of refreshFileSecretsLoop: re-read every
+// ref'd file secret and atomically rewrite the ones whose store value moved.
 func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, refs, files, last map[string]string) {
 	for name, path := range files {
 		id := refs[name]

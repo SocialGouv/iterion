@@ -20,10 +20,6 @@ func evalComputeExpr(ast *expr.AST, exprCtx *expr.Context) (val any, err error) 
 	return ast.Eval(exprCtx)
 }
 
-// exprContext builds a generic expression evaluator context using runState.
-// `input` resolves against the supplied input map (the current node's input
-// for compute nodes, or the source node's output when called from edge
-// selection — both correspond to "the data this edge sees").
 // exprContext builds an expression context against the run's trunk scope
 // (rs.vars / rs.outputs / rs.artifacts). For a node running inside a fan-out
 // branch — which must see branch-local outputs not yet merged into rs — use

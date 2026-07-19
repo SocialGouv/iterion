@@ -154,7 +154,10 @@ func (s *Store) emitPostCommitEvent(evt Event) error {
 		// create a duplicate issue (Create generates a fresh UUID) or re-emit
 		// the mutation. Warn and swallow. (Always returns nil; the error
 		// return is kept only for the call-site signatures.)
-		fmt.Fprintf(os.Stderr, "native store: WARN event log fsync failed; buffered for replay on next operation: %v\n", err)
+		//
+		// s.logger read directly, not via getLogger(): every caller holds
+		// s.mu (post-commit internals), and getLogger would re-lock it.
+		s.logger.Warn("native store: event log fsync failed; buffered for replay on next operation: %v", err)
 	}
 	return nil
 }

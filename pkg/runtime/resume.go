@@ -159,7 +159,7 @@ func (e *Engine) resumeFromPause(ctx context.Context, r *store.Run, answers map[
 	// Pass a CLONE of the checkpoint's version map: materializeHumanArtifact
 	// bumps it in place, and the engine mutates it further during the run —
 	// both would otherwise write r.Checkpoint's map under a concurrent HTTP read.
-	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cloneIntMap(cp.ArtifactVersions))
+	artifactVersions, err := e.materializeHumanArtifact(ctx, runID, humanNodeID, answers, cloneMap(cp.ArtifactVersions))
 	if err != nil {
 		return err
 	}
@@ -351,14 +351,14 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 
 	// Clone (not alias) the counter maps: the engine mutates them in place
 	// during the resumed run, so aliasing r.Checkpoint's maps would race a
-	// concurrent HTTP read of the run pointer. cloneIntMap(nil) returns nil,
+	// concurrent HTTP read of the run pointer. cloneMap(nil) returns nil,
 	// so fall back to a fresh map — a nil map would crash selectEdgeRS the
 	// first time it does `rs.loopCounters[X]++`.
-	loopCounters := cloneIntMap(cp.LoopCounters)
+	loopCounters := cloneMap(cp.LoopCounters)
 	if loopCounters == nil {
 		loopCounters = make(map[string]int)
 	}
-	roundRobinCounters := cloneIntMap(cp.RoundRobinCounters)
+	roundRobinCounters := cloneMap(cp.RoundRobinCounters)
 	if roundRobinCounters == nil {
 		roundRobinCounters = make(map[string]int)
 	}
@@ -597,13 +597,13 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		// leaves the empty map newRunState allocated (avoids a first-write nil
 		// panic).
 		if cp.LoopCounters != nil {
-			rs.loopCounters = cloneIntMap(cp.LoopCounters)
+			rs.loopCounters = cloneMap(cp.LoopCounters)
 		}
 		if cp.RoundRobinCounters != nil {
-			rs.roundRobinCounters = cloneIntMap(cp.RoundRobinCounters)
+			rs.roundRobinCounters = cloneMap(cp.RoundRobinCounters)
 		}
 		if cp.ArtifactVersions != nil {
-			rs.artifactVersions = cloneIntMap(cp.ArtifactVersions)
+			rs.artifactVersions = cloneMap(cp.ArtifactVersions)
 		}
 		rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
 		restoreLoopSnapshots(rs, cp)

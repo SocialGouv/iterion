@@ -12,6 +12,23 @@ import (
 	"github.com/SocialGouv/iterion/pkg/secrets"
 )
 
+// injectCredentials resolves the run's sealed bundle, decrypts it,
+// stamps the plaintext into ctx via secrets.WithCredentials, and
+// returns a cleanup func that performs LOCAL hygiene (wipes the
+// in-memory plaintext keys + removes the OAuth temp dirs) at the call
+// site. When no bundle is attached or the runner has no Sealer wired,
+// returns the original ctx unchanged.
+//
+// The cleanup func runs on every executeRun return. Removal of the
+// *persistent* sealed bundle from the store is intentionally NOT part
+// of cleanup — see deleteRunSecrets, which executeRun invokes only on a
+// terminal-clean outcome so a redelivered run can re-fetch its secrets.
+//
+// OAuth-forfait blobs are materialised in fresh temp directories
+// (CLAUDE_CONFIG_DIR / CODEX_HOME-shaped) and wired through
+// Credentials.OAuthCredentialFiles so the delegate backends point
+// the spawned CLI at them. The cleanup func tears the dirs down on
+// every exit path.
 func (r *Runner) injectCredentials(ctx context.Context, msg *queue.RunMessage) (context.Context, func(), error) {
 	if msg.SecretsRef == "" {
 		return ctx, nil, nil

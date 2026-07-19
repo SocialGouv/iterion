@@ -41,13 +41,6 @@ func cloneMap[K comparable, V any](m map[K]V) map[K]V {
 	return dst
 }
 
-// cloneIntMap returns a shallow copy of a map[string]int (nil in → nil out),
-// used to isolate a resumed run's mutable counter maps from the persisted
-// checkpoint maps the engine would otherwise write in place.
-func cloneIntMap(src map[string]int) map[string]int {
-	return cloneMap(src)
-}
-
 // restoreBudgetAccounting seeds a resumed run's SharedBudget consumption and
 // cumulative cost from the checkpoint so the resume continues from what was
 // already spent instead of a fresh allowance. No-op when cp is nil (a

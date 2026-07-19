@@ -66,7 +66,7 @@ func newMetricsEmitter(inner model.EventEmitter, reg *metrics.Registry) *metrics
 	}
 }
 
-// rateFor returns the cached per-token rates for the given model,
+// rateForLocked returns the cached per-token rates for the given model,
 // resolving once via cost.EstimateUSD. Called under m.mu.
 func (m *metricsEmitter) rateForLocked(modelName string) modelRate {
 	if r, ok := m.priceByModel[modelName]; ok {
