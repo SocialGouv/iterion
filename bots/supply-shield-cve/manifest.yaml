@@ -43,3 +43,10 @@ invocations:
     args_var: scope_notes
     command: { name: cve, aliases: [supply-shield-cve, shield-cve], scope: any, min_replier_role: developer }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [base_ref, pr_ref]
+  hidden: [forge_marker]

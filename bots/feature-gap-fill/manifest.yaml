@@ -41,3 +41,9 @@ invocations:
     args_var: gap_spec
     command: { name: fini, aliases: [feature-gap-fill], scope: any, min_replier_role: maintainer }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [gap_spec]

@@ -73,3 +73,9 @@ config_share:
     - "categories.{category}.editorial"
   visible_paths:
     - "categories.{category}.digest_title"
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are internal plumbing kept out of
+## the form (still settable via --var / bot_args).
+launch:
+  primary: [mode, category]
