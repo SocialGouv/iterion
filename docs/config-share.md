@@ -32,6 +32,8 @@ declares what a share may touch with a `config_share:` block in its
 ```yaml
 config_share:
   config_path: feed-watch.json
+  editor_title: "Éditeur de veilles"          # optional: shell heading (else "Config editor")
+  editor_description: "Sources, éditorial et fréquence de vos veilles."
   editable_paths:
     - "categories.{category}.feeds"
     - "categories.{category}.editorial"
@@ -80,7 +82,11 @@ untrusted party, so isolation is enforced at every layer:
   silent overwrite.
 - **Mint guards.** `config_path` is rejected if it traverses (`..`) or targets a
   protected area (`.git/**`, `.github/**`, `Dockerfile`, `.env*`); `repo_ref`
-  must be explicit; `repo_url` must be a clean `owner/name`.
+  must be explicit; `repo_url` must be a clean `owner/name`. Minting a
+  category share whose category is **absent from the config file** (a common
+  typo — `design` vs the real `design-systems`) is rejected with a clear error
+  rather than producing an editor with no fields — a best-effort projected read
+  (a forge outage never blocks the mint, since the operator is trusted).
 - **Commit hygiene.** The commit message, branch, and a fixed
   `iterion-share-editor[bot]` author are all server-derived — an edit can't
   retarget the branch or forge attribution.
@@ -126,6 +132,27 @@ Operator (JWT, `canManageTeam`, audited):
 The studio surfaces the operator side on a bot's home page (a "Config shares"
 card, gated on `server_info.config_shares_enabled`).
 
+Signed-in **config-editor** (the least-privilege `config_editor` team role,
+ADR-078 — a real cookie session, `canEditConfigShares`-gated, not a token):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/teams/{id}/config-editor/shares` | list the team's shares (reduced view + bot `editor_title`) |
+| GET | `/api/teams/{id}/config-editor/shares/{sid}/config` | the projected config + `sha` |
+| PATCH | `/api/teams/{id}/config-editor/shares/{sid}/config` | edit the fields (same allow-list/if-match as the token path) |
+| GET | `/api/teams/{id}/config-editor/shares/{sid}/schedule` | the cadence (cron + next fire) of the share's category schedule, if any |
+| PATCH | `/api/teams/{id}/config-editor/shares/{sid}/schedule` | edit **only** the cron of that category's schedule |
+
+**Cadence.** The recurrence of a category's digest is not repo config — it is a
+first-class schedule in iterion's schedule store (visible in the Schedules
+view). The config-editor may read and adjust **only the cron** of the schedule
+bound to its share's `(bot, category)` (`vars.category == share.category`); a
+different category's schedule is unreachable, and a missing schedule returns
+`404` (creating a category's schedule + delivery sinks stays an operator
+action). The cadence never leaves iterion, so it needs no repo write. The
+studio renders it as a "Cadence" card (cron presets + next-run) in the
+config-editor shell, whose heading uses the bot's `editor_title`.
+
 ## Forge write path
 
 The write resolves the team's `forge_token` generic secret — the **same PAT the
@@ -140,9 +167,11 @@ TTL, one share per category, the team `forge_token` PAT for writes, the per-bot
 `config_share:` manifest block that declares the shareable surface (the mint
 derives `config_path` + `allowed_paths` + `visible_paths` from it and the studio
 card renders a data-driven form, so a **second bot adopts the whole editor by
-adding the block alone** — no Go or SPA change), and **per-share field
-subsetting** (an operator mints, say, a feeds-only share; a non-selected field is
-neither writable nor visible).
+adding the block alone** — no Go or SPA change), **per-share field subsetting**
+(an operator mints, say, a feeds-only share; a non-selected field is neither
+writable nor visible), the signed-in **config-editor role** (ADR-078) with a
+bot-declared **`editor_title`**, and **scoped cadence editing** (a config-editor
+tunes the cron of its category's schedule from the same shell).
 
 Follow-ups (not blockers): a repo-narrowed github-app installation token (tighter
 blast radius than the team PAT); a one-shot code-per-handout exchange (so a
