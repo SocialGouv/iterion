@@ -467,20 +467,28 @@ gray-area but has no explicit prohibition today. We treat this as
 pragmatic — if OpenAI changes the terms or tightens enforcement, set
 `ITERION_OPENAI_USE_OAUTH=0` and fall back to `OPENAI_API_KEY`.
 
-## Third-party agent CLIs (`kimi`, and the CLI-agent seam)
+## Third-party agent CLIs (`kimi`, `grok`, and the CLI-agent seam)
 
 Some agent CLIs have an argument protocol **disjoint from claude-code's**
 Session mode (`--print`, prompt on stdin, `--append-system-prompt`, …), so
 neither `backend: claude_code` nor the per-node `command:` override (which
 only swaps the *binary* while keeping claude-code's argv) can drive them.
-Moonshot's **`kimi-code`** is the motivating case — it takes the prompt as
-`-p <prompt>` (`kimi --print …` errors with `unknown option '--print'`):
+iterion ships dedicated backends for these as instances of a generic
+**CLI-agent** seam (`delegate.CLIAgentBackend` + `CLIAgentProtocol`, see
+[ADR-065](adr/065-dedicated-cli-agent-backend.md)): build the target CLI's
+*own* argv, run with a wall-clock timeout (inside the run's sandbox when
+active), parse stdout into a structured result, retry on no-output /
+network transient. Adding another such CLI is a new protocol *value*, not
+new plumbing.
+
+### `kimi` (Moonshot kimi-code)
+
+Moonshot's **`kimi-code`** takes the prompt as `-p <prompt>`
+(`kimi --print …` errors with `unknown option '--print'`):
 
 ```
 kimi -p <prompt> --output-format {text,stream-json} [-m <alias>]
 ```
-
-iterion ships a dedicated **`kimi`** backend for it:
 
 ```yaml
 agent implement:
@@ -489,28 +497,51 @@ agent implement:
   system: "…the task…"
 ```
 
-Under the hood, `kimi` is a concrete instance of a generic **CLI-agent
-backend** (`delegate.CLIAgentBackend` + `CLIAgentProtocol`, see
-[ADR-065](adr/065-dedicated-cli-agent-backend.md)) that builds the target
-CLI's *own* command line, runs it with a wall-clock timeout (inside the run's
-sandbox container when one is active), parses its role-based `stream-json`
-stdout (with backward compatibility for the former claude-code-style events)
-into the structured result, and retries
-on a no-output / network transient. Adding another such CLI is a new protocol
-*value*, not new plumbing.
+### `grok` (xAI Grok Build CLI)
 
-Behavioural notes specific to CLI-agent backends:
+xAI's **Grok Build** coding agent (`grok` on `PATH`, typically installed
+under `~/.grok/bin/grok`) is headless via `-p` / `--single`, not
+claude-code Session mode:
 
-- **Explicit opt-in.** `kimi` is never auto-detected; you select it with
-  `backend: "kimi"`. No Moonshot credential silently re-targets a run.
-- **Credentials** are resolved by the CLI itself from its own env/config (e.g.
-  `$MOONSHOT_API_KEY`) — iterion inherits the host environment and does not
-  fight the CLI's native resolution.
-- **Tools are not host-gated.** Like `codex`, kimi runs with its *own* built-in
-  toolset; a node's `tools:` list is advisory. For a hard tool-permission
-  boundary use `claude_code` (permission gate) or `claw` (native restriction).
-- **Effort** has no effect (kimi has no reasoning-effort dial); **sessions**
-  are captured for observability but resume/fork is not yet wired.
+```
+grok -p <prompt> --output-format json \
+     --permission-mode bypassPermissions --always-approve \
+     [-m <model>] [--rules <system>] [--reasoning-effort <level>]
+```
+
+```yaml
+agent implement:
+  backend: "grok"
+  model: "grok-4.5"          # or grok-4.5-build, grok-3, …
+  # model: "xai/grok-4.5"    # also fine — the xai/ prefix is stripped
+  system: "…the task…"       # delivered as --rules (appended to Grok's native prompt)
+  reasoning_effort: high     # optional; mapped to --reasoning-effort
+```
+
+The node's `system:` is passed as **`--rules`** (append), never as
+`--system-prompt-override`, so Grok keeps its native agentic baseline
+(tools, plan, posture). Credentials come from the CLI itself (Grok Build
+login / `~/.grok` config) — iterion does not inject `XAI_API_KEY` for this
+backend. That is **distinct** from calling the xAI HTTP API via
+`backend: claw` + `model: "xai/…"`.
+
+### Behavioural notes (all CLI-agent backends)
+
+- **Explicit opt-in.** `kimi` / `grok` are never auto-detected; set
+  `backend: "kimi"` or `backend: "grok"`. No host credential silently
+  re-targets a run away from `claude_code` / `claw`.
+- **Credentials** are resolved by the CLI itself from its own env/config
+  (e.g. `$MOONSHOT_API_KEY` for kimi, Grok Build OAuth for grok) — iterion
+  inherits the host environment and does not fight the CLI's native
+  resolution.
+- **Tools are not host-gated.** Like `codex`, these CLIs run with their
+  *own* built-in toolset; a node's `tools:` list is advisory. For a hard
+  tool-permission boundary use `claude_code` (permission gate) or `claw`
+  (native restriction).
+- **Effort:** kimi has no dial (ignored); grok maps `reasoning_effort` to
+  `--reasoning-effort` (`ultracode` degrades to `high`).
+- **Sessions** are captured for observability (`sessionId`) but resume/fork
+  is not yet wired for CLI-agent backends.
 
 ## Editor UX
 

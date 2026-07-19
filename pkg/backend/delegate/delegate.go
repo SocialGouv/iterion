@@ -195,10 +195,16 @@ func SystemPromptModeForBackend(backend string) SystemPromptMode {
 	switch backend {
 	case BackendClaudeCode:
 		return SystemPromptAppendToNative
+	case BackendGrok:
+		// Grok Build CLI: node's system: is delivered via --rules (append to
+		// the CLI's native agentic baseline). Override would strip that
+		// baseline — same trap as claude_code --system-prompt.
+		return SystemPromptAppendToNative
 	case BackendClaw:
 		return SystemPromptAuthoredBase
 	default:
-		// codex and any future/legacy backend: author text is the whole prompt.
+		// codex, kimi, and any future/legacy backend: author text is the
+		// whole prompt (kimi folds it into -p; codex replaces).
 		return SystemPromptStandalone
 	}
 }
