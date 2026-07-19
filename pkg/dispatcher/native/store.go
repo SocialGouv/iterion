@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/SocialGouv/iterion/pkg/dispatcher/tracker"
+	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/google/uuid"
 )
@@ -41,6 +42,12 @@ type Store struct {
 	mu    sync.Mutex
 	board *Board
 	seq   int64
+
+	// logger carries store diagnostics (watcher errors, …). Defaults to a
+	// warn-level stderr logger — stderr is safe even in the `iterion
+	// __mcp-board` stdio subprocess, whose protocol channel is stdout.
+	// Replaceable via SetLogger.
+	logger *iterlog.Logger
 
 	// index is a hot in-memory mirror of issues/<id>.json. Filesystem
 	// remains authoritative — index is populated at NewStore and kept
@@ -107,15 +114,20 @@ func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(root, issuesDir), dirPerm); err != nil {
 		return nil, fmt.Errorf("native store: mkdir: %w", err)
 	}
-	s := &Store{root: root, index: map[string]*Issue{}}
+	s := &Store{
+		root:   root,
+		index:  map[string]*Issue{},
+		logger: iterlog.New(iterlog.LevelWarn, os.Stderr),
+	}
 	if err := s.loadOrInitBoard(); err != nil {
 		return nil, err
 	}
 	// Seed the event sequence counter from any existing log so a
 	// fresh process opening a pre-existing store doesn't restart Seq
 	// at 0 and produce duplicate sequence numbers in events.jsonl.
-	// Best-effort: a partial scan still advances seq past the
-	// readable prefix; the warning is for the operator.
+	// Torn tails / malformed lines are skipped inside ScanEvents, so
+	// an error here is a real I/O failure — abort rather than restart
+	// Seq at 0 and emit duplicate sequence numbers.
 	var maxSeq int64 = -1
 	if err := s.ScanEvents(func(e *Event) bool {
 		if e.Seq > maxSeq {
@@ -123,7 +135,7 @@ func NewStore(root string) (*Store, error) {
 		}
 		return true
 	}); err != nil {
-		_ = err
+		return nil, fmt.Errorf("native: recover max seq from events.jsonl: %w", err)
 	}
 	s.seq = maxSeq + 1
 
@@ -144,6 +156,26 @@ func NewStore(root string) (*Store, error) {
 		s.watcher = w
 	}
 	return s, nil
+}
+
+// SetLogger replaces the store's diagnostic logger (default: warn-level
+// to stderr). Lets studio/dispatch plumb their configured logger in.
+// Nil is ignored so callers never disable diagnostics by accident.
+func (s *Store) SetLogger(l *iterlog.Logger) {
+	if l == nil {
+		return
+	}
+	s.mu.Lock()
+	s.logger = l
+	s.mu.Unlock()
+}
+
+// getLogger returns the current diagnostic logger under the store lock,
+// so the watcher goroutine races cleanly with a wiring-time SetLogger.
+func (s *Store) getLogger() *iterlog.Logger {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logger
 }
 
 // Close releases store-owned resources (currently the fsnotify

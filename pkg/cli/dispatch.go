@@ -62,6 +62,7 @@ func RunDispatch(p *Printer, opts DispatchOptions) error {
 	if err != nil {
 		return fmt.Errorf("native store: %w", err)
 	}
+	nativeStore.SetLogger(logger)
 
 	wsRoot := cfg.Workspace.Root
 	if wsRoot == "" {

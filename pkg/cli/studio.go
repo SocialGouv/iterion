@@ -272,6 +272,7 @@ func RunStudio(ctx context.Context, opts StudioOptions, p *Printer) error {
 	}
 	ns, nsErr := native.NewStore(filepath.Join(resolvedStoreDir, "dispatcher"))
 	if nsErr == nil {
+		ns.SetLogger(logger)
 		cfg.NativeTrackerStore = ns
 		// A Manager sits idle alongside the native store. The SPA can
 		// configure + start + pause + stop the dispatcher entirely

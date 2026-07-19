@@ -112,19 +112,20 @@ func (iw *indexWatcher) loop(s *Store, issuesPath string) {
 				return
 			}
 			// fsnotify error channel drains rare kernel queue-full
-			// signals. Don't spam: log once per session. The Store
-			// has no logger handle, so the best we can do is keep
-			// the watcher alive — a missed event simply means the
+			// signals. Don't spam: log once per session, keep the
+			// watcher alive — a missed event simply means the
 			// daemon's view stays stale until the next event for
 			// that file forces a refresh, or the next restart
 			// repopulates from disk. Wrap the flag in a tiny mutex
 			// because the events + errors selects run on the same
 			// goroutine but the linter cannot prove that.
 			mu.Lock()
-			_ = seenErr
-			_ = err
+			first := !seenErr
 			seenErr = true
 			mu.Unlock()
+			if first {
+				s.getLogger().Error("native index watcher: fsnotify error: %v — board index may serve stale reads until the next write event or restart (further watcher errors suppressed this session)", err)
+			}
 		}
 	}
 }
