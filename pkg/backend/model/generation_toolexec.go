@@ -46,193 +46,271 @@ func executeToolsDirect(
 	results := make([]api.ContentBlock, 0, len(toolUses))
 
 	for _, tu := range toolUses {
-		gt, ok := toolMap[tu.Name]
-		if !ok {
-			// A bot prompt may name an MCP/board tool in the claude_code
-			// double-underscore FQN convention ("mcp__server__tool") while
-			// the claw in-process loop advertises it sanitized
-			// ("mcp_server_tool"); bridge the two so the call dispatches.
-			gt, ok = toolMap[canonicalMCPToolName(tu.Name)]
+		block, abort := executeOneTool(ctx, tu, toolMap, onToolStarted, onToolCall, runner, materialize, policy)
+		if abort != nil {
+			return results, abort
 		}
-		if !ok {
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("unknown tool: %s", tu.Name),
-				IsError:   true,
-			}.ToContentBlock())
-			if onToolCall != nil {
-				onToolCall(ToolCallInfo{
-					ToolName:  tu.Name,
-					InputSize: len(tu.PartialJSON),
-					Error:     fmt.Errorf("unknown tool: %s", tu.Name),
-				})
-			}
-			continue
-		}
+		results = append(results, block)
+	}
 
-		// Validate that PartialJSON is well-formed JSON before either
-		// firing hooks with stale/empty input or invoking Execute with
-		// a payload its decoder can't parse. A malformed PartialJSON
-		// at this point indicates either a truncated stream the
-		// upstream aggregateStream missed, or a provider that emits
-		// invalid JSON; both warrant a tool_result-isError, not a
-		// silent empty-args call that the LLM would never recover
-		// from cleanly.
-		var hookInput map[string]any
-		if jsonErr := json.Unmarshal([]byte(tu.PartialJSON), &hookInput); jsonErr != nil {
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("malformed tool input: %v", jsonErr),
-				IsError:   true,
-			}.ToContentBlock())
-			if onToolCall != nil {
-				onToolCall(ToolCallInfo{
-					ToolName:  tu.Name,
-					InputSize: len(tu.PartialJSON),
-					ToolUseID: tu.ID,
-					Error:     fmt.Errorf("malformed tool input: %w", jsonErr),
-				})
-			}
-			continue
-		}
+	return results, nil
+}
 
-		if dec, _ := runner.Fire(ctx, hooks.Context{
-			Event:     hooks.PreToolUse,
+// executeOneTool runs a single tool_use block through the full pipeline —
+// lookup, input validation, lifecycle PreToolUse, permission gate,
+// execution, and result shaping. Every failure mode is rendered into the
+// returned isError tool_result so the LLM can recover; a non-nil abort
+// error (currently only *delegate.ErrAskUser, from the native ask_user
+// tool or a permission-gate Ask) signals the tool loop must stop and
+// propagate it, discarding the block.
+func executeOneTool(
+	ctx context.Context,
+	tu toolUseBlock,
+	toolMap map[string]*GenerationTool,
+	onToolStarted func(ToolCallInfo),
+	onToolCall func(ToolCallInfo),
+	runner *hooks.Runner,
+	materialize func(string) string,
+	policy *permission.Policy,
+) (api.ContentBlock, error) {
+	gt, ok := lookupGenerationTool(toolMap, tu.Name)
+	if !ok {
+		return unknownToolResult(tu, onToolCall), nil
+	}
+
+	// Validate that PartialJSON is well-formed JSON before either
+	// firing hooks with stale/empty input or invoking Execute with
+	// a payload its decoder can't parse.
+	var hookInput map[string]any
+	if jsonErr := json.Unmarshal([]byte(tu.PartialJSON), &hookInput); jsonErr != nil {
+		return malformedInputResult(tu, jsonErr, onToolCall), nil
+	}
+
+	if refusal := preToolUseRefusal(ctx, runner, tu, hookInput, onToolCall); refusal != nil {
+		return *refusal, nil
+	}
+
+	if refusal, abort := permissionGateOutcome(policy, tu, hookInput, onToolCall); abort != nil {
+		return api.ContentBlock{}, abort
+	} else if refusal != nil {
+		return *refusal, nil
+	}
+
+	output, err := runToolExecution(ctx, gt, tu, materialize, onToolStarted, onToolCall)
+	return shapeToolOutcome(ctx, runner, tu, hookInput, output, err)
+}
+
+// lookupGenerationTool resolves a tool_use name against the tool map. A
+// bot prompt may name an MCP/board tool in the claude_code
+// double-underscore FQN convention ("mcp__server__tool") while the claw
+// in-process loop advertises it sanitized ("mcp_server_tool"); the second
+// lookup bridges the two so the call dispatches.
+func lookupGenerationTool(toolMap map[string]*GenerationTool, name string) (*GenerationTool, bool) {
+	gt, ok := toolMap[name]
+	if !ok {
+		gt, ok = toolMap[canonicalMCPToolName(name)]
+	}
+	return gt, ok
+}
+
+// unknownToolResult renders the isError tool_result for a call naming a
+// tool the map cannot resolve, and reports it on onToolCall. Quirk pinned
+// by the characterization tests: unlike the other refusal paths, the
+// callback info carries no ToolUseID here.
+func unknownToolResult(tu toolUseBlock, onToolCall func(ToolCallInfo)) api.ContentBlock {
+	block := api.ToolResult{
+		ToolUseID: tu.ID,
+		Content:   fmt.Sprintf("unknown tool: %s", tu.Name),
+		IsError:   true,
+	}.ToContentBlock()
+	if onToolCall != nil {
+		onToolCall(ToolCallInfo{
 			ToolName:  tu.Name,
-			ToolInput: hookInput,
-		}); dec.Action == hooks.ActionBlock {
-			reason := dec.Reason
-			if reason == "" {
-				reason = "blocked by lifecycle hook"
-			}
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("tool refused: %s", reason),
-				IsError:   true,
-			}.ToContentBlock())
-			if onToolCall != nil {
-				onToolCall(ToolCallInfo{
-					ToolName:  tu.Name,
-					InputSize: len(tu.PartialJSON),
-					Error:     fmt.Errorf("blocked by hook: %s", reason),
-				})
-			}
-			continue
-		}
+			InputSize: len(tu.PartialJSON),
+			Error:     fmt.Errorf("unknown tool: %s", tu.Name),
+		})
+	}
+	return block
+}
 
-		// Permission gate (the anti-prompt-injection boundary). Evaluated
-		// AFTER the lifecycle hook (so hooks still observe every call) and
-		// BEFORE execution. Deny → a synthetic refusal tool_result the
-		// model can adapt to. Ask → abort the loop with an ErrAskUser so
-		// the run pauses for human approval (mirrors claude_code's
-		// PreToolUse permission hook for cross-backend parity). Allow falls
-		// through to execution. nil/disabled policy is a no-op.
-		if policy.Enabled() {
-			switch dec, rule := policy.Evaluate(tu.Name, hookInput); dec {
-			case permission.Deny:
-				reason := permission.DenyMessage(tu.Name, hookInput, rule)
-				results = append(results, api.ToolResult{
-					ToolUseID: tu.ID,
-					Content:   reason,
-					IsError:   true,
-				}.ToContentBlock())
-				if onToolCall != nil {
-					onToolCall(ToolCallInfo{
-						ToolName:  tu.Name,
-						InputSize: len(tu.PartialJSON),
-						ToolUseID: tu.ID,
-						Error:     errors.New(reason),
-					})
-				}
-				continue
-			case permission.Ask:
-				// Suspend the run for operator approval. The captured
-				// question guides the model after the operator answers
-				// (and grants), so on resume the re-issued call passes the
-				// now-updated gate. Stamp the pending tool_use ID exactly
-				// like the ask_user path below.
-				return results, &delegate.ErrAskUser{
-					Question:         permission.AskPrompt(tu.Name, hookInput, rule),
-					PendingToolUseID: tu.ID,
-					PermissionMarker: permission.Marker(tu.Name, hookInput, rule),
-				}
-			}
-			// permission.Allow falls through to execution.
-		}
+// malformedInputResult renders the isError tool_result for a tool_use
+// whose PartialJSON does not parse — either a truncated stream the
+// upstream aggregateStream missed, or a provider that emits invalid JSON.
+// Both warrant a tool_result-isError, not a silent empty-args call that
+// the LLM would never recover from cleanly.
+func malformedInputResult(tu toolUseBlock, jsonErr error, onToolCall func(ToolCallInfo)) api.ContentBlock {
+	block := api.ToolResult{
+		ToolUseID: tu.ID,
+		Content:   fmt.Sprintf("malformed tool input: %v", jsonErr),
+		IsError:   true,
+	}.ToContentBlock()
+	if onToolCall != nil {
+		onToolCall(ToolCallInfo{
+			ToolName:  tu.Name,
+			InputSize: len(tu.PartialJSON),
+			ToolUseID: tu.ID,
+			Error:     fmt.Errorf("malformed tool input: %w", jsonErr),
+		})
+	}
+	return block
+}
 
-		if onToolStarted != nil {
-			onToolStarted(ToolCallInfo{
-				ToolName:  tu.Name,
-				InputSize: len(tu.PartialJSON),
-				ToolUseID: tu.ID,
-				Input:     json.RawMessage(tu.PartialJSON),
-			})
-		}
+// preToolUseRefusal fires the PreToolUse lifecycle hook and, on a Block
+// decision, renders the synthetic refusal tool_result carrying the
+// decision Reason (defaulting to "blocked by lifecycle hook"). A nil
+// return means the call may proceed. Like the unknown-tool path, the
+// callback info carries no ToolUseID (quirk pinned by the
+// characterization tests).
+func preToolUseRefusal(ctx context.Context, runner *hooks.Runner, tu toolUseBlock, hookInput map[string]any, onToolCall func(ToolCallInfo)) *api.ContentBlock {
+	dec, _ := runner.Fire(ctx, hooks.Context{
+		Event:     hooks.PreToolUse,
+		ToolName:  tu.Name,
+		ToolInput: hookInput,
+	})
+	if dec.Action != hooks.ActionBlock {
+		return nil
+	}
+	reason := dec.Reason
+	if reason == "" {
+		reason = "blocked by lifecycle hook"
+	}
+	block := api.ToolResult{
+		ToolUseID: tu.ID,
+		Content:   fmt.Sprintf("tool refused: %s", reason),
+		IsError:   true,
+	}.ToContentBlock()
+	if onToolCall != nil {
+		onToolCall(ToolCallInfo{
+			ToolName:  tu.Name,
+			InputSize: len(tu.PartialJSON),
+			Error:     fmt.Errorf("blocked by hook: %s", reason),
+		})
+	}
+	return &block
+}
 
-		// Materialise secret placeholders into the input the tool actually
-		// executes with. The placeholder form (tu.PartialJSON) is what the
-		// hooks and event log above/below persist, so the real secret
-		// never reaches the store — only the live tool call (Layer 1).
-		execInput := json.RawMessage(tu.PartialJSON)
-		if materialize != nil {
-			execInput = json.RawMessage(materialize(string(tu.PartialJSON)))
-		}
-		start := time.Now()
-		output, err := gt.Execute(ctx, execInput)
-		dur := time.Since(start)
-
+// permissionGateOutcome evaluates the tool-permission gate (the
+// anti-prompt-injection boundary). Evaluated AFTER the lifecycle hook (so
+// hooks still observe every call) and BEFORE execution. Deny → a synthetic
+// refusal tool_result the model can adapt to. Ask → a *delegate.ErrAskUser
+// abort so the run pauses for human approval (mirrors claude_code's
+// PreToolUse permission hook for cross-backend parity). Allow — and a
+// nil/disabled policy — returns (nil, nil): fall through to execution.
+func permissionGateOutcome(policy *permission.Policy, tu toolUseBlock, hookInput map[string]any, onToolCall func(ToolCallInfo)) (*api.ContentBlock, error) {
+	if !policy.Enabled() {
+		return nil, nil
+	}
+	switch dec, rule := policy.Evaluate(tu.Name, hookInput); dec {
+	case permission.Deny:
+		reason := permission.DenyMessage(tu.Name, hookInput, rule)
+		block := api.ToolResult{
+			ToolUseID: tu.ID,
+			Content:   reason,
+			IsError:   true,
+		}.ToContentBlock()
 		if onToolCall != nil {
 			onToolCall(ToolCallInfo{
 				ToolName:  tu.Name,
 				InputSize: len(tu.PartialJSON),
 				ToolUseID: tu.ID,
-				Output:    output,
-				Duration:  dur,
-				Error:     err,
+				Error:     errors.New(reason),
 			})
 		}
-
-		if err != nil {
-			// Special case: ask_user requested by the LLM. Abort the loop
-			// and propagate up so the backend can surface the question to
-			// iterion's pause/resume flow. The PostToolUseFailure hook is
-			// intentionally NOT fired — this isn't a tool failure, it's a
-			// suspension request. Stamp the pending tool_use ID so the
-			// backend can craft a tool_result block on resume.
-			var askErr *delegate.ErrAskUser
-			if errors.As(err, &askErr) {
-				askErr.PendingToolUseID = tu.ID
-				return results, askErr
-			}
-			// Post-tool fires are observational; the runner logs any
-			// handler error itself, so we discard the (Decision, error)
-			// return on purpose.
-			_, _ = runner.Fire(ctx, hooks.Context{
-				Event:     hooks.PostToolUseFailure,
-				ToolName:  tu.Name,
-				ToolInput: hookInput,
-				ToolError: err,
-			})
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   fmt.Sprintf("tool error: %v", err),
-				IsError:   true,
-			}.ToContentBlock())
-		} else {
-			_, _ = runner.Fire(ctx, hooks.Context{
-				Event:      hooks.PostToolUse,
-				ToolName:   tu.Name,
-				ToolInput:  hookInput,
-				ToolResult: output,
-			})
-			results = append(results, api.ToolResult{
-				ToolUseID: tu.ID,
-				Content:   output,
-			}.ToContentBlock())
+		return &block, nil
+	case permission.Ask:
+		// Suspend the run for operator approval. The captured
+		// question guides the model after the operator answers
+		// (and grants), so on resume the re-issued call passes the
+		// now-updated gate. Stamp the pending tool_use ID exactly
+		// like the ask_user suspension in shapeToolOutcome.
+		return nil, &delegate.ErrAskUser{
+			Question:         permission.AskPrompt(tu.Name, hookInput, rule),
+			PendingToolUseID: tu.ID,
+			PermissionMarker: permission.Marker(tu.Name, hookInput, rule),
 		}
 	}
+	// permission.Allow falls through to execution.
+	return nil, nil
+}
 
-	return results, nil
+// runToolExecution reports the call on onToolStarted, executes the tool,
+// and reports the outcome on onToolCall. Secret placeholders are
+// materialised into the input the tool actually executes with; the
+// placeholder form (tu.PartialJSON) is what the callbacks, hooks, and
+// event log persist, so the real secret never reaches the store — only
+// the live tool call (Layer 1).
+func runToolExecution(ctx context.Context, gt *GenerationTool, tu toolUseBlock, materialize func(string) string, onToolStarted, onToolCall func(ToolCallInfo)) (string, error) {
+	if onToolStarted != nil {
+		onToolStarted(ToolCallInfo{
+			ToolName:  tu.Name,
+			InputSize: len(tu.PartialJSON),
+			ToolUseID: tu.ID,
+			Input:     json.RawMessage(tu.PartialJSON),
+		})
+	}
+
+	execInput := json.RawMessage(tu.PartialJSON)
+	if materialize != nil {
+		execInput = json.RawMessage(materialize(string(tu.PartialJSON)))
+	}
+	start := time.Now()
+	output, err := gt.Execute(ctx, execInput)
+	dur := time.Since(start)
+
+	if onToolCall != nil {
+		onToolCall(ToolCallInfo{
+			ToolName:  tu.Name,
+			InputSize: len(tu.PartialJSON),
+			ToolUseID: tu.ID,
+			Output:    output,
+			Duration:  dur,
+			Error:     err,
+		})
+	}
+	return output, err
+}
+
+// shapeToolOutcome converts an execution outcome into the tool_result
+// block for the conversation, firing the observational post-hooks.
+//
+// Special case: ask_user requested by the LLM. The suspension aborts the
+// loop and propagates up so the backend can surface the question to
+// iterion's pause/resume flow. The PostToolUseFailure hook is
+// intentionally NOT fired — this isn't a tool failure, it's a suspension
+// request. The pending tool_use ID is stamped so the backend can craft a
+// tool_result block on resume.
+func shapeToolOutcome(ctx context.Context, runner *hooks.Runner, tu toolUseBlock, hookInput map[string]any, output string, err error) (api.ContentBlock, error) {
+	if err != nil {
+		var askErr *delegate.ErrAskUser
+		if errors.As(err, &askErr) {
+			askErr.PendingToolUseID = tu.ID
+			return api.ContentBlock{}, askErr
+		}
+		// Post-tool fires are observational; the runner logs any
+		// handler error itself, so we discard the (Decision, error)
+		// return on purpose.
+		_, _ = runner.Fire(ctx, hooks.Context{
+			Event:     hooks.PostToolUseFailure,
+			ToolName:  tu.Name,
+			ToolInput: hookInput,
+			ToolError: err,
+		})
+		return api.ToolResult{
+			ToolUseID: tu.ID,
+			Content:   fmt.Sprintf("tool error: %v", err),
+			IsError:   true,
+		}.ToContentBlock(), nil
+	}
+	_, _ = runner.Fire(ctx, hooks.Context{
+		Event:      hooks.PostToolUse,
+		ToolName:   tu.Name,
+		ToolInput:  hookInput,
+		ToolResult: output,
+	})
+	return api.ToolResult{
+		ToolUseID: tu.ID,
+		Content:   output,
+	}.ToContentBlock(), nil
 }
 
 // maybeCompact runs claw's pure-function compactor with a config sized

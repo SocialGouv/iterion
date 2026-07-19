@@ -323,8 +323,8 @@ func (e *Engine) materializeHumanArtifact(ctx context.Context, runID, humanNodeI
 // error when the CAS rejects the transition — typically a second concurrent
 // resume racing the first, which we refuse rather than spawn a duplicate
 // execution clobbering run.json. Used by the human-pause path; the
-// failed-resumable path inlines its own claim because it carries
-// resume-data on the emit.
+// failed-resumable path claims via claimForFailureResume because it
+// carries resume-data on the emit.
 func (e *Engine) claimForResume(ctx context.Context, runID string, allowed ...store.RunStatus) error {
 	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "", allowed)
 	if claimErr != nil {
@@ -474,59 +474,13 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		restartNodeID = cp.NodeID
 	}
 
-	// Atomically claim the run for this execution. A compare-and-set on
-	// the status (vs an unconditional write) rejects a second concurrent
-	// resume — e.g. an operator /resume racing a studio-restart reconcile
-	// — so two engines never execute the same run and race on run.json.
-	// That race is what left a live run mislabeled `failed_resumable`
-	// (the failing execution's write clobbered the running one's).
-	// RunStatusQueued: cloud resumes arrive with the publisher's queued
-	// flip already applied (see Resume's queued case — routed here only
-	// when a checkpoint exists). The CAS still rejects double claims.
-	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "",
-		[]store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued})
-	if claimErr != nil {
-		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
-	}
-	if !claimed {
-		return fmt.Errorf("runtime: run %q is already being executed (status no longer resumable); refusing duplicate resume", runID)
-	}
-	resumeData := map[string]any{
-		"resumed_from": "failed",
-		"restart_node": restartNodeID,
-	}
-	if cp == nil {
-		resumeData["from_entry"] = true
-	}
-	if err := e.emit(ctx, runID, store.EventRunResumed, "", resumeData); err != nil {
+	if err := e.claimForFailureResume(ctx, runID, cp, restartNodeID); err != nil {
 		return err
 	}
 
-	// Restore the per-run env (workDir + executor wiring). cp.Vars is
-	// not the source of truth; we re-resolve from r.Inputs so any
-	// engine-side fix (e.g. env-var expansion of overrides, see commit
-	// e9bf189) applies on resume too. Without this, a run launched on
-	// an old binary that froze `${PROJECT_DIR}` literally in cp.Vars
-	// would re-fail at the same node even after a fixed binary takes
-	// over.
-	e.restoreRunEnv(r)
-
-	// Re-mirror bundle skills on resume (F-RT-7) — same rationale as
-	// resumeFromPause: a bundle upgrade between launch and resume
-	// would otherwise leave the agent reading stale skill content.
-	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
-		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
+	if err := e.restoreResumeWorkspace(r); err != nil {
+		return err
 	}
-	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
-	}
-	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
-		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
-	}
-	// Re-apply the preset's "## Focus" bias + skill hints on resume so a
-	// failed-then-resumed run keeps running as the selected sous-bot.
-	e.applyLibrarySkills()
-	e.applyPresetFocus()
 
 	// Re-bootstrap the sandbox container. The original Run() process
 	// owned it through a defer that ran on exit, so a resumed run finds
@@ -577,57 +531,11 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 
 	rs := e.newRunState(runID, r.Inputs)
 	rs.vars = e.resolveVars(r.Inputs)
-
-	if cp != nil {
-		// Deep-copy outputs so subsequent writes on rs.outputs don't
-		// retroactively mutate r.Checkpoint (which any HTTP read still
-		// holding the run pointer could iterate concurrently). Same
-		// sibling-isolation discipline as fan_out.go's copyOutputs.
-		rs.outputs = copyOutputs(cp.Outputs)
-		if rs.outputs == nil {
-			rs.outputs = make(map[string]map[string]any)
-		}
-		rs.artifacts = e.rebuildArtifacts(rs.outputs)
-		// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
-		// mutate loopCounters/roundRobinCounters and artifactVersions in
-		// place, so aliasing cp.* (== r.Checkpoint.*) would let the engine
-		// write a map an HTTP read still holding the run pointer could
-		// iterate concurrently — a fatal concurrent map read+write. Same
-		// sibling-isolation reasoning as the copyOutputs above. A nil source
-		// leaves the empty map newRunState allocated (avoids a first-write nil
-		// panic).
-		if cp.LoopCounters != nil {
-			rs.loopCounters = cloneMap(cp.LoopCounters)
-		}
-		if cp.RoundRobinCounters != nil {
-			rs.roundRobinCounters = cloneMap(cp.RoundRobinCounters)
-		}
-		if cp.ArtifactVersions != nil {
-			rs.artifactVersions = cloneMap(cp.ArtifactVersions)
-		}
-		rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
-		restoreLoopSnapshots(rs, cp)
-		restoreBudgetAccounting(rs, cp)
-		// Fork rehydration: when the checkpoint carries a backend
-		// conversation (claw) or session id (claude_code), pin them to
-		// runState so the first execution of cp.NodeID injects them
-		// into the input map. Cleared after the first injection so
-		// downstream nodes don't accidentally rehydrate.
-		if len(cp.BackendConversation) > 0 || cp.BackendSessionID != "" {
-			rs.resumeBackend = resumeBackendState{
-				nodeID:       cp.NodeID,
-				conversation: cp.BackendConversation,
-				sessionID:    cp.BackendSessionID,
-			}
-		}
-	}
+	e.restoreCheckpointState(rs, cp)
 	// Re-apply live-steering grants (bump_loop / raise_budget) persisted
 	// on the run record, so a bumped ceiling survives the resume.
 	e.applySteeringState(rs, r)
 	rs.isWorktree = r.Worktree
-	// When cp is nil, rs keeps the empty maps from newRunState — same
-	// state shape as a fresh launch, only the run_id is preserved so
-	// the studio's snapshot continuity stays intact.
 
 	e.pushExecutorVars(rs.vars)
 
@@ -640,6 +548,120 @@ func (e *Engine) resumeFromFailure(ctx context.Context, r *store.Run) error {
 		e.finalizeOnExit(ctx, runID, wtCtx, nil, loopErr)
 	}
 	return loopErr
+}
+
+// claimForFailureResume atomically claims a failed/cancelled/operator-paused
+// run for this execution, then emits run_resumed carrying
+// {resumed_from, restart_node} (+ from_entry=true when no checkpoint
+// exists). The compare-and-set on the status (vs an unconditional write)
+// rejects a second concurrent resume — e.g. an operator /resume racing a
+// studio-restart reconcile — so two engines never execute the same run and
+// race on run.json. That race is what left a live run mislabeled
+// `failed_resumable` (the failing execution's write clobbered the running
+// one's). RunStatusQueued: cloud resumes arrive with the publisher's queued
+// flip already applied (see Resume's queued case — routed here only when a
+// checkpoint exists). The CAS still rejects double claims.
+func (e *Engine) claimForFailureResume(ctx context.Context, runID string, cp *store.Checkpoint, restartNodeID string) error {
+	claimed, claimErr := e.store.UpdateRunStatusIf(ctx, runID, store.RunStatusRunning, "",
+		[]store.RunStatus{store.RunStatusFailedResumable, store.RunStatusCancelled, store.RunStatusPausedOperator, store.RunStatusQueued})
+	if claimErr != nil {
+		return fmt.Errorf("runtime: claim run for resume: %w", claimErr)
+	}
+	if !claimed {
+		return fmt.Errorf("runtime: run %q is already being executed (status no longer resumable); refusing duplicate resume", runID)
+	}
+	resumeData := map[string]any{
+		"resumed_from": "failed",
+		"restart_node": restartNodeID,
+	}
+	if cp == nil {
+		resumeData["from_entry"] = true
+	}
+	return e.emit(ctx, runID, store.EventRunResumed, "", resumeData)
+}
+
+// restoreResumeWorkspace re-establishes the per-run working environment on
+// the failed-resumable path: the per-run env (workDir + executor wiring —
+// cp.Vars is not the source of truth; vars are re-resolved from r.Inputs so
+// any engine-side fix, e.g. env-var expansion of overrides, applies on
+// resume too), bundle skills re-mirrored (F-RT-7 — same rationale as
+// resumeFromPause: a bundle upgrade between launch and resume would
+// otherwise leave the agent reading stale skill content), plugin
+// contributions + hooks (best-effort), and the preset's "## Focus" bias +
+// library skill hints so a failed-then-resumed run keeps running as the
+// selected sous-bot.
+func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
+	e.restoreRunEnv(r)
+	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
+		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
+	}
+	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
+	}
+	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
+		e.logger.Warn("runtime: plugin hooks (resume): %v", err)
+	}
+	e.applyLibrarySkills()
+	e.applyPresetFocus()
+	return nil
+}
+
+// restoreCheckpointState rehydrates the runState from a checkpoint:
+// outputs, artifacts, loop/round-robin counters, artifact versions, node
+// attempts, loop snapshots, budget accounting, and the backend
+// rehydration pin. A nil cp is a no-op — rs keeps the empty maps from
+// newRunState (same state shape as a fresh launch; only the run_id is
+// preserved so the studio's snapshot continuity stays intact).
+func (e *Engine) restoreCheckpointState(rs *runState, cp *store.Checkpoint) {
+	if cp == nil {
+		return
+	}
+	// Deep-copy outputs so subsequent writes on rs.outputs don't
+	// retroactively mutate r.Checkpoint (which any HTTP read still
+	// holding the run pointer could iterate concurrently). Same
+	// sibling-isolation discipline as fan_out.go's copyOutputs.
+	rs.outputs = copyOutputs(cp.Outputs)
+	if rs.outputs == nil {
+		rs.outputs = make(map[string]map[string]any)
+	}
+	rs.artifacts = e.rebuildArtifacts(rs.outputs)
+	// Deep-COPY the counter maps (not alias): selectEdgeRS/execLoop
+	// mutate loopCounters/roundRobinCounters and artifactVersions in
+	// place, so aliasing cp.* (== r.Checkpoint.*) would let the engine
+	// write a map an HTTP read still holding the run pointer could
+	// iterate concurrently — a fatal concurrent map read+write. Same
+	// sibling-isolation reasoning as the copyOutputs above. A nil source
+	// leaves the empty map newRunState allocated (avoids a first-write nil
+	// panic).
+	if cp.LoopCounters != nil {
+		rs.loopCounters = cloneMap(cp.LoopCounters)
+	}
+	if cp.RoundRobinCounters != nil {
+		rs.roundRobinCounters = cloneMap(cp.RoundRobinCounters)
+	}
+	if cp.ArtifactVersions != nil {
+		rs.artifactVersions = cloneMap(cp.ArtifactVersions)
+	}
+	rs.nodeAttempts = restoreNodeAttempts(cp.NodeAttempts)
+	restoreLoopSnapshots(rs, cp)
+	restoreBudgetAccounting(rs, cp)
+	pinBackendRehydration(rs, cp)
+}
+
+// pinBackendRehydration pins a checkpoint's backend conversation (claw) or
+// session id (claude_code) onto runState so the first execution of
+// cp.NodeID injects them into the input map (fork rehydration). Cleared
+// after the first injection so downstream nodes don't accidentally
+// rehydrate.
+func pinBackendRehydration(rs *runState, cp *store.Checkpoint) {
+	if len(cp.BackendConversation) == 0 && cp.BackendSessionID == "" {
+		return
+	}
+	rs.resumeBackend = resumeBackendState{
+		nodeID:       cp.NodeID,
+		conversation: cp.BackendConversation,
+		sessionID:    cp.BackendSessionID,
+	}
 }
 
 // restoreRunEnv re-establishes the engine's working directory from the
