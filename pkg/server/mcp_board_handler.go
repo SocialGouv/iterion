@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native/boardops"
 )
@@ -292,7 +293,5 @@ func dispatchHTTP(req mcpReq, store *native.Store, caps boardops.Capabilities) m
 }
 
 func writeJSONStatus(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	httpx.WriteJSON(w, status, body)
 }

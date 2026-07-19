@@ -2,12 +2,12 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/auth"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
@@ -292,8 +292,6 @@ func (s *Server) writeLaunchDenial(w http.ResponseWriter, r *http.Request, d *la
 	if !d.resetAt.IsZero() {
 		body["reset_at"] = d.resetAt.Format(time.RFC3339)
 	}
-	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
-	w.WriteHeader(d.status)
-	_ = json.NewEncoder(w).Encode(body)
+	httpx.WriteJSON(w, d.status, body)
 }

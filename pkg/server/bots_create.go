@@ -1,12 +1,12 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/botscaffold"
 )
 
@@ -71,8 +71,6 @@ func (s *Server) handleBotCreate(w http.ResponseWriter, r *http.Request) {
 			"bots: created %s but discovery does not see it (err=%v)", dir, err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(entry)
+	httpx.WriteJSON(w, http.StatusCreated, entry)
 }

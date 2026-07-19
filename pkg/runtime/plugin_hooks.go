@@ -117,10 +117,10 @@ func mergePluginHooks(workDir string, logger *iterlog.Logger) error {
 	if err := os.MkdirAll(filepath.Dir(sidecarPath), 0o755); err != nil {
 		return fmt.Errorf("runtime/plugin: mkdir managed dir: %w", err)
 	}
-	if err := writeJSON(settingsPath, settings); err != nil {
+	if err := writeJSONFile(settingsPath, settings); err != nil {
 		return fmt.Errorf("runtime/plugin: write settings.json: %w", err)
 	}
-	if err := writeJSON(sidecarPath, newBlob); err != nil {
+	if err := writeJSONFile(sidecarPath, newBlob); err != nil {
 		return fmt.Errorf("runtime/plugin: write hooks sidecar: %w", err)
 	}
 	return nil
@@ -180,7 +180,7 @@ func readJSONObject(path string) (map[string]any, error) {
 	return out, nil
 }
 
-func writeJSON(path string, v any) error {
+func writeJSONFile(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err

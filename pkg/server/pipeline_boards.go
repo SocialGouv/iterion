@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -355,10 +356,8 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: create: %v", err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
 	s.reflectAllowedOrigin(w, r)
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(issue)
+	httpx.WriteJSON(w, http.StatusCreated, issue)
 }
 
 // uniquePipelineTitle keeps board card titles distinct: if `desired` is
@@ -479,9 +478,7 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: %v", err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	s.reflectAllowedOrigin(w, r)
-	_ = json.NewEncoder(w).Encode(issue)
+	s.writeJSONFor(w, r, issue)
 }
 
 type pipelineBoardReadyRequest struct {
@@ -525,9 +522,7 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board ready: set state: %v", err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	s.reflectAllowedOrigin(w, r)
-	_ = json.NewEncoder(w).Encode(issue)
+	s.writeJSONFor(w, r, issue)
 }
 
 // ---------------------------------------------------------------------------

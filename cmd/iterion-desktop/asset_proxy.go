@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	iserver "github.com/SocialGouv/iterion/pkg/server"
 )
 
@@ -367,8 +368,7 @@ func (h *assetProxyHandler) indexHTML() ([]byte, error) {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	httpx.EncodeJSON(w, v)
 }
 
 // jsonString returns a safely-quoted JSON string literal for embedding in an

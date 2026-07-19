@@ -2,10 +2,10 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/internal/appinfo"
 )
 
@@ -109,7 +109,5 @@ func (s *Server) deployMode() string {
 // endpoints. Not exported — the rest of the server composes responses
 // inline today.
 func writeHealthJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	httpx.WriteJSON(w, status, payload)
 }

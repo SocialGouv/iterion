@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/SocialGouv/iterion/internal/httpx"
 	"github.com/SocialGouv/iterion/pkg/backend/mcp"
 )
 
@@ -257,9 +257,7 @@ func (s *Server) handleBrowserAttach(w http.ResponseWriter, r *http.Request) {
 	// it has store access alongside the rest of the run's events.
 
 	s.reflectAllowedOrigin(w, r)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"session_id": sessionID})
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"session_id": sessionID})
 }
 
 // requireBrowserRegistry is the small dependency-injection point used
