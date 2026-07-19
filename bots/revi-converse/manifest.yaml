@@ -45,3 +45,10 @@ invocations:
     mode: direct
     args_var: converse_question
     command: { name: revi, scope: pr, disambiguator: when_args_present, min_replier_role: developer }
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [converse_question, pr_url]
+  hidden: [discussion_id, trigger_note, thread_context, replier]

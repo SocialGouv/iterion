@@ -61,3 +61,10 @@ invocations:
     args_var: feature_prompt
     command: { name: featurly, aliases: [feature-dev], scope: any, min_replier_role: maintainer, opens_mr: true }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [feature_prompt]
+  hidden: [source_issue_ref]

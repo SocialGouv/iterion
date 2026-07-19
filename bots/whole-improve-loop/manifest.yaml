@@ -79,3 +79,10 @@ invocations:
     args_var: improvement_prompt
     command: { name: willy, aliases: [whole-improve-loop], scope: any, min_replier_role: maintainer, opens_mr: true }
   - kind: board
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [improvement_prompt]
+  hidden: [source_issue_ref]

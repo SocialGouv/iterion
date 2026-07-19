@@ -78,3 +78,10 @@ invocations:
   - kind: command
     mode: direct
     command: { name: vetty, scope: pr, disambiguator: when_args_empty }
+
+## Studio launch-form hierarchy: `primary` inputs render top-level in
+## the declared order; `hidden` vars are dispatch/webhook plumbing kept
+## out of the form (still settable via --var / bot_args).
+launch:
+  primary: [pr_url]
+  hidden: [pr_author]
