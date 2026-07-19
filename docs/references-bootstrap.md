@@ -167,7 +167,7 @@ claude --print "/triage VULN-FINDINGS.json --auto --repo ."
 claude --print "/patch TRIAGE.json --repo . --top 5"
 ```
 
-Cross-check outputs are copied to `.iterion/security/cross-check/<ts>/`
+Cross-check outputs are copied to `.sec-audit/cross-check/<ts>/`
 to keep them out of the workspace root.
 
 Both tools have the same read-only constraint Seki enforces: harness

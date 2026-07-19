@@ -34,16 +34,20 @@ devbox run -- iterion run bots/sec-audit-deps/main.bot \
 
 # Outputs:
 #  - kanban issues: ready / labels = severity:* + type:supply-chain-* + ecosystem:* + source:sec-audit-deps
-#  - host cache appended at ~/.iterion/security-cache/packages.jsonl
+#  - package cache appended at cache_path (default: run scratch; see below)
 #  - markdown export at <store-dir>/runs/<run_id>/artifacts/export_report/findings.md
 ```
 
-## Cross-run memory — host-wide package cache
+## Cross-run memory — package cache
 
 A package version is a universal artifact: `left-pad@1.3.0` is the
 same tarball whether you `npm install` it in repo A or repo B. The
-cache lives at `~/.iterion/security-cache/packages.jsonl` so every
-repo on the host benefits from past analysis.
+cache defaults to the engine's out-of-tree run scratch dir
+(`${PROJECT_SCRATCH_DIR}/sec-audit-deps/cache/packages.jsonl` —
+always writable, even in sandbox images pinning a non-host user, but
+per-run under a sandbox). For true host-wide reuse across repos, opt
+in with
+`--var cache_path=$HOME/.iterion/security-cache/packages.jsonl`.
 
 Schema (one JSON object per line, append-only):
 
@@ -67,7 +71,7 @@ operator state.
 
 ```
 enumerate_deps (claw, readonly)
-  └─→ load_package_cache (compute: read ~/.iterion/security-cache/packages.jsonl)
+  └─→ load_package_cache (compute: read the package cache at cache_path)
   └─→ filter_cached (compute: split into already_scanned[] vs pending[])
   └─→ heuristic_scan (router fan_out_all on ecosystems present)
         ├─→ run_js_heuristics      (tool: parse package.json scripts, decode `*-install.js` payloads)

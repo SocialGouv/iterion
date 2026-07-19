@@ -6,8 +6,10 @@ description: |
   Universal supply-chain malware auditor. Enumerates installed
   dependencies per ecosystem (npm/yarn/pnpm, pip/poetry/uv,
   go.mod/vendor, …), looks each `(ecosystem, name, version,
-  checksum)` triple up against a host-wide cache at
-  `~/.iterion/security-cache/packages.jsonl` to skip packages that
+  checksum)` triple up against a package cache (per-run scratch by
+  default; point `cache_path` at
+  `~/.iterion/security-cache/packages.jsonl` for host-wide reuse)
+  to skip packages that
   were already analysed at an acceptable scanner version, runs
   language-specific static heuristics on the rest (install-time
   hooks, eval, obfuscation, fetch+exec, base64 blobs, init()

@@ -5,7 +5,7 @@ description: |
   verification, two-pass dedup (deterministic + semantic), exclusion
   rules, severity re-rank from preconditions. Wires into Seki's
   revalidate phase via `[[disprove-voting]]` and consumes the FP
-  memory at `.iterion/security/fp-known.yaml` ([[fp-memory]]).
+  memory at `.sec-audit/fp-known.yaml` ([[fp-memory]]).
 attribution: |
   Adapted from Anthropic's `defending-code-reference-harness`
   (`/triage` reference implementation). Harness JSON checkpoint
@@ -37,10 +37,10 @@ data plane.
 
 - The candidate list from `triage` phase 3 (already taxonomy-mapped
   per `[[finding-taxonomy]]`).
-- `.iterion/security/fp-known.yaml` ([[fp-memory]]) — read BEFORE
+- `.sec-audit/fp-known.yaml` ([[fp-memory]]) — read BEFORE
   the LLM ever sees a candidate. Matching candidates get
   `status: known_fp` and skip revalidate.
-- `.iterion/security/context.md` ([[threat-model]]) if present. The
+- `.sec-audit/context.md` ([[threat-model]]) if present. The
   threat model defines the trust boundary and stated threats —
   preconditions and severity get evaluated against it.
 
@@ -142,7 +142,7 @@ when it matches any of:
    escape a trust boundary.
 8. Trusted inputs as the attack vector (env vars, CLI flags set by
    the operator) UNLESS the trust boundary in
-   `.iterion/security/context.md` marks them untrusted.
+   `.sec-audit/context.md` marks them untrusted.
 9. Client-side code flagged for a server-side finding_type.
 10. Outdated dep versions (sec-audit-deps owns those).
 11. Weak random used for non-security purposes (jitter, shuffle,
@@ -245,9 +245,9 @@ appended to `fp-known.yaml` (see `[[fp-memory]]` append rules).
 ## See also
 
 - `[[disprove-voting]]` — the per-voter protocol and output schema.
-- `[[fp-memory]]` — `.iterion/security/fp-known.yaml` read/write.
+- `[[fp-memory]]` — `.sec-audit/fp-known.yaml` read/write.
 - `[[finding-taxonomy]]` — the twelve categories.
-- `[[threat-model]]` — `.iterion/security/context.md` consumer.
+- `[[threat-model]]` — `.sec-audit/context.md` consumer.
 - `[[sec-audit-source]]` — six-phase orchestration this skill plugs
   into.
 - `HARNESS-ATTRIBUTION.md` — upstream credit.

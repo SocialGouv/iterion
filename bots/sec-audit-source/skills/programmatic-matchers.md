@@ -54,7 +54,8 @@ Stdin:
 ```
 
 `files[]` is the list of files in scope for this run (workspace
-walk excluding `.git`, `node_modules`, `.iterion`, `vendor`, etc.).
+walk excluding `.git`, `node_modules`, `.iterion`, `.sec-audit`,
+`vendor`, etc.).
 A matcher can read any file via its own logic — `files[]` is a
 performance hint, not a hard restriction.
 

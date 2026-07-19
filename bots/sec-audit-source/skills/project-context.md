@@ -1,7 +1,7 @@
 ---
 name: project-context
 description: |
-  Project security context — `.iterion/security/context.md`. Threat
+  Project security context — `.sec-audit/context.md`. Threat
   model, auth/authz model, in-scope file patterns, and known-FP
   sources. Loaded deterministically by `project_context_load` and
   injected verbatim into the `triage` and `revalidate` system
@@ -13,7 +13,7 @@ description: |
   file body.
 ---
 
-# Project security context — `.iterion/security/context.md`
+# Project security context — `.sec-audit/context.md`
 
 A committable markdown file describing what could go wrong in
 THIS codebase, independent of the specific bugs the scanners
@@ -26,13 +26,13 @@ interview/bootstrap workflow that populates it, and
 ## Location
 
 ```
-<workspace_dir>/.iterion/security/context.md
+<workspace_dir>/.sec-audit/context.md
 ```
 
 Recommended to commit. Reviewable by humans; rewriting the file
 in a PR is the operator's path for steering Seki's scope. The
 file lives outside `.git/` so it survives clones, but inside
-`.iterion/` so the bot's other state is co-located.
+`.sec-audit/` so the bot's other state is co-located.
 
 ## Lifecycle
 
@@ -136,7 +136,7 @@ Seki flagging its own output, the C-007 self-finding).
 
 ### Steer the next run via a one-line edit
 ```bash
-$EDITOR .iterion/security/context.md
+$EDITOR .sec-audit/context.md
 # Edit "## In-scope file patterns" to add a directory; commit.
 ```
 
@@ -163,7 +163,7 @@ loader treats a missing timestamp as "human authored, trust it".
 
 | Memory                        | Scope                       | Authoritative for                       |
 |-------------------------------|-----------------------------|-----------------------------------------|
-| `.iterion/security/context.md` | Project-wide threat + scope | "what could go wrong / what to ignore"  |
+| `.sec-audit/context.md` | Project-wide threat + scope | "what could go wrong / what to ignore"  |
 | `fp-known.yaml`                | Per-matcher suppression     | "this matcher on this line is benign"   |
 | FileRecords (`files/`)         | Per-file analysis cache     | "this file's verdicts haven't changed"  |
 

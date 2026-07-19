@@ -752,8 +752,10 @@ cannot masquerade as a clean bill of health.
 Universal supply-chain malware auditor. Enumerates installed
 dependencies per ecosystem (npm/yarn/pnpm, pip/poetry/uv,
 go.mod/vendor, …), looks each `(ecosystem, name, version,
-checksum)` triple up against a host-wide cache at
-`~/.iterion/security-cache/packages.jsonl` to skip packages that
+checksum)` triple up against a package cache (per-run scratch by
+default; point `cache_path` at
+`~/.iterion/security-cache/packages.jsonl` for host-wide reuse)
+to skip packages that
 were already analysed at an acceptable scanner version, runs
 language-specific static heuristics on the rest (install-time
 hooks, eval, obfuscation, fetch+exec, base64 blobs, init()
@@ -788,7 +790,7 @@ frameworks, runs language-specific SAST (semgrep + gosec / bandit /
 npm audit) plus language-agnostic scanners (gitleaks for secrets,
 trivy fs for filesystem misconfig, semgrep --config=auto), triages
 the raw output with an LLM against a finding taxonomy, confronts
-candidates against `.iterion/security/fp-known.yaml` to suppress
+candidates against `.sec-audit/fp-known.yaml` to suppress
 curated false positives, revalidates surviving candidates with a
 two-phase judge (anti-façade), then writes findings to the iterion
 native kanban board (one issue per finding, labelled by severity +
@@ -796,7 +798,7 @@ type) and exports a markdown summary.
 
 Cross-run memory: false positives confirmed by the operator (or by
 the revalidate judge after explicit human reasoning) are written
-back to `.iterion/security/fp-known.yaml` in the repo so the next
+back to `.sec-audit/fp-known.yaml` in the repo so the next
 run does not re-surface them. Entries are reviewable + editable by
 humans.
 

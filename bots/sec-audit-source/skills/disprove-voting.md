@@ -69,7 +69,7 @@ Read-only access to {workspace_dir}. Read, Glob, Grep ONLY inside
 that root. May NOT build, run, test, install, or reach the network.
 
 ENVIRONMENT (trust boundary):
-{from .iterion/security/context.md section 3, or
+{from .sec-audit/context.md section 3, or
 "Unknown. Treat externally-reachable entry points as untrusted."}
 
 PROCEDURE:

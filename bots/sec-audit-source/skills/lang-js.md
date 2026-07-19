@@ -28,6 +28,8 @@ semgrep \
   --metrics=off \
   --quiet \
   --exclude='node_modules' \
+  --exclude='.iterion' \
+  --exclude='.sec-audit' \
   --exclude='dist' \
   --exclude='build' \
   --exclude='.next' \
@@ -119,6 +121,6 @@ coverage. To add/adjust JS/TS scanning, edit this block — no DSL change.
 
 <!-- iterion:scanners
 [
-  {"id":"semgrep-js","output":"js.json","cmd":"semgrep --config=p/javascript --config=p/typescript --config=p/nodejsscan --config=p/owasp-top-ten --json --output=$SCAN_DIR/js.json --metrics=off --quiet --exclude=node_modules --exclude='.iterion' --exclude='.works' --exclude=dist --exclude=build --exclude=.next --exclude='*.min.js' $WORKSPACE_DIR || true"}
+  {"id":"semgrep-js","output":"js.json","cmd":"semgrep --config=p/javascript --config=p/typescript --config=p/nodejsscan --config=p/owasp-top-ten --json --output=$SCAN_DIR/js.json --metrics=off --quiet --exclude=node_modules --exclude='.iterion' --exclude='.sec-audit' --exclude='.works' --exclude=dist --exclude=build --exclude=.next --exclude='*.min.js' $WORKSPACE_DIR || true"}
 ]
 -->

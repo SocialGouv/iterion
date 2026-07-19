@@ -56,8 +56,8 @@ The bot keeps two kinds of memory between runs:
 
 | Memory | Location | Purpose |
 |---|---|---|
-| **Curated FP list** | `.iterion/security/fp-known.yaml` in the scanned repo (committable) | Suppress findings the operator has reviewed and judged false positives. Human-editable. |
-| **Per-file analysis records** | `.iterion/security/files/<sha1(path)>.json` in the scanned repo (typically committable) | Append-only history of every file analysis. Lets re-runs skip the expensive `revalidate` phase on files that haven't changed since the previous run at the same scanner version + within TTL. |
+| **Curated FP list** | `.sec-audit/fp-known.yaml` in the scanned repo (committable) | Suppress findings the operator has reviewed and judged false positives. Human-editable. |
+| **Per-file analysis records** | `.sec-audit/files/<sha1(path)>.json` in the scanned repo (typically committable) | Append-only history of every file analysis. Lets re-runs skip the expensive `revalidate` phase on files that haven't changed since the previous run at the same scanner version + within TTL. |
 
 The records mechanism mirrors deepsec's append-only `FileRecord`
 pattern, scoped to single-process iterion-bundle execution. See
@@ -69,7 +69,7 @@ invalidates the cache (`--var scanner_version=…`).
 ## False-positive memory
 
 Confirmed false positives are written to
-`.iterion/security/fp-known.yaml` in the **scanned repo** (NOT in the
+`.sec-audit/fp-known.yaml` in the **scanned repo** (NOT in the
 host store). The file is committable + human-reviewable, and is the
 authoritative source of suppression rules.
 

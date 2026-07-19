@@ -5,7 +5,7 @@ description: |
   before triage and ranking. Three modes: `interview` (walk an owner
   through the four-question framework), `bootstrap` (derive the
   model from the code + past vulns), and `bootstrap-then-interview`
-  (chain the two). Output lands in `.iterion/security/context.md`.
+  (chain the two). Output lands in `.sec-audit/context.md`.
 attribution: |
   Adapted from Anthropic's `defending-code-reference-harness`
   (`/threat-model` reference implementation). Re-anchored on
@@ -37,12 +37,12 @@ likelihood.
 revalidate judge is operating blind on a generic untrusted-input
 boundary and the kanban fills with theoretical CVEs.
 
-## Output contract — `.iterion/security/context.md`
+## Output contract — `.sec-audit/context.md`
 
 This skill writes **one file** per workspace:
 
 ```
-<workspace_dir>/.iterion/security/context.md
+<workspace_dir>/.sec-audit/context.md
 ```
 
 It is markdown so humans can edit it; the section headings + table
@@ -164,13 +164,13 @@ open questions and any thin threat rows. Owner time goes to
 - **Public advisory DBs only** when fetching CVEs (NVD, GHSA, the
   project's own issue tracker). Never the live deployment.
 - Bootstrap is idempotent. Re-running it overwrites
-  `.iterion/security/context.md`. Operators may edit the file by
+  `.sec-audit/context.md`. Operators may edit the file by
   hand between runs.
 
 ## After writing
 
 Print:
-1. Path to `.iterion/security/context.md`.
+1. Path to `.sec-audit/context.md`.
 2. Top 5 threats by `impact × likelihood` (id, one-line, score).
 3. For `bootstrap`: open questions (these seed a later interview).
 4. For `interview`: owner claims unverifiable in code.
