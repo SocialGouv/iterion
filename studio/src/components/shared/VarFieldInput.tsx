@@ -2,8 +2,9 @@ import type { VarField } from "@/api/types";
 
 import { Checkbox } from "@/components/ui/Checkbox";
 import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { Textarea } from "@/components/ui/Textarea";
-import { isPromptLikeVar, suggestRows } from "@/lib/promptVarHeuristics";
+import { isEnumVar, isPromptLikeVar, suggestRows } from "@/lib/promptVarHeuristics";
 
 interface Props {
   field: VarField;
@@ -88,6 +89,41 @@ export default function VarFieldInput({
       );
     case "string":
     default:
+      // Enum-constrained string vars render a fixed-choice select (the
+      // same ui/Select the launch Engine-options pickers use). The enum
+      // wins over the prompt-like heuristics AND a forced `promptLike`
+      // (launch-hint prominence) — a closed value list is never a prompt
+      // body. A current value outside the list (stale preset / query
+      // param) stays visible as a disabled-but-selected "(invalid: x)"
+      // option instead of silently snapping to another value.
+      if (isEnumVar(field)) {
+        const options = field.enum ?? [];
+        const stale = !options.includes(value);
+        return (
+          <Select
+            value={value}
+            onChange={(e) => onChange(e.currentTarget.value)}
+            error={invalid}
+            {...common}
+          >
+            {stale &&
+              (value === "" ? (
+                <option value="" disabled>
+                  Select a value…
+                </option>
+              ) : (
+                <option value={value} disabled>
+                  (invalid: {value})
+                </option>
+              ))}
+            {options.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </Select>
+        );
+      }
       // Long-form prompt-like fields (suffix _prompt/_description, exact
       // match on prompt/description/instructions, or any string var
       // declared without a default) get a multi-row monospace textarea

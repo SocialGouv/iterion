@@ -37,6 +37,9 @@ export interface VarField {
   name: string;
   type: TypeExpr;
   default?: Literal;
+  /** DSL `[enum: "a", "b"]` constraint — present only on string vars.
+   *  Non-empty ⇒ the var renders as a fixed-choice select. */
+  enum?: string[];
 }
 
 export type TypeExpr = "string" | "bool" | "int" | "float" | "json" | "string[]";

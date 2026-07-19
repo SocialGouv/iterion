@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 import type { VarField } from "@/api/types";
 
 import VarFieldInput from "@/components/shared/VarFieldInput";
-import { isPromptLikeVar } from "@/lib/promptVarHeuristics";
+import { isEnumVar, isPromptLikeVar } from "@/lib/promptVarHeuristics";
 import { isVarRequired, RequiredPill } from "@/lib/varValidation";
 
 export interface VarFieldsSectionProps {
@@ -52,9 +52,14 @@ export default function VarFieldsSection({
       {title && <h2 className="text-xs font-medium text-fg-muted mb-2">{title}</h2>}
       <div className="space-y-4">
         {fields.map((f) => {
+          // Enum vars never take the prompt-style layout — not via the
+          // name/default heuristics (isPromptLikeVar already excludes
+          // them) and not via launch-hint prominence: a closed choice
+          // list stays a compact select row.
           const promptLike =
-            isPromptLikeVar(f) ||
-            (f.type === "string" && !!prominentNames?.has(f.name));
+            !isEnumVar(f) &&
+            (isPromptLikeVar(f) ||
+              (f.type === "string" && !!prominentNames?.has(f.name)));
           const required = isVarRequired(f);
           const value = values[f.name] ?? "";
           const invalid = required && value.trim().length === 0;

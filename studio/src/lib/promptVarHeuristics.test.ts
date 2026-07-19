@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { VarField, Literal } from "@/api/types";
-import { isPromptLikeVar, suggestRows } from "./promptVarHeuristics";
+import { isEnumVar, isPromptLikeVar, suggestRows } from "./promptVarHeuristics";
 
 const stringLit = (s: string): Literal => ({ kind: "string", raw: `"${s}"`, str_val: s });
 
@@ -54,6 +54,23 @@ describe("isPromptLikeVar", () => {
   it("name suffix wins even when a default is provided", () => {
     // A var named *_prompt with a default is still a prompt body.
     expect(isPromptLikeVar(v("system_prompt", "string", stringLit("default text")))).toBe(true);
+  });
+
+  it("an enum constraint wins over every prompt-like rule", () => {
+    // No default (rule c), exact name, and suffix match — all overridden:
+    // a closed choice list renders a select, never a textarea.
+    expect(isPromptLikeVar({ ...v("mode"), enum: ["fast", "thorough"] })).toBe(false);
+    expect(isPromptLikeVar({ ...v("prompt"), enum: ["a", "b"] })).toBe(false);
+    expect(isPromptLikeVar({ ...v("review_prompt"), enum: ["a"] })).toBe(false);
+  });
+});
+
+describe("isEnumVar", () => {
+  it("is true only for string vars with a non-empty enum", () => {
+    expect(isEnumVar({ ...v("mode"), enum: ["a", "b"] })).toBe(true);
+    expect(isEnumVar(v("mode"))).toBe(false);
+    expect(isEnumVar({ ...v("mode"), enum: [] })).toBe(false);
+    expect(isEnumVar({ ...v("mode", "int"), enum: ["a"] })).toBe(false);
   });
 });
 

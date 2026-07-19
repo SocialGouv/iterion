@@ -7,6 +7,13 @@ import type { VarField } from "@/api/types";
  * Pure functions only — covered by `promptVarHeuristics.test.ts`.
  */
 
+/** True when the var carries a DSL `[enum: "a", "b"]` constraint — a
+ *  fixed choice list. Enum vars render as a select and are never
+ *  prompt-like, regardless of name or default heuristics. */
+export function isEnumVar(field: VarField): boolean {
+  return field.type === "string" && (field.enum?.length ?? 0) > 0;
+}
+
 /** Var names treated as prompt-like even without a suffix match. */
 const PROMPT_LIKE_EXACT = new Set(["prompt", "description", "instructions"]);
 
@@ -20,6 +27,9 @@ const PROMPT_SUFFIX_RE = /(_prompt|_description)$/i;
  */
 export function isPromptLikeVar(field: VarField): boolean {
   if (field.type !== "string") return false;
+  // An enum constraint pins the value to a closed list — a select, not a
+  // prompt body, whatever the name/default rules below would say.
+  if (isEnumVar(field)) return false;
 
   const lower = field.name.toLowerCase();
   if (PROMPT_LIKE_EXACT.has(lower)) return true;
