@@ -306,6 +306,7 @@ func New(cfg Config, logger *iterlog.Logger) *Server {
 		queue:             cfg.Queue,
 		botBindings:       cfg.BotBindings,
 		forgeConnections:  cfg.ForgeConnections,
+		pluginSources:     cfg.PluginSources,
 		forgeIntegrations: cfg.ForgeIntegrations,
 		forgeOAuthApps:    cfg.ForgeOAuthApps,
 		forgeGitHubApp:    cfg.ForgeGitHubApp,

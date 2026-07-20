@@ -24,6 +24,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
@@ -189,6 +190,12 @@ type Config struct {
 	// ForgeGitHubApp is the global GitHub-App identity for the
 	// installation-token connect mode. Empty → that mode is unavailable.
 	ForgeGitHubApp ForgeGitHubAppConfig
+
+	// PluginSources holds team-scoped, git-hosted org-private plugins
+	// (pkg/pluginsource). Non-nil registers /api/teams/:id/plugin-sources;
+	// nil answers 501 there. The durable counterpart to a plugin installed
+	// into a pod's iterion home, which a restart silently loses.
+	PluginSources pluginsource.Store
 
 	// MemoryStore backs the shared-knowledge REST surface
 	// (/api/memory/*). nil → the local filesystem store. Cloud mode

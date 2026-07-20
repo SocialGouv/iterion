@@ -38,12 +38,14 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/runview/runstream"
 	"github.com/SocialGouv/iterion/pkg/secrets"
 	"github.com/SocialGouv/iterion/pkg/server"
 	"github.com/SocialGouv/iterion/pkg/server/cloudpublisher"
+	"github.com/SocialGouv/iterion/pkg/store"
 	mongostore "github.com/SocialGouv/iterion/pkg/store/mongo"
 	"github.com/SocialGouv/iterion/pkg/valkey"
 	"github.com/SocialGouv/iterion/pkg/webhooks"
@@ -282,6 +284,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		OAuthForfait:     stores.oauth,
 		ForgeConnections: stores.forgeConn,
 		Identity:         authStack.identityStore,
+		PluginSources:    newPluginSourceResolver(stores, sealer, logger),
 	})
 	if err != nil {
 		return fmt.Errorf("server: build cloud publisher: %w", err)
@@ -398,6 +401,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		ForgeIntegrations:      stores.forgeIntegration,
 		ForgeOAuthApps:         stores.forgeOAuthApp,
 		ForgeGitHubApp:         forgeGitHubAppFromEnv(),
+		PluginSources:          stores.pluginSources,
 		WebhookConfigs:         stores.webhooks.Configs,
 		WebhookDeliveries:      stores.webhooks.Deliveries,
 		WebhookCounter:         stores.webhooks.Counter,
@@ -461,6 +465,7 @@ type cloudStores struct {
 	forgeConn        *forge.MongoConnectionStore
 	forgeIntegration *forge.MongoRepoIntegrationStore
 	forgeOAuthApp    *forge.MongoOAuthAppStore
+	pluginSources    *pluginsource.MongoStore
 	orgSSO           *orgsso.MongoStore
 	orgDomain        *orgsso.MongoDomainStore
 	oidcState        *oidc.MongoStateStore
@@ -493,6 +498,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		forgeConn:        forge.NewMongoConnectionStore(st.DB()),
 		forgeIntegration: forge.NewMongoRepoIntegrationStore(st.DB()),
 		forgeOAuthApp:    forge.NewMongoOAuthAppStore(st.DB()),
+		pluginSources:    pluginsource.NewMongoStore(st.DB()),
 		orgSSO:           orgsso.NewMongoStore(st.DB()),
 		orgDomain:        orgsso.NewMongoDomainStore(st.DB()),
 		// Mongo-backed OIDC state store: PendingAuth must survive across replicas
@@ -526,6 +532,7 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		{"forge_connections", s.forgeConn.EnsureSchema},
 		{"repo_integrations", s.forgeIntegration.EnsureSchema},
 		{"forge_oauth_apps", s.forgeOAuthApp.EnsureSchema},
+		{"plugin_sources", s.pluginSources.EnsureSchema},
 		{"org_sso_providers", s.orgSSO.EnsureSchema},
 		{"org_verified_domains", s.orgDomain.EnsureSchema},
 		{"oidc_states", s.oidcState.EnsureSchema},
@@ -552,6 +559,41 @@ func buildCloudStores(ctx context.Context, st *mongostore.Store, logger *iterlog
 		s.marketplace = marketplace.NewMongoStore(st.DB())
 	}
 	return s, nil
+}
+
+// newPluginSourceResolver builds the launch-time resolver for team-scoped,
+// git-hosted plugins (ADR-080). The cache dir is deliberately ephemeral: the
+// durable authority is the Mongo record, so a cold pod re-derives its checkouts
+// instead of depending on pod-local state that a restart would silently lose.
+//
+// The read credential is used strictly BY REFERENCE — the secret id travels on
+// the source record, the value is unsealed here and handed to the fetcher,
+// which passes it to git via an askpass helper (never argv, never a log line).
+func newPluginSourceResolver(stores *cloudStores, sealer secrets.Sealer, logger *iterlog.Logger) *pluginsource.Resolver {
+	if stores == nil || stores.pluginSources == nil || sealer == nil {
+		return nil
+	}
+	return &pluginsource.Resolver{
+		Store: stores.pluginSources,
+		Fetcher: &pluginsource.Fetcher{
+			CacheDir: filepath.Join(os.TempDir(), "iterion-plugin-sources"),
+			CredentialFor: func(ctx context.Context, s pluginsource.PluginSource) (string, error) {
+				if s.SecretID == "" {
+					return "", nil // public repository
+				}
+				gs, err := stores.genericSecrets.Get(store.WithTenant(ctx, s.TenantID), s.SecretID)
+				if err != nil {
+					return "", err
+				}
+				plain, err := secrets.OpenGenericSecret(sealer, gs.ID, gs.SealedSecret)
+				if err != nil {
+					return "", err
+				}
+				return string(plain), nil
+			},
+		},
+		Warnf: logger.Warn,
+	}
 }
 
 // schemaEnsurer pairs a Mongo collection label (used in the
