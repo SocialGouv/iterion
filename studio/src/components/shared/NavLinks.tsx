@@ -20,10 +20,11 @@ import {
   LockClosedIcon,
   MixIcon,
   CardStackIcon,
+  ReaderIcon,
 } from "@radix-ui/react-icons";
 import { useShallow } from "zustand/react/shallow";
 
-import { useAuth } from "@/auth/AuthContext";
+import { useAuth, canEditConfigShares } from "@/auth/AuthContext";
 import { useRuns } from "@/hooks/useRuns";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
@@ -49,6 +50,7 @@ export type Section =
   | "plugins"
   | "secrets"
   | "skills"
+  | "veilles"
   | "org"
   | "team"
   | "integrations"
@@ -100,6 +102,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   triggers: "triggers",
   marketplace: "marketplace",
   plugins: "plugins",
+  veilles: "veilles",
   orgs: "org",
   teams: "team",
   integrations: "integrations",
@@ -120,7 +123,7 @@ function deriveSection(pathname: string): Section | undefined {
 // specific file/run without going through the section's inner strip.
 export default function NavLinks({ collapsed }: Props) {
   const info = useServerInfoStore((s) => s.info);
-  const { activeTeam, user } = useAuth();
+  const { activeTeam, activeRole, user } = useAuth();
   const [location] = useLocation();
   // Integrations is its own top-level route (/integrations, team-scoped via
   // the active team in context — like /board, /plugins), so deriveSection's
@@ -179,6 +182,14 @@ export default function NavLinks({ collapsed }: Props) {
   // Integrations stays — the valued "connect a repo / enable a bot" shortcut.
   // Both are cloud-only (the forge stores are wired only in cloud mode).
   const manage: LinkDef[] = [];
+  // Veilles: the config-share editor as a full-app route, for accounts that can
+  // edit shares but aren't boxed into the minimal ConfigEditorShell (admins /
+  // owners / super-admins). Mirrors the server canEditConfigShares gate so the
+  // veille editor scales with access instead of vanishing when a config_editor
+  // is broadened.
+  if (info?.config_shares_enabled && canEditConfigShares(activeRole, !!user?.is_super_admin)) {
+    manage.push({ section: "veilles", href: "/veilles", label: "Veilles", icon: ReaderIcon });
+  }
   if (info?.secrets_enabled) {
     manage.push({ section: "secrets", href: "/secrets", label: "Secrets", icon: LockClosedIcon });
   }

@@ -16,7 +16,7 @@ import {
   ReaderIcon,
 } from "@radix-ui/react-icons";
 
-import { useAuth } from "@/auth/AuthContext";
+import { useAuth, canEditConfigShares } from "@/auth/AuthContext";
 import { useServerInfoStore } from "@/store/serverInfo";
 import { listConfigShares, type ShareView } from "@/api/configShareAdmin";
 
@@ -45,14 +45,15 @@ interface AreaCard {
 
 export default function HubGrid() {
   const info = useServerInfoStore((s) => s.info);
-  const { activeTeam, activeTeamID, user } = useAuth();
+  const { activeTeam, activeTeamID, activeRole, user } = useAuth();
   const cloud = info?.mode === "cloud";
+  const canEditVeilles = canEditConfigShares(activeRole, !!user?.is_super_admin);
 
   // Config-shares (Veilles) — loaded only when the feature is wired and a
   // team is active. Shares the ["config-shares", teamID] cache with the
   // per-bot ConfigSharesCard. Best-effort: a failure just hides the card
   // (the nav never surfaced it either, so its absence is not a regression).
-  const sharesEnabled = !!info?.config_shares_enabled && !!activeTeamID;
+  const sharesEnabled = !!info?.config_shares_enabled && !!activeTeamID && canEditVeilles;
   const sharesQuery = useQuery<ShareView[]>({
     queryKey: ["config-shares", activeTeamID],
     queryFn: () => listConfigShares(activeTeamID),
@@ -93,13 +94,10 @@ export default function HubGrid() {
     areas.push({ href: "/admin/orgs", label: "Admin", desc: "Orgs, audit, platform", icon: GearIcon });
   }
 
-  // The Veilles card leads to the owning bot's home where shares are managed.
-  // Distinct shares can target different bots; link to the first bot but show
-  // the total count so the operator knows the scope.
-  const veille =
-    shares && shares.length > 0 && shares[0]
-      ? { bot: shares[0].bot_id, count: shares.length }
-      : null;
+  // The Veilles card leads to the dedicated /veilles editor route (the same
+  // Workspace as the minimal config-editor shell). Shown with the share count
+  // so the operator knows the scope.
+  const veilleCount = shares && shares.length > 0 ? shares.length : 0;
 
   return (
     <section aria-label="Explore" className="space-y-2">
@@ -107,11 +105,11 @@ export default function HubGrid() {
         Explore
       </h2>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        {veille && (
+        {veilleCount > 0 && (
           <HubTile
-            href={`/bots/${encodeURIComponent(veille.bot)}`}
+            href="/veilles"
             label="Veilles"
-            desc={`${veille.count} config-share${veille.count === 1 ? "" : "s"} to edit`}
+            desc={`${veilleCount} config-share${veilleCount === 1 ? "" : "s"} to edit`}
             icon={ReaderIcon}
           />
         )}
