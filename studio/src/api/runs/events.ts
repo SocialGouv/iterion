@@ -302,6 +302,45 @@ export type UserMessageEvent =
   | UserMessageConsumedEvent
   | UserMessageCancelledEvent;
 
+// Budget events share {dimension, used, limit} (pkg/runtime/budget.go);
+// budget_warning has a second emitter shape for loop liveness stalls
+// ({loop, reason, crossings} — pkg/runtime/edges.go), hence everything
+// optional.
+export interface BudgetEventData {
+  // "tokens" | "cost_usd" | "iterations" | "duration". Absent on the
+  // liveness-stall warning variant.
+  dimension?: string;
+  used?: number;
+  limit?: number;
+  [key: string]: unknown;
+}
+
+export interface BudgetWarningEvent extends RunEventBase {
+  type: "budget_warning";
+  data?: BudgetEventData;
+}
+
+export interface BudgetExceededEvent extends RunEventBase {
+  type: "budget_exceeded";
+  data?: BudgetEventData;
+}
+
+// In-process run-health alert (stall / budget / failure) fanned out by
+// pkg/alert's browser sink. Unpersisted, Seq=0, broker-only — see the
+// interception note in useRunWebSocket.
+export interface AlertEvent extends RunEventBase {
+  type: "alert";
+  data?: {
+    // Source condition ("stall" | "budget_warning" | "budget_exceeded"
+    // | "run_failed" | …) — drives the toast tone.
+    kind?: string;
+    // Pre-rendered headline + detail.
+    title?: string;
+    reason?: string;
+    [key: string]: unknown;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Pass-through variant — every remaining backend event type
 // ---------------------------------------------------------------------------
@@ -332,9 +371,6 @@ export type PassthroughEventType =
   | "review_merged"
   | "join_ready"
   | "edge_selected"
-  | "budget_warning"
-  | "budget_exceeded"
-  | "alert"
   | "run_interrupted"
   | "delegate_started"
   | "delegate_finished"
@@ -385,6 +421,9 @@ export type RunEvent =
   | UserMessageDeliveredEvent
   | UserMessageConsumedEvent
   | UserMessageCancelledEvent
+  | BudgetWarningEvent
+  | BudgetExceededEvent
+  | AlertEvent
   | PassthroughRunEvent;
 
 export type RunEventType = RunEvent["type"];

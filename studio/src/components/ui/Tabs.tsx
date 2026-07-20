@@ -1,17 +1,21 @@
 import * as RT from "@radix-ui/react-tabs";
 import type { ReactNode } from "react";
 
-export interface TabItem {
-  value: string;
+export interface TabItem<V extends string = string> {
+  value: V;
   label: ReactNode;
   icon?: ReactNode;
   disabled?: boolean;
 }
 
-export interface TabsProps {
-  value: string;
-  onValueChange: (value: string) => void;
-  items: TabItem[];
+// Generic over the tab-value union so call sites with a closed set of
+// tabs (e.g. NodeDetailPanel's TabValue) get a typed onValueChange
+// instead of casting the string Radix reports. Defaults to `string`,
+// so untyped call sites are unaffected.
+export interface TabsProps<V extends string = string> {
+  value: V;
+  onValueChange: (value: V) => void;
+  items: TabItem<V>[];
   /** Render content panels keyed by tab value. */
   panels?: Record<string, ReactNode>;
   className?: string;
@@ -23,7 +27,7 @@ export interface TabsProps {
   variant?: "underline" | "pill";
 }
 
-export function Tabs({
+export function Tabs<V extends string = string>({
   value,
   onValueChange,
   items,
@@ -32,11 +36,14 @@ export function Tabs({
   listClassName = "",
   triggerClassName = "",
   variant = "underline",
-}: TabsProps) {
+}: TabsProps<V>) {
   return (
     <RT.Root
       value={value}
-      onValueChange={onValueChange}
+      // Boundary cast: Radix reports plain string, but every trigger is
+      // rendered from items (value: V), so the reported value is always
+      // a member of V at runtime.
+      onValueChange={(v) => onValueChange(v as V)}
       className={`flex flex-col min-h-0 ${className}`.trim()}
     >
       <RT.List

@@ -46,7 +46,7 @@ export function toastForEvent(
     case "run_finished":
       return { message: "Run finished", type: "success" };
     case "run_failed": {
-      const err = (e.data?.["error"] as string | undefined) ?? "see logs";
+      const err = e.data?.error ?? "see logs";
       return { message: `Run failed: ${err}`, type: "error" };
     }
     case "run_paused": {
@@ -54,7 +54,7 @@ export function toastForEvent(
       // the operator clicked Pause, so a warning toast over-dramatizes
       // the event. Engine-side input-requested pauses keep the
       // warning tone so they read as action-required.
-      const reason = e.data?.["reason"] as string | undefined;
+      const reason = e.data?.reason;
       if (reason === "operator") {
         return { message: "Run paused by operator", type: "info" };
       }
@@ -65,9 +65,9 @@ export function toastForEvent(
     case "run_cancelled":
       return { message: "Run cancelled", type: "info" };
     case "budget_warning": {
-      const dim = (e.data?.["dimension"] as string | undefined) ?? "budget";
-      const used = e.data?.["used"] as number | undefined;
-      const limit = e.data?.["limit"] as number | undefined;
+      const dim = e.data?.dimension ?? "budget";
+      const used = e.data?.used;
+      const limit = e.data?.limit;
       const pct =
         typeof used === "number" && typeof limit === "number" && limit > 0
           ? Math.round((used / limit) * 100)
@@ -76,16 +76,16 @@ export function toastForEvent(
       return { message: `Budget warning: ${dim}${suffix}.`, type: "warning" };
     }
     case "budget_exceeded": {
-      const dim = (e.data?.["dimension"] as string | undefined) ?? "budget";
+      const dim = e.data?.dimension ?? "budget";
       return { message: `Budget exhausted: ${dim} hit hard cap.`, type: "error" };
     }
     case "alert": {
       // In-process run-health alert (stall / budget / failure) fanned
       // out by pkg/alert's browser sink. The payload carries a
       // pre-rendered title + reason; pick the toast tone from kind.
-      const kind = e.data?.["kind"] as string | undefined;
-      const title = (e.data?.["title"] as string | undefined) ?? "Run alert";
-      const reason = e.data?.["reason"] as string | undefined;
+      const kind = e.data?.kind;
+      const title = e.data?.title ?? "Run alert";
+      const reason = e.data?.reason;
       const message = reason ? `${title}: ${reason}` : title;
       const type: "error" | "warning" =
         kind === "budget_exceeded" || kind === "run_failed" ? "error" : "warning";

@@ -130,7 +130,7 @@ function buildFanoutFrames(
       // ELK-sized containers (an expanded subbot frame in the region)
       // carry real dims on style — use them over the fixed IRNode
       // footprint so the region frame wraps the whole container.
-      const style = (n.style ?? {}) as Record<string, unknown>;
+      const style = n.style ?? {};
       const w = typeof style.width === "number" ? style.width : FANOUT_NODE_W;
       const h = typeof style.height === "number" ? style.height : FANOUT_NODE_H;
       minX = Math.min(minX, p.x);
@@ -152,7 +152,7 @@ function buildFanoutFrames(
         label: `fan_out_each · ${router}`,
         total: routerItems.get(router)?.size ?? 0,
       },
-    } as FlowNode);
+    });
   }
   return frames;
 }
@@ -531,7 +531,7 @@ export default function RunCanvasIR({
             return {
               ...fn,
               data: {
-                ...(fn.data as Record<string, unknown>),
+                ...fn.data,
                 subRuns: buildFrameSubRuns(
                   fn.id,
                   subRunsByNodeRef.current,
@@ -555,7 +555,7 @@ export default function RunCanvasIR({
           return {
             ...fn,
             data: {
-              ...(fn.data as Record<string, unknown>),
+              ...fn.data,
               executions: execs,
               selectedIteration,
               selected: fn.id === selectedNodeIdRef.current,
@@ -616,7 +616,7 @@ export default function RunCanvasIR({
           return {
             ...n,
             data: {
-              ...(n.data as Record<string, unknown>),
+              ...n.data,
               subRuns: buildFrameSubRuns(
                 n.id,
                 subRunsByNode,
@@ -642,7 +642,7 @@ export default function RunCanvasIR({
         return {
           ...n,
           data: {
-            ...(n.data as Record<string, unknown>),
+            ...n.data,
             executions: execs,
             selectedIteration,
             selected: n.id === selectedNodeId,

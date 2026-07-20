@@ -186,29 +186,27 @@ export default function NodeDetailPanel({
   // Tab order: Pause first when paused (drives action), then Trace,
   // Tools, Artifact, Events. Pause hidden when not paused.
   const tabItems: Array<{ value: TabValue; label: string; disabled?: boolean }> = [
-    ...(isPaused
-      ? [{ value: "pause" as TabValue, label: "Pause" }]
-      : []),
+    ...(isPaused ? [{ value: "pause", label: "Pause" } as const] : []),
     {
-      value: "trace" as TabValue,
+      value: "trace",
       label: llmSteps.length > 1 ? `Trace (${llmSteps.length})` : "Trace",
       disabled: llmSteps.length === 0,
     },
     {
-      value: "tools" as TabValue,
+      value: "tools",
       label: `Tools (${toolCalls.length})`,
       disabled: toolCalls.length === 0,
     },
     {
-      value: "artifact" as TabValue,
+      value: "artifact",
       label:
         artifactVersions.length > 1
           ? `Artifact (${artifactVersions.length})`
           : "Artifact",
       disabled: !hasArtifact,
     },
-    { value: "events" as TabValue, label: `Events (${matching.length})` },
-    { value: "logs" as TabValue, label: "Logs" },
+    { value: "events", label: `Events (${matching.length})` },
+    { value: "logs", label: "Logs" },
   ];
 
   return (
@@ -228,7 +226,7 @@ export default function NodeDetailPanel({
 
       <Tabs
         value={activeTab ?? "events"}
-        onValueChange={(v) => setActiveTab(v as TabValue)}
+        onValueChange={setActiveTab}
         items={tabItems}
         variant="underline"
         listClassName="px-3"

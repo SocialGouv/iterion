@@ -5,6 +5,15 @@ import { useMemo, useState } from "react";
 
 import type { RunEvent } from "@/api/runs";
 import { CopyButton } from "@/components/ui";
+import { isRecord } from "@/lib/isRecord";
+
+// llm_prompt / llm_request / llm_step_finished are pass-through events
+// (data: Record<string, unknown>) read here via bracket access + local
+// validation, mirroring pkg/cli/inspect_node.go's stringField reader.
+const str = (v: unknown): string | undefined =>
+  typeof v === "string" ? v : undefined;
+const num = (v: unknown): number | undefined =>
+  typeof v === "number" ? v : undefined;
 
 interface LLMStep {
   seq: number;
@@ -33,13 +42,13 @@ export function useLLMSteps(matching: RunEvent[]): LLMStep[] {
         if (current) steps.push(current);
         current = {
           seq: e.seq,
-          systemPrompt: (e.data["system_prompt"] as string) ?? undefined,
-          userMessage: (e.data["user_message"] as string) ?? undefined,
+          systemPrompt: str(e.data["system_prompt"]),
+          userMessage: str(e.data["user_message"]),
           model: lastModel,
           pending: true,
         };
       } else if (e.type === "llm_request" && e.data) {
-        const model = (e.data["model"] as string) ?? undefined;
+        const model = str(e.data["model"]);
         if (model) lastModel = model;
         if (current) current.model = model ?? current.model;
         else
@@ -50,20 +59,17 @@ export function useLLMSteps(matching: RunEvent[]): LLMStep[] {
           };
       } else if (e.type === "llm_step_finished" && e.data) {
         if (!current) current = { seq: e.seq, pending: false };
-        current.response = (e.data["response_text"] as string) ?? current.response;
-        current.inputTokens =
-          (e.data["input_tokens"] as number) ?? current.inputTokens;
+        current.response = str(e.data["response_text"]) ?? current.response;
+        current.inputTokens = num(e.data["input_tokens"]) ?? current.inputTokens;
         current.outputTokens =
-          (e.data["output_tokens"] as number) ?? current.outputTokens;
+          num(e.data["output_tokens"]) ?? current.outputTokens;
         current.finishReason =
-          (e.data["finish_reason"] as string) ?? current.finishReason;
-        const calls = e.data["tool_call_details"] as
-          | Array<Record<string, unknown>>
-          | undefined;
-        if (calls) {
-          current.toolCalls = calls.map((c) => ({
-            name: (c["tool_name"] as string) ?? "",
-            input: c["input"] as string | undefined,
+          str(e.data["finish_reason"]) ?? current.finishReason;
+        const calls = e.data["tool_call_details"];
+        if (Array.isArray(calls)) {
+          current.toolCalls = calls.filter(isRecord).map((c) => ({
+            name: str(c["tool_name"]) ?? "",
+            input: str(c["input"]),
           }));
         }
         current.pending = false;
