@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { BotEntryWithSchema, ConfigShareSpec } from "@/api/bots";
@@ -135,11 +136,23 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
 
   return (
     <Card>
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex items-center justify-between gap-2">
         <h2 className="text-xs font-semibold text-fg-default">Config-share links</h2>
-        <Button variant="secondary" size="sm" onClick={() => setCreating(true)}>
-          Create share link…
-        </Button>
+        <div className="flex items-center gap-3">
+          {/* Cross-path: edit this bot's config-shares directly in the
+              signed-in config editor (pre-filtered to this bot). */}
+          {(shares ?? []).length > 0 && (
+            <Link
+              href={`/config-editor?bot=${encodeURIComponent(entry.name)}`}
+              className="whitespace-nowrap text-caption text-accent-text hover:underline"
+            >
+              Open in config editor →
+            </Link>
+          )}
+          <Button variant="secondary" size="sm" onClick={() => setCreating(true)}>
+            Create share link…
+          </Button>
+        </div>
       </div>
       <p className="mb-2 text-caption text-fg-subtle">
         Scoped, self-service editor links for a category of the bot's config

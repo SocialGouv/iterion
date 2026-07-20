@@ -15,10 +15,14 @@ export function Workspace({
   teamID,
   teamName,
   onBranding,
+  initialQuery,
 }: {
   teamID: string;
   teamName?: string;
   onBranding?: (b: { title?: string; description?: string }) => void;
+  // Forwarded to the browser as its initial filter (e.g. a bot slug when the
+  // user arrived from that bot's page).
+  initialQuery?: string;
 }) {
   const [shares, setShares] = useState<EditorShare[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +127,7 @@ export function Workspace({
             shares={shares}
             selectedId={selectedId}
             onSelect={(id) => setSelectedId(id)}
+            initialQuery={initialQuery}
           />
           <div className="min-w-0">
             {selected ? (

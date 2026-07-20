@@ -1,3 +1,5 @@
+import { useSearch } from "wouter";
+
 import { useAuth, canEditConfigShares } from "@/auth/AuthContext";
 import { InlineBanner } from "@/components/ui";
 import { Workspace } from "@/views/configEditorShell/Workspace";
@@ -20,6 +22,10 @@ import { Workspace } from "@/views/configEditorShell/Workspace";
  */
 export default function ConfigEditorView() {
   const { activeTeamID, activeTeam, activeRole, user } = useAuth();
+  // `?bot=<slug>` pre-filters the browser to that bot's shares — the path from
+  // a bot's own page ("edit Vigie's configs") lands scoped to it.
+  const search = useSearch();
+  const botParam = new URLSearchParams(search).get("bot") ?? "";
 
   if (!canEditConfigShares(activeRole, !!user?.is_super_admin)) {
     return (
@@ -37,7 +43,11 @@ export default function ConfigEditorView() {
     <div className="h-full overflow-auto p-4 sm:p-6">
       <div className="mx-auto max-w-5xl">
         {activeTeamID ? (
-          <Workspace teamID={activeTeamID} teamName={activeTeam?.team_name} />
+          <Workspace
+            teamID={activeTeamID}
+            teamName={activeTeam?.team_name}
+            initialQuery={botParam}
+          />
         ) : (
           <InlineBanner tone="warning" layout="inline" title="No active team">
             Select a team to edit its config-shares.

@@ -91,12 +91,16 @@ export function ShareBrowser({
   shares,
   selectedId,
   onSelect,
+  initialQuery,
 }: {
   shares: EditorShare[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  // Pre-fill the filter (e.g. the bot slug when arriving from a bot's page),
+  // so the browser opens scoped to the shares that path is "about".
+  initialQuery?: string;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => initialQuery ?? "");
   // Group keys the user explicitly collapsed. Default = everything open.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const q = query.trim().toLowerCase();
