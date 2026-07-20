@@ -706,7 +706,23 @@ func (e *ClawExecutor) buildTask(ctx context.Context, node ir.Node, f backendFie
 	// internally (claw). CLI-based backends (claude_code, codex) handle tools
 	// natively via AllowedTools and do not need ToolDefs.
 	if len(effectiveTools) > 0 && backendName == delegate.BackendClaw {
-		toolDefs, toolErr := e.resolveToolsForNode(ctx, node, effectiveTools)
+		clawTools := effectiveTools
+		// Ambient plugin-MCP parity with claude_code (the claude_code branch
+		// below forwards every active plugin MCP server to the CLI via
+		// --mcp-config). claude_code resolves those out-of-process; claw
+		// resolves in-process, so splice each active server's tools in here as
+		// an `mcp.<server>.*` wildcard. This is what lets a claw node reach the
+		// firecrawl scrape/search MCP (self-hosted, searxng-backed) instead of
+		// only claw's native direct-HTTP web_fetch — the wiring gap that made
+		// firecrawl claude_code-only. resolveToolsForNode starts the servers and
+		// expands + dedups the wildcards; the len(effectiveTools)>0 gate keeps
+		// tool-less judges lean (no ambient fetch tools, no behaviour change).
+		if e.mcpManager != nil {
+			for _, srv := range f.activeMCPServers {
+				clawTools = append(clawTools, "mcp."+srv+".*")
+			}
+		}
+		toolDefs, toolErr := e.resolveToolsForNode(ctx, node, clawTools)
 		if toolErr != nil {
 			return delegate.Task{}, fmt.Errorf("model: node %q: %w", f.id, toolErr)
 		}
