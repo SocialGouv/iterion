@@ -166,8 +166,9 @@ func buildWireWorkflowFromRun(r *store.Run, cache *wireWorkflowCache) (*WireWork
 	)
 	switch {
 	case r.FilePath != "":
-		cacheKey = r.FilePath
-		wf, hash, err = CompileWorkflowWithHash(r.FilePath)
+		path := resolveWorkflowPath(r)
+		cacheKey = path
+		wf, hash, err = CompileWorkflowWithHash(path)
 	case r.BundlePath != "":
 		cacheKey = r.BundlePath
 		b, oerr := bundle.OpenDir(r.BundlePath)
