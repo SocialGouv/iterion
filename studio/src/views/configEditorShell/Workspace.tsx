@@ -5,6 +5,7 @@ import { listEditorShares, type EditorShare } from "@/api/configEditor";
 import { Button, Card, EmptyState, InlineBanner, Spinner } from "@/components/ui";
 
 import { ShareEditor } from "./ShareEditor";
+import { ShareBrowser } from "./ShareBrowser";
 
 // ---------------------------------------------------------------------------
 // Workspace — share list (master) + editor (detail).
@@ -117,8 +118,8 @@ export function Workspace({
           />
         </Card>
       ) : shares && shares.length > 0 ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(220px,300px)_1fr]">
-          <ShareList
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(260px,340px)_1fr]">
+          <ShareBrowser
             shares={shares}
             selectedId={selectedId}
             onSelect={(id) => setSelectedId(id)}
@@ -135,146 +136,5 @@ export function Workspace({
         </div>
       ) : null}
     </div>
-  );
-}
-
-// shortRepo reduces a repo URL to "org/repo" for a compact group header.
-function shortRepo(url: string): string {
-  if (!url) return "Other";
-  const cleaned = url.replace(/\.git$/, "").replace(/\/+$/, "");
-  const m = cleaned.match(/([^/]+\/[^/]+)$/);
-  return m?.[1] ?? cleaned;
-}
-
-interface BotGroup {
-  botId: string;
-  botLabel: string;
-  shares: EditorShare[];
-}
-interface RepoGroup {
-  repoKey: string;
-  repoLabel: string;
-  bots: BotGroup[];
-}
-
-// groupShares builds the repo → bot → shares hierarchy the editor renders, so a
-// team whose config-shares span several bots and repos reads as a tree instead
-// of one flat list. Insertion order is preserved (the server already sorts).
-function groupShares(shares: EditorShare[]): RepoGroup[] {
-  const repos = new Map<string, Map<string, EditorShare[]>>();
-  for (const s of shares) {
-    const rk = s.repo_url ?? "";
-    const bk = s.bot_id ?? "";
-    let bots = repos.get(rk);
-    if (!bots) {
-      bots = new Map();
-      repos.set(rk, bots);
-    }
-    const bucket = bots.get(bk);
-    if (bucket) bucket.push(s);
-    else bots.set(bk, [s]);
-  }
-  return Array.from(repos, ([rk, bots]) => ({
-    repoKey: rk,
-    repoLabel: shortRepo(rk),
-    bots: Array.from(bots, ([bk, ss]) => ({
-      botId: bk,
-      // The bot's own branding (manifest editor_title) names the group; fall
-      // back to the technical bot id.
-      botLabel: ss[0]?.editor_title || bk || "Config",
-      shares: ss,
-    })),
-  }));
-}
-
-function ShareList({
-  shares,
-  selectedId,
-  onSelect,
-}: {
-  shares: EditorShare[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const groups = groupShares(shares);
-  return (
-    <div className="flex flex-col gap-4" aria-label="Config-shares">
-      {groups.map((repo) => (
-        <div key={repo.repoKey || "other"} className="flex flex-col gap-2">
-          <div
-            className="truncate font-mono text-caption font-semibold uppercase tracking-wider text-fg-subtle"
-            title={repo.repoKey}
-          >
-            {repo.repoLabel}
-          </div>
-          {repo.bots.map((bot) => (
-            <div key={bot.botId} className="flex flex-col gap-1.5 border-l border-border-subtle pl-2.5">
-              <div className="flex items-baseline gap-2">
-                <span className="truncate text-sm font-medium text-fg-default">
-                  {bot.botLabel}
-                </span>
-                {bot.botLabel !== bot.botId && bot.botId && (
-                  <span className="truncate font-mono text-caption text-fg-subtle">
-                    {bot.botId}
-                  </span>
-                )}
-              </div>
-              <ul className="flex flex-col gap-1.5">
-                {bot.shares.map((s) => (
-                  <li key={s.id}>
-                    <ShareButton
-                      share={s}
-                      active={s.id === selectedId}
-                      onSelect={() => onSelect(s.id)}
-                    />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ShareButton({
-  share: s,
-  active,
-  onSelect,
-}: {
-  share: EditorShare;
-  active: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-current={active ? "true" : undefined}
-      className={`w-full rounded-lg border px-3 py-2 text-left transition-colors ${
-        active
-          ? "border-accent bg-accent-soft/50"
-          : "border-border-default bg-surface-1 hover:border-border-strong"
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium text-fg-default">
-          {s.label || s.category || s.id}
-        </span>
-        {s.read_only && (
-          <span className="shrink-0 text-caption text-fg-subtle">read-only</span>
-        )}
-      </div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-caption text-fg-subtle">
-        {s.category && <span className="truncate">{s.category}</span>}
-        {s.config_path && (
-          <>
-            <span aria-hidden>·</span>
-            <span className="truncate font-mono">{s.config_path}</span>
-          </>
-        )}
-      </div>
-    </button>
   );
 }
