@@ -99,8 +99,41 @@ reaches its runs. Two consequences worth knowing:
 - **`hooks` are not carried yet** — they merge into `.claude/settings.json`
   rather than mirroring markdown, so they still need the pod's own registry
   (env-based enablement).
-- Enablement stays **global per instance**; ADR-079 makes an enabled plugin's
-  skills portable, it does not add per-team or per-bot plugin scoping.
+- Enablement of *installed* plugins stays **global per instance**. For a
+  **team-scoped, private** plugin see the next section.
+
+### Org-private plugins from a git repo (ADR-080)
+
+Installing a plugin into a cloud pod's iterion home is **not durable** — the pod
+is ephemeral, so the plugin silently disappears on the next restart and runs
+proceed without it. And a single `plugins.yaml` per instance cannot give one
+team a private plugin.
+
+A **plugin source** fixes both: a team-scoped record naming the git repository
+that holds the plugin, persisted in Mongo (the durable cloud substrate). The
+checkout is only a re-derivable cache, so a restart rebuilds it.
+
+```sh
+# team admin/owner
+POST /api/teams/{id}/plugin-sources
+{ "name": "deploy-k8s-acme", "git_url": "https://github.com/acme/iterion-deploy.git",
+  "ref": "v1.0.0", "secret_id": "<generic secret: PAT or deploy key>", "enabled": true }
+```
+
+The repo may carry a full `plugin.yaml` or be a bare `skills/` library (a
+skills-only manifest is synthesized, as with `iterion plugin install`). The
+credential is consumed **by reference** — passed to git through an askpass
+helper, never argv, never the URL, and redacted from output.
+
+**Pin `ref` to a tag or sha.** A pinned ref makes the checkout immutable: every
+launch after the first costs no network, *and* updating the plugin becomes an
+explicit, auditable bump instead of a skill that changes under a running bot. A
+moving branch is allowed but warns, and `pinned_ref` is exposed on the API so
+the UI can flag it.
+
+Unlike an installed plugin (best-effort, skipped on error), a source the
+operator **enabled** that fails to fetch **fails the launch** — a run missing
+its platform skill would otherwise succeed while doing the wrong thing.
 
 ## Manifest reference (`plugin.yaml`)
 
