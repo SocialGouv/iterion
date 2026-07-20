@@ -13,6 +13,8 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
 
 func TestCron(t *testing.T) {
@@ -78,6 +80,66 @@ func TestTicker_ExactlyOnce(t *testing.T) {
 	due, _ := store.ListDue(context.Background(), now, 0)
 	if len(due) != 0 {
 		t.Errorf("schedules should not be due again after firing, got %d", len(due))
+	}
+}
+
+func TestNextFireForBot_KeepaliveInterval(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	// Keepalive: sub-minute interval, cron ignored.
+	next, err := NextFireForBot(ScheduledBot{IntervalSeconds: 30}, now)
+	if err != nil || !next.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("keepalive next = %v (err %v), want now+30s", next, err)
+	}
+	// No interval → cron path.
+	next, err = NextFireForBot(ScheduledBot{Cron: "0 2 * * *"}, now)
+	if err != nil || next.Hour() != 2 {
+		t.Fatalf("cron next = %v (err %v), want 02:00", next, err)
+	}
+}
+
+func TestTicker_KeepaliveSubMinuteExactlyOnce(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 7, 20, 12, 0, 15, 0, time.UTC)
+	// A due keepalive schedule (15s interval, next_fire in the past).
+	if err := store.Create(context.Background(), ScheduledBot{
+		ID: "daemon", TenantID: "t1", BotID: "bots/daemon",
+		IntervalSeconds: 15, Overlap: schedgate.OverlapKeepalive,
+		NextFireAt: now.Add(-5 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	fires := 0
+	ticker := &Ticker{
+		Store: store,
+		Now:   func() time.Time { return now },
+		Launch: func(_ context.Context, sb ScheduledBot) error {
+			mu.Lock()
+			fires++
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	// Race many replicas: the CAS must let exactly one win the slot.
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = ticker.Tick(context.Background()) }()
+	}
+	wg.Wait()
+
+	if fires != 1 {
+		t.Fatalf("keepalive fired %d times, want exactly 1", fires)
+	}
+	// next_fire_at advanced by the interval (now+15s), so not due again at now.
+	got, _ := store.Get(context.Background(), "daemon")
+	if !got.NextFireAt.Equal(now.Add(15 * time.Second)) {
+		t.Fatalf("NextFireAt = %v, want now+15s (sub-minute advance)", got.NextFireAt)
+	}
+	if due, _ := store.ListDue(context.Background(), now, 0); len(due) != 0 {
+		t.Fatalf("keepalive should not be due again after firing, got %d", len(due))
 	}
 }
 

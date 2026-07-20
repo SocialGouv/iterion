@@ -60,9 +60,9 @@ func (t *Ticker) Tick(ctx context.Context) (int, error) {
 	}
 	fired := 0
 	for _, sb := range due {
-		next, nerr := NextFire(sb.Cron, now)
+		next, nerr := NextFireForBot(sb, now)
 		if nerr != nil {
-			t.warn("bad cron on %s: %v", sb.ID, nerr)
+			t.warn("bad schedule on %s: %v", sb.ID, nerr)
 			continue
 		}
 		won, cerr := t.Store.ClaimTick(ctx, sb.ID, sb.NextFireAt, next, now)

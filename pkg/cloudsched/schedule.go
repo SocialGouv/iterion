@@ -26,7 +26,12 @@ type ScheduledBot struct {
 	RepoIntegrationID string            `bson:"repo_integration_id,omitempty" json:"repo_integration_id,omitempty"`
 	BotID             string            `bson:"bot_id" json:"bot_id"`
 	Cron              string            `bson:"cron" json:"cron"` // 5-field standard cron
-	Vars              map[string]string `bson:"vars,omitempty" json:"vars,omitempty"`
+	// IntervalSeconds drives an always-on (keepalive) schedule instead of Cron:
+	// the ticker relaunches the bot every IntervalSeconds (sub-minute allowed,
+	// bounded by the ticker's own Interval). Exactly one of Cron/IntervalSeconds
+	// is set. Overlap=keepalive gives at-most-one-live + staleness reaping.
+	IntervalSeconds int               `bson:"interval_seconds,omitempty" json:"interval_seconds,omitempty"`
+	Vars            map[string]string `bson:"vars,omitempty" json:"vars,omitempty"`
 	RepoURL           string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
 	RepoRef           string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
 	Disabled          bool              `bson:"disabled,omitempty" json:"disabled,omitempty"`
@@ -39,6 +44,9 @@ type ScheduledBot struct {
 	Guard         string `bson:"guard,omitempty" json:"guard,omitempty"`
 	GuardTimeout  string `bson:"guard_timeout,omitempty" json:"guard_timeout,omitempty"`
 	GuardVar      string `bson:"guard_var,omitempty" json:"guard_var,omitempty"`
+	// StaleAfter is the keepalive silence cutoff (Go duration); empty defaults
+	// to schedgate.DefaultStaleAfter. Only meaningful with Overlap=keepalive.
+	StaleAfter string `bson:"stale_after,omitempty" json:"stale_after,omitempty"`
 
 	// NextFireAt is the next UTC instant this schedule is due. The ticker
 	// CAS-advances it the moment it claims a tick, so a second replica racing
@@ -83,18 +91,20 @@ type Store interface {
 // expression when set (already validated by ValidateCron); the store
 // recomputes NextFireAt through NextFire(cron, now).
 type SchedulePatch struct {
-	Cron          *string
-	NextFireAt    *time.Time
-	Vars          *map[string]string
-	RepoURL       *string
-	RepoRef       *string
-	Disabled      *bool
-	Overlap       *string
-	MaxConcurrent *int
-	Guard         *string
-	GuardTimeout  *string
-	GuardVar      *string
-	UpdatedAt     time.Time
+	Cron            *string
+	IntervalSeconds *int
+	NextFireAt      *time.Time
+	Vars            *map[string]string
+	RepoURL         *string
+	RepoRef         *string
+	Disabled        *bool
+	Overlap         *string
+	MaxConcurrent   *int
+	Guard           *string
+	GuardTimeout    *string
+	GuardVar        *string
+	StaleAfter      *string
+	UpdatedAt       time.Time
 }
 
 // ErrNotFound is returned by Get/Delete for an unknown id.
@@ -117,6 +127,16 @@ func NextFire(expr string, after time.Time) (time.Time, error) {
 	return sched.Next(after), nil
 }
 
+// NextFireForBot computes a schedule's next-fire instant: a fixed interval for
+// keepalive (IntervalSeconds > 0), else the cron expression. The single seam
+// every ticker/store path uses so keepalive and cron stay consistent.
+func NextFireForBot(sb ScheduledBot, after time.Time) (time.Time, error) {
+	if sb.IntervalSeconds > 0 {
+		return after.Add(time.Duration(sb.IntervalSeconds) * time.Second), nil
+	}
+	return NextFire(sb.Cron, after)
+}
+
 // applySchedulePatch mutates sb in place with the non-nil fields of patch.
 // UpdatedAt is stamped from patch.UpdatedAt (caller-provided so tests are
 // deterministic). NextFireAt takes patch.NextFireAt when set — callers with a
@@ -124,6 +144,9 @@ func NextFire(expr string, after time.Time) (time.Time, error) {
 func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	if patch.Cron != nil {
 		sb.Cron = *patch.Cron
+	}
+	if patch.IntervalSeconds != nil {
+		sb.IntervalSeconds = *patch.IntervalSeconds
 	}
 	if patch.NextFireAt != nil {
 		sb.NextFireAt = *patch.NextFireAt
@@ -155,6 +178,9 @@ func applySchedulePatch(sb *ScheduledBot, patch SchedulePatch) {
 	if patch.GuardVar != nil {
 		sb.GuardVar = *patch.GuardVar
 	}
+	if patch.StaleAfter != nil {
+		sb.StaleAfter = *patch.StaleAfter
+	}
 	if !patch.UpdatedAt.IsZero() {
 		sb.UpdatedAt = patch.UpdatedAt
 	}
@@ -169,5 +195,6 @@ func (sb ScheduledBot) Policy() schedgate.Policy {
 		Guard:         sb.Guard,
 		GuardTimeout:  sb.GuardTimeout,
 		GuardVar:      sb.GuardVar,
+		StaleAfter:    sb.StaleAfter,
 	})
 }
