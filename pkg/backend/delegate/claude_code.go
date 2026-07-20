@@ -472,6 +472,36 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, task Task) (result Resu
 		return result, fmt.Errorf("claude-code: model %q is unavailable or unauthorized (check the node's backend/model — a claude_code node cannot run a non-Anthropic model): %s", task.Model, detail)
 	}
 
+	// Auth-failure guard. A dead/expired forfait token (or a rejected API key)
+	// does NOT fail the stream (subtype=success, IsError=true): the claude CLI
+	// renders the auth error AS the result text (e.g. "Failed to authenticate.
+	// API Error: 401 Invalid bearer token"). Left untouched it flows into the
+	// formatting passes and finally surfaces as an opaque "missing required
+	// field" schema error — the exact masking that turns a dead credential into
+	// a wild goose chase through the structured-output machinery. Fail fast with
+	// a legible auth error. Non-transient (a retry can't revive a dead token).
+	if rm.Result != nil && isAuthErrorResult(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		b.Logger.Error("[%s#%d/claude-code] authentication failed — failing fast: %.160s",
+			task.NodeID, task.Iteration, detail)
+		return result, fmt.Errorf("claude-code: authentication failed (check the forfait CLAUDE_CODE_OAUTH_TOKEN or the Anthropic API key): %s", detail)
+	}
+
+	// Quota / usage-window guard on the RESULT. The forfait's weekly / session /
+	// 5h caps can come back as the result text (subtype=success, IsError=true)
+	// with no assistant text block for the stream classifier to catch — re-check
+	// here so the notice becomes a typed, resumable rate-limit error instead of
+	// flowing into structured-output validation as a misleading "missing
+	// required field". Usage-window → resumable after reset; a plain throttle →
+	// the executor's transient retry.
+	if rm.Result != nil && isRateLimitMessage(*rm.Result) {
+		detail := strings.TrimSpace(*rm.Result)
+		kind, resetAt := classifyRateLimit(detail, time.Now())
+		b.Logger.Warn("[%s#%d/claude-code] provider quota/rate-limit result (%s) — failing: %.120s",
+			task.NodeID, task.Iteration, kind, detail)
+		return result, &ErrRateLimited{Provider: BackendClaudeCode, Detail: detail, Kind: kind, ResetAt: resetAt}
+	}
+
 	if needsTwoPass && rm.SessionID != "" {
 		if handled, twoPassResult, twoPassErr := b.runTwoPassFormatting(ctx, task, rm, result, &totalIn, &totalOut); handled {
 			return twoPassResult, twoPassErr

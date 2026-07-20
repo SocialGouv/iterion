@@ -67,6 +67,40 @@ func isModelUnavailableResult(s string) bool {
 		(strings.Contains(low, "may not exist") || strings.Contains(low, "access to it"))
 }
 
+// isAuthErrorResult detects the claude CLI's rendered AUTHENTICATION failure —
+// a dead/expired forfait CLAUDE_CODE_OAUTH_TOKEN or a rejected API key. Like the
+// model-unavailable case it completes the stream (subtype=success, IsError=true)
+// with the auth error AS the result text, e.g. "Failed to authenticate. API
+// Error: 401 Invalid bearer token". Untyped, that flows into the formatting
+// passes and surfaces as an opaque schema "missing required field" error,
+// masking a simply-dead credential (this cost a full debugging session once).
+// Bounded length + distinctive auth markers keep an agent quoting these phrases
+// mid-answer from false-positiving. Non-transient — a retry can't revive a dead
+// credential; the caller fails fast with a legible auth error.
+func isAuthErrorResult(s string) bool {
+	t := strings.TrimSpace(s)
+	// Real auth renders are short one-liners (like a rate-limit notice); the cap
+	// keeps an agent discussing auth in a long answer from false-positiving.
+	if t == "" || len(t) > 200 {
+		return false
+	}
+	low := strings.ToLower(t)
+	for _, sig := range []string{
+		"invalid bearer token",
+		"failed to authenticate",
+		"authentication_error",
+		"invalid api key",
+		"invalid x-api-key",
+		"oauth token has expired",
+		"oauth token expired",
+	} {
+		if strings.Contains(low, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 // retypeNetworkError re-classifies an opaque claude_code failure as an
 // ErrTransient when the error message or captured stderr shows a transient-
 // connectivity marker (fetch failed, ECONNRESET, overloaded, 5xx, …), so the
