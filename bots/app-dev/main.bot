@@ -642,18 +642,6 @@ prompt deploy_user:
 
   Then report deployed / healthy / deployed_url / notes.
 
-prompt deploy_verdict_system:
-  You gate a deployment result. Return pass=true ONLY when deployed AND
-  healthy are both true AND deployed_url is a non-empty absolute URL
-  (starts with http). Otherwise pass=false with a concise reason the
-  deploy agent can act on to fix and redeploy. No tools, no code changes.
-
-prompt deploy_verdict_user:
-  deployed:     {{input.deployed}}
-  healthy:      {{input.healthy}}
-  deployed_url: {{input.deployed_url}}
-  notes:        {{input.notes}}
-
 ## ─── Schemas ────────────────────────────────────────────────────
 
 ## Entry projection input — computes always take an input schema; route
@@ -812,13 +800,6 @@ schema deploy_input:
 ## The deploy agent's termination contract. deployed_url is the
 ## operator-facing payload — the live URL at the end of the session.
 schema deploy_result:
-  deployed:     bool
-  healthy:      bool
-  deployed_url: string
-  notes:        string
-
-## deploy_verify's input (the deploy result, mapped through the edge).
-schema deploy_verify_input:
   deployed:     bool
   healthy:      bool
   deployed_url: string
@@ -1200,15 +1181,24 @@ agent deploy:
   interaction: human
   skills: ["deploy-target"]
 
-## deploy_verify — cheap verdict on the deploy result (no tools). pass
-## gates the redeploy loop; a claw judge keeps it cheap.
-judge deploy_verify:
-  backend: "claw"
-  model: "${ITERION_APP_DEV_DEPLOY_VERDICT_MODEL:-openai/gpt-5.4-mini}"
-  input: deploy_verify_input
+## deploy_verify — DETERMINISTIC verdict on the deploy result. No LLM: the
+## deploy agent already reports the truth as structured output, and an
+## opinion about that truth can only add a way to be wrong.
+##
+## It did, once: on a redeploy whose own output said `deployed: false,
+## deployed_url: ""`, an LLM judge answered `pass: true, reason:
+## "Acknowledged."`. The loop exited, the run reached `done`, and the run
+## reported SUCCESS while nothing had been deployed and nothing pushed —
+## the exact façade docs/workflow_authoring_pitfalls.md is about. The gate
+## is the truth oracle, so it must be code.
+##
+## `reason` carries the deploy agent's own notes (its root-cause report)
+## into the retry's fail_log, which is what the redeploy actually needs.
+compute deploy_verify:
   output: deploy_verdict
-  system: deploy_verdict_system
-  user: deploy_verdict_user
+  expr:
+    pass:   "outputs.deploy.deployed && outputs.deploy.healthy && outputs.deploy.deployed_url != ''"
+    reason: "if(outputs.deploy.deployed_url != '', '', outputs.deploy.notes)"
 
 ## ─── Workflow ───────────────────────────────────────────────────
 
@@ -1344,12 +1334,7 @@ workflow app_dev:
   deploy_gate -> deploy when enabled
   deploy_gate -> mr_gate when not enabled
 
-  deploy -> deploy_verify with {
-    deployed:     "{{outputs.deploy.deployed}}",
-    healthy:      "{{outputs.deploy.healthy}}",
-    deployed_url: "{{outputs.deploy.deployed_url}}",
-    notes:        "{{outputs.deploy.notes}}"
-  }
+  deploy -> deploy_verify
 
   ## Healthy → the PR tail (the live URL rides on the deploy node output,
   ## surfaced in the run overview / report). Not healthy → bounded
