@@ -25,9 +25,11 @@ import { humanizeCron } from "@/lib/humanizeCron";
 
 import { EditScheduleDialog, NewScheduleDialog } from "./ScheduleDialogs";
 import {
+  cadenceLabel,
   filterGroupsByRepo,
   formatNextFire,
   groupSchedulesByRepo,
+  isAlwaysOn,
   type ScheduleRepoGroup,
 } from "./scheduleModel";
 
@@ -320,9 +322,31 @@ function ScheduleGroupCard({
             {botLabel(s.bot_id) !== s.bot_id && (
               <span className="font-mono text-fg-subtle">{s.bot_id}</span>
             )}
-            <span className="text-fg-muted" title={`cron: ${s.cron} (UTC)`}>
-              {humanizeCron(s.cron) ?? s.cron}
-            </span>
+            {isAlwaysOn(s) ? (
+              <>
+                <span
+                  className="text-fg-muted"
+                  title={
+                    s.interval_seconds
+                      ? `relaunches every ${s.interval_seconds}s`
+                      : "always-on"
+                  }
+                >
+                  {cadenceLabel(s)}
+                </span>
+                <Badge
+                  variant="accent"
+                  size="sm"
+                  title={`Always-on: at most one live run; a run silent past ${s.stale_after || "5m"} is relaunched`}
+                >
+                  always-on
+                </Badge>
+              </>
+            ) : (
+              <span className="text-fg-muted" title={`cron: ${s.cron} (UTC)`}>
+                {humanizeCron(s.cron) ?? s.cron}
+              </span>
+            )}
             {s.overlap === "allow" && (
               <Badge variant="neutral" size="sm" title="Overlapping runs allowed">
                 overlap: allow{s.max_concurrent ? ` ≤${s.max_concurrent}` : ""}

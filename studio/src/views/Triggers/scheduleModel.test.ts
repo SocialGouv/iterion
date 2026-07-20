@@ -6,9 +6,12 @@ import { policyValueFromSchedule } from "@/components/shared/SchedulePolicyEdito
 import {
   UNLINKED_LABEL,
   buildCreatePayload,
+  cadenceLabel,
   filterGroupsByRepo,
   formatNextFire,
+  formatSeconds,
   groupSchedulesByRepo,
+  isAlwaysOn,
   nextUpcoming,
   repoSlugFromUrl,
 } from "./scheduleModel";
@@ -140,8 +143,48 @@ describe("nextUpcoming", () => {
   });
 });
 
+describe("keepalive helpers", () => {
+  it("isAlwaysOn detects interval or keepalive overlap", () => {
+    expect(isAlwaysOn(sched({ interval_seconds: 30 }))).toBe(true);
+    expect(isAlwaysOn(sched({ overlap: "keepalive" }))).toBe(true);
+    expect(isAlwaysOn(sched({ cron: "0 2 * * *" }))).toBe(false);
+  });
+
+  it("formatSeconds compacts to s/m/h", () => {
+    expect(formatSeconds(30)).toBe("30s");
+    expect(formatSeconds(120)).toBe("2m");
+    expect(formatSeconds(7200)).toBe("2h");
+  });
+
+  it("cadenceLabel shows always-on cadence or the cron", () => {
+    expect(cadenceLabel(sched({ interval_seconds: 30, overlap: "keepalive", cron: "" }))).toBe(
+      "always-on · every 30s",
+    );
+    expect(cadenceLabel(sched({ cron: "0 2 * * *" }))).toBe("0 2 * * *");
+  });
+});
+
 describe("buildCreatePayload", () => {
   const policy = policyValueFromSchedule();
+
+  it("builds an always-on body from interval, forcing overlap keepalive and omitting cron", () => {
+    const body = buildCreatePayload({
+      botId: "daemon",
+      cron: "",
+      repo: null,
+      policy,
+      alwaysOn: true,
+      intervalSeconds: 30,
+      staleAfter: "10m",
+    });
+    expect(body).toEqual({
+      bot_id: "daemon",
+      interval_seconds: 30,
+      overlap: "keepalive",
+      stale_after: "10m",
+    });
+    expect(body.cron).toBeUndefined();
+  });
 
   it("builds a minimal body for an untouched policy and no repo", () => {
     expect(

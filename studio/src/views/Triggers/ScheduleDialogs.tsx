@@ -15,6 +15,7 @@ import SchedulePolicyEditor, {
   type SchedulePolicyValue,
 } from "@/components/shared/SchedulePolicyEditor";
 import { Button } from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { Combobox, type ComboboxOption } from "@/components/ui/Combobox";
 import { Dialog } from "@/components/ui/Dialog";
 import { FieldLabel } from "@/components/ui/FieldLabel";
@@ -50,6 +51,19 @@ function botOptions(
 
 const NO_REPO = "";
 
+/** Parses a Go-style duration ("30s", "5m", "2h") to whole seconds. A bare
+ *  number is read as seconds. Returns 0 on anything unparseable. */
+export function parseDurationSeconds(v: string): number {
+  const s = v.trim();
+  if (s === "") return 0;
+  if (/^\d+$/.test(s)) return parseInt(s, 10);
+  const m = /^(\d+)\s*(s|m|h)$/i.exec(s);
+  if (!m) return 0;
+  const n = parseInt(m[1] ?? "0", 10);
+  const unit = (m[2] ?? "s").toLowerCase();
+  return unit === "h" ? n * 3600 : unit === "m" ? n * 60 : n;
+}
+
 export function NewScheduleDialog({
   open,
   onOpenChange,
@@ -74,6 +88,9 @@ export function NewScheduleDialog({
   const [repoKey, setRepoKey] = useState<string>(defaultRepoKey ?? NO_REPO);
   const [botId, setBotId] = useState("");
   const [cron, setCron] = useState("0 2 * * *");
+  const [alwaysOn, setAlwaysOn] = useState(false);
+  const [interval, setInterval] = useState("30s");
+  const [staleAfter, setStaleAfter] = useState("");
   const [policy, setPolicy] = useState<SchedulePolicyValue>(policyValueFromSchedule());
   const [vars, setVars] = useState<{ key: string; value: string }[]>([]);
   const action = useAsyncAction();
@@ -91,6 +108,9 @@ export function NewScheduleDialog({
       );
       setBotId("");
       setCron("0 2 * * *");
+      setAlwaysOn(false);
+      setInterval("30s");
+      setStaleAfter("");
       setPolicy(policyValueFromSchedule());
       setVars([]);
       action.clearError();
@@ -105,7 +125,14 @@ export function NewScheduleDialog({
       action.setError("Bot is required.");
       return;
     }
-    if (!cron.trim()) {
+    let intervalSeconds = 0;
+    if (alwaysOn) {
+      intervalSeconds = parseDurationSeconds(interval);
+      if (intervalSeconds < 5) {
+        action.setError("Interval must be at least 5s (e.g. 30s, 2m).");
+        return;
+      }
+    } else if (!cron.trim()) {
       action.setError("Cron is required.");
       return;
     }
@@ -118,6 +145,9 @@ export function NewScheduleDialog({
           repo,
           policy,
           vars: Object.fromEntries(vars.map((r) => [r.key, r.value])),
+          alwaysOn,
+          intervalSeconds,
+          staleAfter,
         }),
       ),
     );
@@ -175,7 +205,52 @@ export function NewScheduleDialog({
           )}
         </div>
 
-        <CronField value={cron} onChange={setCron} />
+        <Checkbox
+          checked={alwaysOn}
+          onChange={(e) => setAlwaysOn(e.currentTarget.checked)}
+          label={
+            <span>
+              Always-on
+              <span className="ml-1 text-xs text-fg-subtle">
+                — keep this bot running: relaunch on an interval, at most one live at a time
+              </span>
+            </span>
+          }
+        />
+
+        {alwaysOn ? (
+          <div className="flex flex-col gap-3">
+            <div>
+              <FieldLabel>Interval</FieldLabel>
+              <Input
+                size="sm"
+                value={interval}
+                onChange={(e) => setInterval(e.target.value)}
+                placeholder="30s"
+                className="w-32 font-mono"
+              />
+              <p className="mt-1 text-xs text-fg-subtle">
+                How often to relaunch (min 5s, e.g. 30s / 2m). Sub-minute needs a
+                resident scheduler.
+              </p>
+            </div>
+            <div>
+              <FieldLabel>Stale after (optional)</FieldLabel>
+              <Input
+                size="sm"
+                value={staleAfter}
+                onChange={(e) => setStaleAfter(e.target.value)}
+                placeholder="5m"
+                className="w-32 font-mono"
+              />
+              <p className="mt-1 text-xs text-fg-subtle">
+                A run silent past this is treated dead and relaunched (default 5m).
+              </p>
+            </div>
+          </div>
+        ) : (
+          <CronField value={cron} onChange={setCron} />
+        )}
 
         <div>
           <FieldLabel>Variables (optional)</FieldLabel>
@@ -240,10 +315,12 @@ export function NewScheduleDialog({
           </div>
         </div>
 
-        <div>
-          <FieldLabel>Tick policy</FieldLabel>
-          <SchedulePolicyEditor value={policy} onChange={setPolicy} disabled={action.busy} />
-        </div>
+        {!alwaysOn && (
+          <div>
+            <FieldLabel>Tick policy</FieldLabel>
+            <SchedulePolicyEditor value={policy} onChange={setPolicy} disabled={action.busy} />
+          </div>
+        )}
 
         {action.error && (
           <InlineBanner tone="danger" title="Couldn't create schedule">
@@ -277,14 +354,22 @@ export function EditScheduleDialog({
   onSaved: () => void;
 }) {
   const [cron, setCron] = useState("");
+  const [interval, setInterval] = useState("30s");
+  const [staleAfter, setStaleAfter] = useState("");
   const [policy, setPolicy] = useState<SchedulePolicyValue>(policyValueFromSchedule());
   const action = useAsyncAction();
+
+  const alwaysOn = (schedule?.interval_seconds ?? 0) > 0 || schedule?.overlap === "keepalive";
 
   // Re-seed the draft whenever a (different) schedule is opened.
   const [seededFor, setSeededFor] = useState<string | null>(null);
   if (schedule && schedule.id !== seededFor) {
     setSeededFor(schedule.id);
     setCron(schedule.cron);
+    setInterval(
+      schedule.interval_seconds ? `${schedule.interval_seconds}s` : "30s",
+    );
+    setStaleAfter(schedule.stale_after ?? "");
     setPolicy(policyValueFromSchedule(schedule));
     action.clearError();
   }
@@ -292,6 +377,21 @@ export function EditScheduleDialog({
 
   async function submit() {
     if (!schedule) return;
+    if (alwaysOn) {
+      const sec = parseDurationSeconds(interval);
+      if (sec < 5) {
+        action.setError("Interval must be at least 5s (e.g. 30s, 2m).");
+        return;
+      }
+      const res = await action.run(() =>
+        updateTeamSchedule(teamID, schedule.id, {
+          interval_seconds: sec,
+          stale_after: staleAfter.trim() || undefined,
+        }),
+      );
+      if (res) onSaved();
+      return;
+    }
     if (!cron.trim()) {
       action.setError("Cron is required.");
       return;
@@ -313,12 +413,44 @@ export function EditScheduleDialog({
       widthClass="max-w-xl"
     >
       <div className="flex flex-col gap-3 px-4 py-3">
-        <CronField value={cron} onChange={setCron} disabled={action.busy} />
-
-        <div>
-          <FieldLabel>Tick policy</FieldLabel>
-          <SchedulePolicyEditor value={policy} onChange={setPolicy} disabled={action.busy} />
-        </div>
+        {alwaysOn ? (
+          <div className="flex flex-col gap-3">
+            <div className="rounded-md bg-surface-sunken px-3 py-2 text-xs text-fg-subtle">
+              Always-on schedule — relaunches on an interval with at most one live
+              run at a time.
+            </div>
+            <div>
+              <FieldLabel>Interval</FieldLabel>
+              <Input
+                size="sm"
+                value={interval}
+                onChange={(e) => setInterval(e.target.value)}
+                placeholder="30s"
+                disabled={action.busy}
+                className="w-32 font-mono"
+              />
+            </div>
+            <div>
+              <FieldLabel>Stale after (optional)</FieldLabel>
+              <Input
+                size="sm"
+                value={staleAfter}
+                onChange={(e) => setStaleAfter(e.target.value)}
+                placeholder="5m"
+                disabled={action.busy}
+                className="w-32 font-mono"
+              />
+            </div>
+          </div>
+        ) : (
+          <>
+            <CronField value={cron} onChange={setCron} disabled={action.busy} />
+            <div>
+              <FieldLabel>Tick policy</FieldLabel>
+              <SchedulePolicyEditor value={policy} onChange={setPolicy} disabled={action.busy} />
+            </div>
+          </>
+        )}
 
         {action.error && (
           <InlineBanner tone="danger" title="Couldn't save schedule">

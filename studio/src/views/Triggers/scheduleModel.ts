@@ -97,10 +97,33 @@ export function groupSchedulesByRepo(
   );
   for (const g of out) {
     g.schedules.sort(
-      (a, b) => a.bot_id.localeCompare(b.bot_id) || a.cron.localeCompare(b.cron),
+      (a, b) =>
+        a.bot_id.localeCompare(b.bot_id) ||
+        cadenceLabel(a).localeCompare(cadenceLabel(b)),
     );
   }
   return out;
+}
+
+/** Whether a schedule is an always-on (keepalive) one. */
+export function isAlwaysOn(s: Pick<ScheduledBot, "interval_seconds" | "overlap">): boolean {
+  return (s.interval_seconds ?? 0) > 0 || s.overlap === "keepalive";
+}
+
+/** Human cadence: "always-on · every 30s" for keepalive, else the cron. */
+export function cadenceLabel(s: Pick<ScheduledBot, "cron" | "interval_seconds" | "overlap">): string {
+  if (isAlwaysOn(s)) {
+    const sec = s.interval_seconds ?? 0;
+    return sec > 0 ? `always-on · every ${formatSeconds(sec)}` : "always-on";
+  }
+  return s.cron;
+}
+
+/** Compact seconds → "30s" / "5m" / "2h". */
+export function formatSeconds(sec: number): string {
+  if (sec % 3600 === 0) return `${sec / 3600}h`;
+  if (sec % 60 === 0) return `${sec / 60}m`;
+  return `${sec}s`;
 }
 
 /** Narrows the grouped list to one repo key ("" / null = no filter). */
@@ -153,6 +176,12 @@ export interface ScheduleDraft {
   /** Per-run vars passed to the bot on each fire (e.g. a feed-watch digest's
    *  `mode=digest` + `category=a11y`). Empty when the bot needs none. */
   vars?: Record<string, string>;
+  /** Always-on (keepalive) mode: relaunch every intervalSeconds with
+   *  at-most-one-live + staleness reaping, instead of firing on cron. */
+  alwaysOn?: boolean;
+  intervalSeconds?: number;
+  /** Silence cutoff for always-on (Go duration, e.g. "5m"); empty = default. */
+  staleAfter?: string;
 }
 
 /**
@@ -163,10 +192,20 @@ export interface ScheduleDraft {
  * policy creates the same minimal row as the orchestrator's.
  */
 export function buildCreatePayload(d: ScheduleDraft): ScheduleCreateInput {
-  const input: ScheduleCreateInput = {
-    bot_id: d.botId.trim(),
-    cron: d.cron.trim(),
-  };
+  const input: ScheduleCreateInput = { bot_id: d.botId.trim() };
+  if (d.alwaysOn) {
+    // Keepalive: interval instead of cron; overlap forced to keepalive.
+    input.interval_seconds = Math.max(0, Math.floor(d.intervalSeconds ?? 0));
+    input.overlap = "keepalive";
+    if (d.staleAfter?.trim()) input.stale_after = d.staleAfter.trim();
+  } else {
+    input.cron = d.cron.trim();
+    const p = policyFieldsFromValue(d.policy);
+    if (p.overlap === "allow") {
+      input.overlap = "allow";
+      if (p.max_concurrent > 0) input.max_concurrent = p.max_concurrent;
+    }
+  }
   if (d.repo) {
     input.repo_url = d.repo.clone_url || d.repo.web_url || d.repo.repo_full_name;
   }
@@ -177,11 +216,8 @@ export function buildCreatePayload(d: ScheduleDraft): ScheduleCreateInput {
     }
     if (Object.keys(vars).length > 0) input.vars = vars;
   }
+  // The guard applies to both cadences.
   const p = policyFieldsFromValue(d.policy);
-  if (p.overlap === "allow") {
-    input.overlap = "allow";
-    if (p.max_concurrent > 0) input.max_concurrent = p.max_concurrent;
-  }
   if (p.guard) {
     input.guard = p.guard;
     if (p.guard_timeout) input.guard_timeout = p.guard_timeout;

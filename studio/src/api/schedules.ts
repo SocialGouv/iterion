@@ -24,11 +24,16 @@ export interface ScheduledBot {
   // Overlap policy + guard (pkg/schedgate). overlap defaults to "skip":
   // a tick that would overlap a still-live run of the same schedule
   // passes, audited (actions schedule.tick.* on the team audit trail).
-  overlap?: "skip" | "allow";
+  overlap?: "skip" | "allow" | "keepalive";
   max_concurrent?: number;
   guard?: string;
   guard_timeout?: string;
   guard_var?: string;
+  // Always-on (keepalive): relaunch every interval_seconds instead of on
+  // cron (mutually exclusive with cron). stale_after is the silence cutoff
+  // after which a running run is treated dead and relaunched.
+  interval_seconds?: number;
+  stale_after?: string;
 }
 
 export async function listTeamSchedules(teamID: string): Promise<ScheduledBot[]> {
@@ -48,16 +53,20 @@ export async function listTeamSchedules(teamID: string): Promise<ScheduledBot[]>
 // created row (201) with its computed next_fire_at.
 export interface ScheduleCreateInput {
   bot_id: string;
-  cron: string;
+  // Exactly one of cron / interval_seconds. interval_seconds makes it an
+  // always-on (keepalive) schedule.
+  cron?: string;
+  interval_seconds?: number;
   vars?: Record<string, string>;
   repo_url?: string;
   repo_ref?: string;
   disabled?: boolean;
-  overlap?: "skip" | "allow";
+  overlap?: "skip" | "allow" | "keepalive";
   max_concurrent?: number;
   guard?: string;
   guard_timeout?: string;
   guard_var?: string;
+  stale_after?: string;
 }
 
 export function createTeamSchedule(
@@ -72,17 +81,19 @@ export function createTeamSchedule(
 
 export interface SchedulePatch {
   cron?: string;
+  interval_seconds?: number;
   vars?: Record<string, string>;
   repo_url?: string;
   repo_ref?: string;
   disabled?: boolean;
   // Policy fields patch individually; the server validates the MERGED
   // row (400 on e.g. max_concurrent without overlap=allow).
-  overlap?: "skip" | "allow";
+  overlap?: "skip" | "allow" | "keepalive";
   max_concurrent?: number;
   guard?: string;
   guard_timeout?: string;
   guard_var?: string;
+  stale_after?: string;
 }
 
 export function updateTeamSchedule(

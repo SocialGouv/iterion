@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/SocialGouv/iterion/pkg/auth"
+	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
@@ -28,26 +29,32 @@ func (s *Server) registerScheduleRoutes() {
 }
 
 type createScheduleReq struct {
-	BotID    string            `json:"bot_id"`
-	Cron     string            `json:"cron"`
-	Vars     map[string]string `json:"vars,omitempty"`
-	RepoURL  string            `json:"repo_url,omitempty"`
-	RepoRef  string            `json:"repo_ref,omitempty"`
-	Disabled bool              `json:"disabled,omitempty"`
+	BotID string `json:"bot_id"`
+	Cron  string `json:"cron"`
+	// IntervalSeconds turns this into an always-on (keepalive) schedule
+	// instead of cron: mutually exclusive with cron. Overlap defaults to
+	// keepalive when set.
+	IntervalSeconds int               `json:"interval_seconds,omitempty"`
+	Vars            map[string]string `json:"vars,omitempty"`
+	RepoURL         string            `json:"repo_url,omitempty"`
+	RepoRef         string            `json:"repo_ref,omitempty"`
+	Disabled        bool              `json:"disabled,omitempty"`
 	// Overlap policy + guard (pkg/schedgate; validated on create).
 	Overlap       string `json:"overlap,omitempty"`
 	MaxConcurrent int    `json:"max_concurrent,omitempty"`
 	Guard         string `json:"guard,omitempty"`
 	GuardTimeout  string `json:"guard_timeout,omitempty"`
 	GuardVar      string `json:"guard_var,omitempty"`
+	StaleAfter    string `json:"stale_after,omitempty"`
 }
 
 type updateScheduleReq struct {
-	Cron     *string            `json:"cron,omitempty"`
-	Vars     *map[string]string `json:"vars,omitempty"`
-	RepoURL  *string            `json:"repo_url,omitempty"`
-	RepoRef  *string            `json:"repo_ref,omitempty"`
-	Disabled *bool              `json:"disabled,omitempty"`
+	Cron            *string            `json:"cron,omitempty"`
+	IntervalSeconds *int               `json:"interval_seconds,omitempty"`
+	Vars            *map[string]string `json:"vars,omitempty"`
+	RepoURL         *string            `json:"repo_url,omitempty"`
+	RepoRef         *string            `json:"repo_ref,omitempty"`
+	Disabled        *bool              `json:"disabled,omitempty"`
 	// Overlap policy + guard (pkg/schedgate; the merged result is
 	// validated against the row's current values on update).
 	Overlap       *string `json:"overlap,omitempty"`
@@ -55,6 +62,7 @@ type updateScheduleReq struct {
 	Guard         *string `json:"guard,omitempty"`
 	GuardTimeout  *string `json:"guard_timeout,omitempty"`
 	GuardVar      *string `json:"guard_var,omitempty"`
+	StaleAfter    *string `json:"stale_after,omitempty"`
 }
 
 // scheduleNow returns the UTC instant used for CreatedAt / UpdatedAt and to
@@ -101,53 +109,76 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	botID := strings.TrimSpace(req.BotID)
 	cronExpr := strings.TrimSpace(req.Cron)
-	if botID == "" || cronExpr == "" {
-		httpError(w, http.StatusBadRequest, "bot_id and cron required")
+	keepalive := req.IntervalSeconds > 0
+	if botID == "" {
+		httpError(w, http.StatusBadRequest, "bot_id required")
 		return
 	}
-	if err := cloudsched.ValidateCron(cronExpr); err != nil {
-		httpError(w, http.StatusBadRequest, "%s", err.Error())
+	if keepalive && cronExpr != "" {
+		httpError(w, http.StatusBadRequest, "set either cron or interval_seconds, not both")
 		return
+	}
+	if !keepalive && cronExpr == "" {
+		httpError(w, http.StatusBadRequest, "cron or interval_seconds required")
+		return
+	}
+	overlap := req.Overlap
+	if keepalive {
+		if floor := int(bundle.KeepaliveMinInterval.Seconds()); req.IntervalSeconds < floor {
+			httpError(w, http.StatusBadRequest, "interval_seconds must be >= %d", floor)
+			return
+		}
+		if strings.TrimSpace(overlap) == "" {
+			overlap = schedgate.OverlapKeepalive
+		}
+	} else {
+		if err := cloudsched.ValidateCron(cronExpr); err != nil {
+			httpError(w, http.StatusBadRequest, "%s", err.Error())
+			return
+		}
 	}
 	if err := schedgate.Validate(schedgate.Policy{
-		Overlap:       req.Overlap,
+		Overlap:       overlap,
 		MaxConcurrent: req.MaxConcurrent,
 		Guard:         req.Guard,
 		GuardTimeout:  req.GuardTimeout,
 		GuardVar:      req.GuardVar,
+		StaleAfter:    req.StaleAfter,
 	}); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
 	}
 	now := s.scheduleNow()
-	next, err := cloudsched.NextFire(cronExpr, now)
-	if err != nil {
-		httpError(w, http.StatusBadRequest, "%s", err.Error())
-		return
-	}
 	sb := cloudsched.ScheduledBot{
-		ID:       uuid.NewString(),
-		TenantID: teamID,
-		BotID:    botID,
-		Cron:     cronExpr,
-		Vars:     req.Vars,
-		RepoURL:  strings.TrimSpace(req.RepoURL),
-		RepoRef:  strings.TrimSpace(req.RepoRef),
+		ID:              uuid.NewString(),
+		TenantID:        teamID,
+		BotID:           botID,
+		Cron:            cronExpr,
+		IntervalSeconds: req.IntervalSeconds,
+		Vars:            req.Vars,
+		RepoURL:         strings.TrimSpace(req.RepoURL),
+		RepoRef:         strings.TrimSpace(req.RepoRef),
 		// First-class repo binding when the URL maps to a provisioned
 		// integration: the schedules UI then groups this row with the
 		// repo's other automation instead of joining by URL string.
 		RepoIntegrationID: s.resolveRepoIntegrationID(r.Context(), teamID, req.RepoURL),
 		Disabled:          req.Disabled,
-		Overlap:           req.Overlap,
+		Overlap:           overlap,
 		MaxConcurrent:     req.MaxConcurrent,
 		Guard:             req.Guard,
 		GuardTimeout:      req.GuardTimeout,
 		GuardVar:          req.GuardVar,
-		NextFireAt:        next,
+		StaleAfter:        req.StaleAfter,
 		CreatedBy:         id.UserID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
+	next, err := cloudsched.NextFireForBot(sb, now)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "%s", err.Error())
+		return
+	}
+	sb.NextFireAt = next
 	if err := s.cfg.ScheduledBots.Create(r.Context(), sb); err != nil {
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
@@ -234,6 +265,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		Guard:         cur.Guard,
 		GuardTimeout:  cur.GuardTimeout,
 		GuardVar:      cur.GuardVar,
+		StaleAfter:    cur.StaleAfter,
 	}
 	if req.Overlap != nil {
 		merged.Overlap = *req.Overlap
@@ -250,6 +282,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	if req.GuardVar != nil {
 		merged.GuardVar = *req.GuardVar
 	}
+	if req.StaleAfter != nil {
+		merged.StaleAfter = *req.StaleAfter
+	}
 	if err := schedgate.Validate(merged); err != nil {
 		httpError(w, http.StatusBadRequest, "%s", err.Error())
 		return
@@ -261,6 +296,28 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	patch.Guard = req.Guard
 	patch.GuardTimeout = req.GuardTimeout
 	patch.GuardVar = req.GuardVar
+	patch.StaleAfter = req.StaleAfter
+	// cron and interval_seconds are mutually exclusive; a switch recomputes
+	// NextFireAt from the new cadence.
+	if req.Cron != nil && req.IntervalSeconds != nil && strings.TrimSpace(*req.Cron) != "" && *req.IntervalSeconds > 0 {
+		httpError(w, http.StatusBadRequest, "set either cron or interval_seconds, not both")
+		return
+	}
+	if req.IntervalSeconds != nil {
+		iv := *req.IntervalSeconds
+		if iv > 0 {
+			if floor := int(bundle.KeepaliveMinInterval.Seconds()); iv < floor {
+				httpError(w, http.StatusBadRequest, "interval_seconds must be >= %d", floor)
+				return
+			}
+			// Switching to keepalive clears cron.
+			empty := ""
+			patch.Cron = &empty
+			next := now.Add(time.Duration(iv) * time.Second)
+			patch.NextFireAt = &next
+		}
+		patch.IntervalSeconds = &iv
+	}
 	if req.Cron != nil {
 		cronExpr := strings.TrimSpace(*req.Cron)
 		if err := cloudsched.ValidateCron(cronExpr); err != nil {
@@ -274,6 +331,9 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.Cron = &cronExpr
 		patch.NextFireAt = &next
+		// Switching to cron clears the interval.
+		zero := 0
+		patch.IntervalSeconds = &zero
 	}
 	if req.Vars != nil {
 		patch.Vars = req.Vars
