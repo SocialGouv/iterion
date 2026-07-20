@@ -35,6 +35,44 @@ func TestResolveWorkflowPath_FallsBackToBotCatalog(t *testing.T) {
 	}
 }
 
+// THE REAL-WORLD CASE: a studio launch persists file_path WITHOUT bot_id.
+// The first version of this fix keyed only on BotID and therefore silently
+// no-opped for exactly the runs it was written for — the 404 persisted in prod.
+func TestResolveWorkflowPath_NoBotIDUsesPathName(t *testing.T) {
+	catalog := t.TempDir()
+	botDir := filepath.Join(catalog, "app-dev")
+	if err := os.MkdirAll(botDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(botDir, "main.bot")
+	if err := os.WriteFile(main, []byte("workflow x:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(botDir, "manifest.yaml"),
+		[]byte("name: app-dev\ndisplay_name: Appy\nschema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ITERION_BOTS_PATH", catalog)
+
+	// bot_id deliberately empty — as a studio-launched run records it.
+	got := resolveWorkflowPath(&store.Run{FilePath: "bots/app-dev/main.bot"})
+	if got != main {
+		t.Errorf("got %q, want the catalog path %q", got, main)
+	}
+}
+
+func TestBotNameFromPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"bots/app-dev/main.bot": "app-dev",
+		"main.bot":              "",
+		"":                      "",
+	} {
+		if got := botNameFromPath(in); got != want {
+			t.Errorf("botNameFromPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // An existing path must win untouched — local runs and absolute paths keep
 // their current behaviour.
 func TestResolveWorkflowPath_ExistingPathWins(t *testing.T) {

@@ -35,13 +35,32 @@ func resolveWorkflowPath(r *store.Run) string {
 		return r.FilePath
 	}
 	paths := botsPathsFromEnv()
-	if r.BotID == "" || len(paths) == 0 {
+	if len(paths) == 0 {
 		return r.FilePath
 	}
-	if main, err := botregistry.ResolveBotPath(r.BotID, paths); err == nil {
-		return main
+	// BotID first when present, then the bot name carried by the path itself.
+	// A studio launch persists file_path WITHOUT bot_id, so keying only on
+	// BotID silently no-ops for exactly the runs this exists to fix.
+	for _, name := range []string{r.BotID, botNameFromPath(r.FilePath)} {
+		if name == "" {
+			continue
+		}
+		if main, err := botregistry.ResolveBotPath(name, paths); err == nil {
+			return main
+		}
 	}
 	return r.FilePath
+}
+
+// botNameFromPath extracts the bot name from a catalog-relative workflow path
+// ("bots/app-dev/main.bot" -> "app-dev"), i.e. the parent directory of the
+// workflow file. Returns "" when the path has no parent directory to name.
+func botNameFromPath(p string) string {
+	dir := filepath.Dir(filepath.ToSlash(p))
+	if dir == "." || dir == "/" || dir == "" {
+		return ""
+	}
+	return filepath.Base(dir)
 }
 
 // botsPathsFromEnv reads ITERION_BOTS_PATH — the colon-separated list of bot
