@@ -280,6 +280,7 @@ dispatcher routes on it), never the persona.
 | Testy | `test-coverage` |
 | Nexie | `whats-next` (this bot) |
 | Willy | `whole-improve-loop` |
+| Wikky | `wiki-gen` |
 
 ## Bot reference
 
@@ -1008,6 +1009,40 @@ docs/references/productive-session-patterns.md.
   at the tree instead — this bot needs an axis to sweep.
 - **Vars**: `baseline` (string), `improvement_prompt` (string), `max_passes` (int), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scope_globs` (string), `scope_notes` (string), `scratch_dir` (string), `source_issue_ref` (string), `workspace_dir` (string)
 - **Path**: `bots/whole-improve-loop/main.bot`
+
+### `wiki-gen` — Wikky
+
+Wiki generator — one capable agent builds and incrementally maintains
+a navigable, Open-Knowledge-Format wiki for whatever repository it is
+pointed at, in any language. It surveys the code, plans the concept
+pages and their relationships, and writes a structured wiki tree
+(architecture/, workflows/, domain/, …) under wiki/ with a quickstart
+entrypoint — every claim grounded in the source, never invented.
+
+Deterministic by construction: after each authoring pass a tool
+regenerates every directory index from the pages' frontmatter, and a
+validator gate fails the run on invalid OKF frontmatter, a dead
+intra-wiki link, or any write outside the wiki tree — so the agent
+cannot rubber-stamp a broken or hallucinated wiki. A persistent,
+out-of-tree git_head cache lets a scheduled run skip entirely when the
+wiki is already current for the exact commit.
+
+The OKF output (type-only-required YAML frontmatter + Markdown links as
+concept-relationship edges) is a standard, tool-agnostic interchange
+format, directly ingestible by a knowledge-graph explorer.
+
+Ships 2 skills: wiki-authoring (the operating playbook) and okf-format
+(the frontmatter + link-graph contract the validator enforces).
+
+- **Use when**:
+  Use to bootstrap a navigable wiki for a repository that has none, or to
+  keep an existing wiki/ tree current as the code evolves (nightly, or on
+  demand). Wikky OWNS the wiki/ tree and writes only there — it never
+  edits source. Reach for Doki (docs-refresh) instead when the goal is to
+  fix a repo's EXISTING hand-authored docs (README/docs/**) against the
+  code, editing them in place.
+- **Vars**: `bundle_self_path` (string), `code_scope_globs` (string), `excluded_dirs` (string), `issue_id` (string), `max_passes` (string), `okf_version` (string), `scope_notes` (string), `wiki_cache_path` (string), `wiki_dir` (string), `workspace_dir` (string)
+- **Path**: `bots/wiki-gen/main.bot`
 
 <!-- ITERION:CATALOG:GENERATED:END -->
 
