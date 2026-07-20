@@ -180,6 +180,7 @@ func (s *Server) routes() {
 	// Bot-secret bindings (policy wrapper over generic secrets).
 	if s.botBindings != nil && s.authSvc != nil {
 		s.registerBotBindingRoutes()
+		s.registerPluginSourceRoutes()
 	}
 
 	// Recurring cloud schedules — team-scoped CRUD. Cloud-only (the ticker

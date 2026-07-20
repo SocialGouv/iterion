@@ -1,11 +1,13 @@
 package cloudpublisher
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/plugin"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	"github.com/SocialGouv/iterion/pkg/skilllib"
 )
@@ -34,8 +36,38 @@ const maxContributionsBytes = 256 * 1024
 // a broken plugin must not fail a launch — but a referenced library skill that
 // is MISSING is only warned about, matching the local path where a DSL `skills:`
 // reference is soft.
-func resolveContributions(wf *ir.Workflow, projectStoreDir string, logger *iterlog.Logger) (*queue.Contributions, error) {
+// resolveContributionsFor is the tenant-aware entry point. tenantID + sources are
+// what make an ORG-PRIVATE plugin work: sources are team-scoped git-hosted
+// plugins (pkg/pluginsource) whose authority is the durable store, not this
+// pod's filesystem — so they survive a restart, unlike a plugin installed into
+// the pod's iterion home. A nil resolver keeps the local-only behaviour.
+func resolveContributionsFor(
+	ctx context.Context,
+	wf *ir.Workflow,
+	projectStoreDir string,
+	tenantID string,
+	sources *pluginsource.Resolver,
+	logger *iterlog.Logger,
+) (*queue.Contributions, error) {
 	out := &queue.Contributions{}
+
+	// 0. Team-scoped git-hosted plugins. Resolved FIRST so a locally installed
+	// plugin of the same name shadows it deterministically below.
+	if sources != nil && tenantID != "" {
+		files, err := sources.Resolve(ctx, tenantID)
+		if err != nil {
+			// Deliberate: a source the operator explicitly enabled that cannot
+			// be resolved fails the launch. Shipping the run without its
+			// platform skill is the silent-wrong-result failure this exists to
+			// prevent.
+			return nil, err
+		}
+		for _, f := range files {
+			out.Plugin = append(out.Plugin, queue.ContributionFile{
+				Kind: f.Kind, Name: f.Name, Content: f.Content,
+			})
+		}
+	}
 
 	// 1. Enabled plugins' markdown (skills / commands / agents).
 	reg, err := plugin.Load()
@@ -54,6 +86,13 @@ func resolveContributions(wf *ir.Workflow, projectStoreDir string, logger *iterl
 					continue
 				}
 				for _, f := range files {
+					// A locally installed plugin file shadows a same-named
+					// git-hosted one: one (kind, name) must resolve to exactly
+					// one payload entry, or the runner's mirror order would
+					// decide the winner non-deterministically.
+					if replaceContribution(out.Plugin, kind.Dir, f.Name, f.Content) {
+						continue
+					}
 					out.Plugin = append(out.Plugin, queue.ContributionFile{
 						Kind:    kind.Dir,
 						Name:    f.Name,
@@ -127,4 +166,18 @@ func collectWorkflowSkillRefs(wf *ir.Workflow) []string {
 		}
 	}
 	return out
+}
+
+// replaceContribution overwrites an existing (kind, name) entry in place and
+// reports whether it did. Used so a locally installed plugin deterministically
+// shadows a same-named git-hosted one, instead of both riding the payload and
+// letting the runner's mirror order pick a winner.
+func replaceContribution(files []queue.ContributionFile, kind, name string, content []byte) bool {
+	for i := range files {
+		if files[i].Kind == kind && files[i].Name == name {
+			files[i].Content = content
+			return true
+		}
+	}
+	return false
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/marketplace"
 	"github.com/SocialGouv/iterion/pkg/orgusage"
 	"github.com/SocialGouv/iterion/pkg/pat"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/secrets"
@@ -96,8 +97,12 @@ type Server struct {
 	pats              pat.Store
 	queue             *natsq.Conn
 	botBindings       secrets.BotSecretBindingStore
-	configShares      configshare.Store
-	configShareSvc    *configshare.Service
+	// pluginSources holds team-scoped, git-hosted org-private plugins. Durable
+	// (unlike a plugin installed into this pod's ephemeral iterion home), so a
+	// restart re-derives instead of silently dropping the plugin from runs.
+	pluginSources  pluginsource.Store
+	configShares   configshare.Store
+	configShareSvc *configshare.Service
 	// configShareFC overrides forge-client resolution in tests (nil in prod →
 	// shareFileClient resolves the team forge_token + builds a GitHub client).
 	configShareFC     func(context.Context, *configshare.Share) (forge.FileClient, error)

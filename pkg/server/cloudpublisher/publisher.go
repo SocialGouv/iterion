@@ -31,6 +31,7 @@ import (
 	"github.com/SocialGouv/iterion/pkg/forge"
 	"github.com/SocialGouv/iterion/pkg/identity"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
+	"github.com/SocialGouv/iterion/pkg/pluginsource"
 	"github.com/SocialGouv/iterion/pkg/queue"
 	natsq "github.com/SocialGouv/iterion/pkg/queue/nats"
 	"github.com/SocialGouv/iterion/pkg/runview"
@@ -81,6 +82,11 @@ type Config struct {
 	// attributed to the App bot (the runner can't self-resolve it — see
 	// RunBundle.ForgeAppBotLogin).
 	ForgeConnections forge.ConnectionStore
+	// PluginSources, when non-nil, resolves the launching team's git-hosted
+	// org-private plugins at launch (pkg/pluginsource). This is the DURABLE
+	// counterpart to a plugin installed into the pod's iterion home, which a
+	// restart silently loses. Nil keeps local-only resolution.
+	PluginSources *pluginsource.Resolver
 	// Identity, when non-nil, lets the publisher resolve a run's team
 	// to its parent org so the RunMessage carries the org id the launch
 	// gate metered the run on. The runner charges LLM spend to that key
@@ -116,6 +122,7 @@ type Publisher struct {
 	sealer         secrets.Sealer
 	oauthForfait   secrets.OAuthStore
 	forgeConns     forge.ConnectionStore
+	pluginSources  *pluginsource.Resolver
 	identity       TeamResolver
 
 	// orgCache memoizes team → org id so the publish hot path doesn't
@@ -205,6 +212,7 @@ func New(cfg Config) (*Publisher, error) {
 		sealer:         cfg.Sealer,
 		oauthForfait:   cfg.OAuthForfait,
 		forgeConns:     cfg.ForgeConnections,
+		pluginSources:  cfg.PluginSources,
 		identity:       cfg.Identity,
 	}, nil
 }
@@ -561,7 +569,7 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	// Plugin/library skills resolved HERE, from this instance's iterion home:
 	// the runner pod's is empty, so an operator-installed plugin's skill would
 	// otherwise never reach the workspace (see resolveContributions).
-	contributions, err := resolveContributions(wf, "", p.logger)
+	contributions, err := resolveContributionsFor(ctx, wf, "", tenantID, p.pluginSources, p.logger)
 	if err != nil {
 		return 0, err
 	}
@@ -730,7 +738,7 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	}
 	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
 	// so a resumed run must carry the same payload a fresh launch would.
-	contributions, contribErr := resolveContributions(wf, "", p.logger)
+	contributions, contribErr := resolveContributionsFor(ctx, wf, "", prior.TenantID, p.pluginSources, p.logger)
 	if contribErr != nil {
 		return contribErr
 	}
