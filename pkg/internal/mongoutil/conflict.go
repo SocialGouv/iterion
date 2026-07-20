@@ -31,6 +31,20 @@ func IsIndexConflict(err error) bool {
 	return false
 }
 
+// IsIndexNotFound reports whether err is Mongo's IndexNotFound, so a schema
+// migration can drop a retired index unconditionally: absent is the expected
+// steady state (fresh install, or already migrated), not a failure.
+func IsIndexNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var cmd mongo.CommandError
+	if errors.As(err, &cmd) {
+		return cmd.Code == 27 // IndexNotFound
+	}
+	return false
+}
+
 // IsDuplicateKey reports whether err is a Mongo E11000 duplicate-key
 // error, so InsertOne/ReplaceOne callers across storage packages can
 // translate it to a domain sentinel without each re-deriving the check.

@@ -223,7 +223,21 @@ func NewMongoOAuthAppStore(db *mongo.Database) *MongoOAuthAppStore {
 	return &MongoOAuthAppStore{coll: db.Collection(OAuthAppsCollectionName)}
 }
 
+// legacyOAuthAppInstanceIndex is the pre-owner uniqueness key. Creating the
+// replacement does NOT retire it, and while it survives it keeps enforcing
+// one app per host — which is exactly the constraint being lifted. Dropped
+// explicitly, before the new index is created, so a deployment actually
+// changes behaviour instead of silently keeping the old rule.
+const legacyOAuthAppInstanceIndex = "tenant_provider_baseurl_unique"
+
 func (s *MongoOAuthAppStore) EnsureSchema(ctx context.Context) error {
+	if err := s.coll.Indexes().DropOne(ctx, legacyOAuthAppInstanceIndex); err != nil {
+		// IndexNotFound (fresh install, or already migrated) is the expected
+		// steady state — anything else is a real failure worth surfacing.
+		if !mongoutil.IsIndexNotFound(err) {
+			return fmt.Errorf("forge: drop legacy oauth app index: %w", err)
+		}
+	}
 	_, err := s.coll.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		// Uniqueness is per OWNING ACCOUNT, not per host: a tenant legitimately
 		// holds one app per GitHub org (a private App is only installable on its
