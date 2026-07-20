@@ -623,8 +623,24 @@ prompt deploy_user:
   when present, fix exactly this then redeploy):
   {{input.fail_log}}
 
-  Load the `deploy-target` skill, deploy the app, validate the URL is
-  live, and report deployed / healthy / deployed_url / notes.
+  The app is COMMITTED in this workspace but is very likely NOT PUSHED
+  yet — nothing upstream has run. Publishing the image is YOUR job, in
+  this order; do not stop early because "no image reference was
+  provided", and never ask the operator for one:
+
+    1. Ensure the repo has a CI workflow that builds and pushes the image
+       to this forge's registry (add it if missing) plus a Dockerfile.
+    2. Commit anything you added, then PUSH the branch — this is what
+       triggers the build. A push credential is mounted; the
+       `forge-mr-create` skill covers authenticating the forge CLI.
+    3. WAIT for that CI run to publish the image, then read back the
+       exact published reference.
+    4. Only then follow the `deploy-target` skill to deploy it.
+
+  If a step genuinely cannot succeed, report deployed=false with the
+  concrete blocking error — never a guessed URL.
+
+  Then report deployed / healthy / deployed_url / notes.
 
 prompt deploy_verdict_system:
   You gate a deployment result. Return pass=true ONLY when deployed AND
