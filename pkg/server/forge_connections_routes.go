@@ -163,7 +163,7 @@ func (s *Server) handleForgeConnectionHealth(w http.ResponseWriter, r *http.Requ
 		h.ProvisionedRepoCount = len(names)
 	}
 	if conn.Kind == forge.KindGitHubApp && conn.InstallationID != 0 {
-		if cfg, _, ok := s.githubAppConfigForTenant(r.Context(), conn.TenantID); ok {
+		if cfg, _, ok := s.githubAppConfigForConnection(r.Context(), conn); ok {
 			login, htmlURL, err := forgegithub.InstallationInfo(r.Context(), s.forgeHTTPClient(),
 				forgegithub.APIBaseFor(conn.BaseURL()), cfg, conn.InstallationID, time.Now().UTC())
 			if err != nil {

@@ -70,6 +70,57 @@ func TestOAuthAppStore_DuplicateInstance(t *testing.T) {
 	}
 }
 
+// A tenant legitimately holds ONE GitHub App PER OWNING ORG on the same host:
+// a private App can only be installed on the account that owns it, so an org
+// with a prod org and a sandbox org needs two. Keying uniqueness on the host
+// alone made the second one impossible — that is the constraint this relaxes.
+func TestOAuthAppStore_OneAppPerOwnerOnSameHost(t *testing.T) {
+	st := NewMemoryOAuthAppStore()
+	ctx := context.Background()
+	base := time.Unix(1700000000, 0).UTC()
+
+	prod := ForgeOAuthApp{ID: "prod", TenantID: "t1", Provider: ProviderGitHub,
+		ForgeBaseURL: "https://github.com", OwnerLogin: "SocialGouv", ClientID: "c1", CreatedAt: base}
+	sandbox := ForgeOAuthApp{ID: "sandbox", TenantID: "t1", Provider: ProviderGitHub,
+		ForgeBaseURL: "https://github.com", OwnerLogin: "iterion-sandbox", ClientID: "c2", CreatedAt: base.Add(time.Hour)}
+
+	if err := st.Create(ctx, prod); err != nil {
+		t.Fatalf("create prod app: %v", err)
+	}
+	if err := st.Create(ctx, sandbox); err != nil {
+		t.Fatalf("a second app on the same host but a DIFFERENT org must be allowed: %v", err)
+	}
+
+	// Same owner twice is still a duplicate — the constraint moved, it did not vanish.
+	dup := ForgeOAuthApp{ID: "dup", TenantID: "t1", Provider: ProviderGitHub,
+		ForgeBaseURL: "https://github.com", OwnerLogin: "SocialGouv", ClientID: "c3"}
+	if err := st.Create(ctx, dup); !errors.Is(err, ErrOAuthAppExists) {
+		t.Fatalf("same owner twice must conflict, got %v", err)
+	}
+
+	list, err := st.ListByInstance(ctx, "t1", ProviderGitHub, "https://github.com")
+	if err != nil {
+		t.Fatalf("list by instance: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("want 2 apps on the instance, got %d", len(list))
+	}
+
+	// GetByInstance must stay DETERMINISTIC (oldest first) — it is the legacy
+	// answer for connections created before they recorded which app they use.
+	// An unordered "any match" would hand callers a different private key run
+	// to run, which cannot mint for the installation it is used against.
+	for i := 0; i < 5; i++ {
+		got, err := st.GetByInstance(ctx, "t1", ProviderGitHub, "https://github.com")
+		if err != nil {
+			t.Fatalf("get by instance: %v", err)
+		}
+		if got.ID != "prod" {
+			t.Fatalf("GetByInstance must return the oldest app deterministically, got %q", got.ID)
+		}
+	}
+}
+
 func TestOAuthAppSealer_RoundTrip(t *testing.T) {
 	sealer, err := secrets.NewAESGCMSealer(make([]byte, 32))
 	if err != nil {

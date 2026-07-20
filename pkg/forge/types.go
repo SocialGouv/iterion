@@ -105,6 +105,18 @@ type Connection struct {
 	// GitHub-App specific (Kind == KindGitHubApp).
 	InstallationID int64  `bson:"installation_id,omitempty" json:"installation_id,omitempty"`
 	AppSlug        string `bson:"app_slug,omitempty" json:"app_slug,omitempty"`
+	// OAuthAppID points at the ForgeOAuthApp whose private key mints this
+	// installation's tokens. It exists because a tenant may hold SEVERAL GitHub
+	// Apps on one host (one per owning org — a private App is only installable
+	// on its owner), so the app can no longer be re-derived from
+	// (tenant, provider, host). Signing an installation token with the wrong
+	// app's key does not degrade gracefully: it fails, or worse, addresses a
+	// different installation entirely.
+	//
+	// Empty on connections created before this field existed; resolution falls
+	// back to the legacy per-instance lookup, which is unambiguous for them
+	// precisely because the old unique index allowed only one app per host.
+	OAuthAppID string `bson:"oauth_app_id,omitempty" json:"oauth_app_id,omitempty"`
 
 	Status ConnectionStatus `bson:"status" json:"status"`
 

@@ -120,7 +120,7 @@ func (s *Server) forgeAdminForToken(provider forge.Provider, baseURL, token stri
 // the App private key on demand; every other kind opens its sealed token.
 func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forge.Admin, error) {
 	if conn.Kind == forge.KindGitHubApp {
-		cfg, _, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
+		cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
 		if !ok {
 			return nil, fmt.Errorf("forge: no github app available for this connection")
 		}
@@ -150,11 +150,9 @@ func (s *Server) forgeAdminFor(ctx context.Context, conn forge.Connection) (forg
 func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) (cfg forgegithub.AppConfig, shared bool, ok bool) {
 	if s.forgeOAuthApps != nil {
 		base := forge.CanonicalBaseURL(forge.ProviderGitHub, "")
-		if app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, base); err == nil && len(app.SealedPrivateKey) > 0 {
-			if pem, err := forge.OpenForgeAppPrivateKey(s.sealer, app.ID, app.SealedPrivateKey); err == nil && pem != "" {
-				if appID, _ := strconv.ParseInt(app.ProviderAppID, 10, 64); appID != 0 {
-					return forgegithub.AppConfig{AppID: appID, PrivateKeyPEM: pem, AppSlug: app.AppSlug}, false, true
-				}
+		if app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, base); err == nil {
+			if cfg, ok := s.githubAppConfigFromRecord(app); ok {
+				return cfg, false, true
 			}
 		}
 	}
@@ -162,6 +160,94 @@ func (s *Server) githubAppConfigForTenant(ctx context.Context, tenantID string) 
 		return s.githubAppConfig(), true, true
 	}
 	return forgegithub.AppConfig{}, false, false
+}
+
+// githubAppConfigForConnection resolves the App identity that owns a
+// connection's installation.
+//
+// This is the correct key. A tenant may hold several GitHub Apps on one host —
+// one per owning org, since a private App is only installable on its owner — so
+// the app CANNOT be re-derived from (tenant, provider, host) any more. Getting
+// it wrong is not a graceful degradation: a JWT signed with app A's key cannot
+// mint a token for an installation of app B, and the background refresh worker
+// would keep failing (or address the wrong installation) with no obvious cause.
+//
+// Resolution order: the connection's own OAuthAppID, then the legacy
+// per-instance lookup (unambiguous for connections created while only one app
+// per host could exist), then the shared platform App.
+func (s *Server) githubAppConfigForConnection(ctx context.Context, conn forge.Connection) (cfg forgegithub.AppConfig, shared bool, ok bool) {
+	if conn.OAuthAppID != "" && s.forgeOAuthApps != nil {
+		app, err := s.forgeOAuthApps.Get(ctx, conn.OAuthAppID)
+		if err == nil && app.TenantID == conn.TenantID {
+			if cfg, ok := s.githubAppConfigFromRecord(app); ok {
+				return cfg, false, true
+			}
+		}
+		// Deliberate: a connection that NAMES an app whose key is unusable must
+		// not silently fall back to another tenant-level app and sign with the
+		// wrong identity. Fail closed and let the caller surface it.
+		if s.logger != nil {
+			s.logger.Warn("forge: connection %s references oauth app %s which did not resolve to a usable key", conn.ID, conn.OAuthAppID)
+		}
+		return forgegithub.AppConfig{}, false, false
+	}
+	return s.githubAppConfigForTenant(ctx, conn.TenantID)
+}
+
+// githubAppForInstall picks the App to start an install flow with, returning
+// its config and the app-record id to pin onto the pending state (and, later,
+// onto the Connection). An explicit appID selects among a team's several Apps;
+// empty keeps the legacy "the team's app for this host" behaviour.
+//
+// A cross-tenant appID resolves to nothing rather than another team's App.
+// shared reports the SHARED platform App, exactly as githubAppConfigForTenant
+// does — the install callback's IDOR guard keys on it, so it is returned
+// explicitly rather than inferred from an empty record id (a tenant app whose
+// record lookup merely failed must not be mistaken for the platform app).
+func (s *Server) githubAppForInstall(ctx context.Context, tenantID, appID string) (cfg forgegithub.AppConfig, resolvedID string, shared bool, ok bool) {
+	if appID != "" && s.forgeOAuthApps != nil {
+		app, err := s.forgeOAuthApps.Get(ctx, appID)
+		if err != nil || app.TenantID != tenantID {
+			return forgegithub.AppConfig{}, "", false, false
+		}
+		cfg, ok := s.githubAppConfigFromRecord(app)
+		if !ok {
+			return forgegithub.AppConfig{}, "", false, false
+		}
+		return cfg, app.ID, false, true
+	}
+	cfg, shared, ok = s.githubAppConfigForTenant(ctx, tenantID)
+	if !ok {
+		return forgegithub.AppConfig{}, "", false, false
+	}
+	// Only a tenant-owned app has a record to pin; the shared platform app has
+	// none, and pinning "" keeps those connections on the legacy resolution.
+	if shared || s.forgeOAuthApps == nil {
+		return cfg, "", shared, true
+	}
+	app, err := s.forgeOAuthApps.GetByInstance(ctx, tenantID, forge.ProviderGitHub, forge.CanonicalBaseURL(forge.ProviderGitHub, ""))
+	if err != nil {
+		return cfg, "", shared, true
+	}
+	return cfg, app.ID, shared, true
+}
+
+// githubAppConfigFromRecord unseals an app row into a usable App identity.
+// Returns ok=false when the row cannot mint (no private key, unsealable, or a
+// non-numeric app id) so callers treat it as "no app" rather than half-valid.
+func (s *Server) githubAppConfigFromRecord(app forge.ForgeOAuthApp) (forgegithub.AppConfig, bool) {
+	if len(app.SealedPrivateKey) == 0 {
+		return forgegithub.AppConfig{}, false
+	}
+	pem, err := forge.OpenForgeAppPrivateKey(s.sealer, app.ID, app.SealedPrivateKey)
+	if err != nil || pem == "" {
+		return forgegithub.AppConfig{}, false
+	}
+	appID, _ := strconv.ParseInt(app.ProviderAppID, 10, 64)
+	if appID == 0 {
+		return forgegithub.AppConfig{}, false
+	}
+	return forgegithub.AppConfig{AppID: appID, PrivateKeyPEM: pem, AppSlug: app.AppSlug}, true
 }
 
 // forgeOAuthAppFor builds a provider's OAuth client for a (tenant, provider,
@@ -273,7 +359,7 @@ func (s *Server) forgeAppMinter(ctx context.Context, conn forge.Connection) (str
 	if conn.Kind != forge.KindGitHubApp {
 		return "", fmt.Errorf("forge: not a github_app connection")
 	}
-	cfg, _, ok := s.githubAppConfigForTenant(ctx, conn.TenantID)
+	cfg, _, ok := s.githubAppConfigForConnection(ctx, conn)
 	if !ok {
 		return "", fmt.Errorf("forge: no github app available for this connection")
 	}
@@ -443,7 +529,7 @@ func repoOutsideInstallationErr(repos []forge.RepoSummary, repoFullName string) 
 // OAuthExchanger and TokenRefresher.
 func (s *Server) forgeRefresherFor(conn forge.Connection) forge.TokenRefresher {
 	if conn.Kind == forge.KindGitHubApp {
-		cfg, _, ok := s.githubAppConfigForTenant(context.Background(), conn.TenantID)
+		cfg, _, ok := s.githubAppConfigForConnection(context.Background(), conn)
 		if !ok {
 			return nil
 		}

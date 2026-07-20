@@ -113,7 +113,8 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 	manageURL := forgegithub.AppManageURL(pending.ForgeBaseURL, conv.Owner.Login, conv.Owner.Type, conv.Slug)
 	// Capture the App slug + private key (conv.PEM) so the App can be INSTALLED
 	// (least-privilege github_app), not only OAuth-authorized.
-	app, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest", manageURL, conv.Slug, conv.PEM)
+	app, err := s.createForgeOAuthApp(r, pending.TenantID, pending.UserID, forge.ProviderGitHub, pending.ForgeBaseURL, conv.ClientID, conv.ClientSecret, strconv.FormatInt(conv.ID, 10), true, "github_manifest",
+		githubAppFacts{ManageURL: manageURL, Slug: conv.Slug, PrivateKeyPEM: conv.PEM, OwnerLogin: conv.Owner.Login})
 	if err != nil {
 		s.writeForgeOAuthAppError(w, err)
 		return

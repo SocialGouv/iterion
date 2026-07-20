@@ -26,6 +26,10 @@ type forgeConnectReq struct {
 	PAT          string `json:"pat,omitempty"`
 	DisplayName  string `json:"display_name,omitempty"`
 	Next         string `json:"next,omitempty"`
+	// OAuthAppID selects WHICH GitHub App to install when the team holds
+	// several (one per owning org). Empty keeps the legacy behaviour: the
+	// team's single app for that host.
+	OAuthAppID string `json:"oauth_app_id,omitempty"`
 }
 
 type forgeConnectResp struct {
@@ -72,7 +76,7 @@ func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, r *http.Request, t
 		httpError(w, http.StatusBadRequest, "the app mode is GitHub-only")
 		return
 	}
-	cfg, _, ok := s.githubAppConfigForTenant(r.Context(), teamID)
+	cfg, appID, _, ok := s.githubAppForInstall(r.Context(), teamID, req.OAuthAppID)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "no GitHub App available — first create one (Register an OAuth app → Create a GitHub App), or use OAuth/PAT")
 		return
@@ -90,7 +94,7 @@ func (s *Server) connectForgeGitHubApp(w http.ResponseWriter, r *http.Request, t
 	if err := s.forgeStates.put(forgePending{
 		State: state, Provider: forge.ProviderGitHub, ForgeBaseURL: forge.DefaultBaseURL(forge.ProviderGitHub),
 		TenantID: teamID, UserID: userID, AgentBinding: binding,
-		NextURL: safeNext(req.Next), IssuedAt: time.Now().UTC(),
+		NextURL: safeNext(req.Next), OAuthAppID: appID, IssuedAt: time.Now().UTC(),
 	}); err != nil {
 		if s.logger != nil {
 			s.logger.Error("forge connect: %v", err)
@@ -300,7 +304,11 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		httpError(w, http.StatusBadRequest, "invalid installation_id")
 		return
 	}
-	cfg, shared, ok := s.githubAppConfigForTenant(r.Context(), pending.TenantID)
+	// Resolve the app the flow was STARTED with (pinned in the signed state),
+	// not "the team's app for this host" — with several apps per host the
+	// latter can pick the wrong private key, which cannot mint for this
+	// installation at all.
+	cfg, appRecordID, shared, ok := s.githubAppForInstall(r.Context(), pending.TenantID, pending.OAuthAppID)
 	if !ok {
 		httpError(w, http.StatusBadRequest, "no github app available for this org")
 		return
@@ -360,7 +368,7 @@ func (s *Server) handleForgeGitHubAppCallback(w http.ResponseWriter, r *http.Req
 		ID: connID, TenantID: pending.TenantID, Provider: forge.ProviderGitHub, Kind: forge.KindGitHubApp,
 		DisplayName: cfg.AppSlug, ForgeBaseURL: base,
 		AccountLogin: cfg.AppSlug + "[bot]", Namespace: cfg.AppSlug,
-		InstallationID: installationID, AppSlug: cfg.AppSlug,
+		InstallationID: installationID, AppSlug: cfg.AppSlug, OAuthAppID: appRecordID,
 		Status: forge.StatusActive, SealedPayload: sealed, AccessTokenExpiresAt: &exp,
 		CreatedBy: pending.UserID, CreatedAt: now, UpdatedAt: now,
 	}

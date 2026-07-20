@@ -27,7 +27,13 @@ type forgePending struct {
 	UserID       string
 	AgentBinding string
 	NextURL      string
-	IssuedAt     time.Time
+	// OAuthAppID pins WHICH of the tenant's GitHub Apps this flow is for, so
+	// the install callback stamps the right one on the Connection instead of
+	// re-deriving it from (tenant, provider, host) — ambiguous once a tenant
+	// holds one app per owning org. Empty for non-app flows and for installs
+	// started before the picker existed.
+	OAuthAppID string
+	IssuedAt   time.Time
 }
 
 // forgeStateBackend stores forgePending CSRF state keyed by State, with a
