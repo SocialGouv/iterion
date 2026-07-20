@@ -306,6 +306,17 @@ func WithBundle(b *bundle.Bundle) EngineOption {
 	return func(e *Engine) { e.bundle = b }
 }
 
+// WithContributions hands the engine PRE-RESOLVED plugin contributions and
+// skill-library skills instead of letting it resolve them from the local
+// iterion home. Set by the cloud runner from the queue message: a runner pod's
+// iterion home is ephemeral and empty, so without this an operator-installed
+// plugin's skill (or a DSL `skills:` reference) silently never reaches the
+// workspace there. Passing a non-nil value — including an empty one — makes the
+// payload authoritative and suppresses local resolution. See Contributions.
+func WithContributions(c *Contributions) EngineOption {
+	return func(e *Engine) { e.contributions = c }
+}
+
 // WithOutputValidation enables post-execution validation of node outputs
 // against their declared output schemas. When enabled, a node whose output
 // does not conform to its schema will cause the run to fail immediately.

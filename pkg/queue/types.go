@@ -26,7 +26,13 @@ import (
 // runner instead of being rejected at publish time. The version bump makes a
 // stale runner reject the message loudly rather than silently dropping the
 // caps the caller asked for.
-const SchemaVersion = 4
+// v=5 (2026-07-20): added Contributions so enabled-plugin skills and DSL
+// `skills:` library references reach the runner pod, whose iterion home is
+// empty. Bumped for the same reason as v=4: a stale runner must reject the
+// message loudly rather than run the workflow WITHOUT the skills it was
+// launched with — a run missing its deploy/platform skill still "succeeds"
+// while doing the wrong thing, which is the exact façade this field prevents.
+const SchemaVersion = 5
 
 // RunMessage is the JSON envelope published on
 // `iterion.queue.runs`. The runner deserialises it, takes the
@@ -45,10 +51,19 @@ type RunMessage struct {
 	RepoSHA      string          `json:"repo_sha,omitempty"`
 	// BotID is the stable bundle/bot identifier for this run. It qualifies
 	// structured visibility=bot memory and is preserved on resume.
-	BotID      string         `json:"bot_id,omitempty"`
-	Vars       map[string]any `json:"vars,omitempty"`
-	SecretsRef string         `json:"secrets_ref,omitempty"`
-	TimeoutSec int            `json:"timeout_sec,omitempty"`
+	BotID string `json:"bot_id,omitempty"`
+	// Contributions carries the plugin markdown contributions and
+	// skill-library skills the LAUNCHING instance resolved for this run (the
+	// wire mirror of runtime.Contributions). A runner pod's iterion home is
+	// ephemeral and empty, so without this an operator-installed plugin's
+	// skill — or a DSL `skills:` library reference — silently never reaches
+	// the workspace and only compiled-in builtins do. Nil (a message from
+	// before this field, or a non-cloud publisher) makes the runner fall back
+	// to local resolution, which is a no-op on a pod.
+	Contributions *Contributions `json:"contributions,omitempty"`
+	Vars          map[string]any `json:"vars,omitempty"`
+	SecretsRef    string         `json:"secrets_ref,omitempty"`
+	TimeoutSec    int            `json:"timeout_sec,omitempty"`
 	// Budget carries launch-time budget-cap overrides ("non-zero wins,
 	// zero inherits" — the wire mirror of ir.BudgetOverrides). The runner
 	// applies it after loading the workflow and BEFORE its multitenant
@@ -97,6 +112,34 @@ type RunMessage struct {
 	CallbackURL        string `json:"callback_url,omitempty"`
 	CallbackToken      string `json:"callback_token,omitempty"`
 	CallbackAnswerNode string `json:"callback_answer_node,omitempty"`
+}
+
+// Contributions is the wire mirror of runtime.Contributions: the plugin
+// markdown files and skill-library skills the launching instance resolved from
+// ITS iterion home, shipped so the runner pod can mirror the same set into the
+// workspace. Sizes are small (markdown, a few KB each) and capped at publish
+// time — see cloudpublisher.
+type Contributions struct {
+	Plugin  []ContributionFile `json:"plugin,omitempty"`
+	Library []LibrarySkillFile `json:"library,omitempty"`
+}
+
+// ContributionFile is one plugin markdown file bound for
+// <workspace>/.claude/<kind>/<name>.
+type ContributionFile struct {
+	// Kind is the .claude/ leaf dir: "skills" | "commands" | "agents".
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+	Content []byte `json:"content"`
+}
+
+// LibrarySkillFile is one resolved skill-library skill. Description carries the
+// frontmatter description so the runner reproduces the "## Skills" prompt hint
+// without the store it does not have.
+type LibrarySkillFile struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Content     []byte `json:"content"`
 }
 
 // BudgetOverrides is the wire mirror of ir.BudgetOverrides (kept local so

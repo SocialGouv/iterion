@@ -380,7 +380,7 @@ func (e *Engine) resumeRebuildState(ctx context.Context, r *store.Run, cp *store
 	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
 		return nil, nil, fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
+	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
@@ -595,7 +595,7 @@ func (e *Engine) restoreResumeWorkspace(r *store.Run) error {
 	if err := mirrorBundleSkills(e.workDir, e.bundle, e.logger); err != nil {
 		return fmt.Errorf("runtime: bundle skills (resume): %w", err)
 	}
-	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
+	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions (resume): %v", err)
 	}
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {

@@ -368,7 +368,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 	// Mirror markdown contributions (skills / commands / agents) from enabled plugins
 	// after the bundle skills so a same-named bundle/workspace file
 	// wins on collision. Best-effort: a plugin must not fail the run.
-	if err := mirrorPluginContributions(e.workDir, e.logger); err != nil && e.logger != nil {
+	if err := mirrorPluginContributions(e.workDir, e.contributions, e.logger); err != nil && e.logger != nil {
 		e.logger.Warn("runtime: plugin contributions: %v", err)
 	}
 	if err := mergePluginHooks(e.workDir, e.logger); err != nil && e.logger != nil {
@@ -389,7 +389,7 @@ func (e *Engine) runPersistWorkspace(ctx context.Context, runID string, run *sto
 // failure is logged but never fails the run (the DSL reference is soft). Only
 // ClawExecutor implements SetSkillHints.
 func (e *Engine) applyLibrarySkills() {
-	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.logger)
+	hints, err := mirrorLibrarySkills(e.workDir, e.store.Root(), e.workflow, e.contributions, e.logger)
 	if err != nil {
 		if e.logger != nil {
 			e.logger.Warn("runtime: library skills: %v", err)

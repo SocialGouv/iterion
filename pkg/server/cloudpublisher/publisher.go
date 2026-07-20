@@ -558,8 +558,16 @@ func (p *Publisher) SubmitLaunch(ctx context.Context, runID string, spec runview
 	if err != nil {
 		return 0, err
 	}
+	// Plugin/library skills resolved HERE, from this instance's iterion home:
+	// the runner pod's is empty, so an operator-installed plugin's skill would
+	// otherwise never reach the workspace (see resolveContributions).
+	contributions, err := resolveContributions(wf, "", p.logger)
+	if err != nil {
+		return 0, err
+	}
 	msg := &queue.RunMessage{
 		V:              queue.SchemaVersion,
+		Contributions:  contributions,
 		RunID:          runID,
 		WorkflowName:   wf.Name,
 		WorkflowHash:   hash,
@@ -720,12 +728,19 @@ func (p *Publisher) SubmitResume(ctx context.Context, spec runview.ResumeSpec, w
 	if err := p.store.UpdateRunStatus(ctx, spec.RunID, store.RunStatusQueued, ""); err != nil {
 		return fmt.Errorf("cloudpublisher: requeue %s: %w", spec.RunID, err)
 	}
+	// Re-resolved on resume too: the engine re-mirrors skills on every resume,
+	// so a resumed run must carry the same payload a fresh launch would.
+	contributions, contribErr := resolveContributions(wf, "", p.logger)
+	if contribErr != nil {
+		return contribErr
+	}
 	msg := &queue.RunMessage{
-		V:            queue.SchemaVersion,
-		RunID:        spec.RunID,
-		WorkflowName: wf.Name,
-		WorkflowHash: hash,
-		IRCompiled:   body,
+		V:             queue.SchemaVersion,
+		Contributions: contributions,
+		RunID:         spec.RunID,
+		WorkflowName:  wf.Name,
+		WorkflowHash:  hash,
+		IRCompiled:    body,
 		Resume: &queue.ResumeSpec{
 			Answers: spec.Answers,
 			Force:   spec.Force,

@@ -78,6 +78,30 @@ ITERION_PLUGINS_ENABLE=firecrawl
 ITERION_PLUGIN_FIRECRAWL_API_URL=http://iterion-firecrawl:3002
 ```
 
+### Markdown contributions reach cloud runs (ADR-079)
+
+Env-based enablement above is what a runner pod needs for **process-local**
+kinds (`rewriters`, `mcp_servers`, `lifecycle`): those run *in* the pod, so the
+pod's own registry must know about them.
+
+The **markdown** kinds (`skills`, `commands`, `agents`) work differently, and
+used not to work on cloud at all. A runner pod's iterion home is ephemeral and
+empty, so an *installed* plugin — one living in the studio/server instance's
+`~/.iterion/plugins/`, which no env var can conjure onto a pod — mirrored
+nothing there, silently (mirroring is best-effort so no error surfaced).
+
+Since **ADR-079** the launching instance resolves the enabled plugins' markdown
+files and ships them on the queue message (`RunMessage.Contributions`, schema
+v5); the runner mirrors that payload with the same collision policy and
+precedence. So an org-private plugin installed + enabled on a cloud studio now
+reaches its runs. Two consequences worth knowing:
+
+- **`hooks` are not carried yet** — they merge into `.claude/settings.json`
+  rather than mirroring markdown, so they still need the pod's own registry
+  (env-based enablement).
+- Enablement stays **global per instance**; ADR-079 makes an enabled plugin's
+  skills portable, it does not add per-team or per-bot plugin scoping.
+
 ## Manifest reference (`plugin.yaml`)
 
 ```yaml

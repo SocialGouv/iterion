@@ -26,9 +26,16 @@ import (
 // The library layers a machine-global store (~/.iterion/skills) with an
 // optional per-project override (<projectStoreDir>/skills). No-op (nil map)
 // when the workflow references no skills.
-func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, logger *iterlog.Logger) (map[string]string, error) {
+// When inj is non-nil the payload is AUTHORITATIVE: its skills are mirrored and
+// the local library store is never consulted (the cloud path — a runner pod has
+// no library on disk, so the launching instance resolved the workflow's refs
+// for it; see Contributions).
+func mirrorLibrarySkills(workDir, projectStoreDir string, wf *ir.Workflow, inj *Contributions, logger *iterlog.Logger) (map[string]string, error) {
 	if workDir == "" || wf == nil {
 		return nil, nil
+	}
+	if inj != nil {
+		return mirrorInjectedLibrarySkills(workDir, inj.Library, logger)
 	}
 	refs := collectSkillRefs(wf)
 	if len(refs) == 0 {

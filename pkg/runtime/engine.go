@@ -108,6 +108,7 @@ type Engine struct {
 	sandboxHostStateDefault  string                   // global ITERION_SANDBOX_HOST_STATE snapshot; set via WithSandboxHostStateDefault
 	attachmentPromote        AttachmentPromoteFunc    // optional: invoked after CreateRun to materialise attachments
 	bundle                   *bundle.Bundle           // optional: bundle backing this run; nil for plain .bot runs
+	contributions            *Contributions           // optional: pre-resolved plugin/library skills (cloud runner pods have no iterion home); nil = resolve locally. Set via WithContributions
 	pauseSignal              <-chan struct{}          // optional: closed by Service.Pause to request a soft pause at the next safe boundary; nil disables operator pause
 	overrideCh               <-chan *OverrideMsg      // optional: live-steering commands drained at the same safe boundary (see override.go); nil disables steering
 	dailyCap                 *DailyCapGuard           // optional: per-(store, UTC-day) spend cap; nil disables it. Set via WithDailyCap
