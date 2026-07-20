@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SocialGouv/claw-code-go/pkg/api"
+
 	"github.com/SocialGouv/iterion/pkg/backend/delegate"
 	"github.com/SocialGouv/iterion/pkg/backend/permission"
 	"github.com/SocialGouv/iterion/pkg/backend/rewrite"
@@ -422,6 +424,20 @@ func (e *ClawExecutor) validateAndRetry(
 		return backend.Execute(ctx, retryTask)
 	})
 	if retryErr != nil || retryResult.ParseFallback {
+		// The same backend still couldn't emit schema-valid JSON. The steady
+		// state here is claude_code under the Anthropic OAuth *forfait*, which
+		// cannot produce native structured output at all (proven: even a
+		// trivial 2-field schema fails, while free-form prompts succeed). The
+		// forfait is usable ONLY by claude_code, so we can't just switch the
+		// node to claw. Instead, keep the agent's reasoning (done under the
+		// forfait) and extract the schema from its free-form text via claw with
+		// whatever provider the host has (openai/anthropic, key or forfait) — so
+		// a structured-output node works on EVERY backend×credential combo, not
+		// only api-key Anthropic. Fires only on the already-failing path, so it
+		// can only turn a hard failure into a success.
+		if out, ok := e.extractStructuredViaClaw(ctx, f.id, task, retryResult, result, schema, backendName); ok {
+			return out, nil
+		}
 		return result, fmt.Errorf("model: node %q: structured output invalid: %w", f.id, err)
 	}
 	// Accumulate token/duration from the first attempt so per-node
@@ -435,6 +451,82 @@ func (e *ClawExecutor) validateAndRetry(
 		return retryResult, fmt.Errorf("model: node %q: structured output invalid after retry: %w", f.id, retryValErr)
 	}
 	return retryResult, nil
+}
+
+// extractStructuredViaClaw is the last-resort structured-output recovery. When
+// a backend finished with free-form text but no schema-valid JSON (the
+// steady-state failure for claude_code under the Anthropic OAuth forfait, which
+// cannot emit native structured output), re-derive the schema from that text
+// via a direct claw call using whatever provider the host detects
+// (openai/anthropic; API key or forfait). Returns (result, true) only on a
+// schema-valid extraction; otherwise (_, false) and the caller surfaces the
+// original error. Purely additive — it runs only on the already-failing path.
+func (e *ClawExecutor) extractStructuredViaClaw(
+	ctx context.Context,
+	nodeID string,
+	task *delegate.Task,
+	primary delegate.Result,
+	secondary delegate.Result,
+	schema *ir.Schema,
+	sourceBackend string,
+) (delegate.Result, bool) {
+	if len(task.OutputSchema) == 0 {
+		return delegate.Result{}, false
+	}
+	text := fallbackText(primary.Output)
+	if strings.TrimSpace(text) == "" {
+		text = fallbackText(secondary.Output)
+	}
+	if strings.TrimSpace(text) == "" {
+		return delegate.Result{}, false
+	}
+	modelSpec := e.detectorSuggestedModel()
+	if modelSpec == "" {
+		e.logger.Warn("[%s] structured-output recovery skipped: no claw provider detected", nodeID)
+		return delegate.Result{}, false
+	}
+	client, err := e.registry.Resolve(modelSpec)
+	if err != nil {
+		e.logger.Warn("[%s] structured-output recovery: resolve %q: %v", nodeID, modelSpec, err)
+		return delegate.Result{}, false
+	}
+	genOpts := GenerationOptions{
+		Model: modelSpec,
+		System: "You convert an assistant's finished answer into the required structured JSON. " +
+			"Use ONLY information present in the answer — never invent, add, or drop data. Populate every required field.",
+		Messages: []api.Message{{Role: "user", Content: []api.ContentBlock{{
+			Type: "text",
+			Text: "Convert the following answer into the required structured output:\n\n" + text,
+		}}}},
+		ExplicitSchema: task.OutputSchema,
+	}
+	obj, err := GenerateObjectDirect[map[string]any](ctx, client, genOpts)
+	if err != nil {
+		e.logger.Warn("[%s] structured-output recovery via claw (%s) failed: %v", nodeID, modelSpec, err)
+		return delegate.Result{}, false
+	}
+	out := primary
+	out.Output = obj.Object
+	out.ParseFallback = false
+	if verr := ValidateOutput(out.Output, schema); verr != nil {
+		e.logger.Warn("[%s] structured-output recovery via claw (%s) still invalid: %v", nodeID, modelSpec, verr)
+		return delegate.Result{}, false
+	}
+	stampDelegateOutputMeta(out.Output, out, sourceBackend)
+	e.logger.Info("[%s] structured output recovered via claw (%s) — %s produced free-form text but no schema JSON (forfait structured-output gap)",
+		nodeID, modelSpec, sourceBackend)
+	return out, true
+}
+
+// fallbackText returns the free-form text a parse-fallback output wraps
+// (delegate parse.go stores it under "text"), or "" when the output is not a
+// text fallback.
+func fallbackText(output map[string]any) string {
+	if output == nil {
+		return ""
+	}
+	t, _ := output["text"].(string)
+	return t
 }
 
 // schemaRetryFeedbackMarker delimits the schema-validation feedback block
