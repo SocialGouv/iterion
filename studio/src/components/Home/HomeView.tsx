@@ -2,6 +2,7 @@ import { useRuns } from "@/hooks/useRuns";
 import { useActiveRepo } from "@/hooks/useActiveRepo";
 import CostCapBanner from "@/components/shared/CostCapBanner";
 import WhatsNextCard from "./WhatsNextCard";
+import HubGrid from "./HubGrid";
 import RecentFilesPanel from "./RecentFilesPanel";
 import CloudReposPanel from "./CloudReposPanel";
 import GettingStartedCard from "./GettingStartedCard";
@@ -40,6 +41,10 @@ export default function HomeView() {
             the grid so it reads as "start here" rather than as one
             option among many. */}
         <WhatsNextCard liveStatus={nexieLive?.status ?? null} />
+        {/* The hub: every surface the operator can reach, gated by the same
+            server_info flags + role as the sidebar. Makes the root a place
+            you can get anywhere from, and represents the veille correctly. */}
+        <HubGrid />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Left slot: local mode gets the file-oriented picker; cloud
               gets the team's repositories (there is no server-side file
