@@ -105,6 +105,10 @@ func editorShareView(sh *configshare.Share) map[string]any {
 	return map[string]any{
 		"id": sh.ID, "bot_id": sh.BotID, "label": sh.Label,
 		"category": sh.Category, "config_path": sh.ConfigPath, "read_only": sh.ReadOnly,
+		// repo_url/ref let the editor group its shares by repo → bot (the file
+		// it edits lives in that repo). Not sensitive — it's the target the
+		// editor is already scoped to.
+		"repo_url": sh.RepoURL, "repo_ref": sh.RepoRef,
 	}
 }
 

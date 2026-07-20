@@ -27,6 +27,9 @@ export interface EditorShare {
   category: string;
   config_path: string;
   read_only: boolean;
+  /** Target repo of the edited file — used to group shares by repo → bot. */
+  repo_url?: string;
+  repo_ref?: string;
   /** Bot-declared branding for the shell heading (manifest config_share). */
   editor_title?: string;
   editor_description?: string;
