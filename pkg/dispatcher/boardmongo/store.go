@@ -160,9 +160,13 @@ func (s *Store) Create(in native.Issue) (*native.Issue, error) {
 	if err := board.ValidateFieldValues(in.Fields); err != nil {
 		return nil, err
 	}
+	in.Blockers = native.NormalizeBlockers(in.Blockers)
 	if in.ID == "" {
 		in.ID = "native:" + uuid.NewString()
 	} else if err := validateIssueID(in.ID); err != nil {
+		return nil, err
+	}
+	if err := native.ValidateBlockers(s, in.ID, in.Blockers); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -178,6 +182,14 @@ func (s *Store) Create(in native.Issue) (*native.Issue, error) {
 	}
 	if err := s.emit(native.Event{Type: native.EvtIssueCreated, IssueID: in.ID, Payload: map[string]any{"state": in.State, "title": in.Title}}); err != nil {
 		return nil, err
+	}
+	if len(in.Blockers) > 0 {
+		if err := s.emit(native.Event{
+			Type: native.EvtIssueBlockersUpdated, IssueID: in.ID,
+			Payload: map[string]any{"blockers": append([]string(nil), in.Blockers...)},
+		}); err != nil {
+			return nil, err
+		}
 	}
 	clone := in
 	return &clone, nil
@@ -260,6 +272,14 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.Blockers != nil {
+		next := native.NormalizeBlockers(*p.Blockers)
+		if err := native.ValidateBlockers(s, id, next); err != nil {
+			return nil, err
+		}
+		// Normalize before applyPatch so the stored list is clean.
+		p.Blockers = &next
+	}
 	changed := applyPatch(iss, p, s.Board())
 	if len(changed.fields) == 0 {
 		return iss, changed.err
@@ -273,6 +293,17 @@ func (s *Store) Update(id string, p native.Patch) (*native.Issue, error) {
 	}
 	if err := s.emit(native.Event{Type: native.EvtIssueUpdated, IssueID: iss.ID, Payload: map[string]any{"changed": changed.fields}}); err != nil {
 		return nil, err
+	}
+	for _, f := range changed.fields {
+		if f == "blockers" {
+			if err := s.emit(native.Event{
+				Type: native.EvtIssueBlockersUpdated, IssueID: iss.ID,
+				Payload: map[string]any{"blockers": append([]string(nil), iss.Blockers...)},
+			}); err != nil {
+				return nil, err
+			}
+			break
+		}
 	}
 	return iss, nil
 }
@@ -298,6 +329,10 @@ func (s *Store) SetState(id, newState string) (*native.Issue, error) {
 	}
 	if err := s.emit(native.Event{Type: native.EvtIssueState, IssueID: iss.ID, Payload: map[string]any{"from": old, "to": newState}}); err != nil {
 		return nil, err
+	}
+	if newState == native.StateDone {
+		// Best-effort: do not roll back a successful done transition.
+		_ = native.PromoteUnblockedDependents(s, id)
 	}
 	return iss, nil
 }

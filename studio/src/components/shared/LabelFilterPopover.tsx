@@ -13,11 +13,16 @@ export function LabelFilter({
   selected,
   onToggle,
   onClear,
+  label = "Labels",
+  searchPlaceholder = "Search labels…",
 }: {
   allLabels: string[];
   selected: Set<string>;
   onToggle: (l: string) => void;
   onClear: () => void;
+  /** Button caption (e.g. "Tags" on the pipeline board). */
+  label?: string;
+  searchPlaceholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -59,7 +64,7 @@ export function LabelFilter({
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span>Labels</span>
+        <span>{label}</span>
         {count > 0 && (
           <span className="px-1 rounded bg-accent text-fg-onAccent text-caption">{count}</span>
         )}
@@ -74,8 +79,8 @@ export function LabelFilter({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search labels…"
-              aria-label="Search labels"
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
             />
           </div>
           <ul className="py-1 overflow-auto">

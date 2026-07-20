@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,10 +21,19 @@ type pipelineBoardTaskRequest struct {
 	Labels   []string          `json:"labels,omitempty"`
 	Priority int               `json:"priority,omitempty"`
 	BotArgs  map[string]string `json:"bot_args,omitempty"`
-	Start    bool              `json:"start,omitempty"`
+	// Blockers are hard deps: issue IDs that must reach StateDone before
+	// this ticket can launch. Cycles are rejected at create.
+	Blockers []string `json:"blockers,omitempty"`
+	// ParentID is the planner ticket that spawned this one (provenance).
+	// Also accepted via bot_args.spawned_from.
+	ParentID string `json:"parent_id,omitempty"`
+	Start    bool   `json:"start,omitempty"`
+	// Upsert, when true and bot_args.input_path is set, updates an existing
+	// ticket with the same (bot, input_path) instead of creating a duplicate.
+	// Does not reset state when the match is already in_progress / done /
+	// awaiting_input (or has an active run stamp).
+	Upsert bool `json:"upsert,omitempty"`
 	// External links the task to a forge repo (same shape as the native
-	// board's create) so pipeline tasks participate in the repo-first
-	// scope like every other card.
 	External *native.ExternalRef `json:"external,omitempty"`
 }
 
@@ -123,19 +133,88 @@ func (s *Server) handlePipelineBoardTaskCreate(w http.ResponseWriter, r *http.Re
 		s.httpErrorFor(w, r, http.StatusConflict, "pipeline board task: native board has no states")
 		return
 	}
+	blockers := native.NormalizeBlockers(req.Blockers)
+	botArgs := cloneStringMap(req.BotArgs)
+	blockerPolicy := native.BlockerPolicy{RequireLabels: native.RequireBlockerLabels(botArgs)}
+
+	// Upsert: planners re-run without duplicating tickets for the same request file.
+	if req.Upsert {
+		if bot, inputPath, ok := native.UpsertKey(entry.Name, botArgs); ok {
+			existing, ferr := native.FindByBotInputPath(boardStore, bot, inputPath)
+			if ferr != nil {
+				s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: upsert lookup: %v", ferr)
+				return
+			}
+			if existing != nil {
+				issue, uerr := s.upsertPipelineTask(boardStore, board, existing, req, entry.Name, botArgs, blockers)
+				if uerr != nil {
+					if strings.Contains(uerr.Error(), "cycle") {
+						s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: %v", uerr)
+						return
+					}
+					s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board task: upsert: %v", uerr)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				s.reflectAllowedOrigin(w, r)
+				// 200 = updated existing; create stays 201.
+				_ = json.NewEncoder(w).Encode(issue)
+				return
+			}
+		}
+	}
+
+	if err := native.ValidateBlockers(boardStore, "", blockers); err != nil {
+		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board task: %v", err)
+		return
+	}
 	state := board.States[0].Name
 	if req.Start {
-		state = ""
-		for _, candidate := range board.States {
-			if candidate.Eligible && !candidate.Terminal {
-				state = candidate.Name
-				break
+		// Prefer StateReady when present; fall back to first eligible.
+		state = native.StateReady
+		if board.StateByName(state) == nil {
+			state = ""
+			for _, candidate := range board.States {
+				if candidate.Eligible && !candidate.Terminal {
+					state = candidate.Name
+					break
+				}
 			}
 		}
 		if state == "" {
 			s.httpErrorFor(w, r, http.StatusConflict, "pipeline board task: native board has no dispatch-eligible state")
 			return
 		}
+		// D1: Ready only when hard deps are satisfied; otherwise park in
+		// waiting_deps (or refuse if that state is absent on a custom board).
+		ok, open := native.BlockersSatisfiedPolicy(boardStore, blockers, blockerPolicy)
+		if !ok {
+			if board.StateByName(native.StateWaitingDeps) != nil {
+				state = native.StateWaitingDeps
+			} else {
+				s.httpErrorFor(w, r, http.StatusConflict,
+					"pipeline board task: cannot start with open blockers %s (board has no waiting_deps state)",
+					formatBlockerIDs(open))
+				return
+			}
+		}
+	} else if len(blockers) > 0 {
+		// Planner publish: if deps known open and waiting_deps exists, park there
+		// so the card is visible as waiting (not a silent draft).
+		ok, _ := native.BlockersSatisfiedPolicy(boardStore, blockers, blockerPolicy)
+		if !ok && board.StateByName(native.StateWaitingDeps) != nil {
+			state = native.StateWaitingDeps
+		}
+	}
+	parentID := strings.TrimSpace(req.ParentID)
+	if parentID == "" && botArgs != nil {
+		parentID = strings.TrimSpace(botArgs[native.BotArgSpawnedFrom])
+	}
+	if parentID != "" {
+		if botArgs == nil {
+			botArgs = map[string]string{}
+		}
+		botArgs[native.BotArgSpawnedFrom] = parentID
 	}
 	issue, err := boardStore.Create(native.Issue{
 		Title:    uniquePipelineTitle(boardStore, req.Title),
@@ -198,12 +277,15 @@ func cloneStringMap(in map[string]string) map[string]string {
 // (a Backlog ticket, or a failed one before retry). Only non-nil fields are
 // applied; the studio form sends the full state it wants to persist.
 type pipelineBoardUpdateRequest struct {
-	Title    *string             `json:"title,omitempty"`
-	Body     *string             `json:"body,omitempty"`
-	Labels   *[]string           `json:"labels,omitempty"`
-	Priority *int                `json:"priority,omitempty"`
-	Bot      *string             `json:"bot,omitempty"`
-	BotArgs  *map[string]string  `json:"bot_args,omitempty"`
+	Title    *string            `json:"title,omitempty"`
+	Body     *string            `json:"body,omitempty"`
+	Labels   *[]string          `json:"labels,omitempty"`
+	Priority *int               `json:"priority,omitempty"`
+	Bot      *string            `json:"bot,omitempty"`
+	BotArgs  *map[string]string `json:"bot_args,omitempty"`
+	// Blockers, when non-nil, replaces the hard-dep list wholesale (empty
+	// slice clears). Cycles are rejected.
+	Blockers *[]string           `json:"blockers,omitempty"`
 	External *native.ExternalRef `json:"external,omitempty"`
 }
 
@@ -268,8 +350,20 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 		}
 		patch.Bot = &bot
 	}
+	if req.Blockers != nil {
+		normalized := native.NormalizeBlockers(*req.Blockers)
+		if err := native.ValidateBlockers(boardStore, id, normalized); err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: %v", err)
+			return
+		}
+		patch.Blockers = &normalized
+	}
 	issue, err := boardStore.Update(id, patch)
 	if err != nil {
+		if strings.Contains(err.Error(), "cycle") {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board update: %v", err)
+			return
+		}
 		s.httpErrorFor(w, r, http.StatusInternalServerError, "pipeline board update: %v", err)
 		return
 	}
@@ -277,14 +371,17 @@ func (s *Server) handlePipelineBoardTaskUpdate(w http.ResponseWriter, r *http.Re
 }
 
 type pipelineBoardReadyRequest struct {
-	// Ready true stages the ticket Backlog→Todo (StateReady, eligible for
-	// the launch loop); false unstages it Todo→Backlog (StateInbox).
+	// Ready true stages the ticket Backlog→Ready (StateReady, eligible for
+	// the launch loop); false unstages it Ready→Backlog (StateInbox).
 	Ready bool `json:"ready"`
 }
 
 // handlePipelineBoardTaskReady flags a native ticket ready (or back to
-// backlog) — the backend of the board's “→ Todo” / “→ Backlog” buttons. A ready ticket is
-// launched by the admission loop when a concurrency slot frees.
+// backlog) — the backend of the board's “→ Ready” / “→ Backlog” buttons. A
+// ready ticket is launched by the admission loop when a concurrency slot
+// frees. D1: Ready is only accepted when hard blockers are all StateDone;
+// otherwise the ticket is parked in waiting_deps (or 409 when that state
+// is absent on a custom board).
 func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSafeOrigin(w, r) {
 		return
@@ -308,9 +405,33 @@ func (s *Server) handlePipelineBoardTaskReady(w http.ResponseWriter, r *http.Req
 		s.httpErrorFor(w, r, http.StatusBadRequest, "pipeline board ready: invalid request: %v", err)
 		return
 	}
-	target := native.StateInbox
+	// Unstage → backlog (prefer StateBacklog; StateInbox is the historical
+	// unstage target for boards that still use it as the first column).
+	target := native.StateBacklog
+	if board := boardStore.Board(); board != nil && board.StateByName(target) == nil {
+		target = native.StateInbox
+	}
 	if req.Ready {
-		target = native.StateReady
+		iss, gerr := boardStore.Get(id)
+		if gerr != nil {
+			s.httpErrorFor(w, r, http.StatusNotFound, "pipeline board ready: %v", gerr)
+			return
+		}
+		ok, open := native.BlockersSatisfiedForIssue(boardStore, iss)
+		if !ok {
+			if board := boardStore.Board(); board != nil && board.StateByName(native.StateWaitingDeps) != nil {
+				target = native.StateWaitingDeps
+			} else {
+				s.writeJSONError(w, r, http.StatusConflict, map[string]any{
+					"error":         "open_blockers",
+					"message":       fmt.Sprintf("cannot mark ready: open blockers %s", formatBlockerIDs(open)),
+					"open_blockers": open,
+				})
+				return
+			}
+		} else {
+			target = native.StateReady
+		}
 	}
 	issue, err := boardStore.SetState(id, target)
 	if err != nil {

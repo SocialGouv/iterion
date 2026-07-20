@@ -62,6 +62,10 @@ type ExecutorSpec struct {
 	RunID    string
 	Logger   *iterlog.Logger
 	StoreDir string
+	// SourceIssueID is the ticket that owns this run (dispatcher / pipeline
+	// launch). Empty for ad-hoc runs. Used to auto-stamp parent_id when the
+	// bot creates child tickets via board.create.
+	SourceIssueID string
 	// ExtraHooks are merged into the store-backed event hooks. Pass
 	// the prometheus exporter's hooks here (cli does this); the HTTP
 	// service can pass nothing or a future broker-side hook chain.
@@ -104,7 +108,7 @@ type ExecutorSpec struct {
 	// path): it registers the node's board caps with the server's token
 	// registry and returns the token. nil (CLI) leaves sandboxed
 	// board-emit disabled.
-	BoardRegister func(caps []string) string
+	BoardRegister func(caps []string, sourceIssueID string) string
 	// Compress is the run-level command-output-compression override ("",
 	// "on", "ultra", "off"), forwarded to the executor as the highest-priority
 	// input to rewrite.Resolve (above node/workflow DSL and ITERION_COMPRESS).
@@ -288,6 +292,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 		model.WithPermissionOverride(spec.Permission),
 		model.WithPermissionRules(spec.PermissionAllow, spec.PermissionAsk, spec.PermissionDeny),
 	}
+	if sid := resolveSourceIssueID(spec); sid != "" {
+		opts = append(opts, model.WithSourceIssueID(sid))
+	}
 	if spec.BoardRegister != nil {
 		opts = append(opts, model.WithBoardRegister(spec.BoardRegister))
 	}
@@ -382,6 +389,9 @@ func BuildExecutor(spec ExecutorSpec) (*model.ClawExecutor, error) {
 			boardCfg := &tool.BoardConfig{
 				Store:        ns,
 				Capabilities: boardops.AllCapabilities(),
+				// The owning ticket travels with the tools so board.create
+				// auto-stamps parent_id / spawned_from on spawned children.
+				SourceIssueID: resolveSourceIssueID(spec),
 			}
 			if err := tool.RegisterClawBoardTools(toolReg, boardCfg); err != nil {
 				spec.Logger.Warn("runview: RegisterClawBoardTools: %v", err)
@@ -555,4 +565,32 @@ func newLLMClassifierFromEnv(reg *model.Registry, logger *iterlog.Logger) (permi
 		Cache:     permissions.NewClassifierCache(30 * time.Minute),
 		MaxTokens: 64,
 	}, nil
+}
+
+// resolveSourceIssueID returns the ticket that owns this run: explicit
+// ExecutorSpec.SourceIssueID first, else LoadRun(Source.IssueID) when the
+// store can load the record. Empty for ad-hoc launches.
+func resolveSourceIssueID(spec ExecutorSpec) string {
+	if id := strings.TrimSpace(spec.SourceIssueID); id != "" {
+		return id
+	}
+	if spec.RunID == "" {
+		return ""
+	}
+	type runLoader interface {
+		LoadRun(ctx context.Context, id string) (*store.Run, error)
+	}
+	loader, ok := spec.Store.(runLoader)
+	if !ok {
+		return ""
+	}
+	ctx := spec.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r, err := loader.LoadRun(ctx, spec.RunID)
+	if err != nil || r == nil || r.Source == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Source.IssueID)
 }

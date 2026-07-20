@@ -17,17 +17,18 @@ type PipelineBoardColumn struct {
 	Kind  string `json:"kind"`
 }
 
-// pipelineColumns is the fixed, client-order column set. Backlog holds
-// not-yet-ready tickets; Failed holds pipelines whose run ended in failure
-// (with the reason) until the operator retries them to Todo; the local
-// launch loop starts ready tickets when a concurrency slot frees.
+// pipelineColumns is the fixed, client-order column set. Opened holds every
+// not-yet-running ticket — a per-card `ready` flag marks the launch-eligible
+// ones (the studio badges + filters them), the rest are still being
+// prepared; the local launch loop starts ready tickets when a concurrency
+// slot frees. Closed holds every finished pipeline, success or failure —
+// a per-card success/failed outcome distinguishes them (surfaced as the
+// Closed lane's filter). In progress holds running / awaiting-review runs.
 func pipelineColumns() []PipelineBoardColumn {
 	return []PipelineBoardColumn{
-		{ID: pipelineColumnBacklog, Title: "Backlog", Kind: "backlog"},
-		{ID: pipelineColumnTodo, Title: "Todo", Kind: "todo"},
+		{ID: pipelineColumnOpened, Title: "Opened", Kind: "opened"},
 		{ID: pipelineColumnInProgress, Title: "In progress", Kind: "in_progress"},
-		{ID: pipelineColumnDone, Title: "Done", Kind: "done"},
-		{ID: pipelineColumnFailed, Title: "Failed", Kind: "failed"},
+		{ID: pipelineColumnClosed, Title: "Closed", Kind: "closed"},
 	}
 }
 
@@ -54,6 +55,28 @@ type PipelineBoardAttempt struct {
 	At     *time.Time      `json:"at,omitempty"`
 }
 
+// PipelineBoardChildRef is one spawned child ticket under a planner parent.
+type PipelineBoardChildRef struct {
+	IssueID string `json:"issue_id"`
+	Title   string `json:"title,omitempty"`
+	State   string `json:"state,omitempty"`
+	BotID   string `json:"bot_id,omitempty"`
+	// CardID is the pipeline card id (task:… or run:…) when the child is
+	// projected on the board; empty if the child has no bot card yet.
+	CardID string `json:"card_id,omitempty"`
+}
+
+// PipelineBoardChildrenSummary is the compact face for a plan group.
+type PipelineBoardChildrenSummary struct {
+	Total      int `json:"total"`
+	Ready      int `json:"ready"`
+	InProgress int `json:"in_progress"`
+	Done       int `json:"done"`
+	Failed     int `json:"failed"`
+	// Open is opened-but-not-ready (drafts / waiting_deps).
+	Open int `json:"open"`
+}
+
 // PipelineBoardCard is the read model the studio polls: one per root
 // pipeline (or per not-yet-launched native task). Descendants are NOT
 // separate cards — their progress and pending reviews are folded here.
@@ -70,8 +93,27 @@ type PipelineBoardCard struct {
 	Labels     []string `json:"labels,omitempty"`
 	Priority   int      `json:"priority,omitempty"`
 	// External is the backing issue's forge linkage — the card's repo
-	// identity, powering the repo-first scope on /pipelines.
+	// provenance when the ticket was imported from a forge.
 	External *native.ExternalRef `json:"external,omitempty"`
+
+	// Hard-dependency graph (ticket roots only — not sub-bot runs).
+	// Blockers are resolved server-side; OpenBlockerCount > 0 means the
+	// launch loop will refuse even if Ready is true.
+	Blockers            []native.BlockerInfo `json:"blockers,omitempty"`
+	OpenBlockerCount    int                  `json:"open_blocker_count,omitempty"`
+	LaunchBlockedReason string               `json:"launch_blocked_reason,omitempty"`
+	// Blocking is the reverse index: tickets that list this one as a blocker.
+	Blocking []native.BlockingInfo `json:"blocking,omitempty"`
+
+	// Planner provenance (distinct from hard blockers). ParentIssueID is the
+	// ticket that spawned this one; Children are reverse edges on the board.
+	ParentIssueID string                  `json:"parent_issue_id,omitempty"`
+	ParentTitle   string                  `json:"parent_title,omitempty"`
+	Children      []PipelineBoardChildRef `json:"children,omitempty"`
+	// ChildrenSummary aggregates child ticket statuses for the plan group face.
+	ChildrenSummary *PipelineBoardChildrenSummary `json:"children_summary,omitempty"`
+	// Role is planner|producer when known (bot_args.role or inferred).
+	Role string `json:"role,omitempty"`
 
 	// Run identity (empty for a not-yet-launched task card).
 	RunID        string          `json:"run_id,omitempty"`
@@ -81,14 +123,14 @@ type PipelineBoardCard struct {
 	Error        string          `json:"error,omitempty"`
 	// Failed is true when the card sits in the FAILED lane because its run
 	// failed / was cancelled. The UI shows the Error as the reason and
-	// offers a Retry (move back to Todo) on ticket-backed cards.
+	// offers a Retry (move back to Ready) on ticket-backed cards.
 	Failed bool `json:"failed,omitempty"`
 	// Ready reflects whether a task-backed card's ticket is in a
 	// launch-eligible (ready) state — used by the UI to place run-less
-	// tasks in Todo vs Backlog and to enable the move buttons.
+	// tasks in Ready vs Backlog and to enable the move buttons.
 	Ready bool `json:"ready,omitempty"`
 
-	// TODO — the pipeline's entry input (launch vars / task bot-args).
+	// Ready lane — the pipeline's entry input (launch vars / task bot-args).
 	EntryInput map[string]any `json:"entry_input,omitempty"`
 	// QueuePosition is the 1-based place in the local concurrency queue
 	// (queued roots only); 0 otherwise.

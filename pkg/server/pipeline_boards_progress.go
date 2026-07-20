@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 
+	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/dsl/ir"
 	"github.com/SocialGouv/iterion/pkg/runview"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -144,27 +146,28 @@ func pipelineColumnForRoot(root *store.Run, reviews []PipelineBoardPendingReview
 	}
 	switch root.Status {
 	case store.RunStatusQueued:
-		// Waiting for a local concurrency slot — not yet executing.
-		return pipelineColumnTodo
+		// Waiting for a local concurrency slot — not yet executing, so it
+		// stays in Opened (the studio badges it Ready — it is cleared to run).
+		return pipelineColumnOpened
 	case store.RunStatusFinished:
-		return pipelineColumnDone
+		return pipelineColumnClosed
 	case store.RunStatusRunning, store.RunStatusPausedWaitingHuman, store.RunStatusPausedOperator:
 		// An operator soft-pause is a RESUMABLE mid-flight state (the run
 		// console offers Resume), not a failure — it stays In progress with
-		// its "paused" status chip rather than landing in Failed with a
+		// its "paused" status chip rather than landing in Closed with a
 		// Retry-from-zero affordance.
 		return pipelineColumnInProgress
 	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
-		// A failed/cancelled run lands in the FAILED lane (with its error
-		// as the reason) until the operator retries it back to Todo.
-		return pipelineColumnFailed
+		// A failed/cancelled run lands in the CLOSED lane (with its error as
+		// the reason, flagged failed) until the operator retries it to Opened.
+		return pipelineColumnClosed
 	default:
 		return pipelineColumnInProgress
 	}
 }
 
 // pipelineRunFailed reports whether a run status marks a card failed (as
-// opposed to a not-yet-ready backlog ticket).
+// opposed to a successfully-finished one — both share the Closed lane).
 func pipelineRunFailed(status store.RunStatus) bool {
 	switch status {
 	case store.RunStatusFailed, store.RunStatusFailedResumable, store.RunStatusCancelled:
@@ -217,6 +220,196 @@ func pipelineTruncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+// pipelineDisplayTitle picks the label shown on a pipeline card.
+//
+// Priority:
+//  1. Content-derived title from bot inputs / bot_args (explains WHAT the
+//     pipeline is producing — e.g. "Boudicca · ÉP 1/5 — Le Fouet et le Serment")
+//  2. Native ticket title (operator-authored)
+//  3. Bundle display name / humanized workflow name
+//  4. Run codename (GenerateRunName) — last resort; unique but opaque
+//
+// Run codenames are intentionally NOT preferred: they are branch/ID helpers,
+// not content labels. See titleFromContentInputs for the input key heuristics.
+func pipelineDisplayTitle(issue *native.Issue, root *store.Run) string {
+	var inputs map[string]any
+	if root != nil && len(root.Inputs) > 0 {
+		inputs = root.Inputs
+	} else if issue != nil && len(issue.BotArgs) > 0 {
+		inputs = stringMapToAny(issue.BotArgs)
+	}
+	if t := titleFromContentInputs(inputs); t != "" {
+		return t
+	}
+	if issue != nil {
+		if t := strings.TrimSpace(issue.Title); t != "" {
+			return t
+		}
+	}
+	if root != nil {
+		if t := strings.TrimSpace(root.BundleDisplayName); t != "" {
+			return t
+		}
+		if t := humanizePipelineName(root.WorkflowName); t != "" && t != "Pipeline" {
+			return t
+		}
+		if t := strings.TrimSpace(root.Name); t != "" {
+			return t
+		}
+	}
+	return "Pipeline"
+}
+
+// titleFromContentInputs builds a human content label from common bot input
+// keys. Prefer structured subject + episode framing (shorts / series bots)
+// over free-form prose. Returns "" when inputs have nothing usable so callers
+// can fall through to ticket title / run name.
+//
+// Recognised patterns (first match wins on each slot):
+//
+//	subject:  character | requested_character | subject | family | family_name |
+//	          asset_name | collection | series
+//	episode:  episode_no (+ episode_total) | ep / episode
+//	title:    episode_title | title | topic | feature | name (when not a path)
+//
+// Example: character=Boudicca, episode_no=1, episode_total=5,
+// episode_title="Le Fouet et le Serment"
+// → "Boudicca · ÉP 1/5 — Le Fouet et le Serment"
+func titleFromContentInputs(inputs map[string]any) string {
+	if len(inputs) == 0 {
+		return ""
+	}
+	get := func(keys ...string) string {
+		for _, k := range keys {
+			v, ok := inputs[k]
+			if !ok || v == nil {
+				continue
+			}
+			s := strings.TrimSpace(fmt.Sprint(v))
+			if s == "" || s == "<nil>" {
+				continue
+			}
+			return s
+		}
+		return ""
+	}
+
+	subject := get(
+		"character", "requested_character", "subject",
+		"family", "family_id", "family_name", "asset_name", "collection", "series",
+	)
+	// Planners often only carry a path — use the file stem as subject
+	// (e.g. assets/.../boudicca.json → boudicca).
+	if subject == "" {
+		if p := get("input_path", "catalog_path", "output_dir"); p != "" {
+			base := filepath.Base(strings.TrimRight(p, "/\\"))
+			base = strings.TrimSuffix(base, filepath.Ext(base))
+			base = strings.TrimSpace(base)
+			if base != "" && !looksLikeMachineToken(base) {
+				subject = humanizePipelineName(base)
+			}
+		}
+	}
+	epNo := get("episode_no", "ep", "episode")
+	// episode_index is often 0-based; only use it when episode_no is absent,
+	// and prefer the 1-based display the operator expects (index+1 when numeric).
+	if epNo == "" {
+		if idx := get("episode_index"); idx != "" {
+			epNo = episodeIndexAsOneBased(idx)
+		}
+	}
+	epTotal := get("episode_total", "episodes", "episode_count")
+	epTitle := get("episode_title", "title", "topic", "feature")
+	// "name" is common but often a machine id / path — only use when it looks
+	// human (no slash, not a bare uuid-ish token) and we still have nothing.
+	if epTitle == "" {
+		if n := get("name"); n != "" && !looksLikeMachineToken(n) {
+			epTitle = n
+		}
+	}
+
+	// Full shorts-style frame: Subject · ÉP n/N — Title
+	if epNo != "" {
+		epLabel := "ÉP " + epNo
+		if epTotal != "" {
+			epLabel = fmt.Sprintf("ÉP %s/%s", epNo, epTotal)
+		}
+		switch {
+		case subject != "" && epTitle != "":
+			return fmt.Sprintf("%s · %s — %s", subject, epLabel, epTitle)
+		case subject != "":
+			return fmt.Sprintf("%s · %s", subject, epLabel)
+		case epTitle != "":
+			return fmt.Sprintf("%s — %s", epLabel, epTitle)
+		default:
+			return epLabel
+		}
+	}
+
+	if subject != "" && epTitle != "" && subject != epTitle {
+		return fmt.Sprintf("%s — %s", subject, epTitle)
+	}
+	if epTitle != "" {
+		return epTitle
+	}
+	if subject != "" {
+		return subject
+	}
+
+	// Last-resort content: a short prose field, truncated so it can't blow the card.
+	for _, k := range []string{"hook", "angle", "summary", "place", "period"} {
+		if s := get(k); s != "" {
+			return pipelineTruncate(s, 80)
+		}
+	}
+	return ""
+}
+
+// episodeIndexAsOneBased turns a 0-based episode_index into a 1-based display
+// number when the value is a plain integer; non-numeric values pass through.
+func episodeIndexAsOneBased(idx string) string {
+	var n int
+	if _, err := fmt.Sscanf(idx, "%d", &n); err == nil {
+		// Heuristic: indices start at 0 in many bots; if the value is already
+		// ≥1 leave it (some bots store 1-based in episode_index).
+		if n == 0 {
+			return "1"
+		}
+		// For n>=1 we can't know base — keep as-is (callers prefer episode_no).
+		return fmt.Sprintf("%d", n)
+	}
+	return idx
+}
+
+// looksLikeMachineToken rejects values that are paths, UUIDs, or codenames
+// from being used as a human title fragment.
+func looksLikeMachineToken(s string) bool {
+	if strings.ContainsAny(s, "/\\") {
+		return true
+	}
+	if strings.Count(s, "-") >= 3 && !strings.Contains(s, " ") {
+		// e.g. run codenames orbital-plunge-borealroar-707f
+		return true
+	}
+	// Hex-ish uuid fragments
+	if len(s) >= 32 {
+		hexish := true
+		for _, r := range s {
+			if r == '-' {
+				continue
+			}
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+				hexish = false
+				break
+			}
+		}
+		if hexish {
+			return true
+		}
+	}
+	return false
 }
 
 func humanizePipelineName(value string) string {

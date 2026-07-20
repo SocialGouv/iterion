@@ -76,7 +76,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
-	if err := s.Register("tok1", []string{"board.read", "board.move"}); err != nil {
+	if err := s.Register("tok1", []string{"board.read", "board.move"}, ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	g, ok := s.lookup("tok1")
@@ -91,7 +91,7 @@ func TestValkeyBoardMCPTokenStore_RegisterLookupRevoke(t *testing.T) {
 		t.Errorf("revoked token should miss")
 	}
 	// TTL eviction.
-	if err := s.Register("tok2", []string{"board.read"}); err != nil {
+	if err := s.Register("tok2", []string{"board.read"}, ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	mr.FastForward(boardMCPDefaultTTL + time.Minute)
@@ -107,7 +107,7 @@ func TestValkeyBoardMCPTokenStore_RegisterSurfacesSetFailure(t *testing.T) {
 	s := newValkeyBoardMCPTokenStore(rdb, nil)
 
 	mr.SetError("valkey down")
-	err := s.Register("secret-token", []string{"board.read"})
+	err := s.Register("secret-token", []string{"board.read"}, "")
 	if err == nil {
 		t.Fatal("Register should surface the Set failure")
 	}

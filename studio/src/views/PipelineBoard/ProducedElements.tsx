@@ -30,6 +30,7 @@ import { usePreview, type PreviewState } from "@/components/Runs/usePreview";
 import { formatBytes, formatRelative } from "@/lib/format";
 
 import { producedKindLabel, type ProducedFileKind } from "./fileKind";
+import { ImagePreviewDialog } from "./ImagePreview";
 import {
   aggregateProducedItems,
   type ProducedItem,
@@ -240,7 +241,23 @@ export function ProducedElements({ runIds, status }: Props) {
         </Suspense>
       )}
 
-      {preview && (
+      {preview && isImagePreview(preview, previewKind) && preview.blobURL ? (
+        <ImagePreviewDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) closePreview();
+          }}
+          src={preview.blobURL}
+          alt={preview.path}
+          title={<span className="font-mono text-xs">{preview.path}</span>}
+          description={
+            <span>
+              {formatBytes(preview.size)} · {preview.contentType || "loading…"}
+            </span>
+          }
+          downloadHref={`${artifactFileURL(previewRunId, preview.path)}?download=1`}
+        />
+      ) : preview ? (
         <Dialog
           open
           onOpenChange={(open) => {
@@ -265,9 +282,15 @@ export function ProducedElements({ runIds, status }: Props) {
         >
           <PreviewBody preview={preview} kind={previewKind} />
         </Dialog>
-      )}
+      ) : null}
     </section>
   );
+}
+
+function isImagePreview(preview: PreviewState, kind: ProducedFileKind): boolean {
+  if (preview.loading || preview.error || !preview.blobURL) return false;
+  if (preview.textBody !== null) return false;
+  return preview.contentType.startsWith("image/") || kind === "image";
 }
 
 // KIND_ICON maps a produced kind to its row glyph. Media kinds (image/audio/

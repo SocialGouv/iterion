@@ -109,6 +109,20 @@ func routeSchemas() map[string]routeOp {
 			request:  pipelineBoardUpdateRequest{},
 			response: native.Issue{},
 		},
+		"GET /api/v1/pipeline-board/tasks/{id}/dependency-graph": {response: DependencyGraphResponse{}},
+		"GET /api/v1/native/issues/{id}/dependency-graph":        {response: DependencyGraphResponse{}},
+		"POST /api/v1/pipeline-board/bulk/ready": {
+			request:  pipelineBulkReadyRequest{},
+			response: pipelineBulkReadyResponse{},
+		},
+		"POST /api/v1/pipeline-board/bulk/delete": {
+			request:  pipelineBulkDeleteRequest{},
+			response: pipelineBulkDeleteResponse{},
+		},
+		"POST /api/v1/pipeline-board/bulk/recompute-deps": {
+			request:  pipelineRecomputeDepsRequest{},
+			response: pipelineRecomputeDepsResponse{},
+		},
 
 		"POST /api/teams/{id}/forge/oauth-apps": {request: forgeOAuthAppReq{}, response: forge.ForgeOAuthApp{}},
 		"POST /api/teams/{id}/forge/oauth-apps/github-manifest": {
