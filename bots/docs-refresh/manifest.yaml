@@ -1,7 +1,17 @@
 name: docs-refresh
 display_name: Doki
 icon: 📚
-version: 2.0.0
+version: 2.1.0
+## 2.1.0 — NOOP short-circuit (openwiki-inspired). scan_docs now skips
+## the whole campaign when the docs are already aligned to the exact
+## current HEAD: update_audit_cache persists git_head, and a matching
+## HEAD on a clean tree with no explicit request (issue_id) routes
+## scan_docs -> done with zero LLM cost — killing wasteful scheduled
+## runs on an unchanged repo. Also fixes a latent bug: the inter-run
+## cache default moved from a repo-root dotfile (silently ephemeral
+## under `worktree: auto`, which omits untracked files) to the
+## host-persistent ${PROJECT_SCRATCH_DIR}, so pre_verified + noop
+## actually survive across runs.
 ## 2.0.0 — RADICAL SIMPLIFICATION (ADR-058 minimal-framing). The
 ## deterministic audit machinery is KEPT in full (scan_docs footprint,
 ## scan_code_surface, build_manifest anchor verification with the

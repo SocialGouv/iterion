@@ -189,15 +189,26 @@ vars:
   issue_id: string = ""
 
   ## Inter-run audit cache. Path to the JSON cache file that stores
-  ## `{doc_path: {sha, refs: [{path, sha}]}}` from the previous
-  ## successful run. scan_docs reads this and emits `pre_verified_docs`
-  ## for entries whose doc content AND all cited code-file SHAs are
-  ## unchanged; update_audit_cache (the terminal tool) writes the
-  ## merged state from the manifest's mechanically VERIFIED pairs.
+  ## `{git_head, doc: {doc_path: {sha, refs: [{p, s}]}}}` from the
+  ## previous successful run. scan_docs reads this and emits
+  ## `pre_verified_docs` for entries whose doc content AND all cited
+  ## code-file SHAs are unchanged, and short-circuits the whole run
+  ## (noop_skip) when git_head still matches the live HEAD on a clean
+  ## tree; update_audit_cache (the terminal tool) writes the merged
+  ## state from the manifest's mechanically VERIFIED pairs.
   ## Empty string disables both reads and writes.
-  ## UNIVERSAL DEFAULT: a repo-root dotfile — add it to the target
-  ## repo's .gitignore (or leave empty to disable).
-  audit_cache_path: string = ".docs-refresh-cache.json"
+  ## UNIVERSAL DEFAULT: a persistent, OUT-OF-TREE file under the
+  ## project scratch dir (keyed off the original repo root, so it
+  ## survives across runs). A repo-root dotfile would NOT survive
+  ## under `worktree: auto` — the run executes in a fresh worktree
+  ## that omits untracked files, so a repo-relative cache is written
+  ## into the ephemeral worktree and lost on finalize (which also
+  ## silently defeats pre_verified + the noop gate). Scratch is
+  ## host-persistent when not sandboxed (the nightly/scheduled case);
+  ## under sandbox it is per-run, so the cache simply no-ops (safe
+  ## degradation — noop never wrongly skips). Set to a repo-relative
+  ## path for a non-worktree run, or empty to disable.
+  audit_cache_path: string = "${PROJECT_SCRATCH_DIR}/docs-refresh-cache.json"
 
   ## DEFAULT-CREATE: when scan_docs finds ZERO documentation files in
   ## scope, the `author_docs` node creates this directory and authors
@@ -628,6 +639,14 @@ schema scan_output:
   pre_verified_docs: string[]
   cache_hits: int
   cache_misses: int
+  ## noop gate (openwiki-inspired): true when the docs are already aligned
+  ## to the exact current HEAD (cache git_head matches, clean worktree) and
+  ## no explicit request (issue_id) is present — routes scan_docs -> done,
+  ## skipping the whole campaign. noop_reason explains the decision either
+  ## way; git_head is the current HEAD (empty outside a git repo).
+  noop_skip: bool
+  noop_reason: string
+  git_head: string
 
 schema author_input:
   workspace_dir: string
@@ -661,6 +680,9 @@ schema update_audit_cache_input:
 schema update_audit_cache_output:
   cache_path: string
   entries_written: int
+  ## HEAD committed into the cache; the NEXT run's scan_docs compares it
+  ## against the live HEAD for the noop short-circuit.
+  git_head: string
   skipped: string
 
 
@@ -764,7 +786,7 @@ schema build_manifest_output:
 ## are then exposed to python via shell env vars (WS, GLOBS,
 ## BUNDLE_SELF, DIFF_SINCE).
 tool scan_docs:
-  command: `WS={{vars.workspace_dir}} GLOBS={{vars.doc_globs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} CACHE_PATH={{vars.audit_cache_path}} EXCLUDED_DIRS={{vars.excluded_dirs}} python3 -c "
+  command: `WS={{vars.workspace_dir}} GLOBS={{vars.doc_globs}} BUNDLE_SELF={{vars.bundle_self_path}} DIFF_SINCE={{vars.diff_since}} CACHE_PATH={{vars.audit_cache_path}} EXCLUDED_DIRS={{vars.excluded_dirs}} ISSUE_ID={{vars.issue_id}} python3 -c "
 import os, json, glob, hashlib, subprocess
 ws = os.environ['WS']
 globs = [g.strip() for g in os.environ['GLOBS'].split(',') if g.strip()]
@@ -797,10 +819,12 @@ if diff_since:
 pre_verified = []
 hits = 0
 misses = 0
+cache_head = ''
 if cache_path:
     try:
         with open(cache_path) as cf:
             cache = json.load(cf)
+        cache_head = cache.get('git_head', '') or ''
         doc_entries = cache.get('doc', {})
         for doc_path in files:
             entry = doc_entries.get(doc_path)
@@ -828,7 +852,55 @@ if cache_path:
                 misses += 1
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-print(json.dumps({'doc_files': files, 'doc_count': len(files), 'no_docs': len(files) == 0, 'footprint_hash': h, 'scope_globs': globs, 'recently_changed_code_files': recent, 'bundle_self_path': bundle_self, 'pre_verified_docs': pre_verified, 'cache_hits': hits, 'cache_misses': misses}))
+# noop detection (openwiki-inspired whole-run skip): when the docs are
+# already aligned to the exact current HEAD and no human explicitly asked,
+# skip the entire (expensive) campaign. update_audit_cache persists git_head
+# in the cache on every successful terminal run; a matching HEAD + clean
+# worktree proves nothing has changed since that alignment. issue_id (a
+# dispatched ticket) or scope_notes is an explicit request and never skips —
+# the parity of openwiki's 'disable noop when a user message is supplied'.
+issue_id = os.environ.get('ISSUE_ID', '').strip()
+cache_abs = os.path.abspath(cache_path) if cache_path else ''
+def git_head():
+    try:
+        return subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return ''
+def worktree_dirty():
+    try:
+        proc = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all'], capture_output=True, text=True, check=True)
+    except Exception:
+        return True
+    for line in proc.stdout.splitlines():
+        path = line[3:].strip() if len(line) > 3 else ''
+        if not path:
+            continue
+        # ignore the audit cache itself (it may be an untracked in-tree
+        # override; the out-of-tree default never appears here anyway)
+        if cache_abs and os.path.abspath(path) == cache_abs:
+            continue
+        if excluded(path):
+            continue
+        return True
+    return False
+head = git_head()
+noop_skip = False
+if len(files) == 0:
+    noop_reason = 'no docs in scope'
+elif issue_id:
+    noop_reason = 'explicit request (issue_id set)'
+elif not head:
+    noop_reason = 'HEAD unavailable (not a git repo?)'
+elif not cache_head:
+    noop_reason = 'no cached git_head (first aligned run)'
+elif head != cache_head:
+    noop_reason = 'HEAD advanced since last alignment'
+elif worktree_dirty():
+    noop_reason = 'worktree has uncommitted changes'
+else:
+    noop_skip = True
+    noop_reason = 'docs already aligned to HEAD ' + head[:12]
+print(json.dumps({'doc_files': files, 'doc_count': len(files), 'no_docs': len(files) == 0, 'footprint_hash': h, 'scope_globs': globs, 'recently_changed_code_files': recent, 'bundle_self_path': bundle_self, 'pre_verified_docs': pre_verified, 'cache_hits': hits, 'cache_misses': misses, 'noop_skip': noop_skip, 'noop_reason': noop_reason, 'git_head': head}))
 "`
   output: scan_output
 
@@ -1383,17 +1455,24 @@ tool mark_issue_for_review:
 ## the cache no longer records reviewer claims). Each pair
 ## contributes a reference entry; the current sha1 of doc + refs is
 ## captured so the NEXT run's scan_docs can pre-verify untouched
-## tuples. Empty cache_path disables the write.
+## tuples. Also records the current git_head so the next run's
+## scan_docs can short-circuit the whole campaign when HEAD is
+## unchanged (the noop gate). Empty cache_path disables the write.
 tool update_audit_cache:
   command: `python3 -c "
-import os, json, hashlib, re, sys, pathlib
+import os, json, hashlib, re, sys, pathlib, subprocess
 ws = sys.argv[1]
 cache_path = sys.argv[2]
 pairs = sys.argv[3:]
 if not cache_path:
-    print(json.dumps({'cache_path': '', 'entries_written': 0, 'skipped': 'no cache_path'}))
+    print(json.dumps({'cache_path': '', 'entries_written': 0, 'git_head': '', 'skipped': 'no cache_path'}))
     sys.exit(0)
 os.chdir(ws)
+def git_head():
+    try:
+        return subprocess.run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return ''
 def sha_of_file(p):
     try:
         with open(p, 'rb') as fh:
@@ -1423,9 +1502,10 @@ for doc, refs in by_doc.items():
     }
 out_path = pathlib.Path(cache_path)
 out_path.parent.mkdir(parents=True, exist_ok=True)
+head = git_head()
 with open(out_path, 'w') as out:
-    json.dump({'v': 1, 'doc': doc_entries}, out, indent=2, sort_keys=True)
-print(json.dumps({'cache_path': str(out_path), 'entries_written': len(doc_entries), 'skipped': ''}))
+    json.dump({'v': 1, 'git_head': head, 'doc': doc_entries}, out, indent=2, sort_keys=True)
+print(json.dumps({'cache_path': str(out_path), 'entries_written': len(doc_entries), 'git_head': head, 'skipped': ''}))
 " {{input.workspace_dir}} {{input.cache_path}} {{input.audited_pairs}}`
   input: update_audit_cache_input
   output: update_audit_cache_output
@@ -1635,12 +1715,17 @@ workflow docs_refresh:
   ## campaign polishes + commits them. author_rescan(1) = exactly one
   ## authoring pass; if it still produces nothing in scope the bounded
   ## loop fails loudly rather than spinning.
+  ## NOOP short-circuit (openwiki-inspired): docs already aligned to the
+  ## exact current HEAD, clean tree, no explicit request → skip the whole
+  ## campaign. Highest-priority guard; mutually exclusive with no_docs
+  ## (noop requires doc_count > 0) and the else fallback below.
+  scan_docs -> done when noop_skip
   scan_docs -> author_docs when no_docs with {
     workspace_dir: "{{vars.workspace_dir}}",
     docs_dir: "{{vars.docs_dir}}",
     recently_changed_code_files: "{{outputs.scan_docs.recently_changed_code_files}}"
   }
-  scan_docs -> scan_code_surface when not no_docs
+  scan_docs -> scan_code_surface else
   author_docs -> scan_docs as author_rescan(1)
 
   ## build_manifest runs after scan_code_surface (initial) AND as the
