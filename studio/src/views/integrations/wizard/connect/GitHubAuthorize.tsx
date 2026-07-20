@@ -12,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { InlineBanner } from "@/components/ui/InlineBanner";
+import { Select } from "@/components/ui/Select";
 import { errorMessage } from "@/lib/errorHints";
 import { useServerInfoStore } from "@/store/serverInfo";
 import {
@@ -47,11 +48,12 @@ export default function GitHubAuthorize({
   );
   const [busy, setBusy] = useState(false);
 
-  // A team-installable GitHub App exists when a manifest-created app is
-  // registered for the (github, base) tuple with installable: true.
-  const teamInstallable = useMemo(() => {
+  // A team may hold SEVERAL installable Apps on one host — one per owning org,
+  // since a private App is only installable on its owner. Keep them all: the
+  // operator picks which org to install into.
+  const teamApps = useMemo(() => {
     const base = canonicalBase("github", baseURL);
-    return oauthApps.find(
+    return oauthApps.filter(
       (a) =>
         a.provider === "github" &&
         (a.forge_base_url ?? DEFAULT_BASE.github) === base &&
@@ -59,7 +61,9 @@ export default function GitHubAuthorize({
     );
   }, [oauthApps, baseURL]);
 
-  const appAvailable = platformAppConfigured || !!teamInstallable;
+  const [selectedAppID, setSelectedAppID] = useState("");
+  const appAvailable = platformAppConfigured || teamApps.length > 0;
+  const appLabel = (a: ForgeOAuthApp) => a.owner_login || a.app_slug || a.id;
 
   const installApp = async () => {
     setBusy(true);
@@ -68,6 +72,10 @@ export default function GitHubAuthorize({
         provider: "github",
         mode: "app",
         forge_base_url: baseURL.trim() || undefined,
+        // Pin WHICH app when the team has several, so the install callback
+        // records it on the connection instead of guessing by host.
+        oauth_app_id:
+          selectedAppID || (teamApps.length === 1 ? teamApps[0].id : undefined),
         next: RETURN_PATH,
       });
       if (res.install_url) {
@@ -118,6 +126,24 @@ export default function GitHubAuthorize({
             and the minimal permission set (contents, pull requests,
             webhooks). No account-wide <code>repo</code> scope.
           </p>
+          {teamApps.length > 1 && (
+            <label className="block space-y-1">
+              <span className="text-caption text-fg-muted">
+                Install which App? Each one belongs to a different GitHub
+                organisation.
+              </span>
+              <Select
+                value={selectedAppID || teamApps[0].id}
+                onChange={(e) => setSelectedAppID(e.target.value)}
+              >
+                {teamApps.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {appLabel(a)}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          )}
           <div>
             <Button
               variant="primary"
@@ -129,6 +155,25 @@ export default function GitHubAuthorize({
             </Button>
           </div>
         </div>
+      ) : null}
+
+      {/* Always reachable, not only on a cold start: a team that already has
+          an App still needs a second one to operate on another GitHub org (a
+          private App installs solely on its owner). When an App exists this is
+          the secondary path, collapsed behind a summary. */}
+      {appAvailable ? (
+        <details className="rounded-[var(--radius-lg)] border border-border-default p-3">
+          <summary className="cursor-pointer text-sm text-fg-muted">
+            Work with another GitHub organisation? Create a second App
+          </summary>
+          <div className="pt-3">
+            <CreateGitHubAppCard
+              teamID={teamID}
+              baseURL={baseURL}
+              onError={onError}
+            />
+          </div>
+        </details>
       ) : (
         <CreateGitHubAppCard
           teamID={teamID}

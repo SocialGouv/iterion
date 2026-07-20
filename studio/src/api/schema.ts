@@ -2763,6 +2763,26 @@ export interface paths {
         patch: operations["patchTeamsByIdConfigEditorSharesBySidConfig"];
         trace?: never;
     };
+    "/api/teams/{id}/config-editor/shares/{sid}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/config-editor/shares/{sid}/runs */
+        get: operations["getTeamsByIdConfigEditorSharesBySidRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/config-editor/shares/{sid}/schedule": {
         parameters: {
             query?: never;
@@ -3161,6 +3181,47 @@ export interface paths {
         head?: never;
         /** PATCH /api/teams/{id}/members/{user_id} */
         patch: operations["patchTeamsByIdMembersByUserId"];
+        trace?: never;
+    };
+    "/api/teams/{id}/plugin-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** GET /api/teams/{id}/plugin-sources */
+        get: operations["getTeamsByIdPluginSources"];
+        put?: never;
+        /** POST /api/teams/{id}/plugin-sources */
+        post: operations["postTeamsByIdPluginSources"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teams/{id}/plugin-sources/{source_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** DELETE /api/teams/{id}/plugin-sources/{source_id} */
+        delete: operations["deleteTeamsByIdPluginSourcesBySourceId"];
+        options?: never;
+        head?: never;
+        /** PATCH /api/teams/{id}/plugin-sources/{source_id} */
+        patch: operations["patchTeamsByIdPluginSourcesBySourceId"];
         trace?: never;
     };
     "/api/teams/{id}/secrets": {
@@ -4221,6 +4282,7 @@ export interface components {
             /** Format: date-time */
             last_refreshed_at?: string;
             namespace?: string;
+            oauth_app_id?: string;
             provider: string;
             scopes?: string[];
             status: string;
@@ -4265,6 +4327,7 @@ export interface components {
             forge_base_url?: string;
             id: string;
             installable?: boolean;
+            owner_login?: string;
             provider: string;
             provider_app_id?: string;
             redirect_uri?: string;
@@ -4577,6 +4640,7 @@ export interface components {
             forge_base_url?: string;
             mode: string;
             next?: string;
+            oauth_app_id?: string;
             pat?: string;
             provider: string;
         };
@@ -8300,6 +8364,27 @@ export interface operations {
             };
         };
     };
+    getTeamsByIdConfigEditorSharesBySidRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                sid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getTeamsByIdConfigEditorSharesBySidSchedule: {
         parameters: {
             query?: never;
@@ -8929,6 +9014,88 @@ export interface operations {
             path: {
                 id: string;
                 user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamsByIdPluginSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    postTeamsByIdPluginSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamsByIdPluginSourcesBySourceId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patchTeamsByIdPluginSourcesBySourceId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                source_id: string;
             };
             cookie?: never;
         };
