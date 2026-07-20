@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 
+import { useBotsStore } from "@/store/bots";
+import { botLaunchFile } from "@/views/Bots/botPaths";
 import BotIdentity from "@/components/shared/BotIdentity";
 import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
 import { Button } from "@/components/ui/Button";
@@ -34,10 +36,29 @@ import VarFieldsSection from "./launchView/VarFieldsSection";
 export default function LaunchView() {
   const [, setLocation] = useLocation();
   const search = useSearch();
-  const filePath = useMemo(() => {
+  const allBots = useBotsStore((s) => s.bots);
+  const fetchBots = useBotsStore((s) => s.fetch);
+  const { fileParam, botParam } = useMemo(() => {
     const params = new URLSearchParams(search);
-    return params.get("file") ?? "";
+    return {
+      fileParam: params.get("file") ?? "",
+      botParam: params.get("bot") ?? "",
+    };
   }, [search]);
+  // `?bot=<slug>` is the clean, shareable launch URL (e.g.
+  // /runs/new?bot=feed-watch) — resolve the catalog slug to its workflow file
+  // so the rest of the form is byte-identical to the ?file= path. Load the
+  // catalog when a slug actually needs resolving. `?file=` still wins when
+  // both are present (explicit path beats slug).
+  useEffect(() => {
+    if (botParam && !fileParam) void fetchBots();
+  }, [botParam, fileParam, fetchBots]);
+  const filePath = useMemo(() => {
+    if (fileParam) return fileParam;
+    if (!botParam) return "";
+    const entry = allBots?.find((b) => b.name === botParam);
+    return (entry && botLaunchFile(entry)) || "";
+  }, [fileParam, botParam, allBots]);
 
   // Page-level error banner — fed by both document loading and the
   // launch submission (which clears it before each attempt).

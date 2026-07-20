@@ -37,7 +37,10 @@ export default function ActionsRow({
 
   const onLaunch = () => {
     if (!launchFile) return;
-    setLocation(`/runs/new?file=${encodeURIComponent(launchFile)}`);
+    // Prefer the clean, shareable slug URL (/runs/new?bot=feed-watch) over the
+    // encoded file path; LaunchView resolves the slug back to launchFile. The
+    // entry name is the catalog slug and is always set.
+    setLocation(`/runs/new?bot=${encodeURIComponent(entry.name)}`);
   };
 
   const onEdit = () => {
