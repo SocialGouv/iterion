@@ -14,6 +14,9 @@
 .iterion/
 .iterion-*/
 
+# sec-audit bot state (findings memory, matchers, patches) — local, per-repo
+.sec-audit/
+
 # whole_improve_loop (issue #12) persists its package-chunk rotation
 # cursor AND its cross-run clean_streak here when dogfooded on this repo.
 # It's coverage+convergence state, not source — regenerable (delete to
