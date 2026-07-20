@@ -267,6 +267,7 @@ dispatcher routes on it), never the persona.
 | Featurly | `feature-dev` |
 | Fini | `feature-gap-fill` |
 | Vigie | `feed-watch` |
+| Heartbeat (always-on demo) | `heartbeat` |
 | Nested Subbots Demo | `nested-subbots-demo` |
 | Pipeline Board Demo | `pipeline-board-demo` |
 | Revi (converse) | `revi-converse` |
@@ -358,7 +359,7 @@ pull request (PR; merge request on GitLab).
   for a fast free first draft the operator reframes at the draft-review
   gate. A re-run against the generated app evolves it.
 - **Triggers**: new-app, greenfield, scaffold, bootstrap, app-from-prompt
-- **Vars**: `app_prompt` (string), `baseline` (string), `draft_review` (bool), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
+- **Vars**: `app_prompt` (string), `baseline` (string), `deploy_enabled` (bool), `draft_review` (bool), `max_deploy_retries` (int), `max_draft_loops` (int), `max_interview_turns` (int), `max_passes` (int), `mode` (string), `mr_base` (string), `mr_branch` (string), `open_mr` (bool), `scratch_dir` (string), `source_issue_ref` (string), `stack` (string), `workspace_dir` (string)
 - **Path**: `bots/app-dev/main.bot`
 
 ### `bmady` — Bmady
@@ -636,6 +637,16 @@ schemes by default (opt into internal feeds with
   (use a plain research bot) and it never edits code.
 - **Vars**: `allow_private_feeds` (bool), `category` (string), `config_path` (string), `dry_run` (bool), `fetch_timeout_secs` (int), `max_digest_items` (int), `max_items_per_feed` (int), `mode` (string), `scratch_dir` (string), `state_commit` (bool), `state_dir` (string), `workspace_dir` (string)
 - **Path**: `bots/feed-watch/main.bot`
+
+### `heartbeat` — Heartbeat (always-on demo)
+
+Tool-only demo of an always-on agent. Relaunched continuously by an
+`overlap: keepalive` schedule with at-most-one-live semantics and
+staleness reaping — the pattern for keeping a watcher/poller/your own
+long-lived bot running as a stream of fresh, individually-budgeted runs
+rather than one immortal run. No LLM, no API keys.
+
+- **Path**: `examples/keepalive/main.bot`
 
 ### `nested-subbots-demo` — Nested Subbots Demo
 

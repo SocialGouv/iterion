@@ -100,5 +100,5 @@ invocations:
 ## the declared order; `hidden` vars are dispatch/webhook plumbing kept
 ## out of the form (still settable via --var / bot_args).
 launch:
-  primary: [app_prompt, mode]
+  primary: [app_prompt, mode, deploy_enabled]
   hidden: [source_issue_ref]
