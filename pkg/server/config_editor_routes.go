@@ -9,6 +9,8 @@ import (
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/cloudsched"
 	"github.com/SocialGouv/iterion/pkg/configshare"
+	"github.com/SocialGouv/iterion/pkg/runview"
+	"github.com/SocialGouv/iterion/pkg/store"
 )
 
 // registerConfigEditorRoutes wires the AUTHENTICATED (session) config-editor
@@ -27,6 +29,73 @@ func (s *Server) registerConfigEditorRoutes() {
 	// schedule store (visible in the Schedules UI), never buried in the repo.
 	s.mux.Handle("GET /api/teams/{id}/config-editor/shares/{sid}/schedule", s.requireAuth(http.HandlerFunc(s.handleConfigEditorGetSchedule)))
 	s.mux.Handle("PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule", s.requireAuth(http.HandlerFunc(s.handleConfigEditorPatchSchedule)))
+	// Recent runs of the share's (bot, category): a read-only, reduced view so
+	// the editor can SEE the effect of their edits (did the last digest run,
+	// when, did it succeed) without granting the full run console.
+	s.mux.Handle("GET /api/teams/{id}/config-editor/shares/{sid}/runs", s.requireAuth(http.HandlerFunc(s.handleConfigEditorRuns)))
+}
+
+// configEditorRunsLimit caps how many recent digests the editor view returns —
+// enough to see the recent cadence, not a full history browser.
+const configEditorRunsLimit = 8
+
+// handleConfigEditorRuns returns a REDUCED, read-only view of the recent runs
+// of the share's (bot, category): status + timestamps only, never run ids,
+// inputs, errors, or artifacts (the config_editor role has no run-console
+// access, and this endpoint must not become a side-channel to it). Scoped to
+// the share's category when it has one, so an editor of `a11y` never sees the
+// `design-systems` cadence. Tenant isolation rides ListRunRecordsCtx (the
+// request context carries the caller's team → mongo tenant_id filter).
+func (s *Server) handleConfigEditorRuns(w http.ResponseWriter, r *http.Request) {
+	sh, ok := s.loadEditableShare(w, r)
+	if !ok {
+		return
+	}
+	if s.runs == nil {
+		writeJSON(w, map[string]any{"runs": []any{}})
+		return
+	}
+	records, err := s.runs.ListRunRecordsCtx(r.Context(), runview.ListFilter{Bundle: sh.BotID, Limit: 200})
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, "%s", err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"runs": editorRunRows(records, sh.Category, configEditorRunsLimit)})
+}
+
+// editorRunRows is the reduced, no-leak projection for handleConfigEditorRuns,
+// factored out so the scoping + field allow-list are unit-testable without a
+// live store. For each run of the share's bot it emits ONLY status + timestamps
+// — never the run id, inputs, or error, which the config_editor role must not
+// see. When category is non-empty, only runs whose launch var
+// `category` matches are kept, so an `a11y` editor never sees the
+// `design-systems` cadence. Records are assumed newest-first (ListRunRecordsCtx
+// sorts by CreatedAt desc); the first `limit` matches are returned.
+func editorRunRows(records []*store.Run, category string, limit int) []map[string]any {
+	rows := make([]map[string]any, 0, limit)
+	for _, run := range records {
+		if run == nil {
+			continue
+		}
+		if category != "" {
+			cat, _ := run.Inputs["category"].(string)
+			if cat != category {
+				continue
+			}
+		}
+		row := map[string]any{
+			"status":     run.Status,
+			"created_at": run.CreatedAt,
+		}
+		if run.FinishedAt != nil {
+			row["finished_at"] = run.FinishedAt
+		}
+		rows = append(rows, row)
+		if len(rows) >= limit {
+			break
+		}
+	}
+	return rows
 }
 
 // editorShareView is the REDUCED projection a config-editor sees — enough to

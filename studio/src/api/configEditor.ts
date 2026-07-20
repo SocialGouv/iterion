@@ -161,3 +161,25 @@ export function patchEditorSchedule(
     { method: "PATCH", body: JSON.stringify({ cron }) },
   );
 }
+
+// EditorRun is one row of the REDUCED recent-runs view for the share's
+// (bot, category): status + timestamps only — the server never returns run
+// ids, inputs, or errors to the config_editor role.
+export interface EditorRun {
+  status: string;
+  created_at: string;
+  finished_at?: string;
+}
+
+// listEditorShareRuns loads the recent digests of the share's (bot, category)
+// so the editor can see the effect of their edits (did it run, when, ok?). A
+// 404 (runs unavailable) surfaces as FeatureUnavailableError; callers treat it
+// as "no recent-digests panel".
+export function listEditorShareRuns(teamID: string, shareID: string): Promise<EditorRun[]> {
+  return guard404("config-editor-runs", async () => {
+    const r = await apiRequest<{ runs: EditorRun[] }>(
+      `${teamBase(teamID)}/shares/${encodeURIComponent(shareID)}/runs`,
+    );
+    return r.runs ?? [];
+  });
+}
