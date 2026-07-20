@@ -208,11 +208,12 @@ func (s *Server) ListenAndServe() error {
 				cancel()
 			}()
 			(&cloudsched.Ticker{
-				Store:  s.cfg.ScheduledBots,
-				Launch: s.launchScheduledBot,
-				Logger: s.logger,
-				Gate:   s.cloudScheduleGate,
-				Audit:  s.cloudScheduleAudit,
+				Store:    s.cfg.ScheduledBots,
+				Launch:   s.launchScheduledBot,
+				Logger:   s.logger,
+				Gate:     s.cloudScheduleGate,
+				Audit:    s.cloudScheduleAudit,
+				Interval: schedulerTickInterval(),
 			}).Run(ctx)
 		}()
 	}

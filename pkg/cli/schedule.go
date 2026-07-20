@@ -58,11 +58,15 @@ type ScheduleEntry struct {
 	// Guard is an optional `sh -lc` snippet run before any launch —
 	// exit 0 fires the run with its stdout in vars[guard_var],
 	// non-zero skips the tick. See docs/scheduling.md#overlap-policy.
+	// Overlap "keepalive" runs the bot always-on at the cron cadence (host
+	// crontab floors at 1 minute — sub-minute keepalive needs the resident
+	// scheduler): a stale run silent past StaleAfter is relaunched.
 	Overlap       string `yaml:"overlap,omitempty"`
 	MaxConcurrent int    `yaml:"max_concurrent,omitempty"`
 	Guard         string `yaml:"guard,omitempty"`
 	GuardTimeout  string `yaml:"guard_timeout,omitempty"`
 	GuardVar      string `yaml:"guard_var,omitempty"`
+	StaleAfter    string `yaml:"stale_after,omitempty"`
 }
 
 // policy projects the entry's schedgate fields into a normalized Policy.
@@ -73,6 +77,7 @@ func (e ScheduleEntry) policy() schedgate.Policy {
 		Guard:         e.Guard,
 		GuardTimeout:  e.GuardTimeout,
 		GuardVar:      e.GuardVar,
+		StaleAfter:    e.StaleAfter,
 	})
 }
 
@@ -184,6 +189,7 @@ func validateScheduleEntry(e ScheduleEntry) error {
 		Guard:         e.Guard,
 		GuardTimeout:  e.GuardTimeout,
 		GuardVar:      e.GuardVar,
+		StaleAfter:    e.StaleAfter,
 	}); err != nil {
 		return err
 	}
@@ -227,6 +233,7 @@ type ScheduleAddOptions struct {
 	Guard         string
 	GuardTimeout  string
 	GuardVar      string
+	StaleAfter    string
 }
 
 type ScheduleRefOptions struct {
@@ -282,6 +289,7 @@ func RunScheduleAdd(p *Printer, opts ScheduleAddOptions) error {
 		Guard:         opts.Guard,
 		GuardTimeout:  opts.GuardTimeout,
 		GuardVar:      opts.GuardVar,
+		StaleAfter:    opts.StaleAfter,
 	}
 	if err := validateScheduleEntry(entry); err != nil {
 		return err

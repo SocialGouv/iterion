@@ -1,13 +1,35 @@
 package server
 
 import (
+	"context"
+	"os"
+	"time"
+
 	"github.com/SocialGouv/iterion/pkg/dispatcher/native"
 	"github.com/SocialGouv/iterion/pkg/eventbus"
 	"github.com/SocialGouv/iterion/pkg/internal/jsonl"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
+	"github.com/SocialGouv/iterion/pkg/store"
 	"github.com/SocialGouv/iterion/pkg/trigger"
 )
+
+// defaultSchedulerTickInterval is the in-process scheduler's tick
+// resolution. It is well below a minute so sub-minute keepalive
+// subscriptions fire near their cadence out of the box; a cron
+// subscription is unaffected (its next-fire is minute-aligned, so a
+// faster tick never over-fires it). Override with ITERION_SCHEDULER_INTERVAL
+// (a Go duration).
+const defaultSchedulerTickInterval = 15 * time.Second
+
+func schedulerTickInterval() time.Duration {
+	if v := os.Getenv("ITERION_SCHEDULER_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultSchedulerTickInterval
+}
 
 // TriggerCoordinator wires the event-driven trigger spine for the native
 // board: an in-process eventbus, a board source tailing the shared
@@ -63,6 +85,7 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 		tc.scheduler = trigger.NewScheduler(subs, launcher,
 			trigger.WithSchedulerLogger(logger),
 			trigger.WithSchedulerGate(gate),
+			trigger.WithSchedulerInterval(schedulerTickInterval()),
 		)
 		tc.scheduler.Start()
 	}
@@ -78,6 +101,21 @@ func (s *Server) scheduleGate() *trigger.ScheduleGate {
 		return nil
 	}
 	gate := &trigger.ScheduleGate{Lister: s.cfg.Store, GuardDir: s.cfg.WorkDir}
+	// Reap keepalive zombies: a stale run the gate dropped is CAS-flipped
+	// running→failed_resumable so it stops counting as live and frees its
+	// resources (resumable so an operator can still inspect/continue it).
+	gate.Reap = func(ctx context.Context, ids []string) {
+		for _, id := range ids {
+			changed, rerr := s.cfg.Store.UpdateRunStatusIf(ctx, id, store.RunStatusFailedResumable,
+				"keepalive: run silent past stale_after — reaped so a fresh run could relaunch",
+				[]store.RunStatus{store.RunStatusRunning})
+			if rerr != nil {
+				s.logger.Warn("server: keepalive reap %s failed: %v", id, rerr)
+			} else if changed {
+				s.logger.Info("server: keepalive reaped stale run %s", id)
+			}
+		}
+	}
 	auditPath, err := schedgate.DefaultLocalAuditPath()
 	if err != nil {
 		s.logger.Warn("server: trigger tick audit disabled: %v", err)
