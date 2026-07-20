@@ -56,10 +56,10 @@ describe("ShareDeliveriesDrawer", () => {
   it("renders the empty state when the share was never fetched", async () => {
     listConfigShareDeliveries.mockResolvedValue([]);
     renderDrawer();
+    // Matched on the leading sentence, not the whole paragraph: the rest of
+    // the copy explains what the log excludes and is reworded often.
     expect(
-      await screen.findByText(
-        "No deliveries yet — this share hasn't been fetched.",
-      ),
+      await screen.findByText(/No edits through this share yet\./),
     ).toBeTruthy();
   });
 
