@@ -3,6 +3,7 @@ package schedgate
 import (
 	"context"
 	"fmt"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 )
@@ -28,6 +29,9 @@ type GateInput struct {
 	GuardDir string
 	GuardEnv []string
 	Logger   *iterlog.Logger
+	// Now overrides the clock for keepalive staleness detection (zero =
+	// time.Now()). Tests inject a fixed instant; production leaves it zero.
+	Now time.Time
 }
 
 // GateOutcome is the gate's verdict for one consumed tick slot.
@@ -45,6 +49,12 @@ type GateOutcome struct {
 	// Proceed it is left undecided — "fired" is only true after the
 	// launch attempt, which the caller owns.
 	Record TickRecord
+	// ReapRunIDs lists keepalive runs found stale (silent past
+	// StaleAfter) at this tick. The caller cancels them via its store so
+	// the zombies free resources; schedgate stays I/O-free. Non-empty
+	// only on the keepalive path, and only alongside Proceed (a stale
+	// run no longer blocks, so the tick fires a fresh one).
+	ReapRunIDs []string
 }
 
 // Apply runs the shared overlap→guard gate sequence. It never returns
@@ -53,8 +63,14 @@ type GateOutcome struct {
 func Apply(ctx context.Context, in GateInput) GateOutcome {
 	policy := Normalize(in.Policy)
 
+	var reap []string
 	if in.Lister != nil {
-		live := LiveRunsForSchedule(ctx, in.Lister, in.ScheduleID, in.Logger)
+		var live []string
+		if policy.Overlap == OverlapKeepalive {
+			live, reap = LiveAndStaleRunsForSchedule(ctx, in.Lister, in.ScheduleID, policy.StaleAfterDuration(), in.Now, in.Logger)
+		} else {
+			live = LiveRunsForSchedule(ctx, in.Lister, in.ScheduleID, in.Logger)
+		}
 		if decision, blocking := EvaluateOverlap(live, policy); decision == DecisionSkipOverlap {
 			rec := in.Record
 			rec.Decision = TickSkippedOverlap
@@ -65,7 +81,7 @@ func Apply(ctx context.Context, in GateInput) GateOutcome {
 	}
 
 	if policy.Guard == "" {
-		return GateOutcome{Proceed: true, Record: in.Record}
+		return GateOutcome{Proceed: true, Record: in.Record, ReapRunIDs: reap}
 	}
 
 	res := RunGuard(ctx, GuardSpec{
@@ -88,6 +104,6 @@ func Apply(ctx context.Context, in GateInput) GateOutcome {
 		rec.ApplyGuard(res)
 		return GateOutcome{Record: rec}
 	default:
-		return GateOutcome{Proceed: true, GuardRan: true, GuardStdout: res.Stdout, Record: in.Record}
+		return GateOutcome{Proceed: true, GuardRan: true, GuardStdout: res.Stdout, Record: in.Record, ReapRunIDs: reap}
 	}
 }

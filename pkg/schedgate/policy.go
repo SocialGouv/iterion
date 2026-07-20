@@ -19,15 +19,28 @@ import (
 // latent-bug default (a nightly that overruns its window piles up
 // concurrent runs on the same repo), so skip is the safe baseline and
 // allow is the explicit opt-in.
+//
+// OverlapKeepalive is the "always-on agent" policy: at-most-one-live
+// (like skip), but a live run that has gone silent past StaleAfter is
+// treated as dead — dropped from the live set so the tick relaunches a
+// fresh run, and surfaced for reaping. It is what keeps a bot
+// continuously alive across short, individually-budgeted runs rather
+// than one immortal run.
 const (
-	OverlapSkip  = "skip"
-	OverlapAllow = "allow"
+	OverlapSkip      = "skip"
+	OverlapAllow     = "allow"
+	OverlapKeepalive = "keepalive"
 )
 
 // Guard defaults.
 const (
 	DefaultGuardTimeout = 30 * time.Second
 	DefaultGuardVar     = "guard_output"
+	// DefaultStaleAfter is the keepalive silence cutoff: a running run
+	// whose last progress is older than this is treated as dead. Chosen
+	// generously so a long-but-alive run is not falsely reaped; override
+	// per schedule (ideally >= the bot's max_duration).
+	DefaultStaleAfter = 5 * time.Minute
 )
 
 // Policy is the concurrency + guard contract shared by all three
@@ -52,6 +65,11 @@ type Policy struct {
 	// GuardVar names the workflow var receiving the guard's stdout
 	// (default "guard_output").
 	GuardVar string `yaml:"guard_var,omitempty" json:"guard_var,omitempty" bson:"guard_var,omitempty"`
+	// StaleAfter is the keepalive silence cutoff (Go duration string): a
+	// running run whose last progress is older than this counts as dead,
+	// so a fresh run relaunches and the zombie is reaped. Only meaningful
+	// with Overlap=keepalive; empty normalizes to DefaultStaleAfter.
+	StaleAfter string `yaml:"stale_after,omitempty" json:"stale_after,omitempty" bson:"stale_after,omitempty"`
 }
 
 // Normalize returns p with defaults applied. Idempotent; never returns
@@ -65,6 +83,9 @@ func Normalize(p Policy) Policy {
 	}
 	if p.GuardVar == "" {
 		p.GuardVar = DefaultGuardVar
+	}
+	if p.Overlap == OverlapKeepalive && p.StaleAfter == "" {
+		p.StaleAfter = DefaultStaleAfter.String()
 	}
 	return p
 }
@@ -82,8 +103,24 @@ func Validate(p Policy) error {
 		if p.MaxConcurrent < 0 {
 			return fmt.Errorf("schedgate: max_concurrent must be >= 1 when set (0 = unlimited)")
 		}
+	case OverlapKeepalive:
+		if p.MaxConcurrent != 0 {
+			return fmt.Errorf("schedgate: max_concurrent is invalid with overlap=keepalive (at-most-one-live is the whole point)")
+		}
+		if p.StaleAfter != "" {
+			d, err := time.ParseDuration(p.StaleAfter)
+			if err != nil {
+				return fmt.Errorf("schedgate: invalid stale_after %q: %w", p.StaleAfter, err)
+			}
+			if d <= 0 {
+				return fmt.Errorf("schedgate: stale_after must be > 0 (got %q)", p.StaleAfter)
+			}
+		}
 	default:
-		return fmt.Errorf("schedgate: invalid overlap %q (want %q or %q)", p.Overlap, OverlapSkip, OverlapAllow)
+		return fmt.Errorf("schedgate: invalid overlap %q (want %q, %q or %q)", p.Overlap, OverlapSkip, OverlapAllow, OverlapKeepalive)
+	}
+	if p.StaleAfter != "" && p.Overlap != OverlapKeepalive {
+		return fmt.Errorf("schedgate: stale_after is only valid with overlap=keepalive")
 	}
 	if p.GuardTimeout != "" {
 		if _, err := time.ParseDuration(p.GuardTimeout); err != nil {
@@ -106,6 +143,20 @@ func (p Policy) GuardTimeoutDuration() time.Duration {
 	d, err := time.ParseDuration(p.GuardTimeout)
 	if err != nil || d <= 0 {
 		return DefaultGuardTimeout
+	}
+	return d
+}
+
+// StaleAfterDuration resolves the keepalive silence cutoff, falling back
+// to DefaultStaleAfter on empty or unparseable values (Validate rejects
+// the latter upstream; the fallback keeps runtime behavior total).
+func (p Policy) StaleAfterDuration() time.Duration {
+	if p.StaleAfter == "" {
+		return DefaultStaleAfter
+	}
+	d, err := time.ParseDuration(p.StaleAfter)
+	if err != nil || d <= 0 {
+		return DefaultStaleAfter
 	}
 	return d
 }
@@ -137,7 +188,10 @@ func EvaluateOverlap(liveIDs []string, p Policy) (Decision, string) {
 			return DecisionFire, ""
 		}
 		return DecisionSkipOverlap, liveIDs[0]
-	default: // OverlapSkip
+	default: // OverlapSkip and OverlapKeepalive: at-most-one-live.
+		// For keepalive, staleness has already emptied the live set
+		// upstream (LiveAndStaleRunsForSchedule), so any run reaching
+		// here is genuinely alive and blocks the tick.
 		return DecisionSkipOverlap, liveIDs[0]
 	}
 }

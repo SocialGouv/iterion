@@ -79,4 +79,46 @@ func TestApply(t *testing.T) {
 			t.Fatal("guard error must carry the cause")
 		}
 	})
+
+	t.Run("keepalive: fresh run blocks the tick", func(t *testing.T) {
+		now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+		lister := &fakeLister{
+			ids:  []string{"alive"},
+			runs: map[string]*store.Run{"alive": {ID: "alive", Status: store.RunStatusRunning, UpdatedAt: now.Add(-1 * time.Minute)}},
+		}
+		out := Apply(context.Background(), GateInput{
+			Policy:     Policy{Overlap: OverlapKeepalive, StaleAfter: "5m"},
+			Lister:     lister,
+			ScheduleID: "sched-1",
+			Record:     base,
+			Now:        now,
+		})
+		if out.Proceed {
+			t.Fatal("a fresh keepalive run must block the tick")
+		}
+		if len(out.ReapRunIDs) != 0 {
+			t.Fatalf("no reap expected, got %v", out.ReapRunIDs)
+		}
+	})
+
+	t.Run("keepalive: stale run relaunches and is reaped", func(t *testing.T) {
+		now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+		lister := &fakeLister{
+			ids:  []string{"zombie"},
+			runs: map[string]*store.Run{"zombie": {ID: "zombie", Status: store.RunStatusRunning, UpdatedAt: now.Add(-10 * time.Minute)}},
+		}
+		out := Apply(context.Background(), GateInput{
+			Policy:     Policy{Overlap: OverlapKeepalive, StaleAfter: "5m"},
+			Lister:     lister,
+			ScheduleID: "sched-1",
+			Record:     base,
+			Now:        now,
+		})
+		if !out.Proceed {
+			t.Fatal("a stale keepalive run must not block relaunch")
+		}
+		if len(out.ReapRunIDs) != 1 || out.ReapRunIDs[0] != "zombie" {
+			t.Fatalf("ReapRunIDs = %v, want [zombie]", out.ReapRunIDs)
+		}
+	})
 }

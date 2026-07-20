@@ -2,6 +2,7 @@ package schedgate
 
 import (
 	"context"
+	"time"
 
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/store"
@@ -24,17 +25,37 @@ type ScheduleRunLister interface {
 // A run that fails to load is logged and skipped rather than blocking
 // the tick: this is a gate, not a data-integrity boundary.
 func LiveRunsForSchedule(ctx context.Context, s ScheduleRunLister, scheduleID string, logger *iterlog.Logger) []string {
+	live, _ := LiveAndStaleRunsForSchedule(ctx, s, scheduleID, 0, time.Time{}, logger)
+	return live
+}
+
+// LiveAndStaleRunsForSchedule is the keepalive-aware liveness query. It
+// returns two disjoint, order-preserving lists of non-terminal runs
+// stamped with this schedule's provenance:
+//
+//   - live: runs that count against the overlap policy;
+//   - stale: running runs whose last progress (UpdatedAt) is older than
+//     staleAfter — treated as dead so a keepalive tick relaunches, and
+//     returned so the caller can reap them.
+//
+// When staleAfter <= 0 (the non-keepalive path) no run is ever
+// considered stale, so this reduces exactly to the old
+// LiveRunsForSchedule behavior. Staleness is gated on RunStatusRunning
+// only: a paused run is legitimately idle and must never be reaped.
+func LiveAndStaleRunsForSchedule(ctx context.Context, s ScheduleRunLister, scheduleID string, staleAfter time.Duration, now time.Time, logger *iterlog.Logger) (live, stale []string) {
 	if s == nil || scheduleID == "" {
-		return nil
+		return nil, nil
 	}
 	ids, err := s.ListRunsBySchedule(ctx, scheduleID)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("schedgate: list runs for schedule %q: %v (treating as no live runs)", scheduleID, err)
 		}
-		return nil
+		return nil, nil
 	}
-	var live []string
+	if now.IsZero() {
+		now = time.Now()
+	}
 	for _, id := range ids {
 		r, err := s.LoadRun(ctx, id)
 		if err != nil {
@@ -43,9 +64,14 @@ func LiveRunsForSchedule(ctx context.Context, s ScheduleRunLister, scheduleID st
 			}
 			continue
 		}
-		if !r.Status.IsTerminal() {
-			live = append(live, id)
+		if r.Status.IsTerminal() {
+			continue
 		}
+		if staleAfter > 0 && r.Status == store.RunStatusRunning && now.Sub(r.UpdatedAt) > staleAfter {
+			stale = append(stale, id)
+			continue
+		}
+		live = append(live, id)
 	}
-	return live
+	return live, stale
 }

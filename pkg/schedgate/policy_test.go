@@ -25,6 +25,14 @@ func TestNormalize(t *testing.T) {
 	if got := Normalize(Normalize(Policy{})); got != Normalize(Policy{}) {
 		t.Fatalf("Normalize not idempotent")
 	}
+
+	// keepalive fills StaleAfter with the default; an explicit one is kept.
+	if got := Normalize(Policy{Overlap: OverlapKeepalive}); got.StaleAfter != DefaultStaleAfter.String() {
+		t.Fatalf("keepalive StaleAfter = %q, want %q", got.StaleAfter, DefaultStaleAfter.String())
+	}
+	if got := Normalize(Policy{Overlap: OverlapKeepalive, StaleAfter: "30s"}); got.StaleAfter != "30s" {
+		t.Fatalf("explicit StaleAfter overwritten: %q", got.StaleAfter)
+	}
 }
 
 func TestValidate(t *testing.T) {
@@ -44,6 +52,12 @@ func TestValidate(t *testing.T) {
 		{"bad timeout", Policy{GuardTimeout: "5x"}, "invalid guard_timeout"},
 		{"good timeout", Policy{GuardTimeout: "90s"}, ""},
 		{"whitespace guard_var", Policy{GuardVar: "a b"}, "must not contain whitespace"},
+		{"keepalive bare", Policy{Overlap: OverlapKeepalive}, ""},
+		{"keepalive with stale_after", Policy{Overlap: OverlapKeepalive, StaleAfter: "2m"}, ""},
+		{"keepalive with max_concurrent", Policy{Overlap: OverlapKeepalive, MaxConcurrent: 2}, "invalid with overlap=keepalive"},
+		{"keepalive bad stale_after", Policy{Overlap: OverlapKeepalive, StaleAfter: "5x"}, "invalid stale_after"},
+		{"keepalive zero stale_after", Policy{Overlap: OverlapKeepalive, StaleAfter: "0s"}, "must be > 0"},
+		{"stale_after without keepalive", Policy{Overlap: OverlapSkip, StaleAfter: "2m"}, "only valid with overlap=keepalive"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,6 +87,18 @@ func TestGuardTimeoutDuration(t *testing.T) {
 	}
 }
 
+func TestStaleAfterDuration(t *testing.T) {
+	if d := (Policy{}).StaleAfterDuration(); d != DefaultStaleAfter {
+		t.Fatalf("zero policy stale_after = %s, want default", d)
+	}
+	if d := (Policy{StaleAfter: "90s"}).StaleAfterDuration(); d != 90*time.Second {
+		t.Fatalf("stale_after = %s, want 90s", d)
+	}
+	if d := (Policy{StaleAfter: "-1s"}).StaleAfterDuration(); d != DefaultStaleAfter {
+		t.Fatalf("negative stale_after = %s, want default", d)
+	}
+}
+
 func TestEvaluateOverlap(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -87,6 +113,10 @@ func TestEvaluateOverlap(t *testing.T) {
 		{"allow under cap", []string{"r1", "r2"}, Policy{Overlap: OverlapAllow, MaxConcurrent: 3}, DecisionFire, ""},
 		{"allow at cap", []string{"r1", "r2", "r3"}, Policy{Overlap: OverlapAllow, MaxConcurrent: 3}, DecisionSkipOverlap, "r1"},
 		{"allow unlimited", make([]string, 100), Policy{Overlap: OverlapAllow}, DecisionFire, ""},
+		// keepalive behaves like skip at the pure layer (staleness is
+		// filtered upstream): no live → fire; any live → skip.
+		{"keepalive no live", nil, Policy{Overlap: OverlapKeepalive}, DecisionFire, ""},
+		{"keepalive one live", []string{"r1"}, Policy{Overlap: OverlapKeepalive}, DecisionSkipOverlap, "r1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
