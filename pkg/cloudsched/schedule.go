@@ -21,20 +21,20 @@ import (
 // this to have a workspace to push to. When RepoURL is empty the run executes
 // against the runner pod's base WorkDir, matching the pre-repo behaviour.
 type ScheduledBot struct {
-	ID                string            `bson:"_id" json:"id"`
-	TenantID          string            `bson:"tenant_id" json:"tenant_id"`
-	RepoIntegrationID string            `bson:"repo_integration_id,omitempty" json:"repo_integration_id,omitempty"`
-	BotID             string            `bson:"bot_id" json:"bot_id"`
-	Cron              string            `bson:"cron" json:"cron"` // 5-field standard cron
+	ID                string `bson:"_id" json:"id"`
+	TenantID          string `bson:"tenant_id" json:"tenant_id"`
+	RepoIntegrationID string `bson:"repo_integration_id,omitempty" json:"repo_integration_id,omitempty"`
+	BotID             string `bson:"bot_id" json:"bot_id"`
+	Cron              string `bson:"cron" json:"cron"` // 5-field standard cron
 	// IntervalSeconds drives an always-on (keepalive) schedule instead of Cron:
 	// the ticker relaunches the bot every IntervalSeconds (sub-minute allowed,
 	// bounded by the ticker's own Interval). Exactly one of Cron/IntervalSeconds
 	// is set. Overlap=keepalive gives at-most-one-live + staleness reaping.
 	IntervalSeconds int               `bson:"interval_seconds,omitempty" json:"interval_seconds,omitempty"`
 	Vars            map[string]string `bson:"vars,omitempty" json:"vars,omitempty"`
-	RepoURL           string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
-	RepoRef           string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
-	Disabled          bool              `bson:"disabled,omitempty" json:"disabled,omitempty"`
+	RepoURL         string            `bson:"repo_url,omitempty" json:"repo_url,omitempty"`
+	RepoRef         string            `bson:"repo_ref,omitempty" json:"repo_ref,omitempty"`
+	Disabled        bool              `bson:"disabled,omitempty" json:"disabled,omitempty"`
 
 	// Overlap policy + pre-launch guard (pkg/schedgate). Overlap ""
 	// normalizes to "skip": a slot whose previous run is still live is

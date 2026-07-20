@@ -97,16 +97,24 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 // `iterion schedule audit` reads). Audit appends are best-effort: a
 // failed append is logged, never turns a tick decision into a failure.
 func (s *Server) scheduleGate() *trigger.ScheduleGate {
-	if s.cfg.Store == nil {
+	// The overlap/staleness gate needs the run store. cfg.Store is set only
+	// in cloud/injected-store mode; in local/studio mode runview owns the
+	// store, so fall back to it — otherwise the gate is nil and keepalive
+	// loses at-most-one-live + staleness reaping (runs would stack).
+	rs := s.cfg.Store
+	if rs == nil && s.runs != nil {
+		rs = s.runs.RunStore()
+	}
+	if rs == nil {
 		return nil
 	}
-	gate := &trigger.ScheduleGate{Lister: s.cfg.Store, GuardDir: s.cfg.WorkDir}
+	gate := &trigger.ScheduleGate{Lister: rs, GuardDir: s.cfg.WorkDir}
 	// Reap keepalive zombies: a stale run the gate dropped is CAS-flipped
 	// running→failed_resumable so it stops counting as live and frees its
 	// resources (resumable so an operator can still inspect/continue it).
 	gate.Reap = func(ctx context.Context, ids []string) {
 		for _, id := range ids {
-			changed, rerr := s.cfg.Store.UpdateRunStatusIf(ctx, id, store.RunStatusFailedResumable,
+			changed, rerr := rs.UpdateRunStatusIf(ctx, id, store.RunStatusFailedResumable,
 				"keepalive: run silent past stale_after — reaped so a fresh run could relaunch",
 				[]store.RunStatus{store.RunStatusRunning})
 			if rerr != nil {

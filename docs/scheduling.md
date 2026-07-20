@@ -159,6 +159,63 @@ stamped `source.kind: schedule` + `source.schedule_id` in `run.json`,
 which also makes them attributable in the studio and queryable via the
 store.
 
+## Always-on agents — `overlap: keepalive`
+
+`overlap: keepalive` runs a bot **continuously**: every tick relaunches
+it, but with **at-most-one-live** semantics *and* a **staleness cutoff**.
+It is how you keep an agent (a watcher, a poller, your own long-lived
+bot) alive as a stream of fresh, individually-budgeted runs rather than
+one immortal run that fights `max_duration`, per-node deadlines, and the
+cloud budget ceiling.
+
+The only difference from `skip`: a run that is **silent past
+`stale_after`** (default 5m; a `running` run whose last progress is older
+than the cutoff) stops counting as live, so the next tick **relaunches**
+a fresh run and the zombie is reaped (`running` → `failed_resumable`, so
+it is still inspectable/resumable). This closes the "crashed run stuck in
+`running` blocks the schedule forever" gap above — a dead always-on
+agent recovers on its own within one tick.
+
+```yaml
+# schedules.yaml — an always-on watcher, relaunched every minute,
+# recovered if it goes silent for 2 minutes.
+- name: watcher
+  cron: "* * * * *"           # host crontab floors at 1 minute
+  bot: bots/my-watcher/main.bot
+  overlap: keepalive
+  stale_after: 2m
+```
+
+- **Sub-minute cadence** is *not* expressible on the host crontab (its
+  floor is 1 minute). For a faster pulse, run the resident scheduler
+  (`iterion studio` / `iterion server`) and author the bot with a
+  `kind: keepalive` invocation carrying an `interval:` (see below) — the
+  in-process scheduler ticks every 15s by default (`ITERION_SCHEDULER_INTERVAL`).
+- `max_concurrent` is invalid with keepalive (at-most-one-live is the point).
+- `stale_after` should be **≥ the bot's `max_duration`** so a long-but-alive
+  run is never falsely reaped. Staleness only ever applies to `running`
+  runs — a `paused_waiting_human` run is legitimately idle and never reaped.
+
+### Authoring an always-on bot (`kind: keepalive`)
+
+A bot declares its always-on capability in its `manifest.yaml`; the
+cadence lives on the invocation (not baked into the bot's logic):
+
+```yaml
+invocations:
+  - kind: keepalive
+    keepalive:
+      interval: 30s            # >= 5s; sub-minute needs the resident scheduler
+      stale_after: 5m          # optional (default 5m)
+```
+
+Enable it one-click from the bot's studio home (the
+`/bots/{name}/triggers/from-invocation` route), or toggle **Always-on**
+on a schedule in the studio **Schedules** tab. To also *steer* each
+launched run mid-flight (correct it, nudge it), give the bot a
+`supervisor:` block — the engine auto-attaches a supervisor coordinator
+to every keepalive run, no extra wiring.
+
 ## Guard command — fire only when there is work
 
 `guard:` is an optional `sh -lc` snippet executed **before** any
