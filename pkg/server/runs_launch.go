@@ -290,6 +290,13 @@ func (s *Server) handleLaunchRun(w http.ResponseWriter, r *http.Request) {
 			span.SetStatus(codes.Error, "repo host mismatch")
 			return
 		}
+		// Fail at launch, not three hours in: a repo outside a "selected
+		// repositories" App installation can only fail at push time.
+		if err := s.forgeRepoReachable(r.Context(), conn, strings.TrimSuffix(strings.TrimPrefix(req.RepoURL, base+"/"), ".git")); err != nil {
+			s.httpErrorFor(w, r, http.StatusBadRequest, "%v", err)
+			span.SetStatus(codes.Error, "repo unreachable by connection")
+			return
+		}
 		secID, err := s.forgeOrchestrator.EnsureManagedSecret(store.WithTenant(r.Context(), conn.TenantID), &conn, id.UserID)
 		if err != nil {
 			s.httpErrorFor(w, r, http.StatusBadGateway, "forge token for the clone: %v", err)

@@ -388,6 +388,55 @@ func shortRepoName(s string) string {
 	return s
 }
 
+// forgeRepoReachable reports whether a github_app connection's runtime token
+// will actually be able to reach repoFullName, and returns an ACTIONABLE error
+// when it definitively cannot.
+//
+// Why this exists: a GitHub App installed on "selected repositories" mints
+// tokens hard-scoped to that selection. A repo outside it — notably one iterion
+// just CREATED, since GitHub does not add App-created repos to the installation
+// — fails only at `git push`, with a bare 403 "denied to <app>[bot]". On a
+// multi-hour app-building run that surfaces hours after launch, after all the
+// work is done, and reads as an agent bug rather than a missing grant.
+//
+// Best-effort by construction: only a definitive negative (the API answered,
+// and the repo is absent from the installation) blocks the launch. A transient
+// failure to ask returns nil so a forge hiccup never blocks an otherwise valid
+// run.
+func (s *Server) forgeRepoReachable(ctx context.Context, conn forge.Connection, repoFullName string) error {
+	if conn.Kind != forge.KindGitHubApp || repoFullName == "" {
+		return nil
+	}
+	admin, err := s.forgeAdminFor(ctx, conn)
+	if err != nil {
+		return nil
+	}
+	repos, err := admin.ListRepos(ctx, forge.RepoQuery{})
+	if err != nil {
+		return nil // no answer is not a negative
+	}
+	return repoOutsideInstallationErr(repos, repoFullName)
+}
+
+// repoOutsideInstallationErr is forgeRepoReachable's decision, split out so the
+// rule is testable without an Admin seam. An EMPTY list is treated as "no
+// usable answer", not as "absent": an installation we cannot enumerate must
+// never block a launch.
+func repoOutsideInstallationErr(repos []forge.RepoSummary, repoFullName string) error {
+	if len(repos) == 0 || repoFullName == "" {
+		return nil
+	}
+	want := shortRepoName(repoFullName)
+	for _, r := range repos {
+		if shortRepoName(r.FullName) == want {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"the GitHub App installation cannot reach %s — its token is scoped to the installation's selected repositories, so any push would fail with 403. Add the repository to the installation (GitHub → the App → Configure → Repository access), or install the App on \"All repositories\" in a namespace you own",
+		repoFullName)
+}
+
 // forgeRefresherFor returns the token refresher for a connection, or nil
 // when it cannot/should-not refresh (PAT, GitHub-App, or a provider with no
 // configured OAuth app). The per-provider OAuth clients implement both
