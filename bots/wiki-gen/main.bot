@@ -484,6 +484,10 @@ if os.path.isdir(wiki_dir):
 all_md = sorted(all_md); concepts = sorted(concepts)
 invalid_fm = [p for p in concepts if not frontmatter_type_ok(p)]
 link_re = re.compile(r'\\[[^\\]]*\\]\\(([^)]+)\\)')
+wiki_abs = os.path.abspath(wiki_dir)
+def inside_wiki(path):
+    ap = os.path.abspath(path)
+    return ap == wiki_abs or ap.startswith(wiki_abs + os.sep)
 dead = []
 graph_deg = {p: 0 for p in concepts}
 for p in all_md:
@@ -499,19 +503,27 @@ for p in all_md:
         if not path_part:
             continue
         resolved = os.path.normpath(os.path.join(os.path.dirname(p), path_part))
-        fs = resolved
-        if path_part.endswith('/'):
-            fs = os.path.join(resolved, 'index.md')
-        if not os.path.exists(fs):
-            dead.append(p + ' -> ' + target)
-            continue
-        if anchor and fs.endswith('.md') and slug(anchor) not in headings(fs):
-            dead.append(p + ' -> ' + target + ' (missing #anchor)')
-            continue
-        if not path_part.endswith('/') and fs in graph_deg and os.path.basename(p) not in RESERVED:
-            graph_deg[fs] += 1
-            if p in graph_deg:
-                graph_deg[p] += 1
+        if inside_wiki(resolved):
+            # intra-wiki link: must resolve to a wiki page (or a dir's index)
+            fs = os.path.join(resolved, 'index.md') if path_part.endswith('/') else resolved
+            if not os.path.exists(fs):
+                dead.append(p + ' -> ' + target)
+                continue
+            if anchor and fs.endswith('.md') and slug(anchor) not in headings(fs):
+                dead.append(p + ' -> ' + target + ' (missing #anchor)')
+                continue
+            # concept-graph edge: both endpoints inside the wiki, non-reserved
+            if fs.endswith('.md') and fs in graph_deg and os.path.basename(p) not in RESERVED:
+                graph_deg[fs] += 1
+                if p in graph_deg:
+                    graph_deg[p] += 1
+        else:
+            # source-code / out-of-wiki reference (e.g. ../../pkg/dsl/parser/):
+            # a legitimate, valuable link in a code wiki. Valid when the path
+            # exists on disk (file OR directory); only a truly broken ref is
+            # flagged. No #anchor check (source files have no md headings).
+            if not os.path.exists(resolved):
+                dead.append(p + ' -> ' + target + ' (broken source ref)')
 orphans = sorted(p for p, d in graph_deg.items() if d == 0)
 has_quickstart = os.path.exists(os.path.join(wiki_dir, 'quickstart.md'))
 # scope: everything changed since run base must live under the wiki tree
