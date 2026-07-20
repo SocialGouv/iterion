@@ -57,7 +57,9 @@ function groupShares(shares: EditorShare[]): RepoGroup[] {
   return Array.from(repos, ([rk, bots]) => {
     const botGroups = Array.from(bots, ([bk, ss]) => ({
       botId: bk,
-      botLabel: ss[0]?.editor_title || bk || "Config",
+      // Name the bot group by its persona (display_name, e.g. "Vigie"); fall
+      // back to the editor surface title, then the technical bot id.
+      botLabel: ss[0]?.bot_display || ss[0]?.editor_title || bk || "Config",
       shares: ss,
     }));
     return {
@@ -75,6 +77,7 @@ function shareMatches(s: EditorShare, q: string): boolean {
     s.label,
     s.category,
     s.bot_id,
+    s.bot_display,
     s.editor_title,
     s.config_path,
     s.repo_url ? shortRepo(s.repo_url) : "",

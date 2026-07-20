@@ -141,26 +141,34 @@ func (s *Server) handleConfigEditorList(w http.ResponseWriter, r *http.Request) 
 		httpError(w, http.StatusInternalServerError, "%s", err.Error())
 		return
 	}
-	specCache := map[string]*bundle.ConfigShareSpec{}
+	manifestCache := map[string]*bundle.Manifest{}
 	views := make([]map[string]any, 0, len(rows))
 	for _, sh := range rows {
 		if !sh.Enabled {
 			continue
 		}
 		v := editorShareView(sh)
-		// Bot-declared editor branding (manifest config_share.editor_title) so
-		// the shell can show "Éditeur de veilles" instead of the generic title.
-		spec, ok := specCache[sh.BotID]
+		m, ok := manifestCache[sh.BotID]
 		if !ok {
-			spec = s.botConfigShareSpec(sh.BotID)
-			specCache[sh.BotID] = spec
+			m = s.botManifest(sh.BotID)
+			manifestCache[sh.BotID] = m
 		}
-		if spec != nil {
-			if spec.EditorTitle != "" {
-				v["editor_title"] = spec.EditorTitle
+		if m != nil {
+			// The bot's persona (display_name, e.g. "Vigie") names the bot when
+			// browsing by bot — distinct from editor_title ("Éditeur de veilles",
+			// the surface's name) and bot_id (the technical slug).
+			if m.DisplayName != "" {
+				v["bot_display"] = m.DisplayName
 			}
-			if spec.EditorDescription != "" {
-				v["editor_description"] = spec.EditorDescription
+			// Bot-declared editor branding (manifest config_share.editor_*) so the
+			// shell heading reads "Éditeur de veilles" instead of the generic title.
+			if m.ConfigShare != nil {
+				if m.ConfigShare.EditorTitle != "" {
+					v["editor_title"] = m.ConfigShare.EditorTitle
+				}
+				if m.ConfigShare.EditorDescription != "" {
+					v["editor_description"] = m.ConfigShare.EditorDescription
+				}
 			}
 		}
 		views = append(views, v)

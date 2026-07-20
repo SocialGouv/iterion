@@ -30,6 +30,8 @@ export interface EditorShare {
   /** Target repo of the edited file — used to group shares by repo → bot. */
   repo_url?: string;
   repo_ref?: string;
+  /** Bot persona (manifest display_name, e.g. "Vigie") — names the bot group. */
+  bot_display?: string;
   /** Bot-declared branding for the shell heading (manifest config_share). */
   editor_title?: string;
   editor_description?: string;

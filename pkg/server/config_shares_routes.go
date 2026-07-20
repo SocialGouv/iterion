@@ -86,16 +86,26 @@ func (s *Server) shareURL(id, token string) string {
 // bot without a discoverable surface mints with explicit operator-supplied
 // paths — the block is a guard-rail + convenience for the common case, not the
 // trust boundary against the operator.
-func (s *Server) botConfigShareSpec(botID string) *bundle.ConfigShareSpec {
+// botManifest loads a bot's manifest.yaml (persona display_name, config_share
+// surface, …) resolving the bot id against the effective bot paths. Returns nil
+// when the bot isn't resolvable on this server (e.g. a loose .bot).
+func (s *Server) botManifest(botID string) *bundle.Manifest {
 	mainFile, err := botregistry.ResolveBotPath(botID, s.effectivePaths())
 	if err != nil {
 		return nil
 	}
 	m, err := bundle.LoadManifest(filepath.Join(filepath.Dir(mainFile), "manifest.yaml"))
-	if err != nil || m == nil {
+	if err != nil {
 		return nil
 	}
-	return m.ConfigShare
+	return m
+}
+
+func (s *Server) botConfigShareSpec(botID string) *bundle.ConfigShareSpec {
+	if m := s.botManifest(botID); m != nil {
+		return m.ConfigShare
+	}
+	return nil
 }
 
 func (s *Server) handleCreateConfigShare(w http.ResponseWriter, r *http.Request) {
