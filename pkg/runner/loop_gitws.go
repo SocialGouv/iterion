@@ -185,6 +185,13 @@ func (r *Runner) prepareRepoWorkspace(ctx context.Context, msg *queue.RunMessage
 	if err := r.runGit(ctx, dir, "", "config", "user.email", authorEmail); err != nil {
 		return "", fmt.Errorf("runner: seed git author email in %s: %w", dir, err)
 	}
+	if err := r.installGitCredentialStore(ctx, dir, msg.RepoURL, tok); err != nil {
+		// Fail the clone rather than proceed: the alternative is a workspace
+		// whose only credential is the frozen one in remote.origin.url, which
+		// works now and 403s hours later at push time — the exact failure this
+		// removes, and the hardest kind to attribute.
+		return "", fmt.Errorf("runner: wire git credentials for %s: %w", msg.RunID, err)
+	}
 	seedRunScratchIgnore(dir)
 	r.cfg.Logger.Info("runner: cloned %s@%s for run %s", msg.RepoURL, msg.RepoSHA, msg.RunID)
 	return dir, nil
@@ -366,6 +373,61 @@ func (r *Runner) runGitEnv(ctx context.Context, dir, tok string, extraEnv []stri
 			return fmt.Errorf("git %s: timed out after %s (ITERION_RUNNER_GIT_TIMEOUT bounds each git op): %w: %s", shown, gitOpTimeout, err, detail)
 		}
 		return fmt.Errorf("git %s: %w: %s", shown, err, detail)
+	}
+	return nil
+}
+
+// gitCredentialFile is where the clone's live forge token lives, in git's
+// credential-store format. It sits under .git/ (not the worktree) so a bot's
+// `git add -A` can never stage it.
+const gitCredentialFile = "iterion-credentials"
+
+// installGitCredentialStore detaches the clone from the token it was cloned
+// with and points git at a credential FILE instead.
+//
+// The clone URL has to carry the token for the initial fetch to authenticate,
+// but git persists remote.origin.url verbatim — which freezes that credential
+// into .git/config. A GitHub App installation token lives ONE HOUR, while an
+// app-building run takes several, so the agent's `git push` at the end of the
+// run would authenticate with a long-dead token and fail 403. Writing the
+// credential to a file that the mid-run refresher rewrites means every later
+// git operation re-reads a LIVE token. It also keeps the secret out of
+// .git/config, where the agent (and anything that dumps config) could read it.
+func (r *Runner) installGitCredentialStore(ctx context.Context, dir, repoURL, token string) error {
+	if token == "" {
+		return nil
+	}
+	if err := r.runGit(ctx, dir, token, "remote", "set-url", "origin", repoURL); err != nil {
+		return fmt.Errorf("clean token out of the origin URL: %w", err)
+	}
+	path := filepath.Join(dir, ".git", gitCredentialFile)
+	if err := writeGitCredentials(path, repoURL, token); err != nil {
+		return err
+	}
+	// --file keeps the store local to this run; git's default would be the
+	// pod-global ~/.git-credentials, which a later run could read.
+	if err := r.runGit(ctx, dir, "", "config", "credential.helper", "store --file="+path); err != nil {
+		return fmt.Errorf("configure credential helper: %w", err)
+	}
+	return nil
+}
+
+// writeGitCredentials renders one credential-store line
+// (https://oauth2:<token>@host) and replaces the file atomically, so a
+// concurrent git read never sees a torn line.
+func writeGitCredentials(path, repoURL, token string) error {
+	u, err := url.Parse(repoURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("credential store: unusable repo URL %q", repoURL)
+	}
+	line := (&url.URL{Scheme: u.Scheme, Host: u.Host, User: url.UserPassword("oauth2", token)}).String() + "\n"
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(line), 0o600); err != nil {
+		return fmt.Errorf("credential store: write: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("credential store: replace: %w", err)
 	}
 	return nil
 }

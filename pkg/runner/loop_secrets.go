@@ -146,6 +146,61 @@ func (r *Runner) refreshFileSecretsOnce(ctx context.Context, tenantID string, re
 	}
 }
 
+// refreshGitCredentialsLoop keeps the clone's credential file live for the
+// whole run. It is the counterpart of refreshFileSecretsLoop for the token git
+// itself uses: a GitHub App installation token lives 1h, an app-building run
+// takes several, and the push happens at the END — so without this the last
+// and most valuable action of the run is the one that fails.
+//
+// Best-effort by design: a transient store error just leaves the previous
+// (still possibly valid) credential in place until the next tick.
+func (r *Runner) refreshGitCredentialsLoop(ctx context.Context, tenantID, secretID, dir, repoURL string) {
+	tick := time.NewTicker(fileSecretRefreshInterval)
+	defer tick.Stop()
+	path := filepath.Join(dir, ".git", gitCredentialFile)
+	last := ""
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		val, err := r.readFreshSecret(ctx, tenantID, secretID)
+		if err != nil {
+			r.cfg.Logger.Warn("runner: refresh git credential (ref %s): %v", secretID, err)
+			continue
+		}
+		if len(val) == 0 || string(val) == last {
+			continue
+		}
+		if err := writeGitCredentials(path, repoURL, string(val)); err != nil {
+			r.cfg.Logger.Warn("runner: refresh git credential: %v", err)
+			continue
+		}
+		last = string(val)
+		r.cfg.Logger.Info("runner: refreshed the clone's git credential from store (rotation picked up)")
+	}
+}
+
+// gitCredentialSecretRef returns the store id backing the run's forge token,
+// or "" when the run has no refreshable one (snapshot-only, or no store).
+// Mirrors the name precedence cloneRepo uses to pick the token.
+func (r *Runner) gitCredentialSecretRef(ctx context.Context) string {
+	if r.cfg.GenericSecrets == nil || r.cfg.Sealer == nil {
+		return ""
+	}
+	creds, ok := secrets.CredentialsFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	for _, name := range []string{"forge_token", "gitlab_token", "github_token"} {
+		if id := creds.GenericRefs[name]; id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
 // sandboxFileSecretRefs returns the file secrets of wf that carry a store
 // ref in the run's credentials — the ones a mid-run refresh can rewrite.
 // Nil when the store/creds/refs are absent or no file secret is

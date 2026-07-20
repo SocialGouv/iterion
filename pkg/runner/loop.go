@@ -973,6 +973,17 @@ func (r *Runner) executeRun(ctx context.Context, msg *queue.RunMessage) error {
 			go r.refreshFileSecretsLoop(refreshCtx, msg.TenantID, creds.GenericRefs, fileSecrets)
 		}
 	}
+	// Same rotation problem for the token GIT uses. Independent of the file
+	// secrets above: a repo-targeted run has a forge token even when the
+	// workflow declares no `as: file` secret at all, and its push is the last
+	// thing the run does — hours after the credential was minted.
+	if msg.RepoURL != "" && workDir != "" {
+		if ref := r.gitCredentialSecretRef(ctx); ref != "" {
+			gitCredCtx, stopGitCred := context.WithCancel(ctx)
+			defer stopGitCred()
+			go r.refreshGitCredentialsLoop(gitCredCtx, msg.TenantID, ref, workDir, msg.RepoURL)
+		}
+	}
 
 	// Isolate the forge CLI (glab/gh) auth config to a PER-RUN directory so a
 	// bot's `glab auth login` / `gh auth login` can never leak its forge
