@@ -14,6 +14,7 @@ import {
   type ShareWithToken,
 } from "@/api/configShareAdmin";
 import { useAuth } from "@/auth/AuthContext";
+import { useActiveRepo } from "@/hooks/useActiveRepo";
 import {
   Badge,
   Button,
@@ -48,6 +49,16 @@ import { ShareDeliveriesDrawer } from "./ShareDeliveriesDrawer";
 export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
   const { activeTeam } = useAuth();
   const teamID = activeTeam?.team_id;
+
+  // The bot is usually already bound to a repository (forge integration); a
+  // share edits a file IN that repo, so pre-fill the mint form from the bound
+  // repo instead of making the operator retype it. Falls back to manual entry
+  // when the bot has no (single) bound repo.
+  const { repos } = useActiveRepo();
+  const boundRepo = useMemo(
+    () => repos.find((r) => r.bot_ids.includes(entry.name)),
+    [repos, entry.name],
+  );
 
   const [creating, setCreating] = useState(false);
   const [mintedForOnce, setMintedForOnce] = useState<ShareWithToken | null>(null);
@@ -192,6 +203,7 @@ export function ConfigSharesCard({ entry }: { entry: BotEntryWithSchema }) {
           teamID={teamID}
           botID={entry.name}
           spec={spec}
+          defaultRepoURL={boundRepo?.web_url ?? ""}
           onCancel={() => setCreating(false)}
           onCreated={(minted) => {
             setCreating(false);
@@ -273,13 +285,31 @@ function ShareRow({
           {share.last_used_at && <> · last used {formatRelative(share.last_used_at)}</>}
         </span>
         <span className="ml-auto flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={onDeliveries} disabled={busy}>
-            Deliveries
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onDeliveries}
+            disabled={busy}
+            title="Edits saved through this share (link or config editor) — not the bot's scheduled runs"
+          >
+            History
           </Button>
-          <Button variant="secondary" size="sm" onClick={onRotate} disabled={busy}>
-            Rotate token
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onRotate}
+            disabled={busy}
+            title="Generate a new link. The current link stops working immediately — you must hand out the new one."
+          >
+            Rotate link
           </Button>
-          <Button variant="ghost" size="sm" onClick={onDelete} disabled={busy}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            disabled={busy}
+            title="Delete this share. Its link stops working permanently."
+          >
             Revoke
           </Button>
         </span>
@@ -296,17 +326,20 @@ function CreateShareDialog({
   teamID,
   botID,
   spec,
+  defaultRepoURL,
   onCancel,
   onCreated,
 }: {
   teamID: string;
   botID: string;
   spec: ConfigShareSpec;
+  /** Pre-fill from the bot's bound repo; empty = manual entry. */
+  defaultRepoURL?: string;
   onCancel: () => void;
   onCreated: (minted: ShareWithToken) => void;
 }) {
   const [label, setLabel] = useState("");
-  const [repoURL, setRepoURL] = useState("");
+  const [repoURL, setRepoURL] = useState(defaultRepoURL ?? "");
   const [repoRef, setRepoRef] = useState("main");
   const [category, setCategory] = useState("");
   const [readOnly, setReadOnly] = useState(false);

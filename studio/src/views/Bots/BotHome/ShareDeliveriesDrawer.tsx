@@ -7,9 +7,11 @@ import { DeliveriesDrawer } from "@/components/shared/DeliveriesDrawer";
 import { StatusBadge, Td, Tr, type BadgeVariant } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
 
-// Recent deliveries (editor-side requests) for one config-share — a thin
-// parameterization (fetch + columns/row shape) of the shared deliveries
-// drawer.
+// Edit history (the "delivery" audit) for one config-share: one row per SAVE
+// made through the share — via the token link OR the signed-in config editor —
+// with the before/after state, for forensics after a leak. NOT the bot's runs
+// (those read the file from git directly). A thin parameterization of the
+// shared deliveries drawer.
 export function ShareDeliveriesDrawer({
   teamID,
   share,
@@ -23,9 +25,9 @@ export function ShareDeliveriesDrawer({
 
   return (
     <DeliveriesDrawer
-      title={`Deliveries — ${shareName}`}
-      caption={`Recent deliveries for share ${shareName}`}
-      emptyMessage="No deliveries yet — this share hasn't been fetched."
+      title={`Edit history — ${shareName}`}
+      caption={`Saves made through this share (token link or config editor) — not the bot's scheduled runs`}
+      emptyMessage="No edits through this share yet. This logs saves made via the share link or the config editor — the bot's scheduled runs read the file straight from git and don't appear here."
       queryKey={["config-share-deliveries", teamID, share.id]}
       fetcher={() => listConfigShareDeliveries(teamID, share.id)}
       columns={["Status", "When", "Method", "Actor", "Changed", "Error"]}
