@@ -104,7 +104,10 @@ type Subscription struct {
 	// payload (issue title+body, comment args). Empty injects no payload.
 	ArgsVar string `json:"args_var,omitempty" bson:"args_var,omitempty"`
 	// Cron is set only for Invocation == schedule (the timer source matches it).
-	Cron            string            `json:"cron,omitempty" bson:"cron,omitempty"`
+	Cron string `json:"cron,omitempty" bson:"cron,omitempty"`
+	// IntervalSeconds is set only for Invocation == keepalive (the sub-minute
+	// counterpart of Cron): the always-on relaunch cadence in seconds.
+	IntervalSeconds int               `json:"interval_seconds,omitempty" bson:"interval_seconds,omitempty"`
 	KeyOverrides    map[string]string `json:"key_overrides,omitempty" bson:"key_overrides,omitempty"`
 	SecretOverrides map[string]string `json:"secret_overrides,omitempty" bson:"secret_overrides,omitempty"`
 	// Overlap policy + pre-launch guard for schedule-kind subscriptions
@@ -117,6 +120,10 @@ type Subscription struct {
 	Guard         string `json:"guard,omitempty" bson:"guard,omitempty"`
 	GuardTimeout  string `json:"guard_timeout,omitempty" bson:"guard_timeout,omitempty"`
 	GuardVar      string `json:"guard_var,omitempty" bson:"guard_var,omitempty"`
+	// StaleAfter is the keepalive silence cutoff (Go duration); empty
+	// normalizes to schedgate.DefaultStaleAfter. Only meaningful with
+	// Overlap == keepalive.
+	StaleAfter string `json:"stale_after,omitempty" bson:"stale_after,omitempty"`
 	// Origin records where this subscription came from so dedup and cleanup
 	// are possible: "forge:<repo_integration_id>" (orchestrator-generated,
 	// deleted by Origin on deprovision), "operator" (studio), "schedule.yaml"
@@ -137,6 +144,7 @@ func (s Subscription) Policy() schedgate.Policy {
 		Guard:         s.Guard,
 		GuardTimeout:  s.GuardTimeout,
 		GuardVar:      s.GuardVar,
+		StaleAfter:    s.StaleAfter,
 	})
 }
 
@@ -196,6 +204,35 @@ func FromScheduleInvocation(id, tenantID, repo, botID, origin string, inv bundle
 	sub.Mode = bundle.ExecutionDirect
 	sub.Match = Matcher{Sources: []Source{SourceSchedule}}
 	sub.Cron = cronExpr
+	sub.Vars = vars
+	sub.ArgsVar = inv.ArgsVar
+	return sub, true
+}
+
+// FromKeepaliveInvocation derives an always-on Subscription from a bot's
+// kind=keepalive invocation. The interval (validated >= KeepaliveMinInterval at
+// manifest parse) becomes IntervalSeconds; the overlap policy is keepalive so
+// the scheduler relaunches a fresh run each tick with at-most-one-live +
+// staleness reaping. Returns ok=false for any other invocation or a
+// missing/unparseable interval.
+func FromKeepaliveInvocation(id, tenantID, repo, botID, origin string, inv bundle.Invocation, now time.Time) (Subscription, bool) {
+	if inv.Kind != bundle.InvocationKindKeepalive || inv.Keepalive == nil {
+		return Subscription{}, false
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(inv.Keepalive.Interval))
+	if err != nil || d < bundle.KeepaliveMinInterval {
+		return Subscription{}, false
+	}
+	vars := copyStrMap(inv.Keepalive.DefaultVars)
+	if vars == nil {
+		vars = copyStrMap(inv.ContextVars)
+	}
+	sub := baseSubscription(id, tenantID, repo, botID, origin, inv.Kind, now)
+	sub.Mode = bundle.ExecutionDirect
+	sub.Match = Matcher{Sources: []Source{SourceSchedule}}
+	sub.IntervalSeconds = int(d.Round(time.Second) / time.Second)
+	sub.Overlap = schedgate.OverlapKeepalive
+	sub.StaleAfter = strings.TrimSpace(inv.Keepalive.StaleAfter)
 	sub.Vars = vars
 	sub.ArgsVar = inv.ArgsVar
 	return sub, true

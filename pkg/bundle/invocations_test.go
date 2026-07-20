@@ -126,7 +126,32 @@ func TestLoadManifest_RejectsInvocationErrors(t *testing.T) {
 		{
 			name: "wrong payload on kind",
 			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: forge\n    forge:\n      event: pull_request\n    command:\n      name: x\n",
-			want: "kind=forge must not set a command:/schedule: block",
+			want: "kind=forge must not set a command:/schedule:/keepalive: block",
+		},
+		{
+			name: "keepalive missing block",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n",
+			want: "kind=keepalive requires a keepalive: block",
+		},
+		{
+			name: "keepalive missing interval",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      stale_after: 10m\n",
+			want: "interval is required",
+		},
+		{
+			name: "keepalive interval below floor",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      interval: 1s\n",
+			want: "below the 5s floor",
+		},
+		{
+			name: "keepalive bad interval",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      interval: nope\n",
+			want: "invalid interval",
+		},
+		{
+			name: "keepalive with disallowed payload",
+			body: "name: b\nschema_version: 1\ninvocations:\n  - kind: keepalive\n    keepalive:\n      interval: 30s\n    board: {}\n",
+			want: "kind=keepalive must not set a forge:/command:/schedule:/board: block",
 		},
 		{
 			name: "schedule bad cron",

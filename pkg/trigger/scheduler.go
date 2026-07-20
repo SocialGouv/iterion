@@ -87,6 +87,10 @@ type ScheduleGate struct {
 	Lister   schedgate.ScheduleRunLister
 	Audit    func(schedgate.TickRecord)
 	GuardDir string
+	// Reap cancels keepalive runs found stale at a tick (so the zombie
+	// frees resources once a fresh run has relaunched). Nil is safe — the
+	// stale run simply lingers but no longer blocks relaunch.
+	Reap func(ctx context.Context, runIDs []string)
 }
 
 // SchedulerOption configures a Scheduler.
@@ -106,6 +110,18 @@ func WithSchedulerClock(fn func() time.Time) SchedulerOption {
 // keeps the pre-gate fire-always behavior).
 func WithSchedulerGate(g *ScheduleGate) SchedulerOption {
 	return func(s *Scheduler) { s.gate = g }
+}
+
+// WithSchedulerInterval overrides the loop tick resolution (default 1
+// minute). Set it below a minute (e.g. 5s) so sub-minute keepalive
+// subscriptions can actually fire at their cadence — the loop can only
+// fire a subscription as often as it ticks. Values <= 0 are ignored.
+func WithSchedulerInterval(d time.Duration) SchedulerOption {
+	return func(s *Scheduler) {
+		if d > 0 {
+			s.interval = d
+		}
+	}
 }
 
 // NewScheduler builds a scheduler over a subscription store + launcher.
@@ -175,21 +191,34 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 	scheduleSubs := 0
 	seen := map[string]bool{}
 	for _, sub := range subs {
-		if sub.Invocation != bundle.InvocationKindSchedule || !sub.Enabled || sub.Cron == "" {
+		if !sub.Enabled {
+			continue
+		}
+		// nextAfter computes a subscription's next-fire instant: cron for
+		// schedule kind, a fixed interval for keepalive (the sub-minute
+		// counterpart). A subscription that is neither is skipped.
+		var nextAfter func(time.Time) time.Time
+		switch {
+		case sub.Invocation == bundle.InvocationKindSchedule && sub.Cron != "":
+			sched, perr := cron.ParseStandard(sub.Cron)
+			if perr != nil {
+				s.warn("scheduler: bad cron %q on %s: %v", sub.Cron, sub.ID, perr)
+				continue
+			}
+			nextAfter = sched.Next
+		case sub.Invocation == bundle.InvocationKindKeepalive && sub.IntervalSeconds > 0:
+			d := time.Duration(sub.IntervalSeconds) * time.Second
+			nextAfter = func(t time.Time) time.Time { return t.Add(d) }
+		default:
 			continue
 		}
 		scheduleSubs++
-		sched, perr := cron.ParseStandard(sub.Cron)
-		if perr != nil {
-			s.warn("scheduler: bad cron %q on %s: %v", sub.Cron, sub.ID, perr)
-			continue
-		}
 		seen[sub.ID] = true
 
 		s.mu.Lock()
 		nf, armed := s.nextFire[sub.ID]
 		if !armed {
-			s.nextFire[sub.ID] = sched.Next(now)
+			s.nextFire[sub.ID] = nextAfter(now)
 			s.mu.Unlock()
 			continue
 		}
@@ -197,7 +226,7 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 			s.mu.Unlock()
 			continue
 		}
-		s.nextFire[sub.ID] = sched.Next(now)
+		s.nextFire[sub.ID] = nextAfter(now)
 		s.mu.Unlock()
 
 		s.fireIsolated(ctx, sub)
@@ -254,6 +283,7 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 			"ITERION_SCHEDULE_BOT=" + sub.BotID,
 		},
 		Logger: s.logger,
+		Now:    s.now(),
 	})
 	if !out.Proceed {
 		s.audit(out.Record)
@@ -267,6 +297,14 @@ func (s *Scheduler) fire(ctx context.Context, sub Subscription) {
 	}
 	if out.GuardRan {
 		vars[policy.GuardVar] = out.GuardStdout
+	}
+	// Reap keepalive zombies (stale runs the gate dropped so this fresh
+	// launch could proceed) so they free resources.
+	if len(out.ReapRunIDs) > 0 {
+		s.warn("scheduler: %s (%s) reaping %d stale keepalive run(s): %v", sub.ID, sub.BotID, len(out.ReapRunIDs), out.ReapRunIDs)
+		if s.gate != nil && s.gate.Reap != nil {
+			s.gate.Reap(ctx, out.ReapRunIDs)
+		}
 	}
 
 	plan := LaunchPlan{

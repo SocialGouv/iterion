@@ -112,6 +112,13 @@ func (s *Server) handleTriggerFromInvocation(w http.ResponseWriter, r *http.Requ
 				errors.New("board invocation has no board: block — it is a plain dispatcher target, nothing to subscribe"))
 			return
 		}
+	case bundle.InvocationKindKeepalive:
+		sub, derived = trigger.FromKeepaliveInvocation(id, "", "", entry.Name, botHomeTriggerOrigin, inv, now)
+		if !derived {
+			dispatcher.WriteErr(w, http.StatusBadRequest,
+				errors.New("keepalive invocation has no valid interval — check the keepalive: block"))
+			return
+		}
 	default:
 		dispatcher.WriteErr(w, http.StatusBadRequest,
 			fmt.Errorf("invocation kind %q is not enabled from here — wire it through the forge integration flow", inv.Kind))

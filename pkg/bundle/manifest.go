@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v2"
 )
@@ -405,14 +406,25 @@ const (
 	// InvocationKindBoard marks the bot as a dispatcher target: an issue whose
 	// Bot == this bot's name is picked up and run. No payload.
 	InvocationKindBoard InvocationKind = "board"
+	// InvocationKindKeepalive runs the bot always-on: a fresh, individually
+	// budgeted run is relaunched every `interval` with at-most-one-live
+	// semantics (a stale run is reaped, not stacked). Sub-minute cadence
+	// requires the resident in-process scheduler (host crontab floors at 1m).
+	// The bot's own supervisor: block, if any, attaches per launched run.
+	InvocationKindKeepalive InvocationKind = "keepalive"
 )
 
 var knownInvocationKinds = map[InvocationKind]bool{
-	InvocationKindForge:    true,
-	InvocationKindCommand:  true,
-	InvocationKindSchedule: true,
-	InvocationKindBoard:    true,
+	InvocationKindForge:     true,
+	InvocationKindCommand:   true,
+	InvocationKindSchedule:  true,
+	InvocationKindBoard:     true,
+	InvocationKindKeepalive: true,
 }
+
+// KeepaliveMinInterval is the floor on a keepalive invocation's interval: a
+// guardrail against a launch storm (each tick is a fresh budgeted run).
+const KeepaliveMinInterval = 5 * time.Second
 
 // ExecutionMode controls how a fired invocation becomes a run.
 //
@@ -457,10 +469,11 @@ type Invocation struct {
 	// still wins).
 	ContextVars map[string]string `yaml:"context_vars,omitempty" json:"context_vars,omitempty"`
 
-	Forge    *InvocationForge    `yaml:"forge,omitempty" json:"forge,omitempty"`
-	Command  *InvocationCommand  `yaml:"command,omitempty" json:"command,omitempty"`
-	Schedule *InvocationSchedule `yaml:"schedule,omitempty" json:"schedule,omitempty"`
-	Board    *InvocationBoard    `yaml:"board,omitempty" json:"board,omitempty"`
+	Forge     *InvocationForge     `yaml:"forge,omitempty" json:"forge,omitempty"`
+	Command   *InvocationCommand   `yaml:"command,omitempty" json:"command,omitempty"`
+	Schedule  *InvocationSchedule  `yaml:"schedule,omitempty" json:"schedule,omitempty"`
+	Board     *InvocationBoard     `yaml:"board,omitempty" json:"board,omitempty"`
+	Keepalive *InvocationKeepalive `yaml:"keepalive,omitempty" json:"keepalive,omitempty"`
 }
 
 // EffectiveMode returns the execution mode, defaulting an empty value to
@@ -524,6 +537,20 @@ type InvocationSchedule struct {
 	DefaultVars map[string]string `yaml:"default_vars,omitempty" json:"default_vars,omitempty"`
 }
 
+// InvocationKeepalive is the payload of a kind=keepalive invocation.
+type InvocationKeepalive struct {
+	// Interval is how often to relaunch the bot (Go duration, e.g. "30s",
+	// "5m"). Required, must be >= KeepaliveMinInterval. Sub-minute values
+	// need the resident in-process scheduler.
+	Interval string `yaml:"interval" json:"interval"`
+	// StaleAfter is the silence cutoff: a running run whose last progress is
+	// older than this is treated as dead, so a fresh run relaunches and the
+	// zombie is reaped. Empty defaults to schedgate.DefaultStaleAfter.
+	StaleAfter string `yaml:"stale_after,omitempty" json:"stale_after,omitempty"`
+	// DefaultVars are vars stamped on each relaunched run.
+	DefaultVars map[string]string `yaml:"default_vars,omitempty" json:"default_vars,omitempty"`
+}
+
 // Board card-event kinds a kind=board invocation may filter on. These mirror
 // the trigger package's Kind* constants; bundle can't import trigger (trigger
 // imports bundle), so they are duplicated here and kept in sync — the closed
@@ -576,7 +603,7 @@ func validateInvocations(invs []Invocation) error {
 	seenCmd := map[string]bool{}
 	for idx, inv := range invs {
 		if !knownInvocationKinds[inv.Kind] {
-			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board)", idx, inv.Kind)
+			return fmt.Errorf("invocations[%d]: unknown kind %q (known: forge, command, schedule, board, keepalive)", idx, inv.Kind)
 		}
 		if !knownExecutionModes[inv.Mode] {
 			return fmt.Errorf("invocations[%d]: invalid mode %q (want direct or board)", idx, inv.Mode)
@@ -589,8 +616,8 @@ func validateInvocations(invs []Invocation) error {
 			if !KnownForgeEvents[inv.Forge.Event] {
 				return fmt.Errorf("invocations[%d].forge: unknown event %q (known: %s, %s)", idx, inv.Forge.Event, ForgeEventPullRequest, ForgeEventPullRequestComment)
 			}
-			if inv.Command != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=forge must not set a command:/schedule: block", idx)
+			if inv.Command != nil || inv.Schedule != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=forge must not set a command:/schedule:/keepalive: block", idx)
 			}
 		case InvocationKindCommand:
 			if inv.Command == nil {
@@ -612,8 +639,8 @@ func validateInvocations(invs []Invocation) error {
 				}
 				seenCmd[lc] = true
 			}
-			if inv.Forge != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=command must not set a forge:/schedule: block", idx)
+			if inv.Forge != nil || inv.Schedule != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=command must not set a forge:/schedule:/keepalive: block", idx)
 			}
 		case InvocationKindSchedule:
 			if inv.Schedule == nil {
@@ -624,12 +651,12 @@ func validateInvocations(invs []Invocation) error {
 					return fmt.Errorf("invocations[%d].schedule: suggested_cron %q must be a 5-field cron expression", idx, c)
 				}
 			}
-			if inv.Forge != nil || inv.Command != nil {
-				return fmt.Errorf("invocations[%d]: kind=schedule must not set a forge:/command: block", idx)
+			if inv.Forge != nil || inv.Command != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=schedule must not set a forge:/command:/keepalive: block", idx)
 			}
 		case InvocationKindBoard:
-			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil {
-				return fmt.Errorf("invocations[%d]: kind=board takes only an optional board: block (not forge:/command:/schedule:)", idx)
+			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Keepalive != nil {
+				return fmt.Errorf("invocations[%d]: kind=board takes only an optional board: block (not forge:/command:/schedule:/keepalive:)", idx)
 			}
 			if inv.Board != nil {
 				for _, k := range inv.Board.On {
@@ -637,6 +664,33 @@ func validateInvocations(invs []Invocation) error {
 						return fmt.Errorf("invocations[%d].board: unknown on %q (known: %s, %s, %s, %s)", idx, k, BoardKindCardCreated, BoardKindCardMoved, BoardKindCardLabeled, BoardKindCardUpdated)
 					}
 				}
+			}
+		case InvocationKindKeepalive:
+			if inv.Keepalive == nil {
+				return fmt.Errorf("invocations[%d]: kind=keepalive requires a keepalive: block", idx)
+			}
+			iv := strings.TrimSpace(inv.Keepalive.Interval)
+			if iv == "" {
+				return fmt.Errorf("invocations[%d].keepalive: interval is required", idx)
+			}
+			d, err := time.ParseDuration(iv)
+			if err != nil {
+				return fmt.Errorf("invocations[%d].keepalive: invalid interval %q: %w", idx, iv, err)
+			}
+			if d < KeepaliveMinInterval {
+				return fmt.Errorf("invocations[%d].keepalive: interval %q is below the %s floor", idx, iv, KeepaliveMinInterval)
+			}
+			if sa := strings.TrimSpace(inv.Keepalive.StaleAfter); sa != "" {
+				sd, err := time.ParseDuration(sa)
+				if err != nil {
+					return fmt.Errorf("invocations[%d].keepalive: invalid stale_after %q: %w", idx, sa, err)
+				}
+				if sd <= 0 {
+					return fmt.Errorf("invocations[%d].keepalive: stale_after must be > 0 (got %q)", idx, sa)
+				}
+			}
+			if inv.Forge != nil || inv.Command != nil || inv.Schedule != nil || inv.Board != nil {
+				return fmt.Errorf("invocations[%d]: kind=keepalive must not set a forge:/command:/schedule:/board: block", idx)
 			}
 		}
 	}
