@@ -30,12 +30,12 @@ func (s *Server) registerConfigEditorRoutes() {
 	s.mux.Handle("GET /api/teams/{id}/config-editor/shares/{sid}/schedule", s.requireAuth(http.HandlerFunc(s.handleConfigEditorGetSchedule)))
 	s.mux.Handle("PATCH /api/teams/{id}/config-editor/shares/{sid}/schedule", s.requireAuth(http.HandlerFunc(s.handleConfigEditorPatchSchedule)))
 	// Recent runs of the share's (bot, category): a read-only, reduced view so
-	// the editor can SEE the effect of their edits (did the last digest run,
+	// the editor can SEE the effect of their edits (did the last run happen,
 	// when, did it succeed) without granting the full run console.
 	s.mux.Handle("GET /api/teams/{id}/config-editor/shares/{sid}/runs", s.requireAuth(http.HandlerFunc(s.handleConfigEditorRuns)))
 }
 
-// configEditorRunsLimit caps how many recent digests the editor view returns —
+// configEditorRunsLimit caps how many recent runs the editor view returns —
 // enough to see the recent cadence, not a full history browser.
 const configEditorRunsLimit = 8
 

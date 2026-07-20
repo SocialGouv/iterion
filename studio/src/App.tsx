@@ -28,7 +28,7 @@ const MarketplaceView = lazy(() => import("@/views/Marketplace"));
 const PluginsView = lazy(() => import("@/views/Plugins"));
 const SecretsView = lazy(() => import("@/views/Secrets"));
 const SkillsView = lazy(() => import("@/views/Skills"));
-const VeillesView = lazy(() => import("@/views/Veilles"));
+const ConfigEditorView = lazy(() => import("@/views/ConfigEditor"));
 const OrgsAdminPage = lazy(() => import("@/views/admin/OrgsAdminPage"));
 const UsersAdminPage = lazy(() => import("@/views/admin/UsersAdminPage"));
 const AuditAdminPage = lazy(() => import("@/views/admin/AuditAdminPage"));
@@ -611,9 +611,9 @@ function AuthedApp() {
               <WhatsNextView />
             </ErrorBoundary>
           </Route>
-          <Route path="/veilles">
-            <ErrorBoundary area="Veilles view">
-              <VeillesView />
+          <Route path="/config-editor">
+            <ErrorBoundary area="Config editor view">
+              <ConfigEditorView />
             </ErrorBoundary>
           </Route>
           <Route path="/" component={HomeView} />

@@ -171,10 +171,10 @@ export interface EditorRun {
   finished_at?: string;
 }
 
-// listEditorShareRuns loads the recent digests of the share's (bot, category)
-// so the editor can see the effect of their edits (did it run, when, ok?). A
-// 404 (runs unavailable) surfaces as FeatureUnavailableError; callers treat it
-// as "no recent-digests panel".
+// listEditorShareRuns loads the recent runs of the share's (bot, category) so
+// the editor can see the effect of their edits (did it run, when, ok?). A 404
+// (runs unavailable) surfaces as FeatureUnavailableError; callers treat it as
+// "no recent-runs panel".
 export function listEditorShareRuns(teamID: string, shareID: string): Promise<EditorRun[]> {
   return guard404("config-editor-runs", async () => {
     const r = await apiRequest<{ runs: EditorRun[] }>(

@@ -29,11 +29,11 @@ import { listConfigShares, type ShareView } from "@/api/configShareAdmin";
  * operator has access to, with a one-line description each — a hub, not a
  * dead end. Areas the server hasn't wired simply don't render.
  *
- * The Veilles (config-share) card is the exception the nav never had: there
- * is no top-level config-shares route, only the per-bot manager. The card
- * loads the team's shares and links straight to the owning bot's home (its
- * real `bot_id`, e.g. feed-watch) — never a stale default — so the veille is
- * represented correctly here instead of pointing at the wrong bot.
+ * The Config-editor card links to the generic /config-editor route (the same
+ * Workspace as the minimal config-editor shell). iterion is bot-agnostic here:
+ * it exposes the generic config-share primitive; a bot's own branding (e.g.
+ * feed-watch's "Éditeur de veilles") comes from that bot's manifest, never
+ * hardcoded in the engine UI.
  */
 
 interface AreaCard {
@@ -47,13 +47,13 @@ export default function HubGrid() {
   const info = useServerInfoStore((s) => s.info);
   const { activeTeam, activeTeamID, activeRole, user } = useAuth();
   const cloud = info?.mode === "cloud";
-  const canEditVeilles = canEditConfigShares(activeRole, !!user?.is_super_admin);
+  const canEditShares = canEditConfigShares(activeRole, !!user?.is_super_admin);
 
-  // Config-shares (Veilles) — loaded only when the feature is wired and a
-  // team is active. Shares the ["config-shares", teamID] cache with the
-  // per-bot ConfigSharesCard. Best-effort: a failure just hides the card
-  // (the nav never surfaced it either, so its absence is not a regression).
-  const sharesEnabled = !!info?.config_shares_enabled && !!activeTeamID && canEditVeilles;
+  // Config-shares — loaded only when the feature is wired, a team is active,
+  // and the user can edit shares. Shares the ["config-shares", teamID] cache
+  // with the per-bot ConfigSharesCard. Best-effort: a failure just hides the
+  // card (the nav never surfaced it either, so its absence is not a regression).
+  const sharesEnabled = !!info?.config_shares_enabled && !!activeTeamID && canEditShares;
   const sharesQuery = useQuery<ShareView[]>({
     queryKey: ["config-shares", activeTeamID],
     queryFn: () => listConfigShares(activeTeamID),
@@ -94,10 +94,10 @@ export default function HubGrid() {
     areas.push({ href: "/admin/orgs", label: "Admin", desc: "Orgs, audit, platform", icon: GearIcon });
   }
 
-  // The Veilles card leads to the dedicated /veilles editor route (the same
-  // Workspace as the minimal config-editor shell). Shown with the share count
-  // so the operator knows the scope.
-  const veilleCount = shares && shares.length > 0 ? shares.length : 0;
+  // The Config-editor card leads to the dedicated /config-editor route (the
+  // same Workspace as the minimal config-editor shell). Shown with the share
+  // count so the operator knows the scope.
+  const shareCount = shares && shares.length > 0 ? shares.length : 0;
 
   return (
     <section aria-label="Explore" className="space-y-2">
@@ -105,11 +105,11 @@ export default function HubGrid() {
         Explore
       </h2>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-        {veilleCount > 0 && (
+        {shareCount > 0 && (
           <HubTile
-            href="/veilles"
-            label="Veilles"
-            desc={`${veilleCount} config-share${veilleCount === 1 ? "" : "s"} to edit`}
+            href="/config-editor"
+            label="Config editor"
+            desc={`${shareCount} config-share${shareCount === 1 ? "" : "s"} to edit`}
             icon={ReaderIcon}
           />
         )}

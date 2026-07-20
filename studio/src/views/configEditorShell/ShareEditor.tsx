@@ -19,7 +19,7 @@ import {
   type FieldValue,
 } from "./fieldModel";
 import { CadenceCard } from "./CadenceCard";
-import { RecentDigestsCard } from "./RecentDigestsCard";
+import { RecentRunsCard } from "./RecentRunsCard";
 import { StringField, ArrayField } from "./ShareFields";
 import { ConflictDialog } from "./ConflictDialog";
 
@@ -169,7 +169,7 @@ export function ShareEditor({ teamID, share }: { teamID: string; share: EditorSh
 
       <CadenceCard teamID={teamID} share={share} readOnly={readOnly} />
 
-      <RecentDigestsCard teamID={teamID} share={share} />
+      <RecentRunsCard teamID={teamID} share={share} />
 
       {fields.length === 0 ? (
         <Card>

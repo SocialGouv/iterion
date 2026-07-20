@@ -50,7 +50,7 @@ export type Section =
   | "plugins"
   | "secrets"
   | "skills"
-  | "veilles"
+  | "configEditor"
   | "org"
   | "team"
   | "integrations"
@@ -102,7 +102,7 @@ const SEGMENT_TO_SECTION: Record<string, Section> = {
   triggers: "triggers",
   marketplace: "marketplace",
   plugins: "plugins",
-  veilles: "veilles",
+  "config-editor": "configEditor",
   orgs: "org",
   teams: "team",
   integrations: "integrations",
@@ -182,13 +182,14 @@ export default function NavLinks({ collapsed }: Props) {
   // Integrations stays — the valued "connect a repo / enable a bot" shortcut.
   // Both are cloud-only (the forge stores are wired only in cloud mode).
   const manage: LinkDef[] = [];
-  // Veilles: the config-share editor as a full-app route, for accounts that can
-  // edit shares but aren't boxed into the minimal ConfigEditorShell (admins /
-  // owners / super-admins). Mirrors the server canEditConfigShares gate so the
-  // veille editor scales with access instead of vanishing when a config_editor
-  // is broadened.
+  // Config editor: the config-share editor as a full-app route, for accounts
+  // that can edit shares but aren't boxed into the minimal ConfigEditorShell
+  // (admins / owners / super-admins). Mirrors the server canEditConfigShares
+  // gate so the editor scales with access instead of vanishing when a
+  // config_editor is broadened. Generic engine surface — a bot's own branding
+  // (e.g. feed-watch's "Éditeur de veilles") shows inside via editor_title.
   if (info?.config_shares_enabled && canEditConfigShares(activeRole, !!user?.is_super_admin)) {
-    manage.push({ section: "veilles", href: "/veilles", label: "Veilles", icon: ReaderIcon });
+    manage.push({ section: "configEditor", href: "/config-editor", label: "Config editor", icon: ReaderIcon });
   }
   if (info?.secrets_enabled) {
     manage.push({ section: "secrets", href: "/secrets", label: "Secrets", icon: LockClosedIcon });

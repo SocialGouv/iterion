@@ -314,9 +314,9 @@ export function hasRole(role: Role | null, want: Role | "super-admin"): boolean 
 // canEditConfigShares mirrors the server gate (auth_authz.go
 // canEditConfigShares): a super-admin, the least-privilege config_editor
 // capability, or a team manager (admin/owner) may edit the team's
-// config-shares. Used to gate the Veilles nav entry / hub card / route so the
-// veille editor scales with access — a config_editor lands on its minimal
-// shell, an admin reaches the same editor as a route in the full studio.
+// config-shares. Used to gate the Config-editor nav entry / hub card / route so
+// the editor scales with access — a config_editor lands on its minimal shell,
+// an admin reaches the same editor as a route in the full studio.
 export function canEditConfigShares(role: Role | null, isSuperAdmin: boolean): boolean {
   if (isSuperAdmin) return true;
   if (role === "config_editor") return true;
