@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
 )
@@ -133,6 +135,27 @@ type Subscription struct {
 	CreatedBy string    `json:"created_by,omitempty" bson:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at" bson:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
+}
+
+// NextFire computes the subscription's next-fire instant after `after`,
+// the single seam that resolves the cron-vs-interval cadence (mirrors
+// cloudsched.NextFireForBot for the resident scheduler). ok=false means
+// this subscription has no timer cadence (not a schedule/keepalive kind,
+// or missing cron/interval) and the scheduler skips it; a non-nil err is a
+// malformed cron on an otherwise-eligible schedule subscription.
+func (s Subscription) NextFire(after time.Time) (next time.Time, ok bool, err error) {
+	switch {
+	case s.Invocation == bundle.InvocationKindSchedule && s.Cron != "":
+		sched, perr := cron.ParseStandard(s.Cron)
+		if perr != nil {
+			return time.Time{}, true, perr
+		}
+		return sched.Next(after), true, nil
+	case s.Invocation == bundle.InvocationKindKeepalive && s.IntervalSeconds > 0:
+		return after.Add(time.Duration(s.IntervalSeconds) * time.Second), true, nil
+	default:
+		return time.Time{}, false, nil
+	}
 }
 
 // Policy projects the subscription's schedgate fields into a

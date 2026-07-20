@@ -54,3 +54,16 @@ The keepalive/always-on scheduling feature and its demo bot
   - Test staleness with a **separate store dir / fresh process** — `rm -rf
     .iterion/runs` while a prior studio's runs are in flight triggers a drain
     and "run not found" noise. Kill all `iterion studio` procs first.
+- Follow-ups (found by the /simplify cleanup pass, deferred as out-of-diff):
+  1. **Unbounded per-tick liveness scan.** `schedgate.LiveAndStaleRunsForSchedule`
+     calls `ListRunsBySchedule` + `LoadRun` for every run ever stamped with the
+     schedule id, every tick. Reaped runs stay `failed_resumable` but keep the
+     `source.schedule_id` edge, so the scan grows O(lifetime runs) — acute for a
+     15s keepalive (~5.7k runs/day). Fix lives in the store layer (filter
+     terminal runs in `ListRunsBySchedule` across mongo/fs/memory + conformance),
+     outside this feature's diff. Worth doing before enabling a long-lived
+     keepalive in production.
+  2. **Studio hides the guard under always-on.** The always-on toggle hides the
+     whole `SchedulePolicyEditor`, so a guard command (which the CLI/API allow
+     with `overlap=keepalive`) can't be set from studio. Fix = let the editor own
+     the third overlap mode / keep the guard portion visible under always-on.

@@ -38,6 +38,11 @@ func (s *Server) cloudScheduleGate(ctx context.Context, sb cloudsched.ScheduledB
 	if !out.Proceed {
 		return false, "", out.Record
 	}
+	// out.ReapRunIDs is intentionally dropped here: in cloud the NATS lease
+	// is the liveness authority, so reaping a stranded run is owned by the
+	// lease-aware queue sweeper/reaper (force-flipping a still-leased run
+	// would fight it). schedgate's stale_after still drives relaunch; the
+	// sweeper's lease TTL drives the eventual status flip.
 	return true, out.GuardStdout, schedgate.TickRecord{}
 }
 

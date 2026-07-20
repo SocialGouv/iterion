@@ -297,28 +297,25 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	patch.GuardTimeout = req.GuardTimeout
 	patch.GuardVar = req.GuardVar
 	patch.StaleAfter = req.StaleAfter
-	// cron and interval_seconds are mutually exclusive; a switch recomputes
-	// NextFireAt from the new cadence.
-	if req.Cron != nil && req.IntervalSeconds != nil && strings.TrimSpace(*req.Cron) != "" && *req.IntervalSeconds > 0 {
-		httpError(w, http.StatusBadRequest, "set either cron or interval_seconds, not both")
-		return
-	}
-	if req.IntervalSeconds != nil {
-		iv := *req.IntervalSeconds
-		if iv > 0 {
-			if floor := int(bundle.KeepaliveMinInterval.Seconds()); iv < floor {
-				httpError(w, http.StatusBadRequest, "interval_seconds must be >= %d", floor)
-				return
-			}
-			// Switching to keepalive clears cron.
-			empty := ""
-			patch.Cron = &empty
-			next := now.Add(time.Duration(iv) * time.Second)
-			patch.NextFireAt = &next
+	// cron and interval_seconds are mutually exclusive cadences; whichever
+	// the request provides recomputes NextFireAt and clears the other. The
+	// exclusive switch (not two independent ifs) makes each patch field set
+	// exactly once.
+	switch {
+	case req.IntervalSeconds != nil && *req.IntervalSeconds > 0:
+		if req.Cron != nil && strings.TrimSpace(*req.Cron) != "" {
+			httpError(w, http.StatusBadRequest, "set either cron or interval_seconds, not both")
+			return
 		}
-		patch.IntervalSeconds = &iv
-	}
-	if req.Cron != nil {
+		iv := *req.IntervalSeconds
+		if floor := int(bundle.KeepaliveMinInterval.Seconds()); iv < floor {
+			httpError(w, http.StatusBadRequest, "interval_seconds must be >= %d", floor)
+			return
+		}
+		next := now.Add(time.Duration(iv) * time.Second)
+		empty := ""
+		patch.IntervalSeconds, patch.Cron, patch.NextFireAt = &iv, &empty, &next // keepalive clears cron
+	case req.Cron != nil:
 		cronExpr := strings.TrimSpace(*req.Cron)
 		if err := cloudsched.ValidateCron(cronExpr); err != nil {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
@@ -329,11 +326,12 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusBadRequest, "%s", err.Error())
 			return
 		}
-		patch.Cron = &cronExpr
-		patch.NextFireAt = &next
-		// Switching to cron clears the interval.
 		zero := 0
-		patch.IntervalSeconds = &zero
+		patch.Cron, patch.NextFireAt, patch.IntervalSeconds = &cronExpr, &next, &zero // cron clears the interval
+	case req.IntervalSeconds != nil:
+		// Explicit interval_seconds:0 disables keepalive without a new cron.
+		iv := 0
+		patch.IntervalSeconds = &iv
 	}
 	if req.Vars != nil {
 		patch.Vars = req.Vars

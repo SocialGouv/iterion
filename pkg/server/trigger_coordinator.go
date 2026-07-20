@@ -97,14 +97,15 @@ func StartTriggerCoordinator(ns *native.Store, subs trigger.SubscriptionStore, n
 // `iterion schedule audit` reads). Audit appends are best-effort: a
 // failed append is logged, never turns a tick decision into a failure.
 func (s *Server) scheduleGate() *trigger.ScheduleGate {
-	// The overlap/staleness gate needs the run store. cfg.Store is set only
-	// in cloud/injected-store mode; in local/studio mode runview owns the
-	// store, so fall back to it — otherwise the gate is nil and keepalive
-	// loses at-most-one-live + staleness reaping (runs would stack).
-	rs := s.cfg.Store
-	if rs == nil && s.runs != nil {
-		rs = s.runs.RunStore()
+	// The overlap/staleness gate needs the run store. runview owns it in
+	// both modes — RunStore() returns the injected cfg.Store in cloud and
+	// the storeDir-built store locally — so it is the single canonical
+	// accessor every run-touching call site in this package uses. (Reaching
+	// for cfg.Store directly misses the local case, where it is nil.)
+	if s.runs == nil {
+		return nil
 	}
+	rs := s.runs.RunStore()
 	if rs == nil {
 		return nil
 	}

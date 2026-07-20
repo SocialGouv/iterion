@@ -24,7 +24,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 
-import { buildCreatePayload } from "./scheduleModel";
+import { buildCreatePayload, intervalSecondsOrError } from "./scheduleModel";
 
 // Create + edit dialogs for the Automations → Schedules tab. Both share
 // the CronField (live humanized preview + preset shortcuts) and the
@@ -51,17 +51,54 @@ function botOptions(
 
 const NO_REPO = "";
 
-/** Parses a Go-style duration ("30s", "5m", "2h") to whole seconds. A bare
- *  number is read as seconds. Returns 0 on anything unparseable. */
-export function parseDurationSeconds(v: string): number {
-  const s = v.trim();
-  if (s === "") return 0;
-  if (/^\d+$/.test(s)) return parseInt(s, 10);
-  const m = /^(\d+)\s*(s|m|h)$/i.exec(s);
-  if (!m) return 0;
-  const n = parseInt(m[1] ?? "0", 10);
-  const unit = (m[2] ?? "s").toLowerCase();
-  return unit === "h" ? n * 3600 : unit === "m" ? n * 60 : n;
+/** The interval + stale-after inputs shown when a schedule is always-on.
+ *  Shared by the create and edit dialogs so the two stay in sync. */
+function AlwaysOnFields({
+  interval,
+  staleAfter,
+  onInterval,
+  onStaleAfter,
+  disabled = false,
+}: {
+  interval: string;
+  staleAfter: string;
+  onInterval: (v: string) => void;
+  onStaleAfter: (v: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <FieldLabel>Interval</FieldLabel>
+        <Input
+          size="sm"
+          value={interval}
+          onChange={(e) => onInterval(e.target.value)}
+          placeholder="30s"
+          disabled={disabled}
+          className="w-32 font-mono"
+        />
+        <p className="mt-1 text-xs text-fg-subtle">
+          How often to relaunch (min 5s, e.g. 30s / 2m). Sub-minute needs a
+          resident scheduler.
+        </p>
+      </div>
+      <div>
+        <FieldLabel>Stale after (optional)</FieldLabel>
+        <Input
+          size="sm"
+          value={staleAfter}
+          onChange={(e) => onStaleAfter(e.target.value)}
+          placeholder="5m"
+          disabled={disabled}
+          className="w-32 font-mono"
+        />
+        <p className="mt-1 text-xs text-fg-subtle">
+          A run silent past this is treated dead and relaunched (default 5m).
+        </p>
+      </div>
+    </div>
+  );
 }
 
 export function NewScheduleDialog({
@@ -127,11 +164,12 @@ export function NewScheduleDialog({
     }
     let intervalSeconds = 0;
     if (alwaysOn) {
-      intervalSeconds = parseDurationSeconds(interval);
-      if (intervalSeconds < 5) {
-        action.setError("Interval must be at least 5s (e.g. 30s, 2m).");
+      const iv = intervalSecondsOrError(interval);
+      if ("error" in iv) {
+        action.setError(iv.error);
         return;
       }
+      intervalSeconds = iv.seconds;
     } else if (!cron.trim()) {
       action.setError("Cron is required.");
       return;
@@ -219,35 +257,12 @@ export function NewScheduleDialog({
         />
 
         {alwaysOn ? (
-          <div className="flex flex-col gap-3">
-            <div>
-              <FieldLabel>Interval</FieldLabel>
-              <Input
-                size="sm"
-                value={interval}
-                onChange={(e) => setInterval(e.target.value)}
-                placeholder="30s"
-                className="w-32 font-mono"
-              />
-              <p className="mt-1 text-xs text-fg-subtle">
-                How often to relaunch (min 5s, e.g. 30s / 2m). Sub-minute needs a
-                resident scheduler.
-              </p>
-            </div>
-            <div>
-              <FieldLabel>Stale after (optional)</FieldLabel>
-              <Input
-                size="sm"
-                value={staleAfter}
-                onChange={(e) => setStaleAfter(e.target.value)}
-                placeholder="5m"
-                className="w-32 font-mono"
-              />
-              <p className="mt-1 text-xs text-fg-subtle">
-                A run silent past this is treated dead and relaunched (default 5m).
-              </p>
-            </div>
-          </div>
+          <AlwaysOnFields
+            interval={interval}
+            staleAfter={staleAfter}
+            onInterval={setInterval}
+            onStaleAfter={setStaleAfter}
+          />
         ) : (
           <CronField value={cron} onChange={setCron} />
         )}
@@ -378,14 +393,14 @@ export function EditScheduleDialog({
   async function submit() {
     if (!schedule) return;
     if (alwaysOn) {
-      const sec = parseDurationSeconds(interval);
-      if (sec < 5) {
-        action.setError("Interval must be at least 5s (e.g. 30s, 2m).");
+      const iv = intervalSecondsOrError(interval);
+      if ("error" in iv) {
+        action.setError(iv.error);
         return;
       }
       const res = await action.run(() =>
         updateTeamSchedule(teamID, schedule.id, {
-          interval_seconds: sec,
+          interval_seconds: iv.seconds,
           stale_after: staleAfter.trim() || undefined,
         }),
       );
@@ -419,28 +434,13 @@ export function EditScheduleDialog({
               Always-on schedule — relaunches on an interval with at most one live
               run at a time.
             </div>
-            <div>
-              <FieldLabel>Interval</FieldLabel>
-              <Input
-                size="sm"
-                value={interval}
-                onChange={(e) => setInterval(e.target.value)}
-                placeholder="30s"
-                disabled={action.busy}
-                className="w-32 font-mono"
-              />
-            </div>
-            <div>
-              <FieldLabel>Stale after (optional)</FieldLabel>
-              <Input
-                size="sm"
-                value={staleAfter}
-                onChange={(e) => setStaleAfter(e.target.value)}
-                placeholder="5m"
-                disabled={action.busy}
-                className="w-32 font-mono"
-              />
-            </div>
+            <AlwaysOnFields
+              interval={interval}
+              staleAfter={staleAfter}
+              onInterval={setInterval}
+              onStaleAfter={setStaleAfter}
+              disabled={action.busy}
+            />
           </div>
         ) : (
           <>

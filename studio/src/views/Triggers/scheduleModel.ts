@@ -4,6 +4,23 @@ import {
   policyFieldsFromValue,
   type SchedulePolicyValue,
 } from "@/components/shared/SchedulePolicyEditor";
+import { parseGoDuration } from "@/lib/duration";
+
+/** Minimum always-on interval (seconds) — mirrors the server's
+ *  bundle.KeepaliveMinInterval floor so the dialog rejects the same values. */
+export const KEEPALIVE_MIN_INTERVAL_SEC = 5;
+
+/** Parses an always-on interval string (Go duration, e.g. "30s", "2m") to
+ *  whole seconds, or returns an error when it is unparseable or below the
+ *  floor. Shared by the create + edit dialogs so the rule lives in one place. */
+export function intervalSecondsOrError(v: string): { seconds: number } | { error: string } {
+  const ms = parseGoDuration(v);
+  const seconds = ms == null ? 0 : Math.floor(ms / 1000);
+  if (seconds < KEEPALIVE_MIN_INTERVAL_SEC) {
+    return { error: `Interval must be at least ${KEEPALIVE_MIN_INTERVAL_SEC}s (e.g. 30s, 2m).` };
+  }
+  return { seconds };
+}
 
 // Pure model for the Schedules tab: the client-side join of a team's
 // schedules against its connected forge repos, plus the create-payload
@@ -193,6 +210,7 @@ export interface ScheduleDraft {
  */
 export function buildCreatePayload(d: ScheduleDraft): ScheduleCreateInput {
   const input: ScheduleCreateInput = { bot_id: d.botId.trim() };
+  const p = policyFieldsFromValue(d.policy);
   if (d.alwaysOn) {
     // Keepalive: interval instead of cron; overlap forced to keepalive.
     input.interval_seconds = Math.max(0, Math.floor(d.intervalSeconds ?? 0));
@@ -200,7 +218,6 @@ export function buildCreatePayload(d: ScheduleDraft): ScheduleCreateInput {
     if (d.staleAfter?.trim()) input.stale_after = d.staleAfter.trim();
   } else {
     input.cron = d.cron.trim();
-    const p = policyFieldsFromValue(d.policy);
     if (p.overlap === "allow") {
       input.overlap = "allow";
       if (p.max_concurrent > 0) input.max_concurrent = p.max_concurrent;
@@ -217,7 +234,6 @@ export function buildCreatePayload(d: ScheduleDraft): ScheduleCreateInput {
     if (Object.keys(vars).length > 0) input.vars = vars;
   }
   // The guard applies to both cadences.
-  const p = policyFieldsFromValue(d.policy);
   if (p.guard) {
     input.guard = p.guard;
     if (p.guard_timeout) input.guard_timeout = p.guard_timeout;

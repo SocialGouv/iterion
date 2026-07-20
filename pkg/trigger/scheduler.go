@@ -6,8 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
-
 	"github.com/SocialGouv/iterion/pkg/bundle"
 	iterlog "github.com/SocialGouv/iterion/pkg/log"
 	"github.com/SocialGouv/iterion/pkg/schedgate"
@@ -194,22 +192,14 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		if !sub.Enabled {
 			continue
 		}
-		// nextAfter computes a subscription's next-fire instant: cron for
-		// schedule kind, a fixed interval for keepalive (the sub-minute
-		// counterpart). A subscription that is neither is skipped.
-		var nextAfter func(time.Time) time.Time
-		switch {
-		case sub.Invocation == bundle.InvocationKindSchedule && sub.Cron != "":
-			sched, perr := cron.ParseStandard(sub.Cron)
-			if perr != nil {
-				s.warn("scheduler: bad cron %q on %s: %v", sub.Cron, sub.ID, perr)
-				continue
-			}
-			nextAfter = sched.Next
-		case sub.Invocation == bundle.InvocationKindKeepalive && sub.IntervalSeconds > 0:
-			d := time.Duration(sub.IntervalSeconds) * time.Second
-			nextAfter = func(t time.Time) time.Time { return t.Add(d) }
-		default:
+		// The subscription owns its cadence (cron or keepalive interval) —
+		// see Subscription.NextFire. ok=false = not a timer sub; err = bad cron.
+		next, ok, err := sub.NextFire(now)
+		if !ok {
+			continue
+		}
+		if err != nil {
+			s.warn("scheduler: bad cron %q on %s: %v", sub.Cron, sub.ID, err)
 			continue
 		}
 		scheduleSubs++
@@ -218,7 +208,7 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		s.mu.Lock()
 		nf, armed := s.nextFire[sub.ID]
 		if !armed {
-			s.nextFire[sub.ID] = nextAfter(now)
+			s.nextFire[sub.ID] = next
 			s.mu.Unlock()
 			continue
 		}
@@ -226,7 +216,7 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 			s.mu.Unlock()
 			continue
 		}
-		s.nextFire[sub.ID] = nextAfter(now)
+		s.nextFire[sub.ID] = next
 		s.mu.Unlock()
 
 		s.fireIsolated(ctx, sub)
