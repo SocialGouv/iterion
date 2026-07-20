@@ -1,65 +1,50 @@
+// BoardView — the kanban orchestrator. Wires the board/ concern modules
+// together: data (useBoardData), filters + saved views (useBoardFilters →
+// BoardFilterBar), dispatcher overlay (useDispatcherPoll), per-column
+// derivations (useBoardColumns/useSwimlanes), selection + drag-drop + undo,
+// column management (useColumnManagement → ColumnDialogHost), issue CRUD
+// (useIssueActions → IssueModalHost), bulk actions and keyboard shortcuts.
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 
-import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
-import DispatcherControlBar from "@/components/shared/DispatcherControlBar";
-import { Button } from "@/components/ui/Button";
-import { DropdownMenu, DropdownMenuItem } from "@/components/ui/DropdownMenu";
-import { InlineBanner } from "@/components/ui/InlineBanner";
-import { useActiveRepo } from "@/hooks/useActiveRepo";
 import { cancelIssue } from "@/api/dispatcher";
-import {
-  createIssue,
-  deleteIssue,
-  patchIssue,
-  saveView,
-  deleteView,
-  type NativeIssue,
-  type NativeState,
-  type NativeView,
-} from "@/api/native";
-import IssueModal, { type IssueDraft } from "./IssueModal";
-import { BoardFilters } from "./BoardFilters";
-import { BoardKeyboardHelp } from "./BoardKeyboardHelp";
-import { Column } from "./Column";
-import { ViewBar } from "./ViewBar";
-import {
-  AddColumnDialog,
-  DeleteColumnDialog,
-  EditColumnDialog,
-} from "./ColumnDialogs";
-import { SelectionToolbar } from "./SelectionToolbar";
-import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
+import DispatcherControlBar from "@/components/shared/DispatcherControlBar";
 import TrackerErrorBanner from "@/components/shared/TrackerErrorBanner";
-import { useAsyncAction } from "@/hooks/useAsyncAction";
+import { useHeaderSlot } from "@/components/shared/useHeaderSlot";
+import SettingsDrawer from "@/components/Dispatcher/SettingsDrawer";
+import { InlineBanner } from "@/components/ui/InlineBanner";
 import { useBoardKeyboard } from "@/hooks/useBoardKeyboard";
 import { useConfirm } from "@/hooks/useConfirm";
-import { useToggleSet } from "@/hooks/useToggleSet";
+import { useServerInfoStore } from "@/store/serverInfo";
 import { useUIStore } from "@/store/ui";
-import {
-  defaultStateColor,
-  type GroupMode,
-  type SortMode,
-} from "./boardShared";
+
+import { BoardKeyboardHelp } from "./BoardKeyboardHelp";
+import { SelectionToolbar } from "./SelectionToolbar";
+import { BoardColumnsArea } from "./board/BoardColumnsArea";
+import { BoardFilterBar } from "./board/BoardFilterBar";
+import { BoardHeaderActions } from "./board/BoardHeaderActions";
 import { BoardSkeleton } from "./board/BoardSkeleton";
+import { ColumnDialogHost } from "./board/ColumnDialogHost";
 import { EmptyBoard } from "./board/EmptyBoard";
 import { EmptyBoardBanner } from "./board/EmptyBoardBanner";
-import { useServerInfoStore } from "@/store/serverInfo";
+import { IssueModalHost } from "./board/IssueModalHost";
 import { isDispatchable } from "./board/boardSort";
-import { useBoardData } from "./board/useBoardData";
-import { useDispatcherPoll } from "./board/useDispatcherPoll";
+import { useBoardBulkActions } from "./board/useBoardBulkActions";
 import { useBoardColumns } from "./board/useBoardColumns";
-import { filtersFromView, viewFromFilters } from "./board/viewMapping";
-import { useSwimlanes } from "./board/useSwimlanes";
-import { useColumnManagement } from "./board/useColumnManagement";
-import { useBoardSelection } from "./board/useBoardSelection";
+import { useBoardData } from "./board/useBoardData";
 import { useBoardDragDrop } from "./board/useBoardDragDrop";
+import { useBoardFilters } from "./board/useBoardFilters";
+import { useBoardSelection } from "./board/useBoardSelection";
+import { useColumnManagement } from "./board/useColumnManagement";
+import { useDispatcherPoll } from "./board/useDispatcherPoll";
+import { useIssueActions } from "./board/useIssueActions";
+import { useSwimlanes } from "./board/useSwimlanes";
+import { useTabBadge } from "./board/useTabBadge";
 import {
   useTransitionHistory,
   useUndoKeyboardShortcut,
 } from "./board/useUndoTransitions";
-import { useBoardBulkActions } from "./board/useBoardBulkActions";
-import { useTabBadge } from "./board/useTabBadge";
 
 export default function BoardView() {
   const [, setLocation] = useLocation();
@@ -71,40 +56,12 @@ export default function BoardView() {
   const { board, issues, setIssues, loading, error, setError, refresh } =
     useBoardData();
 
-  const [editing, setEditing] = useState<NativeIssue | null>(null);
-  const [creating, setCreating] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const {
-    set: labelFilter,
-    toggle: onLabelToggle,
-    clear: clearLabelFilter,
-    replace: replaceLabels,
-  } = useToggleSet<string>();
-  const [assigneeFilter, setAssigneeFilter] = useState("");
-  const [botFilter, setBotFilter] = useState("");
-  const [sortMode, setSortMode] = useState<SortMode>("priority");
-  const [groupMode, setGroupMode] = useState<GroupMode>("none");
-  // Repo-first scoping: when the sidebar has an active repo (cloud + not
-  // overview), filter cards to that repo. `includeUnlinked` widens the
-  // filter to also show cards with no external link (default off).
-  const {
-    activeRepo,
-    overview: repoOverview,
-    enabled: repoScopeEnabled,
-  } = useActiveRepo();
-  const repoScope =
-    repoScopeEnabled && !repoOverview ? (activeRepo?.repo_full_name ?? null) : null;
-  const [includeUnlinked, setIncludeUnlinked] = useState(false);
-  // Saved views: activeView is the currently-applied preset's name ("" =
-  // custom/unsaved). viewAction tracks the save/delete REST call.
-  const [activeView, setActiveView] = useState("");
-  const viewAction = useAsyncAction();
-  // `onLabelToggle` (from useToggleSet) is the single source of truth
-  // for label filter toggling — used both by the top filter strip and
-  // by clicking a chip on any card, so card-level chips toggle the
-  // same Set the filter strip shows.
+
+  // Filter/sort/group + saved-view ("views bar") state. filters.onLabelToggle
+  // is the single toggle used by both the filter strip and card-level chips.
+  const filters = useBoardFilters({ refresh });
 
   const addToast = useUIStore((s) => s.addToast);
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -143,73 +100,27 @@ export default function BoardView() {
     useBoardColumns({
       board,
       issues,
-      searchQuery,
-      labelFilter,
-      assigneeFilter,
-      botFilter,
-      sortMode,
-      repoScope,
-      includeUnlinked,
+      searchQuery: filters.searchQuery,
+      labelFilter: filters.labelFilter,
+      assigneeFilter: filters.assigneeFilter,
+      botFilter: filters.botFilter,
+      sortMode: filters.sortMode,
+      repoScope: filters.repoScope,
+      includeUnlinked: filters.includeUnlinked,
     });
 
   // Swimlanes: null when grouping is off (flat board), else the per-lane
-  // grouping of the same filtered issues. Column management is offered only
-  // in the flat view, so swimlane columns render without header menus.
-  const swimlanes = useSwimlanes({ board, filteredIssues, groupMode, sortMode });
+  // grouping of the same filtered issues.
+  const swimlanes = useSwimlanes({
+    board,
+    filteredIssues,
+    groupMode: filters.groupMode,
+    sortMode: filters.sortMode,
+  });
 
   // Column (state) management: header menu + reorder drag + add/edit/
   // delete dialogs. Mutations refresh the board+issues afterward.
   const columns = useColumnManagement({ board, issues, refresh });
-
-  // Saved-view handlers. applyView restores a preset's filter/sort/group;
-  // onSaveView snapshots the current combo; onDeleteView drops one.
-  const applyView = useCallback(
-    (v: NativeView | null) => {
-      if (!v) {
-        setActiveView("");
-        return;
-      }
-      const f = filtersFromView(v);
-      setSearchQuery(f.search);
-      replaceLabels(f.labels);
-      setAssigneeFilter(f.assignee);
-      setBotFilter(f.bot);
-      setSortMode(f.sort);
-      setGroupMode(f.group);
-      setActiveView(v.name);
-    },
-    [replaceLabels],
-  );
-  const onSaveView = useCallback(
-    (name: string) => {
-      if (!name) return;
-      void viewAction.run(async () => {
-        await saveView(
-          viewFromFilters(name, {
-            search: searchQuery,
-            labels: [...labelFilter],
-            assignee: assigneeFilter,
-            bot: botFilter,
-            sort: sortMode,
-            group: groupMode,
-          }),
-        );
-        await refresh();
-        setActiveView(name);
-      });
-    },
-    [viewAction, searchQuery, labelFilter, assigneeFilter, botFilter, sortMode, groupMode, refresh],
-  );
-  const onDeleteView = useCallback(
-    (name: string) => {
-      void viewAction.run(async () => {
-        await deleteView(name);
-        await refresh();
-        setActiveView((cur) => (cur === name ? "" : cur));
-      });
-    },
-    [viewAction, refresh],
-  );
 
   // Multi-selection state + click/drag-start selection logic.
   const {
@@ -254,94 +165,12 @@ export default function BoardView() {
     recordTransition,
   });
 
+  // Issue-modal glue: create/edit state + the CRUD handlers.
+  const { creating, setCreating, editing, setEditing, onCreate, onSave, onDelete } =
+    useIssueActions({ refresh, setError, confirm, setSelectedIds, setAnchorId });
+
   const modalOpen = creating || editing !== null || helpOpen || settingsOpen;
   useUndoKeyboardShortcut({ historyRef, onDrop, modalOpen });
-
-  const onCreate = useCallback(
-    async (input: IssueDraft) => {
-      try {
-        await createIssue({
-          title: input.title ?? "",
-          body: input.body,
-          state: input.state,
-          labels: input.labels,
-          priority: input.priority,
-          assignee: input.assignee,
-          fields: input.fields,
-          bot: input.bot,
-          bot_args: input.bot_args,
-          external: input.external,
-        });
-        setCreating(false);
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [refresh, setError],
-  );
-
-  const onSave = useCallback(
-    async (input: IssueDraft) => {
-      if (!editing) return;
-      try {
-        await patchIssue(editing.id, {
-          title: input.title,
-          body: input.body,
-          labels: input.labels,
-          priority: input.priority,
-          // assignee/bot/bot_args all default to a cleared value ("" / "" /
-          // {}) when the operator empties the field, so the corresponding
-          // Patch pointer is SET and the server actually clears a
-          // previously-stored value. The modal emits `undefined` for an
-          // empty field; without the `?? ""` the key is JSON-dropped, the
-          // server reads a nil pointer as "unchanged", and the stale value
-          // silently persists. For `assignee` that also kept routing the
-          // issue to the wrong per-assignee workflow (assignee selects the
-          // bot), so clearing it has to reach the store.
-          assignee: input.assignee ?? "",
-          fields: input.fields,
-          bot: input.bot ?? "",
-          bot_args: input.bot_args ?? {},
-          external: input.external,
-        });
-        setEditing(null);
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [editing, refresh, setError],
-  );
-
-  const onDelete = useCallback(
-    async (id: string) => {
-      if (
-        !(await confirm({
-          title: "Delete this issue?",
-          message: "This removes it from the board and cannot be undone.",
-          confirmLabel: "Delete",
-          confirmVariant: "danger",
-        }))
-      )
-        return;
-      try {
-        await deleteIssue(id);
-        setEditing(null);
-        setSelectedIds((cur) => {
-          if (!cur.has(id)) return cur;
-          const next = new Set(cur);
-          next.delete(id);
-          return next;
-        });
-        setAnchorId((cur) => (cur === id ? null : cur));
-        await refresh();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-    },
-    [confirm, refresh, setError, setSelectedIds, setAnchorId],
-  );
 
   // The staging/dispatch lane: the first eligible, non-terminal state
   // (the "Let's go"/ready column). The dispatcher claims from it when
@@ -406,34 +235,13 @@ export default function BoardView() {
   useHeaderSlot({
     left: <span className="text-xs font-medium text-fg-default">Board</span>,
     right: board ? (
-      <>
-        {/* Schema/maintenance actions collapse behind one menu so the
-            header reads: one primary (create) + one secondary (manage). */}
-        <DropdownMenu
-          trigger={
-            <Button variant="secondary" size="sm">
-              Manage
-            </Button>
-          }
-          align="end"
-        >
-          <DropdownMenuItem onSelect={() => setLocation("/board/labels")}>
-            Labels…
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setLocation("/board/fields")}>
-            Fields…
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={columns.openAddColumn}>
-            Add column…
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => void refresh()}>
-            Refresh
-          </DropdownMenuItem>
-        </DropdownMenu>
-        <Button variant="primary" size="sm" onClick={() => setCreating(true)}>
-          + New issue
-        </Button>
-      </>
+      <BoardHeaderActions
+        onManageLabels={() => setLocation("/board/labels")}
+        onManageFields={() => setLocation("/board/fields")}
+        onAddColumn={columns.openAddColumn}
+        onRefresh={() => void refresh()}
+        onNewIssue={() => setCreating(true)}
+      />
     ) : null,
   });
 
@@ -443,115 +251,6 @@ export default function BoardView() {
   if (!board) {
     return <EmptyBoard kind="missing" error={error} onRetry={() => void refresh()} />;
   }
-
-  // Build the active column dialog at statement level so the discriminated
-  // union narrows cleanly (it wouldn't inside JSX .map/.filter callbacks).
-  const colDialog = columns.dialog;
-  let columnDialogNode: React.ReactNode = null;
-  if (colDialog.kind === "add") {
-    columnDialogNode = (
-      <AddColumnDialog
-        existingNames={board.states.map((s) => s.name)}
-        busy={columns.busy}
-        error={columns.error}
-        onCancel={columns.closeDialog}
-        onSubmit={columns.submitAdd}
-      />
-    );
-  } else if (colDialog.kind === "edit") {
-    const st = colDialog.state;
-    columnDialogNode = (
-      <EditColumnDialog
-        state={st}
-        issueCount={columns.issueCount(st.name)}
-        existingNames={board.states.map((s) => s.name).filter((n) => n !== st.name)}
-        busy={columns.busy}
-        error={columns.error}
-        onCancel={columns.closeDialog}
-        onSubmit={columns.submitEdit}
-      />
-    );
-  } else if (colDialog.kind === "delete") {
-    const st = colDialog.state;
-    columnDialogNode = (
-      <DeleteColumnDialog
-        state={st}
-        issueCount={columns.issueCount(st.name)}
-        otherStates={board.states.filter((s) => s.name !== st.name)}
-        isLast={board.states.length <= 1}
-        busy={columns.busy}
-        error={columns.error}
-        onCancel={columns.closeDialog}
-        onSubmit={columns.submitDelete}
-      />
-    );
-  }
-
-  // renderStateColumn builds a <Column> for a board state from a byState
-  // map. Used by both the flat board and each swimlane; column-management
-  // affordances (menu, reorder handle) are offered only in the flat view
-  // (manage=true), so swimlane columns stay clean.
-  const renderStateColumn = (
-    s: NativeState,
-    map: Map<string, NativeIssue[]>,
-    manage: boolean,
-    keyPrefix = "",
-  ) => (
-    <Column
-      key={keyPrefix + s.name}
-      name={s.name}
-      display={s.display ?? s.name}
-      terminal={!!s.terminal}
-      eligible={!!s.eligible}
-      color={s.color ?? defaultStateColor(s.name, !!s.eligible, !!s.terminal)}
-      issues={map.get(s.name) ?? []}
-      selectedIds={selectedIds}
-      runningByIssue={runningByIssue}
-      retryingByIssue={retryingByIssue}
-      skipByIssue={skipByIssue}
-      onDrop={onColumnDrop}
-      onClickCard={onCardClick}
-      onDragStartCard={onCardDragStart}
-      onOpenCard={(iss) => setEditing(iss)}
-      onSelectColumn={selectColumn}
-      onLabelClick={onLabelToggle}
-      activeLabels={labelFilter}
-      onCancelRun={onCancelRun}
-      onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
-      dimmed={dispatcherPaused}
-      onEditColumn={manage ? columns.onEditColumn : undefined}
-      onDeleteColumn={manage ? columns.onDeleteColumn : undefined}
-      onMoveColumn={manage ? columns.onMoveColumn : undefined}
-      onReorderColumn={manage ? columns.onReorderColumn : undefined}
-    />
-  );
-
-  const renderUnmapped = (map: Map<string, NativeIssue[]>, keyPrefix = "") =>
-    (map.get("__unmapped__")?.length ?? 0) > 0 ? (
-      <Column
-        key={keyPrefix + "__unmapped__"}
-        name="__unmapped__"
-        display="Unmapped"
-        terminal={false}
-        eligible={false}
-        color="var(--color-board-backlog)"
-        issues={map.get("__unmapped__") ?? []}
-        selectedIds={selectedIds}
-        runningByIssue={runningByIssue}
-        retryingByIssue={retryingByIssue}
-        skipByIssue={skipByIssue}
-        onDrop={onColumnDrop}
-        onClickCard={onCardClick}
-        onDragStartCard={onCardDragStart}
-        onOpenCard={(iss) => setEditing(iss)}
-        onSelectColumn={selectColumn}
-        onLabelClick={onLabelToggle}
-        activeLabels={labelFilter}
-        onCancelRun={onCancelRun}
-        onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
-        dimmed={dispatcherPaused}
-      />
-    ) : null;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -578,48 +277,15 @@ export default function BoardView() {
         </InlineBanner>
       )}
 
-      <BoardFilters
-        searchQuery={searchQuery}
-        labelFilter={labelFilter}
-        assigneeFilter={assigneeFilter}
-        botFilter={botFilter}
+      <BoardFilterBar
+        filters={filters}
+        board={board}
         allLabels={allLabels}
         allAssignees={allAssignees}
         allBots={allBots}
         total={issues.length}
         filtered={filteredIssues.length}
-        onSearchChange={setSearchQuery}
-        onLabelToggle={onLabelToggle}
-        onClearLabels={clearLabelFilter}
-        onAssigneeChange={setAssigneeFilter}
-        onBotChange={setBotFilter}
-        sortMode={sortMode}
-        onSortChange={setSortMode}
-        groupMode={groupMode}
-        onGroupChange={setGroupMode}
-        fieldNames={(board.fields ?? []).map((f) => f.name)}
         hasRepoLinks={hasRepoLinks}
-        repoScope={repoScope}
-        includeUnlinked={includeUnlinked}
-        onIncludeUnlinkedChange={setIncludeUnlinked}
-        onReset={() => {
-          setSearchQuery("");
-          clearLabelFilter();
-          setAssigneeFilter("");
-          setBotFilter("");
-          setGroupMode("none");
-          setActiveView("");
-        }}
-      />
-
-      <ViewBar
-        views={board.views ?? []}
-        activeView={activeView}
-        onApply={applyView}
-        onSave={onSaveView}
-        onDelete={onDeleteView}
-        busy={viewAction.busy}
-        error={viewAction.error}
       />
 
       {issues.length === 0 && (
@@ -642,86 +308,48 @@ export default function BoardView() {
           onClear={() => setSingleSelection(null)}
         />
       )}
-      <div
-        className="flex-1 overflow-auto p-3"
-        // Click in the empty board area (column gaps, "drop here" space,
-        // padding) clears the selection. Clicks landing on a card are
-        // ignored here — the card carries data-issue-card and runs its
-        // own selection handler.
-        onClick={(e) => {
-          if ((e.target as HTMLElement).closest("[data-issue-card]")) return;
-          if (selectedIds.size > 0) setSingleSelection(null);
-        }}
-      >
-        {swimlanes ? (
-          <div className="flex flex-col gap-4 min-w-fit">
-            {/* Column mutations are ambiguous when the same state repeats
-                across lanes, so the per-column menus are flat-view only —
-                say so instead of looking broken. */}
-            <div className="text-fg-subtle text-micro px-1">
-              Column editing is available with Group: none.
-            </div>
-            {swimlanes.length === 0 && (
-              <div className="text-fg-muted text-xs p-4">
-                No issues to group by this dimension.
-              </div>
-            )}
-            {swimlanes.map((lane) => (
-              <section key={lane.key} className="space-y-2">
-                <h2 className="text-xs font-semibold text-fg-default flex items-center gap-2 sticky left-0">
-                  <span className="uppercase tracking-wide">{lane.label}</span>
-                  <span className="text-fg-muted font-normal">{lane.count}</span>
-                </h2>
-                <div className="flex gap-3 min-w-fit">
-                  {board.states.map((s) =>
-                    renderStateColumn(s, lane.byState, false, lane.key + "::"),
-                  )}
-                  {renderUnmapped(lane.byState, lane.key + "::")}
-                </div>
-              </section>
-            ))}
-          </div>
-        ) : (
-          <div className="flex gap-3 min-w-fit">
-            {board.states.map((s) => renderStateColumn(s, byState, true))}
-            {renderUnmapped(byState)}
-          </div>
-        )}
-      </div>
 
-      {creating && (
-        <IssueModal
-          board={board}
-          initial={null}
-          onSubmit={onCreate}
-          onClose={() => setCreating(false)}
-          allAssignees={allAssignees}
-        />
-      )}
-      {editing && (
-        <IssueModal
-          board={board}
-          initial={editing}
-          allAssignees={allAssignees}
-          onSubmit={onSave}
-          onClose={() => setEditing(null)}
-          onDelete={() => void onDelete(editing.id)}
-          onDispatch={
-            isDispatchable(editing.state)
-              ? () => {
-                  const id = editing.id;
-                  setEditing(null);
-                  void onDrop(id, dispatchState);
-                  addToast(
-                    dispatcherEnabled ? "Dispatched 1 issue" : "Staged 1 issue",
-                    "success",
-                  );
-                }
-              : undefined
-          }
-        />
-      )}
-      {columnDialogNode}
+      <BoardColumnsArea
+        board={board}
+        byState={byState}
+        swimlanes={swimlanes}
+        selectedIds={selectedIds}
+        runningByIssue={runningByIssue}
+        retryingByIssue={retryingByIssue}
+        skipByIssue={skipByIssue}
+        dispatcherPaused={dispatcherPaused}
+        activeLabels={filters.labelFilter}
+        columns={columns}
+        onColumnDrop={onColumnDrop}
+        onCardClick={onCardClick}
+        onCardDragStart={onCardDragStart}
+        onOpenCard={setEditing}
+        onSelectColumn={selectColumn}
+        onLabelToggle={filters.onLabelToggle}
+        onCancelRun={onCancelRun}
+        onOpenRun={(runId) => setLocation(`/runs/${encodeURIComponent(runId)}`)}
+        onClearSelection={() => setSingleSelection(null)}
+      />
+
+      <IssueModalHost
+        board={board}
+        creating={creating}
+        editing={editing}
+        allAssignees={allAssignees}
+        onCreate={onCreate}
+        onSave={onSave}
+        onCloseCreate={() => setCreating(false)}
+        onCloseEdit={() => setEditing(null)}
+        onDelete={(id) => void onDelete(id)}
+        onDispatch={(id) => {
+          void onDrop(id, dispatchState);
+          addToast(
+            dispatcherEnabled ? "Dispatched 1 issue" : "Staged 1 issue",
+            "success",
+          );
+        }}
+      />
+      <ColumnDialogHost board={board} columns={columns} />
       {confirmDialog}
       {helpOpen && <BoardKeyboardHelp onClose={() => setHelpOpen(false)} />}
     </div>
