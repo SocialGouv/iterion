@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -186,6 +187,28 @@ func (b *ClaudeCodeBackend) buildTransportOptions(task Task) ([]claudesdk.Option
 				Env:           env,
 				KeepStdinOpen: openStdin,
 			})
+		}))
+	} else {
+		// Host path: install a builder solely to (a) surface the resolved
+		// claude invocation — the default spawn is opaque, so a silent
+		// "0 tokens / formatting-pass-fallback" structured-output failure can't
+		// be traced to the concrete command + per-task env overrides — and
+		// (b) keep the env identical to the SDK default (os.Environ() + the
+		// per-task entries via hostSpawnEnv), so this is behaviour-neutral.
+		opts = append(opts, claudesdk.WithCommandBuilder(func(ctx context.Context, path string, args []string, cwd string, env map[string]string, openStdin bool) *exec.Cmd {
+			keys := make([]string, 0, len(env))
+			for k := range env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			b.Logger.Info("claude-code: host exec %v (cwd=%s, stdin=%v, task_env_keys=%v)",
+				append([]string{path}, args...), cwd, openStdin, keys)
+			cmd := exec.CommandContext(ctx, path, args...)
+			if cwd != "" {
+				cmd.Dir = cwd
+			}
+			cmd.Env = hostSpawnEnv(env)
+			return cmd
 		}))
 	}
 
